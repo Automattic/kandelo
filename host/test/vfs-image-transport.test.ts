@@ -1,25 +1,24 @@
 /**
- * The container's transport and header rules, tested where they LIVE.
+ * The container's DECOMPRESSION BOUND, tested where it lives.
  *
- * `host/src/vfs/vfs-image-transport.ts` is 363 lines with seventeen exports
- * and, until this file, no test of its own. Everything it guards was reached
- * through `MemoryFileSystem.fromImage`, which is the class lane V exists to
- * delete — and the module is not deleted with it: `module-base-image.ts` reads
- * a container's host-side sections through `parseImageHeader`, and
- * `images/vfs/lib/kandelo-image-fs.ts` decompresses through
- * `maybeDecompressImage`, so both survive.
+ * Everything `host/src/vfs/vfs-image-transport.ts` guards was once reached
+ * through `MemoryFileSystem.fromImage`, the class lane V deleted, and this file
+ * exists because a guard whose only test goes with an unrelated class is a
+ * guard that is gone with nothing saying so.
  *
- * The one that matters most is the decompression bound. A zstd frame declares
- * its own content size, so thirteen bytes can announce two gigabytes; the
- * frame walk refuses that BEFORE a decompressor is asked to produce it. A
- * guard whose only test is deleted alongside an unrelated class is a guard
- * that is gone, and nothing about the deletion would say so.
+ * **What survived that deletion is the bound, and only the bound.** A zstd
+ * frame declares its own content size, so thirteen bytes can announce two
+ * gigabytes; the frame walk refuses that BEFORE a decompressor is asked to
+ * produce it. `images/vfs/lib/kandelo-image-fs.ts` decompresses through
+ * `maybeDecompressImage`, so the guard is reachable from the reader that is
+ * left, and the last case here drives it from exactly there.
  *
- * These claims are MOVED, not invented. Each has a counterpart in
- * `vfs-image.test.ts` driven through `MemoryFileSystem`; here they are driven
- * through the module directly, and the decompression path is additionally
- * driven through `KandeloImageFs.loadImage` so the surviving caller is the one
- * proved to reach the bound.
+ * The header half this file also used to cover is retired at the bottom, with
+ * the reason: its subject had no production caller once `module-base-image.ts`
+ * lost its section-reading branch, and the container's real parser is Rust.
+ *
+ * These claims are MOVED, not invented. Each has a counterpart in the deleted
+ * `vfs-image.test.ts`, driven there through `MemoryFileSystem`.
  */
 
 import { describe, expect, it } from "vitest";
@@ -27,11 +26,8 @@ import { constants as zlibConstants, zstdCompressSync } from "node:zlib";
 
 import {
   VFS_IMAGE_HEADER_SIZE,
-  VFS_IMAGE_MAGIC,
   VFS_IMAGE_MAX_DECOMPRESSED_BYTES,
-  VFS_IMAGE_VERSION,
   maybeDecompressImage,
-  parseImageHeader,
 } from "../src/vfs/vfs-image-transport";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
@@ -46,20 +42,16 @@ function frameDeclaring(bytes: bigint): Uint8Array {
   return frame;
 }
 
-function header(
-  magic: number,
-  version: number,
-  flags: number,
-  sabLen: number,
-  totalBytes = VFS_IMAGE_HEADER_SIZE,
-): Uint8Array {
-  const bytes = new Uint8Array(totalBytes);
-  const view = new DataView(bytes.buffer);
-  view.setUint32(0, magic, true);
-  view.setUint32(4, version, true);
-  view.setUint32(8, flags, true);
-  view.setUint32(12, sabLen, true);
-  return bytes;
+/**
+ * `bytes` bytes that are NOT a zstd frame.
+ *
+ * These cases used to build a whole well-formed VFSI header here, which named
+ * more than they depend on: `maybeDecompressImage` branches on the zstd magic
+ * alone and never looks at what follows. Zeroed bytes are not that magic, and
+ * saying so is the property under test.
+ */
+function notAFrame(bytes: number): Uint8Array {
+  return new Uint8Array(bytes);
 }
 
 describe("VFS image transport", () => {
@@ -134,7 +126,7 @@ describe("VFS image transport", () => {
     });
 
     it("honours a narrower caller-owned bound, and accepts the exact size", () => {
-      const plain = header(VFS_IMAGE_MAGIC, VFS_IMAGE_VERSION, 0, 0, 64);
+      const plain = notAFrame(64);
       const compressed = new Uint8Array(zstdCompressSync(plain));
       expect(() => maybeDecompressImage(compressed, plain.byteLength - 1))
         .toThrow(/zstd.*decompressed.*bound/i);
@@ -158,7 +150,7 @@ describe("VFS image transport", () => {
     });
 
     it("passes plain bytes through untouched", () => {
-      const plain = header(VFS_IMAGE_MAGIC, VFS_IMAGE_VERSION, 0, 0, 32);
+      const plain = notAFrame(32);
       expect(maybeDecompressImage(plain)).toBe(plain);
     });
 
@@ -172,34 +164,24 @@ describe("VFS image transport", () => {
     });
   });
 
-  describe("header refusals", () => {
-    it("rejects bytes too short to hold a header", () => {
-      expect(() => parseImageHeader(new Uint8Array(4))).toThrow("VFS image too small");
-    });
-
-    it("rejects a container whose magic is not VFSI", () => {
-      expect(() => parseImageHeader(header(0xdeadbeef, VFS_IMAGE_VERSION, 0, 0, 32)))
-        .toThrow("Bad VFS image magic");
-    });
-
-    it("rejects a version this reader does not implement", () => {
-      expect(() => parseImageHeader(header(VFS_IMAGE_MAGIC, 99, 0, 0, 32)))
-        .toThrow("Unsupported VFS image version");
-    });
-
-    it("rejects a body the container claims but does not carry", () => {
-      // The header declares a megabyte of filesystem and the buffer is the
-      // header alone. Accepting it would read past the end of what arrived.
-      expect(() => parseImageHeader(header(VFS_IMAGE_MAGIC, VFS_IMAGE_VERSION, 0, 1_000_000)))
-        .toThrow("VFS image truncated");
-    });
-
-    it("returns the flags and body length a well-formed header carries", () => {
-      const bytes = header(VFS_IMAGE_MAGIC, VFS_IMAGE_VERSION, 0b101, 8, VFS_IMAGE_HEADER_SIZE + 8 + 4);
-      const parsed = parseImageHeader(bytes);
-      expect(parsed.flags).toBe(0b101);
-      expect(parsed.sabLen).toBe(8);
-      expect(parsed.image).toBe(bytes);
-    });
-  });
+  // RETIRED 2026-09-17, five cases: "rejects bytes too short to hold a
+  // header", "rejects a container whose magic is not VFSI", "rejects a version
+  // this reader does not implement", "rejects a body the container claims but
+  // does not carry", and "returns the flags and body length a well-formed
+  // header carries".
+  //
+  // All five drove `parseImageHeader`, which is deleted. The reason given at
+  // the top of this file when it was written -- that `module-base-image.ts`
+  // reads a container's host-side sections through it -- stopped being true
+  // when that branch went, and nothing took its place: the census found no
+  // caller in any language. A test whose subject has no production caller is
+  // testing the test.
+  //
+  // The claims themselves are NOT abandoned. `crates/runtime-core/src/
+  // vfsi_container.rs` is the reader that parses containers now, it refuses a
+  // bad magic, an unknown version and a truncated body, and those refusals are
+  // asserted there and reach TypeScript as the errno `KandeloImageFs.loadImage`
+  // throws. `host/test/kandelo-image-fs.test.ts` additionally asserts the
+  // on-disk magic against the real producer, without needing a constant to
+  // compare to.
 });

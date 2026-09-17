@@ -5,12 +5,29 @@
  * answer the same two questions before it can parse anything: are these bytes
  * compressed, and can this frame be trusted to stop. Those answers belong to
  * the image's TRANSPORT rather than to any one reader, and they were reachable
- * from exactly one -- `memory-fs.ts`, the implementation this campaign is
- * deleting. A reader built on the Rust module met a compressed image as
+ * from exactly one -- `memory-fs.ts`, the implementation this campaign
+ * deleted. A reader built on the Rust module met a compressed image as
  * `EINVAL`, because the module reads images and not archives.
  *
  * Nothing here knows what a VFS image contains. It decides whether bytes are
  * compressed, bounds what they may decompress to, and hands back bytes.
+ *
+ * # It used to know more, and that half is gone
+ *
+ * This module also carried a header parser, the container's magic, version and
+ * section flags, and slicers for the two host-side JSON sections. Every one of
+ * those had `memory-fs.ts` or `module-base-image.ts`'s section-reading branch
+ * behind it, and both are deleted -- the census after them found ZERO callers,
+ * in any language, for `parseImageHeader`, `sectionOffsetAfterArchives`,
+ * `lazySectionBytes`, `archiveSectionBytes` and `assertSectionFlagsConsistent`.
+ * The format's authority for those flags is
+ * `crates/runtime-core/src/vfsi_container.rs`, which is where the reader that
+ * still parses containers lives; the TypeScript constants were a second
+ * spelling of them with nothing reading it.
+ *
+ * `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY` survives alone because a test still needs to
+ * NAME that bit: `rootfs-image-load.test.ts` clears it to build the stale image
+ * whose loud refusal it asserts.
  *
  * # The bound is the point
  *
@@ -37,12 +54,12 @@ const ZSTD_MAX_BLOCK_BYTES = 128 * 1024;
 
 /** magic(4) + version(4) + flags(4) + sabLen(4). The floor a bound may name. */
 export const VFS_IMAGE_HEADER_SIZE = 16;
-export const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
-export const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
-export const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
+const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
+const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
+const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
 /** The bound on a `KLZY` section, kept because the decompression ceiling below
  *  is the sum of every section a container may declare. */
-export const VFS_IMAGE_MAX_KERNEL_LAZY_BYTES = 16 * 1024 * 1024;
+const VFS_IMAGE_MAX_KERNEL_LAZY_BYTES = 16 * 1024 * 1024;
 export const VFS_IMAGE_MAX_DECOMPRESSED_BYTES =
   1024 * 1024 * 1024
   + VFS_IMAGE_MAX_LAZY_METADATA_BYTES
@@ -214,12 +231,6 @@ function assertBoundedZstdFrames(image: Uint8Array, maximum: number): void {
   }
 }
 
-export const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
-export const VFS_IMAGE_VERSION = 1;
-export const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
-export const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
-export const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
-export const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
 /**
  * The container declares a kernel-facing lazy-linkage (`KLZY`) section.
  *
@@ -232,146 +243,3 @@ export const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
  * no longer decodes.
  */
 export const VFS_IMAGE_FLAG_HAS_KERNEL_LAZY = 1 << 4;
-
-export interface ParsedImageHeader {
-  image: Uint8Array;
-  view: DataView;
-  flags: number;
-  sabLen: number;
-}
-
-export function parseImageHeader(
-  input: Uint8Array,
-  maxDecompressedBytes?: number,
-): ParsedImageHeader {
-  const image = maybeDecompressImage(input, maxDecompressedBytes);
-
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
-    throw new Error("VFS image too small");
-  }
-
-  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  const magic = view.getUint32(0, true);
-  if (magic !== VFS_IMAGE_MAGIC) {
-    throw new Error(
-      `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
-    );
-  }
-  const version = view.getUint32(4, true);
-  if (version !== VFS_IMAGE_VERSION) {
-    throw new Error(
-      `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
-    );
-  }
-  const flags = view.getUint32(8, true);
-  const sabLen = view.getUint32(12, true);
-
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
-    throw new Error("VFS image truncated");
-  }
-
-  return { image, view, flags, sabLen };
-}
-
-export function sectionOffsetAfterArchives(
-  image: Uint8Array,
-  view: DataView,
-  flags: number,
-  sabLen: number,
-): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
-  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-  const lazyLen = view.getUint32(lazyOffset, true);
-  if (lazyLen > VFS_IMAGE_MAX_LAZY_METADATA_BYTES) {
-    throw new Error(
-      `VFS image lazy metadata exceeds ${VFS_IMAGE_MAX_LAZY_METADATA_BYTES} bytes`,
-    );
-  }
-  if (image.byteLength < lazyOffset + 4 + lazyLen) {
-    throw new Error("VFS image truncated (lazy metadata section)");
-  }
-  const archiveOffset = lazyOffset + 4 + lazyLen;
-  let metadataOffset = archiveOffset;
-
-  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-    if (image.byteLength < archiveOffset + 4) {
-      throw new Error("VFS image truncated (lazy archive section)");
-    }
-    const archiveLen = view.getUint32(archiveOffset, true);
-    if (archiveLen > VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES) {
-      throw new Error(
-        `VFS image lazy archive metadata exceeds ` +
-          `${VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES} bytes`,
-      );
-    }
-    if (image.byteLength < archiveOffset + 4 + archiveLen) {
-      throw new Error("VFS image truncated (lazy archive payload)");
-    }
-    metadataOffset = archiveOffset + 4 + archiveLen;
-  }
-
-  return { lazyLen, archiveOffset, metadataOffset };
-}
-
-/**
- * The bytes of the container's two host-side JSON sections, or `null` when the
- * flags say a section is absent.
- *
- * These sections are the fetch descriptions — lazy file URLs, archive URLs and
- * digests — and the courier contract keeps them host-side: the kernel carries
- * `KLZY` and never parses these. A parity test proved the consequence the hard
- * way, that a module-backed filesystem cannot supply a lazy file's URL at all,
- * because `KLZY` does not carry one. **Whatever reads the container reads
- * these**, which is why the slicing lives with the format rather than inside
- * one of the format's readers.
- *
- * Returns raw bytes rather than parsed values deliberately: `memory-fs.ts`
- * needs them PRISTINE, because it re-derives the binary `KLZY` section from
- * them and compares, and that comparison must not be perturbed by anything a
- * decoder or importer does to the values.
- */
-export function lazySectionBytes(
-  parsed: ParsedImageHeader,
-  sections: { lazyLen: number },
-): Uint8Array | null {
-  if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_LAZY) || sections.lazyLen === 0) {
-    return null;
-  }
-  const at = VFS_IMAGE_HEADER_SIZE + parsed.sabLen;
-  return parsed.image.subarray(at + 4, at + 4 + sections.lazyLen);
-}
-
-/** The archive half of {@link lazySectionBytes}. */
-export function archiveSectionBytes(
-  parsed: ParsedImageHeader,
-  sections: { archiveOffset: number },
-): Uint8Array | null {
-  if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES)) return null;
-  const at = sections.archiveOffset;
-  const len = parsed.view.getUint32(at, true);
-  if (len === 0) return null;
-  return parsed.image.subarray(at + 4, at + 4 + len);
-}
-
-/**
- * Refuse a container whose section flags disagree with its sections.
- *
- * A format-consistency question, not a filesystem one: metadata present without
- * the flag that declares it, or typed archive metadata without the archive flag
- * it depends on, is a malformed container however it arose.
- */
-export function assertSectionFlagsConsistent(
-  flags: number,
-  sections: { lazyLen: number },
-): void {
-  if (!(flags & VFS_IMAGE_FLAG_HAS_LAZY) && sections.lazyLen !== 0) {
-    throw new Error("VFS image has lazy metadata without its format flag");
-  }
-  if (
-    (flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES) &&
-    !(flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES)
-  ) {
-    throw new Error(
-      "VFS image has typed lazy-archive metadata without its archive flag",
-    );
-  }
-}
