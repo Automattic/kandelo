@@ -1257,3 +1257,44 @@ So the options, all measured:
 My recommendation is the third, with `8_192` as the interim if P-11 needs to
 be green before that lands. Not taken unasked: both change a bound whose terms
 the maintainer set.
+
+## PROVED: a channel syscall works at INSTANTIATION time
+
+This was the crux risk for on-demand identity allocation, and it is now
+settled empirically rather than by reading.
+
+The worry: every existing `channel_mmap` caller runs during fork
+(`begin_unwind_impl`) or dlopen (`commit_table_mutation_impl`), with the guest
+live. Identities are published at INSTANTIATION, before the guest runs. If the
+kernel does not service this process's channel yet, a syscall there parks
+forever in `memory_atomic_wait32` and the design is dead.
+
+It does service it. Probe: a temporary `channel_mmap` + `channel_munmap` of one
+page inside `fm_set_format`, guarded on `channel_base != 0`, exercised through
+`fork-module-worker-instantiation.test.ts` (a REAL centralized worker, parent +
+fork child).
+
+Three runs, because the first two could not tell the answers apart:
+
+  1. `if let Ok(addr) = ...`      -> 1 passed. Proves only "did not hang":
+     an Err would skip silently and pass identically.
+  2. trap on Err                  -> 1 passed. So the mmap did NOT fail.
+  3. trap on Ok (reachability)    -> 1 FAILED at 9900ms. So the success path
+     really executes; run 2 was not passing vacuously with the probe skipped.
+
+Run 3 is the one that matters, and it is the H-25 rule applied to a probe
+rather than to a guard: a probe that cannot distinguish its own success from
+its own absence proves nothing. Inverting it is what turns "the test passed"
+into evidence.
+
+Conclusion: the channel is live at `fm_set_format`, which the host calls at
+`worker-main.ts:3781` -- before `ForkImportIdentity` publishes any identity at
+:3920. On-demand identity chunks can therefore be mmap'd exactly where they are
+needed, with no preallocation and no fixed bound.
+
+Probe fully reverted: source back to sha256 `cef66616ede7438a`, all six
+artifacts byte-identical to pre-probe, build-key `5bd1ca7969137211`,
+verify-fresh 0, and 11 tests green across worker-instantiation,
+shipped-artifact and identity-capacity. Worth stating because run 3 left a
+TRAPPING fork module staged, which would have broken every fork in the tree if
+it had been left there.
