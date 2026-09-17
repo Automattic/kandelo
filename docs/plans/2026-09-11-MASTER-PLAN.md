@@ -13721,6 +13721,37 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### THE `images/` TYPECHECK IS NOT AT ZERO — measured 2026-09-17, `9f988d3cb`
+
+The plan records "The `images/` typecheck reaches a ZERO baseline". Re-run
+after the deletion, it reports **seven** errors. Two were this lane's and are
+fixed; the other five, plus one more in `web-libs`, belong elsewhere and are
+written down here so the next person measures rather than trusts the sentence.
+
+**The two that were ours, and they are the same mistake twice.**
+`RootfsOverlayReader` asked for `lstat(): StatResult` and `readdir(): DirEntry`
+from a reader whose only implementation is `KandeloImageFs` — which reports no
+device number and no access or change times, and answers `readdir` with a name
+alone. **The WRITER half of the same interface pair had already been narrowed,
+with the reason stated beside it**; the read half was left asking for the full
+shape. One file, two interfaces, and one of them demanded what the other had
+already established the producer cannot give. Nothing failed at runtime because
+the module reads `mode`, `uid`, `gid`, `size` and `name` and nothing else —
+which is exactly why a typecheck that nobody runs stops being a gate.
+
+**The six that remain, named so they can be owned**: five in
+`host/test/centralized-test-helper.ts` — a `SharedArrayBuffer`/`BufferSource`
+mismatch at the kernel-wasm compile call and four implicit-`any` inference
+cycles — and one in `web-libs/kandelo-session/src/kernel-host.ts`, an optional
+`TerminalProgram` passed where a required one is declared. None is in a hunk
+this lane touched; all six predate 2026-09-17.
+
+**And the measurement to keep**: a "zero baseline" recorded once is a snapshot,
+not a property. This one had drifted to seven without anything failing, because
+no job runs `tsc -p images/tsconfig.typecheck.json`. Wiring it is the thing
+that would make the number mean something, and that is the same shape as the
+`node:test` files no runner includes.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
