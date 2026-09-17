@@ -3393,6 +3393,20 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+> **CLOSED 2026-09-17 (`ead9da12f`).** `memory-fs.ts` and `sharedfs-vendor.ts`
+> are deleted, with `materialization-plan.ts`, `hardlink-graph.ts` and
+> `kernel-lazy-section.ts` — about 12,900 lines — and the closure gate flipped
+> the lane's status because its conditions were met, not because anyone
+> asserted it.
+>
+> **Everything below this line is the record of how it got there, not a
+> backlog.** Sections that read as pending — "V5's REMAINDER", the census
+> counts, the step-4/step-5 plan — describe states that no longer exist;
+> several name files that are gone. The closure, what it does NOT mean, and
+> the two things still owed are in **"LANE V IS CLOSED"** near the end of this
+> document.
+
+
 ## The perturbation round for the night's guards — 10 trials, and one that took three tries
 
 `image-writer-install` (3), `rootfs-overlay-not-found` (3) and
