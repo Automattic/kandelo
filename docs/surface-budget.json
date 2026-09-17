@@ -136,7 +136,7 @@
     },
     "hostVfsTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/vfs/*.ts excluding memory-fs.ts and sharedfs-vendor.ts, which memoryFsTypeScript and imageFsTypeScript already count",
-      "ceiling": 7452,
+      "ceiling": 7262,
       "slack": 127,
       "target": 1267,
       "why": "Lane V's two budgeted files are the large halves, but ~11,000 lines of VFS TypeScript sit beside them unmeasured: transports, container parsing, lazy-archive planning, materialization plans. Deleting 242 of them on 2026-09-14 moved no campaign number. The exclusions prevent double-counting, because a line counted twice is banked twice. **The target is a DIRECTION:** the plan's stated floor is that the host fetches deferred bytes and reads host-backed mounts, neither of which needs a filesystem — but that floor has not been measured. **RAISED 11,048 -> 11,091 on 2026-09-14, hours after it was set, and the argument is recorded rather than assumed.** The two image producers write a deferred URL in different places: a MemoryFileSystem-built image in the host-side JSON sections, a module-built one in the KLZY descriptor, and neither writes both. Reading only the sections is correct today and returns an EMPTY LIST after memory-fs.ts is deleted — an image full of deferred files loading as an image with none. The 43 lines buy a module-sourced fallback and a refusal for the archive half it cannot yet reconstruct, so that the step-5 failure is either correct or loud. 27 lines were repaid in the same commit by deleting imageReadFromBody, whose last production caller went when the overlay started reading the container directly."

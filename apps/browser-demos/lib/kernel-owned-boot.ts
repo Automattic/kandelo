@@ -10,7 +10,7 @@
 // and nudge WebKit's collector to reclaim it between boots.
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import imageModuleUrl from "@kandelo-image-module32-wasm?url";
-import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
+import { overlayEtcFromRootfs } from "../../../images/vfs/lib/rootfs-etc-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 

@@ -1,18 +1,34 @@
+/**
+ * Merge a rootfs image's canonical `/etc` into an image under construction.
+ *
+ * MOVED out of `host/src/vfs/` on 2026-09-16, and the move is the point rather
+ * than tidying. This is an IMAGE BUILDER: its one production caller is the
+ * browser demo's boot, which assembles a kernel-owned image before any kernel
+ * exists. It lived in the host runtime only because its source filesystem was
+ * `KandeloImageFs`, and `host/src` may not import from `images/` — enforced
+ * by the host package's own `rootDir`. So the reader it needed could not
+ * follow it, and it could not follow the reader.
+ *
+ * Here it reads through `KandeloImageFs`, which is what every other builder
+ * uses, and the seal check it used to perform explicitly is now inherent:
+ * `loadImage` authenticates cohorts because `sm_load_image` does. A
+ * verification a caller can forget is one some caller eventually will.
+ */
 import {
   ENOENT,
   ENOSPC,
   SFSError,
-} from "./vfs-errors";
-import { OPEN_FLAGS } from "../generated/abi";
-import { MemoryFileSystem } from "./memory-fs";
-import type { HostFileOffset, StatResult } from "../types";
-import type { DirEntry } from "./types";
+} from "../../../host/src/vfs/vfs-errors";
+import { OPEN_FLAGS } from "../../../host/src/generated/abi";
+import { KandeloImageFs } from "./kandelo-image-fs";
+import type { HostFileOffset, StatResult } from "../../../host/src/types";
+import type { DirEntry } from "../../../host/src/vfs/types";
 
 /**
  * What this module needs from a filesystem, split by the three roles it
  * actually uses rather than by the class that happens to provide all of them.
  *
- * Typed against `MemoryFileSystem` before — the 8,000-line class lane V is
+ * Typed against `KandeloImageFs` before — the 8,000-line class lane V is
  * deleting. Measured at the call sites, the reads and the writes are disjoint
  * enough to name separately, which is worth doing: `readFile` cannot write and
  * the type now says so.
@@ -27,18 +43,23 @@ export interface RootfsOverlayReader {
     offset: HostFileOffset | null,
     length: number,
   ): number;
-  close(handle: number): number;
+  /**
+   * `void` rather than `number`: nothing here reads the result, and a method
+   * returning a number still satisfies a `void` declaration — so this admits
+   * both implementations while promising only what is used. The same shape
+   * `VfsImageFilesystem` settled on, for the same reason.
+   */
+  close(handle: number): void;
   opendir(path: string): number;
   readdir(handle: number): DirEntry | null;
   closedir(handle: number): void;
-  verifyImportedLazyAtomicGroupSeals(): Promise<void>;
 }
 
 /** The write half: creating entries and setting their metadata. */
 export interface RootfsOverlayWriter {
   /**
    * Only the fields this module reads. Narrowed from `StatResult` so a writer
-   * that is not a `MemoryFileSystem` can satisfy it: `KandeloImageFs` describes an
+   * that is not a `KandeloImageFs` can satisfy it: `KandeloImageFs` describes an
    * image, and an image records no access or change times to report.
    */
   lstat(path: string): Pick<StatResult, "mode" | "uid" | "gid" | "size">;
@@ -61,7 +82,7 @@ export interface RootfsOverlayWriter {
     gid: number,
   ): void;
 }
-import { FILE_MODES } from "../generated/abi";
+import { FILE_MODES } from "../../../host/src/generated/abi";
 
 const { S_IFDIR, S_IFLNK, S_IFMT, S_IFREG } = FILE_MODES;
 
@@ -85,7 +106,7 @@ function lstatIfPresent(
 /**
  * "This path is not there" from either filesystem.
  *
- * `MemoryFileSystem` raises `SFSError` with `code`; `KandeloImageFs` raises
+ * `KandeloImageFs` raises `SFSError` with `code`; `KandeloImageFs` raises
  * `KandeloImageError` with `errno`. Both mean ENOENT and this function is the one
  * place that has to know it — an `instanceof` check against one class silently
  * RETHROWS the other's not-found, which turns "copy this path if it is
@@ -251,8 +272,13 @@ export async function overlayEtcFromRootfs(
   target: RootfsOverlayWriter,
   rootfsImage: Uint8Array,
 ): Promise<void> {
-  const source = MemoryFileSystem.fromImage(rootfsImage);
-  // WHY: reject forged imported metadata before copying even one source entry.
-  await source.verifyImportedLazyAtomicGroupSeals();
+  const source = KandeloImageFs.create();
+  // NO SEPARATE VERIFY. `loadImage` authenticates every cohort seal the image
+  // carries, because `sm_load_image` does — so forged imported metadata is
+  // refused here by the act of reading the image, rather than by a call the
+  // next author of this function could omit. That is what the explicit
+  // `await source.verifyImportedLazyAtomicGroupSeals()` bought, and it bought
+  // it only for as long as someone remembered to write it.
+  source.loadImage(rootfsImage);
   copyMissingRootfsPath(source, target, "/etc");
 }

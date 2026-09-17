@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { overlayEtcFromRootfs } from "../src/vfs/rootfs-overlay";
+import { overlayEtcFromRootfs } from "../../images/vfs/lib/rootfs-etc-overlay";
 
 /**
  * What a HOST does to an image before handing it to the kernel, and whether the

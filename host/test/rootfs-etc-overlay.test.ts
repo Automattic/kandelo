@@ -1,26 +1,36 @@
+/**
+ * REPOINTED 2026-09-16 with the module itself, which moved to
+ * `images/vfs/lib/rootfs-etc-overlay.ts` and now reads its source image
+ * through `KandeloImageFs` instead of `MemoryFileSystem`.
+ *
+ * Two of the five cases could not follow, and both are recorded where they
+ * were rather than quietly dropped — see the comments in place.
+ */
 import { describe, expect, it, vi } from "vitest";
-import { MemoryFileSystem } from "../../src/vfs/memory-fs";
-import { overlayEtcFromRootfs } from "../../src/vfs/rootfs-overlay";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { overlayEtcFromRootfs } from "../../images/vfs/lib/rootfs-etc-overlay";
 import {
   ENOENT,
-  ENOSPC,
   S_IFDIR,
   S_IFLNK,
   S_IFMT,
   S_IFREG,
-  SFSError,
-} from "../../src/vfs/sharedfs-vendor";
-import {
-  addSealedLazyAtomicTestTree,
-  forgeLazyAtomicSeal,
-} from "../lazy-atomic-seal-fixture";
+} from "../src/vfs/sharedfs-vendor";
 
-function createFs(bytes = 2 * 1024 * 1024): MemoryFileSystem {
-  return MemoryFileSystem.create(new SharedArrayBuffer(bytes));
+/** The errno a filesystem error carries, whichever convention it uses. */
+function errnoOf(error: unknown): number {
+  const shaped = error as { errno?: number; code?: number };
+  if (typeof shaped.errno === "number") return Math.abs(shaped.errno);
+  if (typeof shaped.code === "number") return Math.abs(shaped.code);
+  throw new Error(`not a filesystem error: ${String(error)}`);
+}
+
+function createFs(): KandeloImageFs {
+  return KandeloImageFs.create();
 }
 
 function writeText(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
   text: string,
   mode = 0o644,
@@ -36,7 +46,7 @@ function writeText(
   );
 }
 
-function readText(fs: MemoryFileSystem, path: string): string {
+function readText(fs: KandeloImageFs, path: string): string {
   const stat = fs.stat(path);
   const bytes = new Uint8Array(stat.size);
   const fd = fs.open(path, 0, 0);
@@ -58,29 +68,21 @@ async function captureError(operation: () => Promise<void>): Promise<unknown> {
 }
 
 describe("canonical rootfs /etc overlay", () => {
-  it.each(["member", "cohort"] as const)(
-    "rejects a forged imported %s seal before changing the target",
-    async (forgery) => {
-      const source = createFs();
-      source.mkdirWithOwner("/etc", 0o755, 0, 0);
-      writeText(source, "/etc/hosts", "canonical\n");
-      await addSealedLazyAtomicTestTree(source, {
-        groupId: "test:rootfs-overlay",
-        member: "metadata",
-        root: "/metadata-only",
-      });
-      const target = createFs();
-      target.mkdirWithOwner("/sentinel", 0o755, 0, 0);
-      const before = await target.saveImage();
-
-      await expect(overlayEtcFromRootfs(
-        target,
-        forgeLazyAtomicSeal(await source.saveImage(), forgery),
-      )).rejects.toThrow(/seal/);
-      expect(await target.saveImage()).toEqual(before);
-    },
-    15_000,
-  );
+  // RETIRED with the repoint: "rejects a forged imported member/cohort seal
+  // before changing the target".
+  //
+  // `forgeLazyAtomicSeal` tampers with the host-side JSON sections, which is
+  // where `MemoryFileSystem` records an atomic group. `KandeloImageFs` reads
+  // the body's own `SDEF`, so the forgery is invisible to it and the case
+  // asserted a refusal this reader cannot make.
+  //
+  // THE CLAIM DID NOT GO WITH IT. Cohort authentication is now performed by
+  // `rootfs::load_image`, which this overlay reaches through `loadImage`, and
+  // `runtime-core`'s `a_load_refuses_an_image_whose_cohorts_do_not_authenticate`
+  // asserts it on a genuine exported container with a negative control beside
+  // it. What cannot be reproduced HERE is the forgery: the producer re-seals
+  // at the export door and refuses to emit an image whose cohorts do not
+  // authenticate, so TypeScript has no way to build one.
 
   it("copies nested state and metadata while preserving caller-owned entries", async () => {
     const source = createFs();
@@ -172,8 +174,17 @@ describe("canonical rootfs /etc overlay", () => {
 
     const error = await captureError(() => overlayEtcFromRootfs(target, image));
 
-    expect(error).toBeInstanceOf(SFSError);
-    expect((error as SFSError).code).toBe(ENOENT);
+    // THE ERRNO, not the class. `MemoryFileSystem` raised `SFSError` with a
+    // negative `code`; the module raises `KandeloImageError` with a positive
+    // `errno`. Both say ENOENT, and the claim here is that ENOENT PROPAGATES
+    // rather than being swallowed into "there was no /etc to copy" — which is
+    // a difference an assertion on the class cannot see and an assertion on
+    // the number can. The module's own `isNotFound` reads both conventions
+    // for the same reason.
+    // `ENOENT` from `vfs-errors` is itself negative, which is the third sign
+    // convention in play; comparing magnitudes is what makes the assertion
+    // about the errno rather than about whose spelling reached it.
+    expect(errnoOf(error)).toBe(Math.abs(ENOENT));
   });
 
   it("rejects a short source read instead of copying a truncated file", async () => {
@@ -183,7 +194,7 @@ describe("canonical rootfs /etc overlay", () => {
     const image = await source.saveImage();
     const target = createFs();
     const readSpy = vi
-      .spyOn(MemoryFileSystem.prototype, "read")
+      .spyOn(KandeloImageFs.prototype, "read")
       .mockReturnValueOnce(0);
 
     try {
@@ -195,17 +206,15 @@ describe("canonical rootfs /etc overlay", () => {
     }
   });
 
-  it("propagates target capacity failures instead of accepting a partial overlay", async () => {
-    const source = createFs();
-    source.mkdirWithOwner("/etc", 0o755, 0, 0);
-    source.mkdirWithOwner("/etc/ssl", 0o755, 0, 0);
-    writeText(source, "/etc/ssl/cert.pem", "x".repeat(128 * 1024));
-    const target = createFs(64 * 1024);
-    const image = await source.saveImage();
-
-    const error = await captureError(() => overlayEtcFromRootfs(target, image));
-
-    expect(error).toBeInstanceOf(SFSError);
-    expect((error as SFSError).code).toBe(ENOSPC);
-  });
+  // RETIRED with the repoint: "propagates target capacity failures instead of
+  // accepting a partial overlay".
+  //
+  // It worked by handing the target a 64 KiB `SharedArrayBuffer` and copying
+  // 128 KiB into it. `KandeloImageFs` grows its own linear memory, so there is
+  // no fixed backing store to exhaust and no ENOSPC to provoke — the condition
+  // is not harder to reach, it does not exist for this writer.
+  //
+  // The property it guarded — a failed copy leaves no partial overlay — is
+  // still asserted by the short-read case above, which fails mid-copy for a
+  // different reason and makes the same demand of the target.
 });
