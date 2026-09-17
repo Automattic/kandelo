@@ -57,6 +57,13 @@
       "scope_end": "\n  };\n",
       "find": "        kind: (known === undefined ? \"file\" : \"archive\") as \"file\" | \"archive\",",
       "replace": "        kind: \"archive\" as \"file\" | \"archive\","
+    },
+    {
+      "name": "a body the image sized nowhere is admitted to the transport table anyway",
+      "scope": "  const policy = new Map<string, { transports: string[]; size: number }>();",
+      "scope_end": "\n  }\n",
+      "find": "    if (archive.bytes === undefined) continue;",
+      "replace": "    if (false) continue;"
     }
   ]
 }

@@ -172,6 +172,41 @@ describe("buildRootfsLazyWiring", () => {
   // copy here would have meant hand-building the legacy shape to check a
   // conversion this file no longer performs.
 
+  it("fetches a body the image sized nowhere, instead of checking it against nothing", async () => {
+    // THE SKIP RULE, and why it is a skip rather than a tolerance. A transport
+    // list is only usable with a declared length: the whole point of trying
+    // the next mirror is that the first one served the wrong number of bytes,
+    // and with no length to compare against, "wrong" cannot be decided. So a
+    // body with no declared length holds no policy at all, and its address is
+    // fetched directly — which is what the courier contract does with any
+    // address it has no entry for.
+    //
+    // Admitting it to the table instead would compare a real length against
+    // `undefined`, fail every mirror in turn, and end in EIO for an archive
+    // whose only fault was that nobody wrote down its size.
+    const calls: string[] = [];
+    const bytes = new Uint8Array([7, 7, 7, 7]);
+    const fetcher = async (url: string): Promise<Uint8Array> => {
+      calls.push(url);
+      return bytes;
+    };
+    const unsized = archive({
+      address: "no-size",
+      transports: ["no-size", "a-mirror"],
+      bytes: undefined,
+    });
+
+    const read = archiveReaderOf(buildRootfsLazyWiring([unsized], fetcher));
+    expect(read("no-size", 0n, new Uint8Array(4))).toBe(-11);
+    await flushMicrotasks();
+
+    const dest = new Uint8Array(4);
+    expect(read("no-size", 0n, dest)).toBe(4);
+    expect(dest).toEqual(bytes);
+    // Fetched once, at the address, and the mirror was never consulted.
+    expect(calls).toEqual(["no-size"]);
+  });
+
   it("tries the next transport on a size mismatch and serves from the good one", async () => {
     const calls: string[] = [];
     const badBytes = new Uint8Array(ARCHIVE_SIZE - 1); // wrong length

@@ -203,6 +203,35 @@ describe("a module-backed base image", () => {
     expect(derived.address).toBe("/kandelo/archives/tree.zip");
   });
 
+  it("reads a section-carried archive's declared length and digest", async () => {
+    // THE OTHER CARRIER's identity fields, which nothing else here asserts.
+    // A legacy image records an archive's bytes and digest in its host-side
+    // JSON — under `content` for a v3 tree and `integrity` for the older shape
+    // — and the Pages asset closure stages every referenced body by exactly
+    // those two values. A reader that returned them as `undefined` would make
+    // the closure report an archive "without byte integrity" for an image that
+    // declares it, and the transport table would hold no policy for a
+    // perfectly well-described archive.
+    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
+    source.registerLazyArchiveFromEntries(
+      "archives/legacy.zip",
+      [zipEntry()],
+      "/",
+      undefined,
+      { sha256: "c".repeat(64), bytes: 1234 },
+    );
+    const container = await source.saveImage();
+
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+    );
+    const [archive] = baseImage.deferredArchives();
+    expect(archive.address).toBe("archives/legacy.zip");
+    expect(archive.bytes).toBe(1234);
+    expect(archive.sha256).toBe("c".repeat(64));
+  });
+
   it("reads a module-built image's deferred URLs, which its sections do not carry", async () => {
     // A bridge-built image: the URL lives in the KLZY descriptor and there are
     // no host-side JSON sections at all. Reading only the sections would give

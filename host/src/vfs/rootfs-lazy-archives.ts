@@ -202,9 +202,13 @@ export function buildRootfsLazyWiring(
   // expected, and a mirror serving something else is the failure a transport
   // table exists to bound. Skipping leaves the address fetched directly, which
   // is the courier contract rather than a gap.
+  //
+  // NO EMPTY-ADDRESS CHECK HERE, deliberately. One was written and removed
+  // before it shipped: the provider refuses `""` before it ever consults this
+  // table, so a policy entry under an empty address can change no outcome, and
+  // a guard that cannot fail is a second place for a rule to live.
   const policy = new Map<string, { transports: string[]; size: number }>();
   for (const archive of archives) {
-    if (archive.address === "") continue;
     if (archive.bytes === undefined) continue;
     policy.set(archive.address, {
       transports: [...archive.transports],
