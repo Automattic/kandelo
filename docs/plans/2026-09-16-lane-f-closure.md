@@ -1386,3 +1386,82 @@ side-module statics outside memory 0.
 Worth recording that P-11 found all of this. A test deliberately capped at 384
 pages is the only thing in the tree that notices what the fork engine takes
 from a guest, which is an argument for keeping it exactly as tight as it is.
+
+## The full host suite, and why "flaky" was the wrong first answer
+
+4,227 tests across 448 files, 2,004s. 65 files failed against a 64-file
+baseline (`host/test/expected-failures.json`), which compares as 4 regressions
+and 3 unbanked improvements. None of the four is a code regression -- but
+finding that out required correcting my own first explanation.
+
+I saw another worktree running vitest concurrently and called all four load
+flakes without reading them. Two are not races at all:
+
+    rootfs-image-tree-parity   six VFS images MISSING
+    vfs-image-kernel-lazy      same, and the test says so outright:
+                               "shell.vfs.zst is missing; run ./run.sh setup
+                               before this gate can prove anything"
+
+### The cause was mine, and it is a defect worth reporting
+
+`./run.sh rebuild kernel` -- run to try to clear the stale ambient-kernel gate
+-- runs `clean_target` then `build_target`. The clean removed the kernel AND
+every VFS image depending on it:
+
+    removed local-binaries/source-only-v1/kernel.wasm
+    removed .../wasm32/{lamp,nginx-php-vfs,nginx-vfs,node-vfs,shell,wordpress}.vfs.zst
+
+The build then rebuilt only the kernel. Six images stayed deleted, silently. A
+targeted rebuild that leaves the tree LESS complete than it found it is a
+defect on its own, and it compounds the ambient-kernel problem: rebuilding the
+kernel is the documented remedy there, so following the advice makes the tree
+worse rather than better.
+
+### Isolation is what separated them
+
+Four failures that looked identical in a loaded run split cleanly when each was
+re-run alone:
+
+| test | alone | cause |
+|---|---|---|
+| `binary-resolver` | 85 passed | load |
+| `fork-instrument-coverage` | 41 passed | load (P-08 and P-11 green) |
+| `rootfs-image-tree-parity` | 7 failed | NOT load |
+| `vfs-image-kernel-lazy` | 7 failed | NOT load |
+
+`binary-resolver` is the sharpest case: it passed alone against the SAME
+artifact-missing tree, which RULES OUT the missing images as its cause rather
+than assuming. And after `./run.sh setup` restored the tree (exit 0, 98/98
+nodes succeeded, 8 images back), the two image tests pass: 13 and 25.
+
+So: zero code regressions across 4,227 tests.
+
+### Why a full re-run was not needed
+
+The other 61 failing files matched the baseline exactly, and neither confounder
+can reclassify them: missing images cannot turn a baselined failure into a
+pass, and CPU contention cannot either. The accounting closes from both
+directions -- 65 failing minus 4 regressions, and 64 baselined minus 3
+unbanked, are both 61. That reasoning saved a ~33-minute re-run, and it is
+only valid because the two confounders are one-directional.
+
+### A grep that counts the wrong thing
+
+The restoring `setup` logs 56 lines containing "failed" where the earlier one
+had 1. All are package-internal: PHP `opcache.so` load warnings, and the
+opcache prewarm heuristic that DELIBERATELY bisects ("compile batch of 758
+failed; splitting into 379 + 379"). They appear only because those packages
+actually rebuilt this time instead of being cached. The authoritative signal is
+`"state":"succeeded"` x98 and the exit code, not a grep for a word that appears
+inside a working algorithm.
+
+### For the maintainer: three unbanked improvements
+
+    ../packages/registry/wordpress/test/wordpress-site-editor.test.ts
+    test/man-shell-lazy-archive.test.ts
+    test/terminfo-shared-db.test.ts
+
+These are in the baseline and now pass. Per `suite-baseline.mjs`, leaving them
+listed lets the next regression hide behind them, so they should be banked --
+but `expected-failures.json` is shared state and that edit is not this lane's
+to make.
