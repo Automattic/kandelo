@@ -67,6 +67,38 @@ describe("a module-backed base image", () => {
     expect(direct(container.byteLength, new Uint8Array(8))).toBe(0);
   });
 
+  it("applies the deployment base to a relative address and to no other kind", async () => {
+    // RESTORED ON THE MODULE PATH, 2026-09-17, because retiring the section
+    // version left a mutant alive: `rebaseUrl` prepending the base to every
+    // address — absolute and rooted included — survived the trial run, which
+    // is the harness saying the claim had lost its test rather than its
+    // subject. A deployment base pasted onto `https://cdn.test/abs.bin` is a
+    // URL that fetches nothing, and onto `/already/rooted.bin` one that
+    // fetches the wrong thing.
+    const module = KandeloImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerLazyFile("/opt/rel.bin", "assets/rel.bin", 11, 0o644);
+    module.registerLazyFile("/opt/abs.bin", "https://cdn.test/abs.bin", 22, 0o644);
+    module.registerLazyFile("/opt/root.bin", "/already/rooted.bin", 33, 0o644);
+    const container = await module.saveImage();
+
+    const reader = KandeloImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      "/kandelo/",
+      () => reader.lazyEntries(),
+    );
+
+    expect(baseImage.deferredFiles().map((body) => body.address).sort())
+      .toEqual([
+        "/already/rooted.bin",
+        "/kandelo/assets/rel.bin",
+        "https://cdn.test/abs.bin",
+      ]);
+  });
+
   it("reads a module-built image's deferred URLs, which its sections do not carry", async () => {
     // A bridge-built image: the URL lives in the KLZY descriptor and there are
     // no host-side JSON sections at all. Reading only the sections would give
