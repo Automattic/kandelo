@@ -13530,9 +13530,37 @@ should not, the host keeps one filesystem for the mounts the kernel declines,
 and that is the floor — in which case the honest end state is a much smaller
 scratch backend, not the 7,000-line class.
 
-**That is the next increment, and it is unblocked.** It needs no decision this
-plan has not already made: the kernel owning scratch is the same cutover that
-took `/`, applied to the paths it left behind.
+**Measured before assuming it.** The kernel route needs an ABI addition, and
+the host route does not — so the host route is the one that is actually
+unblocked.
+
+*The kernel route.* `SCRATCH_MOUNTS` is a compile-time `const &[ScratchMount]`
+of eight entries, each carrying prefix, mode, uid, gid and an `st_dev` derived
+positionally; `match_mount` routes by longest prefix over it and `mount_roots`
+is indexed per entry. Serving an arbitrary declared scratch path means that
+table becomes runtime state, which means the host must hand the kernel a
+prefix AND its mode/uid/gid. `kernel_rootfs_set_foreign_prefixes` carries
+prefixes only and means the OPPOSITE — it names what the kernel must not
+claim — so there is no existing door. **A new export is an ABI change, which
+the standing rules put outside this lane without a fresh authorisation.**
+
+*The host route needs no kernel change at all.* `MemoryFileSystem implements
+FileSystemBackend` and wraps a `SharedFS` — the 3,716-line vendor, which is
+budgeted separately and stays either way. `FileSystemBackend` is **31
+methods**, and for a scratch mount one of them is trivial: `preparePath` is
+the lazy-materialization hook and a scratch filesystem has nothing deferred.
+So the scratch role wants a small backend over `SharedFS`, not the
+8,052-line class that also knows about images, lazy archives, seals, atomic
+groups and the `KLZY` writer.
+
+**And the budget says when that may be written, which is the useful part.**
+`hostVfsTypeScript` excludes `memory-fs.ts`, so a new `vfs/scratch-fs.ts`
+grows that surface with nothing offsetting it — the class's own lines live in
+`memoryFsTypeScript` and do not come back until the class goes. Writing the
+scratch backend FIRST is growth the budget should refuse, and would refuse.
+**The two have to land together, which makes the test population — step 4,
+53 host tests, 11 browser, 18 build-time — the thing standing between here
+and the deletion, rather than any missing capability.**
 
 ### THE BLOCKER WAS WRONG, AND THE WORD THAT CARRIED IT WAS "THEREFORE" — 2026-09-16
 
