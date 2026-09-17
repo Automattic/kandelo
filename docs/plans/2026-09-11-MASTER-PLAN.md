@@ -14041,6 +14041,46 @@ actually covers this file, the host one being `include: ["src"]`, and which has
 returned to the zero baseline the plan recorded before it drifted to seven;
 surface budget 101/101; `xtask perturb --validate` 415 trials all anchoring.
 
+### A DEMO PRESENTATION DEFINED TWICE — `e38272365`, 2026-09-17
+
+**The same census, one layer out.** `images/vfs/scripts/kandelo-demo-config.ts`
+hand-rolls presentation configs beside `genericDemoPresentation` in
+`web-libs/kandelo-session/src/demo-config.ts` — the module that DEFINES what a
+demo presentation is, and which this file already imports from. Three copies,
+and they did not agree.
+
+| copy | against the library | disposition |
+|---|---|---|
+| `terminalPresentation` | identical, field for field | now calls the library |
+| `framebufferPresentation` | identical, plus an `autoCommand` nothing passed | **deleted**, no caller |
+| `externalAsset` | `(config) => config` | **deleted**, no caller, and an identity function besides |
+| `webPresentation` | `["web", "syslog", "terminal"]` vs `["web", "terminal", "syslog"]` | **left, and written up** |
+
+**The web one is the finding.** Its running-surface order differs from the
+library's, and the comment beside it says why: a web demo should stay on the
+boot log while the HTTP preview is still coming up rather than falling back to a
+terminal. **From here, a deliberate divergence and drift look the same** — and
+the difference is what a viewer SEES, in five shipped demos (`lamp`,
+`wordpress-mariadb`, `wordpress-sqlite`, `wordpress`, and the two nginx images).
+So it is left exactly as it was, with the divergence now stated in the code
+beside both functions rather than only in one of them.
+
+**FOR THE MAINTAINER**: is `webPresentation`'s order intended, or did the
+library's `genericDemoPresentation("web")` drift away from it? If intended, the
+library's web case is the one that is wrong for these demos; if drift, five
+demos change. Either way one of the two definitions should stop existing, and
+which one is a product question.
+
+**The pattern is worth naming, because it is lane V's pattern at a smaller
+scale**: a builder writes out a policy the library already owns, the two are
+identical on the day they are written, and one of them changes. Two of the three
+copies here were never called at all — which is how a third could drift without
+anyone noticing there was something to compare it to.
+
+**Evidence**: `tsc -p images/tsconfig.typecheck.json` zero errors;
+dinit-image-helpers, shell-vfs-build, vfs-product-builder-contract and
+surface-budget **142/142**; `xtask perturb --validate` 415 trials all anchoring.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
