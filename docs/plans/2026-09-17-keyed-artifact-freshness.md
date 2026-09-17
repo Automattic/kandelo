@@ -143,6 +143,18 @@ whether a *packable* tier can hold links.
 
 ## What "packable" actually means
 
+> **DEPRIORITIZED by the maintainer, 2026-09-17: *"Forget packability for now.
+> We aren't even running CI right now."*** Everything below is accurate and was
+> traced from the code, but it is not a live constraint today — the packing
+> script only binds a workspace that CI actually packs. Recorded so a later
+> reader does not treat it as blocking, and so whoever turns CI back on knows
+> the constraint exists and where it is enforced.
+>
+> The practical effect: **while CI is not packing, a tier could link wherever it
+> likes**, and the "index plus copy-on-pack" branch this document worried about
+> is not currently needed at all.
+
+
 `scripts/pack-ci-test-workspace.sh` copies `local-binaries/` into a staging
 directory and ships it as a **self-contained CI workspace**. It then walks every
 symlink under the staged tree and enforces three things:
