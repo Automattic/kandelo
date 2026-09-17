@@ -712,36 +712,16 @@ describe("format-neutral deferred trees", () => {
     expect(fs.readlink("/metadata/runtime-link")).toBe("/runtime/target");
   });
 
-  it("rewrites post-seal mirrors without changing byte identity", async () => {
-    const first = tarTreeFixture("first-use", "atomic-rewrite-a");
-    const second = tarTreeFixture("first-use", "atomic-rewrite-b");
-    const fs = createFs();
-    await registerAtomicTrees(fs, "atomic:rewrite", [first, second]);
-    const sealed = fs.exportLazyArchiveEntries();
-    const sealedMemberships = sealed.map((entry) =>
-      entry.activation!.atomicGroup
-    );
-
-    fs.rewriteLazyArchiveUrls((url) =>
-      url.replace("https://example.invalid/", "https://cdn.invalid/")
-    );
-    const rewritten = fs.exportLazyArchiveEntries();
-    expect(rewritten.map((entry) => entry.activation!.atomicGroup))
-      .toEqual(sealedMemberships);
-    expect(rewritten.every((entry) =>
-      entry.content!.transports[0]!.startsWith("https://cdn.invalid/")
-    )).toBe(true);
-    await expect(fs.saveImage()).resolves.toBeInstanceOf(Uint8Array);
-
-    const payloads = new Map([
-      ["https://cdn.invalid/atomic-rewrite-a.tar.gz", first.payload],
-      ["https://cdn.invalid/atomic-rewrite-b.tar.gz", second.payload],
-    ]);
-    fs.setLazyFetcher(async (url) => new Response(payloads.get(url)!));
-    await expect(fs.preparePath("/atomic-rewrite-a/tool")).resolves.toBe(true);
-    expect(readText(fs, "/atomic-rewrite-a/tool")).toBe("payload");
-    expect(readText(fs, "/atomic-rewrite-b/tool")).toBe("payload");
-  });
+  // RETIRED with `rewriteLazyArchiveUrls` itself, 2026-09-16: "rewrites
+  // post-seal mirrors without changing byte identity".
+  //
+  // The verb had no production caller. Its cluster-mates
+  // `bindImageOwnedRuntimeUrls` and `assertShellLazyUrlsResolved` were removed
+  // with defect B45 — rewriting an image's deferred half emptied 65 lazy
+  // binaries — and `node-image-runtime.test.ts` pins their absence as an
+  // inverted property. These last two survived only as a differential oracle
+  // inside `module-base-image.test.ts`, which already carried the literal
+  // expectations that oracle was standing in front of.
 
   it("rejects an atomic image that omits a cohort record or pending alias", async () => {
     const first = tarTreeFixture("first-use", "atomic-seal-a");

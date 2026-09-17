@@ -112,23 +112,23 @@ describe("a module-backed base image", () => {
     source.registerLazyFile("/opt/root.bin", "/already/rooted.bin", 33, 0o644);
     const container = await source.saveImage();
 
-    // PARITY with the incumbent: this is exactly what the worker entries used
-    // to do by mutating a restored MemoryFileSystem before handing it over.
-    const incumbent = MemoryFileSystem.fromImage(container);
-    incumbent.rewriteLazyFileUrls((url) => resolveLazyUrl("/kandelo/", url));
-
     const { baseImage } = createBaseImageFromContainer(
       container,
       imageReadFromContainer(container),
       "/kandelo/",
     );
 
+    // THE EXPECTATIONS ARE THE ORACLE NOW, and they always were the part that
+    // could fail. This compared `baseImage` against a restored
+    // `MemoryFileSystem` that had been rebased with `rewriteLazyFileUrls` —
+    // "parity with the incumbent", which the worker entries used to perform.
+    // The comparison never decided anything the three literals below do not:
+    // an implementation that rebased nothing matched an incumbent that also
+    // rebased nothing, which is why the literals were written in the first
+    // place. Keeping it would have kept a production method alive to serve a
+    // test.
     const byPath = (entries: readonly { path: string; url: string }[]) =>
       Object.fromEntries(entries.map((e) => [e.path, e.url]));
-    expect(byPath(baseImage.exportLazyEntries()))
-      .toEqual(byPath(incumbent.exportLazyEntries()));
-    // Guards the guard: an implementation that rebased nothing would match an
-    // incumbent that also rebased nothing.
     expect(byPath(baseImage.exportLazyEntries())["/opt/rel.bin"])
       .toBe("/kandelo/assets/rel.bin");
     expect(byPath(baseImage.exportLazyEntries())["/opt/abs.bin"])
@@ -169,9 +169,6 @@ describe("a module-backed base image", () => {
     );
     const container = await source.saveImage();
 
-    const incumbent = MemoryFileSystem.fromImage(container);
-    incumbent.rewriteLazyArchiveUrls((url) => resolveLazyUrl("/kandelo/", url));
-
     const { baseImage } = createBaseImageFromContainer(
       container,
       imageReadFromContainer(container),
@@ -181,10 +178,11 @@ describe("a module-backed base image", () => {
     const shape = (e: SerializedLazyArchiveEntry) =>
       ({ url: e.url, transports: e.content?.transports });
     const actual = baseImage.exportLazyArchiveEntries().map(shape);
-    expect(actual).toEqual(incumbent.exportLazyArchiveEntries().map(shape));
-    // Guards the guard: an image with no archives would satisfy the equality,
-    // and one carrying only the legacy shape would never reach the branch
-    // where `url` is derived from the first transport.
+    // Same as above: the incumbent comparison went, and what it was standing
+    // in front of stayed. An image with no archives would have satisfied the
+    // equality, and one carrying only the legacy shape would never reach the
+    // branch where `url` is DERIVED from the first transport — so the count
+    // and the four literals were doing the work either way.
     expect(actual.length).toBe(2);
     const derived = actual.find((a) => a.transports !== undefined)!;
     const legacy = actual.find((a) => a.transports === undefined)!;

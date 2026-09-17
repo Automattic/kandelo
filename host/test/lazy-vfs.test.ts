@@ -89,20 +89,9 @@ describe("Lazy VFS files", () => {
     });
   });
 
-  it("rewriteLazyFileUrls updates lazy metadata without changing size", () => {
-    const mfs = createMemfs();
-    mfs.registerLazyFile("/bin/tool", "kandelo-lazy:programs/tool.wasm", 1234);
-
-    mfs.rewriteLazyFileUrls((url, path) => {
-      expect(path).toBe("/bin/tool");
-      return url.replace("kandelo-lazy:", "/assets/");
-    });
-
-    const [entry] = mfs.exportLazyEntries();
-    expect(entry.url).toBe("/assets/programs/tool.wasm");
-    expect(entry.size).toBe(1234);
-    expect(mfs.stat("/bin/tool").size).toBe(1234);
-  });
+  // RETIRED with `rewriteLazyFileUrls` itself, 2026-09-16. See the sibling
+  // note in `lazy-tree.test.ts`: the verb's callers went with defect B45 and
+  // the method outlived them as a test oracle.
 
   it("importLazyEntries restores lazy metadata on another instance", () => {
     // Create first instance and register lazy files

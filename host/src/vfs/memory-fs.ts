@@ -4488,17 +4488,6 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
-   * Rewrite the URL of every registered lazy file. Useful when a VFS image
-   * was built with placeholder URLs and the browser runtime needs to replace
-   * them with bundler-produced asset URLs.
-   */
-  rewriteLazyFileUrls(transform: (url: string, path: string) => string): void {
-    for (const entry of this.lazyFiles.values()) {
-      entry.url = transform(entry.url, entry.path);
-    }
-  }
-
-  /**
    * Register a format-neutral immutable filesystem tree. The complete
    * inventory is validated before namespace mutation. One stub is created per
    * inode group and hard-link names are attached to that same SharedFS inode.
@@ -5303,62 +5292,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
     for (const [key, group] of plannedInodes) {
       this.lazyArchiveInodes.set(key, group);
-    }
-  }
-
-  /**
-   * Rewrite the URL of every registered lazy archive group. Useful when the
-   * VFS image was built with relative URLs (e.g. "vim.zip") and the runtime
-   * needs to resolve them against a deployment base URL.
-   */
-  rewriteLazyArchiveUrls(transform: (url: string) => string): void {
-    for (const group of this.lazyArchiveGroups) {
-      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
-      const atomicState = this.sealedLazyAtomicStates.get(group);
-      if (atomicState !== undefined && !atomicGroup?.committed) {
-        this.assertLazyAtomicSnapshotMatchesPublic(group);
-        const snapshot = rewriteSealedLazyAtomicSnapshotTransports(
-          atomicState.snapshot,
-          transform,
-        );
-        // WHY: URL rewriting is the one authorized post-seal deployment
-        // mutation. Replace both private and public values from the private
-        // snapshot so arbitrary public edits never become transport authority.
-        group.content = cloneLazyTreeContent(snapshot.content);
-        group.url = snapshot.url;
-        group.integrity = { ...snapshot.integrity };
-        atomicState.snapshot = snapshot;
-        continue;
-      }
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      if (ordinaryDefinition !== undefined) {
-        const content = immutableLazyTreeContent(
-          ordinaryDefinition.content,
-          ordinaryDefinition.content.transports.map(transform),
-        );
-        const next = immutableLazyTreeDefinitionSnapshot(
-          content,
-          ordinaryDefinition.inventory,
-          ordinaryDefinition.activation,
-          content.transports[0]!,
-          ordinaryDefinition.mountPrefix,
-          ordinaryDefinition.integrity,
-          ordinaryDefinition.entries,
-          ordinaryDefinition.materialized,
-        );
-        this.ordinaryLazyTreeDefinitions.set(group, next);
-        group.content = cloneLazyTreeContent(next.content);
-        group.url = next.url;
-        group.integrity = { ...next.integrity };
-      } else if (group.content) {
-        group.content = {
-          ...group.content,
-          transports: group.content.transports.map(transform),
-        };
-        group.url = group.content.transports[0];
-      } else {
-        group.url = transform(group.url);
-      }
     }
   }
 
