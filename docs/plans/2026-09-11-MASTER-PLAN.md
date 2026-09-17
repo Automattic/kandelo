@@ -13694,6 +13694,29 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### `lazy-archive.test.ts` SORTED BY KIND — 39 claims, 2026-09-17
+
+Sorted rather than counted, because "39 cases" is a number nobody can act on
+and the four kinds have four different answers:
+
+| kind | claims | answer |
+|---|---|---|
+| **registration validates before it mutates** — malformed identity, traversal through a regular file, traversal through a symlink | 3 | the kernel's own walk answers ENOTDIR for a traversal, and `sdef.rs` refuses a malformed identity at encode. **Worth confirming case by case before deletion, not assuming** |
+| **stub and size semantics** — declared size through `stat`/`fstat`/`lstat`, empty members, directory entries skipped, mount prefix, parents created | 6 | Rust, except "creates parent directories automatically", which is the documented leniency difference the fixtures now pay |
+| **identity and materialization** — materialize only on an identity match, refuse a wrong byte count or digest, fetch once, replace stale backing | 8 | Rust: `digest_accepts` + EIO, `lazy_member_second_read_served_from_cache`, `lazy_member_second_different_member_reuses_archive_fetch` |
+| **all-or-nothing activation** — every member materializes when any one is read, pending groups materialize into a self-contained image | 4 | **INCONGRUOUS.** The kernel materializes a member when that member is read. There is no group commit, so there is no partial state to prevent |
+| **peer coordination** — a peer's write, a peer's rename during a fetch, a peer-created hard link surviving unlink, sequence-less metadata after a live peer write | 9 | **INCONGRUOUS.** Several host instances over one `SharedArrayBuffer` is the model the kernel replaced; there is one writer and one tree |
+| **serialization round trip** — export/import archive metadata, integrity through serialization, canonical mount prefix, legacy member names, rebase, fully-materialized groups omitted | 9 | Rust: `sdef.rs` and `kandelo_image_write.rs` carry 106 tests over exactly this, and the bridge asserts the mount-prefix spelling |
+
+**So the file is roughly 60% re-made in Rust, 33% about a model the kernel does
+not have, and 7% that must be READ before it goes.** That last 7% is the part
+worth the maintainer's attention, and it is three cases rather than a category.
+
+**The same sorting is owed for `lazy-tree.test.ts` (82) and `vfs-image.test.ts`
+(53) before either is deleted.** They are the two largest files in the SUBJECT
+cohort, and "they test the class" is true of every file in it — which is
+exactly why it is not a sufficient reason on its own.
+
 ### THE ENDGAME, WITH WHAT EACH STEP OWES — written 2026-09-17 at importers 60 -> ~30
 
 **What is left is three different kinds of work, and the order between them is
