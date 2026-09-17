@@ -14407,6 +14407,47 @@ kernel is rebuilt**, when most of these 38 should disappear and a genuine
 both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 "38 vs 39" as if it were the clean result the earlier deletion got.
 
+### THE SUITE AGAINST A COHERENT TREE — 2026-09-17, and what it does and does not settle
+
+**Run at `23d1cb045` with the closure rebuilt**: `Test Files  38 failed | 369
+passed | 12 skipped (419)`, `Tests  89 failed | 3899 passed | 2 expected fail |
+49 skipped (4039)`.
+
+**Three runs of the SAME COMMIT, differing only in artifact state:**
+
+| artifact state | failing files | failing tests | run |
+|---|---|---|---|
+| stale kernel | 38 | 82 | 4,038 |
+| kernel rebuilt alone, closure broken | 54 | 69 | 3,853 |
+| closure rebuilt (`./run.sh setup`) | **38** | **89** | 4,039 |
+
+Against the recorded baseline of **39 / 84 of 4,067**, that is one fewer failing
+file and five more failing tests.
+
+**THE FAILING FILE SETS ARE ALL BUT IDENTICAL, which is the useful measurement.**
+Diffing the stale-kernel run against the coherent one, on the same commit, moves
+exactly two files: `wordpress-site-editor` fails only with the stale kernel, and
+`run-example-credentials` fails only in the coherent run — **and that one passes
+9/9 alone.** It is a full-suite contention flake of the same kind as
+`dinit-scripted-service`, which this plan already records as passing alone.
+
+So the failing-test count moves with artifact state and suite contention, not
+with the code, and the five-test delta against a baseline measured on a different
+tree is not evidence of a regression.
+
+**WHAT THIS STILL IS NOT.** A strict both-sides comparison needs `f92fee4f2` run
+against THIS closure, and that was not done: it means detaching the lane
+worktree for a twenty-five-minute run, which is not something to start
+unattended on a machine about to sleep. **The retirement's evidence therefore
+remains: a census that found no caller in any language, CI already listing the
+suite in `disabled_software_excludes`, every targeted suite passing, and a
+whole-suite failing set that contains nothing the session touched** — strong,
+and one run short of the standard the `memory-fs.ts` deletion met.
+
+**The cheapest way to close it** is a `git worktree add` at `f92fee4f2` with its
+own `node_modules`, run once, compared, removed — rather than detaching this
+worktree.
+
 ### THE CLOSURE IS REBUILT — 2026-09-17, and the interruption warning above it is withdrawn
 
 **`./run.sh setup` COMPLETED, exit 0.** I wrote the warning this replaces
