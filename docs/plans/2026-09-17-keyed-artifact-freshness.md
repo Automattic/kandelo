@@ -46,16 +46,30 @@ stale, the one that needs an internal stamp, and the only reason
 |---|---|---|---|
 | `local-binaries/programs/wasm32/gzip.wasm` | symlink → generation | the directory it points into | structural |
 | `local-binaries/kernel.wasm` (main checkout) | symlink → generation | the directory it points into | structural |
-| `local-binaries/kernel.wasm` (both worktrees) | **absent** | — | — |
-| `local-binaries/source-only-v1/kernel.wasm` | **copy** | `kandelo.build.key`, inside the bytes | a stamp comparison |
+| `local-binaries/kernel.wasm` (both worktrees) | **absent**, and a kernel build does not create it | — | — |
+| `~/.cache/kandelo/source-only/…/programs/kernel-0.1.0-rev1-wasm32-<key>/` | directory | **the directory name** | structural |
+| `local-binaries/source-only-v1/kernel.wasm` | **copy** out of that cache | `kandelo.build.key`, inside the bytes | a stamp comparison |
 | `local-binaries/fork_module32.wasm` | copy | `.build-key` **sidecar** | a third form; does not survive a copy |
+
+**There are TWO key-addressed stores, not one**, and this document's earlier
+drafts saw only the first. Packages live in the per-worktree generation store;
+source-built artifacts like the kernel live in the **machine-wide source-only
+cache**, whose paths are `kernel-0.1.0-rev1-wasm32-<key>` — key-addressed
+already. Verified 2026-09-17 by building the kernel and watching it install to
+`…/programs/.kernel-0.1.0-rev1-wasm32-ea67b4c3…`, the exact key the tree
+resolves to.
+
+**So the copy is a PROJECTION out of a keyed store, not an original.** That is
+the whole finding in one line: the bytes are key-addressed where they are built
+and stop being key-addressed where they are read.
 
 Generations are live: bzip2, git, nginx, redis, vim, wget and less all have
 directories written on Sep 16. The kernel's 21 are all dated `2026-09-12
-10:53:36` — a single bulk event — because **these worktrees never published a
-root mirror**, so nothing here writes a kernel generation, and the tier twin is
-the only kernel they have. That is why `verify-fresh` failing on it blocks this
-lane while the main checkout is fine.
+10:53:36` — and **a successful `./run.sh build kernel` on 2026-09-17 added
+none**. It published into the machine-wide source cache and projected a copy
+into the tier, leaving both the generation store and the root mirror untouched.
+So the kernel is not "missing from" the generation scheme in these worktrees; it
+does not participate in it here at all.
 
 A detail worth keeping: inside those stored generations, **no directory name
 matches the stamp in its own artifact** (`aded8633…` holds one stamped
@@ -104,7 +118,10 @@ mirror is in that state, because a package mirror cannot be.
 **Make the tier projection an indirection, exactly as the root mirror already
 is**, and the stamp and its gate become unnecessary rather than improved.
 
-1. `source-only-v1/kernel.wasm` resolves to a generation instead of copying one.
+1. `source-only-v1/kernel.wasm` resolves INTO the keyed store it is currently
+   copied out of — the machine-wide source cache for the kernel, the generation
+   store for packages — instead of copying. The store already exists and is
+   already keyed; only the last hop copies.
 2. `kandelo.build.key` and the `.build-key` sidecars stop being read for
    freshness. `verify_fresh_kernel_artifact`'s stamp comparison goes; its
    ABI-version check is independent and stays.
@@ -149,9 +166,13 @@ whether a *packable* tier can hold links.
 
 ## What I did not check
 
-- **Whether the tier copies deliberately because it must be packable.** This is
-  now the only question that changes the design rather than the detail, and it
-  is a question for whoever wrote the tier projection.
+- **Whether the tier copies deliberately because it must be packable.** Still
+  the only question that changes the design rather than the detail, and now
+  sharper: the source cache lives under `$HOME`, outside the repository, so a
+  tier that must be packable cannot link into it at all. **If that is the
+  reason, the answer is an index plus a copy-on-pack step, not a link** — and
+  the proposal's step 1 should say so instead of assuming the link is available.
+  This is a question for whoever wrote the tier projection.
 - ~~Why these two worktrees have no root kernel mirror, and whether the lane's
   stale kernel therefore has a cheap fix.~~ **Checked, and the answer is no.**
   The absence is if anything PROTECTIVE — with no root mirror there is nothing
