@@ -1137,3 +1137,38 @@ honest trade is "one host line against a diagnostic that is already available
 by another route", which is a weaker case than "one host line against an
 undiagnosable errno". Offered as an argument for leaving the ceiling alone,
 not as a reason to close the question.
+
+### The tier guard, perturbed at all four call sites
+
+The shared helper is one function, but four scripts call it, and proving the
+FUNCTION fails proves nothing about whether a given call site passes the right
+arguments. Each was perturbed separately: append one byte to that module's
+source-only tier copy, run that module's `build-wasm.sh --verify-fresh`.
+
+| module | tier sha under mutation | verify-fresh | message names |
+|---|---|---|---|
+| fork-module | `410a764bd061b311` | 1 | `fork-module:` + `fork_module32.wasm` |
+| wasi-module | `16f6091423c5c725` | 1 | `wasi-module:` + `wasi_module32.wasm` |
+| dylink-module | `c25a73b1ee2b973d` | 1 | `dylink-module:` + `dylink_module32.wasm` |
+| wasm-artifact-module | `a050ddcea1dcb87f` | 1 | `wasm-artifact-module:` + `wasm_artifact_module32.wasm` |
+
+All four killed. Each message names its OWN label and its OWN file pair, which
+is what distinguishes "the shared function works" from "this call site is
+wired correctly" -- a transposed basename would still have failed, just about
+the wrong file. Restored to `a01f1cbdb407cb03`, `a54ab0c3fe898faf`,
+`e5e8869847bd82fe` and `58ac5e338fdda995`; all four verify-fresh exit 0 and
+every tier copy is byte-identical to its `local-binaries/` twin.
+
+`fork-module` is the one that does NOT call `stage_side_module_tier_copy`,
+and that is correct rather than an omission: its own staging step already
+writes all three tiers in one go (`staged fork_module32.wasm -> local-binaries,
+host/wasm, local-binaries/source-only-v1`). The helper's two halves exist so a
+script that only CHECKS cannot create a rejection nobody can clear; fork-module
+satisfies the staging half by other means.
+
+Known scope, recorded rather than fixed: the vitest tier-agreement assertion
+covers `fork_module` only. The three siblings are guarded by the shell check
+alone, which runs on every build and every verify-fresh. That is adequate
+coverage for the drift this lane found, and extending the vitest test to the
+siblings would duplicate the shell guard rather than add a dimension -- so it
+is left, named, for whoever decides otherwise.
