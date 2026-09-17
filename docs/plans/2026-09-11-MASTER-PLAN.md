@@ -13694,6 +13694,83 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### A DEFERRED BODY IS AN ADDRESS — `530ff25a8`, `02b2de137`, 2026-09-17
+
+**`host/src/vfs` importers of `memory-fs.ts` go from five to two, and the two
+survivors are the barrels.** The three that went — `kernel-lazy-section.ts`,
+`module-base-image.ts`, `rootfs-lazy-archives.ts` — imported it for two types
+and nothing else, which is the cluster §"THE NEXT REDUCTION" measured on
+2026-09-16 and the maintainer's question then re-shaped: the types point at
+lines that should LEAVE the surface, not at 191 that should enter it.
+
+**What they cost is the part the earlier measurement did not show.**
+`module-base-image.ts` had to SYNTHESIZE `SerializedLazyArchiveEntry` for every
+module-written image — grouping members by archive, and JSON-parsing each
+archive's descriptor to recover a `mountPrefix` — purely so that
+`buildRootfsLazyWiring` could reduce it straight back down to an address, its
+mirrors and a length. **Two of the three synthesized fields were read by
+nobody.** The descriptor parse was the sharpest edge: a boot opened an opaque
+blob the image format says nobody opens, on input that can arrive from a shared
+link, to fill a slot no consumer looks in.
+
+So `RootfsOverlayBaseImage` answers in `DeferredBody` — `address`,
+`transports`, `bytes`, `sha256` — and it is the SAME record for a lazy file and
+a lazy archive, because addressing them differently is the distinction the URI
+relay already removed. The legacy JSON sections are read structurally instead
+of cast to a declared type nothing had checked, and `unwrapSealPayload` goes
+with the parse it served: the seal half is authenticated by
+`rootfs::load_image`, so the host has no reason to open the envelope.
+
+**A design decision inside the lane: a file's declared digest is NOT carried.**
+An image's host-side lazy section records no per-file digest, so the field
+would be present on a module-written image and absent on a legacy one. A field
+whose meaning depends on which producer ran is worse than no field, and no
+consumer reads one.
+
+**THE CENSUS CAUGHT WHAT THE FIRST READING MISSED.** `exportLazyEntries()`
+looked dead — its only mentions were the interface, two implementations and one
+package-system test — until the census was re-run including `scripts/`, which
+holds `build-local-vfs-asset-group.ts`: the Pages asset closure, which
+enumerates every lazy body a product image references and stages it. It is the
+one consumer of BOTH methods, and the reason `DeferredBody` carries a digest at
+all. **That is the second time in this lane that a census stopping at `host/`
+and `apps/` missed a real caller under `scripts/`.**
+
+**Tests: claims kept, three retired with their fields.** The mount prefix and
+member list retire because nothing downstream reads them once the kernel reads
+its own manifest out of `SDEF`; two descriptor-refusal cases retire because
+there is no descriptor parse left to refuse with. The refusal that matters — an
+archive declaring no address — stays, and gained company: the section carrier's
+length and digest had no assertion at all, and `buildRootfsLazyWiring`'s
+skip-the-unsized rule had none either.
+
+**`rootfs-lazy-archives.test.ts` loses its `memory-fs` import**, and its three
+member-reduction cases MOVED rather than died: they assert
+`reduceLazyArchiveGroups`, whose only remaining caller is the `KLZY` encoder in
+`memory-fs.ts`, so they live in `vfs-image-kernel-lazy.test.ts` now and retire
+with that encoder. **A test that outlives what it describes is how a suite
+starts asserting the past.**
+
+**One guard deleted rather than tried.** The wiring skipped a body with an
+empty address; the provider refuses `""` before it consults the policy table,
+so the line could change no outcome. Same reasoning as the SDEF reader guard,
+and the reason it is recorded here rather than only in the diff: this is the
+second time tonight that the honest move was to delete a guard rather than to
+find a test for it.
+
+**Still owed, and named so it is not discovered as a surprise**: the
+section-reading branch of `createBaseImageFromContainer` has no producer once
+`memory-fs.ts` is gone — the shipped images are module-written and carry no
+host-side JSON sections. Deleting that branch is a separate increment, because
+`browser-kernel-worker-entry.ts` still calls the reader with three arguments
+and would then get an empty list where today it gets one too; the fix is to
+pass `moduleLazyEntries`, and that is a browser-validated change rather than a
+type change.
+
+**Evidence**: 244 tests / 9 files (the affected lazy-archive, image-URL,
+tree-parity and KLZY suites plus `surface-budget.test.ts`, 101); `host`
+typecheck clean; `xtask perturb --validate` 421 trials anchor.
+
 ### THE CLI READS WITH ONE READER — `1a32c5e4a`, 2026-09-17
 
 **`tools/mkrootfs`'s three reading verbs now load with `KandeloImageFs`, and
