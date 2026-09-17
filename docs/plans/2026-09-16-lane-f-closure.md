@@ -1500,3 +1500,63 @@ These are in the baseline and now pass. Per `suite-baseline.mjs`, leaving them
 listed lets the next regression hide behind them, so they should be banked --
 but `expected-failures.json` is shared state and that edit is not this lane's
 to make.
+
+## Reducing the module's static: what worked, and where the wall is
+
+The module's static is mmap'd out of the GUEST's own window before the guest
+allocates anything, so every byte of it is a byte a process cannot map. Asked
+to shrink it using the identity table's dynamic-allocation approach.
+
+### Done: the bump heap, 4 MiB -> 1 MiB floor (-3.00 MiB, -46%)
+
+`memorySize` 6,480,916 -> 3,335,204; module region 7.44 MiB -> 4.44 MiB.
+
+The heap was the outlier. Measured by trapping above a threshold and rebuilding:
+a real single fork peaks between 256 and 512 KiB, so 4 MiB was 8-16x oversized
+-- AND still a hard bound, so a heavier fork got a null allocation with no way
+to ask for more. It is now a floor that maps 1 MiB chunks on demand and retains
+them across `ALLOC.reset()`.
+
+The floor's size is measured, not chosen. At a 64 KiB floor the growth path is
+forced on every fork and 44 tests pass, including a real end-to-end fork -- that
+is what proves growth serves production allocations rather than merely
+compiling. The full lifecycle suite at that floor fails exactly ONE test: P-11,
+which deliberately exhausts a 384-page process, because growth needs an mmap and
+that fixture has no room for one. So the floor must cover the peak or a
+memory-constrained fork cannot fork. At 1 MiB it does.
+
+### Blocked: the five catalog arenas, 1.56 MiB
+
+Two facts close this off, and both were measured rather than assumed.
+
+**They are not oversized.** Unlike the heap, they are sized for real programs:
+php uses 73% of each (47,757 resume-catalog ordinals against a 65,536 cap).
+A smaller floor would refuse php, which is the trap the identity table's old
+`512` fell into.
+
+**A fork child re-seeds them from scratch, and cannot syscall while it does.**
+`set_format_impl` DELIBERATELY resets `ACT_CATALOG_ACT_COUNT`,
+`ACT_CATALOG_ORD_USED`, `RESUME_SLOT_COUNT`, `RESUME_FREE_COUNT`,
+`ACT_FUNC_CATALOG_BASE_COUNT` and `ACT_STATIC_ROOT_BASE_COUNT` on the child, so
+the child's own per-activation seeding repopulates them. Seeding therefore
+allocates, and allocation during child seeding is refused by the kernel -- the
+child process is still being created. Measured directly: an attempt at the GC
+codec arena (which is NOT reset, and so should have inherited) failed 16
+lifecycle tests with `fm_set_activation_gc_codec failed with errno 12` (ENOMEM)
+in the child. That attempt is reverted.
+
+Put together: a dynamic arena needs a floor big enough for child re-seeding, and
+child re-seeding is php-scale, so the floor is the array. There is no saving to
+take by this route.
+
+### What would move it
+
+Not more effort on the same approach -- a change to WHEN children seed. If a
+child seeded after the kernel considered it fully created, its catalogs could
+grow like the heap does and the 1.56 MiB would follow the 3 MiB. That is a
+process-lifecycle change well outside this lane, and it is the thing to
+reconsider if the remaining static ever matters.
+
+Also worth noting the asymmetry that made the heap tractable: it is reset per
+fork and reconstructed, so a child never depends on inheriting it, while the
+catalogs are state a child must have before it can run.
