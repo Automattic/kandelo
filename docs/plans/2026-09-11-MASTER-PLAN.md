@@ -13565,6 +13565,54 @@ attributed to load by assertion.
 
 **`perturb/browser-scratch-refusal.json`: 3 trials, 0 survived.**
 
+### THE 47 CLASSIFIED BY ROLE, NOT BY DEPTH — 2026-09-17
+
+**The shallow/deep split recorded earlier was too crude and misclassified
+files in both directions.** `login.test.ts` counted as shallow because it
+calls none of the methods the matcher looked for — and then hands the
+filesystem to a `VirtualPlatformIO` as a live mount backend. `symlink.test.ts`
+counted as shallow and is the filesystem's own semantics under test.
+
+Re-classified by what each file DOES with the class:
+
+| role | files | what it means |
+|---|---|---|
+| **FIXTURE** — builds an image, hands the BYTES on | 20 | repoint to `KandeloImageFs`, the producer that ships |
+| **BACKEND** — hands the object to `VirtualPlatformIO` or a mount | 16 | needs a live filesystem; the role the host keeps until something else fills it |
+| **SUBJECT** — the filesystem itself is what is under test | 11 | redundant with Rust, or incongruous with the kernel FS, or a claim to port |
+
+**And "FIXTURE" is not automatically a repoint.** Two of the twenty use
+`MemoryFileSystem` BECAUSE it is the legacy writer:
+`sdef-image-runtime.test.ts` says so in its own header — *"fixture with
+`MemoryFileSystem`, which emits `KLZY`"* — and
+`image-build-round-trip.test.ts` carries the instruction *"DELETE THIS TEST
+WITH `memory-fs.ts`. It is not describing something to fix in that writer; it
+is recording why nothing may route an image through it."* Those retire with
+the class rather than moving.
+
+**Three repointed, and one of them moved most of the suite** (`f07b60573`).
+`centralized-test-helper.ts` builds a rootfs image for **89 test files**, so
+what it writes decides which producer the whole suite downstream exercises —
+and it was the TypeScript filesystem. `loadImage` turned out to be exactly the
+capacity-preserving load it needed, because the module restores the image's
+declared ceiling.
+
+**`vfs-image-lazy-identity.test.ts` is the clearest case of rule 4 so far.**
+Its six claims are about the TypeScript reader's identity gate — an image
+whose lazy JSON records an inode the body does not have — and its last case is
+named *"still throws on the OTHER axis, when JSON and KLZY disagree"*. Two
+host-side carriers that can disagree is the architecture the kernel does not
+have: it reads `SDEF` and there is no second axis. The one claim in there that
+is NOT carrier-specific — a deferred stub reports its real size — is already
+`a_registered_lazy_file_exports_as_deferred_with_its_real_size` in Rust. So
+the file goes with the class, under rule 4 and rule 2 together.
+
+**Two reds surfaced during the sweep and neither is from this work**,
+established by stashing rather than by reading: `login.test.ts`'s
+missing-canonical-home case and `spawn-pid-authority.test.ts`'s
+dirfd/`AT_EMPTY_PATH` case both fail at HEAD, the second being one of the three
+spawn failures already recorded as unowned.
+
 ### THE ENDGAME'S RULES — maintainer decisions, 2026-09-16
 
 **Four answers that settle how lane V finishes.** Recorded here because they
