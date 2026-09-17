@@ -141,6 +141,43 @@ symlinks on portability grounds without noticing the project already relies on
 them; that argument is withdrawn, and survives only as the narrower question of
 whether a *packable* tier can hold links.
 
+## What "packable" actually means
+
+`scripts/pack-ci-test-workspace.sh` copies `local-binaries/` into a staging
+directory and ships it as a **self-contained CI workspace**. It then walks every
+symlink under the staged tree and enforces three things:
+
+* the target must resolve **inside `local-binaries/`** — the source root, the
+  staged root, or a `.kandelo-local-generations/` namespace under one of them;
+* absolute targets are **rewritten to relative** as they are packed;
+* anything else is refused: *"staged local resolver link retains an external
+  absolute target"*.
+
+So packable means **the workspace survives being copied elsewhere and used
+there**. Symlinks are not merely tolerated — the same script REQUIRES
+`local-binaries/kernel.wasm` to be one and refuses a regular file in its place.
+
+**THE CONSTRAINT IS WHERE THE STORE LIVES, NOT WHETHER THE TIER COPIES.**
+
+| store | inside `local-binaries/`? | can a packable tier link into it? |
+|---|---|---|
+| `.kandelo-local-generations/` | yes | **yes** — it is packed along with the links |
+| `~/.cache/kandelo/source-only/` | no | **no** — refused as an external absolute target |
+
+**Which redirects the fix.** It is not "make the tier link" — for the kernel that
+would point at the machine-wide source cache and be refused. It is **publish the
+kernel into the in-repo generation store the way packages already are**, after
+which the tier can link to it exactly as `local-binaries/kernel.wasm` already
+does in the main checkout.
+
+**STILL OPEN, and narrower than before:** the tier copies EVERYTHING, not just
+the kernel. `source-only-v1/programs/wasm32/gzip.wasm` is a regular file while
+`local-binaries/programs/wasm32/gzip.wasm` is a symlink into the store — so the
+tier is a deliberately materialized namespace, and the reason for that is not in
+the packing script. Until that reason is known, step 1 should not be rewritten
+around links: a materialized tier may be load-bearing for provenance pinning in
+a way this document has not established.
+
 ## Why this simplifies testing and releasing
 
 - A test cannot get a stale kernel by accident: wrong key, different path,
@@ -166,13 +203,11 @@ whether a *packable* tier can hold links.
 
 ## What I did not check
 
-- **Whether the tier copies deliberately because it must be packable.** Still
-  the only question that changes the design rather than the detail, and now
-  sharper: the source cache lives under `$HOME`, outside the repository, so a
-  tier that must be packable cannot link into it at all. **If that is the
-  reason, the answer is an index plus a copy-on-pack step, not a link** — and
-  the proposal's step 1 should say so instead of assuming the link is available.
-  This is a question for whoever wrote the tier projection.
+- ~~Whether the tier copies deliberately because it must be packable.~~
+  **Answered from the code, 2026-09-17 — see "What packable actually means"
+  below. The framing was wrong: packability constrains WHERE a link may point,
+  not whether links are allowed.** What remains open is narrower and is stated
+  there.
 - ~~Why these two worktrees have no root kernel mirror, and whether the lane's
   stale kernel therefore has a cheap fix.~~ **Checked, and the answer is no.**
   The absence is if anything PROTECTIVE — with no root mirror there is nothing
