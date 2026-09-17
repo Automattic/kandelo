@@ -32,6 +32,7 @@ import {
 } from "../host/src/binary-resolver.ts";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
 import { createBaseImageFromContainer } from "../host/src/vfs/module-base-image.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
 import { imageReadFromContainer } from "../host/src/vfs/rootfs-lazy-archives.ts";
 import {
   validateVfsAssetGroupManifest,
@@ -166,9 +167,25 @@ export async function buildLocalVfsAssetGroup(
     // reader built for exactly that question does it without one, and it also
     // reads the module-written half, which `restoreVerifiedVfsImage` could not
     // see: the two producers record a deferred URL in different places.
+    // THE MODULE IS ASKED, because a shipped image no longer carries the
+    // host-side JSON sections this reader was written against.
+    //
+    // Measured, not assumed: every builder under `images/` writes with
+    // `KandeloImageFs`, whose images describe their deferred files in the
+    // in-body `SDEF` section and write no JSON trailer at all. A two-argument
+    // call reads only the trailer, so it answered "no deferred bodies" for a
+    // product image full of them — and this closure would then have staged
+    // NOTHING while reporting the count as its own failure.
+    //
+    // `moduleLazyEntries` is the fourth argument the reader grew for exactly
+    // this, and it is the thing nothing was passing.
+    const reader = KandeloImageFs.create();
+    reader.loadImage(snapshot.bytes);
     const { baseImage: fs } = createBaseImageFromContainer(
       snapshot.bytes,
       imageReadFromContainer(snapshot.bytes),
+      undefined,
+      () => reader.lazyEntries(),
     );
     for (const body of fs.deferredFiles()) {
       if (body.bytes === undefined) {

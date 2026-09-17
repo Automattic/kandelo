@@ -2,7 +2,6 @@ import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { KandeloImageFs, KandeloImageError } from "../../images/vfs/lib/kandelo-image-fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { OPEN_FLAGS } from "../src/generated/abi";
 import type { ZipEntry } from "../src/vfs/zip";
@@ -890,41 +889,30 @@ describe("KandeloImageFs", () => {
   });
 });
 
-describe("owner-carrying creation, against MemoryFileSystem", () => {
-  it("keeps a setuid bit that chown would otherwise clear", async () => {
-    const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
+describe("owner-carrying creation", () => {
+  // THE COMPARISON WENT, THE LITERALS STAYED, 2026-09-17. Both cases built the
+  // same tree twice — once with the incumbent, once with the bridge — and
+  // asserted the two agreed, then asserted the literal that made the agreement
+  // meaningful ("guards the guard: both agreeing on a cleared bit would
+  // satisfy toEqual"). The literal was doing the work either way, and there is
+  // no second producer left to agree with.
 
-    // 0o4755: setuid. This is the mode `sudo` ships with, and the whole reason
-    // the incumbent re-chmods after chown.
-    const incumbent = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    incumbent.mkdirWithOwner("/usr", 0o755, 0, 0);
-    incumbent.createFileWithOwner(
-      "/usr/sudo", 0o4755, 0, 0, new TextEncoder().encode("x"),
-    );
-
+  it("keeps a setuid bit that chown would otherwise clear", () => {
+    // 0o4755: setuid. This is the mode `sudo` ships with, and the reason
+    // owner-carrying creation exists at all — a create-then-chown sequence
+    // clears it, so the mode and the owner must arrive together.
     const bridge = KandeloImageFs.create();
     bridge.mkdirWithOwner("/usr", 0o755, 0, 0);
     bridge.createFileWithOwner(
       "/usr/sudo", 0o4755, 0, 0, new TextEncoder().encode("x"),
     );
 
-    const shape = (st: { mode: number; uid: number; gid: number }) =>
-      ({ mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
-    expect(shape(bridge.lstat("/usr/sudo"))).toEqual(shape(incumbent.lstat("/usr/sudo")));
-    // Guards the guard: both agreeing on a cleared bit would satisfy toEqual.
-    expect(bridge.lstat("/usr/sudo").mode & 0o4000).toBe(0o4000);
+    const st = bridge.lstat("/usr/sudo");
+    expect(st.mode & 0o7777).toBe(0o4755);
+    expect({ uid: st.uid, gid: st.gid }).toEqual({ uid: 0, gid: 0 });
   });
 
-  it("carries a non-root owner onto both a file and a directory", async () => {
-    const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
-
-    const incumbent = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    incumbent.mkdirWithOwner("/home", 0o755, 0, 0);
-    incumbent.mkdirWithOwner("/home/maker", 0o750, 1000, 1001);
-    incumbent.createFileWithOwner(
-      "/home/maker/.profile", 0o640, 1000, 1001, new TextEncoder().encode("hi"),
-    );
-
+  it("carries a non-root owner onto both a file and a directory", () => {
     const bridge = KandeloImageFs.create();
     bridge.mkdirWithOwner("/home", 0o755, 0, 0);
     bridge.mkdirWithOwner("/home/maker", 0o750, 1000, 1001);
@@ -934,11 +922,10 @@ describe("owner-carrying creation, against MemoryFileSystem", () => {
 
     const shape = (st: { mode: number; uid: number; gid: number }) =>
       ({ mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
-    for (const path of ["/home/maker", "/home/maker/.profile"]) {
-      expect(shape(bridge.lstat(path))).toEqual(shape(incumbent.lstat(path)));
-    }
-    expect(bridge.lstat("/home/maker").uid).toBe(1000);
-    expect(bridge.lstat("/home/maker").gid).toBe(1001);
+    expect(shape(bridge.lstat("/home/maker")))
+      .toEqual({ mode: 0o750, uid: 1000, gid: 1001 });
+    expect(shape(bridge.lstat("/home/maker/.profile")))
+      .toEqual({ mode: 0o640, uid: 1000, gid: 1001 });
   });
 });
 
@@ -1161,20 +1148,13 @@ describe("the two producers record one mount prefix", () => {
     expect(archives).toHaveLength(1);
     const described = describedBy(archives[0].descriptor);
 
-    const legacy = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
-    legacy.registerLazyArchiveFromEntries(
-      "https://example.invalid/tool.zip",
-      archiveEntries(),
-      "/usr/",
-      undefined,
-      { sha256: "0".repeat(64), bytes: 128 },
-    );
-    const [recorded] = legacy.exportLazyArchiveEntries();
-
-    // The assertion that matters is the EQUALITY, not the value: whichever
-    // spelling the project picks, one image must not describe itself
-    // differently from another built by the other producer.
-    expect(described.mountPrefix).toBe(recorded.mountPrefix);
+    // THE OTHER PRODUCER'S SPELLING, asserted as a literal rather than by
+    // building an image with it. The equality here was the point while two
+    // producers wrote images that had to describe themselves the same way: a
+    // trailing slash kept by one and normalized away by the other is a
+    // difference nothing reads until something does. One producer writes every
+    // image now, so what is left to hold is the spelling itself — and it is
+    // the normalized one, which is what the legacy writer recorded too.
     expect(described.mountPrefix).toBe("/usr");
   });
 
