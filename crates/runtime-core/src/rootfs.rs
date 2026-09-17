@@ -8039,6 +8039,37 @@ mod tests {
     }
 
     #[test]
+    fn a_load_leaves_the_image_it_was_handed_byte_for_byte_unchanged() {
+        let _guard = TestGuard::acquire();
+        // PORTED from `host/test/vfs/image-source-immutability.test.ts`, which
+        // asserted this of the host's restore — the gigabyte materialization
+        // that no longer happens. The claim belongs to whoever reads the
+        // image, and that is now this loader.
+        //
+        // The kernel builds its tree from these bytes and keeps reading them
+        // afterwards: every base file is a promise that the image can be asked
+        // again. A loader that amended what it was handed would make the tree
+        // and the artifact disagree, and the disagreement would surface later,
+        // somewhere else, as a wrong file rather than as a failed load.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
+        write_file_at(b"/usr/thing", 0, b"ordinary bytes", 0o644, true, no_bytes())
+            .expect("a file, so the image is not empty");
+        let image = drain_container(8192, &mut no_bytes());
+        let pristine = image.clone();
+
+        reset();
+        let count = load_image(image.len() as u64, image_host(&image)).expect("load");
+        assert_eq!(count, 3, "root, /usr, /usr/thing");
+        assert_eq!(image, pristine, "the loader wrote into the image it was given");
+
+        // NOT VACUOUS: the tree really was built from those bytes, so the
+        // comparison is about a loader that read them rather than one that
+        // ignored them.
+        assert_eq!(lstat(b"/usr/thing").expect("stat").st_size, 14);
+    }
+
+    #[test]
     fn a_load_refuses_an_image_whose_cohorts_do_not_authenticate() {
         let _guard = TestGuard::acquire();
         // THE BOOT-TIME BOUNDARY, tested where it now lives.

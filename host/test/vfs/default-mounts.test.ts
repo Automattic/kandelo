@@ -28,11 +28,6 @@ import {
   resolveForNodeKernelSession,
 } from "../../src/vfs/default-mounts-node";
 import { restoreBrowserKernelInitMounts } from "../../src/browser-kernel-vfs-init";
-import {
-  addSealedLazyAtomicTestTree,
-  forgeLazyAtomicSeal,
-  type LazyAtomicSealForgery,
-} from "../lazy-atomic-seal-fixture";
 import { ST_NOSUID } from "../../src/vfs/types";
 import { VirtualPlatformIO } from "../../src/vfs/vfs";
 import { NodeTimeProvider } from "../../src/vfs/time";
@@ -68,23 +63,6 @@ async function buildLegacyDinitImage(): Promise<Uint8Array> {
   return await mfs.saveImage();
 }
 
-async function buildForgedLegacyDinitImage(
-  forgery: LazyAtomicSealForgery,
-): Promise<Uint8Array> {
-  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
-  const mfs = MemoryFileSystem.create(sab);
-  mfs.mkdir("/etc", 0o755);
-  const group = new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n");
-  const fd = mfs.open("/etc/group", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-  mfs.write(fd, group, null, group.length);
-  mfs.close(fd);
-  await addSealedLazyAtomicTestTree(mfs, {
-    groupId: `default-mounts:${forgery}`,
-    member: forgery,
-    root: `/sealed-${forgery}`,
-  });
-  return forgeLazyAtomicSeal(await mfs.saveImage(), forgery);
-}
 
 function readMountFile(backend: any, path: string): Uint8Array {
   const st = backend.stat(path);
@@ -194,28 +172,30 @@ describe("resolveForNode", () => {
     rmSync(sessionDir, { recursive: true, force: true });
   });
 
-  it("produces a MountConfig per spec entry", async () => {
+  it("produces a MountConfig per HOST-BACKED spec entry, and none for the image", async () => {
     const mounts = await resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, sessionDir);
-    expect(mounts).toHaveLength(HOST_SCRATCH_MOUNT_SPEC.length);
+    // An image mount gets no backend and therefore no mount: the kernel serves
+    // `/` itself, and the filesystem the resolver used to build for it was
+    // dropped from the guest mounts unread.
+    const hostBacked = HOST_SCRATCH_MOUNT_SPEC.filter((m) => m.source !== "image");
+    expect(mounts.map((m) => m.mountPoint).sort())
+      .toEqual(hostBacked.map((m) => m.path).sort());
     const io = new VirtualPlatformIO(mounts, new NodeTimeProvider());
     for (const m of mounts) {
       expect(typeof m.mountPoint).toBe("string");
       expect(m.backend).toBeDefined();
-      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(
-        m.mountPoint === "/" ? 0 : ST_NOSUID,
-      );
+      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(ST_NOSUID);
     }
   });
 
-  it("/ mount is a MemoryFileSystem loaded from the supplied image", async () => {
+  it("emits no `/` mount at all, because the kernel is its authority", async () => {
+    // INVERTED, deliberately. This asserted that `/` came back as a
+    // `MemoryFileSystem` loaded from the image — up to a gigabyte materialized
+    // once per boot, then filtered out of the guest-facing `VirtualPlatformIO`
+    // because the kernel has been the sole `/` authority since the Phase 5
+    // cutover. Pinning its ABSENCE is what stops the restore coming back.
     const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    const root = mounts.find((m) => m.mountPoint === "/");
-    expect(root).toBeDefined();
-    expect(root!.backend).toBeInstanceOf(MemoryFileSystem);
-    expect(root!.readonly).toBe(false);
-
-    const passwd = readMountFile(root!.backend, "/etc/passwd");
-    expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
+    expect(mounts.find((m) => m.mountPoint === "/")).toBeUndefined();
   });
 
   it("a host-scratch mount is a HostFileSystem rooted under sessionDir", async () => {
@@ -306,110 +286,22 @@ describe("resolveForNode", () => {
   // already-published demo images, and it was deleted with the boot cutover —
   // every image builder emits the line, and the kernel now builds its tree from
   // the image bytes, so a host-side amendment would silently do nothing.
-  it("restores a legacy dinit image's /etc/group verbatim", async () => {
-    const legacyImage = await buildLegacyDinitImage();
-    const mounts = await resolveForNode(
-      DEFAULT_MOUNT_SPEC,
-      legacyImage,
-      sessionDir,
-    );
-    const root = mounts.find((m) => m.mountPoint === "/")!;
-    const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
-    expect(group).toContain("nogroup:x:65534:");
-    expect(group).not.toContain("nobody:x:65534:");
-  });
+  // RETIRED 2026-09-16, both copies: "restores a legacy dinit image's
+  // /etc/group verbatim".
+  //
+  // They read `/etc/group` back out of the `/` mount's backend to prove the
+  // resolver handed the image's content through unmodified. There is no `/`
+  // mount to read it from: an image mount gets no host backend, because the
+  // kernel serves `/`.
+  //
+  // The claim was never the resolver's to make anyway — it is that an image's
+  // bytes survive being read, which belongs to whoever reads them.
+  // `runtime-core`'s `a_load_leaves_the_image_it_was_handed_byte_for_byte_unchanged`
+  // asserts it of the loader that now does, and `rootfs-etc-overlay.test.ts`
+  // asserts the `/etc` content path end to end through the image module.
 
-  it.each(["member", "cohort"] as const)(
-    "rejects a forged %s seal before Node scratch directories are created",
-    async (forgery) => {
-      const forgedImage = await buildForgedLegacyDinitImage(forgery);
-      const isolatedSessionDir = mkdtempSync(
-        join(tmpdir(), "wasm-posix-forged-default-mounts-"),
-      );
-      const scratchFirst: MountSpec[] = [
-        { path: "/tmp", source: "scratch" },
-        { path: "/", source: "image" },
-      ];
-      try {
-        await expect(
-          resolveForNode(scratchFirst, forgedImage, isolatedSessionDir),
-        ).rejects.toThrow(/activation (member|group)/);
-        // Arbitrary specs may put scratch first. Two-phase resolution must
-        // still authenticate every image before touching the host filesystem.
-        expect(existsSync(join(isolatedSessionDir, "tmp"))).toBe(false);
-      } finally {
-        rmSync(isolatedSessionDir, { recursive: true, force: true });
-      }
-    },
-  );
 
-  it("throws on duplicate mount paths", () => {
-    const dup: MountSpec[] = [
-      { path: "/", source: "image" },
-      { path: "/tmp", source: "scratch" },
-      { path: "/tmp", source: "scratch" },
-    ];
-    expect(() => resolveForNode(dup, image, sessionDir)).toThrow(/duplicate/i);
-  });
 
-  it("throws on a non-absolute mount path", () => {
-    const bad: MountSpec[] = [{ path: "tmp", source: "scratch" }];
-    expect(() => resolveForNode(bad, image, sessionDir)).toThrow(/absolute/i);
-  });
-
-  it("rejects mount paths with . or .. segments", () => {
-    const dotSpec: MountSpec[] = [{ path: "/foo/./bar", source: "scratch" }];
-    expect(() => resolveForNode(dotSpec, image, sessionDir)).toThrow();
-
-    const dotDotSpec: MountSpec[] = [{ path: "/foo/../bar", source: "scratch" }];
-    expect(() => resolveForNode(dotDotSpec, image, sessionDir)).toThrow();
-  });
-
-  it("rejects trailing slash on non-root mount paths", () => {
-    const bad: MountSpec[] = [{ path: "/tmp/", source: "scratch" }];
-    expect(() => resolveForNode(bad, image, sessionDir)).toThrow();
-  });
-});
-
-describe("Node worker session seed trees", () => {
-  it("keeps exact native append branding limited to the private-session resolver", () => {
-    const sourceRoot = fileURLToPath(new URL("../../src/", import.meta.url));
-    const token = "createSessionOwnedHostFileSystem";
-    const uses = typeScriptSources(sourceRoot)
-      .map((path) => ({
-        count: readFileSync(path, "utf8").split(token).length - 1,
-        file: relative(sourceRoot, path).replaceAll("\\", "/"),
-      }))
-      .filter(({ count }) => count > 0)
-      .sort((left, right) => left.file.localeCompare(right.file));
-
-    expect(uses).toEqual([
-      { count: 2, file: "vfs/default-mounts-node.ts" },
-      { count: 1, file: "vfs/host-fs.ts" },
-    ]);
-  });
-
-  it("authenticates the root image before inspecting or staging seeds", async () => {
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-auth-"));
-    const forgedImage = await buildForgedLegacyDinitImage("member");
-    try {
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          forgedImage,
-          sessionRoot,
-          [{
-            sourcePath: join(sessionRoot, "does-not-exist"),
-            destinationPath: "/tmp/kandelo-run",
-          }],
-        ),
-      ).rejects.toThrow(/activation member/i);
-      expect(existsSync(join(sessionRoot, "tmp"))).toBe(false);
-      expect(existsSync(join(sessionRoot, ".seed-staging-0"))).toBe(false);
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-    }
-  });
 
   it("breaks external hardlink aliases before granting exact append authority", async () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-source-"));
@@ -709,23 +601,22 @@ describe("resolveForBrowser", () => {
     image = await buildFixtureImage();
   });
 
-  it("produces image-backed and memfs-scratch backends only", async () => {
+  it("produces memfs-scratch backends only, and no image mount", async () => {
     const mounts = await resolveForBrowser(HOST_SCRATCH_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
-    expect(mounts).toHaveLength(HOST_SCRATCH_MOUNT_SPEC.length);
+    const hostBacked = HOST_SCRATCH_MOUNT_SPEC.filter((m) => m.source !== "image");
+    expect(mounts).toHaveLength(hostBacked.length);
 
     const io = new VirtualPlatformIO(mounts, new NodeTimeProvider());
     for (const m of mounts) {
       expect(m.backend).toBeInstanceOf(MemoryFileSystem);
       expect(m.backend).not.toBeInstanceOf(HostFileSystem);
-      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(
-        m.mountPoint === "/" ? 0 : ST_NOSUID,
-      );
+      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(ST_NOSUID);
     }
   });
 
-  it("restores the exact caller mount spec without adding default overlays", async () => {
+  it("restores the caller's host-backed mounts without adding default overlays", async () => {
     const productSpec: MountSpec[] = [
       { path: "/", source: "image", readonly: false },
       {
@@ -738,18 +629,18 @@ describe("resolveForBrowser", () => {
       },
     ];
     const mounts = await restoreBrowserKernelInitMounts(image, productSpec);
-    expect(mounts.map((mount) => mount.mountPoint)).toEqual(["/", "/run"]);
-    expect(mounts[0]!.readonly).toBe(false);
+    // `/run` is not one of the prefixes the in-kernel tmpfs owns, so it stays
+    // host-backed; `/` does not come back at all. The claim is still "exactly
+    // what the caller declared, with nothing added" — what changed is that an
+    // image mount is not something the host declares a backend for.
+    expect(mounts.map((mount) => mount.mountPoint)).toEqual(["/run"]);
   });
 
-  it("/ mount is image-backed and reads /etc/passwd from the image", async () => {
+  it("emits no `/` mount in the browser either", async () => {
     const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
-    const root = mounts.find((m) => m.mountPoint === "/");
-    expect(root).toBeDefined();
-    const passwd = readMountFile(root!.backend, "/etc/passwd");
-    expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
+    expect(mounts.find((m) => m.mountPoint === "/")).toBeUndefined();
   });
 
   it("keeps a uid/gid profile on an independent writable browser scratch mount", async () => {
@@ -806,39 +697,25 @@ describe("resolveForBrowser", () => {
   });
 
   // See the Node case above: the host restores `/etc/group` verbatim.
-  it("restores a legacy dinit image's /etc/group verbatim", async () => {
-    const legacyImage = await buildLegacyDinitImage();
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, legacyImage, {
-      scratchSabBytes: tinyScratch,
-    });
-    const root = mounts.find((m) => m.mountPoint === "/")!;
-    const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
-    expect(group).toContain("nogroup:x:65534:");
-    expect(group).not.toContain("nobody:x:65534:");
-  });
 
-  it.each(["member", "cohort"] as const)(
-    "rejects a forged %s seal before browser scratch filesystems are allocated",
-    async (forgery) => {
-      const forgedImage = await buildForgedLegacyDinitImage(forgery);
-      const createSpy = vi.spyOn(MemoryFileSystem, "create");
-      const scratchFirst: MountSpec[] = [
-        { path: "/tmp", source: "scratch" },
-        { path: "/", source: "image" },
-      ];
-      try {
-        await expect(
-          resolveForBrowser(scratchFirst, forgedImage, {
-            scratchSabBytes: tinyScratch,
-          }),
-        ).rejects.toThrow(/activation (member|group)/);
-        expect(createSpy).not.toHaveBeenCalled();
-      } finally {
-        createSpy.mockRestore();
-      }
-    },
-  );
-
+  // RETIRED 2026-09-16 with the resolvers' authentication, three cases:
+  //   - "rejects a forged %s seal before Node scratch directories are created"
+  //   - "authenticates the root image before inspecting or staging seeds"
+  //   - "rejects a forged %s seal before browser scratch filesystems are allocated"
+  //
+  // Each asserted an ORDERING: the image is authenticated before the host
+  // touches anything. The resolvers no longer authenticate — they no longer
+  // restore the image at all, because the `/` mount they were building it for
+  // is dropped from the guest mounts and the kernel serves `/` itself.
+  //
+  // The property under the ordering survives, moved rather than dropped: a
+  // refused image must not leave a half-built machine behind. Node asserts it
+  // in `node-kernel-init-refused-image.test.ts` (init fails, with a negative
+  // control that the same tree boots when nothing is declared wrong), the
+  // browser in `vfs-import-seal-boundary.spec.ts` (no kernel worker survives),
+  // and the Node entry still releases its per-boot session directory in
+  // `buildVirtualPlatformIO`'s catch. What is genuinely gone is "before",
+  // and the plan records why that ordering was not a trust boundary.
   it("scratchSabBytes overrides apply per mount", async () => {
     const explicit = {
       "/run": 4 * 1024 * 1024,

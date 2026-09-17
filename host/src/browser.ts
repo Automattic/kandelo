@@ -50,11 +50,6 @@ export {
   MemoryFileSystem,
   resolveMountSetIdCapability,
 } from "./vfs/memory-fs";
-export {
-  loadVfsImage,
-  restoreVerifiedVfsImage,
-  restoreVerifiedVfsImagePreservingCapacity,
-} from "./vfs/load-image";
 export type {
   LazyDownloadEvent,
   LazyDownloadKind,

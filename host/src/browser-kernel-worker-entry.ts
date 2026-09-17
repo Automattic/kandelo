@@ -36,7 +36,6 @@ import type {
 import {
   VirtualPlatformIO,
 } from "./vfs/vfs";
-import { MemoryFileSystem } from "./vfs/memory-fs";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
@@ -45,6 +44,8 @@ import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
+import { DEFAULT_MOUNT_SPEC } from "./vfs/default-mounts";
+import * as rootImage from "./vfs/root-image-facts";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import {
   BROWSER_MITM_CA_BUNDLE_PATH,
@@ -197,7 +198,7 @@ function sideModuleInitFields(ptrWidth: 4 | 8): {
   };
 }
 let workerAdapter: BrowserWorkerAdapter;
-let memfs: MemoryFileSystem;
+
 let io: VirtualPlatformIO;
 /** Canonical mount points of the sibling filesystems still mounted under `/`
  *  after the host `/` mount is dropped (e.g. `/dev/shm`, session-seed trees,
@@ -344,7 +345,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   diagnosticPrefix: "[browser-kernel-worker]",
   execMountIO: () => io,
   isInitReady: () => initReady,
-  hasRootfsImage: () => memfs != null,
+  hasRootfsImage: rootImage.has,
   defaultExitCrashSignum: (exitStatus) =>
     signalFromExitStatus(exitStatus) ?? SIGSEGV,
   threadWorkerSettleMs: THREADED_WORKER_TERMINATION_SETTLE_MS,
@@ -668,9 +669,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     msg.vfsImage,
     msg.rootfsMountSpec,
   );
-  const rootMount = specMounts.find((m) => m.mountPoint === "/");
-  if (!rootMount) throw new Error("rootfs mount spec missing / mount");
-  memfs = rootMount.backend as MemoryFileSystem;
+  // The `/` mount has no host backend any more, so there is nothing to find:
+  // `resolveForBrowser` emits no `MountConfig` for an image mount. What the
+  // boot still needs from the SPEC is whether `/` was declared `nosuid`, which
+  // is a declared property rather than one read back off a filesystem.
+  if (!rootImage.record(msg.rootfsMountSpec ?? DEFAULT_MOUNT_SPEC)) {
+    throw new Error("rootfs mount spec missing / mount");
+  }
   // No rewriteLazy*Urls here any more. The deployment base is applied when the
   // overlay reads its metadata out of the container, so nothing mutates a
   // stored record to say where bytes live.
@@ -724,9 +729,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // reads go through the overlay (`readExecFromOverlay`), so nothing depends
   // on `/` being mounted here. Leaving it mounted would double-fetch lazy
   // archives (this host mount plus the overlay's own lazy wiring both
-  // fetching). `memfs` was already captured from `rootMount` above, so the
-  // backing MemoryFileSystem stays alive as the `blob_read` byte store and
-  // lazy-group source even though it is no longer mounted.
+  // fetching). Nothing captures a `/` backend any more: the resolver emits no
+  // mount for an image, so there is no second filesystem to keep alive.
   const guestMounts = mounts.filter((m) => m.mountPoint !== "/");
   // The mounts that survive dropping `/` are exactly the sibling filesystems the
   // overlay must not claim. Hand their prefixes to the overlay so `/dev/shm`,
@@ -785,9 +789,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
   // `/` authority. Hand the `/` image tree to the overlay and install the byte
-  // provider before init applies them. The `/` MemoryFileSystem is reachable
-  // only here in the entry.
-  if (memfs) {
+  // provider before init applies them.
+  if (rootImage.has()) {
     // The overlay's metadata and bytes both come from the container the kernel
     // is itself handed, not from the host's filesystem. `memfs` is no longer
     // asked anything here.
@@ -805,7 +808,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       imageBytes: msg.vfsImage,
       foreignPrefixes: rootfsForeignPrefixes,
-      nosuid: rootMount?.nosuid === true,
+      nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
     });
   }
@@ -826,7 +829,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // connection in this session is terminated by the MITM, so a guest that does
   // not trust the CA fails later with a confusing certificate error instead of
   // the real cause.
-  if (memfs) {
+  if (rootImage.has()) {
     try {
       kernelWorker.rootfsMkdirParents(BROWSER_MITM_CA_BUNDLE_PATH, 0o755);
       kernelWorker.rootfsWriteFile(

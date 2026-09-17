@@ -55,11 +55,6 @@ export type {
   VfsImageRestoreOptions,
 } from "./memory-fs";
 export {
-  loadVfsImage,
-  restoreVerifiedVfsImage,
-  restoreVerifiedVfsImagePreservingCapacity,
-} from "./load-image";
-export {
   DEFAULT_TAR_GZIP_LIMITS,
   TarParseError,
   parseTarGzip,
