@@ -13694,6 +13694,48 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### THE REPOINT PHASE IS DONE — importers 60 -> 25, `9766a4e19`, 2026-09-17
+
+**Every file that can be repointed has been.** What remains is the deletion's
+own diff (16 files that test the class or the `KLZY` carrier only it writes,
+plus four fixture generators), the two barrels, `kernel-lazy-section`'s `KLZY`
+half, one file blocked on a production decision, and two that are not imports
+at all — `surface-budget.test.ts` MEASURES those paths and
+`build-input-import-closure.test.ts` names one as data.
+
+**The browser pages sorted into three roles, and each had a different answer:**
+
+| role | files | answer |
+|---|---|---|
+| image builder in a page | `ruby-posix-spawn.spec.ts`, the SpiderMonkey stress page | `createEmptyBuildFs`, which installs the module's wasm first — a page cannot hand bytes to a synchronous constructor, which is why that helper exists |
+| live mount in a page | `nosuid-exec.spec.ts`, the kernel export-stack worker | `FixedTreeBackend`: a backend that answers about a tree the TEST writes out. A mount-policy test needs a stat it chose — set-ID bits and inode included — which no real filesystem lets you pick |
+| a type in a signature | `lib/init/vfs-utils.ts`, `lib/texlive-bundle.ts` | the structural `VfsImageFilesystem`, which is what the helpers they call already take |
+
+**A THIRD DEFECT, and this one was reachable in production.** Archive ids are
+assigned by the bridge, counting up from zero, and a LOAD fills the tree with
+archives it never assigned. The next `registerLazyArchive` minted id 1 again,
+collided with the loaded image's archive 1, and failed `EINVAL` from the
+module's own "one id, two archives" refusal. **The shell composer does exactly
+that** — load a source rootfs, register the shell's lazy archives into it — and
+it has not fired only because today's source rootfs carries no archive. The
+first base image that shipped with one would have broken the build that
+composes from it. Fixed by asking the MODULE after a load, because a counter
+the bridge maintains through a load is a second author for a fact the image
+already carries.
+
+**Three defects in one day, all found the same way: by deleting the second
+reader.** The symlink truncation, the unresolvable `..` in a relative target,
+and this. None was found by review, and each was invisible while a second
+implementation stood beside the first.
+
+**Browser evidence, and its limits.** `nosuid-exec` (1) and
+`ruby-posix-spawn` (2) pass against Chromium with the new backend and builder.
+`kernel-allocator-churn`, which drives the export-stack worker, fails on a
+missing `wasm_artifact_module32.wasm` installation in the page's realm — and
+fails identically with the ORIGINAL worker file, checked by restoring it, so
+it is a provisioning failure rather than this change. The SpiderMonkey stress
+page is a manual page rather than a spec, so it is typechecked and not run.
+
 ### `vfs-image.test.ts` SORTED BY KIND — 53 claims, 2026-09-17
 
 The last of the three large SUBJECT files, sorted the same way:
