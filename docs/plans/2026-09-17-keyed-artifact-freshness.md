@@ -1,162 +1,145 @@
-# Bring the kernel into the keyed discipline the packages already have
+# The tier twin is the only kernel that isn't key-addressed
 
-**Status: proposal, 2026-09-17. Rewritten twice the same day**, both times
-because checking something this document listed as unchecked changed what it
-should say. The thesis survived both; the argument for it got shorter and the
-work got smaller.
+**Status: proposal, 2026-09-17.** Written, then rewritten twice, each time
+because checking something the previous draft listed as unchecked changed what
+it should say. The scope shrank at every step: from "invent a keyed route", to
+"stop special-casing the kernel", to what is below — **one copy, in one
+directory, is the exception, and the project already refuses that exception
+everywhere else.**
 
-Requested by the maintainer after *"why is there a kernel.wasm that isn't named
-or addressed by cache key at all?"* and its follow-up: *which route would
-simplify both testing and releasing while ensuring freshness for each?*
+The drafts are in the git history. The process is the point: each rewrite was
+paid for by one `ls -l`.
 
-Nothing here is implemented.
+## The answer to the question that prompted this
 
-## The short version
+> *"Why is there a kernel.wasm that isn't named or addressed by cache key at
+> all?"*
 
-**The route already exists and already works — for every ordinary package.** A
-package's artifacts live at
-`local-binaries/.kandelo-local-generations/<arch>/<pkg>/<cache-key>/…`, so the
-key IS the path, freshness is structural, and the artifacts inside carry no
-stamp at all because none is needed.
+**In the main checkout, there isn't.** `/Users/brandon/src/kandelo/
+local-binaries/kernel.wasm` is a **symlink** into
+`.kandelo-local-generations/wasm32/kernel/<cache-key>/…/kandelo-kernel.wasm`.
+Every ordinary package mirror is the same shape:
+`local-binaries/programs/wasm32/gzip.wasm` is a symlink into
+`.kandelo-local-generations/wasm32/gzip/<cache-key>/…/gzip.wasm`.
 
-**The kernel is the exception**, and it is where the freshness failures happen.
-It is projected to a fixed name, `local-binaries/source-only-v1/kernel.wasm`,
-with its key stamped *inside the bytes* as a `kandelo.build.key` custom section,
-and freshness handled by a bespoke gate that reads the stamp and compares it to
-a recomputed key.
+And the project **enforces** it. `scripts/pack-ci-test-workspace.sh` refuses to
+pack a workspace whose `local-binaries/kernel.wasm` is a regular file, in these
+words:
 
-So this is not a proposal to invent a mechanism. **It is a proposal to stop
-special-casing one artifact.**
+> *"these compatibility paths are package-owned mirrors, not anonymous scalar
+> byte slots. Accepting a regular file would let a stale or concurrently
+> replaced kernel artifact enter the portable workspace without a cache identity
+> or publication claim."*
+
+That is the thesis of this document, already written down, already enforced, a
+year of commits before I asked the question.
+
+**The exception is the tier twin.** `local-binaries/source-only-v1/kernel.wasm`
+is a *copy*, not a link — 1,430,838 bytes of regular file with the key stamped
+inside it as a `kandelo.build.key` custom section. It is the artifact that goes
+stale, the one that needs an internal stamp, and the only reason
+`verify_fresh_kernel_artifact` has to exist.
 
 ## Measured, 2026-09-17
 
-| | ordinary package (bzip2, git, nginx, redis, vim, wget, less…) | kernel |
-|---|---|---|
-| lives at | `<store>/<arch>/<pkg>/<cache-key>/<session>/x.wasm` | `source-only-v1/kernel.wasm`, a fixed name |
-| key recorded as | the directory name | a custom section inside the bytes |
-| internal stamp | **none** — `bzip2.wasm` has no `kandelo.build.key` | `dfd6ebfb…` at offset 1,430,734 |
-| newest generation | **Sep 16** — still written on every build | **Sep 12** — none written in four days |
-| freshness is | structural: wrong key ⇒ different path ⇒ unreachable | a comparison, in `verify_fresh_kernel_artifact` |
+| artifact | shape | key recorded as | freshness |
+|---|---|---|---|
+| `local-binaries/programs/wasm32/gzip.wasm` | symlink → generation | the directory it points into | structural |
+| `local-binaries/kernel.wasm` (main checkout) | symlink → generation | the directory it points into | structural |
+| `local-binaries/kernel.wasm` (both worktrees) | **absent** | — | — |
+| `local-binaries/source-only-v1/kernel.wasm` | **copy** | `kandelo.build.key`, inside the bytes | a stamp comparison |
+| `local-binaries/fork_module32.wasm` | copy | `.build-key` **sidecar** | a third form; does not survive a copy |
 
-The `.build-key` **sidecar** files next to `local-binaries/*.wasm` are a third
-form again, used by the ambient side modules; a sidecar does not survive a copy.
+Generations are live: bzip2, git, nginx, redis, vim, wget and less all have
+directories written on Sep 16. The kernel's 21 are all dated `2026-09-12
+10:53:36` — a single bulk event — because **these worktrees never published a
+root mirror**, so nothing here writes a kernel generation, and the tier twin is
+the only kernel they have. That is why `verify-fresh` failing on it blocks this
+lane while the main checkout is fine.
 
-The kernel's own history shows the drift. Its 21 stored generations all carry
-one mtime, `2026-09-12 10:53:36`, and **not one directory name matches the stamp
-inside its own artifact** — `aded8633…` holds a kernel stamped `0c2a0675…`,
-`0c021ff5…` holds `ec9e9ee1…`, `0c91200f…` holds `56cff738…`, and `1124611e…`
-holds one with no stamp at all. Two keys for two purposes, in one place, with
-nothing reconciling them.
+A detail worth keeping: inside those stored generations, **no directory name
+matches the stamp in its own artifact** (`aded8633…` holds one stamped
+`0c2a0675…`; three more sampled the same way; one has no stamp at all). The
+directory is a package cache-identity key; the stamp is the SourceOnlyV1 cache
+key. Two derivations of `manifest_cache_key_sha_for_policy` under different
+`ResolvePolicy` values, in one place, with nothing reconciling them — which is
+what an internal stamp buys you.
 
 ## Why the exception is the expensive one
 
-**1. Two fixed names for one artifact, and only one was refreshed.**
-`local_build.rs` records it in its own comment: on **2026-09-09** a `./run.sh
-rebuild kernel` refreshed the SourceOnlyV1 projection and left the ambient
-`local-binaries/kernel.wasm` three days stale. `verify-fresh` reported green —
-it only checked the tier copy — while every host-native test failed to
-instantiate on an import-type mismatch, because `crates/host-native/src/lib.rs`
-loads the ambient path directly. The fix was to teach the gate about both names.
-**A fixed name is a thing the gate must be told about; a keyed path is not.**
+**1. Two fixed names, one refreshed.** `local_build.rs` records it: on
+2026-09-09 a `./run.sh rebuild kernel` refreshed the SourceOnlyV1 projection and
+left the ambient `local-binaries/kernel.wasm` three days stale. `verify-fresh`
+was green — it checked only the tier copy — while every host-native test failed
+on an import-type mismatch. The fix was to teach the gate about both names. **A
+link cannot be stale relative to its target; a copy always can.**
 
-**2. The cheap provisioning path and the freshness gate contradict each other,
-and `build_deps.rs` says so in as many words.** Only the local-build engine
-stamps `kandelo.build.key`. An artifact installed by `build-deps
-install-local-artifact` — the documented cheap path for a fresh worktree —
-carries no stamp, so the gate refuses it and points at `./run.sh setup`, the
-expensive path the reader was told not to run. The installer *correctly* refuses
-to stamp: its source argument is caller-supplied, so a stamp there would let a
-stale file or a copy from another worktree acquire a claim of engine provenance.
-**The contradiction is a consequence of provenance living inside the bytes.** A
-package has no such problem, because putting bytes at a keyed path is a claim
-the installer can simply decline to make.
+**2. The cheap provisioning path and the gate contradict each other**, and
+`build_deps.rs` says so. Only the engine stamps `kandelo.build.key`, so an
+artifact placed by `build-deps install-local-artifact` carries none, the gate
+refuses it, and it points at the expensive path the reader was told to avoid.
+The installer is right to refuse to stamp — its source is caller-supplied.
+**The contradiction is a consequence of provenance living inside the bytes**,
+and it does not arise for a link, where the claim is the path.
 
-**3. It is the artifact most likely to be stale and the one it hurts most.**
-Today, in this lane worktree, `source-only-v1/kernel.wasm` is stamped for a key
-the tree no longer resolves to — which is what blocks the browser cycle. No
-package is in that state, because a package cannot be.
+**3. It is stale here, now**, which is what blocks the browser cycle. No package
+mirror is in that state, because a package mirror cannot be.
 
-## The route
+## The proposal
 
-1. **Publish the kernel as a generation, like every other package.** It already
-   was, until Sep 12. `<store>/<arch>/kernel/<key>/kernel.wasm`, written by the
-   same engine path that writes bzip2's.
+**Make the tier projection an indirection, exactly as the root mirror already
+is**, and the stamp and its gate become unnecessary rather than improved.
 
-2. **Keep the stable name as an indirection, not a copy.** `source-only-v1/`
-   gets an index — name → key — that the resolver reads. Consumers keep asking
-   for `kernel.wasm`.
+1. `source-only-v1/kernel.wasm` resolves to a generation instead of copying one.
+2. `kandelo.build.key` and the `.build-key` sidecars stop being read for
+   freshness. `verify_fresh_kernel_artifact`'s stamp comparison goes; its
+   ABI-version check is independent and stays.
+3. A worktree that has no kernel generation gets a **miss**, which the build
+   fills — rather than a stale copy plus a gate that must notice.
+4. `build-deps install-local-artifact` writes to an explicitly unkeyed slot used
+   only under an opt-in flag, so the gate reports a *place* rather than a
+   missing stamp, and the cheap path stops contradicting it.
 
-   *An index file rather than symlinks.* A symlink is the obvious
-   implementation and the wrong one: it makes the layout depend on filesystem
-   and archive behaviour this project must keep working across macOS, Linux and
-   CI artifact upload. An index is a file, and a file copies everywhere.
+**Symlink or index file — the one real design question.** The root mirror uses
+symlinks and the packing script depends on that. The tier probably copies for a
+reason: it is the namespace that gets packed and shipped, and a symlink farm may
+be exactly wrong there. If so the answer is an index file (`<tier>/index.json`,
+name → key) for the tier and symlinks for the root mirror, and **the difference
+should be stated rather than inherited.** My earlier draft argued against
+symlinks on portability grounds without noticing the project already relies on
+them; that argument is withdrawn, and survives only as the narrower question of
+whether a *packable* tier can hold links.
 
-3. **Retire the stamp and the sidecars as FRESHNESS records.**
-   `kandelo.build.key` may stay as provenance a released artifact carries, but
-   nothing reads it to decide freshness, and `verify_fresh_kernel_artifact`'s
-   stamp comparison goes with it. The ABI-version check in the same function is
-   independent and stays.
+## Why this simplifies testing and releasing
 
-4. **Hand-staging gets an honest home.** `build-deps install-local-artifact`
-   writes to an explicitly unkeyed slot the resolver uses only under an opt-in
-   flag, and the gate reports *"the unkeyed slot is in use"* — a place, not a
-   missing stamp. The cheap path and the gate stop contradicting because they
-   stop making claims about the same object.
+- A test cannot get a stale kernel by accident: wrong key, different path,
+  unreachable. The property every package mirror already has.
+- The stamp comparison leaves test setup; a suite asks the resolver and gets an
+  artifact or a miss.
+- A release becomes a selection of keys. Provenance is the path, so it survives
+  a copy — unlike a sidecar, which does not, and unlike a stamp, which needs a
+  wasm parser to read.
+- The 2026-09-09 class of bug cannot recur: there is one kernel, and it is
+  wherever the link points.
 
-**Which key names the store.** The existing directories are named by the package
-cache-identity key (`manifest_cache_key_sha`), while the kernel's stamp is the
-SourceOnlyV1 cache key (`expected_source_only_cache_key`). Both come from
-`manifest_cache_key_sha_for_policy` under different `ResolvePolicy` values. **The
-packages' choice should win** — the kernel joins the scheme that already works
-rather than the scheme joining it — which means the kernel's freshness question
-becomes "is there a generation for my cache identity?" and stops being a
-separate derivation.
+## Costs
 
-## Why this simplifies testing
-
-- A test cannot get a stale kernel by accident, because the wrong bytes are at a
-  different path — the property packages already have.
-- The `verify-fresh` stamp comparison disappears from test setup. A suite asks
-  the resolver and gets an artifact or a miss.
-- The 2026-09-09 class of bug cannot recur: there is nothing to refresh twice.
-
-## Why this simplifies releasing
-
-- **A release becomes a selection of keys.** Publishing is copying the keyed
-  directories a manifest names, and provenance is the path, so it survives any
-  copy — unlike a sidecar, which does not.
-- Nothing re-derives identity from inside the bytes, so the release path needs
-  no wasm parser to answer "which build is this?".
-- One artifact's identity stops being three encodings that can disagree — which,
-  as the kernel's own 21 generations show, they already do.
-
-## Costs, honestly
-
-- **Every consumer that hardcodes a kernel path must go through the resolver**:
-  `crates/host-native/src/lib.rs`, `scripts/build-rootfs.sh`, the browser
-  build's `@binaries/` alias, and whatever a census adds. The census is the
-  first implementation step, not an afterthought.
-- **The store needs a prune policy.** It is load-bearing under this route, and
-  21 kernel generations are already on disk.
-- **An index can go stale too.** It must be written in the same atomic publish
-  as the generation, so it cannot drift without the write failing. That has to
-  be enforced, not assumed.
-- **Migration is not free.** Both layouts must work while consumers move.
-- **The old kernel generations cannot be re-keyed from what is on disk**, since
-  their stamps do not match their directory names and one has no stamp. They
-  should be discarded rather than reconciled.
+- **A consumer census is the first step.** `crates/host-native/src/lib.rs`,
+  `scripts/build-rootfs.sh`, the browser build's `@binaries/` alias, and
+  whatever else reads a tier path directly.
+- **The store needs a prune policy** once it is load-bearing.
+- **An index, if the tier needs one, must be written in the same atomic publish
+  as the generation**, or it becomes a fourth thing that can disagree.
+- **The existing kernel generations should be discarded, not migrated.** Their
+  directory names do not match their stamps and one has no stamp.
 
 ## What I did not check
 
-- ~~Whether the generation store is pruned.~~ **Checked.** Not pruned, and not
-  dead: ordinary packages get new generations on every build. Only the kernel
-  stopped, which is what turned this from "revive a store" into "stop
-  special-casing one artifact".
-- **What moved the kernel out of the generation scheme on 2026-09-12, and
-  whether that was deliberate.** I established that it happened; I did not find
-  the commit. **If it was deliberate there is a reason I have not heard, and it
-  belongs in this document before anyone implements against it.** This is the
-  one remaining question that could still invalidate the route.
-- **Whether `dash` stopping too is the same cause.** It has one generation, also
-  Sep 12, but it may simply not have been rebuilt since.
+- **Whether the tier copies deliberately because it must be packable.** This is
+  now the only question that changes the design rather than the detail, and it
+  is a question for whoever wrote the tier projection.
+- **Why these two worktrees have no root kernel mirror.** It is consistent with
+  provisioning by copy rather than by build, but I did not confirm that, and if
+  it is instead a bug in worktree setup then the lane's stale kernel has a much
+  cheaper fix than any of this.
 - **The full consumer census.**
