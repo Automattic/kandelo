@@ -77,6 +77,14 @@ export const EBUSY = 16;
 export const CHANNEL_BASE = 4 * PAGE;
 export const MODULE_BASE = 8 * 1024 * 1024;
 /** Where the responder hands out mappings from: above everything else in use. */
+/**
+ * A u32 the responder increments on every `SYS_MUNMAP`, so a test can assert
+ * that something was FREED rather than only that it was allocated.
+ *
+ * Page 5 is free: the channel is page 4 and `MODULE_BASE` is 8 MiB.
+ */
+export const MUNMAP_COUNTER = 5 * PAGE;
+
 export const MMAP_FLOOR = 12 * 1024 * 1024;
 /** Where a CHILD worker's own module instance sits in the shared memory. */
 export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
@@ -90,7 +98,14 @@ export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
  * for `SYS_MMAP`, accepts `SYS_MUNMAP`, and refuses anything else with EINVAL
  * rather than inventing a plausible answer.
  */
-const RESPONDER = `
+/**
+ * The channel responder script, shared.
+ *
+ * Exported because identity storage became on-demand: any test that publishes
+ * an identity now needs a serviced channel, not just the capture-drive tests.
+ * One responder rather than a copy per file keeps them answering the same way.
+ */
+export const CHANNEL_RESPONDER = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { sab, channelBase, floor } = workerData;
 const i32 = new Int32Array(sab);
@@ -112,6 +127,7 @@ while (!stop) {
     next += Math.ceil(size / ${PAGE}) * ${PAGE};
     ret = BigInt(addr); errno = 0;
   } else if (nr === ${SYS_MUNMAP}) {
+    dv.setUint32(${MUNMAP_COUNTER}, dv.getUint32(${MUNMAP_COUNTER}, true) + 1, true);
     ret = 0n; errno = 0;
   }
   dv.setBigInt64(channelBase + ${RETURN_OFFSET}, ret, true);
@@ -178,7 +194,7 @@ export function fixture(): Fixture {
     { env: { __wpk_fork_publish: () => {} } },
   ).exports as Record<string, CallableFunction>;
 
-  const worker = new Worker(RESPONDER, {
+  const worker = new Worker(CHANNEL_RESPONDER, {
     eval: true,
     workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
   });

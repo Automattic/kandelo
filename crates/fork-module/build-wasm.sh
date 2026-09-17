@@ -63,6 +63,9 @@ PIC_RUSTFLAGS=(
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Shared tier staging + freshness check for co-resident side modules.
+source "$REPO_ROOT/scripts/lib/side-module-tier.sh"
+
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 FORK_MODULE_CLOSURE_CRATES="fork-module,fork-module-inject"
 
@@ -131,6 +134,23 @@ if [[ "${1:-}" == "--verify-fresh" ]]; then
         "but the current source tree (crates/fork-module, crates/fork-module-inject," \
         "crates/fork-codec, crates/shared) resolves to $current_sha." \
         "Rebuild with 'bash crates/fork-module/build-wasm.sh'." >&2
+      status=1
+      continue
+    fi
+    # THE KEY IS NOT ENOUGH, because it stamps only THIS copy. `resolveBinary`
+    # searches `local-binaries/source-only-v1/` FIRST -- ahead of the artifact
+    # just verified -- and `verify-fresh`'s scan of that tier is scoped to
+    # `kernel.wasm` (see the resolver's note, and the staging comment below).
+    # So a stale module sitting one tier up passes every check here while being
+    # the module both hosts actually load, the build is skipped as fresh, and
+    # the staleness is invisible until something instantiates it.
+    #
+    # That is not hypothetical: the staging comment below records it costing a
+    # commit whose new export "existed in two tiers and the call resolved the
+    # third, so it read `undefined`". Compare the bytes rather than trust the
+    # stamp, since the shadowing copy carries no stamp of its own.
+    if ! assert_side_module_tier_copy_matches "fork-module" "$REPO_ROOT" \
+      "fork_module${width}.wasm"; then
       status=1
       continue
     fi

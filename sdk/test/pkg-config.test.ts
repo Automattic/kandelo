@@ -33,6 +33,45 @@ describe('buildPkgConfigEnv', () => {
     ).toBe(targetRunnerPath);
   });
 
+  it('keeps a dep path the RESOLVER provided, whatever the cache root is called', () => {
+    // The name test cannot see a per-worktree cache root: "kandelo-lane-f" has
+    // a "-" where `includes('kandelo/')` needs a "/". Every lane worktree is
+    // spelled that way, so this filter used to empty PKG_CONFIG_PATH there and
+    // php's configure reported `No package 'icu-uc' found` with all three .pc
+    // files present. The resolver sets WASM_POSIX_DEP_PKG_CONFIG_PATH per build
+    // to the dirs it installed, so provenance answers what spelling cannot.
+    const laneCache =
+      '/Users/x/.cache/kandelo-lane-f/source-only/source-only-v1/compiled/libs/icu-74.2/lib/pkgconfig';
+    expect(
+      buildPkgConfigEnv({ PKG_CONFIG_PATH: laneCache }, SYSROOT).PKG_CONFIG_PATH,
+      'without the resolver variable the name test still rejects it',
+    ).toBe('');
+    expect(
+      buildPkgConfigEnv(
+        { PKG_CONFIG_PATH: laneCache, WASM_POSIX_DEP_PKG_CONFIG_PATH: laneCache },
+        SYSROOT,
+      ).PKG_CONFIG_PATH,
+    ).toBe(laneCache);
+  });
+
+  it('still drops a host path even when the resolver variable is set', () => {
+    // The point of the filter is that Nix's pkg-config-wrapper populates
+    // PKG_CONFIG_PATH with host buildInputs. Trusting the resolver's list must
+    // not become trusting everything alongside it: a host path that the
+    // resolver did NOT install stays dropped.
+    const hostNix = '/nix/store/abc-openssl-3.0/lib/pkgconfig';
+    const laneCache = '/Users/x/.cache/kandelo-lane-f/libs/icu/lib/pkgconfig';
+    expect(
+      buildPkgConfigEnv(
+        {
+          PKG_CONFIG_PATH: `${hostNix}:${laneCache}`,
+          WASM_POSIX_DEP_PKG_CONFIG_PATH: laneCache,
+        },
+        SYSROOT,
+      ).PKG_CONFIG_PATH,
+    ).toBe(laneCache);
+  });
+
   it('defaults PKG_CONFIG_PATH to empty string when caller does not set it', () => {
     const env = buildPkgConfigEnv({}, SYSROOT);
     expect(env.PKG_CONFIG_PATH).toBe('');

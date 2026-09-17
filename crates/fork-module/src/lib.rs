@@ -918,16 +918,81 @@ mod wasm {
     // which owners are imported. That section is exactly what the host would
     // otherwise have had to decode, so the election moves here and the host is
     // left with identity alone.
-    const GLOBAL_IDENTITY_MAX: usize = 512;
+    // ON DEMAND, WITH NO BOUND. This was a fixed `[[u32; 4]; N]` static, and
+    // the bound was the problem rather than its value. The table is one per
+    // worker and every activation adds every catalog export it has, so N had to
+    // be guessed against the largest program anyone might run: php needs 7,684
+    // (intl.so alone 4,129), and 512 was too small, and 16,384 was too big --
+    // it took 256 KiB out of the guest's mmap window and broke P-11, whose
+    // process is deliberately capped at 384 pages so address-space exhaustion
+    // is reachable. A static cannot be right: too small refuses a real program,
+    // too large steals space from every process whether it forks or not.
+    //
+    // So: allocate a chunk when one is needed and free it when it empties,
+    // exactly as the frame arena does (`ForkChunkList`). Each chunk is one
+    // `SYS_MMAP` through the guest syscall channel; a chunk that loses its last
+    // entry on `dlclose` is `SYS_MUNMAP`'d. Nothing is reserved up front.
+    //
+    // THE REGISTRY LIVES IN THE CHUNKS, not in a `Vec`. `ALLOC.reset()` runs
+    // mid-fork and, in its own words, "only rewinds the bump cursor; it neither
+    // frees nor zeroes the bytes, and the next allocations REUSE those low
+    // addresses". Identities are published at instantiation and read at EVERY
+    // later fork, so a bump-heap list of chunk addresses would be clobbered
+    // between the two. Embedding the `next` pointer in each chunk keeps the
+    // list in the memory it describes.
+    //
+    // Layout at a chunk address, little-endian:
+    //     +0   next: u64   (0 = end of list)
+    //     +8   used: u32   (live entries, always a prefix)
+    //     +12  pad: u32
+    //     +16  entries: [[u32; 4]; IDENTITY_ENTRIES_PER_CHUNK]
+    //
+    // A publish needs a serviced channel, and a module instantiated without one
+    // gets `EINVAL` from `channel_base()` rather than parking forever on
+    // `memory_atomic_wait32` -- the same refusal `begin_unwind_impl` makes.
+    const IDENTITY_CHUNK_BYTES: u64 = 65_536;
+    const IDENTITY_CHUNK_HEADER: u64 = 16;
+    const IDENTITY_ENTRY_BYTES: u64 = 16;
+    const IDENTITY_ENTRIES_PER_CHUNK: u32 =
+        ((IDENTITY_CHUNK_BYTES - IDENTITY_CHUNK_HEADER) / IDENTITY_ENTRY_BYTES) as u32;
 
-    #[repr(C, align(4))]
-    struct GlobalIdentityGroups(UnsafeCell<[[u32; 4]; GLOBAL_IDENTITY_MAX]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for GlobalIdentityGroups {}
-    /// Each live entry is `[space, activation_id, owner_id, group_id]`.
-    static GLOBAL_IDENTITY: GlobalIdentityGroups =
-        GlobalIdentityGroups(UnsafeCell::new([[0u32; 4]; GLOBAL_IDENTITY_MAX]));
-    static GLOBAL_IDENTITY_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// First chunk of the identity list, or 0 before anything is published.
+    static IDENTITY_HEAD: AtomicU64 = AtomicU64::new(0);
+
+    // Every accessor re-derives `mem_mut()` rather than holding a slice across
+    // calls. That is not caution: `channel_mmap` GROWS the shared linear memory,
+    // which invalidates any view taken before it, and the frame allocator
+    // records the same rule ("the caller MUST re-derive any pre-captured memory
+    // view afterward").
+    fn ident_u32(addr: u64) -> u32 {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        u32::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]])
+    }
+
+    fn ident_set_u32(addr: u64, value: u32) {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        m[i..i + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn ident_u64(addr: u64) -> u64 {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&m[i..i + 8]);
+        u64::from_le_bytes(b)
+    }
+
+    fn ident_set_u64(addr: u64, value: u64) {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        m[i..i + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn ident_entry_at(chunk: u64, index: u32) -> u64 {
+        chunk + IDENTITY_CHUNK_HEADER + u64::from(index) * IDENTITY_ENTRY_BYTES
+    }
 
     fn set_identity_group_impl(
         space: u32,
@@ -941,21 +1006,122 @@ mod wasm {
         if owner_id == 0 {
             return Err(Errno::EINVAL); // catalog owners are 1-based
         }
-        let count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &mut *GLOBAL_IDENTITY.0.get() };
-        for entry in table.iter_mut().take(count) {
-            if entry[0] == space && entry[1] == activation_id && entry[2] == owner_id {
-                entry[3] = group_id; // re-publish updates, as provenance does
-                return Ok(());
+
+        // One walk does three jobs: find an existing entry to update, remember
+        // the first chunk with room, and find the tail to append a new chunk to.
+        let mut chunk = IDENTITY_HEAD.load(Ordering::Relaxed);
+        let mut with_room = 0u64;
+        let mut tail = 0u64;
+        while chunk != 0 {
+            let used = ident_u32(chunk + 8);
+            for index in 0..used {
+                let at = ident_entry_at(chunk, index);
+                if ident_u32(at) == space
+                    && ident_u32(at + 4) == activation_id
+                    && ident_u32(at + 8) == owner_id
+                {
+                    ident_set_u32(at + 12, group_id); // re-publish updates
+                    return Ok(());
+                }
             }
+            if with_room == 0 && used < IDENTITY_ENTRIES_PER_CHUNK {
+                with_room = chunk;
+            }
+            tail = chunk;
+            chunk = ident_u64(chunk);
         }
-        if count >= GLOBAL_IDENTITY_MAX {
-            return Err(Errno::E2BIG);
-        }
-        table[count] = [space, activation_id, owner_id, group_id];
-        GLOBAL_IDENTITY_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+
+        let target = if with_room != 0 {
+            with_room
+        } else {
+            // APPENDED AT THE TAIL, not pushed at the head. `identity_groups`
+            // walks this list and the election downstream consumes the order,
+            // so the list has to stay in publish order the fixed array had.
+            let base = channel_base()?;
+            let fresh = channel_mmap(base, IDENTITY_CHUNK_BYTES)?;
+            ident_set_u64(fresh, 0);
+            ident_set_u32(fresh + 8, 0);
+            if tail == 0 {
+                IDENTITY_HEAD.store(fresh, Ordering::Relaxed);
+            } else {
+                ident_set_u64(tail, fresh);
+            }
+            fresh
+        };
+
+        let used = ident_u32(target + 8);
+        let at = ident_entry_at(target, used);
+        ident_set_u32(at, space);
+        ident_set_u32(at + 4, activation_id);
+        ident_set_u32(at + 8, owner_id);
+        ident_set_u32(at + 12, group_id);
+        ident_set_u32(target + 8, used + 1);
         Ok(())
+    }
+
+    /// Drop every identity `activation_id` published, freeing chunks that empty.
+    ///
+    /// Called from `fm_resume_slots` op 1, which the host already issues on
+    /// `dlclose` -- so this needs no new `fm_*` entry. Activation 0 is the main
+    /// guest module and is never dlclosed; its entries live until the process
+    /// exits, when the host releases every activation.
+    ///
+    /// Entries stay a dense prefix, so compaction preserves publish order among
+    /// the survivors.
+    fn release_identity_activation(activation_id: u32) {
+        let base = channel_base().unwrap_or(0);
+        let mut previous = 0u64;
+        let mut chunk = IDENTITY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            let next = ident_u64(chunk);
+            let used = ident_u32(chunk + 8);
+            let mut kept = 0u32;
+            for index in 0..used {
+                let from = ident_entry_at(chunk, index);
+                if ident_u32(from + 4) == activation_id {
+                    continue;
+                }
+                if kept != index {
+                    let to = ident_entry_at(chunk, kept);
+                    ident_set_u32(to, ident_u32(from));
+                    ident_set_u32(to + 4, ident_u32(from + 4));
+                    ident_set_u32(to + 8, ident_u32(from + 8));
+                    ident_set_u32(to + 12, ident_u32(from + 12));
+                }
+                kept += 1;
+            }
+            ident_set_u32(chunk + 8, kept);
+            if kept == 0 {
+                if previous == 0 {
+                    IDENTITY_HEAD.store(next, Ordering::Relaxed);
+                } else {
+                    ident_set_u64(previous, next);
+                }
+                // Best-effort, like `ForkChunkList::release_all`: a munmap
+                // hiccup must not fail an otherwise-complete dlclose.
+                if base != 0 {
+                    let _ = channel_munmap(base, chunk, IDENTITY_CHUNK_BYTES);
+                }
+            } else {
+                previous = chunk;
+            }
+            chunk = next;
+        }
+    }
+
+    /// How many chunks the identity list holds. Zero means nothing is mapped.
+    ///
+    /// A fixed array could not leak; a chunk list can, so the release path needs
+    /// an observable. This is what `fork-identity-capacity.test.ts` asserts
+    /// returns to zero after an activation is released.
+    fn identity_chunk_count() -> u32 {
+        let mut count = 0u32;
+        let mut chunk = IDENTITY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            count += 1;
+            chunk = ident_u64(chunk);
+        }
+        count
     }
 
     /// Publish that `(space, activation, owner)`'s catalog entry is object
@@ -2500,19 +2666,27 @@ mod wasm {
     /// guest without imports produced before.
     /// One space's identity groups, in the shape the election takes them.
     fn identity_groups(space: u32) -> Vec<fork_codec::GlobalIdentityGroup> {
-        let count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &*GLOBAL_IDENTITY.0.get() };
-        table
-            .iter()
-            .take(count)
-            .filter(|g| g[0] == space)
-            .map(|g| fork_codec::GlobalIdentityGroup {
-                activation: g[1],
-                owner: g[2],
-                group_id: g[3],
-            })
-            .collect()
+        // Walks the on-demand chunk list in publish order: chunks are appended
+        // at the tail and entries are a dense prefix within each, so this yields
+        // exactly the order the fixed array did.
+        let mut out = Vec::new();
+        let mut chunk = IDENTITY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            let used = ident_u32(chunk + 8);
+            for index in 0..used {
+                let at = ident_entry_at(chunk, index);
+                if ident_u32(at) != space {
+                    continue;
+                }
+                out.push(fork_codec::GlobalIdentityGroup {
+                    activation: ident_u32(at + 4),
+                    owner: ident_u32(at + 8),
+                    group_id: ident_u32(at + 12),
+                });
+            }
+            chunk = ident_u64(chunk);
+        }
+        out
     }
 
     /// Write the `KFBT` imported-table binding record for this capture.
@@ -10524,6 +10698,11 @@ mod wasm {
             },
             1 => match resume_unregister_impl(activation) {
                 Ok(freed) => {
+                    // The same dlclose that retires this activation's resume
+                    // slots retires its identity entries: one signal, one
+                    // moment, no second `fm_*` entry to say the same thing.
+                    // Chunks that lose their last entry are munmap'd here.
+                    release_identity_activation(activation);
                     set_ok();
                     freed as i32
                 }

@@ -2645,7 +2645,7 @@ cmd_browser() {
 cmd_test() {
     local suites=("$@")
     if [ ${#suites[@]} -eq 0 ]; then
-        suites=(cargo vitest libc posix)
+        suites=(cargo vitest sdk libc posix)
     fi
 
     # Pre-test freshness check (not a divergence guard: Stage 2 collapsed
@@ -2674,6 +2674,22 @@ cmd_test() {
             vitest)
                 step "Running vitest"
                 cd "$REPO_ROOT/host"
+                if ! npx vitest run; then
+                    failed=1
+                fi
+                cd "$REPO_ROOT"
+                ;;
+            sdk)
+                # The SDK ships its own vitest suite and nothing ran it: no
+                # workflow, and no invocation in run.sh, scripts/ or xtask. Its
+                # `PKG_CONFIG_PATH` filter is what decides whether a package can
+                # see its dependencies, and a per-worktree cache root
+                # (`kandelo-lane-f`) failing that filter is what blocked php --
+                # and through php, wordpress and lamp -- for a whole session.
+                # That rule is worth a guard that actually executes.
+                step "Running SDK tests"
+                cd "$REPO_ROOT/sdk"
+                [ -d node_modules ] || npm install
                 if ! npx vitest run; then
                     failed=1
                 fi

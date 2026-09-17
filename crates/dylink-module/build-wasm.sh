@@ -55,6 +55,9 @@ MODULE_RUSTFLAGS=(
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Shared tier staging + freshness check for co-resident side modules.
+source "$REPO_ROOT/scripts/lib/side-module-tier.sh"
+
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 # The crates whose contents can change this artifact. `cargo_closure_paths`
 # walks the compile-time path dependencies from `cargo metadata`, so naming
@@ -127,6 +130,9 @@ if [[ "${1:-}" == "--verify-fresh" ]]; then
       "with 'bash crates/dylink-module/build-wasm.sh'." >&2
     exit 1
   fi
+  if ! assert_side_module_tier_copy_matches "dylink-module" "$REPO_ROOT" "dylink_module32.wasm"; then
+    exit 1
+  fi
   echo "dylink-module: $artifact matches current source ($current_sha)" >&2
   exit 0
 fi
@@ -151,5 +157,6 @@ mkdir -p "$REPO_ROOT/local-binaries" "$REPO_ROOT/host/wasm"
 cp "$WASM32" "$REPO_ROOT/local-binaries/dylink_module32.wasm"
 cp "$WASM32" "$REPO_ROOT/host/wasm/dylink_module32.wasm"
 printf '%s\n' "$FRESH_CLOSURE_SHA" > "$(build_key_path 32)"
+stage_side_module_tier_copy "$REPO_ROOT" "dylink_module32.wasm"
 echo "staged dylink_module32.wasm -> local-binaries/, host/wasm/" \
   "(build-key $FRESH_CLOSURE_SHA)" >&2
