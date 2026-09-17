@@ -140,13 +140,24 @@ pub struct ExactSourceV1 {
 
 /// Validate a resolved-input document's envelope.
 ///
-/// `allow_local_fixture` mirrors the miniature builder's permission: a
-/// `local-fixture` reference is a build that points at something outside the
-/// exact-source world, and only one builder may ask for it.
-pub fn validate_envelope(
-    document: &ResolvedInputsEnvelopeV1,
-    allow_local_fixture: bool,
-) -> Result<(), String> {
+/// # There is no permitted exception any more
+///
+/// This took an `allow_local_fixture` flag that mirrored a builder's permission
+/// to accept a `local-fixture` reference -- a build pointing outside the
+/// exact-source world. That permission existed for the ABI staging
+/// mini-lifecycle (`39a334707`), a rehearsal that staged a miniature two-product
+/// transition entirely from local files so the exact-source rules could apply to
+/// something that never left the machine. `local-fixture:sha256:<digest>` was
+/// its transport scheme.
+///
+/// Every part of that rehearsal was removed with the Homebrew staging pipeline
+/// in `fc2f3ef834`: its local transport, its driver, its fixtures, its shell
+/// script, its test and its builder. Nothing can produce such a reference and
+/// no transport can fetch one, so the class is now refused outright rather than
+/// refused-unless-asked. A rule whose documented exception cannot occur reads as
+/// weaker than it is; if a rehearsal path returns, the permission returns with
+/// the transport that makes it mean something, which is how it arrived.
+pub fn validate_envelope(document: &ResolvedInputsEnvelopeV1) -> Result<(), String> {
     if document.schema != 1 || document.kind != "kandelo-resolved-vfs-product-inputs" {
         return Err("resolved input document has unsupported identity".to_string());
     }
@@ -191,11 +202,10 @@ pub fn validate_envelope(
 
     match document.reference_class.as_str() {
         "candidate" | "canonical" => {}
-        "local-fixture" if allow_local_fixture => {}
         "local-fixture" => {
-            return Err(
-                "local-fixture references are accepted only by the miniature builder".to_string(),
-            )
+            return Err("local-fixture references have no builder: the staging \
+rehearsal that used them was removed"
+                .to_string())
         }
         other => return Err(format!("reference class is not supported: {other:?}")),
     }
@@ -231,12 +241,12 @@ pub fn validate_envelope(
 /// The entry point the builder calls instead of deciding for itself. It reports
 /// the first rule that refused and which field refused it, because "this
 /// document is invalid" is not a sentence anyone can act on.
-pub fn validate_document(path: &Path, allow_local_fixture: bool) -> Result<(), String> {
+pub fn validate_document(path: &Path) -> Result<(), String> {
     let bytes = std::fs::read(path)
         .map_err(|e| format!("resolved inputs: read {}: {e}", path.display()))?;
     let document: ResolvedInputsEnvelopeV1 = serde_json::from_slice(&bytes)
         .map_err(|e| format!("resolved inputs: {}: {e}", path.display()))?;
-    validate_envelope(&document, allow_local_fixture)
+    validate_envelope(&document)
         .map_err(|e| format!("resolved inputs: {}: {e}", path.display()))
 }
 
@@ -444,22 +454,6 @@ fn validate_reference_shape(
         return Ok(());
     }
 
-    if reference_class == "local-fixture" {
-        let captures = local_fixture_pattern()
-            .captures(reference)
-            .ok_or_else(|| {
-                format!("{label} local-fixture reference does not bind exact namespace and bytes")
-            })?;
-        let ok = captures[1] == input.sha256
-            && captures[3].parse::<u64>().ok() == Some(input.bytes)
-            // A product image is not source, whatever namespace it claims.
-            && !(input.kind == "product-image" && &captures[2] == "source");
-        if !ok {
-            return Err(format!(
-                "{label} local-fixture reference does not bind exact namespace and bytes"
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -484,16 +478,6 @@ fn pages_product_pattern() -> &'static regex::Regex {
             r"([a-z0-9][a-z0-9._-]{0,127})-([0-9]+)\.vfs\.zst",
             r"\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$",
         ))
-        .expect("a literal pattern")
-    })
-}
-
-fn local_fixture_pattern() -> &'static regex::Regex {
-    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    PATTERN.get_or_init(|| {
-        regex::Regex::new(
-            r"^local-fixture:sha256:([0-9a-f]{64})\?namespace=(candidate|canonical|source)&bytes=([1-9][0-9]*)$",
-        )
         .expect("a literal pattern")
     })
 }
@@ -600,7 +584,7 @@ mod tests {
     fn check(value: &serde_json::Value) -> Result<(), String> {
         let parsed: ResolvedInputsEnvelopeV1 =
             serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        validate_envelope(&parsed, false)
+        validate_envelope(&parsed)
     }
 
     #[test]
@@ -1072,13 +1056,16 @@ mod tests {
         }
     }
 
+    /// REPLACES `a_local_fixture_reference_needs_the_miniature_builder`, which
+    /// asserted both directions of a permission that no longer exists. The
+    /// refusing direction is the whole rule now.
     #[test]
-    fn a_local_fixture_reference_needs_the_miniature_builder() {
+    fn a_local_fixture_reference_is_refused_outright() {
         let value = document(r#"{"reference_class":"local-fixture"}"#);
         let parsed: ResolvedInputsEnvelopeV1 =
             serde_json::from_value(value).expect("parses");
-        assert!(validate_envelope(&parsed, false).is_err());
-        validate_envelope(&parsed, true).expect("the miniature builder may");
+        let error = validate_envelope(&parsed).expect_err("refused");
+        assert!(error.contains("no builder"), "{error}");
     }
 
     #[test]

@@ -54,11 +54,11 @@
       "replace": "    let ok = matches!((parts.next(), parts.next(), parts.next()), (Some(o), Some(n), _)"
     },
     {
-      "name": "a local-fixture reference needs no permission",
+      "name": "a local-fixture reference is accepted like any other class",
       "scope": "pub fn validate_envelope",
       "scope_end": "\n}\n",
-      "find": "        \"local-fixture\" if allow_local_fixture => {}",
-      "replace": "        \"local-fixture\" => {}"
+      "find": "        \"candidate\" | \"canonical\" => {}",
+      "replace": "        \"candidate\" | \"canonical\" | \"local-fixture\" => {}"
     },
     {
       "name": "inputs need not be sorted or unique",
