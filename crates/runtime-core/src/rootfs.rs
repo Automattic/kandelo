@@ -8039,6 +8039,96 @@ mod tests {
     }
 
     #[test]
+    fn a_load_refuses_an_image_whose_cohorts_do_not_authenticate() {
+        let _guard = TestGuard::acquire();
+        // THE BOOT-TIME BOUNDARY, tested where it now lives.
+        //
+        // This check ran only in the image module's `sm_load_image`, so a
+        // builder authenticated and a booting kernel did not; the host stood
+        // in for it by restoring the whole `/` image into a second filesystem
+        // to call `verifyImportedLazyAtomicGroupSeals` on it. Two trials --
+        // the check removed, and the check made advisory -- both SURVIVED
+        // when the guard first moved here, because every test that exercised
+        // it verifies against the other crate.
+        //
+        // The archive declares a cohort of two and supplies one, which is the
+        // partial activation atomic cohorts exist to forbid.
+        let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
+        let mut identity = alloc::vec![
+            (b"tools".to_vec(), crate::seal::sha256(descriptor)),
+            (b"docs".to_vec(), crate::seal::sha256(b"{}")),
+        ];
+        let cohort = crate::seal::sha256(
+            &crate::seal::cohort_identity(b"shell", &mut identity).expect("identity"),
+        );
+        let payload = crate::seal::encode(&crate::seal::ArchivePayload {
+            descriptor: descriptor.to_vec(),
+            seal: crate::seal::SealState::Sealed(crate::seal::ArchiveSeal {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 2,
+                cohort_digest: cohort,
+                descriptor_digest: crate::seal::sha256(descriptor),
+            }),
+        })
+        .expect("encode");
+
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        mkdir(b"/opt", 0o755, 0, 0).expect("mkdir /opt");
+        declare_archive(3, 8_000_000).expect("declare archive");
+        set_archive_payload(3, &payload).expect("seal it short of its count");
+        insert_lazy_file(
+            b"/opt/tools", 3, b"opt/tools", 4_242, 0o755, 0, 0, 2, b"", b"", b"",
+        )
+        .expect("archive member");
+        let tampered = drain_container(8192, &mut no_bytes());
+
+        assert_eq!(
+            load_image(tampered.len() as u64, image_host(&tampered)).unwrap_err(),
+            Errno::EPERM,
+            "a cohort short of its count",
+        );
+        // The refusal UNLOADS. `load_image` resets on error, and an image that
+        // failed to authenticate must not be left mounted for the next call to
+        // build on.
+        assert!(lstat(b"/opt/tools").is_err(), "and its tree is gone");
+
+        // THE NEGATIVE CONTROL, and it is what makes the refusal about the
+        // cohort rather than about anything else this image happens to carry.
+        // The same tree, the same archive, the same descriptor -- sealed to a
+        // cohort of ONE, which is complete -- must load.
+        reset();
+        let mut whole = alloc::vec![(b"tools".to_vec(), crate::seal::sha256(descriptor))];
+        let one = crate::seal::sha256(
+            &crate::seal::cohort_identity(b"shell", &mut whole).expect("identity"),
+        );
+        let sealed = crate::seal::encode(&crate::seal::ArchivePayload {
+            descriptor: descriptor.to_vec(),
+            seal: crate::seal::SealState::Sealed(crate::seal::ArchiveSeal {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 1,
+                cohort_digest: one,
+                descriptor_digest: crate::seal::sha256(descriptor),
+            }),
+        })
+        .expect("encode");
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        mkdir(b"/opt", 0o755, 0, 0).expect("mkdir /opt");
+        declare_archive(3, 8_000_000).expect("declare archive");
+        set_archive_payload(3, &sealed).expect("seal it whole");
+        insert_lazy_file(
+            b"/opt/tools", 3, b"opt/tools", 4_242, 0o755, 0, 0, 2, b"", b"", b"",
+        )
+        .expect("archive member");
+        let honest = drain_container(8192, &mut no_bytes());
+        assert!(
+            load_image(honest.len() as u64, image_host(&honest)).is_ok(),
+            "a complete cohort loads, so the refusal above is the cohort's",
+        );
+    }
+
+    #[test]
     fn an_image_the_kernel_exported_is_one_the_kernel_can_load() {
         let _guard = TestGuard::acquire();
         // The round trip V4 exists to make possible, and the one thing none of
