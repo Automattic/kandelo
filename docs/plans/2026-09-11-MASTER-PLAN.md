@@ -14130,6 +14130,82 @@ real but deferred — it is what lets the TypeScript later shrink to a parse wit
 no checks — and "start a 400-line addition whose measured benefit is zero today"
 is a scope call rather than an in-lane design decision.
 
+### THE STAGED-PRODUCT APPARATUS IS STRANDED — traced 2026-09-17, and the fence it came with
+
+**Two Chesterton's-fence walks, both ending at `fc2f3ef834`.**
+
+**FENCE ONE: `allow_local_fixture`. Removed, `9ed0393d4`.** It existed for the
+ABI staging mini-lifecycle — `39a334707`, *"Prove a local generic staging
+transition"*, a 3,334-line rehearsal that staged a miniature two-product
+transition entirely from local files, no network and no registry.
+`local-fixture:sha256:<digest>?namespace=…&bytes=…` was its transport scheme:
+content addressed by digest without naming a remote host, so the exact-source
+rules could apply to a rehearsal that never left the machine. Every part of that
+field — `local_transport.rs`, `mini_lifecycle.rs`, the fixture tap and products,
+the shell script, the test, the builder — went with the Homebrew staging
+pipeline. The permission, its regex and a message naming a deleted builder were
+all that stood. **34 trials, 0 survived** after the removal, the replacement
+trial mutating the surviving refusal rather than the removed exception.
+
+**FENCE TWO: the whole staged-product contract. Traced, not touched.**
+
+**When**: 2026-08-12, `c4726d1265`, *"[ABI] Stage exact candidates and prove
+admitted Pages products"* (#1247).
+
+**The initial cause, in the PR's own words**: an ABI change updates the contract
+between programs, kernel and host, so the complete package and VFS product graph
+must be rebuilt and tested **at the exact pull-request commit** before it reaches
+`main`. The previous release path could not do that safely — candidate artifacts
+were *"not consistently separated from trusted release metadata or bound to the
+exact source, build policy, package inputs, and browser runtime that produced
+them"*, and *"a partial or stale result could also look ready to publish."* The
+answer was an **inert staging path**: candidates public and explicitly
+non-endorsed, protected jobs verifying them, and only complete, current, admitted
+product sets becoming inputs to a Pages canary.
+
+**Where the repository-path bundle fits, and it is not an accident.** Images like
+the SDK need files straight from the repository — `sdk/config.site`,
+`sdk/kandelo/bin`, `libc/glue`, the licence files. For a candidate bound to an
+exact commit and tree, reading those from the working tree is ambient authority.
+The bundle turns them into DECLARED, digest-bound, exact-source-bound inputs so
+provenance covers repository files too. `assertStagedProductEnvironment` is its
+enforcement twin, refusing the legacy discovery variables outright.
+
+**What happened to it.** The design's other half was Homebrew — #1247 binds
+inputs to *"the corresponding tap Formula, architecture, bottle layer"* and
+recomposes *"the seven Pages products from admitted Homebrew layers"*.
+`fc2f3ef834` removed Homebrew and its staging pipeline. The product-graph half
+survived, repointed at the source-only world, **and was never re-wired to a
+caller.**
+
+**MEASURED, because "not on a build path" is a claim:**
+
+| where a caller could be | what is there |
+|---|---|
+| local builds | each `build-*-vfs-image.sh` takes the legacy branch unless `--vfs-product-manifest` is passed; only tests pass it |
+| CI workflows | **none** invoke `run-vfs-product-builder.ts`, `staged-product-inputs.ts` or `xtask vfs products`; `staging-build.yml` builds packages, not products through this contract |
+| resolved-inputs documents | generated only by two tests and a perturb spec |
+| the bundle WRITER | `createRepositoryPathBundle` is called only by `host/test/staged-product-inputs.test.ts` |
+| CI's only trace | `ci-scope-paths.sh`, a change-DETECTION list — itself stale, naming `build-abi-staging-mini-vfs.ts`, `tools/xtask/src/abi_staging/` and four scripts that no longer exist |
+
+The live `abi-staging-authority` checkouts in `staging-build.yml` and
+`prepare-merge.yml` are the protected-runner CLASSIFICATION half, unrelated to
+the product builder.
+
+**The size of what is stranded**: 7,662 lines — `staged-product-inputs.ts`
+(1,840), `vfs-product-builder-contract.ts` (1,036), `repository-path-bundle.ts`
+(308), `run-vfs-product-builder.ts` (465), the Rust `vfs_products` module
+(2,893), three test files (1,120) — plus 17 product manifests and 4 perturb
+specs.
+
+**AND THE PERTURB SPECS ARE WHY IT LOOKS ALIVE.** Four specs, all green, all
+killing their mutants. **A green trial on unreachable code reads exactly like a
+green trial on a live guard**, because the verifier is a test and the test drives
+the code directly. Mutation testing proves a guard is REACHABLE FROM ITS TEST; it
+says nothing about whether production reaches it. That is a new entry for the
+causes catalogue, and it is the inverse of the sixth cause: not a guard that
+cannot fail, but a guard that fails correctly in a world nothing enters.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
