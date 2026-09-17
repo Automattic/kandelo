@@ -24,6 +24,7 @@ import {
   resolveRootfsArtifact,
 } from "../src/node-kernel-host";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -192,6 +193,17 @@ export interface RunProgramOptions {
   /** Exact VFS image for tests that stage package runtime files. Overrides
    * `useDefaultRootfs`; omitted means the canonical image. */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /**
+   * How `/` is DECLARED, for the one fact a boot still reads from a spec:
+   * whether the image mount is `nosuid`.
+   *
+   * A host mount's `MountConfig.nosuid` used to carry this, so a test that
+   * needed a nosuid `/` built a `VirtualPlatformIO` and passed it as `io:` —
+   * which drops the whole run into main-thread mode. The kernel is the sole
+   * `/` authority now, so the declaration travels with the boot instead, and a
+   * test asserting set-ID behaviour can run where the product runs it.
+   */
+  rootfsNosuid?: boolean;
   /** Exact kernel wasm to boot (worker-thread mode). Omitted resolves the
    * kernel through the normal binary resolver. A caller that already holds
    * the kernel artifact — e.g. a build-time step that cannot rely on the
@@ -379,6 +391,13 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     execPrograms,
     rootfsImage,
+    rootfsMountSpec: options.rootfsNosuid === undefined
+      ? undefined
+      : DEFAULT_MOUNT_SPEC.map((mount) =>
+        mount.path === "/" && mount.source === "image"
+          ? { ...mount, nosuid: options.rootfsNosuid }
+          : mount
+      ),
     enableTcpNetwork: options.enableTcpNetwork,
     forkModuleBytesByWidth: options.forkModuleBytesByWidth,
     onStdout: (_pid: number, data: Uint8Array) => {

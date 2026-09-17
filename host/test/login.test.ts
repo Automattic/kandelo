@@ -9,9 +9,7 @@ import {
   DEMO_LOGIN_PASSWORD_HASH,
 } from "../../images/vfs/lib/demo-login";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { NodeTimeProvider } from "../src/vfs/time";
-import { VirtualPlatformIO } from "../src/vfs/vfs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -114,12 +112,22 @@ function bytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
-function loginPlatform(
+/**
+ * THE ACCOUNT DATABASE AS A ROOT IMAGE, booted by a kernel in a worker.
+ *
+ * This mounted a `MemoryFileSystem` at `/` through a `VirtualPlatformIO` and
+ * passed it as `io:`, which forces main-thread mode. `/` has been the
+ * kernel's since the Phase 5 cutover, so login policy — the setuid `login`
+ * binary, `/etc/shadow` at 0o640, a home directory that may or may not exist —
+ * is now exercised against the root filesystem a machine actually boots.
+ */
+function loginRootfsImage(
   shell = "/bin/login-identity",
   createHome = true,
   accountHome = "/home/maker",
-): VirtualPlatformIO {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+): Promise<Uint8Array> {
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(64 * 1024 * 1024);
   const enc = new TextEncoder();
   for (const path of ["/etc", "/bin", "/home", "/usr/bin", "/var", "/tmp"]) {
     ensureDirRecursive(fs, path);
@@ -204,12 +212,7 @@ function loginPlatform(
     0,
     bytes(loginWasm),
   );
-  return new VirtualPlatformIO(
-    [
-      { mountPoint: "/", backend: fs },
-    ],
-    new NodeTimeProvider(),
-  );
+  return fs.saveImage();
 }
 
 async function runLogin(
@@ -235,7 +238,7 @@ async function runLogin(
     gid: options.gid ?? 1000,
     env: options.env,
     stdin: options.stdin ?? `${DEMO_LOGIN_PASSWORD}\n`,
-    io: loginPlatform(
+    rootfsImage: await loginRootfsImage(
       options.accountShell,
       options.createHome,
       options.accountHome,
