@@ -3414,6 +3414,35 @@ fn render_ts_module() -> String {
     }
     out.push_str("};\n\n");
 
+    out.push_str("export interface IoctlRequestFamily {\n");
+    out.push_str("  dir: number;\n");
+    out.push_str("  magic: number;\n");
+    out.push_str("  nrFirst: number;\n");
+    out.push_str("  nrLast: number;\n");
+    out.push_str("  direction: IoctlDirection;\n");
+    out.push_str("  fixedSize: number | null;\n");
+    out.push_str("  maxCallerSize: number | null;\n");
+    out.push_str("}\n\n");
+    out.push_str("export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [\n");
+    for family in shared::ioctl_contract::IOCTL_REQUEST_FAMILIES {
+        let (fixed_size, max_caller_size) = match family.size {
+            shared::ioctl_contract::IoctlFamilySize::Fixed(size) => (Some(size), None),
+            shared::ioctl_contract::IoctlFamilySize::CallerEncoded { max } => (None, Some(max)),
+        };
+        out.push_str(&format!(
+            "  {{ dir: {}, magic: {}, nrFirst: {}, nrLast: {}, direction: {:?}, \
+fixedSize: {}, maxCallerSize: {} }},\n",
+            family.dir,
+            family.magic,
+            family.nr_first,
+            family.nr_last,
+            ioctl_direction_name(family.direction),
+            ts_optional_u32(fixed_size),
+            ts_optional_u32(max_caller_size),
+        ));
+    }
+    out.push_str("];\n\n");
+
     out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
     for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS {
         out.push_str(&format!("  {}: [\n", entry.syscall_number));
@@ -3801,6 +3830,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("host_adapter".into(), host_adapter());
     root.insert("syscall_arg_descriptors".into(), syscall_arg_descriptors());
     root.insert("ioctl_request_contracts".into(), ioctl_request_contracts());
+    root.insert("ioctl_request_families".into(), ioctl_request_families());
     root.insert("channel_status_codes".into(), channel_status_codes());
     root.insert("process_native_layouts".into(), process_native_layouts());
     root.insert("process_memory_layout".into(), process_memory_layout());
@@ -5471,6 +5501,35 @@ fn ioctl_request_contracts() -> Value {
     Value::Object(contracts.into_iter().collect())
 }
 
+fn ioctl_request_families() -> Value {
+    let families = shared::ioctl_contract::IOCTL_REQUEST_FAMILIES
+        .iter()
+        .map(|family| {
+            let (fixed_size, max_caller_size) = match family.size {
+                shared::ioctl_contract::IoctlFamilySize::Fixed(size) => {
+                    (Some(size), None)
+                }
+                shared::ioctl_contract::IoctlFamilySize::CallerEncoded { max } => {
+                    (None, Some(max))
+                }
+            };
+            let mut value: JsonMap = BTreeMap::new();
+            value.insert("dir".into(), json!(family.dir));
+            value.insert("magic".into(), json!(family.magic));
+            value.insert("nrFirst".into(), json!(family.nr_first));
+            value.insert("nrLast".into(), json!(family.nr_last));
+            value.insert(
+                "direction".into(),
+                json!(ioctl_direction_name(family.direction)),
+            );
+            value.insert("fixedSize".into(), json!(fixed_size));
+            value.insert("maxCallerSize".into(), json!(max_caller_size));
+            Value::Object(value.into_iter().collect())
+        })
+        .collect();
+    Value::Array(families)
+}
+
 fn host_adapter() -> Value {
     let manifest = shared::abi::HOST_ADAPTER_MANIFEST;
 
@@ -6954,6 +7013,13 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "syscall_arg_descriptors" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            // A request number absent from the table resolved to "unknown"
+            // before, so adding one cannot change how an older program
+            // marshals any call it already made. Changing or removing an
+            // entry would restage a different buffer size and stays breaking.
+            "ioctl_request_contracts" => {
+                classify_additive_object_by_key(key, old_value, new_value, &mut report)?
+            }
             "vfs_metadata" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
@@ -6972,7 +7038,11 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 fn additive_top_level_section(section: &str) -> bool {
     matches!(
         section,
-        "host_adapter" | "io_multiplexing" | "syscall_arg_descriptors" | "vfs_metadata"
+        "host_adapter"
+            | "io_multiplexing"
+            | "ioctl_request_families"
+            | "syscall_arg_descriptors"
+            | "vfs_metadata"
     )
 }
 
@@ -8270,6 +8340,120 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"host_adapter\""]
+        );
+    }
+
+    fn snapshot_with_one_ioctl_contract() -> Value {
+        let mut snapshot = base_snapshot();
+        snapshot.as_object_mut().unwrap().insert(
+            "ioctl_request_contracts".into(),
+            json!({
+                "1074021776": {
+                    "argKind": "scalar-i32",
+                    "direction": "none",
+                    "wasm32Size": 0,
+                    "wasm64Size": 0
+                }
+            }),
+        );
+        snapshot
+    }
+
+    #[test]
+    fn adding_an_ioctl_request_contract_entry_is_compatible() {
+        let old = snapshot_with_one_ioctl_contract();
+        let mut new = snapshot_with_one_ioctl_contract();
+        new["ioctl_request_contracts"]["2147763457"] = json!({
+            "argKind": "pointer",
+            "direction": "out",
+            "wasm32Size": 4,
+            "wasm64Size": 4
+        });
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added ioctl_request_contracts entry \"2147763457\""]
+        );
+    }
+
+    #[test]
+    fn changing_or_removing_an_ioctl_request_contract_entry_is_breaking() {
+        let old = snapshot_with_one_ioctl_contract();
+        let mut resized = snapshot_with_one_ioctl_contract();
+        resized["ioctl_request_contracts"]["1074021776"]["wasm32Size"] = json!(4);
+
+        let report = classify_compat_change(&old, &resized).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed ioctl_request_contracts entry \"1074021776\""]
+        );
+
+        let mut dropped = snapshot_with_one_ioctl_contract();
+        dropped["ioctl_request_contracts"]
+            .as_object_mut()
+            .unwrap()
+            .remove("1074021776");
+
+        let report = classify_compat_change(&old, &dropped).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["removed ioctl_request_contracts entry \"1074021776\""]
+        );
+    }
+
+    #[test]
+    fn adding_the_ioctl_request_families_section_is_compatible() {
+        let old = base_snapshot();
+        let mut new = base_snapshot();
+        new.as_object_mut().unwrap().insert(
+            "ioctl_request_families".into(),
+            json!([{
+                "dir": 2,
+                "magic": 69,
+                "nrFirst": 64,
+                "nrLast": 127,
+                "direction": "out",
+                "fixedSize": 24,
+                "maxCallerSize": null
+            }]),
+        );
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"ioctl_request_families\""]
+        );
+    }
+
+    #[test]
+    fn narrowing_an_existing_ioctl_request_family_is_breaking() {
+        let family = |nr_last: u32| {
+            json!([{
+                "dir": 2,
+                "magic": 69,
+                "nrFirst": 64,
+                "nrLast": nr_last,
+                "direction": "out",
+                "fixedSize": 24,
+                "maxCallerSize": null
+            }])
+        };
+        let mut old = base_snapshot();
+        old.as_object_mut()
+            .unwrap()
+            .insert("ioctl_request_families".into(), family(127));
+        let mut new = base_snapshot();
+        new.as_object_mut()
+            .unwrap()
+            .insert("ioctl_request_families".into(), family(96));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed top-level section \"ioctl_request_families\""]
         );
     }
 

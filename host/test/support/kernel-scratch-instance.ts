@@ -215,6 +215,10 @@ function signatures(
       // genuine Wasm function and the exact gated export lookup.
       result: i32,
     },
+    kernel_input_event: {
+      parameters: [i32, i32, i32, i32],
+      result: i32,
+    },
     kernel_ioctl: {
       parameters: [i32, i32, pointer, i32, i32],
       result: i32,
@@ -454,6 +458,10 @@ function signatures(
       result: i32,
     },
     kernel_set_current_tid: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_set_input_canvas_dims: {
       parameters: [i32, i32],
       result: i32,
     },
