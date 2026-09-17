@@ -111,8 +111,8 @@
       "name": "a relative symlink is resolved against the root instead of its own directory",
       "scope": "  stat(path: string): KandeloImageStat {",
       "scope_end": "\n  }\n",
-      "find": "      current = target.startsWith(\"/\")\n        ? target\n        : `${current.slice(0, current.lastIndexOf(\"/\") + 1)}${target}`;",
-      "replace": "      current = target.startsWith(\"/\") ? target : `/${target}`;"
+      "find": "          : `${current.slice(0, current.lastIndexOf(\"/\") + 1)}${target}`,",
+      "replace": "          : `/${target}`,"
     },
     {
       "name": "a symlink cycle is followed forever",
@@ -288,6 +288,20 @@
       "scope_end": "\n  }\n",
       "find": "      archiveUri: url,",
       "replace": "      archiveUri: \"\","
+    },
+    {
+      "name": "a read through a symlink is sized by the LINK, truncating the file to the length of its own name",
+      "scope": "  readFile(path: string): Uint8Array {",
+      "scope_end": "\n  }\n",
+      "find": "    const { size } = this.stat(path);",
+      "replace": "    const { size } = this.lstat(path);"
+    },
+    {
+      "name": "a relative target's `..` is dropped instead of climbing, so it resolves to the wrong file",
+      "scope": "function canonicalize(path: string): string {",
+      "scope_end": "\n}\n",
+      "find": "      out.pop();\n      continue;",
+      "replace": "      continue;"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

@@ -126,6 +126,31 @@ export class KandeloImageError extends Error {
   }
 }
 
+/**
+ * Resolve `.` and `..` in a path the caller assembled.
+ *
+ * The module takes CANONICAL paths, because the kernel's `rootfs` walk treats
+ * every component as a name to look up — the syscall layer normalizes before
+ * it gets there. A symlink target is not canonical: `../../shared/curl` is the
+ * ordinary way an archive spells a sibling, and joining it onto the link's
+ * directory produces a path with `..` still in it, which the module answers
+ * ENOENT for. That is not the module being wrong; it is path arithmetic the
+ * caller owes, and doing it here keeps it in one place rather than at every
+ * call site that follows a link.
+ */
+function canonicalize(path: string): string {
+  const out: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  return `/${out.join("/")}`;
+}
+
 export class KandeloImageFs {
   private constructor(private readonly exports: ModuleExports) {}
 
@@ -396,7 +421,16 @@ export class KandeloImageFs {
   }
 
   readFile(path: string): Uint8Array {
-    const { size } = this.lstat(path);
+    // `stat`, NOT `lstat`, and the difference was a silent truncation.
+    //
+    // `sm_read_file` follows a final symlink — it is the same resolution
+    // `open` performs — while `lstat` answers about the LINK, whose size is
+    // the length of its target string. Sizing the buffer with `lstat` and
+    // filling it through a following read meant that reading a 4 KiB file
+    // through a 17-byte symlink returned its first 17 bytes, with no error
+    // anywhere. A builder that copied a file through an alias would have
+    // written a truncated one into an image.
+    const { size } = this.stat(path);
     if (size === 0) return new Uint8Array(0);
     const out = this.exports.sm_alloc(size);
     if (out === 0) throw new Error("kandelo-image-module: allocation failed");
@@ -530,9 +564,11 @@ export class KandeloImageFs {
       const st = this.lstat(current);
       if ((st.mode & 0o170000) !== 0o120000) return st;
       const target = this.readlink(current);
-      current = target.startsWith("/")
-        ? target
-        : `${current.slice(0, current.lastIndexOf("/") + 1)}${target}`;
+      current = canonicalize(
+        target.startsWith("/")
+          ? target
+          : `${current.slice(0, current.lastIndexOf("/") + 1)}${target}`,
+      );
     }
     throw new KandeloImageError(ERRNO.ELOOP, "stat", path);
   }

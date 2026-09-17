@@ -889,6 +889,50 @@ describe("KandeloImageFs", () => {
   });
 });
 
+describe("reading through a symlink", () => {
+  it("returns the whole file, not the first bytes of it", () => {
+    // A SILENT TRUNCATION, found by a builder test in `tools/mkrootfs`.
+    //
+    // `readFile` sized its buffer with `lstat`, which answers about the LINK —
+    // and a link's size is the length of its target string. The read itself
+    // follows the link. So reading a file through an alias returned as many
+    // bytes as the target's NAME is long, with no error anywhere: a builder
+    // copying a file through a symlink would have written a truncated one into
+    // an image, and the image would have looked fine.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    const body = new TextEncoder().encode(
+      "#!/bin/sh\nexec /usr/bin/curl \"$@\"\n",
+    );
+    fs.writeFile("/usr/bin/curl-real", body, 0o755);
+    fs.symlink("/usr/bin/curl-real", "/usr/bin/curl");
+
+    // The link's own size is shorter than the file's, which is what makes the
+    // truncation possible in the first place.
+    expect(fs.lstat("/usr/bin/curl").size).toBeLessThan(body.byteLength);
+    expect(fs.readFile("/usr/bin/curl")).toEqual(body);
+  });
+
+  it("follows a relative target that climbs out of its own directory", () => {
+    // `../../shared/curl` is the ordinary way an archive spells a sibling, and
+    // joining it onto the link's directory leaves `..` in the middle of the
+    // path. The module takes CANONICAL paths — the kernel's walk looks up
+    // every component as a name — so an unnormalized join arrives as ENOENT
+    // for a link that resolves perfectly well.
+    const fs = KandeloImageFs.create();
+    for (const dir of ["/opt", "/opt/shared", "/opt/shims", "/opt/shims/deep"]) {
+      fs.mkdir(dir, 0o755);
+    }
+    const body = new TextEncoder().encode("shared payload\n");
+    fs.writeFile("/opt/shared/curl", body, 0o755);
+    fs.symlink("../../shared/curl", "/opt/shims/deep/curl");
+
+    expect(fs.stat("/opt/shims/deep/curl").size).toBe(body.byteLength);
+    expect(fs.readFile("/opt/shims/deep/curl")).toEqual(body);
+  });
+});
+
 describe("owner-carrying creation", () => {
   // THE COMPARISON WENT, THE LITERALS STAYED, 2026-09-17. Both cases built the
   // same tree twice — once with the incumbent, once with the bridge — and
