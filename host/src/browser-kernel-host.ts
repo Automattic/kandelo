@@ -7,7 +7,6 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
-import { MemoryFileSystem } from "./vfs/memory-fs";
 // Not from `memory-fs`, which only re-exports it: this shape describes a
 // FETCH, and reaching it through the filesystem is what `4a365cca6` moved it
 // out of. A move is not finished while a consumer still uses the old address.
@@ -113,7 +112,7 @@ export interface BrowserKernelOptions {
   /** The kernel worker always owns the VFS exclusively: the main thread holds
    *  no VFS SharedArrayBuffer, so it is reclaimed by `Worker.terminate()` and
    *  never accumulates across image switches (Safari OOM fix). Demos build a
-   *  VFS image with {@link MemoryFileSystem} + `saveImage()` and pass it to
+   *  VFS image with `KandeloImageFs` + `saveImage()` and pass it to
    *  {@link BrowserKernel.boot} / {@link BrowserKernel.initFromImage}. Accepted
    *  for backward compatibility; the value is ignored (there is no other mode). */
   kernelOwnedFs?: boolean;
@@ -138,7 +137,7 @@ export interface BrowserKernelBootOptions {
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
   /**
-   * Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}, OR
+   * Pre-built VFS image bytes from `KandeloImageFs.saveImage()`, OR
    * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs`
    * shipped with the worker entry. The worker takes ownership; the main
    * thread no longer has FS access.
@@ -349,9 +348,12 @@ export class BrowserKernel {
    * The worker takes ownership of the FS; the main thread no longer has FS
    * access. Returns the first process's exit code.
    *
-   * Demos build the VFS image on the main thread using MemoryFileSystem +
+   * Demos build the VFS image on the main thread using `KandeloImageFs` +
    * the helpers in `host/src/vfs/image-helpers`, call `saveImage()` for
-   * bytes, then pass them here.
+   * bytes, then pass them here. That is what
+   * `apps/browser-demos/lib/kernel-owned-boot.ts` does, and the writer it
+   * names is the one every builder uses — the doc said `MemoryFileSystem`
+   * long after the demos had stopped.
    */
   async boot(options: BrowserKernelBootOptions): Promise<{ pid: number; exit: Promise<number> }> {
     await this.initFromImage(options);
