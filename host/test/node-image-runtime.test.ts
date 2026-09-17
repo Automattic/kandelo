@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NODE_BINARY_SPEC } from "../../images/vfs/lib/init/shell-binaries";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const NODE_BYTES = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const BASH_PATH = "/usr/bin/bash";
@@ -18,7 +18,7 @@ describe("image-owned Node demo runtime", () => {
         fileIdentity(fs, path, true),
       ]),
     );
-    const deferredTrees = structuredClone(fs.exportLazyArchiveEntries());
+    const deferredBefore = fs.lazyEntries().files.map((file) => file.path).sort();
 
     // `bindImageOwnedRuntimeUrls(fs)` was here, and the assertions below were
     // what proved it rewrote ONLY lazy URLs: the embedded Node binary stayed
@@ -33,14 +33,15 @@ describe("image-owned Node demo runtime", () => {
     expect(readVfsFile(fs, NODE_BINARY_SPEC.vfsPath)).toEqual(NODE_BYTES);
     expect(fileIdentity(fs, NODE_BINARY_SPEC.vfsPath)).toEqual(nodeIdentity);
     expect(fs.isPathDeferred(NODE_BINARY_SPEC.vfsPath)).toBe(false);
-    expect(fs.getLazyEntry(NODE_BINARY_SPEC.vfsPath)).toBeNull();
-    expect(fs.exportLazyArchiveEntries()).toEqual(deferredTrees);
+    expect(fs.lazyEntries().files.map((file) => file.path).sort())
+      .toEqual(deferredBefore);
     for (const path of NODE_BINARY_SPEC.symlinks) {
       expect(fs.readlink(path)).toBe(NODE_BINARY_SPEC.vfsPath);
       expect(fileIdentity(fs, path, true)).toEqual(aliasIdentities.get(path));
     }
 
-    const restored = MemoryFileSystem.fromImage(await fs.saveImage());
+    const restored = KandeloImageFs.create();
+    restored.loadImage(await fs.saveImage());
     expect(readVfsFile(restored, NODE_BINARY_SPEC.vfsPath)).toEqual(NODE_BYTES);
     expect(restored.isPathDeferred(NODE_BINARY_SPEC.vfsPath)).toBe(false);
     for (const path of NODE_BINARY_SPEC.symlinks) {
@@ -164,8 +165,8 @@ describe("image-owned Node demo runtime", () => {
   });
 });
 
-function runtimeImage(): MemoryFileSystem {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+function runtimeImage(): KandeloImageFs {
+  const fs = KandeloImageFs.create();
   for (const path of [
     "/bin",
     "/usr/bin",
@@ -176,41 +177,33 @@ function runtimeImage(): MemoryFileSystem {
 
   writeVfsBinary(fs, BASH_PATH, NODE_BYTES, 0o755);
   fs.symlink(BASH_PATH, "/bin/bash");
-  fs.registerLazyTree(
-    {
-      decoder: "zip-v1",
-      mediaType: "application/zip",
-      sha256: "a".repeat(64),
-      bytes: 10,
-      expandedBytes: 8,
-      sourceEntryCount: 2,
-      transports: ["https://example.invalid/shell-runtime.zip"],
-    },
-    [
-      {
-        vfsPath: "/bin/dash",
-        sourcePath: "bin/dash",
-        type: "file",
-        mode: 0o755,
-        size: 4,
-        inodeGroup: "dash",
-      },
-      {
-        vfsPath: "/bin/coreutils",
-        sourcePath: "bin/coreutils",
-        type: "file",
-        mode: 0o755,
-        size: 4,
-        inodeGroup: "coreutils",
-      },
-    ],
-    "/",
-    {
-      mode: "first-use",
-      capabilities: ["test:shell-runtime"],
-      roots: ["/bin"],
-    },
-  );
+  // A DEFERRED ARCHIVE through the module's own call. This was
+  // `registerLazyTree`, the legacy v3 form with an activation spec; the module
+  // describes the same thing as an archive with members, and the activation
+  // half was never read here — what this case is about is that assembly
+  // leaves the deferred set alone.
+  fs.registerArchiveMember({
+    path: "/bin/dash",
+    archiveId: 1,
+    sourcePath: "bin/dash",
+    size: 4,
+    mode: 0o755,
+    ino: 4101,
+    archiveBytes: 10,
+    archiveDescriptor: new TextEncoder().encode('{"mountPrefix":"/"}'),
+    archiveUri: "https://example.invalid/shell-runtime.zip",
+  });
+  fs.registerArchiveMember({
+    path: "/bin/coreutils",
+    archiveId: 1,
+    sourcePath: "bin/coreutils",
+    size: 4,
+    mode: 0o755,
+    ino: 4102,
+    archiveBytes: 10,
+    archiveDescriptor: new TextEncoder().encode('{"mountPrefix":"/"}'),
+    archiveUri: "https://example.invalid/shell-runtime.zip",
+  });
   writeVfsBinary(fs, NODE_BINARY_SPEC.vfsPath, NODE_BYTES, 0o755);
   for (const path of NODE_BINARY_SPEC.symlinks) {
     fs.symlink(NODE_BINARY_SPEC.vfsPath, path);
@@ -218,49 +211,28 @@ function runtimeImage(): MemoryFileSystem {
   return fs;
 }
 
+/**
+ * What identifies a file here, and what no longer can.
+ *
+ * `generation` and `dataSequence` are gone from this record. They are
+ * `SharedFS`'s inode-reuse counters — a second and third axis of identity that
+ * exists because several host instances share one buffer and must notice when
+ * an inode has been recycled underneath them. One producer writing one image
+ * has no such race, and the module reports `ino` alone.
+ */
 function fileIdentity(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
   noFollow = false,
 ): {
   ino: number;
-  generation: number;
-  dataSequence: number;
   mode: number;
   size: number;
 } {
   const stat = noFollow ? fs.lstat(path) : fs.stat(path);
-  return {
-    ino: stat.ino,
-    generation: stat.generation,
-    dataSequence: stat.dataSequence,
-    mode: stat.mode,
-    size: stat.size,
-  };
+  return { ino: stat.ino, mode: stat.mode, size: stat.size };
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
-  const size = fs.stat(path).size;
-  const bytes = new Uint8Array(size);
-  const fd = fs.open(path, 0, 0);
-  try {
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const count = fs.read(
-        fd,
-        bytes.subarray(offset),
-        null,
-        bytes.byteLength - offset,
-      );
-      if (count <= 0 || count > bytes.byteLength - offset) {
-        throw new Error(
-          `incomplete VFS test read for ${path}: ${offset} of ${size}`,
-        );
-      }
-      offset += count;
-    }
-    return bytes;
-  } finally {
-    fs.close(fd);
-  }
+function readVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
+  return fs.readFile(path);
 }

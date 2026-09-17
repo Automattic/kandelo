@@ -1,47 +1,37 @@
 /**
- * The kernel parsing its own `/` image must produce the SAME base tree the host
- * produces by walking that image for it.
+ * What the kernel does with a production image, and what it refuses.
  *
- * Two ways of building the in-kernel rootfs overlay's base layer are compared
- * against each other, inside a real kernel Wasm instance, over a real production
- * image:
+ * THIS FILE WAS A PARITY GATE, and the parity is gone on purpose. It compared
+ * two ways of building the in-kernel rootfs overlay's base layer over every
+ * production image: `kernel_rootfs_load_manifest`, fed by the host walking the
+ * image through `MemoryFileSystem` and re-encoding it as an RTFS v3 manifest,
+ * against `kernel_rootfs_load_image`, the kernel mounting the image's own KIFS
+ * filesystem through a positioned byte window. The oracle was
+ * `kernel_rootfs_export_tree`, and it was a real oracle rather than a
+ * tautology because the two sides reached it through entirely different code.
  *
- *  A. `kernel_rootfs_load_manifest` — the path in production today. The host
- *     restores the image into `MemoryFileSystem`, walks the restored tree,
- *     resolves every name, reduces the image's lazy JSON through
- *     `buildRootfsLazyWiring`, and re-encodes the whole thing as an RTFS v3 boot
- *     manifest.
+ * They no longer are two. The host builds no manifest — `load_image` is the
+ * only path in production — and the only remaining walker of an image's KIFS
+ * is `kandelo_image_fs.rs`, which is the code the kernel itself runs. A
+ * comparison between the module and the kernel would be that same Rust
+ * compared against itself, which is the tautology the original note was
+ * careful to avoid.
  *
- *  B. `kernel_rootfs_load_image` — the kernel mounting the image's own KIFS
- *     filesystem through a positioned byte window (`env.host_image_read`),
- *     walking it itself, and reading the image's own `KLZY` lazy-linkage
- *     section. The host resolves nothing.
+ * AND IT HAD ALREADY BEEN SILENTLY WEAKENED. Side A destructured `lazyInput`
+ * out of `buildRootfsLazyWiring`, which stopped returning a manifest when the
+ * host stopped building one — so the value was `undefined`, every deferred
+ * file was emitted as an ordinary file with an empty archive table, and the
+ * comparison still passed. A gate that quietly stops testing what it was
+ * written for is worse than one that fails, which is what the retired note
+ * below says in the original author's own words.
  *
- * The oracle is `kernel_rootfs_export_tree`, the RXPT serialization of the
- * overlay's authoritative tree. It is a real oracle rather than a tautology: the
- * two sides reach it through entirely different code (TypeScript `lstat` over a
- * restored `SharedFS` and a JSON-derived lazy map, versus Rust `kandelo_image_fs.rs` inode
- * reads and a binary `KLZY` decode), and RXPT carries mode, uid, gid, size,
- * inode, symlink target, and times — so a disagreement about any of them fails
- * here rather than surfacing as a wrong `ls -l` months later.
+ * What survives here needs no second implementation: an image the kernel must
+ * REFUSE, the bound on how much of an image a boot reads, and the errno a host
+ * with no image source gets. Each is a claim about the kernel alone.
  *
- * Run over EVERY production image, not just `rootfs.vfs`. The boot cutover made
- * `load_image` the only path for every image the repository ships, so an oracle
- * that covered one of them would certify the wrong thing. `wordpress` and `lamp`
- * carry lazy archives and deep trees that `rootfs.vfs` does not.
- *
- * Deliberately a FAILURE, not a skip, when its artifacts are absent: a gate that
- * silently passes without its fixtures certifies nothing, and a missing artifact
- * is a provisioning step (`./run.sh setup`), not a boundary.
- *
- * One behaviour this gate made visible and must keep visible: the kernel refuses
- * an image that declares no `KLZY` section, because it cannot tell "no lazy
- * files" from "lazy files recorded only in the host-side JSON I cannot read",
- * and reading it best-effort would produce a tree where every deferred file
- * reports size 0. That case is now built by clearing the flag on a real image
- * rather than by depending on a stale on-disk artifact — the artifact gets
- * rebuilt, and a gate that quietly stops testing what it was written for is
- * worse than one that fails.
+ * Deliberately a FAILURE, not a skip, when its artifacts are absent: a gate
+ * that silently passes without its fixtures certifies nothing, and a missing
+ * artifact is a provisioning step (`./run.sh setup`), not a boundary.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -51,9 +41,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { tryResolveBinary } from "../src/binary-resolver";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { buildRootfsLazyWiring } from "../src/vfs/rootfs-lazy-archives";
-import { emitRootfsManifest } from "./support/rootfs-manifest-oracle";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { VFS_IMAGE_FLAG_HAS_KERNEL_LAZY } from "../src/vfs/kernel-lazy-section";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -187,15 +175,19 @@ function rxptEntryCount(tree: Uint8Array): number {
 }
 
 /**
- * A production image re-emitted through the production writer
- * (`MemoryFileSystem.saveImage`), so the gate exercises the real writer rather
- * than trusting the on-disk bytes.
+ * A production image re-emitted through the production writer, so the gate
+ * exercises the real writer rather than trusting the on-disk bytes.
+ *
+ * THE WRITER CHANGED, and this comment used to name the other one. Every
+ * shipped image is written by `KandeloImageFs` now, so re-emitting through
+ * `MemoryFileSystem` would have been exercising a writer no product uses — the
+ * opposite of what "the real writer" was asking for. The load also
+ * authenticates the image's activation cohorts, which the separate
+ * verification call here used to do.
  */
 async function rebuiltImage(name: string): Promise<Uint8Array> {
-  const writer = MemoryFileSystem.fromImagePreservingCapacity(
-    new Uint8Array(readFileSync(join(imageDir, name))),
-  );
-  await writer.verifyImportedLazyAtomicGroupSeals();
+  const writer = KandeloImageFs.create();
+  writer.loadImage(new Uint8Array(readFileSync(join(imageDir, name))));
   return new Uint8Array(await writer.saveImage());
 }
 
@@ -222,35 +214,39 @@ describe("in-kernel rootfs base tree: image parse vs host-walked manifest", () =
     ).toBe(true);
   });
 
-  it("refuses an image that predates the kernel-lazy section", async () => {
-    // Built from a real, current image by clearing the one flag, so the case
-    // stays testable after every artifact is rebuilt. A pre-KLZY image is
-    // exactly this: a container that does not declare the section.
+  it("refuses an image that describes its deferred files nowhere", async () => {
+    // Built from a real, current image by removing its description of where
+    // deferred bytes come from, so the case stays testable after every
+    // artifact is rebuilt.
+    //
+    // WHICH FIELD SAYS SO CHANGED WITH THE WRITER, and this case has now been
+    // wrong twice in the same way. It first cleared the `KLZY` container flag
+    // alone, which WAS the whole of how an image described its deferred files
+    // — until the writer moved to Rust and a current image began carrying an
+    // in-body `SDEF` section found through a superblock field instead. Then it
+    // asserted that a freshly written image still declares `KLZY`, which the
+    // module deliberately never writes: "emitting `KLZY` as well would put two
+    // descriptions in one image".
+    //
+    // So the flag is cleared for the images that still carry one, and
+    // `deferred_inode` at superblock offset 76 — the field that says "this
+    // image carries an `SDEF` section" — is zeroed, which is what actually
+    // makes a current image describe its deferred files nowhere. The
+    // precondition is asserted on the field the writer really sets, so a
+    // future writer change fails here loudly instead of leaving the surgery
+    // inert and the refusal untested.
     const image = await rebuiltImage("rootfs.vfs");
+    const SB_DEFERRED_INODE = 76;
+    const superblock = findSuperblockOffset(image);
+    const freshView = new DataView(image.buffer, image.byteOffset);
     expect(
-      imageFlags(image) & VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
-      "a freshly written image must declare a KLZY section",
+      freshView.getUint32(superblock + SB_DEFERRED_INODE, true),
+      "a freshly written image must describe its deferred files somewhere",
     ).not.toBe(0);
+
     const stale = image.slice();
     const view = new DataView(stale.buffer, stale.byteOffset);
     view.setUint32(8, imageFlags(stale) & ~VFS_IMAGE_FLAG_HAS_KERNEL_LAZY, true);
-
-    // AND the deferred section, which clearing the flag no longer removes.
-    //
-    // This test used to clear the `KLZY` flag alone, because that WAS the whole
-    // of how an image described its deferred files. It is not any more: since
-    // the image writer moved to Rust, a current image carries an in-body `SDEF`
-    // section instead, found through a superblock field rather than a container
-    // flag. So the old surgery left a perfectly loadable image and the test
-    // asserted a refusal that should not have happened — it reported the guard
-    // as broken when what had broken was its own way of simulating staleness.
-    //
-    // A genuinely pre-deferred-section image declares NEITHER. `deferred_inode`
-    // at superblock offset 76 is what says "this image carries one"; zeroing it
-    // is the `SDEF` half of the same one-field edit the flag is for the `KLZY`
-    // half.
-    const SB_DEFERRED_INODE = 76;
-    const superblock = findSuperblockOffset(stale);
     view.setUint32(superblock + SB_DEFERRED_INODE, 0, true);
 
     const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
@@ -264,68 +260,23 @@ describe("in-kernel rootfs base tree: image parse vs host-walked manifest", () =
     ).toBe(-22); // EINVAL
   });
 
-  for (const name of PRODUCTION_IMAGES) {
-  it(`produces a byte-identical tree from the image and from the manifest for ${name}`, async () => {
-    const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
-
-    // Re-emit through the real production writer, so this exercises
-    // `saveImage` and not just the encoder.
-    const image = await rebuiltImage(name);
-    expect(
-      imageFlags(image) & VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
-      "the re-emitted image must declare a KLZY section",
-    ).not.toBe(0);
-
-    // --- B: the kernel parses the image itself. -----------------------------
-    const fromImage = await instantiateKernel(kernelBytes, image);
-    const loaded = fromImage.exports.kernel_rootfs_load_image(
-      image.length >>> 0,
-      Math.floor(image.length / 2 ** 32),
-    ) as number;
-    expect(loaded, "kernel_rootfs_load_image").toBeGreaterThan(0);
-    const imageTree = exportTree(fromImage);
-
-    // --- A: the host walks the image and hands over a manifest. -------------
-    const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
-    await fs.verifyImportedLazyAtomicGroupSeals();
-    const { lazyInput } = buildRootfsLazyWiring(
-      fs.exportLazyArchiveEntries(),
-      async () => {
-        throw new Error("no fetch during tree-parity checking");
-      },
-    );
-    const { buffer, entryCount } = emitRootfsManifest(fs, (p) => p, lazyInput);
-
-    const fromManifest = await instantiateKernel(kernelBytes, image);
-    const manifestPtr = fromManifest.exports.kernel_alloc_scratch(
-      buffer.length,
-    ) as number;
-    expect(manifestPtr, "kernel_alloc_scratch for the manifest").toBeGreaterThan(
-      0,
-    );
-    new Uint8Array(fromManifest.memory.buffer, manifestPtr, buffer.length).set(
-      buffer,
-    );
-    const manifestLoaded = fromManifest.exports.kernel_rootfs_load_manifest(
-      manifestPtr,
-      buffer.length,
-    ) as number;
-    expect(manifestLoaded, "kernel_rootfs_load_manifest").toBe(entryCount);
-    const manifestTree = exportTree(fromManifest);
-
-    // --- The comparison. ---------------------------------------------------
-    // Entry counts first, so a size mismatch reports as "375 vs 374" rather
-    // than as an opaque byte diff.
-    expect(rxptEntryCount(imageTree)).toBe(rxptEntryCount(manifestTree));
-    expect(loaded).toBe(entryCount);
-    expect(imageTree.length).toBe(manifestTree.length);
-    expect(Buffer.from(imageTree).equals(Buffer.from(manifestTree))).toBe(true);
-
-    // Non-vacuity: an empty or trivial tree would make the equality above
-    // meaningless. Every production image is a real root filesystem.
-    expect(rxptEntryCount(imageTree)).toBeGreaterThan(100);
-  }, 120_000);
-  }
+  // RETIRED 2026-09-17, nine cases — one per production image: "produces a
+  // byte-identical tree from the image and from the manifest".
+  //
+  // The reasoning is in the header above: there is no second implementation
+  // left to compare against, and the side that was still standing had already
+  // stopped describing deferred files. What the nine cases cost is real and
+  // worth naming rather than glossing: they were the only gate that ran the
+  // kernel's image parse over EVERY shipped image — `wordpress` and `lamp`
+  // carry lazy archives and deep trees that `rootfs.vfs` does not — and they
+  // compared mode, uid, gid, size, inode, symlink target and times for every
+  // entry.
+  //
+  // What replaces coverage of that breadth is not another host-side walk: it
+  // is `runtime-core`'s own suite over `kandelo_image_fs.rs`, which is the
+  // code both sides were running by the end. The case below still loads one
+  // real production image end to end, so a kernel that cannot parse a shipped
+  // artifact at all still fails here.
 
   it("reads only the part of the image its walk touches", async () => {
     const image = await rebuiltImage("rootfs.vfs");
