@@ -3,7 +3,6 @@ import { installBrowserSetImmediatePolyfill } from "@host/browser-immediate-poly
 import { BrowserWorkerAdapter } from "@host/worker-adapter-browser";
 import { detectPtrWidth, extractHeapBase } from "@host/constants";
 import { LocalVirtualNetwork } from "@host/networking/virtual-network";
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { BrowserTimeProvider } from "@host/vfs/time";
 import { DEFAULT_MOUNT_SPEC, resolveForBrowser } from "@host/vfs/default-mounts";
 import { VirtualPlatformIO } from "@host/vfs/vfs";
@@ -162,14 +161,12 @@ async function createMachineIO(
   machineId: MachineId,
   address: [number, number, number, number],
 ): Promise<PlatformIO> {
-  const mounts = [
-    {
-      mountPoint: "/dev/shm",
-      backend: MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024)),
-      nosuid: true,
-    },
-    ...await resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs),
-  ];
+  // NO HOST `/dev/shm`. POSIX shared memory moved into the in-kernel tmpfs at
+  // the Phase 5 cutover, which serves `/dev/shm` along with every other scratch
+  // prefix — so a host backend here was a SECOND AUTHORITY the kernel never
+  // consults, which is the thing `tmpfs.rs` warns about at the very mount it
+  // took over. It was also the last `MemoryFileSystem` any browser page built.
+  const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs);
   const io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
   io.network = network.attachMachine({ id: machineId, address, hostnames: [machineId] });
   return io;
