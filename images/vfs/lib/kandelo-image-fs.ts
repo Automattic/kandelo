@@ -1412,6 +1412,29 @@ export class KandeloImageFs {
       // `sm_check_headroom` answers this without building an export, so a load
       // pays one ABI crossing rather than a plan for a 250 MiB image.
       this.requestedCapacityBytes = this.exportCapacityBytes();
+      // GAP 25, the same shape once more, on the counter rather than a field.
+      //
+      // Archive ids are assigned HERE, by this bridge, counting up from zero —
+      // and a load fills the tree with archives the bridge never assigned. The
+      // next `registerLazyArchive` then minted id 1 again, collided with the
+      // loaded image's archive 1, and failed `EINVAL` from the module's own
+      // "one id, two archives" refusal.
+      //
+      // It is reachable in production, not only in a fixture: the shell
+      // composer loads a source rootfs and registers the shell's lazy archives
+      // into it. It has not fired only because today's source rootfs carries
+      // none — so the first base image that ships with an archive would have
+      // broken the build that composes from it.
+      //
+      // Asked of the MODULE, which holds the tree, rather than tracked
+      // alongside it: a counter the bridge maintains through a load is a second
+      // author for a fact the image already carries.
+      const loadedArchives = this.lazyEntries().archives;
+      for (const archive of loadedArchives) {
+        if (archive.archiveId > this.lastArchiveId) {
+          this.lastArchiveId = archive.archiveId;
+        }
+      }
       return entries;
     } catch (error) {
       this.exports.sm_free(ptr, image.byteLength);

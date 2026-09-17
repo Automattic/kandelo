@@ -19,131 +19,8 @@ import { NodePlatformIO } from "../src/platform/node";
 import type { PlatformIO } from "../src/types";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
-import type { DirEntry, FileSystemBackend } from "../src/vfs/types";
-import type { StatResult, StatfsResult } from "../src/types";
+import { FixedTreeBackend } from "./support/fixed-tree-backend";
 
-/**
- * A backend that answers about ONE file, with an inode number the test picks.
- *
- * The claim below is that file identity is qualified by BACKEND OBJECT rather
- * than by mount path, and the only way to test it is to make two independent
- * backends hand out the SAME inode number — which is what two fresh in-memory
- * filesystems naturally did, and why this test used to build three of them.
- *
- * It needs no filesystem to do that. These locks are taken through the kernel,
- * which keys them on the `(dev, ino)` the host reports, so what a backend owes
- * here is `open`, `close` and a stat. Everything else throws ENOSYS rather
- * than pretending: a test that started depending on one of them would say so
- * instead of quietly passing over a stub.
- */
-class SingleFileBackend implements FileSystemBackend {
-  #nextHandle = 1;
-  readonly #open = new Set<number>();
-
-  constructor(private readonly path: string, private readonly ino: number) {}
-
-  #stat(path: string): StatResult {
-    // PATH-AWARE, because a mount's own directory is stat'd on the way to the
-    // file. Answering "regular file" for every path made `/first` look like a
-    // file and the open failed ENOTDIR — a fake that ignores its argument is a
-    // fake that answers a question it was not asked.
-    const directory = path === "/" || path === "";
-    if (!directory && path !== this.path) {
-      const error = new Error(`no such file: ${path}`) as Error & { code: number };
-      error.code = -2; // ENOENT
-      throw error;
-    }
-    return {
-      dev: 1,
-      ino: directory ? 1 : this.ino,
-      mode: directory ? 0o040755 : 0o100644,
-      nlink: 1,
-      uid: 0,
-      gid: 0,
-      size: 0,
-      atimeMs: 0,
-      mtimeMs: 0,
-      ctimeMs: 0,
-    };
-  }
-
-  #unsupported(name: string): never {
-    const error = new Error(`SingleFileBackend does not implement ${name}`) as
-      Error & { code: number };
-    error.code = -38; // ENOSYS
-    throw error;
-  }
-
-  open(path: string): number {
-    if (path !== this.path) {
-      const error = new Error(`no such file: ${path}`) as Error & { code: number };
-      error.code = -2; // ENOENT
-      throw error;
-    }
-    const handle = this.#nextHandle++;
-    this.#open.add(handle);
-    return handle;
-  }
-
-  close(handle: number): number {
-    this.#open.delete(handle);
-    return 0;
-  }
-
-  stat(path: string): StatResult {
-    return this.#stat(path);
-  }
-
-  lstat(path: string): StatResult {
-    return this.#stat(path);
-  }
-
-  fstat(): StatResult {
-    return this.#stat(this.path);
-  }
-
-  read(): number { this.#unsupported("read"); }
-  write(): number { this.#unsupported("write"); }
-  append(): never { this.#unsupported("append"); }
-  seek(): never { this.#unsupported("seek"); }
-  fpathconf(): never { this.#unsupported("fpathconf"); }
-  ftruncate(): void { this.#unsupported("ftruncate"); }
-  fsync(): void { this.#unsupported("fsync"); }
-  fchmod(): void { this.#unsupported("fchmod"); }
-  fchown(): void { this.#unsupported("fchown"); }
-  statfs(): StatfsResult {
-    // ASKED ON EVERY OPEN, for the mount's `ST_NOSUID` flag, so it is not an
-    // operation this test opted into — it is part of opening a file at all.
-    return {
-      type: 0,
-      bsize: 4096,
-      blocks: 1024,
-      bfree: 1024,
-      bavail: 1024,
-      files: 1024,
-      ffree: 1023,
-      fsid: 0,
-      namelen: 255,
-      frsize: 4096,
-      flags: 0,
-    };
-  }
-  pathconf(): never { this.#unsupported("pathconf"); }
-  mkdir(): void { this.#unsupported("mkdir"); }
-  rmdir(): void { this.#unsupported("rmdir"); }
-  unlink(): void { this.#unsupported("unlink"); }
-  rename(): void { this.#unsupported("rename"); }
-  link(): void { this.#unsupported("link"); }
-  symlink(): void { this.#unsupported("symlink"); }
-  readlink(): string { this.#unsupported("readlink"); }
-  chmod(): void { this.#unsupported("chmod"); }
-  chown(): void { this.#unsupported("chown"); }
-  lchown(): void { this.#unsupported("lchown"); }
-  utimensat(): void { this.#unsupported("utimensat"); }
-  opendir(): number { this.#unsupported("opendir"); }
-  readdir(): DirEntry | null { this.#unsupported("readdir"); }
-  closedir(): void { this.#unsupported("closedir"); }
-}
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -446,14 +323,18 @@ async function makeWorker(
 
 describe("Rust advisory locks through the real kernel Wasm", () => {
   it("qualifies file identity by backend object, not mount path", async () => {
-    const root = new SingleFileBackend("/file", 1);
-    const first = new SingleFileBackend("/file", 42);
-    const second = new SingleFileBackend("/file", 42);
-    // The collision is the POINT, and it is now stated rather than relied on.
+    // THE COLLISION IS THE POINT, and a fake is what lets the test state it.
     // Two fresh in-memory filesystems happened to allocate the same first
     // inode; asserting that was asserting an allocator's behaviour in order to
-    // reach the claim. Handing both backends the same number says what the
-    // test needs in one line and cannot drift.
+    // reach a claim about mount identity. Handing both backends the same
+    // number says what the test needs in one line and cannot drift.
+    const tree = (ino: number) => ({
+      "/": { mode: 0o040755, ino: 1 },
+      "/file": { mode: 0o100644, ino, size: 0 },
+    });
+    const root = new FixedTreeBackend(tree(1));
+    const first = new FixedTreeBackend(tree(42));
+    const second = new FixedTreeBackend(tree(42));
     expect(first.stat("/file").ino).toBe(second.stat("/file").ino);
 
     const platform = new VirtualPlatformIO(

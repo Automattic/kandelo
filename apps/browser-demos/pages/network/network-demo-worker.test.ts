@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, type Plugin } from "vite";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const workerPath = resolve(dirname(fileURLToPath(import.meta.url)), "network-demo-worker.ts");
 
@@ -37,9 +37,6 @@ test("canonical network rootfs binds activated lazy URLs before mounting", async
       }
       if (id === "\0host-stubs") {
         return `
-          export { MemoryFileSystem } from ${JSON.stringify(
-            resolve(dirname(workerPath), "../../../../host/src/vfs/memory-fs.ts"),
-          )};
           export const CAPTURED_STDIO = {};
           export class CentralizedKernelWorker {}
           export function installBrowserSetImmediatePolyfill() {}
@@ -110,11 +107,32 @@ test("canonical network rootfs binds activated lazy URLs before mounting", async
       `${pathToFileURL(join(output, "worker.mjs")).href}?t=${Date.now()}`
     );
     const artifacts = await module.__loadArtifactsForTest();
-    const restored = MemoryFileSystem.fromImage(artifacts.rootfs);
+
+    // RETIRED 2026-09-17: "the rootfs handed to network machines must bind
+    // product lazy URLs from activation authority".
+    //
+    // It asserted that the activated image's lazy URLs had been REWRITTEN to
+    // the deployment's hashed asset paths, and reached that by restoring the
+    // image with `MemoryFileSystem` and reading a lazy entry's `url`. Binding
+    // was removed deliberately: the rewrite was a round trip through a writer
+    // that cannot express the `SDEF` section, so it emptied the image's
+    // deferred half (defect B45). The image's URI is the canonical ADDRESS and
+    // a deployment's hashed path is transport POLICY, applied when bytes are
+    // fetched — `imageOwnedRuntimeUrlTable`, asserted in
+    // `host/test/image-owned-runtime-urls.test.ts` and
+    // `host/test/php-test-lazy-assets.test.ts`.
+    //
+    // So the claim did not lose a home; it moved to where the mapping happens,
+    // and this assertion was pinning the defect's shape.
+    //
+    // What is still this test's own: the canonical path takes the ACTIVATED
+    // bytes and the image it hands over is the one the manifest described.
+    const reader = KandeloImageFs.create();
+    reader.loadImage(artifacts.rootfs);
     assert.equal(
-      restored.getLazyEntry("/bin/program")?.url,
-      "https://kandelo.invalid/a/vfs-groups/release-1/assets/programs/wasm32/program.wasm",
-      "the rootfs handed to network machines must bind product lazy URLs from activation authority",
+      reader.lazyEntries().files.find((file) => file.path === "/bin/program")?.uri,
+      "binaries/programs/wasm32/program.wasm",
+      "the activated image keeps the address it was built with",
     );
     assert.equal(legacyRootfsFetches, 0, "canonical mode must not consult the legacy rootfs URL");
   } finally {
@@ -156,9 +174,6 @@ test("legacy map-only network rootfs preserves absent lazy asset authority", asy
       }
       if (id === "\0host-stubs") {
         return `
-          export { MemoryFileSystem } from ${JSON.stringify(
-            resolve(dirname(workerPath), "../../../../host/src/vfs/memory-fs.ts"),
-          )};
           export const CAPTURED_STDIO = {};
           export class CentralizedKernelWorker {}
           export function installBrowserSetImmediatePolyfill() {}
@@ -235,8 +250,12 @@ test("legacy map-only network rootfs preserves absent lazy asset authority", asy
 });
 
 async function rootfsFixture(options: { withLazyFile?: boolean } = {}) {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  // The producer that writes every shipped image: this fixture stands in for a
+  // product rootfs a deployment activates.
+  const fs = KandeloImageFs.create();
   if (options.withLazyFile !== false) {
+    // The parent first: the module does not create a deferred file's.
+    fs.mkdir("/bin", 0o755);
     fs.registerLazyFile(
       "/bin/program",
       "binaries/programs/wasm32/program.wasm",

@@ -22,7 +22,6 @@ import {
   WORDPRESS_MARIADB_READY_PHP,
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
-import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
 import {
   resolveBrowserCorsProxyConfig,
@@ -38,7 +37,7 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
-import { ABI_VERSION } from "../../../../../host/src/generated/abi";
+import { ABI_VERSION, ERRNO } from "../../../../../host/src/generated/abi";
 import {
   LiveKernelHost,
   type BootDescriptor,
@@ -1170,7 +1169,27 @@ async function bootProfile(
   // `node-image-runtime.test.ts` asserts this ordering, so moving a bridge call
   // above this line fails a test rather than a demo.
   await ensureImageWriterInstalled();
-  const vfsMetadata = KandeloImageFs.readImageMetadata(fetchedVfsImageBytes);
+  // THE ABI CHECK IS THIS READ, and it used to be a separate call below.
+  //
+  // `MemoryFileSystem.assertImageKernelAbi` stood after this line and could
+  // not fire: `readImageMetadata` LOADS the image to read it, and the loader
+  // refuses an image declaring an ABI it does not speak, so a mismatch threw
+  // here first and the assert only ever saw images that had already passed.
+  // One reader, one check — and the message a demo needs is the actionable
+  // half rather than the two numbers, because the declared one cannot be read
+  // out of an image the loader just refused.
+  let vfsMetadata: ReturnType<typeof KandeloImageFs.readImageMetadata>;
+  try {
+    vfsMetadata = KandeloImageFs.readImageMetadata(fetchedVfsImageBytes);
+  } catch (error) {
+    if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
+      throw new Error(
+        `${profile.id}.vfs.zst was built for a different kernel ABI than this `
+          + `build runs (ABI ${ABI_VERSION}). Rebuild the demo images.`,
+      );
+    }
+    throw error;
+  }
   assertVfsImageFitsProfile(
     // `byteLength` is the image as fetched; `maxByteLength` is what it
     // DECLARES it may grow to. The bridge reports only the declaration,
@@ -1182,11 +1201,6 @@ async function bootProfile(
     },
     profile.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
-    `${profile.id}.vfs.zst`,
-  );
-  MemoryFileSystem.assertImageKernelAbi(
-    fetchedVfsImageBytes,
-    ABI_VERSION,
     `${profile.id}.vfs.zst`,
   );
   // Assemble the demo image in a TRANSIENT build-time filesystem. Its

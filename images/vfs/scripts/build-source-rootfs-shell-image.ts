@@ -3,7 +3,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
+import { ABI_VERSION, ERRNO } from "../../../host/src/generated/abi";
 import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   KANDELO_DEMO_CONFIG_PATH,
@@ -689,7 +689,29 @@ export async function buildSourceRootfsShellImage(
   inputs: SourceRootfsShellInputs,
 ): Promise<Uint8Array> {
   const rootfs = readRegularInput(inputs.rootfsPath, "rootfs dependency");
-  const sourceMetadata = KandeloImageFs.readImageMetadata(rootfs);
+  // READING THE METADATA LOADS THE IMAGE, and the loader refuses one that
+  // declares an ABI it does not speak. So a WRONG ABI arrives here as `EPROTO`
+  // rather than as a number this gate can compare, and the gate's own message
+  // — which names the requirement and is the reason a build's failure is
+  // actionable — would never be reached.
+  //
+  // The refusal is the loader's and stays the loader's; what this adds is the
+  // sentence a person building an image needs. A MISSING declaration still
+  // reaches the comparison below, because an image that declares no ABI makes
+  // no claim for the loader to refuse.
+  let sourceMetadata;
+  try {
+    sourceMetadata = KandeloImageFs.readImageMetadata(rootfs);
+  } catch (error) {
+    if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
+      throw new Error(
+        `rootfs dependency must explicitly declare kernel ABI ${ABI_VERSION}; ` +
+          `it declares a different one and this reader cannot say which — ` +
+          `rebuild it`,
+      );
+    }
+    throw error;
+  }
   if (sourceMetadata?.kernelAbi !== ABI_VERSION) {
     throw new Error(
       `rootfs dependency must explicitly declare kernel ABI ${ABI_VERSION}; ` +

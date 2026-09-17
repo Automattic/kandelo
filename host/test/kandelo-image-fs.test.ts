@@ -889,6 +889,51 @@ describe("KandeloImageFs", () => {
   });
 });
 
+describe("registering an archive into a loaded image", () => {
+  it("does not mint an id the loaded image is already using", () => {
+    // GAP 25. Archive ids are assigned by the bridge, counting up from zero,
+    // and a load fills the tree with archives it never assigned. The next
+    // registration minted id 1 again, collided with the loaded image's archive
+    // 1, and failed EINVAL from the module's "one id, two archives" refusal.
+    //
+    // REACHABLE IN PRODUCTION, not only in a fixture: the shell composer loads
+    // a source rootfs and registers the shell's lazy archives into it. It has
+    // not fired only because today's source rootfs carries no archive — so the
+    // first base image that ships with one would have broken the build that
+    // composes from it.
+    const first = KandeloImageFs.create();
+    first.mkdir("/opt", 0o755);
+    first.registerLazyArchive({
+      url: "https://example.invalid/one.zip",
+      entries: [zipEntry({ fileName: "opt/one" })],
+      mountPrefix: "/",
+      integrity: { sha256: "1".repeat(64), bytes: 10 },
+    });
+    const image = first.exportImage();
+
+    const second = KandeloImageFs.create();
+    second.loadImage(image);
+    expect(second.lazyEntries().archives).toHaveLength(1);
+
+    second.registerLazyArchive({
+      url: "https://example.invalid/two.zip",
+      entries: [zipEntry({ fileName: "opt/two" })],
+      mountPrefix: "/",
+      integrity: { sha256: "2".repeat(64), bytes: 20 },
+    });
+
+    const { archives } = second.lazyEntries();
+    expect(archives).toHaveLength(2);
+    // DISTINCT IDS, which is the whole of it: two archives sharing one id is
+    // the state the module refuses, and the ids are what a member points at.
+    expect(new Set(archives.map((archive) => archive.archiveId)).size).toBe(2);
+    expect(archives.map((archive) => archive.uri).sort()).toEqual([
+      "https://example.invalid/one.zip",
+      "https://example.invalid/two.zip",
+    ]);
+  });
+});
+
 describe("reading through a symlink", () => {
   it("returns the whole file, not the first bytes of it", () => {
     // A SILENT TRUNCATION, found by a builder test in `tools/mkrootfs`.

@@ -302,6 +302,13 @@
       "scope_end": "\n}\n",
       "find": "      out.pop();\n      continue;",
       "replace": "      continue;"
+    },
+    {
+      "name": "a load leaves the archive counter at zero, so the next registration collides with the image's own archive",
+      "scope": "      const loadedArchives = this.lazyEntries().archives;",
+      "scope_end": "\n      }\n",
+      "find": "        if (archive.archiveId > this.lastArchiveId) {",
+      "replace": "        if (false) {"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

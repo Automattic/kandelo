@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 interface RootfsExportAcceptanceResult {
   persistedText: string;
@@ -70,8 +70,13 @@ function projectFixtureDir(projectName: string): URL {
 }
 
 test.beforeAll(async ({}, testInfo) => {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+  // Built by the producer that writes every shipped image, so the fixture this
+  // spec exports and reboots is the kind of image a browser actually mounts.
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(8 * 1024 * 1024);
   fs.mkdir("/state", 0o755);
+  // The parents first: the module does not create a deferred file's.
+  fs.mkdir("/opt", 0o755);
   fs.registerLazyFile(
     "/opt/lazy-export-sentinel",
     "https://packages.example.test/lazy-export-sentinel.wasm",

@@ -1,5 +1,5 @@
 import { createWasmPosixKernelTestHarness } from "../../../../host/src/kernel";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { FixedTreeBackend } from "../../../../host/test/support/fixed-tree-backend";
 import { BrowserTimeProvider } from "../../../../host/src/vfs/time";
 import { VirtualPlatformIO } from "../../../../host/src/vfs/vfs";
 
@@ -74,7 +74,12 @@ async function runProbe({
     );
   }
 
-  const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+  // A ROOT THAT ANSWERS NOTHING, because this probe touches no files: it
+  // creates and reaps processes and reads the kernel's stack pointer. The
+  // mount exists only because `VirtualPlatformIO` needs a backend, and a whole
+  // filesystem for that is a megabyte of buffer and an 8,000-line class to say
+  // "/" is a directory.
+  const rootfs = new FixedTreeBackend({});
   const capture: { instance: WebAssembly.Instance | null } = {
     instance: null,
   };
