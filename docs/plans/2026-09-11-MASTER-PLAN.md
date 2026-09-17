@@ -3438,6 +3438,46 @@ the two numeric shapes, and dropping the string shape. `demo-login-image` is 6
 passed, the surface budget 101 passed. Landed as *"Not there is an answer; I
 could not ask is not"* (`5db1c46f5`), pushed for backup.
 
+## V5's REMAINDER, RE-MEASURED 2026-09-16 EVENING — one decision, not a backlog
+
+**Everything downstream of the boot-boundary decision is done.** What is left
+under `host/src` is two files, and they are one chain:
+
+| file | why it still holds `MemoryFileSystem` |
+|---|---|
+| `vfs/default-mounts.ts` | restores the `/` image into one, so the mount has a backend and imported seals are authenticated |
+| `vfs/load-image.ts` | is that restore |
+| `vfs/index.ts` | the re-export barrel, which goes when the class goes |
+
+The mount-backend half of that is already measured dead: all seventeen
+products declare `/` from their image and `/tmp` scratch, `/tmp` is
+kernel-tmpfs-owned, and `/` is dropped from the guest mounts — so **no
+shipped configuration needs a host mount backend**. The authentication half
+is the decision, and it is stated in full below: the property the restore
+protects is *"refused before a worker is started"*, which is host-side by
+construction because the kernel runs in a worker.
+
+**Nothing else in lane V is waiting on anything.** The items this plan listed
+as owed have been closed or measured away:
+
+* the transport module's guards, the builder contract's guards and the
+  capacity claims now live in the modules they are about, with trials;
+* the timestamp group is homed — `shell-vfs-build.test.ts` already asserts
+  byte-identical builds across two wall clocks through the real builder,
+  which is a stronger claim than the freed-inode-slot case it would replace,
+  and that case is a `MemoryFileSystem` internal that dies with the class;
+* the round-trip verb already re-enters its own output
+  (`vfs_image_describe.rs` shares one loader between both loads "so the
+  re-entry cannot drift");
+* `rewriteLazyFileUrls` and `rewriteLazyArchiveUrls` are gone;
+* the `/etc` overlay left `host/src` entirely.
+
+**What remains inside `memory-fs.ts`** — the lazy-download emit path, the
+atomic-group machinery, the `KLZY` writer — is reachable only when the class
+is a live backend, and that role ended at the Phase 5 cutover. Picking it
+apart method by method before the decision lands would be polish reported as
+progress: it all goes in one deletion or none of it does.
+
 ## V5's REMAINDER, MEASURED 2026-09-16 — it is two call sites, not eighty-four
 
 "Delete `memory-fs.ts`" sounds like 84 files, which is how many still import it.
