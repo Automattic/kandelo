@@ -67,12 +67,26 @@ what an internal stamp buys you.
 
 ## Why the exception is the expensive one
 
-**1. Two fixed names, one refreshed.** `local_build.rs` records it: on
-2026-09-09 a `./run.sh rebuild kernel` refreshed the SourceOnlyV1 projection and
-left the ambient `local-binaries/kernel.wasm` three days stale. `verify-fresh`
-was green — it checked only the tier copy — while every host-native test failed
-on an import-type mismatch. The fix was to teach the gate about both names. **A
-link cannot be stale relative to its target; a copy always can.**
+**1. Two copies of one kernel have broken the build in BOTH directions, and
+`local_build.rs` records each.**
+
+* **2026-09-09 — the tier copy fresh, the root mirror stale.** A `./run.sh
+  rebuild kernel` refreshed the SourceOnlyV1 projection and left the ambient
+  `local-binaries/kernel.wasm` three days behind. `verify-fresh` was green,
+  because it checked only the tier copy, while every host-native test failed on
+  an import-type mismatch — `crates/host-native/src/lib.rs` loads the ambient
+  path directly. The fix was to teach the gate about both names.
+* **The other direction — the root mirror stale and SHADOWING the fresh tier
+  copy.** A seven-hour-old symlink at `local-binaries/kernel.wasm` won over the
+  freshly written `source-only-v1/kernel.wasm`, and `cargo test -p host-native`
+  failed **39 of 53 against a tree where the build had just succeeded**. That
+  one is recorded beside `source_only_output_root`, and its stated cause is that
+  the writer and the two readers disagreed about which tier is authoritative.
+
+**The failure is not "a copy goes stale". It is that whichever copy is stale
+WINS, depending on which one the reader consults** — and the reader varies by
+host, by test binary and by tier. One artifact reachable by one path cannot
+produce either incident.
 
 **2. The cheap provisioning path and the gate contradict each other**, and
 `build_deps.rs` says so. Only the engine stamps `kandelo.build.key`, so an
@@ -138,8 +152,11 @@ whether a *packable* tier can hold links.
 - **Whether the tier copies deliberately because it must be packable.** This is
   now the only question that changes the design rather than the detail, and it
   is a question for whoever wrote the tier projection.
-- **Why these two worktrees have no root kernel mirror.** It is consistent with
-  provisioning by copy rather than by build, but I did not confirm that, and if
-  it is instead a bug in worktree setup then the lane's stale kernel has a much
-  cheaper fix than any of this.
+- ~~Why these two worktrees have no root kernel mirror, and whether the lane's
+  stale kernel therefore has a cheap fix.~~ **Checked, and the answer is no.**
+  The absence is if anything PROTECTIVE — with no root mirror there is nothing
+  to shadow the tier copy, which is the second incident above. And the lane's
+  kernel is stale for real rather than mislocated: the key its tree resolves to,
+  `ea67b4c3…`, exists in no generation on this machine, so it has to be built.
+  `./run.sh setup` remains the fix, as the campaign plan already said.
 - **The full consumer census.**
