@@ -894,3 +894,189 @@ slab) and seed its base through a module entry. No syscall, no blocking, sized
 by the host -- which can count catalog exports before publishing. The cost is one
 new `fm_*` entry, and `forkModuleHostEntries` is a budgeted surface, so it is a
 raise to argue rather than take.
+
+### The revert left a stale artifact, and the freshness check caught it
+
+Worth recording because it is the first time this lane's own machinery caught
+this lane's own mistake, unprompted.
+
+Reverting the spill with `git checkout -- crates/fork-module/src/lib.rs`
+restored the SOURCE and left the built artifact alone. `local-binaries/` still
+held a `fork_module32.wasm` compiled from the mmap source, stamped with that
+source's closure key. Nothing in the working tree looked wrong: `git status`
+was clean, every unit test passed, and the wasm was a real, valid, recently
+built module. It was simply built from code that no longer existed.
+
+`./run.sh setup` refused it at projection finalization:
+
+    source-only program authority: finalization failed: co-resident side
+    module fork_module32.wasm is stale (build-key 3eb1a...)
+
+and rebuilding from the reverted source moved the key to `5bd1ca79...`, which
+is the whole proof: the key is a function of the source closure, so a changed
+key means changed inputs and an unchanged key would have meant the check was
+not measuring anything.
+
+Two things follow. First, `git checkout --` is a build-invalidating operation
+and does not act like one -- it is the one way to change a build input that
+leaves no trace in the status output an agent habitually reads. Second, this is
+exactly the failure class the lane was sent to fix, arriving by a route nobody
+designed for: not a stale COMMIT, but a stale revert. The check did not care
+about the distinction, which is the argument for keying on the closure rather
+than on any notion of what the developer meant to do.
+
+### Which check caught it, and why the vacuous one is not a hole
+
+WHICH check fired matters, because the two are easy to mistake for redundant.
+
+It was NOT `verify_fresh_coresident_side_modules`. That one reads
+`local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json`
+and returns `Ok(())` when the file is absent -- a behaviour pinned by
+`l5_ok_when_no_projection_manifest_exists`. The manifest WAS absent here
+(verified directly; an earlier `find` of mine used a pattern that could not
+match that filename, which is a false negative rather than evidence). So that
+check passed without examining anything.
+
+It was the projection FINALIZER, at publish time.
+
+That division is correct, and this run is the evidence. The freshness check
+answers "does what has been PROJECTED still agree with source?" -- when nothing
+is projected there is genuinely nothing to disagree, so `Ok(())` is the true
+answer, not a skipped test. The finalizer answers the different question "is
+what I am ABOUT TO PUBLISH fresh?", and that question has an answer whether or
+not a manifest exists yet. A stale artifact therefore cannot reach a projection
+through the gap: the empty-manifest case is exactly the case the finalizer
+covers.
+
+The reason this is worth writing down is that the vacuous-pass reads like a
+hole when you meet it in isolation, and the instinct is to "harden" it by
+making a missing manifest an error. That would be wrong: it would fail every
+first build, where no manifest can exist yet, and it would be defending a
+boundary the finalizer already holds.
+
+### And the shipped-artifact test would NOT have caught it
+
+Stated because the test's name invites the opposite reading.
+`fork-module-shipped-artifact.test.ts` asserts that every staged tier copy is
+byte-identical to the one `resolveBinary` actually returns. Today all three
+tiers held the SAME mmap-built bytes -- `build-wasm.sh` stages all three from
+one build -- so they agreed perfectly, and that test would have passed while
+the artifact was stale against source.
+
+That is not a defect in it. Tier AGREEMENT and source FRESHNESS are different
+properties, and they fail in different ways:
+
+  * tiers disagree, source fine -- a stale copy in the first-searched tier
+    shadows a fresh build (census 90, the three-hour-old module). Caught by
+    the shipped-artifact test; invisible to a build key, because the key
+    describes the build that wrote SOME copy, not which copy wins.
+  * tiers agree, source moved -- today. Caught by the build-key stamp
+    (`--verify-fresh`) and by the finalizer; invisible to a byte comparison
+    between copies, because consistency says nothing about currency.
+
+Neither check subsumes the other, and each is blind exactly where the other
+looks. Worth keeping in view when either is next proposed for simplification:
+they look redundant (both compare hashes of the same file) and are not.
+
+## NEEDS A DECISION: the pkg-config guard is inert -- nothing runs sdk's tests
+
+The `sdk/src/bin/pkg-config.ts` path-spelling fix is the change that unblocked
+php, and through php the wordpress and lamp products. The FIX is proven by the
+build. Its regression guard is not, and cannot be, because nothing executes the
+suite it lives in.
+
+What I checked:
+
+  * `sdk/package.json` has `"test": "vitest run"` and vitest as a
+    devDependency, and there is no vitest config in `sdk/`, so the default
+    include would pick up `sdk/test/pkg-config.test.ts`. The test is
+    well-formed and would run if the suite were invoked.
+  * Nothing invokes it. No workflow in `.github/workflows/` runs it -- the
+    only `sdk` matches in CI are a comment about `developer-kandelo-sdk`
+    license bytes. `run.sh`, `scripts/` and `tools/xtask/src/` contain no
+    `npm --prefix sdk test` or equivalent; the sole `cd sdk` is an `npm
+    unlink` hint in a warning string.
+  * `sdk/` has no `node_modules` in this worktree, so it cannot be run here
+    without an install. I exercised the two cases I added through
+    `node --experimental-strip-types` instead, which proves the LOGIC and not
+    the suite.
+
+So the rule that a per-worktree cache root must survive `PKG_CONFIG_PATH`
+filtering is currently enforced by nothing. The next person to tighten that
+filter gets php failing again, thirty minutes into a build, with the same
+unhelpful symptom this lane spent hours on.
+
+This is the maintainer's call because the remedy is a CI change, which is
+outside what B50 asked for:
+
+  * wire `sdk` into CI (an install plus `npm --prefix sdk test`), which makes
+    this and every future sdk test real; or
+  * move the pkg-config cases into a suite that already runs, which fixes this
+    one guard and leaves the suite inert for the next one; or
+  * accept it as untested and say so, in which case the test file is
+    documentation and should not look like a guard.
+
+My recommendation is the first: the suite exists, has a runner declared, and
+the only missing piece is the invocation. But adding a CI job is a scope
+decision, not a fork fix, so I am not taking it unasked.
+
+## B50 done criterion: MET, with the evidence
+
+`./run.sh setup` in this worktree, after the fork-module rebuild:
+
+    SETUP_EXIT=0
+    "outcome":"succeeded"
+    "state":"succeeded"  x98   (91 packages + 7 products, no other state)
+
+The six browser products all present: `browser-lamp`, `browser-main-shell`,
+`browser-nginx`, `browser-nginx-php`, `browser-node`, `browser-wordpress`
+(plus `platform-rootfs`). `coreutils-docs/wasm32` and `shell/wasm32` both
+reached a built state.
+
+The exit code is read from the FILE, not from the job's status: the command
+was `./run.sh setup > log 2>&1; echo "SETUP_EXIT=$?" >> log`, so the wrapper's
+own exit is the `echo`'s and always 0. The number that matters is the one in
+the log.
+
+One `failed` string appears in 5,000+ lines, and it is the mirror fallback
+working:
+
+    WARN: gawk source fetch failed from https://ftpmirror.gnu.org/gawk/...
+
+followed by `==> Configuring gawk for wasm32...` from the `ftp.gnu.org`
+fallback added in `237768364`. The matcher used to find it was first proved
+capable of a positive -- the same grep returns 115 hits on the previous,
+genuinely failed log and 1 here -- because a failure scan that cannot match
+is not a verdict.
+
+## NEEDS A DECISION: the errno diagnostic has nowhere to live
+
+`forkTypeScript` measures **890 against a ceiling of 890**. Zero headroom.
+(Measured with the budget test's own `codeLinesInSource`, extracted at
+runtime rather than reimplemented, so the rule cannot drift from the test's:
+463 backend + 69 host-capabilities + 199 instance + 159 capture-module.)
+
+That decides the shape of the approved E2BIG work rather than merely
+constraining it. The module side is free -- one `fm_stats` field, no new
+`fm_*` entry, `forkModuleHostEntries` untouched -- but every host-side
+formulation costs at least one line for the `FORK_MODULE_STATS` name, and
+891 > 890. The errno-7 arm itself is free: the existing errno-16 ternary
+extends to a second arm within the same single expression.
+
+The identity count is not reachable any other way. `GLOBAL_IDENTITY_COUNT`
+has exactly two readers (`set_identity_group_impl` and `identity_groups`),
+both module-internal, and no exported accessor.
+
+So the options are:
+
+  * free one line in those four files by a simplification worth making on
+    its own merits, and let the diagnostic pay for itself -- which is
+    precisely what the ceiling comment in `call()` says to do, and the
+    honest path if such a line exists;
+  * raise the ceiling by one, which I will not do unasked: it is one of the
+    three standing provisional raises B50 explicitly excluded, and "never
+    raise a ceiling to make a check pass" is standing;
+  * leave the errno undiagnosable and keep the recorded note in
+    `crates/fork-module/src/lib.rs` as the reader's only help.
+
+I am not taking the second. Reporting the first as attempted-or-not below.
