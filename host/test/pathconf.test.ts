@@ -8,13 +8,13 @@ import { backendPathconf } from "../src/pathconf";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
-import {
-  ENOENT,
-  O_CREAT,
-  O_RDONLY,
-  O_RDWR,
-  SFSError,
-} from "../src/vfs/sharedfs-vendor";
+// POSIX constants from where the platform publishes them, not from the
+// vendored filesystem: `sharedfs-vendor.ts` goes with `memory-fs.ts`, and
+// `SFSError` went with the assertion that named it — the claim is an errno.
+import { OPEN_FLAGS } from "../src/generated/abi";
+import { ENOENT } from "../src/vfs/vfs-errors";
+
+const { O_CREAT, O_RDONLY, O_RDWR } = OPEN_FLAGS;
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
 
