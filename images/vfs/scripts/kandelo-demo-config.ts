@@ -28,28 +28,23 @@ export function terminalPresentation(): DemoPresentationConfig {
 }
 
 /**
- * The web presentation, which DELIBERATELY DIFFERS from the library's.
+ * The web presentation, from the one place that defines presentations.
  *
- * `genericDemoPresentation("web")` orders the running surfaces
- * `["web", "terminal", "syslog"]`; this one puts syslog second, so a web demo
- * stays on the boot log while the HTTP preview is still coming up rather than
- * falling back to a terminal. The comment for that has been here since the
- * function was written.
+ * This used to write the object out again, ordering the running surfaces
+ * `["web", "syslog", "terminal"]` while `genericDemoPresentation("web")` put
+ * terminal second. The maintainer settled it 2026-09-17: the image builders'
+ * order is right and the library's was wrong, so the library now carries this
+ * order and there is one definition of it.
  *
- * **Whether the divergence is intended or drift is not this lane's to decide**,
- * because the running-surface order is what a viewer sees. It is left as it was
- * and written up rather than quietly unified with the library: unifying it
- * would change five shipped demos (`lamp`, `wordpress-mariadb`,
- * `wordpress-sqlite`, `wordpress`, and the two nginx images) without anyone
- * asking for it.
+ * The divergence mattered, and `demo-guides.ts` is why. Its
+ * `builtinDemoPresentation` maps nginx, nginx-php, wordpress,
+ * wordpress-sqlite, wordpress-mariadb and lamp to the library's web case --
+ * the SAME six demos these builders write `/etc/kandelo/demo.json` for. So a
+ * viewer saw one surface order when the image supplied the presentation and a
+ * different one when the built-in fallback did.
  */
 export function webPresentation(): DemoPresentationConfig {
-  return {
-    bootPrimary: "syslog",
-    runningPrimary: ["web", "syslog", "terminal"],
-    terminalAccess: "drawer",
-    internalsAccess: "drawer",
-  };
+  return genericDemoPresentation("web");
 }
 
 export function action(
