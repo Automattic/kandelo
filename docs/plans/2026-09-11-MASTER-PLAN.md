@@ -14502,9 +14502,24 @@ left in place it measures a missing file, `codeLineCount` refuses a missing path
 by design, and the budget fails with an error that looks like a broken test
 rather than a surface that reached zero. Keep the lane's `imageFsTypeScript`.
 
-**Also check `sffsModuleEntryPoints`** (parent, ceiling 22) against the same
-question — whether what it counts still exists after the merge. I did not
-determine that.
+**THERE ARE TWO RENAMED PAIRS, not one.** The lane renamed the crate
+`crates/sffs-module/` → `crates/kandelo-image-module/` and its budget entry with
+it:
+
+| parent | lane | same surface? |
+|---|---|---|
+| `sffsTypeScript` (3,047) | `imageFsTypeScript` (0) | yes — `host/src/vfs/sharedfs-vendor.ts` |
+| `sffsModuleEntryPoints` (22) | `kandeloImageModuleEntryPoints` (22) | yes — identical ceiling, renamed crate |
+
+**Drop both parent entries; keep both lane entries.**
+
+**AND A PRE-EXISTING RED ON THE PARENT, so nobody blames the merge for it.** The
+parent's `sffsModuleEntryPoints` measures
+`countMatches("crates/sffs-module/src/lib.rs", …)`, and **that path does not
+exist on the parent branch** — the parent has `crates/runtime-core/src/sffs*.rs`
+and no `crates/sffs-module/` at all. `countMatches` is an unguarded
+`readFileSync`, so it throws. That entry is stale on the parent TODAY,
+independent of this lane, and it disappears when the entry is dropped.
 
 **AND A RETRACTION: ignore any `forkTypeScript` figure computed here.** I
 measured 6,461 against the merged tree and it fit neither side — because I used
