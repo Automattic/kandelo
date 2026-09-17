@@ -4445,7 +4445,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     // twice — and worse, would stamp `kind: "archive"` on a lazy FILE's
     // transfer, since one fetcher now serves both. One pipe, one vocabulary,
     // one place that speaks.
-    // NO `exportLazyEntries()`. That call produced the host's inode -> URL
+    // NO LAZY-FILE LIST. That call produced the host's inode -> URL
     // table, and handing it over made this host a second author for where a
     // deferred file's bytes live — with the image, which already recorded an
     // address, as the first. The kernel now reads that address itself and names
@@ -4453,11 +4453,13 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     // whose table was EMPTY, stops loading as an image with no deferred files
     // (defect B43) for the same reason.
     //
-    // The archive entries stay, read for transport POLICY only: which alternate
-    // URLs may stand in for an address, and what length to believe. Never for
-    // which resource is being read.
+    // The archives stay, read for transport POLICY only: which alternate URLs
+    // may stand in for an address, and what length to believe. Never for which
+    // resource is being read — which is why what arrives here is now an
+    // address, its mirrors and a length rather than a serialized archive
+    // record carrying members and a mount prefix nobody downstream read.
     const { deferredProvider } = buildRootfsLazyWiring(
-      options.baseImage.exportLazyArchiveEntries(),
+      options.baseImage.deferredArchives(),
       fetchUrlBytes,
       onProgress,
     );

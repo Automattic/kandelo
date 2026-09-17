@@ -37,11 +37,6 @@
  * rather than a gap in a table.
  */
 
-import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
-import type {
-  LazyFileEntry,
-  SerializedLazyArchiveEntry,
-} from "./memory-fs";
 import type { LazyDownloadEvent } from "./lazy-download-event";
 
 /** Total byte size of a lazy archive, recorded in the trailing archive table
@@ -69,12 +64,57 @@ const ENOSYS = -38;
  * image declared.
  */
 export interface RootfsOverlayBaseImage {
-  exportLazyEntries(): LazyFileEntry[];
-  exportLazyArchiveEntries(): SerializedLazyArchiveEntry[];
+  deferredFiles(): DeferredBody[];
+  deferredArchives(): DeferredBody[];
   // NOT `imageBodyBytes()`. A backend holding the whole CONTAINER cannot
   // answer that — it would be off by the header and carry the trailing
   // sections — so the reader is supplied alongside this by whoever knows which
   // backend they have.
+}
+
+/**
+ * One deferred body an image references, reduced to what a HOST does with it.
+ *
+ * This replaces `SerializedLazyArchiveEntry`, the JSON wire shape declared in
+ * `memory-fs.ts` whose own doc comment called it "JSON-serializable form of
+ * LazyArchiveGroup for cross-worker transfer". Passing that shape around made
+ * every consumer of a deferred body import the filesystem lane V is deleting,
+ * and it cost more than an import: the module-backed reader had to SYNTHESIZE
+ * one — grouping members by archive, JSON-parsing each descriptor for a mount
+ * prefix — so that `buildRootfsLazyWiring` could immediately reduce it back to
+ * an address, its mirrors and a length. Two of those three synthesized fields
+ * were read by nobody.
+ *
+ * What a host does with a deferred body is fetch it and check what came back.
+ * That is this record, and it is the same record for a lazy FILE and a lazy
+ * ARCHIVE, because addressing them differently is exactly the distinction the
+ * URI relay removed.
+ */
+export interface DeferredBody {
+  /**
+   * The address the IMAGE named. Identity, not policy: this is the resource,
+   * and the kernel names it in the fetch it asks for.
+   */
+  readonly address: string;
+  /**
+   * Mirrors that may stand in for the address, in preference order, the first
+   * being the address itself. Host authority — never written into an image —
+   * and never a decision about WHICH resource is being read.
+   */
+  readonly transports: readonly string[];
+  /** Declared length; absent when the producer declared none. */
+  readonly bytes: number | undefined;
+  /**
+   * Declared SHA-256, as hex; absent when the producer declared none.
+   *
+   * Carried for archives and left undefined for files, and the asymmetry is
+   * the carriers', not a consumer's convenience: an image's host-side lazy
+   * section records no per-file digest at all, so a file's digest would be
+   * present on an image the module wrote and absent on one the legacy writer
+   * wrote. A field whose meaning depends on which producer ran is worse than
+   * no field, and no consumer reads one.
+   */
+  readonly sha256: string | undefined;
 }
 
 /**
@@ -142,7 +182,7 @@ function report(
  * a hang rather than a failure.
  */
 export function buildRootfsLazyWiring(
-  entries: SerializedLazyArchiveEntry[],
+  archives: readonly DeferredBody[],
   fetcher: (url: string) => Promise<Uint8Array>,
   onProgress?: DeferredProgress,
 ): {
@@ -152,16 +192,23 @@ export function buildRootfsLazyWiring(
     dest: Uint8Array,
   ) => number;
 } {
-  // Transport policy, keyed by ADDRESS. Built from the archive groups because
-  // they are the only deferred resources that carry alternates today; a lazy
-  // file has one URL and needs no entry.
+  // Transport policy, keyed by ADDRESS. Built from the archives because they
+  // are the only deferred resources that carry alternates today; a lazy file
+  // has one URL and needs no entry.
+  //
+  // A body with no declared length is SKIPPED, which is the rule the reducer
+  // this replaced applied and worth keeping stated: without a length, bytes
+  // that arrive from a mirror cannot be checked against what the image
+  // expected, and a mirror serving something else is the failure a transport
+  // table exists to bound. Skipping leaves the address fetched directly, which
+  // is the courier contract rather than a gap.
   const policy = new Map<string, { transports: string[]; size: number }>();
-  for (const group of reduceLazyArchiveGroups(entries)) {
-    const [address] = group.transports;
-    if (address === undefined) continue;
-    policy.set(address, {
-      transports: group.transports,
-      size: group.archiveBytes,
+  for (const archive of archives) {
+    if (archive.address === "") continue;
+    if (archive.bytes === undefined) continue;
+    policy.set(archive.address, {
+      transports: [...archive.transports],
+      size: archive.bytes,
     });
   }
 

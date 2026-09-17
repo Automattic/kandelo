@@ -25,12 +25,8 @@ import {
   parseImageHeader,
   sectionOffsetAfterArchives,
 } from "./vfs-image-transport";
-import type {
-  LazyFileEntry,
-  SerializedLazyArchiveEntry,
-} from "./memory-fs";
 import { resolveLazyUrl } from "./lazy-url";
-import type { RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
+import type { DeferredBody, RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
 
 /** What `KandeloImageFs.lazyEntries()` answers, named so this file need not import it. */
 export interface ModuleLazyEntries {
@@ -62,49 +58,17 @@ function bytesToSha256Hex(digest: Uint8Array): string {
   return out;
 }
 
-/**
- * Take the descriptor half out of an archive's seal payload.
- *
- * The module wraps every archive payload as
- * `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]` —
- * `seal::encode` in `crates/kandelo-image-module/src/seal.rs`. Reading it here is the
- * design rather than a duplication of it: the seal was deliberately split so
- * that *"the descriptor half stays whatever the producer writes ... and the
- * kernel still never parses it. The seal half is parsed by the VERIFIER, which
- * is consumer-side."* The host is that consumer. What this must never do is
- * re-derive the canonical cohort IDENTITY, which is the part a second
- * implementation could get subtly wrong; a length-prefixed slice has no such
- * freedom.
- */
-function unwrapSealPayload(payload: Uint8Array, archiveId: number): Uint8Array {
-  if (payload.byteLength < 8) {
-    throw new Error(
-      `VFS image lazy archive ${archiveId} has a payload too short to carry a descriptor.`,
-    );
-  }
-  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  const version = view.getUint32(0, true);
-  if (version !== 1) {
-    throw new Error(
-      `VFS image lazy archive ${archiveId} declares payload version ${version}, `
-        + "which this reader does not know.",
-    );
-  }
-  const length = view.getUint32(4, true);
-  // UNREACHABLE through the module's own writer, and kept deliberately. The
-  // module wraps every payload in a well-formed envelope, so no producer
-  // reachable from here can declare a length past the end — a perturbation
-  // removing this check survives, and provably would, because `subarray`
-  // CLAMPS rather than overruns. It stays because the clamp is the dangerous
-  // behaviour: it would hand the seal bytes on as if they were descriptor.
-  if (8 + length > payload.byteLength) {
-    throw new Error(
-      `VFS image lazy archive ${archiveId} declares a ${length}-byte descriptor `
-        + `that does not fit in its ${payload.byteLength}-byte payload.`,
-    );
-  }
-  return payload.subarray(8, 8 + length);
-}
+// THE SEAL-PAYLOAD UNWRAPPER IS GONE, and so is the reason it existed.
+//
+// The module wraps every archive payload as
+// `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]`
+// (`seal::encode`). This file opened that envelope to JSON-parse the
+// descriptor for one field, `mountPrefix` — the only field it could not read
+// as a typed value — and nothing downstream ever read the result. With the
+// record reduced to what a host acts on, a boot no longer opens an opaque
+// blob at all: the address, the length and the digest are typed fields the
+// module hands over, and the seal half is authenticated in the loader by
+// `rootfs::load_image` rather than inspected here.
 
 function decodeSection(bytes: Uint8Array | null, label: string): unknown {
   if (bytes === null) return null;
@@ -188,111 +152,112 @@ export function createBaseImageFromContainer(
   const rebaseUrl = (url: string): string =>
     lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);
 
-  // An archive names its transports in declared order and its `url` is the
-  // first of them; an entry with no `content` carries only the `url`. That is
-  // the whole of what the incumbent's three-branch rewrite does to observable
-  // state — the branches choose which in-memory record to touch, and a decoded
-  // entry is one record.
-  const rebaseArchive = (
-    entry: SerializedLazyArchiveEntry,
-  ): SerializedLazyArchiveEntry => {
-    if (lazyUrlBase === undefined) return entry;
-    if (entry.content === undefined) return { ...entry, url: rebaseUrl(entry.url) };
-    const transports = entry.content.transports.map(rebaseUrl);
+  // WHAT A HOST-SIDE SECTION RECORDS, read structurally rather than cast.
+  //
+  // These sections are JSON written by the legacy producer, and the legacy
+  // shape was a TYPE this file imported from the filesystem that declared it.
+  // Reading the three fields a host acts on needs no such import, and the cast
+  // it replaces was never sound anyway: the bytes are parsed from an image
+  // that can arrive from a shared link, so a declared type here asserted
+  // something about untrusted input that nothing had checked.
+  const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+    typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)
+      : undefined;
+  const declaredTransports = (entry: Record<string, unknown>): string[] => {
+    const content = asRecord(entry.content);
+    const listed = Array.isArray(content?.transports)
+      ? (content.transports as unknown[]).filter(
+        (url): url is string => typeof url === "string" && url.length > 0,
+      )
+      : [];
+    if (listed.length > 0) return listed.map(rebaseUrl);
+    return typeof entry.url === "string" && entry.url.length > 0
+      ? [rebaseUrl(entry.url)]
+      : [];
+  };
+  const declaredIdentity = (
+    entry: Record<string, unknown>,
+  ): { bytes: number | undefined; sha256: string | undefined } => {
+    // `content` first, `integrity` second: a v3 tree describes its bytes in
+    // `content` and older entries in `integrity`, and an entry carrying both
+    // is describing one archive twice.
+    const identity = asRecord(entry.content) ?? asRecord(entry.integrity);
     return {
-      ...entry,
-      content: { ...entry.content, transports },
-      url: transports[0] ?? entry.url,
+      bytes: typeof identity?.bytes === "number" ? identity.bytes : undefined,
+      sha256: typeof identity?.sha256 === "string" ? identity.sha256 : undefined,
     };
   };
 
   const baseImage: RootfsOverlayBaseImage = {
-    exportLazyEntries: () => {
+    deferredFiles: () => {
       if (fromModule !== undefined) {
         // `archiveId === 0` is the STANDALONE registration: no archive behind
         // it, so `uri` is the whole of what says where the bytes are.
         return fromModule.files
           .filter((file) => file.archiveId === 0)
           .map((file) => ({
-            ino: Number(file.ino),
-            generation: 1,
-            dataSequence: 1,
-            path: file.path,
-            paths: [file.path],
-            url: rebaseUrl(file.uri),
-            size: file.size,
-          })) as LazyFileEntry[];
+            address: rebaseUrl(file.uri),
+            transports: [rebaseUrl(file.uri)],
+            bytes: file.size,
+            sha256: undefined,
+          }));
       }
-      return (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>
-        lazyUrlBase === undefined ? entry : { ...entry, url: rebaseUrl(entry.url) },
-      );
+      const listed = Array.isArray(lazy) ? lazy : [];
+      return listed.flatMap((value): DeferredBody[] => {
+        const entry = asRecord(value);
+        if (entry === undefined) return [];
+        const url = typeof entry.url === "string" ? rebaseUrl(entry.url) : "";
+        return [{
+          address: url,
+          transports: url === "" ? [] : [url],
+          bytes: typeof entry.size === "number" ? entry.size : undefined,
+          sha256: undefined,
+        }];
+      });
     },
-    exportLazyArchiveEntries: () => {
+    deferredArchives: () => {
       if (fromModule !== undefined) {
-        // Members are grouped by the archive they came from. `archiveId === 0`
-        // is the standalone registration handled above, not a member.
-        const membersByArchive = new Map<number, SerializedLazyArchiveEntry["entries"]>();
-        for (const file of fromModule.files) {
-          if (file.archiveId === 0) continue;
-          const list = membersByArchive.get(file.archiveId) ?? [];
-          list.push({
-            vfsPath: file.path,
-            ino: Number(file.ino),
-            size: file.size,
-            isSymlink: false,
-            deleted: false,
-            type: "file",
-            sourcePath: file.sourcePath,
-          });
-          membersByArchive.set(file.archiveId, list);
-        }
         return fromModule.archives.map((archive) => {
           // Read as FIELDS, not parsed back out of the descriptor: they were
           // in there only because the format had nowhere typed to put them, so
           // this reader had to open a blob the format says nobody opens — on
           // untrusted input, since an image can arrive from a shared link.
+          //
+          // NO DESCRIPTOR PARSE AT ALL NOW. It survived here to recover a
+          // `mountPrefix` for the legacy record's shape; nothing downstream
+          // ever read that field, so a boot no longer JSON-parses an opaque
+          // blob to fill a slot nobody looks in.
           if (archive.uri === "") {
             throw new Error(
               `VFS image lazy archive ${archive.archiveId} declares no address, `
                 + "so there is nothing that says where its bytes come from.",
             );
           }
-          // `mountPrefix` stays parsed: the kernel genuinely never reads it,
-          // so it is the one field here that is the consumer's alone.
-          const text = new TextDecoder().decode(unwrapSealPayload(archive.descriptor, archive.archiveId));
-          let described: { mountPrefix?: unknown };
-          try {
-            described = JSON.parse(text) as typeof described;
-          } catch {
-            // Refused, not guessed. A descriptor this reader cannot parse is a
-            // producer it does not know, and an archive built from a guess
-            // activates wrongly rather than not at all.
-            throw new Error(
-              `VFS image lazy archive ${archive.archiveId} has a descriptor this `
-                + "reader cannot parse, so its mount prefix is unknown.",
-            );
-          }
-          if (typeof described.mountPrefix !== "string") {
-            throw new Error(
-              `VFS image lazy archive ${archive.archiveId} declares no mount `
-                + "prefix, and the mount prefix is written into the kernel's "
-                + "lazy manifest — it cannot be inferred from member paths.",
-            );
-          }
-          return rebaseArchive({
-            kind: "kandelo-legacy-zip-v1",
-            url: archive.uri,
-            mountPrefix: described.mountPrefix,
-            materialized: false,
-            integrity: archive.digest.length === 32 && archive.digest.some((b) => b !== 0)
-              ? { sha256: bytesToSha256Hex(archive.digest), bytes: archive.bytes }
-              : undefined,
-            entries: membersByArchive.get(archive.archiveId) ?? [],
-          } as SerializedLazyArchiveEntry);
+          const address = rebaseUrl(archive.uri);
+          const declared = archive.digest.length === 32
+            && archive.digest.some((byte) => byte !== 0);
+          return {
+            address,
+            transports: [address],
+            bytes: declared ? archive.bytes : undefined,
+            sha256: declared ? bytesToSha256Hex(archive.digest) : undefined,
+          };
         });
       }
-      return (Array.isArray(archives) ? (archives as SerializedLazyArchiveEntry[]) : [])
-        .map(rebaseArchive);
+      const listed = Array.isArray(archives) ? archives : [];
+      return listed.flatMap((value): DeferredBody[] => {
+        const entry = asRecord(value);
+        if (entry === undefined) return [];
+        const transports = declaredTransports(entry);
+        const { bytes, sha256 } = declaredIdentity(entry);
+        return [{
+          address: transports[0] ?? "",
+          transports,
+          bytes,
+          sha256,
+        }];
+      });
     },
   };
 

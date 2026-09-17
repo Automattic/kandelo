@@ -1,31 +1,20 @@
 import { describe, it, expect } from "vitest";
 import { buildRootfsLazyWiring } from "../src/vfs/rootfs-lazy-archives";
-import { reduceLazyArchiveGroups } from "../src/vfs/kernel-lazy-section";
-import type { SerializedLazyArchiveEntry } from "../src/vfs/memory-fs";
+import type { DeferredBody } from "../src/vfs/rootfs-lazy-archives";
 
 /**
- * The lazy manifest `buildRootfsLazyWiring` used to return and nothing read.
+ * THE MEMBER-REDUCTION CASES MOVED, 2026-09-17, three of them: (a) only the
+ * live file member is mapped, (b) the archive table gets the minted id and raw
+ * size, (g) a group with no declared length is skipped whole.
  *
- * It is gone from production: the kernel parses the image's own KLZY section,
- * so the host builds only a fetch table. The member reduction it exercised is
- * still real — `encodeKernelLazySection` writes those members — so these
- * assertions now go straight at `reduceLazyArchiveGroups`, which is where that
- * behaviour lives, instead of through a wiring call that no longer reports it.
+ * They asserted `reduceLazyArchiveGroups`, reached through this file because
+ * `buildRootfsLazyWiring` used to call it. It no longer does: what a host does
+ * with a deferred body is fetch it, so the wiring takes an address, its
+ * mirrors and a length, and the member list and mount prefix it used to reduce
+ * away are not produced in the first place. The reduction's one remaining
+ * caller is the `KLZY` encoder in `memory-fs.ts`, so the cases live beside
+ * that encoder now, in `vfs-image-kernel-lazy.test.ts`, and retire with it.
  */
-function lazyManifest(entries: SerializedLazyArchiveEntry[]) {
-  const files = new Map<string, { archiveId: number; sourcePath: string }>();
-  const archives: { archiveId: number; size: number }[] = [];
-  for (const group of reduceLazyArchiveGroups(entries)) {
-    archives.push({ archiveId: group.archiveId, size: group.archiveBytes });
-    for (const member of group.members) {
-      files.set(member.vfsPath, {
-        archiveId: group.archiveId,
-        sourcePath: member.sourcePath,
-      });
-    }
-  }
-  return { files, archives };
-}
 
 /** Let an in-flight async archive fetch (and its chained `.then`s) settle
  * before making assertions. A macrotask tick is used rather than a fixed
@@ -53,19 +42,15 @@ function archiveReaderOf(
   return wiring.deferredProvider;
 }
 
-/** Minimal fake `SerializedLazyArchiveEntry` group. Only the fields the
- * builder reads are populated; unused required fields get placeholder
- * values so the object satisfies the type. */
-function makeGroup(
-  overrides: Partial<SerializedLazyArchiveEntry>,
-): SerializedLazyArchiveEntry {
+/** A deferred archive as the wiring is handed one: an address, its mirrors in
+ * preference order, and what the image said the bytes weigh. */
+function archive(overrides: Partial<DeferredBody> = {}): DeferredBody {
+  const transports = overrides.transports ?? ["u1"];
   return {
-    kind: "kandelo-deferred-tree-v3",
-    url: "",
-    mountPrefix: "/",
-    materialized: false,
-    entries: [],
-    ...overrides,
+    address: overrides.address ?? transports[0] ?? "",
+    transports,
+    bytes: "bytes" in overrides ? overrides.bytes : 1,
+    sha256: overrides.sha256,
   };
 }
 
@@ -87,115 +72,16 @@ describe("buildRootfsLazyWiring", () => {
     return { fetcher, calls, settle: () => resolveFetch(archiveBytes) };
   }
 
-  function buildEntries(): SerializedLazyArchiveEntry[] {
-    const validGroup = makeGroup({
-      content: {
-        decoder: "zip-v1",
-        mediaType: "application/zip",
-        sha256: "deadbeef",
-        bytes: ARCHIVE_SIZE,
-        expandedBytes: ARCHIVE_SIZE * 2,
-        sourceEntryCount: 4,
-        transports: ["u1", "u2"],
-      },
-      entries: [
-        {
-          vfsPath: "/a/dir",
-          ino: 1,
-          size: 0,
-          isSymlink: false,
-          deleted: false,
-          type: undefined,
-        },
-        {
-          vfsPath: "/a/link",
-          ino: 2,
-          size: 0,
-          isSymlink: true,
-          deleted: false,
-          type: "symlink",
-          sourcePath: "bin/link",
-        },
-        {
-          vfsPath: "/a/f",
-          ino: 3,
-          size: 6,
-          isSymlink: false,
-          deleted: false,
-          type: "file",
-          sourcePath: "bin/f",
-        },
-        {
-          vfsPath: "/a/gone",
-          ino: 4,
-          size: 0,
-          isSymlink: false,
-          deleted: true,
-          type: "file",
-          sourcePath: "bin/gone",
-        },
-        {
-          vfsPath: "/a/nosource",
-          ino: 5,
-          size: 1,
-          isSymlink: false,
-          deleted: false,
-          type: "file",
-        },
-      ],
-    });
-
-    // Group missing both content.bytes and integrity.bytes: must be skipped
-    // entirely (no id minted, no members, no archive-table entry).
-    const skippedGroup = makeGroup({
-      content: undefined,
-      integrity: undefined,
-      url: "",
-      entries: [
-        {
-          vfsPath: "/b/should-not-appear",
-          ino: 10,
-          size: 3,
-          isSymlink: false,
-          deleted: false,
-          type: "file",
-          sourcePath: "bin/should-not-appear",
-        },
-      ],
-    });
-
-    return [skippedGroup, validGroup];
+  /** The policy this wiring holds: one archive with two mirrors and a declared
+   * length, plus one the image sized nowhere. A body with no declared length
+   * is skipped, so its address is fetched directly rather than through a
+   * mirror list that could serve something else unchecked. */
+  function buildEntries(): DeferredBody[] {
+    return [
+      archive({ address: "no-size", transports: ["no-size"], bytes: undefined }),
+      archive({ transports: ["u1", "u2"], bytes: ARCHIVE_SIZE }),
+    ];
   }
-
-  it("(a) includes only the live file member with correct mapping", () => {
-    const lazyInput = lazyManifest(buildEntries());
-
-    expect(lazyInput.files.size).toBe(1);
-    expect(lazyInput.files.get("/a/f")).toEqual({
-      archiveId: 1,
-      sourcePath: "bin/f",
-    });
-    expect(lazyInput.files.has("/a/dir")).toBe(false);
-    expect(lazyInput.files.has("/a/link")).toBe(false);
-    expect(lazyInput.files.has("/a/gone")).toBe(false);
-    expect(lazyInput.files.has("/a/nosource")).toBe(false);
-  });
-
-  it("(b) archives table has one entry with the minted id and raw size", () => {
-    const lazyInput = lazyManifest(buildEntries());
-
-    expect(lazyInput.archives).toEqual([{ archiveId: 1, size: ARCHIVE_SIZE }]);
-  });
-
-  it("(g) a group missing content.bytes and integrity.bytes is skipped, and the surviving group still gets a stable id", () => {
-    const lazyInput = lazyManifest(buildEntries());
-
-    expect(lazyInput.files.has("/b/should-not-appear")).toBe(false);
-    // Only one archive-table entry total (the skipped group contributed none).
-    expect(lazyInput.archives).toHaveLength(1);
-    expect(lazyInput.archives[0]!.archiveId).toBe(1);
-    expect(lazyInput.files.get("/a/f")!.archiveId).toBe(1);
-  });
 
   it("(c) first provider call returns EAGAIN and invokes the fetcher", () => {
     const { fetcher, calls } = makeFetcher();
@@ -276,38 +162,15 @@ describe("buildRootfsLazyWiring", () => {
     expect(calls).toEqual([]);
   });
 
-  it("falls back to `url` as the sole transport when content.transports is absent", () => {
-    const calls: string[] = [];
-    const fetcher = async (url: string): Promise<Uint8Array> => {
-      calls.push(url);
-      return archiveBytes;
-    };
-
-    const group = makeGroup({
-      content: undefined,
-      integrity: { sha256: "x", bytes: ARCHIVE_SIZE },
-      url: "legacy-url",
-      entries: [
-        {
-          vfsPath: "/c/f",
-          ino: 20,
-          size: 6,
-          isSymlink: false,
-          deleted: false,
-          type: "file",
-          sourcePath: "bin/f",
-        },
-      ],
-    });
-
-    const wiring = buildRootfsLazyWiring([group], fetcher);
-    const lazyInput = lazyManifest(buildEntries());
-    const archiveProvider = archiveReaderOf(wiring);
-    expect(lazyInput.archives).toEqual([{ archiveId: 1, size: ARCHIVE_SIZE }]);
-
-    archiveProvider("legacy-url", 0n, new Uint8Array(1));
-    expect(calls).toEqual(["legacy-url"]);
-  });
+  // RETIRED 2026-09-17: "falls back to `url` as the sole transport when
+  // content.transports is absent". That fallback was a rule about the LEGACY
+  // JSON shape — an entry with no `content` carries only a `url` — and reading
+  // that shape is no longer this module's job. The rule itself is not gone: it
+  // is `declaredTransports` in `module-base-image.ts`, asserted by "rebases an
+  // archive's transports AND the url derived from them", which exercises both
+  // the listed-transports and the bare-url branch on a real image. Keeping a
+  // copy here would have meant hand-building the legacy shape to check a
+  // conversion this file no longer performs.
 
   it("tries the next transport on a size mismatch and serves from the good one", async () => {
     const calls: string[] = [];
@@ -318,27 +181,10 @@ describe("buildRootfsLazyWiring", () => {
       return archiveBytes;
     };
 
-    const group = makeGroup({
-      content: {
-        decoder: "zip-v1",
-        mediaType: "application/zip",
-        sha256: "deadbeef",
-        bytes: ARCHIVE_SIZE,
-        expandedBytes: ARCHIVE_SIZE * 2,
-        sourceEntryCount: 1,
-        transports: ["bad-url", "good-url"],
-      },
-      entries: [
-        {
-          vfsPath: "/c/f",
-          ino: 20,
-          size: 6,
-          isSymlink: false,
-          deleted: false,
-          type: "file",
-          sourcePath: "bin/f",
-        },
-      ],
+    const group = archive({
+      transports: ["bad-url", "good-url"],
+      bytes: ARCHIVE_SIZE,
+      sha256: "deadbeef",
     });
 
     const archiveProvider = archiveReaderOf(buildRootfsLazyWiring([group], fetcher));
@@ -365,22 +211,10 @@ describe("one address space, so nothing needs routing", () => {
     const calls: string[] = [];
     const { deferredProvider } = buildRootfsLazyWiring(
       [
-        makeGroup({
-          kind: "kandelo-legacy-zip-v1",
-          url: "https://example.invalid/pkg.zip",
-          mountPrefix: "/a",
-          integrity: { sha256: "x", bytes: archiveBytes.length },
-          entries: [
-            {
-              vfsPath: "/a/f",
-              ino: 42,
-              size: 2,
-              isSymlink: false,
-              deleted: false,
-              type: "file",
-              sourcePath: "bin/f",
-            },
-          ],
+        archive({
+          transports: ["https://example.invalid/pkg.zip"],
+          bytes: archiveBytes.length,
+          sha256: "x",
         }),
       ],
       async (url) => {
@@ -442,12 +276,10 @@ describe("one address space, so nothing needs routing", () => {
     const { deferredProvider } = (() => {
       const { deferredProvider } = buildRootfsLazyWiring(
         [
-          makeGroup({
-            kind: "kandelo-legacy-zip-v1",
-            url: "https://example.invalid/pkg.zip",
-            mountPrefix: "/a",
-            integrity: { sha256: "x", bytes: archiveBytes.length },
-            entries: [],
+          archive({
+            transports: ["https://example.invalid/pkg.zip"],
+            bytes: archiveBytes.length,
+            sha256: "x",
           }),
         ],
         async (url) =>

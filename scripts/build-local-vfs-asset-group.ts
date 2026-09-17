@@ -170,20 +170,27 @@ export async function buildLocalVfsAssetGroup(
       snapshot.bytes,
       imageReadFromContainer(snapshot.bytes),
     );
-    for (const entry of fs.exportLazyEntries()) {
-      addExpectedAsset(expectedAssets, entry.url, { bytes: entry.size });
+    for (const body of fs.deferredFiles()) {
+      if (body.bytes === undefined) {
+        throw new Error(
+          `product ${products[index]!.id} has a lazy file without a declared size`,
+        );
+      }
+      addExpectedAsset(expectedAssets, body.address, { bytes: body.bytes });
     }
-    for (const entry of fs.exportLazyArchiveEntries()) {
-      const identity = entry.content ?? entry.integrity;
-      if (identity === undefined) {
+    for (const body of fs.deferredArchives()) {
+      // A body with no declared length cannot be staged: the asset group
+      // records what each reference weighs, and an archive nobody sized is a
+      // reference this closure cannot account for.
+      if (body.bytes === undefined) {
         throw new Error(
           `product ${products[index]!.id} has an archive without byte integrity`,
         );
       }
-      for (const reference of entry.content?.transports ?? [entry.url]) {
+      for (const reference of body.transports) {
         addExpectedAsset(expectedAssets, reference, {
-          bytes: identity.bytes,
-          sha256: identity.sha256,
+          bytes: body.bytes,
+          sha256: body.sha256,
         });
       }
     }
