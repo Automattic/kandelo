@@ -13502,6 +13502,57 @@ have satisfied the metric and worsened the parity it exists to protect. One
 module — `vfs/root-image-facts.ts`, imported as a namespace so call sites read
 `rootImage.has()` — removes the duplication instead of hiding it.
 
+### THE ENDGAME'S RULES — maintainer decisions, 2026-09-16
+
+**Four answers that settle how lane V finishes.** Recorded here because they
+govern dozens of individual judgements and none of them is derivable from the
+code.
+
+**1. The host-backed scratch mount goes, and not just its ninth path.** Asked
+as a Chesterton's fence — *"I'd like to know what it is for before I'm willing
+to remove it"* — and the research says it is not for anything:
+
+* the kernel's table documents itself as *"Mirror of the `scratch` entries in
+  `host/src/vfs/default-mounts.ts`"* — a mirror, not a designed subset;
+* the filter that preserves non-mirrored scratch paths names `/run` as an
+  *example*, and arrived with the Phase 5 cutover commit `0b075d1c5c`;
+* **nothing declares one.** All seventeen product manifests are `/` plus
+  `/tmp`; both production callers that pass a custom spec derive it from those
+  manifests; a shared URL's `mounts` reach `setDescriptor` — the
+  `/proc/mounts` presentation — and never the resolver.
+
+So the fence is cutover conservatism: *don't drop what the kernel does not
+serve yet*. The maintainer's answer goes further than refusing a ninth path —
+**remove the reference from the API and the platform**. Concretely that is the
+browser resolver's `MemoryFileSystem.create(sab)` branch, which is the only
+memory-backed host scratch mount there is: Node's scratch mounts are
+`HostFileSystem` over a real session directory, which is a different thing and
+stays.
+
+**2. Rust coverage makes a TypeScript claim redundant.** When `runtime-core`
+or the image module asserts the same property on the implementation that
+actually runs, the TypeScript copy is a second test of a deleted
+implementation. Retire it, naming the Rust peer in place.
+
+**3. Porting a claim into Rust is lane V's work**, where the claim cannot be
+re-made in TypeScript by design — the forged-image tests being the clearest
+case, since the producer re-seals at the export door and refuses to emit one.
+
+**4. And a claim that is INCONGRUOUS with the kernel-FS architecture is
+dropped rather than ported.** The maintainer's words: *"if the maybe-ported
+tests are incongruous with the different kernel FS architecture enough to be
+irrelevant, let's drop them"*. This is the rule for the `SharedArrayBuffer`
+getters, the "a restore is an independent copy" claims, and host-side atomic
+group activation — properties of a filesystem the platform no longer has,
+rather than properties it stopped testing.
+
+**5. `sharedfs-vendor.ts` goes too.** Asked as *"Why should we keep it?"* —
+and the answer is that nothing does: its only real importer is
+`memory-fs.ts`, and `vfs-errors.ts` already describes it as *"a second
+implementation of the KIFS format"*. The `build.toml` mentions are cache-key
+inputs, not imports. So the deletion is a chain: the class goes, the vendor
+follows, and the host keeps no filesystem at all.
+
 ### WHAT IS LEFT OF V5 IS ONE ROLE, AND IT IS A REAL ONE
 
 **Re-measured after the removal**, with the plan's own rule:
