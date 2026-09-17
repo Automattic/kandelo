@@ -31,6 +31,20 @@
       "scope_end": "\n}\n",
       "find": "  if (allowLocalFixture) args.push(\"--allow-local-fixture\");",
       "replace": "  args.push(\"--allow-local-fixture\");"
+    },
+    {
+     "name": "an output built for another kernel ABI is accepted",
+     "scope": "      if (metadata?.kernelAbi !== inputs.target_abi.version) {",
+     "scope_end": "\n      }",
+     "find": "      if (metadata?.kernelAbi !== inputs.target_abi.version) {",
+     "replace": "      if (metadata?.kernelAbi === undefined) {"
+    },
+    {
+     "name": "an output bound to another ABI snapshot is accepted",
+     "scope": "      if (metadata.abiSnapshotSha256 !== inputs.target_abi.snapshot_sha256) {",
+     "scope_end": "\n      }",
+     "find": "      if (metadata.abiSnapshotSha256 !== inputs.target_abi.snapshot_sha256) {",
+     "replace": "      if (false && metadata.abiSnapshotSha256 !== inputs.target_abi.snapshot_sha256) {"
     }
   ]
 }

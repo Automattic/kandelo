@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openVfsProductBuild } from "../../images/vfs/scripts/vfs-product-builder-contract";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { ABI_VERSION } from "../src/generated/abi";
 
 const SNAPSHOT_SHA256 = "b".repeat(64);
 const cleanupDirectories = new Set<string>();
@@ -61,7 +62,8 @@ describe("VFS product builder contract", () => {
       sha256: fixture.lazySha256,
       bytes: 14,
       placement: "lazy-reference",
-      reference: `ghcr.io/kandelo-dev/kandelo-products-abi-7-candidates/products/base@sha256:${fixture.lazySha256}`,
+      reference: `ghcr.io/kandelo-dev/kandelo-products-abi-${ABI_VERSION}-candidates`
+        + `/products/base@sha256:${fixture.lazySha256}`,
     });
     expect(build.requirePackageOutput("shell-bottle")).toMatchObject({
       id: "shell-bottle",
@@ -115,7 +117,7 @@ describe("VFS product builder contract", () => {
       expect.objectContaining({ id: "toolchain-sdk", placement: "build-only" }),
     ]);
     expect(report.output.abi).toEqual({
-      version: 7,
+      version: ABI_VERSION,
       snapshot_sha256: SNAPSHOT_SHA256,
     });
     expect(report.output.name).toBe("mini-shell.vfs");
@@ -135,7 +137,7 @@ describe("VFS product builder contract", () => {
       path: "files/base.vfs",
       reference:
         `https://automattic.github.io/kandelo/products/base/sha256-${fixture.lazySha256}/` +
-        `base-7.vfs.zst?sha256=${fixture.lazySha256}&bytes=14`,
+        `base-${ABI_VERSION}.vfs.zst?sha256=${fixture.lazySha256}&bytes=14`,
     });
     bottle.descriptor.reference = bottle.descriptor.reference.replace("-candidates/", "/");
     writeFileSync(fixture.inputsPath, canonicalJson(inputs));
@@ -153,7 +155,7 @@ describe("VFS product builder contract", () => {
     lazy.reference_class = "canonical";
     lazy.inputs[0].reference =
       `https://automattic.github.io/kandelo/products/base/sha256-${lazyFixture.lazySha256}/` +
-      `base-7.vfs.zst?sha256=${lazyFixture.lazySha256}&bytes=14`;
+      `base-${ABI_VERSION}.vfs.zst?sha256=${lazyFixture.lazySha256}&bytes=14`;
     lazy.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference =
       lazy.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference
         .replace("-candidates/", "/");
@@ -166,7 +168,7 @@ describe("VFS product builder contract", () => {
     const hostile = JSON.parse(readFileSync(hostileFixture.inputsPath, "utf8"));
     hostile.reference_class = "canonical";
     hostile.inputs[0].reference =
-      "https://attacker.invalid/kandelo/products/base/base-7.vfs.zst";
+      `https://attacker.invalid/kandelo/products/base/base-${ABI_VERSION}.vfs.zst`;
     hostile.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference =
       hostile.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference
         .replace("-candidates/", "/");
@@ -292,10 +294,23 @@ describe("VFS product builder contract", () => {
     });
   });
 
+  // The second case USED to build the output at ABI 8 against a target of 7
+  // and assert the builder's own version-mismatch message. That is no longer
+  // how it fails: `readImageMetadata` loads the image, and the loader refuses a
+  // foreign ABI outright, so an output built for another kernel never reaches
+  // the comparison below it. The mismatch the comparison CAN still see is the
+  // one where the output is current and the resolved target is not -- a build
+  // whose inputs were resolved against a different ABI than the kernel that
+  // wrote the image -- so that is what the case now builds. A third case names
+  // the refusal that took the old one's place, so neither outcome is assumed.
   it("writes no report when output ABI validation fails", async () => {
     for (const [options, expected] of [
       [{ outputSnapshotSha256: "c".repeat(64) }, /ABI snapshot SHA-256/],
-      [{ outputAbiVersion: 8 }, /kernel ABI 8.*target ABI 7/],
+      [
+        { targetAbiVersion: ABI_VERSION - 1 },
+        new RegExp(`kernel ABI ${ABI_VERSION}.*target ABI ${ABI_VERSION - 1}`),
+      ],
+      [{ outputAbiVersion: ABI_VERSION - 1 }, /EPROTO/],
     ] as const) {
       const fixture = await createFixture(options);
       const build = await openVfsProductBuild(
@@ -357,6 +372,7 @@ async function createFixture(
   options: {
     outputSnapshotSha256?: string;
     outputAbiVersion?: number;
+    targetAbiVersion?: number;
   } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), "kandelo-vfs-builder-contract-"));
@@ -414,7 +430,8 @@ async function createFixture(
         effective_materialization: "lazy-reference",
         id: "candidate-base",
         kind: "product-image",
-        reference: `ghcr.io/kandelo-dev/kandelo-products-abi-7-candidates/products/base@sha256:${lazySha256}`,
+        reference: `ghcr.io/kandelo-dev/kandelo-products-abi-${ABI_VERSION}-candidates`
+          + `/products/base@sha256:${lazySha256}`,
         role: "runtime",
         sha256: lazySha256,
       },
@@ -425,7 +442,8 @@ async function createFixture(
         descriptor: {
           bytes: Buffer.byteLength(bottleMetadata),
           path: "files/shell-bottle-metadata.json",
-          reference: `ghcr.io/kandelo-dev/kandelo-products-abi-7-candidates/shell@sha256:${sha256(bottleMetadata)}`,
+          reference: `ghcr.io/kandelo-dev/kandelo-products-abi-${ABI_VERSION}-candidates`
+            + `/shell@sha256:${sha256(bottleMetadata)}`,
           sha256: sha256(bottleMetadata),
         },
       },
@@ -447,7 +465,10 @@ async function createFixture(
       repository: "kandelo-dev/kandelo",
       tree: "1".repeat(40),
     },
-    target_abi: { snapshot_sha256: SNAPSHOT_SHA256, version: 7 },
+    target_abi: {
+      snapshot_sha256: SNAPSHOT_SHA256,
+      version: options.targetAbiVersion ?? ABI_VERSION,
+    },
   };
   const inputsPath = join(directory, "resolved-inputs.json");
   writeFileSync(inputsPath, canonicalJson(inputs));
@@ -456,7 +477,7 @@ async function createFixture(
   const outputBytes = await vfs.saveImage({
     metadata: {
       version: 1,
-      kernelAbi: options.outputAbiVersion ?? 7,
+      kernelAbi: options.outputAbiVersion ?? ABI_VERSION,
       abiSnapshotSha256:
         options.outputSnapshotSha256 ?? SNAPSHOT_SHA256,
     },
