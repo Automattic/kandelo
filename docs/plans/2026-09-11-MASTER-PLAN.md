@@ -13433,6 +13433,64 @@ half is the next step, and it needs
 `apps/browser-demos/test/vfs-import-seal-boundary.spec.ts` to expect the
 kernel's refusal instead of `Lazy atomic activation (member|group)`.
 
+### THE HOST RESTORE IS READY TO GO EXCEPT FOR ONE FIXTURE — measured 2026-09-16
+
+**The removal was written, type-checked, and then backed out unlanded.** What
+stops it is not effort and not the kernel; it is that the browser boundary's
+forgery fixture tampers with a carrier the kernel does not read.
+
+**What measured clean.** Every one of the seventeen products declares exactly
+two mounts: `/` from its image and `/tmp` scratch. `/tmp` is one of the eight
+prefixes the in-kernel tmpfs owns, so `filterMountSpecForKernelTmpfs` removes
+it, and `/` is dropped from the guest-facing `VirtualPlatformIO` because the
+kernel has been the sole `/` authority since the Phase 5 cutover. **No shipped
+configuration needs a host mount backend at all.** The `MemoryFileSystem` that
+`restoreVerifiedImageMounts` builds — up to a gigabyte, once per boot — is
+constructed and discarded, and the only thing it does on the way is
+authenticate imported cohort seals. With `rootfs::load_image` now doing that,
+the restore has no remaining job.
+
+The edit itself is small and was typechecked at the 25-diagnostic baseline:
+the image branch of both resolvers emits no `MountConfig`, and both worker
+entries take `nosuid` from the SPEC — where it is declared — instead of from a
+mount that no longer exists.
+
+**WHAT STOPS IT.** `apps/browser-demos/test/vfs-import-seal-boundary.spec.ts`
+proves the browser worker refuses a forged image BEFORE it is ready, and its
+helper builds that image with `MemoryFileSystem` and calls
+`forgeLazyAtomicSeal` on the saved bytes — which tampers with the host-side
+JSON sections. A `MemoryFileSystem`-written image is described by `KLZY`, and
+`KLZY` archives reach the kernel with an EMPTY payload, so
+`verify_cohorts` has nothing to check and the kernel passes the image. The
+kernel's authentication is real and tested — `runtime-core`'s
+`a_load_refuses_an_image_whose_cohorts_do_not_authenticate` drives a genuine
+exported container — but it covers the `SDEF` carrier, and the fixture forges
+the other one.
+
+So removing the host check narrows the boundary from "any image" to "images
+described by `SDEF`". That is defensible for shipped artifacts — no shipped
+image carries `KLZY`, flag `1<<4` clear in all three — and NOT defensible
+while the only browser proof of the boundary is written against the carrier
+that would stop being covered.
+
+**Two ways to finish it, and the choice is a real one:**
+
+* **Forge the `SDEF` carrier.** Take a module-written image and corrupt an
+  archive payload's cohort digest in place. Keeps the spec proving exactly
+  what it proves today, on the carrier that ships. The producer re-seals at
+  the export door and refuses to emit a bad image, so the forgery has to be a
+  byte-level edit after export — which is what `forgeLazyAtomicSeal` already
+  is, pointed at a different section.
+* **Prove the lifecycle property with a different bad image.** The spec's
+  unique value over the Rust test is that init refuses BEFORE the worker is
+  ready, which is about lifecycle rather than about seals. An image declaring
+  archives it describes nowhere is refused with `EINVAL` and needs no forgery
+  at all. Cheaper, and it stops proving the seal boundary specifically.
+
+**Not chosen here**, because the first costs a fixture and the second costs
+coverage, and picking the cheap one silently is how a boundary becomes a test
+that no longer tests it.
+
 ### THE SEAL BOUNDARY AT BOOT IS THE REMAINING V5 BLOCKER, AND IT IS A DESIGN DECISION
 
 **Measured 2026-09-16, and this is what keeps `memory-fs.ts` alive.**
