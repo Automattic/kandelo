@@ -13558,9 +13558,38 @@ groups and the `KLZY` writer.
 grows that surface with nothing offsetting it — the class's own lines live in
 `memoryFsTypeScript` and do not come back until the class goes. Writing the
 scratch backend FIRST is growth the budget should refuse, and would refuse.
-**The two have to land together, which makes the test population — step 4,
-53 host tests, 11 browser, 18 build-time — the thing standing between here
-and the deletion, rather than any missing capability.**
+**The two have to land together, which makes the test population the thing
+standing between here and the deletion, rather than any missing capability.**
+
+**Re-counted 2026-09-16 with a stated rule**, because the figures this plan
+carried were a snapshot — *files importing `MemoryFileSystem` as a VALUE*:
+
+| where | files |
+|---|---|
+| `host/test` | 47 |
+| `apps/browser-demos` | 6 |
+| `tools` | 5 |
+| `packages/registry` | 4 |
+| `tests` | 2 |
+| `images`, `web-libs` | **0** |
+
+**And the 47 split almost evenly by how deeply they use it.** Counting files
+that touch the backend or lazy surface — `preparePath`, `append`, `seek`,
+`fpathconf`, `statfs`, `opendir`, `setLazyFetcher`, `registerLazyTree`,
+`exportLazyArchiveEntries`, `importLazyEntries`, `verifyImported*` — gives
+**24 shallow and 23 deep**. The shallow ones build an image and hand it on;
+they repoint to `KandeloImageFs` the way the export fixtures and
+`vfs-image-helpers` already did, and the seams to expect are the ones already
+recorded: parents are not created for a deferred file, `open`'s mode is spent
+on creation only, and the errno sign conventions differ.
+
+The deep 23 are not one problem either. `lazy-tree.test.ts` alone accounts for
+270 of those calls — it is a test OF the lazy-tree machinery, which is step 5
+material rather than step 4 — while the `sharedfs-*` trio tests the VENDOR
+through its wrapper and would be better pointed at the vendor directly.
+
+**So the work between here and deleting the class is a repoint of two dozen
+fixtures plus a decision about four files, not a wall.**
 
 ### THE BLOCKER WAS WRONG, AND THE WORD THAT CARRIED IT WAS "THEREFORE" — 2026-09-16
 
