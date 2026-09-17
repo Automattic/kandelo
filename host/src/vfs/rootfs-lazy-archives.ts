@@ -26,15 +26,19 @@
  * different requests, and the `kind` discriminator that distinguished them has
  * nothing left to discriminate.
  *
- * # What the host still decides
+ * # What the host still decides, which is less than it looks
  *
- * How to fetch an address is still the host's business, and that is the one
- * table that survives: a URI may have alternate transports (a CORS proxy, a
- * mirror) and a declared length to sanity-check a mirror against. That is
- * transport POLICY, not identity — it never decides WHICH resource is being
- * read, only how to go and get the one the kernel named. An address with no
- * policy entry is fetched directly, which is the courier contract working
- * rather than a gap in a table.
+ * How to fetch an address is the host's business — its fetcher may go through
+ * a CORS proxy, a closed asset store, or a deployment's hashed paths. WHICH
+ * address to fetch is not, and for a while a table here held both: alternate
+ * URLs for an address, and a declared length to judge a mirror's answer by.
+ *
+ * Both are gone as of 2026-09-17, because neither had a producer. An image
+ * records ONE uri per archive, so there are no alternates to list; and the
+ * kernel checks the fetched bytes against the image's DIGEST when it
+ * materializes them, which is the check that decides — a length is a hint that
+ * happens to be cheap. What is left is a pipe, and a pipe with no table in
+ * front of it has nowhere for a second opinion about identity to live.
  */
 
 import type { LazyDownloadEvent } from "./lazy-download-event";
@@ -97,11 +101,13 @@ export interface DeferredBody {
    */
   readonly address: string;
   /**
-   * Mirrors that may stand in for the address, in preference order, the first
-   * being the address itself. Host authority — never written into an image —
-   * and never a decision about WHICH resource is being read.
+   * NO `transports` HERE ANY MORE. It listed mirrors that could stand in for
+   * the address, and no producer can express one: `registerArchiveMember`
+   * takes a single `archiveUri`, so every record ever built carried exactly
+   * `[address]`. A field whose only possible value is derived from another
+   * field is a second spelling, and its one consumer iterated it to register
+   * the same address once.
    */
-  readonly transports: readonly string[];
   /** Declared length; absent when the producer declared none. */
   readonly bytes: number | undefined;
   /**
@@ -168,13 +174,27 @@ function report(
  * Build the `host_fetch_deferred` provider: fetch a URI, cache it, serve
  * positioned bytes of it.
  *
- * `entries` is not an identity table. It is read once for transport POLICY —
- * which alternate URLs may stand in for an address, and what length a mirror's
- * answer must have to be believed — keyed by the address the image recorded.
- * An address absent from it is fetched directly.
+ * # A DUMB PIPE, and the table that used to sit in front of it
+ *
+ * This took a list of archives and built transport POLICY from it — which
+ * alternate URLs may stand in for an address, and what length a mirror's
+ * answer had to have to be believed. **Both halves had no producer left.** A
+ * module-written image records ONE uri per archive, so there are no alternates
+ * to list; and the length check was a weaker duplicate of the digest the
+ * kernel verifies on materialization, which is the check that actually decides
+ * whether the bytes are the right ones.
+ *
+ * So the pipe is what the name says: the kernel names an address, this fetches
+ * it, caches it, and serves positioned bytes. It holds no opinion about which
+ * resource an address names, because an address IS the identity — that is the
+ * whole of what the URI relay bought, and a table in front of the pipe was the
+ * last place a second opinion could live.
  *
  * `fetcher` is the exact transport already wired for lazy assets (closed-asset
- * fetcher, CORS-proxy fetcher, etc.); this module never invents its own.
+ * fetcher, CORS-proxy fetcher, etc.); this module never invents its own. A
+ * deployment that serves an image's addresses from hashed paths maps them
+ * THERE, in the fetcher, which is where `imageOwnedRuntimeUrlTable` already
+ * does it.
  *
  * A fetch in flight is `EAGAIN` — the same answer the kernel's own byte source
  * gives, and the guest retry loop is already built for it. A failed fetch is
@@ -182,7 +202,6 @@ function report(
  * a hang rather than a failure.
  */
 export function buildRootfsLazyWiring(
-  archives: readonly DeferredBody[],
   fetcher: (url: string) => Promise<Uint8Array>,
   onProgress?: DeferredProgress,
 ): {
@@ -192,30 +211,6 @@ export function buildRootfsLazyWiring(
     dest: Uint8Array,
   ) => number;
 } {
-  // Transport policy, keyed by ADDRESS. Built from the archives because they
-  // are the only deferred resources that carry alternates today; a lazy file
-  // has one URL and needs no entry.
-  //
-  // A body with no declared length is SKIPPED, which is the rule the reducer
-  // this replaced applied and worth keeping stated: without a length, bytes
-  // that arrive from a mirror cannot be checked against what the image
-  // expected, and a mirror serving something else is the failure a transport
-  // table exists to bound. Skipping leaves the address fetched directly, which
-  // is the courier contract rather than a gap.
-  //
-  // NO EMPTY-ADDRESS CHECK HERE, deliberately. One was written and removed
-  // before it shipped: the provider refuses `""` before it ever consults this
-  // table, so a policy entry under an empty address can change no outcome, and
-  // a guard that cannot fail is a second place for a rule to live.
-  const policy = new Map<string, { transports: string[]; size: number }>();
-  for (const archive of archives) {
-    if (archive.bytes === undefined) continue;
-    policy.set(archive.address, {
-      transports: [...archive.transports],
-      size: archive.bytes,
-    });
-  }
-
   type Slot =
     | { state: "pending" }
     | { state: "ready"; bytes: Uint8Array }
@@ -234,25 +229,33 @@ export function buildRootfsLazyWiring(
 
     const slot = slots.get(uri);
     if (slot === undefined) {
-      const known = policy.get(uri);
       slots.set(uri, { state: "pending" });
       const base = {
         id: uri,
-        // Policy entries exist only for archives, so this reports what the
-        // host actually knows rather than a kind it would have to invent.
-        kind: (known === undefined ? "file" : "archive") as "file" | "archive",
+        // ONE KIND, because the pipe cannot tell and will not guess. It used to
+        // read `"archive"` out of transport-table membership, which was a
+        // second opinion about identity dressed as a fact — and the table is
+        // gone. What reaches this function is an address and nothing else:
+        // `host_fetch_deferred(uri, offset, dest)` carries no kind, and the
+        // kernel that knows does not send one.
+        //
+        // The field stays because `LazyDownloadEvent` is a shared protocol the
+        // session library consumes; whether it should carry a kind at all is a
+        // protocol question for that library's owner, filed in the master plan.
+        // Its one consumer, `lazyDownloadAssetLabel`, already ends at the URL
+        // for both values, because the host has no path to offer either.
+        kind: "file" as const,
         url: uri,
-        totalBytes: known?.size,
       };
       report(onProgress, { ...base, status: "started", loadedBytes: 0 });
-      void fetchDeferred(uri, known, fetcher).then((bytes) => {
+      void fetchDeferred(uri, fetcher).then((bytes) => {
         if (bytes === undefined) {
           slots.set(uri, { state: "failed" });
           report(onProgress, {
             ...base,
             status: "error",
             loadedBytes: 0,
-            error: `no transport for ${uri} returned usable bytes`,
+            error: `fetching ${uri} did not return usable bytes`,
           });
           return;
         }
@@ -280,31 +283,22 @@ export function buildRootfsLazyWiring(
 }
 
 /**
- * Try the address, then any alternate transports policy allows, and return the
- * first answer that is usable. A declared length that does not match is treated
- * as a failed mirror rather than a fatal error, so the next transport gets a
- * chance. `undefined` means every transport failed.
+ * Fetch the address, and return nothing if it does not answer.
  *
- * Never throws: a transport error is a value here, because the provider that
- * observes it is synchronous.
+ * ONE ADDRESS, NO ALTERNATES. This walked a transport list and compared each
+ * answer's length against a declared size, trying the next on a mismatch.
+ * Neither half has a producer: an image records one uri per archive, and the
+ * bytes are checked against the image's DIGEST by the kernel when it
+ * materializes them — which is a real check, where a length is only a hint
+ * that happens to be cheap.
  */
 async function fetchDeferred(
   uri: string,
-  known: { transports: string[]; size: number } | undefined,
   fetcher: (url: string) => Promise<Uint8Array>,
 ): Promise<Uint8Array | undefined> {
-  const transports = known?.transports ?? [uri];
-  for (const url of transports) {
-    try {
-      const bytes = await fetcher(url);
-      // A length is checked only where one was declared. An address with no
-      // policy entry has nothing to check against, and inventing a check would
-      // mean inventing the expectation.
-      if (known !== undefined && bytes.length !== known.size) continue;
-      return bytes;
-    } catch {
-      // Failed transport: fall through and try the next one.
-    }
+  try {
+    return await fetcher(uri);
+  } catch {
+    return undefined;
   }
-  return undefined;
 }

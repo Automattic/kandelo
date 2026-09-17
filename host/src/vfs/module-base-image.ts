@@ -130,7 +130,6 @@ export function createBaseImageFromContainer(
           .filter((file) => file.archiveId === 0)
           .map((file) => ({
             address: rebaseUrl(file.uri),
-            transports: [rebaseUrl(file.uri)],
             bytes: file.size,
             sha256: undefined,
           }));
@@ -164,7 +163,6 @@ export function createBaseImageFromContainer(
             && archive.digest.some((byte) => byte !== 0);
           return {
             address,
-            transports: [address],
             bytes: declared ? archive.bytes : undefined,
             sha256: declared ? bytesToSha256Hex(archive.digest) : undefined,
           };

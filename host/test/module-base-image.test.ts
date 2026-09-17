@@ -215,13 +215,13 @@ describe("a module-backed base image", () => {
     const { buildRootfsLazyWiring } =
       await import("../src/vfs/rootfs-lazy-archives");
     const fetched: string[] = [];
-    const { deferredProvider } = buildRootfsLazyWiring(
-      baseImage.deferredArchives(),
-      async (url) => {
-        fetched.push(url);
-        return new Uint8Array(4242);
-      },
-    );
+    // THE PIPE TAKES NO ARCHIVE LIST since 2026-09-17 — it fetches the address
+    // the kernel names. What this still shows is that the address the reader
+    // produced is the one a fetch goes to, rebased and all.
+    const { deferredProvider } = buildRootfsLazyWiring(async (url) => {
+      fetched.push(url);
+      return new Uint8Array(4242);
+    });
     // -11 is EAGAIN: a fetch began. Asserting the address that was FETCHED is
     // what makes this a test — a provider handed any address at all answers
     // EAGAIN, so the return value alone would pass without the reconstruction

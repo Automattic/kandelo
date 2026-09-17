@@ -40,7 +40,6 @@ import type { LazyFetch } from "./vfs/lazy-download-event";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
-import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
@@ -794,13 +793,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     // The overlay's metadata and bytes both come from the container the kernel
     // is itself handed, not from the host's filesystem. `memfs` is no longer
     // asked anything here.
-    const { baseImage, imageRead } = createBaseImageFromContainer(
-      msg.vfsImage,
-      imageReadFromContainer(msg.vfsImage),
-      msg.lazyUrlBase,
-    );
+    // THE BYTES, AND NOTHING ELSE. This built a `RootfsOverlayBaseImage`
+    // whose only remaining job was to hand the overlay an archive list
+    // for its transport table; the table is gone, so what is left is the
+    // window itself — and that was always this same function, passed in
+    // and handed back.
+    const imageRead = imageReadFromContainer(msg.vfsImage);
     configureRootfsOverlayFromImage({
-      baseImage,
       imageRead,
       // Progress now comes from the PIPE rather than from the
       // filesystem's own fetch, and it covers archives as well as

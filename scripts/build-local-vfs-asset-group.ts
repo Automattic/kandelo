@@ -204,12 +204,13 @@ export async function buildLocalVfsAssetGroup(
           `product ${products[index]!.id} has an archive without byte integrity`,
         );
       }
-      for (const reference of body.transports) {
-        addExpectedAsset(expectedAssets, reference, {
-          bytes: body.bytes,
-          sha256: body.sha256,
-        });
-      }
+      // ONE ADDRESS, not a mirror list. `transports` was always `[address]` —
+      // no producer can express an alternate — so iterating it registered the
+      // same reference once and read as though more were possible.
+      addExpectedAsset(expectedAssets, body.address, {
+        bytes: body.bytes,
+        sha256: body.sha256,
+      });
     }
   }
   if (expectedAssets.size !== 80) {

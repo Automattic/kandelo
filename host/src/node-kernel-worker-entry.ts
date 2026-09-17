@@ -53,7 +53,6 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
-import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
@@ -807,10 +806,10 @@ async function buildVirtualPlatformIO(
   if (rootImage.record(rootfsMountSpec ?? DEFAULT_MOUNT_SPEC)) {
     // No rewriteLazy*Urls here any more, and this function no longer TAKES
     // `rootfsLazyUrlBase` — it was a parameter nothing in the body read, kept
-    // alive by two call sites passing it. The deployment base is applied where
-    // it is actually used, when `createBaseImageFromContainer` reads the
-    // container's metadata, and nothing mutates a stored record to say where
-    // bytes live.
+    // alive by two call sites passing it. A deployment that serves an image's
+    // addresses from hashed paths maps them in its FETCHER, which is where
+    // `imageOwnedRuntimeUrlTable` does it, and nothing mutates a stored record
+    // to say where bytes live.
     const lazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
@@ -934,13 +933,13 @@ async function handleInit(msg: InitMessage) {
   if (rootImage.has()) {
     const rootfsContainer = new Uint8Array(msg.rootfsImage!);
     // Metadata and bytes both from the container the kernel is itself handed.
-    const { baseImage, imageRead } = createBaseImageFromContainer(
-      rootfsContainer,
-      imageReadFromContainer(rootfsContainer),
-      msg.rootfsLazyUrlBase,
-    );
+    // THE BYTES, AND NOTHING ELSE. This built a `RootfsOverlayBaseImage`
+    // whose only remaining job was to hand the overlay an archive list
+    // for its transport table; the table is gone, so what is left is the
+    // window itself — and that was always this same function, passed in
+    // and handed back.
+    const imageRead = imageReadFromContainer(rootfsContainer);
     configureRootfsOverlayFromImage({
-      baseImage,
       imageRead,
       // Progress now comes from the PIPE rather than from the
       // filesystem's own fetch, and it covers archives as well as

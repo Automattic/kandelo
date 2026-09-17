@@ -134,7 +134,6 @@ import {
   buildRootfsLazyWiring,
   type DeferredProgress,
 } from "./vfs/rootfs-lazy-archives";
-import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
 import {
@@ -4414,12 +4413,14 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    * both reach the overlay through here.
    */
   function configureRootfsOverlayFromImage(options: {
-    baseImage: RootfsOverlayBaseImage;
     /**
-     * Read the image at a CONTAINER offset. Supplied by the caller rather than
-     * taken from `baseImage`, because whether a backend's bytes are a bare
-     * body or a whole container is a fact about that backend, and only the
-     * caller knows which it has.
+     * Read the image at a CONTAINER offset.
+     *
+     * NO `baseImage` BESIDE IT ANY MORE. This took one, and the only thing it
+     * asked of it was the archive list the transport table was built from —
+     * so when the table went, the object went with it. What the overlay needs
+     * from an image is its BYTES, and whether a backend holds a bare body or a
+     * whole container is a fact about that backend that only the caller knows.
      */
     imageRead: (at: number, dest: Uint8Array) => number;
     imageBytes: Uint8Array;
@@ -4453,16 +4454,14 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     // whose table was EMPTY, stops loading as an image with no deferred files
     // (defect B43) for the same reason.
     //
-    // The archives stay, read for transport POLICY only: which alternate URLs
-    // may stand in for an address, and what length to believe. Never for which
-    // resource is being read — which is why what arrives here is now an
-    // address, its mirrors and a length rather than a serialized archive
-    // record carrying members and a mount prefix nobody downstream read.
-    const { deferredProvider } = buildRootfsLazyWiring(
-      options.baseImage.deferredArchives(),
-      fetchUrlBytes,
-      onProgress,
-    );
+    // AND NO ARCHIVE LIST EITHER, since 2026-09-17. The wiring used to take one
+    // and build transport policy from it: which alternate URLs may stand in for
+    // an address, and what length to believe. Neither half had a producer — an
+    // image records one uri per archive, and the bytes are checked against the
+    // image's digest by the kernel on materialization, which is the check that
+    // decides. What is left is a pipe: the kernel names an address, the host
+    // fetches it.
+    const { deferredProvider } = buildRootfsLazyWiring(fetchUrlBytes, onProgress);
     host.kernel().configureRootfsOverlay(
       deferredProvider,
       options.foreignPrefixes,

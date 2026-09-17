@@ -31,39 +31,12 @@
       "replace": "    const slot = slots.size > 0 ? slots.values().next().value : undefined;"
     },
     {
-      "name": "a mirror of the wrong length is believed",
-      "scope": "async function fetchDeferred(",
-      "scope_end": "\n}\n",
-      "find": "      if (known !== undefined && bytes.length !== known.size) continue;",
-      "replace": "      if (known !== undefined && false) continue;"
-    },
-    {
-      "name": "an address with no policy is fetched through some other address's transports",
-      "scope": "async function fetchDeferred(",
-      "scope_end": "\n}\n",
-      "find": "  const transports = known?.transports ?? [uri];",
-      "replace": "  const transports = known?.transports ?? [];"
-    },
-    {
       "name": "the transfer is reported per ASK rather than per address, so a retry announces a new download",
       "scope": "  const deferredProvider = (",
       "scope_end": "\n  };\n",
       "find": "      report(onProgress, { ...base, status: \"started\", loadedBytes: 0 });",
       "replace": "      report(onProgress, { ...base, status: \"started\", loadedBytes: 0 });\n      report(onProgress, { ...base, status: \"started\", loadedBytes: 0 });"
-    },
-    {
-      "name": "the kind is invented rather than read from what the host knows",
-      "scope": "  const deferredProvider = (",
-      "scope_end": "\n  };\n",
-      "find": "        kind: (known === undefined ? \"file\" : \"archive\") as \"file\" | \"archive\",",
-      "replace": "        kind: \"archive\" as \"file\" | \"archive\","
-    },
-    {
-      "name": "a body the image sized nowhere is admitted to the transport table anyway",
-      "scope": "  const policy = new Map<string, { transports: string[]; size: number }>();",
-      "scope_end": "\n  }\n",
-      "find": "    if (archive.bytes === undefined) continue;",
-      "replace": "    if (false) continue;"
     }
-  ]
+  ],
+  "_comment": "FOUR RETIRED 2026-09-17 with the transport table itself: a mirror of the wrong length believed, an address fetched through another address's transports, the kind invented from table membership, and an unsized body admitted to the table. There is no table -- an image records ONE uri per archive, so no producer can express a mirror, and the length check was a weaker duplicate of the digest the kernel verifies on materialization. A trial for policy nothing holds proves nothing."
 }
