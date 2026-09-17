@@ -14490,6 +14490,22 @@ versions of those three are needed is unchanged: after the merge those paths do
 not exist, and the line counter REFUSES a missing path on purpose, so the
 parent's versions fail with a missing-path error that reads like a broken test.
 
+**ONE BUDGET ENTRY IS RENAMED ACROSS THE BRANCHES, and a naive merge leaves
+both.** The parent calls this surface `sffsTypeScript` (ceiling 3,047, measuring
+`host/src/vfs/sharedfs-vendor.ts`, which the parent still has). The lane renamed
+it `imageFsTypeScript` (ceiling 0, measuring the same path as ABSENT). They are
+the same surface under two names.
+
+The merged tree does not contain `sharedfs-vendor.ts` — the lane's deletion wins,
+verified. So **the parent's `sffsTypeScript` entry must be dropped, not kept**:
+left in place it measures a missing file, `codeLineCount` refuses a missing path
+by design, and the budget fails with an error that looks like a broken test
+rather than a surface that reached zero. Keep the lane's `imageFsTypeScript`.
+
+**Also check `sffsModuleEntryPoints`** (parent, ceiling 22) against the same
+question — whether what it counts still exists after the merge. I did not
+determine that.
+
 **AND A RETRACTION: ignore any `forkTypeScript` figure computed here.** I
 measured 6,461 against the merged tree and it fit neither side — because I used
 the LANE's glob (`host/src/fork-*.ts`) for an entry the lane never changed. The
