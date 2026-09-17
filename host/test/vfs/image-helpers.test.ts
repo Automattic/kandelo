@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { MemoryFileSystem } from "../../src/vfs/memory-fs";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import type { VfsImageFilesystem } from "../../src/vfs/vfs-image-filesystem";
 import {
@@ -88,19 +87,20 @@ describe("VFS image write helpers", () => {
     expect(readFile(fs, "/payload.bin")).toEqual(data);
   });
 
-  // THIS ONE STAYS on `MemoryFileSystem`, and not for want of trying. The
-  // claim is that a FIXED-CAPACITY backend running out mid-write leaves the
-  // partial bytes rather than nothing, and `KandeloImageFs` has no fixed
-  // capacity to run out of -- it is module-backed with a growth ceiling. The
-  // test's subject is the class, so it goes when the class goes.
-  it("reports terminal ENOSPC after preserving a positive partial write", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(128 * 1024));
-    const data = new Uint8Array(1024 * 1024).fill(0xa5);
-
-    expect(() => writeVfsBinary(fs, "/partial.bin", data)).toThrow();
-    expect(fs.stat("/partial.bin").size).toBeGreaterThan(0);
-    expect(fs.stat("/partial.bin").size).toBeLessThan(data.length);
-  });
+  // RETIRED 2026-09-17: "reports terminal ENOSPC after preserving a positive
+  // partial write". It stayed on `MemoryFileSystem` while that class existed,
+  // with the reason recorded: the claim is that a FIXED-CAPACITY backend
+  // running out mid-write leaves the partial bytes, and `KandeloImageFs` has
+  // no fixed capacity to run out of — it is module-backed with a declared
+  // growth ceiling rather than an allocation.
+  //
+  // Keeping it meant keeping the last import of the class this file otherwise
+  // no longer uses, for a condition no shipping producer can reach. Its
+  // sibling in `host/test/vfs-image-helpers.test.ts` went for the same reason
+  // in the same tranche. What both defended — that `writeVfsBinary`
+  // propagates a mid-write failure instead of silently omitting the file —
+  // survives in "continues from the correct offset after a positive short
+  // write" below and in the mock-driven write-failure case beside it.
 
   it("continues from the correct offset after a positive short write", () => {
     const data = new Uint8Array([1, 2, 3, 4]);
