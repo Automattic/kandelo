@@ -14258,7 +14258,42 @@ with it; `validate_repo_path_shape` is still used inside `validate_repo_path`
 and is now private. **A temporary allow outlives the temporary condition**, and
 the only reason these two surfaced is that the module was being read anyway.
 
-### THE FRESHNESS PROPOSAL IS WRITTEN — `docs/plans/2026-09-17-keyed-artifact-freshness.md`
+### THE FRESHNESS PROPOSAL, AND WHAT THREE REWRITES COST — `docs/plans/2026-09-17-keyed-artifact-freshness.md`
+
+**The finished answer is narrow, and the first draft was not.** Each rewrite was
+paid for by checking one thing the previous draft had listed as unchecked, and
+each answer shrank the scope:
+
+| draft | thesis | what killed it |
+|---|---|---|
+| first | invent a keyed route; the generation store is already key-addressed, make it the authority | the store's directory is a package cache-identity key, NOT the key freshness is judged on — four sampled kernel generations, no directory matching its own artifact's stamp, one artifact with no stamp |
+| second | the store stopped being written; the kernel is the exception | it did not stop — bzip2, git, nginx, redis, vim, wget and less all have Sep 16 generations. Only the kernel's stopped |
+| third | the project already enforces this, and the exception is ONE COPY | `ls -l` |
+
+**The finished answer.** `local-binaries/kernel.wasm` in the main checkout IS a
+symlink into `.kandelo-local-generations/wasm32/kernel/<cache-key>/…`, every
+package mirror is the same shape, and `scripts/pack-ci-test-workspace.sh`
+**refuses to pack a workspace where that file is a regular one** — because
+*"accepting a regular file would let a stale or concurrently replaced kernel
+artifact enter the portable workspace without a cache identity or publication
+claim"*. The thesis was already written down and already enforced.
+
+The exception is the TIER TWIN, `source-only-v1/kernel.wasm`: a copy with the
+key stamped inside it. That copy is the artifact that goes stale, the reason
+`kandelo.build.key` exists, and the reason `verify_fresh_kernel_artifact`
+exists.
+
+**AND IT EXPLAINS THE LANE'S BLOCKER.** Neither worktree has a root kernel
+mirror at all, so the tier twin is the only kernel they have — which is why
+`verify-fresh` blocks this lane while the main checkout is fine.
+
+**THE LESSON IS ABOUT THE DOCUMENT, not the build system.** A proposal that
+lists what it did not check invites exactly the correction that improves it; one
+that presents a polished conclusion does not. Three rewrites in an afternoon is
+the cheap version of this, and the alternative was shipping the first draft's
+step 1, which was wrong.
+
+### (superseded account of the same proposal)
 
 Requested by the maintainer rather than volunteered. The build key is recorded
 three ways — a key-addressed generation store, a `kandelo.build.key` custom
