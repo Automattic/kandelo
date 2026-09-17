@@ -132,14 +132,26 @@ describe("the shipped fork module", () => {
     // is FIRST in `ARTIFACT_TIERS` and therefore what `resolveBinary` returns.
     // The first half is true and the second does not follow, which is why the
     // list below names every path instead of deriving them from `resolved`.
-    // Measured here: `resolveBinary("fork_module32.wasm")` returns
-    // `local-binaries/fork_module32.wasm` even with the tier present, holding
-    // the file, and with the projection manifest published -- the source-only
-    // candidate must clear a generation-identity check that a hand-staged copy
-    // does not. The projection engine still compares source against projected
-    // (`coresident_side_module_projection_is_current`), so a stale tier copy
-    // is a real hazard; it is just not one that reaches us THROUGH the
-    // resolver.
+    // WHICH COPY `resolveBinary` RETURNS IS NOT STABLE, which is the whole
+    // reason to name the paths. Both of these were measured in one session,
+    // same tree, same files present:
+    //
+    //   after `bash crates/fork-module/build-wasm.sh` alone
+    //       -> local-binaries/fork_module32.wasm
+    //   after `./run.sh setup` republished the projection
+    //       -> local-binaries/source-only-v1/fork_module32.wasm
+    //
+    // The likely mechanism is the tier's `identity: "source-only-generation"`
+    // check (`binaryCandidateTiers`): `build-wasm.sh` stages its tier copy
+    // with a plain `cp`, which does not make it an engine generation, so the
+    // candidate is skipped until a real publish. That is a hypothesis from
+    // reading the resolver, not something proven here -- what IS measured is
+    // the two results above.
+    //
+    // Either way the conclusion holds: a list DERIVED from `resolved` reads a
+    // different set of files depending on when you run it, and on one of those
+    // days it never reads the tier copy at all. Naming all three is what makes
+    // this assertion mean the same thing every run.
     //
     // This is also why perturbing `host/wasm/fork_module32.wasm` to prove this
     // file's guards SURVIVED: the test never reads that copy. A reader
