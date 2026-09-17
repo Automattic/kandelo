@@ -14444,9 +14444,29 @@ suite in `disabled_software_excludes`, every targeted suite passing, and a
 whole-suite failing set that contains nothing the session touched** — strong,
 and one run short of the standard the `memory-fs.ts` deletion met.
 
-**The cheapest way to close it** is a `git worktree add` at `f92fee4f2` with its
-own `node_modules`, run once, compared, removed — rather than detaching this
-worktree.
+**HOW TO CLOSE IT, corrected.** My first note here said a `git worktree add` at
+`f92fee4f2` would be cheapest. **That is wrong, and for the reason this campaign
+already records**: a fresh checkout or worktree inherits NO `local-binaries/`,
+so it would need its own `./run.sh setup` before it could run anything — the
+expensive path, not the cheap one, and against a *different* closure than the
+one measured above, which defeats the comparison.
+
+The actual cheapest route is a code-only round trip inside THIS worktree, which
+keeps the artifacts fixed and varies only the code:
+
+```
+git checkout f92fee4f2            # artifacts are untracked and persist
+cd host && npx vitest run --reporter=dot
+git checkout brandonpayton/lane-y-image-writer
+```
+
+Wrap it so the final checkout runs from a trap, because the failure mode is
+leaving the lane worktree on a detached HEAD. Everything is committed, so the
+round trip is recoverable, but an interrupted one is a confusing state to hand
+someone.
+
+**Not started unattended**, on a machine about to sleep, after telling the
+maintainer it was safe to close.
 
 ### THE CLOSURE IS REBUILT — 2026-09-17, and the interruption warning above it is withdrawn
 
