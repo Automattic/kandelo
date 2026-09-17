@@ -13521,13 +13521,35 @@ to remove it"* — and the research says it is not for anything:
   manifests; a shared URL's `mounts` reach `setDescriptor` — the
   `/proc/mounts` presentation — and never the resolver.
 
-So the fence is cutover conservatism: *don't drop what the kernel does not
-serve yet*. The maintainer's answer goes further than refusing a ninth path —
-**remove the reference from the API and the platform**. Concretely that is the
-browser resolver's `MemoryFileSystem.create(sab)` branch, which is the only
-memory-backed host scratch mount there is: Node's scratch mounts are
-`HostFileSystem` over a real session directory, which is a different thing and
-stays.
+**CORRECTION, same afternoon, before acting on it.** The three bullets above
+are true and the conclusion drawn from them was wrong. They censused product
+manifests and `rootfsMountSpec` callers; they did not census session SEEDS.
+
+`materializeSessionSeedTrees` requires a seed's destination to sit below a
+scratch mount that SURVIVED the filter — *"session seed destination must be
+below a scratch mount and routed through a scratch mount"* — and the three
+tests that use seeds pair `{ path: "/run", source: "scratch" }` with
+`destinationPath: "/run/kandelo-run"`. That path is not a test invention:
+`crates/runtime-core/src/rootfs.rs` names it as the canonical example of a
+foreign mount, in its own prose — *"a foreign mount at `/run/kandelo-run`
+session-seed host"* — and has tests pinning that `owns_path` excludes it while
+still claiming `/run/kandelo-runner`.
+
+**So the fence is the session-seed facility, and the kernel is built to
+accommodate it.** `/run` was the filter comment's example because it is the
+real case, not an illustration someone invented.
+
+**What the two hosts do there is NOT the same thing, and that is what makes
+the removal still correct — for one of them.** A Node scratch mount outside
+the kernel's prefixes is a `HostFileSystem` over a real session directory:
+load-bearing, exercised, and not a TypeScript filesystem at all. A BROWSER
+scratch mount outside them is `MemoryFileSystem.create(sab)` — and the browser
+protocol carries no `sessionSeedTrees` field, so the facility that justifies
+the Node branch cannot reach the browser one.
+
+So the maintainer's *"remove all reference from the API and platform"* applies
+to the browser's memory-backed branch, which has no declarer and no facility
+behind it, and not to Node's host-directory branch, which has both.
 
 **2. Rust coverage makes a TypeScript claim redundant.** When `runtime-core`
 or the image module asserts the same property on the implementation that
