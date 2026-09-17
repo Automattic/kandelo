@@ -13694,6 +13694,51 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### `lazy-vfs.test.ts` RETIRED, TWELVE CLAIMS AUDITED — `4fcc1dd4c`, 2026-09-17
+
+The 2026-09-16 audit of this file listed four dispositions and left the rest
+implied. Finishing it, claim by claim, because "eight are already in Rust" is
+the kind of sentence that is true and unusable:
+
+| claim | disposition |
+|---|---|
+| `registerLazyFile` returns an inode | Rust: `only_a_file_with_a_fetch_description_enumerates_as_deferred` covers registration and identity |
+| `stat` / `lstat` report the declared size unmaterialized | **incongruous.** The kernel's deferred file carries its REAL size in its inode; the claim exists because `MemoryFileSystem` wrote a zero-length STUB and patched the size back from a side registry at `stat` time. There is no stub and no registry to disagree with it |
+| `fstat` reports it through a PEER instance's fd | **incongruous.** A second instance over the same `SharedArrayBuffer` is the model the kernel replaced |
+| creates parent directories automatically | leniency difference, documented 2026-09-16; `KandeloImageFs.registerLazyFile` does not, and that is the seam the export-fixture port hit as `ENOENT` |
+| `exportLazyEntries` lists every registered file | Rust: `the_deferred_set_is_enumerable_with_every_identity_it_carries` |
+| `getLazyEntry` follows a symlink | **incongruous.** It was a SECOND resolver: a host-side lazy lookup re-implementing symlink following. The kernel resolves a path once, for every file, and then reports whatever inode it lands on |
+| `importLazyEntries` restores metadata on another instance | **incongruous**, same reason as `fstat` |
+| a materialized file shows its real size | Rust: `lazy_member_write_materializes_then_overwrites` |
+| several lazy files keep their own sizes | Rust: `many_deferred_files_keep_their_own_payloads` |
+| emits download progress while materializing | **recorded, not ported — see below** |
+| preserves set-ID through materialization | **wrong now.** Lane S's vulnerability; Rust asserts the opposite with a control: `setid_is_demoted_on_deferred_bytes_nothing_can_verify` beside `setid_survives_when_the_image_says_what_the_bytes_must_be` |
+
+**THE PROGRESS CLAIM IS THE ONE WORTH READING.** The 2026-09-16 audit said it
+"belongs to the host and should be re-made against the host that owns it".
+Traced: the host emits `started`, `complete` and `error` from
+`buildRootfsLazyWiring`, and `rootfs-lazy-archives.test.ts` asserts all three,
+including that each transfer is reported once and under the kind the address
+actually is. **What has no home is the intermediate per-chunk `progress`
+event.** Its only producer in the repository is `memory-fs.ts` (two call
+sites), reached through `ensureMaterialized` — a path no boot takes, because
+the kernel owns materialization and the host's fetcher is
+`(url) => Promise<Uint8Array>`, one shot, with nothing to report in between.
+
+So this was not coverage about to be lost. **It was a test of something the
+product had already stopped doing** — and the thing worth carrying forward is
+that `web-libs/kandelo-session` still models a determinate progress bar
+(`LazyDownloadStatus` includes `"progress"`, and its tests exercise it) for
+events no shipping path emits. That is a UI honesty question for whoever owns
+the session library, filed here rather than fixed in this lane.
+
+**And `vfs-image-helpers.test.ts` is repointed in the same commit**, which the
+2026-09-16 audit called correctly: a step-4 repoint misfiled as a step-5
+deletion. Thirty-four cases, fixture swapped to `KandeloImageFs`, one retired —
+the ENOSPC case cannot be expressed against a filesystem whose memory grows
+with what is written and whose capacity is a declared ceiling rather than an
+allocation.
+
 ### A DEFERRED BODY IS AN ADDRESS — `530ff25a8`, `02b2de137`, 2026-09-17
 
 **`host/src/vfs` importers of `memory-fs.ts` go from five to two, and the two
