@@ -14407,6 +14407,39 @@ kernel is rebuilt**, when most of these 38 should disappear and a genuine
 both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 "38 vs 39" as if it were the clean result the earlier deletion got.
 
+### READ THIS BEFORE RUNNING ANY SUITE IN `kandelo-lane-y` — 2026-09-17, end of session
+
+**The worktree's ARTIFACTS are mid-rebuild. Its GIT state is clean.** Those are
+different things and only the second is safe to trust.
+
+`./run.sh setup` was started to repair the tier and was **interrupted** when the
+machine closed. So `local-binaries/` holds a partially rebuilt closure: a kernel
+at `ea67b4c3…` and an unknown mixture of downstream artifacts, some rebuilt
+against it and some not.
+
+**WHAT THAT MEANS FOR THE NEXT TICK:**
+
+* **Re-run `./run.sh setup` to completion before believing any suite result.**
+  It is idempotent and resumes. Until it finishes, a failing test says nothing
+  about the code.
+* **`cargo xtask verify-fresh` is NOT the check that tells you this.** It passes
+  on the kernel alone and cannot see the closure — that is the whole lesson of
+  the retracted entry above. The symptom to look for is *"Package artifact
+  closure is incomplete"*.
+* **Neither host-suite run from this session is usable as evidence.** 38 failing
+  files with a stale kernel, 54 with the broken closure. The retirement's
+  both-sides comparison is still owed.
+
+**The lane's commits are unaffected.** All ten are landed, the tree is clean
+apart from `packages/registry/.program-packages.json.index-transaction-*`, which
+is a build cache and must never be committed.
+
+**An interrupted build is the same hazard as an interrupted `xtask perturb`**,
+recorded earlier in this document: the tree is left in a state nothing announces,
+`git status` looks correct, and the next run's verdict describes a world that was
+never coherent. The difference is that a perturb run leaves a mutation and this
+leaves an artifact set — neither is visible in the diff.
+
 ### I BROKE THE TIER TRYING TO UNBLOCK IT — 2026-09-17, and the retraction is the entry
 
 **RETRACTED, same day, by the next measurement.** This section first said the
