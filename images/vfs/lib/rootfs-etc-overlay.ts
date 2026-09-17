@@ -34,7 +34,15 @@ import type { DirEntry } from "../../../host/src/vfs/types";
  * the type now says so.
  */
 export interface RootfsOverlayReader {
-  lstat(path: string): StatResult;
+  /**
+   * Only the fields this module reads, for the same reason the writer half
+   * below was narrowed and this half was not: `KandeloImageFs` describes an
+   * IMAGE, and an image records no device number and no access or change
+   * times to report. Asking for `StatResult` here demanded four fields the
+   * only implementation cannot supply — the reads are `mode`, `uid`, `gid`
+   * and `size`, and nothing else.
+   */
+  lstat(path: string): Pick<StatResult, "mode" | "uid" | "gid" | "size">;
   readlink(path: string): string;
   open(path: string, flags: number, mode: number): number;
   read(
@@ -51,7 +59,13 @@ export interface RootfsOverlayReader {
    */
   close(handle: number): void;
   opendir(path: string): number;
-  readdir(handle: number): DirEntry | null;
+  /**
+   * The NAME only, for the same reason as `lstat` above: the walk below reads
+   * `entry.name` and nothing else, and an image's reader answers with just
+   * that. `DirEntry` additionally promises a type and an inode number, which
+   * this module never asks for and `KandeloImageFs` does not report.
+   */
+  readdir(handle: number): Pick<DirEntry, "name"> | null;
   closedir(handle: number): void;
 }
 
