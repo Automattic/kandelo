@@ -6409,13 +6409,17 @@ mod tests {
         assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
     }
 
-    /// Cross-language round-trip fixture: a v3 RTFS manifest emitted by the
-    /// REAL TypeScript emitter (`emitRootfsManifest` in
-    /// host/src/vfs/rootfs-manifest.ts), committed at
-    /// `testdata/rtfs-v3-lazy.bin` and regenerated via
-    /// `host/scripts/gen-rtfs-v3-fixture.mts`. If the TS emitter and this
-    /// loader ever disagree on the v3 wire format, this test — not just the
-    /// hand-built byte vectors above — is what catches the drift.
+    /// A v3 RTFS manifest emitted by the TypeScript emitter that used to
+    /// exist, committed at `testdata/rtfs-v3-lazy.bin`.
+    ///
+    /// FROZEN, 2026-09-17: its generator (`host/scripts/gen-rtfs-v3-fixture
+    /// .mts`) went with the filesystem it drove, and the emitter it captured
+    /// (`emitRootfsManifest`) had already moved into test support. So this no
+    /// longer catches DRIFT between two implementations -- there is one -- and
+    /// what it still does is pin this loader against a byte stream nobody can
+    /// silently regenerate to match a change. That is a weaker claim than it
+    /// was and a real one: a loader edit that changes how v3 is read fails
+    /// here.
     const RTFS_V3_FIXTURE: &[u8] = include_bytes!("testdata/rtfs-v3-lazy.bin");
 
     #[test]

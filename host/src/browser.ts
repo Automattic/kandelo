@@ -46,20 +46,3 @@ export type {
   CentralizedWorkerInitMessage,
 } from "./worker-protocol";
 export { VirtualPlatformIO } from "./vfs/vfs";
-export {
-  MemoryFileSystem,
-  resolveMountSetIdCapability,
-} from "./vfs/memory-fs";
-export type {
-  LazyDownloadEvent,
-  LazyDownloadKind,
-  LazyDownloadListener,
-  LazyDownloadStatus,
-  LazyFileEntry,
-  LazyFetcherOptions,
-  LazyTreeActivation,
-  LazyTreeGroup,
-  LazyTreeRegistrationEntry,
-  VfsImageCapacity,
-  VfsImageRestoreOptions,
-} from "./vfs/memory-fs";

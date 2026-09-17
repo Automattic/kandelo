@@ -1598,7 +1598,9 @@ mod tests {
     /// The cross-language fixtures: the RAW KIFS body the TypeScript writer
     /// in `host/src/vfs/sharedfs-vendor.ts` produced for the same tree,
     /// raw-deflated. Regenerate with
-    /// `host/scripts/gen-kandelo-image-writer-fixture.mts`.
+    /// a TypeScript generator that no longer exists. FROZEN 2026-09-17:
+    /// `host/scripts/gen-kandelo-image-writer-fixture.mts` existed to pin this
+    /// writer to the TypeScript one, and there is no TypeScript one.
     const SMALL_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-small.deflate");
     const WIDE_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-wide.deflate");
     const SLOTS_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-slots.deflate");

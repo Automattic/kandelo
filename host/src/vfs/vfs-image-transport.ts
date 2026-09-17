@@ -24,7 +24,6 @@
  */
 import { decompress as zstdDecompress } from "fzstd";
 
-import { VFS_IMAGE_MAX_KERNEL_LAZY_BYTES } from "./kernel-lazy-section";
 
 // zstd frame magic (little-endian on the wire: 28 B5 2F FD).
 // `maybeDecompressImage` auto-detects this and decompresses transparently so
@@ -41,6 +40,9 @@ export const VFS_IMAGE_HEADER_SIZE = 16;
 export const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 export const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
 export const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
+/** The bound on a `KLZY` section, kept because the decompression ceiling below
+ *  is the sum of every section a container may declare. */
+export const VFS_IMAGE_MAX_KERNEL_LAZY_BYTES = 16 * 1024 * 1024;
 export const VFS_IMAGE_MAX_DECOMPRESSED_BYTES =
   1024 * 1024 * 1024
   + VFS_IMAGE_MAX_LAZY_METADATA_BYTES
@@ -218,6 +220,18 @@ export const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
 export const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
 export const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
 export const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
+/**
+ * The container declares a kernel-facing lazy-linkage (`KLZY`) section.
+ *
+ * MOVED HERE 2026-09-17 from `kernel-lazy-section.ts`, which went with the
+ * encoder and decoder that were its only reason to exist — the one writer that
+ * emitted a `KLZY` section is deleted. The flag stays because containers that
+ * declare one still exist on disk, and a reader must be able to say so: an
+ * image the kernel refuses because it describes its deferred files NOWHERE is
+ * a different artifact from one that describes them in a section this reader
+ * no longer decodes.
+ */
+export const VFS_IMAGE_FLAG_HAS_KERNEL_LAZY = 1 << 4;
 
 export interface ParsedImageHeader {
   image: Uint8Array;

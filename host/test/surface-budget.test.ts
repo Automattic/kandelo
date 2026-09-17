@@ -234,10 +234,38 @@ const MEASURED_GLOBS: Record<string, string[]> = {
   ],
 };
 
+/**
+ * Zero, for a surface whose files the campaign deleted.
+ *
+ * Asserts the deletion rather than assuming it: every listed path must be
+ * absent. A surface with one file gone and one renamed fails here, which is
+ * the case `lineCount`'s existence check exists for.
+ */
+function deletedSurface(globs: string[]): number {
+  for (const glob of globs) {
+    if (existsSync(join(repoRoot, glob))) {
+      throw new Error(
+        `surface-budget: ${glob} is declared deleted but still exists. `
+          + "A surface counts zero only when every file it measures is gone.",
+      );
+    }
+  }
+  return 0;
+}
+
 const MEASURED: Record<string, () => number> = {
   forkTypeScript: () => lineCount(MEASURED_GLOBS.forkTypeScript!),
   workerMainTypeScript: () => lineCount(MEASURED_GLOBS.workerMainTypeScript!),
-  imageFsTypeScript: () => lineCount(MEASURED_GLOBS.imageFsTypeScript!),
+  // DELETED SURFACES COUNT ZERO, and only when the plan says the file is gone.
+  //
+  // `lineCount` refuses a path that does not exist, because a moved or renamed
+  // file must not read as a reduction. A DELETED one is the opposite case: the
+  // surface reached its target, and "the file is missing" is the answer rather
+  // than a measurement failure. `deletedSurface` makes that an explicit
+  // declaration — the globs must still be listed, and every one of them must
+  // be absent, so a half-deleted surface (one file gone, one renamed) still
+  // fails rather than reporting zero.
+  imageFsTypeScript: () => deletedSurface(MEASURED_GLOBS.imageFsTypeScript!),
   hostImportFunctions: () =>
     Number.parseInt(
       /EXPECTED_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
@@ -245,7 +273,7 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
-  memoryFsTypeScript: () => lineCount(MEASURED_GLOBS.memoryFsTypeScript!),
+  memoryFsTypeScript: () => deletedSurface(MEASURED_GLOBS.memoryFsTypeScript!),
   kernelWorkerTypeScript: () => lineCount(MEASURED_GLOBS.kernelWorkerTypeScript!),
   // 91.6% of kernel-worker.ts is one class. A line gate alone permits
   // shuffling code between methods of the same god class; this does not.
@@ -368,12 +396,13 @@ const MEASURED: Record<string, () => number> = {
       "host/src/node-kernel-worker-entry.ts",
       "host/src/browser-kernel-protocol.ts",
     ]),
-  // The rest of host/src/vfs. memory-fs.ts and sharedfs-vendor.ts are excluded
-  // because memoryFsTypeScript and imageFsTypeScript already count them, and a
-  // line counted twice is banked twice.
-  hostVfsTypeScript: () =>
-    lineCount(["host/src/vfs/*.ts"])
-      - lineCount(["host/src/vfs/memory-fs.ts", "host/src/vfs/sharedfs-vendor.ts"]),
+  // The rest of host/src/vfs. `memory-fs.ts` and `sharedfs-vendor.ts` were
+  // excluded because `memoryFsTypeScript` and `imageFsTypeScript` counted them,
+  // and a line counted twice is banked twice. Both files are DELETED now, so
+  // the subtraction has nothing to subtract — and asking `lineCount` for them
+  // fails on the missing-path guard, which is that guard doing its job on a
+  // measure that outlived its own exclusion.
+  hostVfsTypeScript: () => lineCount(["host/src/vfs/*.ts"]),
   hostKernelPlumbingTypeScript: () =>
     lineCount(MEASURED_GLOBS.hostKernelPlumbingTypeScript!),
   // Declaration names present in BOTH halves of a browser-/node- pair.
@@ -650,7 +679,17 @@ describe("the budget's code-line counter", () => {
 
   it("counts every real source file the budget measures without losing its place", () => {
     // The throw above is only a guard if it stays silent on real input.
+    //
+    // A DELETED surface is skipped here and asserted instead: its files are
+    // gone on purpose, so `lineCount` would fail for the right reason and say
+    // nothing about the scanner. `deletedSurface` is what checks those, and it
+    // checks the stronger thing — that every one of their paths is absent.
     for (const [name, globs] of Object.entries(MEASURED_GLOBS)) {
+      const gone = globs.every((glob) => !existsSync(join(repoRoot, glob)));
+      if (gone) {
+        expect(() => deletedSurface(globs), name).not.toThrow();
+        continue;
+      }
       expect(() => lineCount(globs), name).not.toThrow();
     }
   });

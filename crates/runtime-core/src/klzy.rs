@@ -236,7 +236,11 @@ mod tests {
     use alloc::vec;
 
     /// Emitted by the REAL TypeScript encoder; see
-    /// `host/scripts/gen-klzy-fixture.mts` for the tree it describes.
+    /// a TypeScript generator that no longer exists for the tree it
+    /// describes. FROZEN 2026-09-17: `host/scripts/gen-klzy-fixture.mts` went
+    /// with the one writer that emitted a `KLZY` section, so the fixture pins
+    /// this decoder against committed bytes rather than against a second
+    /// implementation.
     const KLZY_FIXTURE: &[u8] = include_bytes!("testdata/klzy-v1.bin");
 
     fn build(groups: &[(u32, u64, &str)], files: &[(u32, u64, u32, &str)]) -> Vec<u8> {

@@ -42,7 +42,7 @@ import { describe, expect, it } from "vitest";
 
 import { tryResolveBinary } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import { VFS_IMAGE_FLAG_HAS_KERNEL_LAZY } from "../src/vfs/kernel-lazy-section";
+import { VFS_IMAGE_FLAG_HAS_KERNEL_LAZY } from "../src/vfs/vfs-image-transport";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
