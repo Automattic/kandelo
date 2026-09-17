@@ -12,6 +12,7 @@ import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
+import type { PreparedExecLaunchPlan } from "../src/exec-target";
 import { materializeThreadSlot, THREAD_SLOT_BYTES } from "../src/thread-allocator";
 import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "../src/constants";
 import {
@@ -317,7 +318,17 @@ function centralizedForkModuleFields(
       const view = injected instanceof Uint8Array
         ? injected
         : new Uint8Array(injected);
-      mod = new WebAssembly.Module(view);
+      // The BUFFER, not the view. Since TypeScript 5.7 a
+      // `Uint8Array<ArrayBufferLike>` is not a `BufferSource`, because the
+      // buffer behind it may be shared — and `WebAssembly.Module` wants one it
+      // can hold. Slicing by the view's own bounds is what
+      // `KandeloImageFs.create` does for the same reason.
+      mod = new WebAssembly.Module(
+        view.buffer.slice(
+          view.byteOffset,
+          view.byteOffset + view.byteLength,
+        ) as ArrayBuffer,
+      );
     } else {
       const name = `fork_module${ptrWidth === 8 ? 64 : 32}.wasm`;
       mod = new WebAssembly.Module(readFileSync(resolveBinary(name)));
@@ -714,7 +725,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     }
   };
 
-  const kernelWorker = new CentralizedKernelWorker(
+  // ANNOTATED, because the callbacks in this call reference `kernelWorker`
+  // itself — an inference cycle TypeScript resolves as `any`, which then hides
+  // every mistake made through it. The same shape below for `onExec` and the
+  // two exec results it reads.
+  const kernelWorker: CentralizedKernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
@@ -1025,7 +1040,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           throw error;
         }
       },
-      onExec: async (request) => {
+      onExec: async (request): Promise<number | PreparedExecLaunchPlan> => {
         const {
           pid: execPid,
           targetBytes: newProgramBytes,
@@ -1035,7 +1050,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         } = request;
         const newPtrWidth = detectPtrWidth(newProgramBytes);
         const sourcePtrWidth = processPtrWidths.get(execPid) ?? newPtrWidth;
-        const metadataResult = kernelWorker.validateExecMetadata(argv, envp, sourcePtrWidth);
+        const metadataResult: number = kernelWorker.validateExecMetadata(argv, envp, sourcePtrWidth);
         if (metadataResult < 0) return metadataResult;
 
         const {
@@ -1048,7 +1063,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         );
         const newChannelOffset = newLayout.channelOffset;
 
-        const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(execPid);
+        const addressSpaceResult: number = kernelWorker.prepareAddressSpaceForExec(execPid);
         if (addressSpaceResult < 0) return addressSpaceResult;
         const oldMemory = processMemories.get(execPid);
         if (!oldMemory) {
