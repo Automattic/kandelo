@@ -15,7 +15,9 @@ import {
   writeVfsBinary as writeBrowserVfsBinary,
   writeVfsFile as writeBrowserVfsFile,
 } from "../../../apps/browser-demos/lib/init/vfs-utils";
-import { EEXIST, ENOSPC } from "../../src/vfs/sharedfs-vendor";
+// Errnos from `vfs-errors.ts`, not from the vendored filesystem that
+// re-exports them: `sharedfs-vendor.ts` goes with `memory-fs.ts`.
+import { EEXIST, ENOSPC } from "../../src/vfs/vfs-errors";
 
 const O_RDONLY = 0;
 

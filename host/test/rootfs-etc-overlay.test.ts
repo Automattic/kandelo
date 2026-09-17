@@ -9,13 +9,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { overlayEtcFromRootfs } from "../../images/vfs/lib/rootfs-etc-overlay";
-import {
-  ENOENT,
-  S_IFDIR,
-  S_IFLNK,
-  S_IFMT,
-  S_IFREG,
-} from "../src/vfs/sharedfs-vendor";
+// The file-type bits from the generated ABI and the errno from `vfs-errors`,
+// rather than from `sharedfs-vendor.ts` — a second implementation of the KIFS
+// format, in `vfs-errors.ts`'s own words, which goes with `memory-fs.ts`.
+// These are POSIX constants the platform already publishes; reaching for the
+// vendor's copy is how a file that no longer touches that filesystem still
+// keeps it alive.
+import { FILE_MODES } from "../src/generated/abi";
+import { ENOENT } from "../src/vfs/vfs-errors";
+
+const { S_IFDIR, S_IFLNK, S_IFMT, S_IFREG } = FILE_MODES;
 
 /** The errno a filesystem error carries, whichever convention it uses. */
 function errnoOf(error: unknown): number {
