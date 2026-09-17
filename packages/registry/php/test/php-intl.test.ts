@@ -5,8 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { addSealedLazyAtomicTestTree } from "../../../../host/test/lazy-atomic-seal-fixture";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -47,62 +46,41 @@ const READY = existsSync(phpBinaryPath)
   && existsSync(rootfsPath);
 let intlRootfsImage: Uint8Array;
 
-function readVfsBinary(fs: MemoryFileSystem, path: string): Uint8Array {
-  const size = fs.stat(path).size;
-  const bytes = new Uint8Array(size);
-  const fd = fs.open(path, O_RDONLY, 0);
-  let offset = 0;
-  try {
-    while (offset < bytes.length) {
-      const read = fs.read(
-        fd,
-        bytes.subarray(offset),
-        null,
-        bytes.length - offset,
-      );
-      if (read <= 0) {
-        throw new Error(
-          `short VFS read for ${path}: ${offset} of ${bytes.length}`,
-        );
-      }
-      offset += read;
-    }
-  } finally {
-    fs.close(fd);
-  }
-  return bytes;
+function readVfsBinary(fs: KandeloImageFs, path: string): Uint8Array {
+  return fs.readFile(path);
 }
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-describe("PHP intl VFS restore boundary", () => {
-  it("authenticates an imported v3 rootfs before rebasing", async () => {
-    const source = MemoryFileSystem.create(
-      new SharedArrayBuffer(8 * 1024 * 1024),
-    );
-    await addSealedLazyAtomicTestTree(source, {
-      groupId: "test:php-intl-rootfs",
-      member: "rootfs",
-      root: "/php-intl-rootfs",
-    });
-    const restored = MemoryFileSystem.fromImage(await source.saveImage());
-    await restored.verifyImportedLazyAtomicGroupSeals();
-    expect(
-      restored.rebaseToNewFileSystem(16 * 1024 * 1024)
-        .exportLazyArchiveEntries(),
-    ).toHaveLength(1);
-  });
-});
+// RETIRED 2026-09-17: "authenticates an imported v3 rootfs before rebasing".
+//
+// It planted a sealed lazy-atomic tree with `host/test/lazy-atomic-seal-
+// fixture.ts`, called `verifyImportedLazyAtomicGroupSeals()`, and asserted the
+// rebased filesystem still carried the tree. The fixture was deleted with the
+// host's own seal verification (`0cd9fec21`), so THIS FILE HAS BEEN FAILING TO
+// COMPILE SINCE THEN — a census that grepped `host/` for callers missed this
+// one under `packages/`, the same miss as `tools/mkrootfs/test/cli.test.ts`.
+//
+// The claim it made is now inherent rather than tested here: `loadImage`
+// authenticates every cohort seal because `rootfs::load_image` does, so an
+// image that reaches the rebase below is one whose cohorts checked out, and
+// there is no separate verification a caller can forget. Where the refusal
+// itself is asserted: `seal.rs`'s seventeen unit tests, `rootfs.rs`'s
+// `a_load_refuses_an_image_whose_cohorts_do_not_authenticate`, and the CLI
+// boundary case in `tools/mkrootfs/test/cli.test.ts`.
 
 describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   beforeAll(async () => {
-    const restored = MemoryFileSystem.fromImage(
-      new Uint8Array(readFileSync(rootfsPath)),
-    );
-    await restored.verifyImportedLazyAtomicGroupSeals();
-    const fs = restored.rebaseToNewFileSystem(PHP_INTL_VFS_MAX_BYTES);
+    // THE LOAD AUTHENTICATES, and the rebase is a declared ceiling rather
+    // than a new filesystem. `rebaseToNewFileSystem` copied a whole tree into
+    // a second buffer of the requested size, because capacity was an
+    // allocation; the module records the ceiling the export will declare and
+    // copies nothing.
+    const fs = KandeloImageFs.create();
+    fs.loadImage(new Uint8Array(readFileSync(rootfsPath)));
+    fs.setImageCapacity(PHP_INTL_VFS_MAX_BYTES);
     ensureDirRecursive(fs, dirname(INTL_GUEST_PATH));
     ensureDirRecursive(fs, dirname(icuRuntime!.guestPath));
     writeVfsBinary(
