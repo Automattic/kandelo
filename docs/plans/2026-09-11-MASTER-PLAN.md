@@ -13729,7 +13729,19 @@ fewer tests because the deleted suites are gone, **zero new failures**.
 it passes 2/2 alone. The commit was landed before this reported and said so in
 those words; it now carries the verdict.
 
-**Still owed**: the wasm32 kernel build for the runtime-core doc-comment edit.
+**The wasm32 kernel build is clean too** (`cargo build --release -p kandelo -Z
+build-std=core,alloc`, zero errors), which closes the last validation the
+deletion owed.
+
+**AND THE CENSUS READS ZERO.** The only file that still names any deleted
+module is `host/test/surface-budget.test.ts`, which declares them as deleted
+surfaces on purpose and asserts their absence. The last real importer was
+`scripts/build-local-vfs-asset-group.test.ts`, repointed in `d5072f4d8`: its
+fixtures stand in for product images the Pages closure stages, and that closure
+reads them through the module now, so a fixture from the other producer was
+testing against images it will never meet. It went from failing to load at all
+to 13 of 18 passing, the remaining five on a `run.sh`/registry mismatch that
+predates this lane.
 
 **AND THE BROWSER CYCLE IS BLOCKED ON PROVISIONING, not on this work.** The
 worktree's source-only tier is stale: `xtask verify-fresh` names
