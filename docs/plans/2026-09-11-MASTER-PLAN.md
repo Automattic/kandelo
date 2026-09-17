@@ -13902,6 +13902,47 @@ module-base-image **83/83**; `xtask perturb --validate` 414 trials all
 anchoring; and the surviving five trials RUN — **5 trials, 0 survived, 0
 invalid, 0 timed out**, tree clean afterwards with no `.perturb-in-progress`.
 
+### A JAVASCRIPT PROBLEM, IN A HOST THAT NO LONGER HAS THE JAVASCRIPT — `c9dcbba31`, 2026-09-17
+
+**`host/src/vfs/canonical-text.ts` is deleted, whole.** Its doc comment stated
+its own reason for existing: JavaScript's relational operators compare UTF-16
+code units, which order U+E000 *after* U+10000, and the wire format needs
+Unicode scalar order. Forty-four lines so the host could sort strings the way
+the producer does.
+
+**The producer is Rust, where `str` ordering IS scalar ordering.** So this is a
+stronger statement than "no caller": the defect the module corrects **cannot
+occur in the language that replaced its caller**. That is the shape worth
+looking for in the rest of the host — code that compensates for a property of
+JavaScript, in a path JavaScript no longer owns.
+
+**It was orphaned in the big deletion and nothing said so.** `memory-fs.ts` was
+the sole caller, at its sortedness assertion (`paths[index - 1] >= path`) and
+its entry comparator. When that went, no importer was left to fail — **and
+eight `build.toml` files still named the file as a build input**, which keeps a
+path alive in the build graph with nobody reading it. A file can be dead and
+still be a cache-key input.
+
+**The gate was proved, not assumed.** `xtask build-deps program-index` refuses a
+build input it cannot find; restoring ONE of the eight lines makes it fail with
+`rootfs@0.1.0 build input "host/src/vfs/canonical-text.ts" not found`, and with
+all eight removed it regenerates the whole registry index at exit 0. This is the
+same gate that caught eleven such files during the `memory-fs.ts` deletion, and
+it is now the second time it has been the only thing standing between a
+half-deletion and a broken index.
+
+**A hazard recurred while proving it, and it is worth the line.** `git checkout
+-- packages/registry/rootfs/build.toml`, used to undo the one-line probe, also
+silently discarded the legitimate removal already sitting unstaged in that same
+file — `git status` went quiet and looked correct. A checkout reverts the FILE,
+not the experiment. Re-applied and re-verified; the right move is to write the
+probe back by hand, or stage the real edit before probing.
+
+**Banked**: `hostVfsTypeScript` 5874 -> 5839, measured the same way as the two
+before it (5838 as the ceiling FAILS with "is 5839"). Across the three
+increments landed after lane V's closure the surface has gone **6091 -> 5839**,
+and every step of it is written down rather than absorbed by slack.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
