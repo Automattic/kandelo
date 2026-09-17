@@ -1072,7 +1072,19 @@ capable of a positive -- the same grep returns 115 hits on the previous,
 genuinely failed log and 1 here -- because a failure scan that cannot match
 is not a verdict.
 
-## NEEDS A DECISION: the errno diagnostic has nowhere to live
+## The errno diagnostic has nowhere to live -- DECIDED: dropped
+
+> **DECIDED 2026-09-17: dropped, maintainer's call.** The approval predated
+> two findings. `forkTypeScript` measures 890 against a ceiling of 890, so the
+> one line the `FORK_MODULE_STATS` name costs cannot be paid without a raise --
+> and the M3 cap guard already prints count, cap, per-artifact breakdown and
+> the named consequence ("a fork in wordpress or lamp will fail with E2BIG"),
+> at TEST time, before anyone reaches the runtime errno. So the trade was never
+> "one line against an undiagnosable errno"; it was "one line against a
+> diagnosis already reachable by running one test file". Not worth a ceiling.
+>
+> The reasoning below stands as the record of how the cost was established.
+
 
 `forkTypeScript` measures **890 against a ceiling of 890**. Zero headroom.
 (Measured with the budget test's own `codeLinesInSource`, extracted at
