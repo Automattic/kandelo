@@ -717,43 +717,8 @@ kandelo_package_stage_verified_source() {
     # both gzip and xz archives, and tar should select the decompressor from
     # the verified bytes rather than a recipe-specific filename convention.
     tarball="$download_dir/source.archive"
-    # RETRYING A BROKEN REDIRECT HARDER DOES NOT HELP. `ftpmirror.gnu.org` is
-    # GNU's round-robin redirector: it 302s to whichever mirror it picks, and
-    # mirrors are sometimes missing a release. When that happens every one of
-    # curl's ten retries follows the same redirect to the same incomplete
-    # mirror and 404s identically -- which is exactly what `./run.sh setup`
-    # produced for `gawk@5.3.0` on 2026-09-17: ten `curl: (22) ... 404` lines,
-    # then `build-rootfs.sh exited with 1`. The canonical host had the file the
-    # whole time.
-    #
-    # So fall back from the redirector to `ftp.gnu.org`, which is what it
-    # redirects to when it picks a healthy mirror. Fourteen recipes use the
-    # redirector, so this belongs here rather than in any one of them.
-    #
-    # This weakens NOTHING: the sha256 below verifies the bytes whatever host
-    # served them, so a fallback can only change WHERE correct bytes come from.
-    # A mirror serving wrong bytes still fails the check.
-    kandelo_package_download_urls() {
-        printf '%s\n' "$1"
-        case "$1" in
-            https://ftpmirror.gnu.org/*)
-                printf '%s\n' "https://ftp.gnu.org/gnu/${1#https://ftpmirror.gnu.org/}"
-                ;;
-        esac
-    }
-    local download_url download_ok=0
-    while IFS= read -r download_url; do
-        [ -n "$download_url" ] || continue
-        if curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-            -fsSL "$download_url" -o "$tarball"; then
-            download_ok=1
-            break
-        fi
-        echo "WARN: $label source fetch failed from $download_url" >&2
-    done <<EOF
-$(kandelo_package_download_urls "$source_url")
-EOF
-    if [ "$download_ok" -ne 1 ]; then
+    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+        -fsSL "$source_url" -o "$tarball"; then
         rm -rf "$download_dir"
         return 1
     fi
