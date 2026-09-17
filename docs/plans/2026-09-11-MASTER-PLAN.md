@@ -14407,6 +14407,49 @@ kernel is rebuilt**, when most of these 38 should disappear and a genuine
 both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 "38 vs 39" as if it were the clean result the earlier deletion got.
 
+### MERGING LANE Y/V — read this before resolving `docs/surface-budget.json`
+
+**`brandonpayton/lane-y-image-writer` @ `23d1cb045` is 145 commits ahead and 445
+behind this branch.** A real merge, not a fast-forward.
+
+**THE BUDGET WILL CONFLICT AND NEITHER SIDE IS CORRECT.** Resolve it ceiling by
+ceiling, taking the **minimum** of the two, then RE-RUN the budget — the merged
+tree's measures differ from both sides', and a ceiling more than `slack` above
+its measure fails by design.
+
+| entry | lane | parent | take |
+|---|---|---|---|
+| `hostVfsTypeScript` | 5,839 | 8,801 | **lane** |
+| `memoryFsTypeScript` | 0 | 7,123 | **lane** |
+| `hostKernelPlumbingTypeScript` | 4,575 | 4,582 | **lane** |
+| `forkModuleEntryPoints` | 69 | 71 | **lane** |
+| `setuidLazyWithoutDigest` | 0 | 2 | **lane** |
+| `forkTypeScript` | 19,804 | 890 | **parent** |
+| `workerMainTypeScript` | 5,958 | 5,356 | **parent** |
+
+**Taking either side wholesale destroys banked work.** The lane's side un-banks a
+**~19,000-line** `forkTypeScript` reduction. The parent's side un-banks ~3,000
+lines of `hostVfsTypeScript` and the whole of `memoryFsTypeScript`. This is the
+one place in the merge where a plausible-looking resolution silently raises a
+ceiling, which is the move this campaign forbids everywhere else.
+
+**This document will also conflict.** The entries describing lane Y/V's 2026-09-17
+work were committed directly to THIS branch, so resolve in favour of the parent;
+the lane's copy is 445 commits stale.
+
+**Two commits need a judgment call rather than a re-run**: `02423a018` changes a
+user-visible surface order in five shipped demos (maintainer-approved, the only
+product-visible behaviour change in the lane), and `9ed0393d4` removes
+`--allow-local-fixture` from `xtask`'s public command surface.
+
+**If something looks wrong after merging, suspect artifact state before code.**
+`cargo xtask verify-fresh` is PER-ARTIFACT and cannot see the closure around it.
+The symptom of an inconsistent tier is *"Package artifact closure is
+incomplete"*, and the fix is `./run.sh setup` to completion — a targeted rebuild
+makes it worse, which is recorded above at the cost of one afternoon.
+
+**The browser cycle has never been run against this lane.**
+
 ### THE BOTH-SIDES COMPARISON IS DONE, AND IT IS CLEAN — 2026-09-17
 
 **`f92fee4f2` and `23d1cb045`, same machine, same rebuilt closure**, via a
