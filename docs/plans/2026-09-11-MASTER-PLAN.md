@@ -13538,6 +13538,33 @@ never consults. `perturb/browser-scratch-refusal.json` carries three trials,
 including both directions: a refusal that fired too widely would break every
 boot as surely as one that never fired would hide a dropped mount.
 
+### BROWSER VERDICT: A BASELINE FAILURE GONE, AND ONE FLAKE SEPARATED FROM A REGRESSION
+
+**Chromium after the mount removal: 160 passed / 19 failed / 6 skipped / 9 did
+not run.** Against the original fourteen-failure baseline:
+
+* **One is GONE** — *"default browser profiles use the writable canonical
+  maker home"*. It had been red since the Phase 5 cutover took `/home/maker`,
+  reporting the move rather than a defect, and its claim now lives in the
+  kernel. **That is the first of the fourteen to be retired rather than
+  carried.**
+* **Five are the `@slow` WordPress specs the baseline never ran**, established
+  earlier: the baseline was a `test:fast` run with zero `@slow` entries.
+* **One needed separating from a regression**: *"caught SIGCHLD interrupts and
+  restarts accept coherently"*. The guest reports `accept without SA_RESTART
+  returned 4, errno=0` — it expected `EINTR` and got a live descriptor, which
+  is a SIGNAL result and touches nothing this tranche changed.
+
+**Run alone it passes 3 of 3; it fails only in the full suite**, and it also
+appeared in the three-project run that predated every change here. That is
+**B36's recorded shape** — *"a signal-safe wake can complete before a signal
+the writer has not yet sent"*, the gap this plan already documents as a
+robustness rather than conformance issue, whose obvious fix was refuted rather
+than deferred. Recorded as an observed flake with its evidence rather than
+attributed to load by assertion.
+
+**`perturb/browser-scratch-refusal.json`: 3 trials, 0 survived.**
+
 ### THE ENDGAME'S RULES — maintainer decisions, 2026-09-16
 
 **Four answers that settle how lane V finishes.** Recorded here because they
