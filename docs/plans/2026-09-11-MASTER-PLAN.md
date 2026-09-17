@@ -13943,6 +13943,51 @@ before it (5838 as the ceiling FAILS with "is 5839"). Across the three
 increments landed after lane V's closure the surface has gone **6091 -> 5839**,
 and every step of it is written down rather than absorbed by slack.
 
+### A GATE TESTED IN AN ABI-7 WORLD — `7fc2a864b`, 2026-09-17
+
+**Found by asking whether two red tests were mine.** They were not — the same
+two failed identically at `f92fee4f2`, before any of this session's work — but
+the check that proved it also showed what they were failing ON, and it was a
+lane Y file.
+
+`host/test/vfs-product-builder-contract.test.ts` spells the kernel ABI as the
+literal `7` in **six** places: the resolved inputs' target ABI, the ABI its
+fixture writes into the image, the `-abi-7-candidates` registry path of three
+references and the `base-7.vfs.zst` filename of three more. The real
+`ABI_VERSION` is 44.
+
+**The consequence was not a wrong number. It was an unreachable gate.** Reading
+the output's metadata LOADS the image; the loader refuses a foreign ABI with
+`EPROTO`; and so the builder's own two ABI checks — output kernel ABI against
+target, output snapshot SHA against target — were never reached by either
+failing case. Two guards in a shipping builder, with a test that could not fail.
+
+**One claim could not be restored as written, and saying how it changed is the
+point.** The case that built the output at ABI 8 against a target of 7 asserted
+the builder's version-mismatch message. An output built for another kernel no
+longer gets that far. The mismatch the comparison CAN still see is the other
+one — **an output at the current ABI whose resolved inputs name a different
+target**, a build whose inputs were resolved against a different ABI than the
+kernel that wrote the image — so that is what the case now builds, and a third
+case names the `EPROTO` refusal that took the old one's place. Neither outcome
+is assumed.
+
+**And a fixture can be refused for two reasons at once.** The `attacker.invalid`
+reference must be rejected for its HOST. Leaving a stale ABI inside it left a
+second reason to refuse and no way to tell which one fired — the same shape as
+an error message listing two causes when you have only tested one.
+
+**Both guards are now perturbed**, because a guard whose test cannot fail is not
+a guard: `perturb/product-builder-envelope.json` gains "an output built for
+another kernel ABI is accepted" and "an output bound to another ABI snapshot is
+accepted". **6 trials, 0 survived, 0 invalid, 0 timed out.**
+
+**Evidence**: vfs-product-builder-contract **11/11**, from 9 of 11; the VFS
+slice of the host suite 338 tests with the same failing set before and after
+this session's four commits, and **zero** after this one; `tsc -p
+host/tsconfig.typecheck.json` clean; surface budget 101/101; `xtask perturb
+--validate` 416 trials all anchoring.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
