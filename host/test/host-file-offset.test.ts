@@ -16,7 +16,6 @@ import { NativePositionedWriteHandles } from "../src/native-positioned-write";
 import { NodePlatformIO } from "../src/platform/node";
 import type { HostFileOffset } from "../src/types";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { OPFS_CHANNEL_SIZE } from "../src/vfs/opfs-channel";
 import { OpfsFileSystem } from "../src/vfs/opfs";
 import type { FileSystemBackend } from "../src/vfs/types";
@@ -384,19 +383,13 @@ describe.each([
 });
 
 describe("number-only VFS backends", () => {
+  // ONE ARM, not two, since 2026-09-17. `MemoryFileSystem` stood beside
+  // `OpfsFileSystem` here because both take JS numbers where the guest speaks
+  // 64-bit offsets, and both therefore have to refuse rather than narrow. The
+  // claim is about that shape and not about either class, so it keeps its
+  // subject: OPFS is still a number-only backend, and the arm that went was a
+  // second instance of one rule rather than a second rule.
   it.each([
-    [
-      "MemoryFileSystem",
-      () => {
-        const io = MemoryFileSystem.create(
-          new SharedArrayBuffer(4 * 1024 * 1024),
-        );
-        return {
-          io,
-          handle: io.open("/file", 0o100 | O_RDWR, 0o600),
-        };
-      },
-    ],
     [
       "OpfsFileSystem",
       () => {

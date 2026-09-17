@@ -6825,6 +6825,66 @@ mod tests {
     }
 
     #[test]
+    fn a_dangling_symlink_is_itself_a_file_even_though_its_target_is_not() {
+        // PORTED from `host/test/symlink.test.ts` ("lstat on dangling symlink
+        // succeeds"), which asserted it against the TypeScript filesystem lane
+        // V deletes. The kernel had every other symlink claim that file made
+        // and not this one.
+        //
+        // The asymmetry is the whole of it: `lstat` answers about the LINK, so
+        // a link to nothing is still a link and reports itself; anything that
+        // follows the link reaches nothing and says ENOENT. A reader that
+        // conflated them would make a broken alias invisible to `ls -l`, which
+        // is exactly the state a user needs to see in order to fix it.
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_symlink(b"/dangling", b"/nonexistent", 0o777, 0, 0, 2).unwrap();
+
+        let st = lstat(b"/dangling").expect("the link itself exists");
+        assert_eq!(st.st_mode & S_IFMT, S_IFLNK);
+
+        let (mut blob, _) = make_byte_source(alloc::vec::Vec::new(), alloc::vec::Vec::new());
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            read_file_at(b"/dangling", 0, &mut buf, &mut blob).unwrap_err(),
+            Errno::ENOENT,
+            "following it reaches nothing",
+        );
+    }
+
+    #[test]
+    fn unlink_removes_the_symlink_and_not_what_it_points_at() {
+        // PORTED from `host/test/symlink.test.ts` ("unlink removes a dangling
+        // symlink itself"). POSIX `unlink(2)` removes the directory entry the
+        // path names; when that entry is a symlink it removes the LINK and
+        // never follows it. The opposite behaviour is the dangerous one --
+        // deleting an alias would silently delete the file it aliases -- and
+        // nothing in the kernel asserted which way it goes.
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_host_file(b"/target.txt", 70, 5, 0o644, 0, 0, 2).unwrap();
+        insert_base_symlink(b"/link.txt", b"target.txt", 0o777, 0, 0, 3).unwrap();
+
+        unlink(b"/link.txt").expect("unlink the alias");
+        assert!(lstat(b"/link.txt").is_err(), "the alias is gone");
+        assert_eq!(
+            lstat(b"/target.txt").expect("the target survives").st_mode & S_IFMT,
+            S_IFREG,
+            "and it is still the file it always was",
+        );
+
+        // THE OTHER DIRECTION, which is what makes this about the link rather
+        // than about unlink working at all: removing the TARGET leaves the
+        // alias in place as a link, now dangling.
+        insert_base_symlink(b"/link2.txt", b"target.txt", 0o777, 0, 0, 4).unwrap();
+        unlink(b"/target.txt").expect("unlink the target");
+        assert_eq!(
+            lstat(b"/link2.txt").expect("the alias survives").st_mode & S_IFMT,
+            S_IFLNK,
+        );
+    }
+
+    #[test]
     fn read_file_at_self_loop_symlink_is_eloop() {
         // /loop -> loop resolves forever; the bounded resolver returns ELOOP
         // rather than spinning.
