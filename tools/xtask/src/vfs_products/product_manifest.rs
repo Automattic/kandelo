@@ -316,10 +316,6 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
                 flags["--generated"].as_path(),
             )
         }
-        "validate-resolved-inputs" => {
-            let flags = parse_path_flags(args, &["--path"])?;
-            super::resolved_inputs::validate_document(flags["--path"].as_path())
-        }
         _ => Err(format!("unknown products subcommand {action:?}")),
     }
 }
