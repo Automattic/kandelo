@@ -398,10 +398,73 @@ that found all of this.
    reachable only by diluting; ~8 is realistic once the follow-up lands.
 4. **`workerMainForkTypeScript`'s target of 1200**, labelled a proposal in the
    budget because nobody has built the thing that would reveal the real floor.
-5. **The lane's cache root defeats the SDK's pkg-config allowlist.** A real
-   defect and still the maintainer's call — but read the scope carefully,
-   because an earlier version of this item (and commit `c23de3fa6`) got it
-   wrong in both directions.
+5. **RULED 2026-09-17 and FIXED in `edbc3000a`.** The maintainer's ruling was
+   "can we just fix this for every package by fixing at a shared layer?" — and
+   yes: the wrapper IS the shared layer, every package's pkg-config goes
+   through it, so there was no per-package fix to make. `build-php.sh` was
+   already correct; the wrapper was discarding the paths it handed over.
+
+   `buildPkgConfigEnv` now keeps a path when it is listed in
+   `WASM_POSIX_DEP_PKG_CONFIG_PATH` — which `build_deps.rs:13809` sets on every
+   build script's environment to the pkgconfig directory of each dependency the
+   resolver installed. Provenance instead of spelling. The name test stays for
+   callers outside a resolver-driven build, and a `/nix/store/...` path the
+   resolver did not install is still dropped.
+
+   **Verified end-to-end through the wrapper on PATH**, which is stronger than
+   what `edbc3000a`'s own message claims (it recorded only a `node
+   --experimental-strip-types` import of `buildPkgConfigEnv`, because the sdk
+   package has no `node_modules` here and its vitest cannot start). Same icu
+   directory, same lane cache path that defeated it before:
+
+       PKG_CONFIG_PATH=<lane icu>/lib/pkgconfig \
+         wasm32posix-pkg-config --exists icu-uc            -> exit 1
+
+       PKG_CONFIG_PATH=<same> WASM_POSIX_DEP_PKG_CONFIG_PATH=<same> \
+         wasm32posix-pkg-config --exists icu-uc            -> exit 0
+
+   That is the shipped path — the `sdk/bin` shim execing the TypeScript — and
+   the resolver sets that variable on every build script's environment, so
+   php's configure sees exit 0 where it saw `No package 'icu-uc' found`.
+
+   One assumption this rests on, checked rather than assumed: the match is by
+   exact string, and canonicalization cannot change these paths because no
+   component of the cache root is a symlink (`realpath == literal`).
+
+   **Census 90 is now fully superseded.** It recorded TWO packages that could
+   not build in this worktree: `php` (this defect) and `coreutils-docs` (the
+   cold-cache kernel-boot blocker), with twelve more blocked behind them. In
+   the 2026-09-17 validating run `coreutils-docs/wasm32` SUCCEEDED — fixed
+   independently somewhere along the way — and php is what `edbc3000a`
+   addresses. Both halves of that entry are closed, which is worth stating
+   because the entry was still being cited as current this week.
+
+   **Two things that fix cost, both worth knowing.** Changing `sdk/src`
+   invalidates every package's cache key (it is a declared input), so the
+   validating run is a FULL rebuild, not an incremental one. And there are TWO
+   implementations of this filter: `sdk/bin/wasm32posix-pkg-config` shims to the
+   TypeScript that actually runs, while `sdk/kandelo/bin/wasm32posix-pkg-config`
+   is a separate bash `case` with the same rule that does NOT run here. This
+   defect was diagnosed against the bash copy; only measuring the behaviour
+   rather than reading it kept the fix out of a file nothing executes.
+
+   **Which copy is authoritative is no longer open — I checked.**
+   `sdk/kandelo/bin/wasm32posix-pkg-config` has NO caller: `sdk/package.json`'s
+   `files` list is `activate.sh, bin, config.site, glue, src, sysroot,
+   sysroot64`, so `kandelo/` is not published; `command -v` resolves to
+   `sdk/bin/`, which shims to the TypeScript; and the only references to
+   `kandelo/bin/` anywhere are two SDK tests (`cc.test.ts`,
+   `native-cc.test.ts`) pointing at `wasm32posix-cc`, a DIFFERENT binary. The
+   surrounding tree is live; this file in it is not.
+
+   It now carries the OLD rule, so it is a trap for the next person who greps
+   for the filter — exactly the trap I fell into. Recommend deleting it. Not
+   deleted here: it is another owner's file, and removing it is a decision
+   rather than a fix.
+
+   The original analysis is kept below because the chain it describes is what
+   made the defect invisible, and because an earlier version of this item (and
+   commit `c23de3fa6`) got the scope wrong in both directions.
 
    **Known symptom, new reason.** Census §90 already recorded, earlier in this
    same lane, that `php` cannot find icu in this worktree, that packages were
@@ -658,6 +721,41 @@ manifest is missing — which it is, because php cannot build.
 
 That is B50's mechanism exactly, in two more modules, sitting there now.
 
+**A FULL REBUILD DOES NOT CLEAR IT — measured 2026-09-17.** The pkg-config fix
+invalidated every package's cache key, so the validating run rebuilt the whole
+set from zero cached. Afterwards:
+
+    fork_module32           all three copies agree (8d5c6052)
+    dylink_module32         still DIFFER (a54ab0c3 vs 65527ea7)
+    wasm_artifact_module32  still DIFFER (e5e88698 vs d6a35fef)
+
+All five co-resident artifacts, after that rebuild:
+
+    fork_module32           agree     (its script stages every tier)
+    fork_module64           agree     (same)
+    wasi_module32           agree     -- NEITHER COPY HAS CHANGED since
+                                         Sep 12 05:21; it has not been rebuilt
+    dylink_module32         DIFFER    -- built Sep 16 16:35, tier Sep 13 11:16
+    wasm_artifact_module32  DIFFER    -- built Sep 16 16:35, tier Sep 13 11:16
+
+The dates give the rule, and it is not luck — an earlier draft of this section
+said "by luck" before checking them, which was wrong in the direction that
+UNDERSTATES the problem. **The tier copy goes stale exactly when the module is
+rebuilt.** `wasi` agrees because nothing has touched it since Sep 12; it will
+diverge the first time anything in its closure changes. So the gap is a
+certainty for all three unprotected artifacts, not a coincidence that happens
+to have caught two.
+
+Byte-identical hashes to before the rebuild. The siblings' artifacts WERE
+rebuilt into `local-binaries/`; the Sep 13 copies in the tier — the ones
+`resolveBinary` serves — were never touched, because nothing stages there. The
+fork module agrees only because its script does.
+
+This settles the shape of the fix rather than leaving it a judgment call: a
+check WITHOUT the staging would be a rejection nobody can clear. `--verify-fresh`
+would fail, the operator would rebuild exactly as instructed, and it would fail
+again identically.
+
 **They are already ONE SET in the engine, which points at one of the three
 options.** `CORESIDENT_SIDE_MODULES` (`tools/xtask/src/local_build.rs`) lists
 five artifacts across four modules — `dylink_module32`, `wasi_module32`,
@@ -700,3 +798,50 @@ alarm.
 whether the drift changes any observable behaviour. I compared sizes, first
 differing offsets, dates and export surfaces; I did not diff the code sections
 or boot anything.
+
+## 2026-09-17: the chain resolved, and a fork defect it was hiding
+
+`./run.sh local-build`: **`Local build succeeded`, 98/98 nodes, Products
+7/7, zero failed, zero blocked.** The source-only program projection
+manifest is published again (524 KB) after being absent for this whole
+session, so `verify_fresh_coresident_side_modules` is live rather than
+vacuous. All five co-resident artifacts agree across tiers.
+
+Five links, each measured rather than argued:
+
+1. **The pkg-config filter rejected the resolver's own dependency
+   paths.** It decided membership by spelling (`includes('kandelo/')`)
+   and every per-worktree cache root is `kandelo-lane-f`. Fixed at the
+   shared layer per the maintainer's ruling (`edbc3000a`): the wrapper
+   now keeps a path the resolver listed in
+   `WASM_POSIX_DEP_PKG_CONFIG_PATH`. One place, every package.
+2. **php could not build, so `wordpress` and `lamp` were BLOCKED** and
+   had never actually run in this worktree.
+3. **When they finally ran they hit a fork defect that was mine.**
+   `fm_set_identity_group` stores one entry per catalog export across
+   every activation in a static capped at **512**; php needs **7,684**
+   (`intl.so` alone is 4,129). Every php fork died with
+   `errno 7` / E2BIG. Fixed to 16,384 with the counts recorded and a
+   capacity guard (`9b13064204`).
+4. **The projection could not republish** while any package node failed,
+   which left the check over the module both hosts load switched off.
+   Publishing it again is the visible end of that.
+5. **Two co-resident modules had drifted stale** in that window, and a
+   full 86-node rebuild did not repair them because nothing staged to
+   the tier. The shared helper fixes staging and checking together
+   (`b26ca3240c`).
+
+**What this says about the earlier B50 work.** The guard added in
+`b061db4dc` instantiates the shipped module in the gating suite, and
+`a655ad4d4` made `verify-fresh` check the copy `resolveBinary` actually
+returns. Neither would have caught the E2BIG defect -- that needed a
+real program to fork -- which is the honest limit of artifact-level
+guards, and why `fork-identity-capacity.test.ts` counts a real program's
+exports instead.
+
+**A reporting failure worth recording.** Throughout the 31-minute build
+that exposed items 3-5, I reported "zero failures" from
+`grep -cE '^FAILED [a-z]'`. The engine's tally format is
+`FAILED · CONTINUING |`, so that matcher could never match. The build had
+failed. Same class as [[gate-on-exit-codes-not-greps]], on a run whose
+verdict I had already been told to read from the tool's own summary.
