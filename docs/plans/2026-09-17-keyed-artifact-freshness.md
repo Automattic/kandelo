@@ -1,6 +1,6 @@
 # Make the resolved path carry the build key
 
-**Status: proposal, 2026-09-17.** Requested by the maintainer after the question
+**Status: proposal, 2026-09-17. Revised the same day**, after checking one of the three things it listed as unchecked; the answer changed step 1 and added a step 0. Requested by the maintainer after the question
 *"why is there a kernel.wasm that isn't named or addressed by cache key at
 all?"*, and its follow-up: *which route would simplify both testing and
 releasing while ensuring freshness for each?*
@@ -24,7 +24,7 @@ to forget.
 
 | record | where | shape | survives a copy? |
 |---|---|---|---|
-| generation store | `local-binaries/.kandelo-local-generations/<arch>/<pkg>/<key>/…` | the key IS the directory | yes |
+| generation store | `local-binaries/.kandelo-local-generations/<arch>/<pkg>/<cache-identity>/…` | a directory named by a package cache-identity key — **not** the key freshness is judged on; see below | yes |
 | tier mirror | `local-binaries/source-only-v1/kernel.wasm` | `kandelo.build.key` custom section, inside the wasm | yes, but only for wasm |
 | ambient sibling | `local-binaries/fork_module32.wasm` | `.build-key` sidecar file | **no** |
 
@@ -57,20 +57,50 @@ to stamp: its source argument is caller-supplied, so a stamp there would let a
 stale file or a copy from another worktree acquire a claim of engine provenance.
 The contradiction is structural, not an oversight.
 
-**3. The generation store does not contain what the mirror claims.** The store
-holds 21 kernel generations. Neither `dfd6ebfb…` (the key stamped into the
-current mirror) nor `ea67b4c3…` (what the tree resolves to now) is among them.
-So either the store is pruned without the mirror knowing, or the mirror is
-published by something that does not write a generation. **Which of those is
-true has to be settled before this proposal is implemented** — see "What I did
-not check".
+**3. The generation store is not the record it looks like.** This was listed as
+unchecked in the first draft of this document, with the note that it *"would
+change step 1 if it comes out the wrong way"*. It did. Measured 2026-09-17:
+
+* **The directory name is not the artifact's build key.** A generation directory
+  is `package_generations.join(cache_key_sha)` — build_deps.rs calls it the
+  *"package cache-identity generations root"* — while the stamp `verify-fresh`
+  compares is `expected_source_only_cache_key(repo, "kernel")`. Both come from
+  `manifest_cache_key_sha_for_policy`, but parameterised by different
+  `ResolvePolicy` values, so they are **two keys for two purposes** and not
+  interchangeable.
+* **Sampled four generations; none matched.** `aded8633…` holds a kernel stamped
+  `0c2a0675…`; `0c021ff5…` holds `ec9e9ee1…`; `0c91200f…` holds `56cff738…`;
+  and `1124611e…` holds a kernel with **no stamp at all**.
+* **The store is not pruned — it is simply not written any more.** All 21 kernel
+  generations carry one identical mtime, `2026-09-12 10:53:36`, which is a
+  single bulk operation rather than 21 builds. The mirror is `2026-09-16 23:12`.
+  Every kernel build in those four days refreshed the mirror **without writing a
+  generation**.
+
+So the store cannot be adopted as the authority by taking its directory name,
+which is what step 1 below originally proposed. It would have to be **re-keyed**
+first, on a decision about which of the two keys names it.
 
 ## The proposed route
 
-1. **One record of the key: the path.** The generation store is already
-   key-addressed; make it the only authority. `kandelo.build.key` may stay as
-   provenance metadata, but nothing reads it to decide freshness, and the
-   `.build-key` sidecars go.
+0. **First, decide which key names the store** — the prerequisite the finding
+   above created, and the reason this is step zero rather than a detail of step
+   one. The freshness question is *"were these bytes built from this source?"*,
+   which is what `expected_source_only_cache_key` answers, so that is the key
+   the resolution path should carry. The package cache-identity key answers a
+   different question — *"which package closure produced this?"* — and is the
+   right name for a **build-input** cache, which is what the generation store
+   appears to have become. They may both be worth keeping, under different
+   roots and with the difference named.
+
+1. **One record of the freshness key: the path.** Re-key the artifact side of
+   the store on the build key, and make it the only authority.
+   `kandelo.build.key` may stay as provenance metadata, but nothing reads it to
+   decide freshness, and the `.build-key` sidecars go. **This is now a
+   migration, not an adoption** — the existing directories are named by the
+   other key, and one sampled artifact has no stamp to migrate from, so they
+   cannot all be re-keyed from what is on disk. Some will have to be rebuilt or
+   discarded, and saying which is part of accepting this.
 
 2. **The stable name becomes an indirection, not a copy.** Each tier gets an
    index — `local-binaries/<tier>/index.json`, mapping artifact name → key —
@@ -132,11 +162,19 @@ not check".
 
 ## What I did not check
 
-- **Whether the generation store is pruned.** The missing keys above have two
-  explanations with different consequences, and I did not distinguish them. If
-  the mirror is published by something that does not write a generation, the
-  store is not the record this route depends on, and step 1 needs rethinking
-  before anything else.
+- ~~Whether the generation store is pruned.~~ **Checked, 2026-09-17** — see
+  failure 3. It is not pruned; it stopped being written. The answer cost step 1
+  its original form, which is the argument for writing proposals with their
+  unknowns listed rather than their conclusions polished.
+- **What stopped writing generations on 2026-09-12, and whether that was
+  deliberate.** I established THAT the mirror is refreshed without a generation;
+  I did not find the commit or the code path that changed. If it was deliberate,
+  the store is already considered obsolete by someone and this proposal should
+  say so instead of reviving it.
+- **Why one generation's artifact carries no `kandelo.build.key` at all.** An
+  unstamped artifact inside the store is either a hand-staged install that
+  reached it, or a build that predates stamping. Those have different
+  consequences for a migration.
 - **The full consumer census.** I named the consumers I tripped over, not all of
   them.
 - **Whether any consumer needs a path it can compute without running a
