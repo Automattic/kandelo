@@ -47,6 +47,9 @@ PIC_RUSTFLAGS=(
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Shared tier staging + freshness check for co-resident side modules.
+source "$REPO_ROOT/scripts/lib/side-module-tier.sh"
+
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 # The crates whose contents can change this artifact. Derived from the real
 # build closure rather than a hand-list, per the closure-derived cache-key rule.
@@ -90,6 +93,9 @@ if [[ "${1:-}" == "--verify-fresh" ]]; then
       "'bash crates/wasi-module/build-wasm.sh'." >&2
     exit 1
   fi
+  if ! assert_side_module_tier_copy_matches "wasi-module" "$REPO_ROOT" "wasi_module32.wasm"; then
+    exit 1
+  fi
   echo "wasi-module: $artifact matches current source ($current_sha)" >&2
   exit 0
 fi
@@ -112,5 +118,6 @@ mkdir -p "$REPO_ROOT/local-binaries" "$REPO_ROOT/host/wasm"
 cp "$WASM32" "$REPO_ROOT/local-binaries/wasi_module32.wasm"
 cp "$WASM32" "$REPO_ROOT/host/wasm/wasi_module32.wasm"
 printf '%s\n' "$FRESH_CLOSURE_SHA" > "$(build_key_path 32)"
+stage_side_module_tier_copy "$REPO_ROOT" "wasi_module32.wasm"
 echo "staged wasi_module32.wasm -> local-binaries/, host/wasm/" \
   "(build-key $FRESH_CLOSURE_SHA)" >&2

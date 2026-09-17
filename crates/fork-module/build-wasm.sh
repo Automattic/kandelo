@@ -63,6 +63,9 @@ PIC_RUSTFLAGS=(
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Shared tier staging + freshness check for co-resident side modules.
+source "$REPO_ROOT/scripts/lib/side-module-tier.sh"
+
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 FORK_MODULE_CLOSURE_CRATES="fork-module,fork-module-inject"
 
@@ -146,12 +149,8 @@ if [[ "${1:-}" == "--verify-fresh" ]]; then
     # commit whose new export "existed in two tiers and the call resolved the
     # third, so it read `undefined`". Compare the bytes rather than trust the
     # stamp, since the shadowing copy carries no stamp of its own.
-    shadow="$REPO_ROOT/local-binaries/source-only-v1/fork_module${width}.wasm"
-    if [[ -f "$shadow" ]] && ! cmp -s "$shadow" "$artifact"; then
-      echo "fork-module: $shadow differs from $artifact, and it is the copy" \
-        "resolveBinary returns FIRST -- so the verified artifact is not the one" \
-        "the hosts load. Rebuild with 'bash crates/fork-module/build-wasm.sh'," \
-        "which stages all three tiers." >&2
+    if ! assert_side_module_tier_copy_matches "fork-module" "$REPO_ROOT" \
+      "fork_module${width}.wasm"; then
       status=1
       continue
     fi
