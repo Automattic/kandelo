@@ -19,7 +19,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
 import { validateVfsAssetGroupManifest } from "../web-libs/kandelo-session/src/vfs-asset-group.ts";
 import {
   buildLocalVfsAssetGroup,
@@ -695,7 +695,15 @@ async function createFixture(
 
   const images = new Map<string, Buffer>();
   for (const [id, _load, sourceName] of PRODUCTS) {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    // The producer that writes every shipped image. These fixtures stand in
+    // for product images the Pages closure stages, so they must be the kind of
+    // image it will actually meet — and since `2b54cc9ff` the closure reads
+    // them through the module rather than through host-side JSON sections.
+    const fs = KandeloImageFs.create();
+    // Parents first: the module does not create a deferred file's, where the
+    // filesystem this fixture used to build with did.
+    fs.mkdir("/opt", 0o755);
+    fs.mkdir("/opt/lazy", 0o755);
     if (id === "browser-main-shell") {
       const lazyFileCount = options.collidingImageMember ? 77 : 78;
       for (let index = 0; index < lazyFileCount; index += 1) {
@@ -712,27 +720,24 @@ async function createFixture(
       }
       for (const name of ["vim.zip", "nethack.zip"] as const) {
         const body = assetBodies.get(name)!;
-        fs.registerLazyTree(
-          {
-            bytes: body.byteLength,
-            decoder: "zip-v1",
-            expandedBytes: 1,
-            mediaType: "application/zip",
-            sha256: sha256(body),
-            sourceEntryCount: 1,
-            transports: [name],
-          },
-          [
-            {
-              inodeGroup: name,
-              mode: 0o755,
-              size: 1,
-              sourcePath: `bin/${name}`,
-              type: "file",
-              vfsPath: `/opt/${name}`,
-            },
-          ],
-        );
+        fs.registerLazyArchive({
+          url: name,
+          entries: [{
+            fileName: `bin/${name}`,
+            fileNameBytes: new TextEncoder().encode(`bin/${name}`),
+            compressedSize: 1,
+            uncompressedSize: 1,
+            compressionMethod: 0,
+            localHeaderOffset: 0,
+            mode: 0o755,
+            isDirectory: false,
+            isSymlink: false,
+            externalAttrs: 0,
+            creatorOS: 3,
+          }],
+          mountPrefix: "/opt",
+          integrity: { sha256: sha256(body), bytes: body.byteLength },
+        });
       }
     } else if (id === "browser-node" && options.collidingImageMember) {
       const body = images.get("browser-lamp")!;
