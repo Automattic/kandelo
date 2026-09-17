@@ -1,25 +1,43 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { OPEN_FLAGS } from "../src/generated/abi";
 import { NodePlatformIO } from "../src/platform/node";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { HostFileSystem } from "../src/vfs/host-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { ST_NOSUID } from "../src/vfs/types";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 
-function createSetIdFileSystem(): MemoryFileSystem {
-  const fs = MemoryFileSystem.create(
-    new SharedArrayBuffer(2 * 1024 * 1024),
-  );
+/**
+ * A mount carrying a set-ID file. The SUBJECT is the mount's nosuid policy —
+ * whether `VirtualPlatformIO` honours or masks those bits — so what the
+ * backend must do is carry mode `0o6755` and gid 42, not be any particular
+ * filesystem.
+ *
+ * `HostFileSystem` records ownership and mode in its own metadata overlay, so
+ * a gid of 42 needs no privilege on the machine running the test — which is
+ * also why the incumbent's `createFileWithOwner` had an equivalent here.
+ */
+const setIdRoots: string[] = [];
+function createSetIdFileSystem(): HostFileSystem {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-nosuid-exec-"));
+  setIdRoots.push(root);
+  const fs = new HostFileSystem(root);
   fs.mkdir("/bin", 0o755);
-  fs.createFileWithOwner(
-    "/bin/tool",
-    0o6755,
-    0,
-    42,
-    new Uint8Array([0, 97, 115, 109]),
-  );
+  const fd = fs.open("/bin/tool", OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_RDWR, 0o755);
+  fs.write(fd, new Uint8Array([0, 97, 115, 109]), null, 4);
+  fs.close(fd);
+  fs.chown("/bin/tool", 0, 42);
+  fs.chmod("/bin/tool", 0o6755);
   return fs;
 }
+
+afterAll(() => {
+  while (setIdRoots.length > 0) {
+    rmSync(setIdRoots.pop()!, { recursive: true, force: true });
+  }
+});
 
 describe("set-ID mount policy", () => {
   it("keeps the raw host filesystem adapter nosuid", () => {
