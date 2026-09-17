@@ -13487,9 +13487,41 @@ that would stop being covered.
   archives it describes nowhere is refused with `EINVAL` and needs no forgery
   at all. Cheaper, and it stops proving the seal boundary specifically.
 
-**Not chosen here**, because the first costs a fixture and the second costs
-coverage, and picking the cheap one silently is how a boundary becomes a test
-that no longer tests it.
+**Neither is right, and working out why is the actual finding.**
+
+The spec asserts `workerStartedAfterRejection === false`. **That property is
+host-side by construction.** The kernel runs in a worker, so a refusal it
+makes cannot happen before that worker exists — whatever image is used, and
+however the kernel refuses it. Design two does not relocate the property; it
+deletes it and leaves a differently-named test in its place.
+
+So the real question is not which fixture to write. It is whether **"a
+malformed image is refused before a worker is started" is a boundary the
+platform keeps**, and today the only way to keep it is for the host to
+inspect the image before handing it over — which is the gigabyte restore.
+
+The options that follow from that are a different set:
+
+* **Keep the boundary and pay for it**, but stop paying a whole filesystem:
+  the host needs to answer one question about the container, not mount it.
+  There is no host-side reader for that which is not a second TypeScript
+  parser of the format — unless the image MODULE answers it, which is
+  design (c) from the section above and loads `lamp.vfs` twice.
+* **Move the boundary to where the bytes are chosen.** A shared URL or a
+  demo descriptor is validated before a kernel exists; a machine image the
+  user imports could be checked once, at import, rather than on every boot.
+  That is a different lane's surface (browser and user contract) and a
+  different guarantee.
+* **Accept the weaker property**: the worker starts, the kernel refuses, init
+  fails and the worker is torn down. Nothing untrusted has executed — the
+  kernel refuses before mounting a tree — but a worker did spawn.
+
+**This is a maintainer decision and not lane V's to take.** It trades a
+stated security property against the last production coupling to
+`memory-fs.ts`, and the plan's own rule is that scope changes of that shape
+get argued and asked rather than assumed. Lane V's side of it is DONE: the
+kernel authenticates cohorts at load, with a test and two trials, so whatever
+is decided, the authentication itself no longer depends on the host.
 
 ### THE SEAL BOUNDARY AT BOOT IS THE REMAINING V5 BLOCKER, AND IT IS A DESIGN DECISION
 
