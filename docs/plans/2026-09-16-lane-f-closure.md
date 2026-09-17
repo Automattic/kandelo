@@ -486,6 +486,22 @@ that found all of this.
    Recorded rather than fixed: outside this lane, the filter is
    security-shaped, and its tests encode intent I should not overrule.
 
+   **Its cost is higher than "eleven test files".** While php cannot build, the
+   source-only projection cannot republish, and the engine's side-module
+   freshness check returns `Ok(())` on a missing manifest BY DESIGN. So one of
+   the two checks over the module every fork depends on is switched off for as
+   long as this stands. See "The pkg-config defect and B50 are the same story".
+
+6. **The same tier shadowing is LIVE in two sibling modules, and the fix is
+   three other subsystems' build scripts.** `dylink_module32` and
+   `wasm_artifact_module32` are served from `source-only-v1` copies dated
+   Sep 13 while this tree built new ones on Sep 16 — the wasm-artifact one 103
+   bytes shorter. Export surfaces are identical, so nothing hits a missing
+   symbol; it is behavioural drift, not an outage. Three options and the
+   measurements are in "The same shadowing is LIVE in two sibling modules".
+   Listed HERE because a decision that lives only in a section below the
+   decision list is a decision nobody makes.
+
 ## The follow-up
 
 `docs/plans/2026-09-16-fork-admit-activation-brief.md` on the stacked branch
@@ -541,3 +557,146 @@ detection rather than a repair.
 INSTRUCTION inside generated catalog-scan loops. The injector never writes the
 `dylink` section — one doc comment mentions it, to say it is preserved across
 the round trip. That number comes from wasm-ld.
+
+## The pkg-config defect and B50 are the same story
+
+Reported for most of a day as two unrelated things. They are one chain, and
+each link below was read or run, not inferred.
+
+1. **`php/wasm32` cannot build here**, because the SDK's pkg-config wrapper
+   allowlists a literal `kandelo` path segment and this lane's cache root is
+   `kandelo-lane-f`. Demonstrated by exit code against the same directory
+   under two spellings.
+2. **So the source-only program projection never republishes.**
+   `package_projection_is_eligible` requires EVERY selected package node to
+   have succeeded; php has not, so `local_build` retracts rather than
+   finalizes. `local-binaries/source-only-v1/.kandelo/source-only-program-
+   projection-v1.json` is absent in this worktree.
+3. **So the engine's side-module freshness check passes vacuously.**
+   `verify_fresh_coresident_side_modules` (`tools/xtask/src/local_build.rs`)
+   exists precisely to catch a fork module whose staged bytes disagree with
+   what the projection declares -- its own comment describes the boot 500
+   ("member size is X, expected Y") it was written for. It returns `Ok(())`
+   when the manifest is missing, by design, "mirroring the kernel check's
+   'not projected yet -> Ok' semantics". A missing manifest is not a
+   staleness error, so with php broken this check has nothing to compare and
+   says green.
+
+   That behaviour is DELIBERATE and pinned: `l5_ok_when_no_projection_manifest
+   _exists` asserts "absent projection manifest must not fail freshness". So it
+   is not a bug to be quietly tightened -- a tree that has never projected is a
+   legitimate state. The defect is that nothing else covered the gap while it
+   applied. And the check is live, not dead code: it is called at
+   `local_build.rs:968`, after the kernel artifact checks.
+4. **And `resolveBinary` still serves the tier-root copy**,
+   `local-binaries/source-only-v1/fork_module32.wasm`, ahead of
+   `local-binaries/` and `host/wasm/`. That file is not a projected member;
+   it is the tier root.
+
+Put together: the copy both hosts load had NO validator. The projection check
+was disabled by php, and `build-wasm.sh --verify-fresh` checked only the
+`local-binaries/` copy it stamps. That is the whole of "nothing caught it",
+and it is why B50 reached a kernel boot rather than a test.
+
+`a655ad4d4` closes it without depending on the manifest -- it compares the two
+files' bytes, so it holds whether or not a projection exists. That independence
+matters, because the manifest stays missing until the pkg-config decision in
+item 5 is made.
+
+**It is not a new invariant, which is why it cannot fail spuriously.** The
+projection engine ALREADY requires byte equality between the two:
+`coresident_side_module_projection_is_current` reads
+`local-binaries/<name>` and `<output_root>/<name>` and accepts only
+`source == projected`. So a projected tree has them identical by construction.
+The commit enforces at freshness-check time what the projection enforces at
+projection time -- the same rule, moved earlier, to a moment that still happens
+when the projection cannot.
+
+**What this changes about item 5.** Its cost was reported as eleven baselined
+test files. Add to that: while it stands, one of the two freshness checks over
+the module every fork depends on is switched off.
+
+## The same shadowing is LIVE in two sibling modules — needs a ruling
+
+Found by measuring rather than reasoning, in this worktree, today. Reported
+rather than fixed, because `dylink`, `wasi` and `wasm-artifact` are not this
+lane's subsystems and four more build scripts is not a change to make
+unilaterally.
+
+`resolveBinary` serves the `local-binaries/source-only-v1/` copy for every
+co-resident side module, not just the fork one:
+
+    dylink_module32.wasm        -> local-binaries/source-only-v1/dylink_module32.wasm
+    wasm_artifact_module32.wasm -> local-binaries/source-only-v1/wasm_artifact_module32.wasm
+    wasi_module32.wasm          -> local-binaries/source-only-v1/wasi_module32.wasm
+
+And right now two of those tier copies DISAGREE with the freshly built ones.
+The dates are the point: the built copies are from this worktree's
+`local-build` on Sep 16, the tier copies are from Sep 13.
+
+    dylink_module32         built  371318 B  Sep 16 16:35
+                            tier   371318 B  Sep 13 11:16   differ @ byte 1389
+    wasm_artifact_module32  built  138622 B  Sep 16 16:35
+                            tier   138519 B  Sep 13 11:16   differ @ byte 133
+                                                            AND 103 BYTES SHORTER
+    wasi_module32           agree
+    sffs_module32           no tier copy
+    fork_module32           both   249234 B  Sep 16 22:25   identical
+
+`wasm_artifact_module32` is the one to look at first: a 103-byte size
+difference is not a build id or an embedded timestamp, it is different code,
+and the host loads the shorter three-day-old one. The fork module agrees only
+because `a655ad4d4`'s rebuild staged all three tiers — which is what the other
+four scripts do not do.
+
+So the host currently loads a dylink module and a wasm-artifact module that are
+not the ones this tree's build produced. **Nothing detects it.** Their
+`crates/*/build-wasm.sh --verify-fresh` scripts mention `source-only-v1` ZERO
+times (`grep -c`: dylink 0, sffs 0, wasi 0, wasm-artifact 0; fork-module 6
+after `a655ad4d4`), and the engine's projection check is vacuous while the
+manifest is missing — which it is, because php cannot build.
+
+That is B50's mechanism exactly, in two more modules, sitting there now.
+
+**They are already ONE SET in the engine, which points at one of the three
+options.** `CORESIDENT_SIDE_MODULES` (`tools/xtask/src/local_build.rs`) lists
+five artifacts across four modules — `dylink_module32`, `wasi_module32`,
+`wasm_artifact_module32`, and `fork_module32`/`64`. So
+`verify_fresh_coresident_side_modules` already iterates all of them, and
+`coresident_side_module_projection_is_current` already requires
+`source == projected` for all of them. The gap is not that the siblings are a
+different class; it is that BOTH of those live behind the projection manifest,
+and only `fork-module/build-wasm.sh` grew a manifest-free check. That makes
+"hoist it into one shared helper the scripts call" the option that matches how
+the engine already models these, rather than five copies of ten lines.
+
+(Read that constant with `awk '/CORESIDENT_SIDE_MODULES.*=/,/^\];/'`, not
+`grep -A<n>`: a fixed window cuts the table off partway and I twice concluded
+the siblings were excluded from it, which is the opposite of true.)
+
+**The ask.** The fix is the same ten lines `a655ad4d4` added to the fork
+module's script: compare the tier copy against the stamped artifact and fail
+naming which wins. Cost is small and the invariant is already the projection
+engine's own (`coresident_side_module_projection_is_current` accepts only
+`source == projected`). But it touches three other subsystems' build scripts,
+so it is the maintainer's call, not mine. Options as I see them: extend the
+check to all five scripts; hoist it into one shared helper the scripts call;
+or leave it and rely on the projection once php is fixed — which accepts that
+the check stays off in every worktree where a package build is broken.
+
+**Narrowed, after measuring rather than leaving it open.** The EXPORT SURFACES
+are identical in both cases — `wasm_artifact_module32` exports the same 12
+symbols in both copies, `dylink_module32` the same 42. So the sharp failure the
+staging comment warns about, where "the export existed in two tiers and the
+call resolved the third, so it read `undefined`", is NOT what is happening
+here. Nothing will hit a missing symbol.
+
+That lowers the severity from what an earlier draft of this section implied.
+What remains is behavioural drift: two modules with identical APIs and
+different internals, where the host runs the older one. Worth fixing, not worth
+alarm.
+
+**What I still did not establish.** Which copy is correct in each case, and
+whether the drift changes any observable behaviour. I compared sizes, first
+differing offsets, dates and export surfaces; I did not diff the code sections
+or boot anything.

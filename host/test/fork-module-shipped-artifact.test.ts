@@ -153,7 +153,7 @@ describe("the shipped fork module", () => {
     }
   });
 
-  it("instantiates through the host's own path", () => {
+  it("instantiates through the host's own path (32-bit)", () => {
     // The end-to-end claim, using `instantiateForkModule` rather than a
     // hand-rolled import object, because the defect was in what the HOST
     // derives from the module -- a test that supplies its own tables would
