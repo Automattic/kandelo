@@ -31,7 +31,7 @@ import {
   type SourceOnlyBinarySnapshot,
 } from "../host/src/binary-resolver.ts";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
-import { createBaseImageFromContainer } from "../host/src/vfs/module-base-image.ts";
+import { createBaseImageFromContainer } from "../images/vfs/lib/module-base-image.ts";
 import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
 import { imageReadFromContainer } from "../host/src/vfs/rootfs-lazy-archives.ts";
 import {

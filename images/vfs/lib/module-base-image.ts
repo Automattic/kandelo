@@ -20,8 +20,34 @@
  * module gets nothing, which is the truthful answer to "what does this
  * container say about its deferred files" from a reader that has asked nobody.
  */
-import { resolveLazyUrl } from "./lazy-url";
-import type { DeferredBody, RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
+import { resolveLazyUrl } from "../../../host/src/vfs/lazy-url";
+
+/**
+ * What a reader of an image answers about one deferred body.
+ *
+ * MOVED HERE WITH ITS ONLY CONSUMER, 2026-09-17. This lived in
+ * `host/src/vfs/rootfs-lazy-archives.ts` while the host's lazy pipe built a
+ * transport table out of it. The pipe holds no table — the kernel names an
+ * address and the host fetches it — so the record's only reader is the Pages
+ * asset closure, which stages every body a product image references. That is a
+ * BUILD-TIME question about an image, which is what `images/` is for, and
+ * keeping the type in the host runtime made the runtime carry a shape only a
+ * build script reads.
+ */
+export interface DeferredBody {
+  /** The address the IMAGE named: the canonical identity of these bytes. */
+  readonly address: string;
+  /** Declared length; absent when the producer declared none. */
+  readonly bytes: number | undefined;
+  /** Declared SHA-256, as hex; absent when the producer declared none. */
+  readonly sha256: string | undefined;
+}
+
+/** What a consumer can ask an image about the bodies it does not carry. */
+export interface RootfsOverlayBaseImage {
+  deferredFiles(): DeferredBody[];
+  deferredArchives(): DeferredBody[];
+}
 
 /** What `KandeloImageFs.lazyEntries()` answers, named so this file need not import it. */
 export interface ModuleLazyEntries {

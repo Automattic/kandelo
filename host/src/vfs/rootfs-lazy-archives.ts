@@ -67,61 +67,13 @@ const ENOSYS = -38;
  * this interface has to be a filesystem at all. What is left is metadata the
  * image declared.
  */
-export interface RootfsOverlayBaseImage {
-  deferredFiles(): DeferredBody[];
-  deferredArchives(): DeferredBody[];
-  // NOT `imageBodyBytes()`. A backend holding the whole CONTAINER cannot
-  // answer that — it would be off by the header and carry the trailing
-  // sections — so the reader is supplied alongside this by whoever knows which
-  // backend they have.
-}
-
-/**
- * One deferred body an image references, reduced to what a HOST does with it.
- *
- * This replaces `SerializedLazyArchiveEntry`, the JSON wire shape declared in
- * `memory-fs.ts` whose own doc comment called it "JSON-serializable form of
- * LazyArchiveGroup for cross-worker transfer". Passing that shape around made
- * every consumer of a deferred body import the filesystem lane V is deleting,
- * and it cost more than an import: the module-backed reader had to SYNTHESIZE
- * one — grouping members by archive, JSON-parsing each descriptor for a mount
- * prefix — so that `buildRootfsLazyWiring` could immediately reduce it back to
- * an address, its mirrors and a length. Two of those three synthesized fields
- * were read by nobody.
- *
- * What a host does with a deferred body is fetch it and check what came back.
- * That is this record, and it is the same record for a lazy FILE and a lazy
- * ARCHIVE, because addressing them differently is exactly the distinction the
- * URI relay removed.
- */
-export interface DeferredBody {
-  /**
-   * The address the IMAGE named. Identity, not policy: this is the resource,
-   * and the kernel names it in the fetch it asks for.
-   */
-  readonly address: string;
-  /**
-   * NO `transports` HERE ANY MORE. It listed mirrors that could stand in for
-   * the address, and no producer can express one: `registerArchiveMember`
-   * takes a single `archiveUri`, so every record ever built carried exactly
-   * `[address]`. A field whose only possible value is derived from another
-   * field is a second spelling, and its one consumer iterated it to register
-   * the same address once.
-   */
-  /** Declared length; absent when the producer declared none. */
-  readonly bytes: number | undefined;
-  /**
-   * Declared SHA-256, as hex; absent when the producer declared none.
-   *
-   * Carried for archives and left undefined for files, and the asymmetry is
-   * the carriers', not a consumer's convenience: an image's host-side lazy
-   * section records no per-file digest at all, so a file's digest would be
-   * present on an image the module wrote and absent on one the legacy writer
-   * wrote. A field whose meaning depends on which producer ran is worse than
-   * no field, and no consumer reads one.
-   */
-  readonly sha256: string | undefined;
-}
+// `RootfsOverlayBaseImage` AND `DeferredBody` MOVED OUT, 2026-09-17, to
+// `images/vfs/lib/module-base-image.ts`. They described what a reader can ask
+// an IMAGE about the bodies it does not carry, and the host asked none of it
+// once the transport table went: the kernel names an address and this module
+// fetches it. Their one remaining reader is the Pages asset closure, a build
+// script — so the shapes live beside the reader that answers them rather than
+// in the runtime that no longer asks.
 
 /**
  * Serve container-offset reads straight from the container bytes.

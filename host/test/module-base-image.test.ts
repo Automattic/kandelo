@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { resolveLazyUrl } from "../src/vfs/lazy-url";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import { createBaseImageFromContainer } from "../src/vfs/module-base-image";
+import { createBaseImageFromContainer } from "../../images/vfs/lib/module-base-image";
 import { imageReadFromContainer } from "../src/vfs/rootfs-lazy-archives";
 
 /**
