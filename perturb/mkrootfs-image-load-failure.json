@@ -1,0 +1,28 @@
+{
+  "_comment": "The CLI's half of the one-reader repoint. `rootfs::load_image` decides WHETHER to refuse and the runtime-core specs perturb that; these trials cover what the verbs SAY, because a refusal reported as the wrong kind sends a reader hunting corruption in an intact image.",
+  "file": "tools/mkrootfs/src/cli/image-load-failure.ts",
+  "verify": "cd tools/mkrootfs && npx vitest run test/cli.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a stale image is reported as a corrupt one, so the fix looks like a bug hunt",
+      "scope": "export function describeImageLoadFailure(",
+      "scope_end": "\n}\n",
+      "find": "  if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {",
+      "replace": "  if (false) {"
+    },
+    {
+      "name": "every load failure becomes a rebuild instruction, including a tampered seal",
+      "scope": "export function describeImageLoadFailure(",
+      "scope_end": "\n}\n",
+      "find": "  if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {",
+      "replace": "  if (true) {"
+    },
+    {
+      "name": "the ABI refusal is recognized by the seal errno instead of its own",
+      "scope": "export function describeImageLoadFailure(",
+      "scope_end": "\n}\n",
+      "find": "?.errno === ERRNO.EPROTO) {",
+      "replace": "?.errno === ERRNO.EPERM) {"
+    }
+  ]
+}
