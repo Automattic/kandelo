@@ -7280,6 +7280,58 @@ mod tests {
     }
 
     #[test]
+    fn materializing_one_deferred_file_leaves_every_other_file_untouched() {
+        // PORTED from `host/test/rootfs-image-body-window.test.ts`, which
+        // asserted it about the TypeScript filesystem's `SharedArrayBuffer`
+        // and retires with that class. THE HAZARD OUTLIVED THE MECHANISM.
+        //
+        // There, the host served the kernel's image window out of the same
+        // buffer a materialization wrote into, so a materialization that moved
+        // or clobbered blocks would make the kernel read a wrong tree with no
+        // error anywhere. The buffer is gone -- the kernel reads the image
+        // through `imageRead` and materializes into its own overlay -- but the
+        // shape of the failure is identical: one file's arrival must not
+        // disturb another's bytes, and nothing here asserted that.
+        //
+        // A BASE file beside the deferred one, because a base file is the one
+        // whose content does not live in the overlay at all: it is read back
+        // out of the image, which is the read a wrongly-placed overlay block
+        // would corrupt.
+        let _g = TestGuard::acquire();
+        build_lazy_tree();
+        insert_host_file(b"/lazy/plain", 90, 5, 0o644, 0, 0, 4).unwrap();
+
+        let (mut fetch, _calls) = make_byte_source(
+            alloc::vec![(90u64, b"PLAIN".to_vec())],
+            alloc::vec![(7u32, TINY_ZIP.to_vec())],
+        );
+
+        let mut before = [0u8; 8];
+        let n = read_file_at(b"/lazy/plain", 0, &mut before, &mut fetch).unwrap();
+        assert_eq!(&before[..n], b"PLAIN");
+
+        // O_RDWR == 2: writing a lazy member MATERIALIZES it, which is the
+        // mutation that allocates.
+        let h = open(b"/lazy/f", 2, 0, 0, 0).unwrap();
+        assert_eq!(write(h, 0, b"XYZ", &mut fetch).unwrap(), 3);
+        release_handle(h);
+
+        // The mutation really happened -- otherwise the assertion below is
+        // vacuous, which is exactly how the version of this claim being
+        // retired could have passed without proving anything.
+        assert_eq!(lstat(b"/lazy/f").unwrap().st_size, 4096);
+
+        let mut after = [0u8; 8];
+        let n = read_file_at(b"/lazy/plain", 0, &mut after, &mut fetch).unwrap();
+        assert_eq!(&after[..n], b"PLAIN", "the base file came through untouched");
+        assert_eq!(
+            lstat(b"/lazy/plain").unwrap().st_size,
+            5,
+            "and it is still the size it was",
+        );
+    }
+
+    #[test]
     fn lazy_member_truncate_to_zero_converts_to_empty_regular() {
         let _g = TestGuard::acquire();
         build_lazy_tree();

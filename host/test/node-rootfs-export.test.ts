@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,9 +25,9 @@ const haveWasiHello = existsSync(wasiHelloPath);
  *
  * `export_container_read` declares no `KLZY` section on purpose: the body's own
  * `SDEF` is the one description of its deferred files, and it is what
- * `load_image_inner` reads. `MemoryFileSystem.exportLazyEntries` reads the
- * host-side lazy trailer instead, so it reports an image the kernel loads
- * perfectly as having no lazy files at all. That blindness belongs to the
+ * `load_image_inner` reads. The TypeScript filesystem's own lazy export reads
+ * the host-side lazy trailer instead, so it reported an image the kernel loads
+ * perfectly as having no lazy files at all. That blindness belonged to the
  * reader, not to the artifact, which is why this asks the image module -- the
  * same `sm_lazy_entries` an image builder asks -- and why each of these tests
  * also reboots a kernel from the very bytes it just asserted on.
@@ -53,29 +52,33 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 function writeFile(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
   bytes: Uint8Array,
   mode = 0o644,
 ): void {
-  const fd = fs.open(path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, mode);
-  try {
-    expect(fs.write(fd, bytes, null, bytes.byteLength)).toBe(bytes.byteLength);
-  } finally {
-    fs.close(fd);
-  }
+  fs.writeFile(path, bytes, mode);
 }
 
-function readFile(fs: MemoryFileSystem, path: string): Uint8Array {
-  const stat = fs.stat(path);
-  const bytes = new Uint8Array(stat.size);
-  const fd = fs.open(path, 0, 0);
-  try {
-    expect(fs.read(fd, bytes, null, bytes.byteLength)).toBe(bytes.byteLength);
-  } finally {
-    fs.close(fd);
-  }
-  return bytes;
+function readFile(fs: KandeloImageFs, path: string): Uint8Array {
+  return fs.readFile(path);
+}
+
+/**
+ * Read an exported image back, through the reader that understands what the
+ * kernel WROTE.
+ *
+ * This was `MemoryFileSystem.fromImage`, a second reader standing in as a
+ * differential oracle — and a blind one for half the artifact, as the note
+ * above `exportedLazyFiles` says: it reads the host-side lazy trailer, which
+ * a kernel export does not write, so it reports an image full of deferred
+ * files as having none. Two readers are only an oracle while both can see;
+ * this one could not, and it is being deleted.
+ */
+function readBack(image: Uint8Array): KandeloImageFs {
+  const fs = KandeloImageFs.create();
+  fs.loadImage(image);
+  return fs;
 }
 
 /**
@@ -120,7 +123,7 @@ async function createExecutableRootfs(
   path: string,
   program: Uint8Array,
 ): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+  const fs = KandeloImageFs.create();
   fs.mkdir("/bin", 0o755);
   fs.mkdir("/etc", 0o755);
   fs.mkdir("/etc/kandelo", 0o755);
@@ -227,7 +230,7 @@ describe("NodeKernelHost rootfs export contract", () => {
       }
 
       expect(exported).toBeInstanceOf(Uint8Array);
-      const restored = MemoryFileSystem.fromImage(exported);
+      const restored = readBack(exported);
       expect(new TextDecoder().decode(
         readFile(restored, "/var/lib/persisted-state"),
       )).toBe("survives reboot\n");
@@ -246,7 +249,7 @@ describe("NodeKernelHost rootfs export contract", () => {
       try {
         await rebooted.init(asArrayBuffer(kernel));
         const afterReboot = await rebooted.exportRootfsImage();
-        const afterRebootFs = MemoryFileSystem.fromImage(afterReboot);
+        const afterRebootFs = readBack(afterReboot);
         expect(new TextDecoder().decode(
           readFile(afterRebootFs, "/var/lib/persisted-state"),
         )).toBe("survives reboot\n");
@@ -405,7 +408,7 @@ describe("NodeKernelHost rootfs export contract", () => {
       }
 
       // The exported image round-trips through the normal loader.
-      const restored = MemoryFileSystem.fromImage(exported);
+      const restored = readBack(exported);
 
       // Untouched base file: bytes and mode preserved.
       expect(new TextDecoder().decode(
@@ -439,7 +442,7 @@ describe("NodeKernelHost rootfs export contract", () => {
       try {
         await rebooted.init(asArrayBuffer(kernel));
         const again = await rebooted.exportRootfsImage();
-        const againFs = MemoryFileSystem.fromImage(again);
+        const againFs = readBack(again);
         expect(new TextDecoder().decode(
           readFile(againFs, "/var/lib/base-to-overwrite"),
         )).toBe("copy-on-written\n");
