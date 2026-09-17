@@ -14407,6 +14407,48 @@ kernel is rebuilt**, when most of these 38 should disappear and a genuine
 both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 "38 vs 39" as if it were the clean result the earlier deletion got.
 
+### THE STALE-KERNEL BLOCKER IS CLEARED — 2026-09-17, and it was one cargo build
+
+**`cargo xtask verify-fresh` now exits 0 in the lane worktree.** The artifact
+that blocked the browser cycle, degraded the retirement's both-sides comparison,
+and failed eleven host test files with *"void kernel ingress kernel
+initialization completion failed"* was rebuilt by a single command:
+`./run.sh build kernel`.
+
+**THE HOLD WAS COSTING MORE THAN IT SAVED, and the sizing was wrong.** This plan
+recorded `./run.sh setup` as the fix, and I had deferred it as an expensive,
+machine-wide operation better done after lane F merges. But `kernel` is a
+local-build engine package whose build is a **pure `cargo build`**: 15.76s of
+compile after the dependency crates, no sysroot, no package-source graph. The
+`rebuild` verb would have added `rm -rf target/wasm32-unknown-unknown/` for
+nothing, because the key moved from source edits rather than a corrupt tree.
+**"Provisioning is expensive" was an assumption about a command nobody had
+priced.**
+
+**IT PUBLISHED NOWHERE THE FRESHNESS PROPOSAL EXPECTED, which settles that
+document's open item.** The build installed to
+`~/.cache/kandelo/source-only/source-only-v1/compiled/programs/.kernel-0.1.0-rev1-wasm32-ea67b4c3…/kandelo-kernel.wasm`
+— a **key-addressed path in the machine-wide source cache** — and projected a
+copy into the tier. It wrote **no generation** (the newest is still the Sep 12
+bulk event) and **no root mirror** (`local-binaries/kernel.wasm` is still
+absent).
+
+So the kernel does not participate in the per-worktree generation scheme here at
+all, and the earlier framing — that these worktrees were "missing" a mirror —
+was wrong. **There are two keyed stores**: the generation store for packages,
+the source cache for source-built artifacts. The tier copy is a projection out
+of the second. The proposal is updated: the bytes are key-addressed where they
+are built and stop being key-addressed where they are read.
+
+**And the source cache is under `$HOME`, outside the repository**, which sharpens
+the proposal's last question rather than answering it: a tier that must be
+packable cannot link into it, so if packability is why it copies, the answer is
+an index plus a copy-on-pack step rather than a link.
+
+**Nothing regenerated that this lane may not touch.** `git status` after the
+build shows only the known build cache; `abi/snapshot.json` and
+`host/src/generated/abi.ts` were CHECKED and reported in sync, not rewritten.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
