@@ -13694,6 +13694,33 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### WHAT THE DELETION ACTUALLY TAKES — measured 2026-09-17, and it is more than two files
+
+The authorisation names `memory-fs.ts` and `sharedfs-vendor.ts`. Reading the
+import graph, four more modules have no life without them:
+
+| file | lines | who imports it |
+|---|---|---|
+| `host/src/vfs/memory-fs.ts` | 8,054 | the class |
+| `host/src/vfs/sharedfs-vendor.ts` | 3,716 | the block filesystem under it |
+| `host/src/vfs/materialization-plan.ts` | 577 | **`memory-fs.ts` and the barrel. Nothing else** |
+| `host/src/vfs/hardlink-graph.ts` | 106 | **`memory-fs.ts`. Nothing else** |
+| `host/src/vfs/kernel-lazy-section.ts` | 437 | its `KLZY` encoder/decoder is called by `memory-fs.ts` alone; `reduceLazyArchiveGroups` and one constant survive it |
+| `host/src/vfs/index.ts`, `host/src/browser.ts` | 153 | the two barrels, whose `memory-fs` re-exports — `MemoryFileSystem`, `resolveMountSetIdCapability` and eleven types — have **no importer anywhere outside the barrels themselves** |
+
+**Roughly 12,900 lines, not 11,770**, and `deferred-tree-limits.ts` (577's
+dependency) partially survives because `lazy-archive-paths.ts` uses it too.
+
+**`lazy-tree.test.ts`'s 82 claims are almost entirely about that cluster**, and
+sorting them makes the point in one line: atomic activation cohorts (re-made in
+`seal.rs`'s seventeen tests, in the loader's cohort refusal, and at the CLI
+boundary), generic byte-transform materialization plans
+(`materialization-plan.ts`, no production caller), public deferred-tree bounds
+(`deferred-tree-limits.ts`'s host-side registry), and a dozen cases whose names
+begin "rejects ... after a peer" — the multi-instance model the kernel
+replaced. **The file is the test suite of the subsystem being deleted**, which
+is why it is the deletion's own diff rather than a blocker to it.
+
 ### `lazy-archive.test.ts` SORTED BY KIND — 39 claims, 2026-09-17
 
 Sorted rather than counted, because "39 cases" is a number nobody can act on
