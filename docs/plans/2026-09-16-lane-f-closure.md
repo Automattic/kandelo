@@ -15,10 +15,9 @@ unbanked, exit 0). Browser: 18/18 Chromium fork specs at `d3099c7c1`. Surface
 budget: 99 checks pass.
 
 What remains for the maintainer is listed at the end and is entirely decisions,
-not work: three standing provisional ceiling raises, a merge conflict with the
-parent of five files and 18 hunks (15 of them ledger, two comment-only), two
-target restatements, and one provisioning defect that costs eleven baselined
-test files.
+not work: three standing provisional ceiling raises, two target restatements,
+and one provisioning defect that costs eleven baselined test files. The merge
+itself has landed (`3ea310260`) and the re-merge of what followed is clean.
 
 ## What the lane was for
 
@@ -375,31 +374,26 @@ that found all of this.
    So three raises are actually awaiting a ruling. The other two were taken and
    given back within the session; they are listed only so the `PROVISIONAL`
    markers in the ledger are not read as five outstanding debts.
-2. **The merge conflict with the parent branch: FIVE files, 18 hunks.** Not
-   merged, per instruction. An earlier version of this item said "exactly two
-   files"; that was measured before this lane's last commits and was wrong by
-   the time anyone would have acted on it. Re-measured with
-   `git merge-tree --write-tree` against `brandonpayton/rust-first-abi44-
-   reconcile` at `0c0246390`, which resolves nothing in the working tree:
+2. **The merge LANDED, and the re-merge is clean. Nothing to resolve.**
+   `3ea310260` ("Merge lane F: the fork host floor reaches zero") is an
+   ancestor of `brandonpayton/rust-first-abi44-reconcile`, so the five-file /
+   18-hunk ledger conflict this item used to describe is resolved and in. Only
+   the B50 commits remain to come across, and `git merge-tree --write-tree`
+   reports a CLEAN merge (exit 0, no conflicted paths) at
+   `brandonpayton/rust-first-abi44-reconcile` head `41b5f2f0a`.
 
-   | File | Hunks | What it is |
-   |---|---|---|
-   | `host/test/surface-budget.test.ts` | 8 | the real work |
-   | `docs/surface-budget.json` | 7 | the real work |
-   | `docs/plans/2026-09-11-MASTER-PLAN.md` | 1 | both lanes edited the lane table |
-   | `host/src/platform/native-metadata.ts` | 1 | **comment only** |
-   | `host/src/process-lifecycle.ts` | 1 | **comment only** |
+   This item previously said "two files", then "five files, 18 hunks", and now
+   says none. Every one of those was true when measured and false when read.
+   The number is not the thing to carry away; the command is:
 
-   The two source conflicts are not source conflicts. Both lanes independently
-   made the SAME two browser-parity fixes — guarding a bare `process` read with
-   `typeof process !== "undefined"`, and importing past the `./vfs` barrel so
-   `node:fs` does not reach the browser kernel worker — and the code agrees on
-   both. Only the prose explaining it differs. Take either side's comment.
+       git merge-tree --write-tree --name-only \
+         brandonpayton/rust-first-abi44-reconcile \
+         brandonpayton/lane-f-fork-inversion
 
-   That leaves the ledger as the whole of the merge: 15 of the 18 hunks. Keep
-   BOTH lanes' entries when resolving. A resolution that keeps one side's
-   history silently loses either a ceiling somebody owes a ruling on or a
-   reduction somebody earned, and the budget will still pass either way.
+   It resolves nothing in the working tree, so it is safe to run before every
+   statement anyone makes about this merge, and cheap enough that there is no
+   excuse for quoting a remembered figure instead.
+
 3. **`forkModuleHostEntries`' target of 5**, which census 195 argues is
    reachable only by diluting; ~8 is realistic once the follow-up lands.
 4. **`workerMainForkTypeScript`'s target of 1200**, labelled a proposal in the
@@ -471,6 +465,23 @@ that found all of this.
      `/tmp/kandelo-evil/`. Whether that is acceptable is a question about what
      the filter defends against, which `pkg-config.test.ts` answers only for
      the Nix-store case.
+   - **A third option, more precise than either, and UNTESTED — I have neither
+     implemented nor run it.** The resolver already publishes the right answer:
+     `WASM_POSIX_DEP_PKG_CONFIG_PATH`, documented in
+     `tools/xtask/src/build_deps.rs` as "a colon-joined list of every"
+     dependency's pkgconfig directory, and exported to build scripts as a
+     reserved resolver variable. The wrapper could allowlist exactly the
+     entries in that variable when it is set: that admits precisely what the
+     resolver handed this build and nothing else — no `kandelo` spelling rule,
+     and no `/tmp/kandelo-evil/`.
+
+     Two things to check before believing it. Exactly ONE package consumes the
+     variable today (`libxml2`); `php` hand-composes `DEP_PKG_CONFIG_PATH` from
+     each `$X_PREFIX/lib/pkgconfig` instead, so php would need to use it — and
+     using it ALONE fixes nothing, because those are the same cache-root paths
+     the filter already rejects. The change has to be at the wrapper. I am
+     recording the option rather than taking it because it is SDK code whose
+     tests encode a threat model I should not reinterpret.
 
    Recorded rather than fixed: outside this lane, the filter is
    security-shaped, and its tests encode intent I should not overrule.
@@ -479,3 +490,54 @@ that found all of this.
 
 `docs/plans/2026-09-16-fork-admit-activation-brief.md` on the stacked branch
 `brandonpayton/lane-f-admit-activation`, cut from this HEAD.
+
+## If B50 recurs: the three-command triage
+
+Recorded here rather than in `docs/plans/2026-09-11-MASTER-PLAN.md` on purpose.
+The parent has 11,026 lines in that file this branch does not, and the re-merge
+is currently CLEAN; editing it from here would manufacture a large conflict to
+deliver a paragraph. Copy this across if it is worth keeping.
+
+**1. Objdump the file the host loads, not the obvious one.**
+
+    cd host && npx tsx -e \
+      'import("./src/binary-resolver.ts").then(m =>
+         console.log(m.resolveBinary("fork_module32.wasm")))'
+
+Run as written; it prints the path. `node -e` does NOT work here — plain node
+cannot import a `.ts` module and dies with a stack trace, which is how this
+line first shipped. Every command in this section was executed before being
+written down, because an un-runnable diagnostic is worse than none: it costs
+the reader time and teaches them to distrust the rest.
+
+`resolveBinary` searches `local-binaries/source-only-v1/` FIRST, ahead of
+`local-binaries/` and `host/wasm/`. B50's brief objdumps `host/wasm/…`, which
+is the third choice. I perturbed that copy to prove this branch's new guards
+and watched all three assertions SURVIVE, because nothing reads it.
+
+**2. Ask whether the copies disagree.**
+
+    bash crates/fork-module/build-wasm.sh --verify-fresh
+
+As of `a655ad4d4` this compares the source-only copy against the stamped one
+and fails naming which wins. Before that commit it checked only the stamped
+copy, so a stale module one tier up passed freshness while being the module
+both hosts load — which is the shape B50 has.
+
+**3. Ask whether the SOURCE can even produce the bad module.**
+
+    git worktree add --detach /tmp/probe <the-merge-sha>
+    cd /tmp/probe && bash scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh
+    bash scripts/dev-shell.sh bash -c \
+      'wasm-objdump -j Import -x host/wasm/fork_module32.wasm | grep -i table'
+
+Done for `3ea310260`: it produces a CORRECT module — three table imports
+including `__wpk_fork_drive_table`, and `dylink` `tableSize 2`. A build from
+the merged source does not reproduce the defect, which is why this branch ships
+detection rather than a repair.
+
+**What the brief's hypothesis turned out to be.** `body.table_size(catalog)` at
+`fork-module-inject/src/main.rs:635` and `:740` emits a runtime `table.size`
+INSTRUCTION inside generated catalog-scan loops. The injector never writes the
+`dylink` section — one doc comment mentions it, to say it is preserved across
+the round trip. That number comes from wasm-ld.

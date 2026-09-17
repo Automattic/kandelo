@@ -31,9 +31,19 @@ import { instantiateForkModule } from "../src/fork-module-instance";
 
 const PAGE = 65536;
 
-function shippedModuleBytes(): Uint8Array {
-  return readFileSync(resolveBinary("fork_module32.wasm"));
+function shippedModuleBytes(width: 32 | 64 = 32): Uint8Array {
+  return readFileSync(resolveBinary(`fork_module${width}.wasm`));
 }
+
+/**
+ * Both widths ship, and `worker-main` picks between them by the GUEST's
+ * pointer width -- so a wasm64 guest loads `fork_module64.wasm` and meets the
+ * same failure mode. The byte-level assertions below therefore run over both.
+ * Only the instantiation check is 32-only: standing up a wasm64 instance needs
+ * a memory64, which the host creates only for a wasm64 guest, and a guard that
+ * cannot run is worse than one with a stated boundary.
+ */
+const WIDTHS = [32, 64] as const;
 
 /** The third LEB of the dylink.0 MEM_INFO record, which is what the host reads. */
 function dylinkTableSize(bytes: Uint8Array): number {
@@ -77,7 +87,7 @@ function dylinkTableSize(bytes: Uint8Array): number {
 }
 
 describe("the shipped fork module", () => {
-  it("declares a dylink table size the host can actually honour", () => {
+  it.each(WIDTHS)("declares a dylink table size the host can honour (%i-bit)", (width) => {
     // THE INVARIANT THE MERGE BROKE. Two places state how many slots
     // `__indirect_function_table` needs: the import's `initial`, which the
     // ENGINE enforces, and the dylink record, which the HOST believes and
@@ -89,12 +99,12 @@ describe("the shipped fork module", () => {
     // decoding table limits by hand. What this asserts is the cheaper half:
     // the record exists, is readable, and is not the zero that a module with
     // injected element entries cannot legitimately have.
-    const tableSize = dylinkTableSize(shippedModuleBytes());
+    const tableSize = dylinkTableSize(shippedModuleBytes(width));
     expect(Number.isInteger(tableSize)).toBe(true);
     expect(tableSize).toBeGreaterThan(0);
   });
 
-  it("carries every table import the host binds", () => {
+  it.each(WIDTHS)("carries every table import the host binds (%i-bit)", (width) => {
     // The broken module had TWO table imports; a correct one has three. The
     // missing one was `__wpk_fork_drive_table`, which the injector adds -- so a
     // module without it is one whose injection did not finish, a different
@@ -103,7 +113,7 @@ describe("the shipped fork module", () => {
     // Read through `WebAssembly.Module.imports()` rather than a hand-rolled
     // section walk: the engine already decodes this, and a second decoder here
     // is one more thing that can be wrong about the bytes it is policing.
-    const module = new WebAssembly.Module(shippedModuleBytes());
+    const module = new WebAssembly.Module(shippedModuleBytes(width));
     const tables = WebAssembly.Module.imports(module)
       .filter((entry) => entry.kind === "table")
       .map((entry) => entry.name);
@@ -112,7 +122,7 @@ describe("the shipped fork module", () => {
     expect(tables).toContain("__wpk_fork_drive_table");
   });
 
-  it("agrees across every staged copy, so no tier shadows a fresh build", () => {
+  it.each(WIDTHS)("agrees across every staged copy, so no tier shadows a fresh build (%i-bit)", (width) => {
     // `resolveBinary` does NOT return the file the build script last wrote.
     // It walks ARTIFACT_TIERS, and `local-binaries/source-only-v1` is FIRST --
     // so a stale module there shadows the fresh one in `local-binaries/` and
@@ -127,11 +137,11 @@ describe("the shipped fork module", () => {
     //
     // Absence is not a failure -- not every tree stages every path -- but
     // disagreement is.
-    const resolved = resolveBinary("fork_module32.wasm");
+    const resolved = resolveBinary(`fork_module${width}.wasm`);
     const canonical = readFileSync(resolved);
     const staged = [
-      join(import.meta.dirname, "..", "wasm", "fork_module32.wasm"),
-      join(import.meta.dirname, "..", "..", "local-binaries", "fork_module32.wasm"),
+      join(import.meta.dirname, "..", "wasm", `fork_module${width}.wasm`),
+      join(import.meta.dirname, "..", "..", "local-binaries", `fork_module${width}.wasm`),
     ];
     for (const path of staged) {
       if (!existsSync(path) || path === resolved) continue;
