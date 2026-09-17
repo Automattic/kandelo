@@ -13694,6 +13694,26 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### `vfs-image.test.ts` SORTED BY KIND — 53 claims, 2026-09-17
+
+The last of the three large SUBJECT files, sorted the same way:
+
+| kind | claims | answer |
+|---|---|---|
+| **container framing and decompression bounds** — bad magic, wrong version, truncated, too small, an oversized frame, a narrower caller bound, concatenated frames, plain bytes passed through | ~10 | **already re-made**, in `vfs-image-transport.test.ts` (13 cases, `e540a391a`'s tranche), which tests the surviving reader rather than the class |
+| **`SharedArrayBuffer` semantics** — a growable buffer, a non-growable one, the same buffer returned twice, independent restores, a restore's statfs capacity capped by the superblock | ~12 | **INCONGRUOUS.** Capacity is a declared ceiling and there is no buffer to hand back; "two independent restores of one image" is the multi-instance model itself |
+| **preservation round trips** — a file, permissions, directories, symlinks, varying sizes, an empty filesystem, a writable restore | ~8 | Rust: `kandelo_image_write.rs` and `sdef.rs` round-trip exactly this, and `kandelo-image-fs.test.ts` asserts it through the bridge |
+| **lazy metadata** — preserved by default, multiple lazy files, the lazy flag set or clear, identity-less legacy metadata | ~7 | the `KLZY` carrier's own semantics; retires with the carrier. The `SDEF` equivalents are `a_deferred_file_round_trips_through_the_existing_reader` and its neighbours |
+| **metadata and ABI** — stored and restored, preserved across a re-save, cleared on save, malformed declarations refused, a declared ABI validated against the running one | ~6 | `KandeloImageFs.readImageMetadata` plus `check_declared_abi` in Rust, and the CLI cases repointed today |
+| **timestamp normalization** — the detached image only, freed inode slots cleared | ~3 | Rust, as two killed mutation trials |
+| **peer reconciliation** — a peer-renamed lazy path reconciled before saving | 1 | **INCONGRUOUS**, same reason as the rest of the peer family |
+
+**About 40% is already re-made, 25% is about a model the kernel does not
+have, and the remainder has Rust peers.** Nothing in the file is a claim with
+no home — which, with `lazy-archive`'s three registration cases and
+`lazy-tree`'s subsystem, completes the sorting the endgame owed before the
+SUBJECT cohort can go.
+
 ### WHAT THE DELETION ACTUALLY TAKES — measured 2026-09-17, and it is more than two files
 
 The authorisation names `memory-fs.ts` and `sharedfs-vendor.ts`. Reading the
