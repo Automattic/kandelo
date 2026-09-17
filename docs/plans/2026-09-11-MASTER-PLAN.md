@@ -13523,6 +13523,60 @@ get argued and asked rather than assumed. Lane V's side of it is DONE: the
 kernel authenticates cohorts at load, with a test and two trials, so whatever
 is decided, the authentication itself no longer depends on the host.
 
+### THE `/etc` OVERLAY LEFT `host/src`, AND V5's CENSUS IS HALVED — `aa3d57838`, 2026-09-16
+
+**Re-measured with the plan's own stated rule** — every file under `host/src`
+whose text references `./memory-fs` — because a census is only comparable to
+itself:
+
+| | when the rule was written | 2026-09-16 |
+|---|---|---|
+| files referencing `./memory-fs` | 14 | **6** |
+| of those, using it as a VALUE | 6 | **3** |
+
+And one of the three is `vfs/index.ts`, the re-export barrel, which goes when
+the class goes. **The real production users are two**: `load-image.ts` and
+`default-mounts.ts` — which are one chain, the `/` mount restore, blocked on
+the boundary decision above.
+
+`rootfs-overlay.ts` was the third, and it did not need that decision. It
+merges a rootfs image's canonical `/etc` into an image under construction:
+its one production caller is the browser demo's boot, assembling an image
+before any kernel exists. **It was in the host runtime for exactly one
+reason** — its source filesystem was `MemoryFileSystem`, and `host/src` may
+not import from `images/`, so the reader it needed could not follow it and it
+could not follow the reader. Moved to `images/vfs/lib/`, it reads through
+`KandeloImageFs` like every other builder: 190 code lines out of
+`hostVfsTypeScript`, banked 7452 -> 7262.
+
+**The seal check became inherent instead of remembered.** It used to `await
+verifyImportedLazyAtomicGroupSeals()` before copying an entry; `loadImage`
+authenticates cohorts because `sm_load_image` does.
+
+**Two of five test cases could not follow, and saying which is the point.**
+The forged-seal pair tampers with the host-side JSON — the carrier the new
+reader does not read — and the CLAIM moved to `runtime-core` rather than
+being lost; what cannot be reproduced in TypeScript is the forgery, because
+the producer refuses to emit an image whose cohorts do not authenticate. The
+capacity case exhausted a 64 KiB `SharedArrayBuffer`, and the module grows
+its own memory, so that condition does not exist for this writer rather than
+being harder to reach.
+
+**One case got better.** "Propagates ENOENT" asserted the error was an
+`SFSError`. Three sign conventions meet at that line — the module's positive
+`errno`, the incumbent's negative `code`, and `vfs-errors`' own negative
+`ENOENT` — and the claim is that ENOENT PROPAGATES rather than being
+swallowed into "there was no `/etc` to copy". An assertion on the class
+cannot see that; one on the magnitude can.
+
+### BROWSER PARITY FOR THE WHOLE TRANCHE — chromium, identical to the run before it
+
+**162 passed / 19 failed / 6 skipped / 9 did not run**, and the failure SET
+and the pass SET are byte-identical to the run taken before the kernel gained
+cohort authentication. Nothing regressed and nothing was newly fixed, which
+is the verdict a change to the boot path owes: the loader now verifies seals
+on every browser boot and no demo noticed.
+
 ### THE SEAL BOUNDARY AT BOOT IS THE REMAINING V5 BLOCKER, AND IT IS A DESIGN DECISION
 
 **Measured 2026-09-16, and this is what keeps `memory-fs.ts` alive.**
