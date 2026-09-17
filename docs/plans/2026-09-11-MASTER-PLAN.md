@@ -13613,6 +13613,54 @@ missing-canonical-home case and `spawn-pid-authority.test.ts`'s
 dirfd/`AT_EMPTY_PATH` case both fail at HEAD, the second being one of the three
 spawn failures already recorded as unowned.
 
+### THE `sharedfs` FAMILY AUDITED — nothing needs extending to Rust, 2026-09-17
+
+**Asked as *"Audit the tests and see if we need to extend their test coverage
+to the Rust implementation."* The answer is no, and the reasoning divides in
+two rather than being one judgement repeated.**
+
+Three files, 61 cases: `vfs/sharedfs-positioned-io.test.ts` (9),
+`vfs/sharedfs-uid-gid.test.ts` (20), `sharedfs-safety.test.ts` (32).
+
+**Group one — already asserted in Rust, on the implementation that runs
+(rule 2).**
+
+| claim | Rust peer |
+|---|---|
+| `readAt`/`writeAt` do not move the shared fd offset | `syscalls.rs` `sys_pread` / `sys_pwrite`, with `runtime-core-positioned-io.json`'s two trials pinning exactly that a pread must NOT advance it |
+| one explicit append operation | `host_append`, `validate_append_outcome` |
+| `chown` clears set-ID on regular files | `chown`/`fchown` take `clear_setid` explicitly; `setid_clears_only_on_real_modification_and_respects_group_exec` |
+| `lchown` changes the link, not the target | `chown_does_not_follow_a_final_symlink` |
+| `fchown` matches `chown` through a handle | `fchown_matches_chown_through_an_open_handle` |
+| uid/gid at creation, round-trips, other fields intact | `chmod_chown_and_symlink_creation`, and the image module's owner-carrying tests |
+
+**Group two — incongruous with the kernel FS, so dropped rather than ported
+(rule 4).** These are not harder to express; the condition does not exist:
+
+* *"commits size and data for a positive partial write at ENOSPC"*, *"clears
+  set-ID after a genuinely SHORT positive write"* — a short positive write is
+  what a FIXED allocation produces when it fills. The kernel's overlay writes
+  into owned Rust memory: a write succeeds or it fails, and there is no
+  partial-success-at-ENOSPC state for set-ID to be cleared after.
+* *"publishes distinct lowest descriptors across concurrent workers"*,
+  *"serializes two interleaved append actors"*, *"prevents path ABA across
+  workers without deadlocking"*, *"releases the lowest reservation once after
+  every pre-publish failure"*, *"keeps a reentrant observer from seeing a
+  reserved descriptor"* — every one is several WORKERS mutating one filesystem
+  through a `SharedArrayBuffer`. The kernel is one authority; there is no
+  concurrent multi-worker filesystem to race in.
+* *"polls safely when browser-main-style `Atomics.wait` is unavailable"* — a
+  property of waiting on a SAB.
+
+**And `sharedfs-safety` was already settled on its own terms** earlier in this
+campaign: traced to `e5ae330d82`, it guards a hazard nothing *can* hit, because
+the last production filesystem SAB went with `/dev/shm`.
+
+**So the family retires with the vendor, and no Rust test is owed.** That is
+the useful part of the answer: the audit could have concluded "port 61 claims",
+and the reason it does not is that two thirds are already made where they now
+matter and the rest describe a filesystem the platform no longer has.
+
 ### THE ENDGAME'S RULES — maintainer decisions, 2026-09-16
 
 **Four answers that settle how lane V finishes.** Recorded here because they
