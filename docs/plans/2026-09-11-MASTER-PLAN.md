@@ -14412,20 +14412,35 @@ both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 **`brandonpayton/lane-y-image-writer` @ `23d1cb045` is 145 commits ahead and 445
 behind this branch.** A real merge, not a fast-forward.
 
-**THE BUDGET WILL CONFLICT AND NEITHER SIDE IS CORRECT.** Resolve it ceiling by
-ceiling, taking the **minimum** of the two, then RE-RUN the budget — the merged
-tree's measures differ from both sides', and a ceiling more than `slack` above
-its measure fails by design.
+**THE BUDGET WILL CONFLICT AND NEITHER SIDE IS CORRECT.** An earlier draft of
+this section said to take the **minimum** of each pair. **That rule is wrong and
+would fail the merge** — see `hostKernelPlumbingTypeScript` below.
 
-| entry | lane | parent | take |
-|---|---|---|---|
-| `hostVfsTypeScript` | 5,839 | 8,801 | **lane** |
-| `memoryFsTypeScript` | 0 | 7,123 | **lane** |
-| `hostKernelPlumbingTypeScript` | 4,575 | 4,582 | **lane** |
-| `forkModuleEntryPoints` | 69 | 71 | **lane** |
-| `setuidLazyWithoutDigest` | 0 | 2 | **lane** |
-| `forkTypeScript` | 19,804 | 890 | **parent** |
-| `workerMainTypeScript` | 5,958 | 5,356 | **parent** |
+**The correct rule: set each conflicting ceiling to the MERGED TREE'S MEASURE.**
+That is the same banking discipline used all session — a ceiling is a reading,
+not a pick. The budget reports the number for you: it fails with
+`"<name> is N, above its ceiling of M"`, so resolve, run it, and set each
+ceiling to the `N` it names. Never above.
+
+**Measured against the merged tree** (`git merge-tree --write-tree` gives the
+tree; measures computed over it without checking anything out):
+
+| entry | lane | parent | merged measure | take |
+|---|---|---|---|---|
+| `hostVfsTypeScript` | 5,839 | 8,801 | **5,839** | lane, exact |
+| `memoryFsTypeScript` | 0 | 7,123 | **0** (paths absent) | lane |
+| `imageFsTypeScript` | 0 | — | **0** (paths absent) | lane |
+| `hostKernelPlumbingTypeScript` | 4,575 | 4,582 | **4,582** | **PARENT — the lane's 4,575 FAILS** |
+| `forkModuleEntryPoints` | 69 | 71 | not computed | measure it |
+| `setuidLazyWithoutDigest` | 0 | 2 | not computed | measure it |
+| `forkTypeScript` | 19,804 | 890 | not computed | measure it; parent is the banked one |
+| `workerMainTypeScript` | 5,958 | 5,356 | not computed | measure it; parent is the banked one |
+
+**`hostKernelPlumbingTypeScript` is why the minimum rule is wrong.** The lane
+banked 4,575 before the parent added seven lines to files this lane never
+touched. The merged tree has both, so it measures 4,582 — above the lane's
+ceiling. Taking "the lower" there produces a failing budget, and the obvious
+"fix" is to raise it, which is the one move this campaign forbids.
 
 **Taking either side wholesale destroys banked work.** The lane's side un-banks a
 **~19,000-line** `forkTypeScript` reduction. The parent's side un-banks ~3,000
