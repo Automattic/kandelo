@@ -13694,6 +13694,66 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### THE ENDGAME, WITH WHAT EACH STEP OWES — written 2026-09-17 at importers 60 -> ~30
+
+**What is left is three different kinds of work, and the order between them is
+forced rather than chosen.**
+
+**1. The SUBJECT cohort retires WITH the class, not before it.** Thirteen files
+under `host/test` and three worker fixtures test `MemoryFileSystem` itself or
+the `KLZY` carrier only it writes: `vfs-image`, `vfs-image-kernel-lazy`,
+`vfs-image-lazy-identity`, `image-build-round-trip`, `sdef-image-runtime`,
+`lazy-tree`, `lazy-archive`, `sharedfs-safety`, `vfs/sharedfs-uid-gid`,
+`vfs/sharedfs-positioned-io`, `vfs/memfs-uid-gid-image`, the three
+`fixtures/sharedfs-*-worker.ts`, and the four `host/scripts/gen-*-fixture.mts`
+generators. Two of them say so in their own headers —
+`image-build-round-trip` carries "DELETE THIS TEST WITH `memory-fs.ts`". **They
+are not blockers; they are the deletion's own diff.**
+
+**2. `module-base-image.test.ts` blocks on a PRODUCTION decision, not a test
+one.** Its legacy-section cases exist because
+`createBaseImageFromContainer` still has a branch for images carrying
+host-side JSON sections — a branch with no producer once the class is gone.
+Deleting that branch means passing `moduleLazyEntries` at both worker entries,
+which means a browser worker holding the image module's bytes. **That is the
+same change the asset-closure finding above asks for**, and it is browser-
+validated work.
+
+**3. The BACKEND role is nearly dissolved, and what is left is small.** Of the
+sixteen files originally in it: three policy suites now boot a kernel from an
+image (`969c6740e`), `vfs.test.ts` uses `HostFileSystem`,
+`advisory-lock-kernel` uses a purpose-built fake, and `lazy-prepared-io`
+retired. What remains is three browser specs and one browser worker fixture
+that mount a live backend inside a PAGE, where `HostFileSystem` does not
+exist. **A fake is the answer there too** — `host/test/support/
+fixed-tree-backend.ts`, loaded into the page through the same `/@fs` mechanism
+the specs already use for host modules.
+
+**THE TWO THINGS THAT WOULD MAKE THE DELETION DISHONEST, named so they are not
+skipped:**
+
+* **The browser cycle.** `apps/browser-demos` boots from an image, and the
+  three specs above run in a real browser. A deletion validated only by Vitest
+  would be a Node-first landing of a cross-host change, which the host-runtime
+  contract forbids in those words.
+* **The both-sides suite run.** The failing set at HEAD is already written
+  down (§"THE FAILING SET, WRITTEN DOWN"), and the deletion must be compared
+  against it rather than against an impression. Two reds are already known to
+  fail at HEAD — `login`'s missing-canonical-home case and
+  `spawn-pid-authority`'s dirfd case — and both were re-confirmed today by
+  running them against the unmodified files.
+
+**AND ONE OPEN QUESTION IS NOW CLOSED BY EVIDENCE rather than by a decision.**
+The plan recorded a maintainer question: `network-demo-worker.test.ts` asserts
+that "the rootfs handed to network machines must bind product lazy URLs from
+activation authority", which B45's fix deliberately removed, and where binding
+belongs looked like a deployment-authority call. It is not open: the
+replacement is built, shipped and tested. `imageOwnedRuntimeUrlTable` maps an
+image's recorded ADDRESS to the URL a deployment serves it at, at fetch time,
+and `host/test/image-owned-runtime-urls.test.ts` and
+`host/test/php-test-lazy-assets.test.ts` assert it. The test was pinning the
+defect's shape, not a design choice still to be made.
+
 ### A SECOND READER WAS HIDING A TRUNCATION — `91ad210d2`, 2026-09-17
 
 **`KandeloImageFs.readFile` returned the first N bytes of any file read through
