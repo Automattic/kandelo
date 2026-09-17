@@ -20,6 +20,8 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { readForkResumeCatalog } from "../src/fork-resume-catalog";
+
 import {
   WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
   WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
@@ -71,6 +73,108 @@ function phpArtifacts(): { name: string; bytes: Uint8Array }[] {
   }
   return [];
 }
+
+/** Any `const NAME: usize = N;` the module declares, read from its source. */
+function moduleCap(name: string): number {
+  const match = new RegExp(`const ${name}: usize = ([0-9_]+);`).exec(moduleSource);
+  if (!match) throw new Error(`fork-module no longer defines ${name}`);
+  return Number(match[1].replace(/_/g, ""));
+}
+
+describe("fork-module fixed caps vs a real program", () => {
+  // THE CLASS, not the instance. The identity table was one static sized for
+  // programs nobody had measured; it is not the only one. Every cap below is a
+  // single array shared by the WHOLE worker, so the number that matters is the
+  // sum across every activation a process can hold at once -- which is what
+  // `wordpress` and `lamp` proved by loading php plus intl and dying.
+  //
+  // Headroom is reported even when passing, because "passes today" and "has
+  // room for one more extension" are different facts and only the second is
+  // worth trusting.
+  it("holds php's resume-catalog ordinals", () => {
+    const artifacts = phpArtifacts();
+    if (artifacts.length === 0) {
+      console.warn(
+        "fork-identity-capacity: php is not built, so the resume-catalog bound " +
+          "was NOT checked. Build it to exercise this test.",
+      );
+      return;
+    }
+
+    let total = 0;
+    const per: string[] = [];
+    for (const { name, bytes } of artifacts) {
+      let count = 0;
+      try {
+        count = readForkResumeCatalog(new WebAssembly.Module(bytes)).length;
+      } catch (error) {
+        // ONLY "this module has no catalog section" may be treated as zero. A
+        // ReferenceError or TypeError here is a bug in this test, and a broad
+        // `catch { continue }` turns it into "contributes nothing" -- which is
+        // how both of these assertions first shipped as `0 <= cap`, passing
+        // while the module's cap was cut below php's real need. Re-throw
+        // anything that is not the expected shape.
+        if (error instanceof RangeError || error instanceof WebAssembly.CompileError) {
+          continue; // not a wasm module we can read
+        }
+        if (!(error instanceof Error) || !/section/i.test(error.message)) {
+          throw error;
+        }
+        continue; // fork-instrumented modules only; others contribute nothing
+      }
+      total += count;
+      per.push(`${name}=${count}`);
+    }
+    // All three share the same population: the catalog ordinals of every
+    // activation. Checking one and not the others would leave the same defect
+    // behind two different names.
+    for (const cap of [
+      "ACTIVATION_CATALOG_ORD_CAP",
+      "RESUME_CATALOG_CAP",
+    ]) {
+      const limit = moduleCap(cap);
+      expect(
+        total,
+        `php needs ${total} resume-catalog ordinals against ${cap}=${limit} ` +
+          `(${(limit / total).toFixed(2)}x headroom). Per-artifact: ${per.join(" ")}`,
+      ).toBeLessThanOrEqual(limit);
+    }
+  });
+
+  it("holds php's activation count", () => {
+    const artifacts = phpArtifacts();
+    if (artifacts.length === 0) return;
+    // One activation per fork-instrumented module a process can hold at once.
+    const acts = artifacts.filter(({ bytes }) => {
+      try {
+        readForkResumeCatalog(new WebAssembly.Module(bytes));
+        return true;
+      } catch (error) {
+        if (error instanceof RangeError || error instanceof WebAssembly.CompileError) {
+          return false;
+        }
+        if (!(error instanceof Error) || !/section/i.test(error.message)) {
+          throw error;
+        }
+        return false;
+      }
+    }).length;
+    for (const cap of [
+      "ACTIVATION_CATALOG_MAX_ACTS",
+      "ACT_GC_CODEC_MAX_ACTS",
+      "TEMPLATE_ID_MAX_ACTS",
+      "STATIC_ROOT_BASE_MAX_ACTS",
+      "ACT_EXN_TAGS_MAX_ACTS",
+      "FUNC_CATALOG_BASE_MAX_ACTS",
+    ]) {
+      const limit = moduleCap(cap);
+      expect(
+        acts,
+        `php holds ${acts} activations against ${cap}=${limit}`,
+      ).toBeLessThanOrEqual(limit);
+    }
+  });
+});
 
 describe("fork-module identity table capacity", () => {
   it("holds every catalog export a php process loads", () => {
