@@ -3490,52 +3490,157 @@ mod wasm {
     // doubling — for well past the 5000-frame stress workload, and it sets the
     // module's `dylink.0` `mem_size` (how much of the `__memory_base` region the
     // host must reserve).
-    const HEAP_SIZE: usize = 4 * 1024 * 1024;
+    // THE FLOOR, not the ceiling. This was 4 MiB of static BSS reserved out of
+    // the GUEST's mmap window whether a program forked or not. Measured: a real
+    // single fork peaks between 256 and 512 KiB, so 4 MiB was 8-16x oversized
+    // for the common case -- and it was still a hard bound, so a heavy fork that
+    // wanted more got a null allocation.
+    //
+    // Now it is the amount available BEFORE the allocator asks the kernel for
+    // more. Beyond it, chunks are `SYS_MMAP`ed and RETAINED across `reset()`,
+    // so a worker pays for growth once and reuses it for every later fork.
+    //
+    // WHY A FLOOR AT ALL, when the identity table needed none: a fork CHILD
+    // re-seeds its catalogs while the kernel is still creating it, and a syscall
+    // there is refused (`fm_set_activation_gc_codec failed with errno 12`,
+    // measured). Seeding allocates, so the allocator must be able to serve a
+    // child without syscalling. The floor is what makes that true.
+    const HEAP_FLOOR: usize = 1024 * 1024;
+
+    /// Bytes of usable space in a grown chunk, after its 16-byte header.
+    const HEAP_CHUNK_BYTES: u64 = 1024 * 1024;
+    const HEAP_CHUNK_HEADER: u64 = 16;
 
     #[repr(C, align(16))]
-    struct HeapCell(UnsafeCell<[u8; HEAP_SIZE]>);
+    struct HeapCell(UnsafeCell<[u8; HEAP_FLOOR]>);
     // SAFETY: the process worker is single-threaded for fork state; all access
     // is serialized by the one guest that calls these exports.
     unsafe impl Sync for HeapCell {}
-    static HEAP: HeapCell = HeapCell(UnsafeCell::new([0u8; HEAP_SIZE]));
+    static HEAP: HeapCell = HeapCell(UnsafeCell::new([0u8; HEAP_FLOOR]));
 
     struct Bump {
+        /// Cursor within the CURRENT region.
         offset: AtomicUsize,
+        /// The region being served from: 0 is the static floor, otherwise the
+        /// address of a grown chunk.
+        region: AtomicU64,
+        /// Head of the retained chunk list. Chunks are kept across `reset()`:
+        /// the next fork reuses them instead of paying another syscall, and the
+        /// list is the only record of them, so it lives IN them (each chunk
+        /// header holds the next address) rather than in a `Vec` the reset
+        /// would clobber.
+        chunks: AtomicU64,
     }
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for Bump {}
 
     unsafe impl GlobalAlloc for Bump {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let base = HEAP.0.get() as *mut u8 as usize;
-            let cur = self.offset.load(Ordering::Relaxed);
-            let align = layout.align();
-            let start = match base.checked_add(cur) {
-                Some(s) => s,
-                None => return core::ptr::null_mut(),
-            };
-            let aligned = (start.wrapping_add(align - 1)) & !(align - 1);
-            match (aligned - base).checked_add(layout.size()) {
-                Some(next) if next <= HEAP_SIZE => {
-                    self.offset.store(next, Ordering::Relaxed);
-                    aligned as *mut u8
-                }
-                _ => core::ptr::null_mut(),
+            // Try the current region, then the next retained chunk, then a fresh
+            // one. Two passes at most before growth: a region either fits this
+            // request or is finished for this fork.
+            if let Some(p) = self.alloc_here(layout) {
+                return p;
             }
+            if self.advance_region() && let Some(p) = self.alloc_here(layout) {
+                return p;
+            }
+            if self.grow(layout.size()) && let Some(p) = self.alloc_here(layout) {
+                return p;
+            }
+            // Exhausted, exactly as a full 4 MiB static was before: a null
+            // allocation, not a trap. A child that cannot syscall lands here
+            // rather than failing the fork with a kernel errno.
+            core::ptr::null_mut()
         }
 
         unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
     }
 
     impl Bump {
+        /// Base and usable length of the region currently being served from.
+        fn region_span(&self) -> (usize, usize) {
+            match self.region.load(Ordering::Relaxed) {
+                0 => (HEAP.0.get() as *mut u8 as usize, HEAP_FLOOR),
+                chunk => (
+                    (chunk + HEAP_CHUNK_HEADER) as usize,
+                    ident_u64(chunk + 8) as usize,
+                ),
+            }
+        }
+
+        /// Serve from the current region, or `None` when it cannot fit this.
+        fn alloc_here(&self, layout: Layout) -> Option<*mut u8> {
+            let (base, len) = self.region_span();
+            let cur = self.offset.load(Ordering::Relaxed);
+            let start = base.checked_add(cur)?;
+            let align = layout.align();
+            let aligned = (start.wrapping_add(align - 1)) & !(align - 1);
+            let next = (aligned.checked_sub(base)?).checked_add(layout.size())?;
+            if next > len {
+                return None;
+            }
+            self.offset.store(next, Ordering::Relaxed);
+            Some(aligned as *mut u8)
+        }
+
+        /// Move to the next ALREADY-MAPPED chunk, if this fork has not used it
+        /// yet. Returns false when there is none, which is what asks for growth.
+        fn advance_region(&self) -> bool {
+            let current = self.region.load(Ordering::Relaxed);
+            let next = if current == 0 {
+                self.chunks.load(Ordering::Relaxed)
+            } else {
+                ident_u64(current)
+            };
+            if next == 0 {
+                return false;
+            }
+            self.region.store(next, Ordering::Relaxed);
+            self.offset.store(0, Ordering::Relaxed);
+            true
+        }
+
+        /// Map one more chunk and make it current. Appended at the TAIL so the
+        /// reuse order after a `reset()` is the order they were mapped.
+        fn grow(&self, need: usize) -> bool {
+            let want = HEAP_CHUNK_BYTES.max(page_round_up(need as u64 + HEAP_CHUNK_HEADER));
+            let Ok(base) = channel_base() else {
+                return false; // no serviced channel: a child mid-creation
+            };
+            let Ok(chunk) = channel_mmap(base, want) else {
+                return false;
+            };
+            ident_set_u64(chunk, 0);
+            ident_set_u64(chunk + 8, want - HEAP_CHUNK_HEADER);
+            let head = self.chunks.load(Ordering::Relaxed);
+            if head == 0 {
+                self.chunks.store(chunk, Ordering::Relaxed);
+            } else {
+                let mut tail = head;
+                while ident_u64(tail) != 0 {
+                    tail = ident_u64(tail);
+                }
+                ident_set_u64(tail, chunk);
+            }
+            self.region.store(chunk, Ordering::Relaxed);
+            self.offset.store(0, Ordering::Relaxed);
+            true
+        }
+
+        /// Rewind to the floor. Grown chunks stay MAPPED and stay listed: the
+        /// next fork walks back into them instead of paying to map them again.
         fn reset(&self) {
             self.offset.store(0, Ordering::Relaxed);
+            self.region.store(0, Ordering::Relaxed);
         }
     }
 
     #[global_allocator]
     static ALLOC: Bump = Bump {
         offset: AtomicUsize::new(0),
+        region: AtomicU64::new(0),
+        chunks: AtomicU64::new(0),
     };
 
     /// Transient exchange storage for the guest's recursive payload codecs.
@@ -3786,6 +3891,12 @@ mod wasm {
 
     fn mem_len_bytes() -> usize {
         wasm_intr::memory_size(0) * 65_536
+    }
+
+    /// Round `n` up to a whole wasm page, the granularity `SYS_MMAP` works in.
+    fn page_round_up(n: u64) -> u64 {
+        const PAGE: u64 = 65_536;
+        n.div_ceil(PAGE) * PAGE
     }
 
     /// A mutable view of the whole guest linear memory.
