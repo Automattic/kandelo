@@ -1172,12 +1172,15 @@ is named for, rather than merely a duplication to tidy.** The second
 implementation is not just redundant here; it is LOSSY, and it is lossy
 precisely in the fields SDEF v5 added.
 
-**The guard for this already exists, one directory away.**
-`tools/mkrootfs/src/cli/sdef-reader-guard.ts` (`refuseImageThisReaderCannotSee`)
-was written for exactly this: a reader answering questions about an image whose
-deferred half it cannot see. It guards the `mkrootfs` CLI. The browser path has
-no equivalent, which is why the same defect is loud in one place and silent in
-the other.
+**The guard for this existed, one directory away — and is now GONE, because
+the CLI was fixed instead.** `tools/mkrootfs/src/cli/sdef-reader-guard.ts`
+(`refuseImageThisReaderCannotSee`) was written for exactly this: a reader
+answering questions about an image whose deferred half it cannot see. It
+guarded the `mkrootfs` CLI until `1a32c5e4a` repointed all three verbs at
+`KandeloImageFs`, which leaves nothing to refuse. **The browser path never had
+an equivalent, which is why the same defect was loud in one place and silent in
+the other — and why the browser round trip is now the only place it survives.**
+The fix there is the same fix: one reader, which is the section below.
 
 ### The fix, designed 2026-09-15 — and the relay already paid for half of it
 
@@ -13690,6 +13693,78 @@ distinguishes *"the tests I thought to run are green"* from *"the suite is
 where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
+
+### THE CLI READS WITH ONE READER — `1a32c5e4a`, 2026-09-17
+
+**`tools/mkrootfs`'s three reading verbs now load with `KandeloImageFs`, and
+`sdef-reader-guard.ts` is deleted with its four trials.** `inspect`, `extract`
+and `add` read images with `MemoryFileSystem`, which describes deferred files
+in `KLZY`, while `mkrootfs build` writes `SDEF`. The failure was silent by
+construction: a reader that cannot see a deferred file reports it as a
+zero-length ordinary file, so `inspect` printed that, `extract` wrote it to
+disk, and `add` saved it back — turning a rootfs full of lazy binaries into an
+image with none.
+
+**The guard documented its own fix and named the blocker, and the blocker was
+dissolved by other work in this lane.** Its docstring said the verbs could not
+read with `KandeloImageFs` because "the seal verification they perform has no
+module entry point, and adding one breaches `kandeloImageModuleEntryPoints`"
+(ceiling 22, slack 0). Moving `verify_cohorts` into `rootfs::load_image`
+(`4c5e16d56`, `b964ed51c`) made the verification inherent in a door that
+already existed, so the repoint cost no entry point. **The guard is deleted
+rather than kept: with one reader there is no second opinion to disagree with,
+and a guard that cannot fire is a second place for a rule to live.**
+
+**THE DECISION INSIDE THE LANE: the verbs inherit the loader's ABI contract,
+and that costs a capability.** `rootfs::load_image` returns `EPROTO` for an
+image declaring a kernel ABI it does not speak, so these verbs can no longer
+look inside a stale image — which is exactly when someone reaches for
+`inspect`. Taken anyway, for two reasons. Two readers disagreeing about one
+image is the defect the repoint exists to end, and re-admitting a second reader
+for the stale case would re-create it in the one situation where the image is
+least trustworthy. And an image the kernel will refuse to boot is not something
+a build tool should quietly describe as fine.
+
+**What the decision owes, and pays**: the refusal must say WHICH refusal it is.
+`describeImageLoadFailure` reports `EPROTO` as an intact image that is stale
+and wants a rebuild, rather than as "not a valid VFS image" — wording that
+would send a reader hunting corruption that is not there, against the ABI
+contract's own instruction that a stale artifact fail loudly AS stale. The
+declared and expected numbers are NOT reported: `sm_load_image` returns an
+errno with no channel for them, and reading the declared one means loading the
+image that just refused. Naming the kind and the action beats inventing a
+number.
+
+**Tests: rewritten, not retired.** The imported-seal boundary case built its
+fixture through `MemoryFileSystem` and `host/test/lazy-atomic-seal-fixture.ts`,
+which `0cd9fec21` deleted — and that deletion's census missed this caller, so
+`test/cli.test.ts` was failing to compile at HEAD. **A census that greps
+`host/` finds host callers; this one lived in `tools/`.** The case now builds a
+sealed cohort with `KandeloImageFs` and tampers with the sealed descriptor:
+every digest in the image stays intact and self-consistent while the sealed
+claim becomes false, which is the shape a structural validator cannot see. It
+gains a negative control — the same builder, untampered, must be read and
+printed — so the three refusals are about the seal rather than about any image
+carrying an archive. The two `--metadata` cases declared ABI 11 and would now
+have been testing the ABI refusal instead of the metadata round trip, so they
+declare the ABI this reader speaks, and the stale-image refusal gets its own
+case across all three verbs.
+
+**`perturb/mkrootfs-sdef-guard.json` is deleted, not stubbed.** The empty-file
+convention `deferred-until-v4.json` uses works only while the spec names a file
+that still exists; a stub naming deleted source is reported ROTTED on every
+`--validate`, which is the permanently-red gate `perturb/README.md` warns
+against. Its replacement is `mkrootfs-image-load-failure.json`, three trials on
+what the verbs SAY — never recognizing the ABI mismatch, recognizing every
+failure as one, recognizing it by the seal's errno. All three killed. Each
+turns a truthful refusal into a misleading one while every verb still exits
+non-zero, which is the failure a status-only assertion cannot see.
+
+**Evidence**: `tools/mkrootfs` 189 tests / 4 files pass (was 1 file failing to
+compile); `host/test/surface-budget.test.ts` 101 pass; `xtask perturb
+--validate` 422 trials anchor; the new spec 3 trials / 0 survivors. `tsc
+--noEmit` under `tools/mkrootfs` reports nine unused-symbol errors, all inside
+`host/src/vfs/memory-fs.ts` and all pre-existing — the file lane V deletes.
 
 ### OVERNIGHT AUTHORISATIONS — maintainer, 2026-09-17
 
