@@ -14407,38 +14407,29 @@ kernel is rebuilt**, when most of these 38 should disappear and a genuine
 both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 "38 vs 39" as if it were the clean result the earlier deletion got.
 
-### READ THIS BEFORE RUNNING ANY SUITE IN `kandelo-lane-y` — 2026-09-17, end of session
+### THE CLOSURE IS REBUILT — 2026-09-17, and the interruption warning above it is withdrawn
 
-**The worktree's ARTIFACTS are mid-rebuild. Its GIT state is clean.** Those are
-different things and only the second is safe to trust.
+**`./run.sh setup` COMPLETED, exit 0.** I wrote the warning this replaces
+believing the machine was about to sleep mid-build; it did not. The closure is
+rebuilt, `cargo xtask verify-fresh` exits 0, and the tree is clean apart from
+`packages/registry/.program-packages.json.index-transaction-*`, a build cache
+that must never be committed.
 
-`./run.sh setup` was started to repair the tier and was **interrupted** when the
-machine closed. So `local-binaries/` holds a partially rebuilt closure: a kernel
-at `ea67b4c3…` and an unknown mixture of downstream artifacts, some rebuilt
-against it and some not.
+**So the repair for the broken tier is done**, and the lane worktree is coherent
+for the first time this session: a kernel at `ea67b4c3…` with a closure rebuilt
+against it.
 
-**WHAT THAT MEANS FOR THE NEXT TICK:**
+**THE WARNING WAS STILL WORTH WRITING, and its content stands for next time.**
+An interrupted `./run.sh setup` is the same hazard as an interrupted `xtask
+perturb`, already recorded in this document: the tree is left in a state nothing
+announces, `git status` looks correct, and the next verdict describes a world
+that was never coherent. `verify-fresh` does not detect it — it passes on the
+kernel alone. The symptom is *"Package artifact closure is incomplete"*.
 
-* **Re-run `./run.sh setup` to completion before believing any suite result.**
-  It is idempotent and resumes. Until it finishes, a failing test says nothing
-  about the code.
-* **`cargo xtask verify-fresh` is NOT the check that tells you this.** It passes
-  on the kernel alone and cannot see the closure — that is the whole lesson of
-  the retracted entry above. The symptom to look for is *"Package artifact
-  closure is incomplete"*.
-* **Neither host-suite run from this session is usable as evidence.** 38 failing
-  files with a stale kernel, 54 with the broken closure. The retirement's
-  both-sides comparison is still owed.
-
-**The lane's commits are unaffected.** All ten are landed, the tree is clean
-apart from `packages/registry/.program-packages.json.index-transaction-*`, which
-is a build cache and must never be committed.
-
-**An interrupted build is the same hazard as an interrupted `xtask perturb`**,
-recorded earlier in this document: the tree is left in a state nothing announces,
-`git status` looks correct, and the next run's verdict describes a world that was
-never coherent. The difference is that a perturb run leaves a mutation and this
-leaves an artifact set — neither is visible in the diff.
+**What is now possible and was not**: the retirement's both-sides comparison.
+Neither earlier run could serve — 38 failing files against a stale kernel, 54
+against the broken closure. A run against the rebuilt closure is the first one
+that measures the code rather than the provisioning.
 
 ### I BROKE THE TIER TRYING TO UNBLOCK IT — 2026-09-17, and the retraction is the entry
 
