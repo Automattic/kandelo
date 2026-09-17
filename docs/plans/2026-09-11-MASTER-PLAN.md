@@ -3405,6 +3405,35 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 > several name files that are gone. The closure, what it does NOT mean, and
 > the two things still owed are in **"LANE V IS CLOSED"** near the end of this
 > document.
+>
+> ---
+>
+> **STATE AT THE END OF 2026-09-17**, so the next tick does not re-derive it.
+> Ten commits landed on `brandonpayton/lane-y-image-writer` after `f92fee4f2`:
+> **7,877 deletions against 133 insertions.** `hostVfsTypeScript` 6091 → 5839,
+> every step banked at its measured value rather than left inside slack.
+>
+> | what | where the entry is |
+> |---|---|
+> | dead exports in the lazy pipe, the container header parser, `canonical-text.ts` | "A count of 1 was not a consumer", "A second spelling", "A JavaScript problem" |
+> | the product builder's ABI gate, tested in an ABI-7 world | "A gate tested in an ABI-7 world" |
+> | a dead permission, and the fence behind it | "A permission outlived the builder", "The staged-product apparatus is stranded" |
+> | the staged-product path retired, 7,532 lines | "The staged-product path is retired" |
+> | one web demo with two surface orders | recorded in `02423a018` |
+> | the freshness proposal | `docs/plans/2026-09-17-keyed-artifact-freshness.md` |
+>
+> **OPEN, and none of it is lane work.** (1) The browser cycle still needs
+> `./run.sh setup`; the lane's kernel is stale for real — its key exists in no
+> generation on this machine — and the maintainer's sequencing puts this after
+> lane F merges. (2) The freshness proposal has one question left that changes
+> its design rather than its detail: whether the tier copies because it must be
+> packable. (3) `host/tsconfig.typecheck.json` covers `src` only, so no test
+> file is type-checked; logged as future work, not this lane.
+>
+> **The export audit is exhausted** for `host/src/vfs` and `images/vfs`. What
+> found four real deletions was a caller census that reads every hit rather than
+> counting names, plus one sharper lens: code compensating for a JavaScript
+> property in a path Rust now owns.
 
 
 ## The perturbation round for the night's guards — 10 trials, and one that took three tries
