@@ -13502,6 +13502,42 @@ have satisfied the metric and worsened the parity it exists to protect. One
 module — `vfs/root-image-facts.ts`, imported as a namespace so call sites read
 `rootImage.has()` — removes the duplication instead of hiding it.
 
+### `host/src` MOUNTS NOTHING IT BUILT — `d07b8d51d`, 2026-09-16
+
+**The browser resolver's last job was building a `MemoryFileSystem` over a
+`SharedArrayBuffer` for a scratch mount, and it now refuses instead.** Nothing
+reaches that branch: the eight prefixes the in-kernel tmpfs owns are filtered
+out before the resolver looks, `/` is the kernel's, and every product declares
+only those. A caller asking the browser host for a filesystem it does not have
+hears so at resolve time rather than getting a mount the kernel never sees.
+
+**Node is deliberately not symmetric**, for the reason the correction above
+records: its non-tmpfs scratch mount is a `HostFileSystem` over a real session
+directory, and session seeds require one.
+
+**`host/src` now constructs no `MemoryFileSystem` for any mount.** Two files
+still name the class: `vfs/index.ts`, the barrel, and `vfs/load-image.ts`,
+whose three callers mount a live filesystem OVER an image — the backend role,
+in harnesses rather than in the runtime.
+
+**A long-standing red became coverage in the right layer.**
+`default-maker-profile.spec.ts` asserted that a default profile writes to
+`/home/maker` through a host mount, and had been failing since the Phase 5
+cutover took that prefix — one of the fourteen baseline failures, reporting
+the move rather than a defect. The claim is a product one, so it was ported:
+`the_canonical_maker_home_is_writable_and_owned_by_the_maker` checks the
+home's mode and ownership, writes and reads a profile as uid 1000, and pins
+that `/home` itself is not a mount, so the home is the mount rather than an
+incidental directory under one.
+
+**Five resolver cases retired with the branch they drove**, replaced by two
+that pin what replaced it: the refusal, and that the canonical spec resolves
+to NO mounts at all. The second is the one that matters over time — a future
+host backend would show up there rather than as a second authority the kernel
+never consults. `perturb/browser-scratch-refusal.json` carries three trials,
+including both directions: a refusal that fired too widely would break every
+boot as surely as one that never fired would hide a dropped mount.
+
 ### THE ENDGAME'S RULES — maintainer decisions, 2026-09-16
 
 **Four answers that settle how lane V finishes.** Recorded here because they
