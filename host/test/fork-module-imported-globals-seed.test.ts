@@ -7,6 +7,7 @@ import {
   CHANNEL_BASE,
   CHANNEL_RESPONDER,
   MMAP_FLOOR,
+  MUNMAP_COUNTER,
 } from "./fork-module-capture-fixture";
 
 /** Responders spawned by `fixture()`, terminated in `afterAll`. */
@@ -98,6 +99,13 @@ function fixture() {
       owner: number,
       groupId: number,
     ) => void,
+    // op 1 is the per-activation release the host issues on `dlclose`; it is
+    // where identity chunks are freed, so a leak guard needs to reach it.
+    slots: x.fm_resume_slots as (
+      op: number,
+      activation: number,
+      ordinal: number,
+    ) => number,
   };
 }
 
@@ -359,6 +367,46 @@ describe("one seed surface over two import spaces", () => {
     expect(f.errno()).toBe(0);
     f.identity(SPACE_TABLE, 1, 5, 9);
     expect(f.errno()).toBe(0);
+  });
+});
+
+describe("identity chunks are released, not just allocated", () => {
+  // THE FAILURE MODE THIS DESIGN INTRODUCED. The identity table used to be a
+  // fixed `[[u32; 4]; N]` static, which cannot leak. It is now a list of 64 KiB
+  // chunks the module `SYS_MMAP`s on demand, and a list CAN leak: if
+  // `release_identity_activation` stops freeing, nothing else notices, because
+  // every functional assertion still passes against a table that merely grew.
+  //
+  // So this asserts the FREE, by counting `SYS_MUNMAP`s in the test responder
+  // rather than by adding an observable to the module. A chunk count would have
+  // needed either a new `fm_*` entry or an `fm_stats` field, and the host half
+  // of a stats field costs a line on `forkTypeScript`, which is at its ceiling.
+  it("munmaps every chunk an activation filled when it is released", () => {
+    const f = fixture();
+    const counter = new DataView(f.memory.buffer);
+    // 4,095 entries fit one 64 KiB chunk (16-byte header, 16-byte entries), so
+    // 4,100 distinct owners spans exactly two. Owners must differ: a repeat
+    // (space, activation, owner) UPDATES in place rather than appending.
+    for (let owner = 1; owner <= 4100; owner += 1) {
+      f.identity(SPACE_GLOBAL, 1, owner, owner);
+    }
+    expect(f.errno(), "publishing 4,100 identities").toBe(0);
+    const before = counter.getUint32(MUNMAP_COUNTER, true);
+    // Publishing only ever MAPS. If this is not zero the counter is picking up
+    // something else and `freed` below could reach 2 by coincidence.
+    expect(before, "munmaps seen while only publishing").toBe(0);
+
+    // op 1 is the dlclose release the host already issues per activation.
+    f.slots(1, 1, 0);
+    expect(f.errno(), "releasing activation 1").toBe(0);
+
+    const freed = counter.getUint32(MUNMAP_COUNTER, true) - before;
+    expect(
+      freed,
+      `releasing an activation that filled two chunks freed ${freed} of them. ` +
+        "A chunk list leaks where the old fixed array could not, so the release " +
+        "is the part worth guarding.",
+    ).toBe(2);
   });
 });
 

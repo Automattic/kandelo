@@ -77,6 +77,14 @@ export const EBUSY = 16;
 export const CHANNEL_BASE = 4 * PAGE;
 export const MODULE_BASE = 8 * 1024 * 1024;
 /** Where the responder hands out mappings from: above everything else in use. */
+/**
+ * A u32 the responder increments on every `SYS_MUNMAP`, so a test can assert
+ * that something was FREED rather than only that it was allocated.
+ *
+ * Page 5 is free: the channel is page 4 and `MODULE_BASE` is 8 MiB.
+ */
+export const MUNMAP_COUNTER = 5 * PAGE;
+
 export const MMAP_FLOOR = 12 * 1024 * 1024;
 /** Where a CHILD worker's own module instance sits in the shared memory. */
 export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
@@ -119,6 +127,7 @@ while (!stop) {
     next += Math.ceil(size / ${PAGE}) * ${PAGE};
     ret = BigInt(addr); errno = 0;
   } else if (nr === ${SYS_MUNMAP}) {
+    dv.setUint32(${MUNMAP_COUNTER}, dv.getUint32(${MUNMAP_COUNTER}, true) + 1, true);
     ret = 0n; errno = 0;
   }
   dv.setBigInt64(channelBase + ${RETURN_OFFSET}, ret, true);
