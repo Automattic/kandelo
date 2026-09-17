@@ -14372,6 +14372,41 @@ argue for themselves — a spec's subject file recorded with it, so removing the
 spec without removing the file fails — would close it, but that is a design for
 whoever owns the harness, and this lane found it rather than commissioned it.
 
+### THE HOST SUITE AFTER THE RETIREMENT — and why this comparison is weaker than the last one
+
+**Run at `23d1cb045`, the full host suite**: `Test Files  38 failed | 370
+passed | 11 skipped (419)`, `Tests  82 failed | 3906 passed | 2 expected fail |
+48 skipped (4038)`.
+
+Against the recorded baseline — **39 failing files / 84 failing tests of
+4,067** — that is one fewer failing file and two fewer failing tests, with 29
+fewer tests in total after deleting two host test files carrying 18 cases and
+retiring five more in `vfs-image-transport.test.ts`.
+
+**NOTHING IN THE FAILING SET NAMES ANYTHING THIS SESSION TOUCHED.** The 38 are
+`php-*`, `nginx`, `git`, `wordpress-site-editor`, five `tests/package-system/*`,
+and host tests for fork, exec, process lifecycle, networking, audio and DRI. No
+VFS image builder, no container transport, no demo config, nothing from the
+staged path.
+
+**BUT SAY WHAT THIS EVIDENCE IS AND IS NOT.** The baseline is a NUMBER RECORDED
+EARLIER, not a run on this worktree, so this is a comparison against a snapshot
+rather than a both-sides measurement. The last big deletion got a real one and
+this did not.
+
+**And the run is dominated by one blocker rather than by the change.** Twelve
+failures are `void kernel ingress kernel initialization completion failed` —
+across eleven files — which is the stale `source-only-v1/kernel.wasm` refusing
+to boot, the same condition that blocks the browser cycle. `man-shell-lazy-
+archive.test.ts` is the one failing file adjacent to lane V's subject matter, and
+run alone it fails on exactly that error, not on anything the lane changed.
+
+**So the honest reading**: the retirement introduced no failure this run can
+see, and this run cannot see much. **The comparison worth having is after the
+kernel is rebuilt**, when most of these 38 should disappear and a genuine
+both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
+"38 vs 39" as if it were the clean result the earlier deletion got.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
