@@ -14081,6 +14081,55 @@ anyone noticing there was something to compare it to.
 dinit-image-helpers, shell-vfs-build, vfs-product-builder-contract and
 surface-budget **142/142**; `xtask perturb --validate` 415 trials all anchoring.
 
+### WHERE THE SUPPLY-CHAIN PORT ACTUALLY STANDS — measured 2026-09-17
+
+**The plan's account of this work is a stale snapshot, and re-deriving it moved
+the starting line.** The entry above ("MAINTAINER DECISIONS, 2026-09-13") names
+the next increment as *"an `xtask` verb extracting a whole tree ... the
+`allow(dead_code)` names it"*. Both are done:
+`tools/xtask/src/archive_extract_tree.rs` exists, `archive_paths.rs` carries no
+`allow(dead_code)`, and `staged-product-inputs.ts:1199` calls
+`archive-extract-tree` for real.
+
+**Five of the seven named mechanism functions are already out of TypeScript**:
+`materializeTarEntries`, `materializeZipSource`, `commonArchiveRoot`,
+`stripArchiveRoot` and `normalizedArchiveComponents` have zero occurrences.
+`staged-product-inputs.ts` is 1,840 lines, down from the 1,975 recorded.
+
+**Two remain, and only one of them is a port.**
+
+* `assertExactInputInventory` (5 call sites) compares a build's input ids
+  against a per-product expected map written in this file. That is RECIPE by the
+  maintainer's own split — product configuration, not mechanism over untrusted
+  input — so it stays.
+* `readRepositoryPathBundle` (~135 lines, ~20 distinct refusals) parses and
+  verifies an untrusted JSON document: byte and entry bounds, canonical-JSON
+  identity, schema/kind identity, a source-identity match against the resolved
+  exact source, sorted-unique-and-selected paths, per-kind exact key sets, mode
+  validation, canonical base64, byte count and SHA-256. **That is the port.**
+
+**A SEAM QUESTION HAS TO BE SETTLED FIRST, and it is the one this campaign keeps
+finding.** The bundle's canonical form is `JSON.stringify(sorted) + "\n"` with
+keys sorted by `left < right` — **UTF-16 code-unit order**, the exact defect
+`canonical-text.ts` existed to correct and which was deleted this session on the
+grounds that "the producer is Rust now". It is NOT Rust here: **both halves of
+this format are TypeScript**, `repository-path-bundle.ts` (308 lines) writing
+and `staged-product-inputs.ts` reading. `canonical_json.rs` sorts through
+`serde_json`'s map, which is scalar order. The two agree for every key this
+schema permits, because its keys are fixed ASCII identifiers and the paths are
+VALUES rather than keys — but that is a property of today's schema, not a
+guarantee, and it is exactly the class of seam where both sides are
+individually correct.
+
+**AND THE PORT BANKS NO REDUCTION, which is the argument for asking rather than
+starting.** The precedent it would follow, `validate-resolved-inputs`, left
+`parseResolvedInputs` in place: the TypeScript still parses, because the builder
+needs the typed object, and Rust became the AUTHORITY that runs first. Applying
+that here adds roughly 400 lines of Rust and removes no TypeScript. The value is
+real but deferred — it is what lets the TypeScript later shrink to a parse with
+no checks — and "start a 400-line addition whose measured benefit is zero today"
+is a scope call rather than an in-lane design decision.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
