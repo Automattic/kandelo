@@ -16,7 +16,6 @@ import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { parseZipCentralDirectory } from "../src/vfs/zip";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -226,7 +225,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
 
   // Phase 5 Increment 2e-S3: with the overlay owning `/`, host-side reads and
   // writes of `/` must route THROUGH the overlay (the authority), not the
-  // demoted base-image MemoryFileSystem. The decisive proof is cross-authority:
+  // demoted base image. The decisive proof is cross-authority:
   // a file the host writes must be visible to a live guest, and read back
   // through the overlay round-trips.
   it("routes host read/write of `/` through the overlay, visible to guests", async () => {
@@ -234,7 +233,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     // A minimal eager `/` image (just the root dir); the file under test does
     // not exist in it, so a guest seeing it proves the host write reached the
     // authoritative overlay.
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
     const image = await fs.saveImage();
 
     let stdout = "";
@@ -272,7 +271,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
   // it from the overlay, not the host `/` mount.
   it("execs an overlay-only `/` binary the base image lacks", async () => {
     const probeBytes = new Uint8Array(readFileSync(mountProbe));
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
     const image = await fs.saveImage();
 
     let stdout = "";

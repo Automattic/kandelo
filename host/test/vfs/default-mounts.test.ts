@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
   DEFAULT_MOUNT_SPEC,
@@ -42,24 +42,28 @@ const FILE_TYPE_MASK = 0xf000;
 const DIRECTORY_MODE = 0x4000;
 
 async function buildFixtureImage(): Promise<Uint8Array> {
-  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
-  const mfs = MemoryFileSystem.create(sab);
+  // Built by the producer that writes every shipped image: these cases are
+  // about what the MOUNT RESOLVERS do with a `/` image, and an image from a
+  // writer no product uses can differ in exactly the way they would not
+  // notice.
+  const mfs = KandeloImageFs.create();
   mfs.mkdir("/etc", 0o755);
-  const passwd = new TextEncoder().encode("root:x:0:0:root:/root:/bin/sh\n");
-  const fd = mfs.open("/etc/passwd", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-  mfs.write(fd, passwd, null, passwd.length);
-  mfs.close(fd);
+  mfs.writeFile(
+    "/etc/passwd",
+    new TextEncoder().encode("root:x:0:0:root:/root:/bin/sh\n"),
+    0o644,
+  );
   return await mfs.saveImage();
 }
 
 async function buildLegacyDinitImage(): Promise<Uint8Array> {
-  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
-  const mfs = MemoryFileSystem.create(sab);
+  const mfs = KandeloImageFs.create();
   mfs.mkdir("/etc", 0o755);
-  const group = new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n");
-  const fd = mfs.open("/etc/group", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-  mfs.write(fd, group, null, group.length);
-  mfs.close(fd);
+  mfs.writeFile(
+    "/etc/group",
+    new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n"),
+    0o644,
+  );
   return await mfs.saveImage();
 }
 
