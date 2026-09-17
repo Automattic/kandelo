@@ -1080,3 +1080,60 @@ So the options are:
     `crates/fork-module/src/lib.rs` as the reader's only help.
 
 I am not taking the second. Reporting the first as attempted-or-not below.
+
+### The three cap guards, perturbed until they failed
+
+These two shipped BROKEN and passing on 2026-09-16 -- a missing
+`readForkResumeCatalog` import made every read throw `ReferenceError`, and a
+bare `catch { continue }` swallowed it, so both assertions were really
+`0 <= cap`. They were fixed the same day. A fixed guard is a hypothesis until
+its perturbation is re-run, so all three were re-perturbed here.
+
+Pristine `crates/fork-module/src/lib.rs` sha256 `cef66616ede7438a`,
+`--verify-fresh` exit 0 before and after. Each mutation edits a `const` that
+`moduleCap` reads out of the SOURCE text, so it reaches the assertion without
+a rebuild; each was reverted by inverse edit and the sha checked back to
+pristine rather than trusted.
+
+| # | mutation | sha256 | result |
+|---|---|---|---|
+| M1 | `ACTIVATION_CATALOG_ORD_CAP` 65_536 -> 4 | `7eaf6f78d26965e7` | exit 1, guard 1 failed |
+| M2 | `ACT_EXN_TAGS_MAX_ACTS` 64 -> 2 | `b120a1f46c61b849` | exit 1, guard 2 failed |
+| M3 | `GLOBAL_IDENTITY_MAX` 16_384 -> 64 | `d3bed7c4b4cb3ea5` | exit 1, guard 3 failed |
+
+Restored: sha back to `cef66616ede7438a`, empty `git diff`, 3 passed.
+
+The failure text is the point, and it also proves the repair. Each names a
+REAL measured number where the broken versions read zero:
+
+    php needs 47757 resume-catalog ordinals against
+    ACTIVATION_CATALOG_ORD_CAP=4 (0.00x headroom). Per-artifact:
+    curl.so=973 intl.so=7750 opcache.so=162 phar.so=213 php-fpm.wasm=19189
+    php.wasm=19025 zend_test.so=138 zip.so=307
+
+    php holds 8 activations against ACT_EXN_TAGS_MAX_ACTS=2
+
+    php's artifacts need 7684 identity entries but GLOBAL_IDENTITY_MAX is
+    64; a fork in wordpress or lamp will fail with E2BIG. Per-artifact:
+    curl.so=131 intl.so=4129 opcache.so=69 phar.so=54 php-fpm.wasm=1606
+    php.wasm=1603 zend_test.so=51 zip.so=41
+
+47,757 against 65,536 is the 1.37x recorded for the resume catalog, and 7,684
+against 16,384 is the 2.1x recorded for the identity table. Both numbers are
+now measured by a guard rather than asserted in a comment.
+
+### Which changes the errno decision above
+
+M3's text is the diagnosis the runtime errno cannot give -- count, cap,
+per-artifact breakdown, and the named consequence -- and it arrives at test
+time, before anyone reaches the E2BIG. So the runtime detail word is worth
+less than it was when the note in `lib.rs` was written: a reader who hits
+`errno 7` today can run one test file and get all of it.
+
+That does not make the runtime diagnostic worthless -- the guard only covers
+programs this repo builds, and the failure it predicts happens on someone
+else's machine with someone else's extension set. But it does mean the
+honest trade is "one host line against a diagnostic that is already available
+by another route", which is a weaker case than "one host line against an
+undiagnosable errno". Offered as an argument for leaving the ceiling alone,
+not as a reason to close the question.
