@@ -14339,6 +14339,39 @@ failed on an import-type mismatch. It closes with the three things I did NOT
 check, one of which — whether the generation store is pruned — would change its
 first step.
 
+### NOTHING NOTICED 415 → 349 — observed 2026-09-17
+
+**The campaign's perturbation directory has no inventory gate.** Today's
+retirement deleted five specs and 66 trials, and no check remarked on it.
+
+The asymmetry is worth seeing, because the repository already has the gate — for
+a different directory. `host/test/perturb-specs.test.ts` enumerates
+`docs/perturb/lane-l-*.json`, asserts a floor of 20 trials, and requires the
+lane document to carry an inventory line `**N specs, M trials` that matches what
+it counted — written, its own comment says, because someone read "Six specs, 20
+trials" against a reality of nine and twenty-six. **The campaign's root
+`perturb/` is enumerated by nothing but `xtask perturb` itself**, and
+`--validate` asks whether surviving trials still anchor, never how many there
+should be.
+
+**A count floor is NOT the fix, and that is the interesting part.** Today's drop
+was correct: the code those trials mutated is gone, and a floor would have fired
+on a legitimate deletion and taught the next person to raise it — the exact move
+this campaign forbids for surface ceilings. The gap is not arithmetic. **Nothing
+binds a spec to the surface it guards**, so a spec deleted because its subject
+went and a spec deleted because it was inconvenient are indistinguishable
+afterwards.
+
+**It pairs with the catalogue entry above.** A green trial does not prove
+production reaches the guard, and now: nothing reports when the trial stops
+existing. Both failures are invisible in a green run, and together they mean
+perturbation coverage can decay in either direction without a signal.
+
+Recorded as an observation rather than a proposal. A gate that made deletions
+argue for themselves — a spec's subject file recorded with it, so removing the
+spec without removing the file fails — would close it, but that is a design for
+whoever owns the harness, and this lane found it rather than commissioned it.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
