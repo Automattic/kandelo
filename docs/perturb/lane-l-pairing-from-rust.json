@@ -1,0 +1,13 @@
+{
+  "file": "host/test/kernel-scratch-range.test.ts",
+  "verify": "cargo test -p wasm-posix-shared --target $(rustc -vV | awk '/^host:/{print $2}')",
+  "trials": [
+    {
+      "name": "pairing: the TypeScript half stops READING the range corpus",
+      "scope": "const CORPUS = JSON.parse(",
+      "scope_end": "\n);",
+      "find": "\"../../crates/shared/tests/host-memory-ranges.json\",",
+      "replace": "\"../../crates/shared/tests/host-memory-ranges-GONE.json\","
+    }
+  ]
+}

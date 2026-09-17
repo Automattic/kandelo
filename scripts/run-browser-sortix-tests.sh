@@ -15,8 +15,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
-OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+# See scripts/run-sortix-tests.sh for why this override exists: on a
+# case-insensitive filesystem the submodule checkout collapses tracked paths
+# that differ only in letter case, and KANDELO_OS_TEST_DIR selects a
+# case-sensitive checkout of the same commit instead.
+OS_TEST="${KANDELO_OS_TEST_DIR:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
+# Build output stays on the repository's own filesystem even when sources come
+# from elsewhere; see scripts/run-sortix-tests.sh for the measured reason.
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
@@ -694,6 +700,16 @@ if [ ! -f "$KERNEL_WASM" ]; then
 fi
 if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
+    exit 1
+fi
+
+# Refuse a case-collapsed os-test checkout. See the same guard in
+# scripts/run-sortix-tests.sh: a case-insensitive filesystem collapses the 17
+# tracked path pairs that differ only in letter case, so one spelling per pair
+# has no directory entry and its test is never discovered or run. Browser runs
+# drop the same 17 tests, so they refuse on the same condition.
+if ! "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" "$OS_TEST"; then
+    echo "Refusing to run: os-test results from this checkout would be fictional." >&2
     exit 1
 fi
 

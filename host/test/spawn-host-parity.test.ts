@@ -37,36 +37,91 @@ const nodeEntry = join(repoRoot, "host", "src", "node-kernel-worker-entry.ts");
 const browserEntry = join(repoRoot, "host", "src", "browser-kernel-worker-entry.ts");
 const sharedWorker = join(repoRoot, "host", "src", "kernel-worker.ts");
 const sharedExecTarget = join(repoRoot, "host", "src", "exec-target.ts");
+const sharedLifecycle = join(repoRoot, "host", "src", "process-lifecycle.ts");
 
-function posixSpawnHandlerSource(src: string): string {
-  const start = src.indexOf("async function handlePosixSpawn(");
-  const end = src.indexOf("\nasync function handleClone(", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
+/**
+ * Slice one function out of `host/src/process-lifecycle.ts`.
+ *
+ * The launch family now has ONE implementation, so these invariants are
+ * checked once rather than twice — which is strictly stronger: an invariant
+ * can no longer hold in one host's copy while being absent from the other's.
+ * Each such assertion is still paired with `expectEntryProvides` on both
+ * entries, so sharing a function cannot read as deleting it.
+ *
+ * Bounded by the next declaration at the module's own two-space indent,
+ * rather than by naming whichever function happens to follow.
+ */
+function sharedFunctionSource(name: string): string {
+  const src = readFileSync(sharedLifecycle, "utf8");
+  const opening = new RegExp(
+    String.raw`\n  (?:async )?function ` + name + String.raw`\(`,
+  );
+  const m = opening.exec(src);
+  expect(m, `process-lifecycle.ts must declare ${name}`).not.toBeNull();
+  const start = m!.index;
+  const bodyStart = start + m![0].length;
+  const next = src.slice(bodyStart).search(
+    /\n  (?:async )?(?:function|const|let|class|interface|type) /,
+  );
+  const end = next === -1 ? src.length : bodyStart + next;
   return src.slice(start, end);
 }
 
-function ordinaryForkHandlerSource(src: string): string {
-  const start = src.indexOf("async function handleOrdinaryFork(");
-  const end = src.indexOf("\nasync function handleExec(", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  return src.slice(start, end);
+/**
+ * Assert an entry has `name` in scope — either declared there, or bound from
+ * `host/src/process-lifecycle.ts`, the single implementation both entries
+ * call.
+ *
+ * The subject is that the symbol the spawn wiring references exists, not
+ * which file declares it. Sharing a function between the two hosts is the
+ * outcome this campaign wants; it must not read as a deletion.
+ */
+function expectEntryProvides(src: string, path: string, name: string): void {
+  const declared = new RegExp(
+    String.raw`\b(?:async\s+)?function\s+` + name + String.raw`\s*\(`,
+  ).test(src);
+  const bound = new RegExp(String.raw`^\s*` + name + String.raw`,\s*$`, "m")
+    .test(src) && src.includes("} = lifecycle;");
+  expect(
+    declared || bound,
+    path + " must define " + name + " or bind it from ./process-lifecycle",
+  ).toBe(true);
 }
 
-function execHandlerSource(src: string): string {
-  const start = src.indexOf("async function handleExec(");
-  const end = src.indexOf("\n/**\n * Pre-flight resolver", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  return src.slice(start, end);
+function posixSpawnHandlerSource(): string {
+  return sharedFunctionSource("handlePosixSpawn");
 }
 
-function cloneHandlerSource(src: string): string {
-  const start = src.indexOf("async function handleClone(");
-  const end = src.indexOf("\nfunction handleThreadExit(", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
+function ordinaryForkHandlerSource(): string {
+  return sharedFunctionSource("handleOrdinaryFork");
+}
+
+function execHandlerSource(): string {
+  return sharedFunctionSource("handleExec");
+}
+
+function cloneHandlerSource(): string {
+  return sharedFunctionSource("handleClone");
+}
+
+/**
+ * Slice one top-level function's body out of an entry file.
+ *
+ * Bounded by the entry's own structure — the next declaration at column 0 —
+ * rather than by naming whichever function happens to follow. Naming a
+ * neighbour couples this assertion to code it is not testing, so moving an
+ * unrelated function (for instance into `host/src/process-lifecycle.ts`)
+ * silently turns the slice into `-1` and fails a test that still holds.
+ */
+function topLevelFunctionSource(src: string, startName: string): string {
+  const start = src.indexOf(startName);
+  expect(start, `missing ${startName}`).toBeGreaterThanOrEqual(0);
+  const bodyStart = start + startName.length;
+  const next = src.slice(bodyStart).search(
+    /\n(?:export )?(?:async )?(?:function|const|let|class|interface|type) /,
+  );
+  const end = next === -1 ? src.length : bodyStart + next;
+  expect(end, `no declaration follows ${startName}`).toBeGreaterThan(start);
   return src.slice(start, end);
 }
 
@@ -81,7 +136,8 @@ function centralizedInitMessageSource(handler: string): string {
   return handler.slice(start, end);
 }
 
-function spawnCallbackSource(src: string): string {
+function spawnCallbackSource(): string {
+  const src = readFileSync(sharedLifecycle, "utf8");
   const start = src.indexOf("onResolveSpawn:");
   const end = src.indexOf("\n      onClone:", start);
   expect(start, "onResolveSpawn callback must exist").toBeGreaterThanOrEqual(0);
@@ -89,8 +145,20 @@ function spawnCallbackSource(src: string): string {
   return src.slice(start, end);
 }
 
+/**
+ * Assert the shared callback record wires spawn, and that `entry` takes it.
+ *
+ * The record moved into `host/src/process-lifecycle.ts`, so the wiring is
+ * checked once — an invariant can no longer hold in one host's copy and be
+ * missing from the other's — while each entry is still required to spread it,
+ * so sharing the record cannot read as unwiring a host.
+ */
 function expectSpawnCallbacks(src: string, entry: string): void {
-  const callbacks = spawnCallbackSource(src);
+  expect(
+    src,
+    `${entry} must spread the shared process-lifecycle callback record`,
+  ).toContain("...processLifecycleKernelCallbacks(),");
+  const callbacks = spawnCallbackSource();
   expect(
     callbacks,
     `${entry} must wire onResolveSpawn to handlePosixSpawnResolve`,
@@ -126,18 +194,23 @@ describe("spawn host parity", () => {
       /onExec\?:\s*\(\s*pid:\s*number,\s*path:\s*string,/s,
     );
 
+    const sharedCallbacks = readFileSync(sharedLifecycle, "utf8");
+    expect(
+      sharedCallbacks,
+      "the shared callback record must accept a target-shaped request",
+    ).toMatch(
+      /onExec:\s*async\s*\(request\)\s*=>[\s\S]*handleExec\(request\)/,
+    );
     for (const entry of [nodeEntry, browserEntry]) {
       const source = readFileSync(entry, "utf8");
-      expect(source, `${entry} must accept a target-shaped request`).toMatch(
-        /onExec:\s*async\s*\(request\)\s*=>[\s\S]*handleExec\(request\)/,
-      );
+      expectEntryProvides(source, entry, "handleExec");
       expect(source, `${entry} must remove the Task 10 staging gate`).not.toContain(
         "preparedExecTargetReaderPending",
       );
       expect(source, `${entry} must not carry credential path authority`).not.toContain(
         "credentialPath",
       );
-      const handler = execHandlerSource(source);
+      const handler = execHandlerSource();
       expect(handler, `${entry} must source replacement bytes from the target request`)
         .toMatch(/targetBytes:\s*(?:programBytes|bytes)/);
       expect(handler, `${entry} must send only target-derived bytes to the Worker`)
@@ -171,50 +244,51 @@ describe("spawn host parity", () => {
       /programBytes:\s*request\.targetBytes,[\s\S]*programModule:\s*request\.targetModule/,
     );
 
-    for (const entry of [nodeEntry, browserEntry]) {
-      const handler = posixSpawnHandlerSource(readFileSync(entry, "utf8"));
-      expect(handler, `${entry} must launch the supplied committed module`)
-        .toContain("const { programBytes, programModule, argv } = program;");
-      expect(handler, `${entry} must not repeat candidate resolution`).not.toMatch(
+    const handler = posixSpawnHandlerSource();
+    expect(handler, "the launch must use the supplied committed module")
+      .toContain("const { programBytes, programModule, argv } = program;");
+    expect(handler, "the launch must not repeat candidate resolution").not
+      .toMatch(
         /resolveExecutableForLaunch|handlePosixSpawnResolve|execPrograms|readExecFromVfs/,
       );
-      expect(
-        handler,
-        `${entry} must consume the secure-exec state captured by commit`,
-      ).toContain("kernelWorker.takeCommittedExecSecureExec(childPid)");
-      expect(
-        handler,
-        `${entry} must not re-enter the kernel after the spawn commit`,
-      ).not.toContain("kernelWorker.processSecureExec(childPid)");
+    expect(
+      handler,
+      "the launch must consume the secure-exec state captured by commit",
+    ).toContain("kernelWorker.takeCommittedExecSecureExec(childPid)");
+    expect(
+      handler,
+      "the launch must not re-enter the kernel after the spawn commit",
+    ).not.toContain("kernelWorker.processSecureExec(childPid)");
+    for (const entry of [nodeEntry, browserEntry]) {
+      expectEntryProvides(readFileSync(entry, "utf8"), entry, "handlePosixSpawn");
     }
   });
 
   it("both spawn adapters check child liveness only after allocation yields", () => {
-    for (const entry of [nodeEntry, browserEntry]) {
-      const handler = posixSpawnHandlerSource(readFileSync(entry, "utf8"));
-      const allocation = handler.indexOf("createFreshProcessMemory(");
-      const liveness = handler.indexOf("shouldLaunchPendingChild(childPid)");
-      const registration = handler.indexOf("registerProcess(childPid");
-      expect(
-        handler.match(/shouldLaunchPendingChild\(childPid\)/g) ?? [],
-        `${entry} must retain exactly one post-allocation liveness fence`,
-      ).toHaveLength(1);
-      expect(allocation, `${entry} must allocate process memory`)
-        .toBeGreaterThanOrEqual(0);
-      expect(
-        liveness,
-        `${entry} must check the child after allocation yields`,
-      ).toBeGreaterThan(allocation);
-      expect(
-        registration,
-        `${entry} must check liveness before registering the Worker generation`,
-      ).toBeGreaterThan(liveness);
-    }
+    const handler = posixSpawnHandlerSource();
+    const allocation = handler.indexOf("createFreshProcessMemory(");
+    const liveness = handler.indexOf("shouldLaunchPendingChild(childPid)");
+    const registration = handler.indexOf("registerProcess(childPid");
+    expect(
+      handler.match(/shouldLaunchPendingChild\(childPid\)/g) ?? [],
+      "the launch must retain exactly one post-allocation liveness fence",
+    ).toHaveLength(1);
+    expect(allocation, "the launch must allocate process memory")
+      .toBeGreaterThanOrEqual(0);
+    expect(
+      liveness,
+      "the launch must check the child after allocation yields",
+    ).toBeGreaterThan(allocation);
+    expect(
+      registration,
+      "liveness must be checked before registering the Worker generation",
+    ).toBeGreaterThan(liveness);
   });
 
   it("both exec adapters consume the complete commit-captured transition", () => {
     for (const entry of [nodeEntry, browserEntry]) {
-      const handler = execHandlerSource(readFileSync(entry, "utf8"));
+      expectEntryProvides(readFileSync(entry, "utf8"), entry, "handleExec");
+      const handler = execHandlerSource();
       const postCommit = handler.slice(handler.indexOf("const startAfterCommit"));
       expect(
         postCommit,
@@ -232,7 +306,8 @@ describe("spawn host parity", () => {
   it("both hosts recheck process generations inside delayed kernel retries", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const source = readFileSync(entry, "utf8");
-      const exec = execHandlerSource(source);
+      expectEntryProvides(source, entry, "handleExec");
+      const exec = execHandlerSource();
       expect(
         exec,
         `${entry} must guard exec liveness and address-space preparation`,
@@ -240,63 +315,76 @@ describe("spawn host parity", () => {
         /retryKernelEntryResultForGeneration\(\s*isInitiatingExecGeneration,\s*\(\) => kernelWorker\.isProcessExecutionActive\(pid\),[\s\S]*retryKernelEntryResultForGeneration\(\s*isInitiatingExecGeneration,\s*\(\) => kernelWorker\.prepareAddressSpaceForExec\(pid\),/,
       );
 
-      const clone = cloneHandlerSource(source);
-      expect(
-        clone,
-        `${entry} must guard clone allocation and thread attachment`,
-      ).toMatch(
-        /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => processInfo\.threadAllocator\.allocate\(memory\),[\s\S]*retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
-      );
+      expectEntryProvides(source, entry, "handleClone");
     }
+
+    const clone = cloneHandlerSource();
+    // Placement is no longer a host decision: `sys_clone` reserved the slot and
+    // the attachment carries the address, so this host materializes what the
+    // kernel placed rather than choosing a page itself.
+    expect(
+      clone,
+      "the clone must materialize the kernel-placed slot",
+    ).toMatch(
+      /materializeThreadSlot\(memory, slotAddr, processInfo\.ptrWidth\)/,
+    );
+    expect(
+      clone,
+      "thread attachment must stay guarded against a generation change",
+    ).toMatch(
+      /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
+    );
   });
 
   it("both hosts own the exact fork clone before their first async yield", () => {
+    const handler = ordinaryForkHandlerSource();
+    const clone = handler.indexOf("acquireForkMemoryClone(");
+    const firstAwait = handler.indexOf("await ");
+    expect(clone, "the fork must acquire its clone").toBeGreaterThanOrEqual(0);
+    expect(firstAwait, "the fork must retain an async launch path")
+      .toBeGreaterThanOrEqual(0);
+    // WHY: after the first yield, sibling exec can release and recycle the
+    // parent generation. The helper's owned synchronous copy is the fork
+    // snapshot; doing it later creates an ABA/two-owner race.
+    expect(clone, "the fork must clone before yielding").toBeLessThan(firstAwait);
     for (const entry of [nodeEntry, browserEntry]) {
-      const handler = ordinaryForkHandlerSource(readFileSync(entry, "utf8"));
-      const clone = handler.indexOf("acquireForkMemoryClone(");
-      const firstAwait = handler.indexOf("await ");
-      expect(clone, `${entry} must acquire the fork clone`).toBeGreaterThanOrEqual(0);
-      expect(firstAwait, `${entry} must retain an async launch path`).toBeGreaterThanOrEqual(0);
-      // WHY: after the first yield, sibling exec can release and recycle the
-      // parent generation. The helper's owned synchronous copy is the fork
-      // snapshot; doing it later creates an ABA/two-owner race.
-      expect(clone, `${entry} must clone before yielding`).toBeLessThan(firstAwait);
+      expectEntryProvides(
+        readFileSync(entry, "utf8"),
+        entry,
+        "handleOrdinaryFork",
+      );
     }
   });
 
   it("all fork and spawn dead-start paths transfer cleanup exactly once", () => {
-    for (const entry of [nodeEntry, browserEntry]) {
-      const source = readFileSync(entry, "utf8");
-      expectDeadStartUsesOrdinaryTeardown(
-        ordinaryForkHandlerSource(source),
-        entry,
-      );
-      expectDeadStartUsesOrdinaryTeardown(posixSpawnHandlerSource(source), entry);
-    }
+    expectDeadStartUsesOrdinaryTeardown(
+      ordinaryForkHandlerSource(),
+      "handleOrdinaryFork",
+    );
+    expectDeadStartUsesOrdinaryTeardown(
+      posixSpawnHandlerSource(),
+      "handlePosixSpawn",
+    );
   });
 
   it("Node kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
     const src = readFileSync(nodeEntry, "utf8");
-    expect(src, `${nodeEntry} must define handlePosixSpawn`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
-    );
-    expect(src, `${nodeEntry} must define handlePosixSpawnResolve`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
-    );
+    expectEntryProvides(src, nodeEntry, "handlePosixSpawn");
+    expectEntryProvides(src, nodeEntry, "handlePosixSpawnResolve");
     // WHY: destroy must close this admission gate before its terminal sweep.
     // A direct handler reference can create a new process Memory while that
     // sweep is yielding, making the supposedly retired generation reachable.
     expectSpawnCallbacks(src, nodeEntry);
-    const spawnHandler = posixSpawnHandlerSource(src);
-    expect(spawnHandler, `${nodeEntry} must accept posix_spawn parentage`).toMatch(
+    const spawnHandler = posixSpawnHandlerSource();
+    expect(spawnHandler, "posix_spawn must accept parentage").toMatch(
       /handlePosixSpawn\(\s*parentPid:\s*number,\s*childPid:\s*number,/s,
     );
-    expect(spawnHandler, `${nodeEntry} must publish posix_spawn parentage`).toMatch(
+    expect(spawnHandler, "posix_spawn must publish parentage").toMatch(
       /kind:\s*"spawn",\s*pid:\s*childPid,\s*ppid:\s*parentPid/,
     );
     expect(
       centralizedInitMessageSource(spawnHandler),
-      `${nodeEntry} must not duplicate kernel-owned parentage in worker init metadata`,
+      "worker init metadata must not duplicate kernel-owned parentage",
     ).not.toMatch(
       /\bppid\s*:/,
     );
@@ -304,23 +392,19 @@ describe("spawn host parity", () => {
 
   it("Browser kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
     const src = readFileSync(browserEntry, "utf8");
-    expect(src, `${browserEntry} must define handlePosixSpawn`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
-    );
-    expect(src, `${browserEntry} must define handlePosixSpawnResolve`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
-    );
+    expectEntryProvides(src, browserEntry, "handlePosixSpawn");
+    expectEntryProvides(src, browserEntry, "handlePosixSpawnResolve");
     expectSpawnCallbacks(src, browserEntry);
-    const spawnHandler = posixSpawnHandlerSource(src);
-    expect(spawnHandler, `${browserEntry} must accept posix_spawn parentage`).toMatch(
+    const spawnHandler = posixSpawnHandlerSource();
+    expect(spawnHandler, "posix_spawn must accept parentage").toMatch(
       /handlePosixSpawn\(\s*parentPid:\s*number,\s*childPid:\s*number,/s,
     );
-    expect(spawnHandler, `${browserEntry} must publish posix_spawn parentage`).toMatch(
+    expect(spawnHandler, "posix_spawn must publish parentage").toMatch(
       /kind:\s*"spawn",\s*pid:\s*childPid,\s*ppid:\s*parentPid/,
     );
     expect(
       centralizedInitMessageSource(spawnHandler),
-      `${browserEntry} must not duplicate kernel-owned parentage in worker init metadata`,
+      "worker init metadata must not duplicate kernel-owned parentage",
     ).not.toMatch(
       /\bppid\s*:/,
     );

@@ -107,6 +107,10 @@ if [ "${ROOTFS_SEALED_BUILD:-0}" = "1" ]; then
         node_modules/fzstd; do
         [ -e "$tool" ] || {
             echo "build-rootfs: sealed build requires locked root dependency $tool" >&2
+            echo "build-rootfs: install the repository's locked JavaScript" >&2
+            echo "build-rootfs: dependencies first:  npm ci  (at the repo root)" >&2
+            echo "build-rootfs: note \`npm --prefix host install\` is NOT enough --" >&2
+            echo "build-rootfs: this tool is a ROOT dependency, not a host/ one." >&2
             exit 2
         }
     done

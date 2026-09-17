@@ -77,7 +77,9 @@ performance evidence: the current boundary coordinator runs in the syscall hot
 path, and its cost has not yet been established by before/after micro and full
 application benchmarks on both hosts.
 
-**Files:** `host/src/kernel-worker.ts`, `host/src/worker-main.ts`,
+**Files:** `crates/runtime-core/src/memory.rs` (the mapping table and its
+coherence protocol), `host/src/kernel-worker.ts` (still the live
+implementation; see the cutover note below), `host/src/worker-main.ts`,
 `host/src/browser-kernel-worker-entry.ts`,
 `host/src/node-kernel-worker-entry.ts`
 
@@ -100,8 +102,20 @@ kernel-owned memfd mapping bridge, external invalidation (or a documented
 ownership boundary), and a Wasm mechanism or instrumentation for faulting
 beyond EOF.
 
-**Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
+**Files:** `crates/runtime-core/src/memory.rs` (the page cache and its
+writeback rules), `host/src/kernel-worker.ts` (still the live
+implementation; see the cutover note below), `host/src/vfs/opfs-worker.ts`,
 `host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
+
+**Cutover status.** `crates/runtime-core/src/memory.rs` now holds a Rust
+implementation of the shared-mapping table, its page cache, the fd-writeback
+bridge, the SysV byte-coherence mirror and fork inheritance, with unit tests.
+It is dormant: nothing calls it, because a host-driven subsystem needs
+host-callable `kernel_*` entry points and `crates/kernel/src/wasm_api.rs` is
+the only place those can be declared. Until that wiring lands,
+`host/src/kernel-worker.ts` remains the live implementation and is the file to
+change for behavior. Moving ownership into Rust does not by itself close the
+immediate-coherence gap above; that remains an architectural limit.
 
 ### Re-evaluate the Linux-specificity of the VT keyboard input path
 
@@ -195,6 +209,57 @@ The kernel has full PTY support (PR #181), and browser UI surfaces should use xt
 
 ## Package artifacts
 
+### `bc`'s upstream source cannot be fetched, so the rootfs cannot be built
+
+**A fresh checkout cannot build `rootfs.vfs`.** `scripts/build-rootfs.sh`
+fails at `bc@1.07.1`:
+
+```
+xtask build-deps: bc@1.07.1: build script packages/registry/bc/build-bc.sh
+  exited with exit status: 1
+curl: (22) The requested URL returned error: 404
+```
+
+This is not a missing tarball, and not a local accident. Measured
+2026-09-09:
+
+| URL | Result |
+|---|---|
+| `https://ftpmirror.gnu.org/gnu/bc/bc-1.07.1.tar.gz` (what `packages/registry/bc/package.toml:8` declares) | **404** |
+| ...which redirects to `https://mirror.ihost.md/gnu//gnu/bc/bc-1.07.1.tar.gz` | note the doubled `/gnu/` |
+| `https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz` (canonical) | **200** |
+
+`ftpmirror.gnu.org` is a redirector that picks a nearby GNU mirror. At least
+one mirror in its rotation answers with a **malformed path** — the `/gnu`
+prefix appears twice — so the redirect lands on a URL that cannot exist.
+Reproducible across retries, so it is not transient. Because the redirector
+is chosen per request and per region, whether a given machine can build `bc`
+depends on which mirror it is handed, which is exactly the kind of
+undeclared-host-state dependency the build contract exists to remove.
+
+**What it blocks.** `rootfs.vfs` is a hard prerequisite for every test that
+boots a kernel with the canonical image. Concretely, the three original WASI
+fixtures (`host/test/wasi-shim.test.ts`, the `wasi-hello` / `wasi-args` /
+`wasi-scalar-abi` cases) cannot run at all in a checkout where the rootfs has
+not been built, and neither can anything else that asks for
+`rootfsImage: "default"`.
+
+**Workaround for tests that do not need the base programs.** A test that
+creates everything it needs can pass `useDefaultRootfs: false` and write
+under `/tmp`, the tmpfs the kernel enables. The kernel's overlay `/` is
+**read-only** with no image loaded — a `path_open` under `/` returns `EROFS`
+— so a scratch file has to go somewhere else. `wasi-file-io.wat` and
+`wasi-readdir.wat` are built this way and run without a rootfs image at all.
+That is a better shape for a fixture regardless: a test of WASI file I/O has
+no business requiring the whole base-program set.
+
+**Fixes to consider**, in rough order of preference: point the recipe at the
+canonical `ftp.gnu.org` URL instead of the redirector (loses mirror
+selection, gains determinism); teach the fetcher to retry the canonical host
+when a redirected fetch 404s; or vendor the checksum-pinned tarball the way
+other pinned sources are handled. The source has a recorded `sha256`, so any
+of these stays verifiable.
+
 ### Restore external software gallery support
 
 The browser currently exposes only repository-defined gallery entries and
@@ -258,6 +323,97 @@ Any follow-up should:
 - if the approach still looks useful, expose it as a separate `kernel32.wasm`
   build option.
 
+### RESOLVED 2026-09-09: the `bc` source URL was malformed, not mirror roulette
+
+The `bc@1.07.1` fetch failure recorded elsewhere in this file was diagnosed as
+`ftpmirror.gnu.org` handing out a mirror that emits a doubled `/gnu/` path, and
+therefore as depending on which mirror a machine happened to be given. That is
+not what was happening.
+
+`bc` was **the only one of the 14 GNU packages in this registry whose declared
+URL carried a `/gnu/` path prefix**. Every sibling uses
+`https://ftpmirror.gnu.org/<package>/…`; `bc` used
+`https://ftpmirror.gnu.org/gnu/bc/…`. The redirector prepends its own `/gnu/`,
+so `bc` alone resolved to `…/gnu//gnu/bc/…` and 404'd. Measured:
+
+| URL | result |
+|---|---|
+| `ftpmirror.gnu.org/gnu/bc/bc-1.07.1.tar.gz` (as declared) | **404** → `mirror.ihost.md/gnu//gnu/bc/…` |
+| `ftpmirror.gnu.org/bc/bc-1.07.1.tar.gz` (sibling convention) | **200** → `mirrors.ustc.edu.cn/gnu//bc/…` |
+| `ftpmirror.gnu.org/sed/sed-4.9.tar.xz` (control) | **200** |
+
+So it was deterministic and repo-local, not environmental — which matters,
+because "flaky mirror" invites a retry loop while the actual fix is one
+character class of path. Fixed by dropping the redundant prefix; the recorded
+`sha256` (`62adfca8…`) verifies bit-identically against the bytes the corrected
+URL returns, so the artifact is unchanged.
+
+This unblocks building `rootfs.vfs` in a fresh checkout, and with it
+`KANDELO_SOURCE_CACHE_ROOT`-isolated build caches — which were unusable while a
+cold cache could not fetch `bc`.
+
+## Build freshness
+
+### `scripts/build-musl.sh` exits 0 when its overlay copy fails
+
+Reported 2026-09-09 by an agent provisioning a fresh worktree. With
+`libc/musl` uninitialized, the overlay `cp` inside `scripts/build-musl.sh`
+failed, but the script **exited 0**, leaving a partial `libc/musl/arch` tree and
+no sysroot. The caller had no way to distinguish that from a successful build,
+and the failure only surfaced much later as a confusing missing-sysroot error.
+
+This is the same family as the stale-rebuild entry below and the two
+skip-instead-of-fail test gates fixed on the same day: a step that cannot do its
+job reports success anyway. The platform's own rule is truthful failure over
+convenient illusion, and a build script is exactly where that has to hold —
+everything downstream trusts its exit status.
+
+Fix: fail the script when the overlay copy fails (and check the submodule is
+initialized before attempting it), so a caller sees the real boundary.
+
+**Files:** `scripts/build-musl.sh`.
+
+### `./run.sh rebuild kernel` leaves the consumed artifact stale
+
+`./run.sh rebuild kernel` compiles the kernel and installs it into the
+SourceOnly cache, then exits reporting success — **without repointing
+`local-binaries/kernel.wasm`**, which is the artifact every host actually
+loads. `./run.sh local-build` does not repair it either: it trusts the cache
+and skips the finalizer when the graph is otherwise clean.
+
+Observed 2026-09-09 while validating the rust-first Tier-1 batch. The kernel's
+`host_proc_read_bytes` import had been widened from a 32-bit to a 64-bit
+address. The rebuild produced a correct artifact
+(`kernel-…-d9828ad327e06ac0…`, verified with `wasm-tools print` to import
+`(func (param i32 i64 i32 i32) (result i32))`), while
+`local-binaries/kernel.wasm` still resolved to a generation built three days
+earlier with the `i32` signature. Every `crates/host-native` smoke test failed
+with `incompatible import type for env::host_proc_read_bytes`, and two full
+rebuild cycles were spent before the projection — rather than the code — was
+identified as stale.
+
+The mismatch itself failed loudly, which is the stale-artifact contract working
+as intended. The defect is one layer up: a command named `rebuild` reported
+success while the consumed artifact did not change. A build step that cannot
+refresh what it claims to rebuild should either do so or fail.
+
+The declared installer repoints it correctly and takes seconds:
+
+```
+WASM_POSIX_LOCAL_INSTALL_SOURCE=<cache path>/kandelo-kernel.wasm \
+WASM_POSIX_LOCAL_INSTALL_SESSION=<session> \
+  xtask build-deps --arch wasm32 --binaries-dir local-binaries \
+    install-local-artifact kernel kandelo-kernel.wasm
+```
+
+Fixes to consider, in preference order: have `cmd_rebuild` finish with that
+install step; or have the freshness check compare the projection target against
+the cache key it just produced and fail loudly on divergence, rather than
+letting a stale symlink survive a successful rebuild.
+
+**Files:** `run.sh` (`cmd_rebuild`, `cmd_local_build`),
+`tools/xtask/src/local_build.rs`, `tools/xtask/src/build_deps.rs`.
+
 ## Kernel — regressions
 
 ### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
@@ -271,6 +427,112 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 **Files:** `apps/browser-demos/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
 
 ## Host runtime
+
+### The scratch-export allowlist is written twice, and only one copy is tested
+
+`host/src/kernel-scratch.ts` states which kernel exports may borrow a scratch
+lease in two places: the frozen `KERNEL_SCRATCH_EXPORT_NAMES` array
+(`:131`) and a hand-written `switch` in `isKernelScratchExportName` (`:323`).
+The array is the one `kernel-scratch-contract.test.ts` iterates; the `switch`
+is the one the runtime actually consults.
+
+Adding an export to the array alone therefore passes every test and fails at
+run time — and it fails **fatally**: a rejected borrow is an export-failure
+signal, so the entry gate poisons the kernel instance rather than returning an
+error to the caller. Found on 2026-09-10 while adding
+`kernel_classify_wasm_trap_signal`, where the symptom was every Wasm trap
+reporting exit status -1 with the kernel worker torn down underneath it.
+
+The `switch` exists so the check is a compile-time-exhaustive type guard rather
+than an array scan. Both properties are obtainable from one source: derive the
+predicate from the frozen array (a `Set` membership test with a
+`value is KernelScratchExportName` return), or have a test assert the two agree
+name-for-name. Either removes the second authority.
+
+### `crates/host-native` reports a faulting guest without `WIFSIGNALED`
+
+A guest that traps under `crates/host-native` now ends with the same wait
+status a JavaScript host records — `128 + signum`, with the signal chosen by
+`wasm_posix_shared::trap_signal` from wasmtime's typed `Trap`. Two pieces of
+fidelity are still missing, and both are recorded here rather than papered
+over in the host.
+
+- **The signal flag.** Node and the browser additionally call the kernel's
+  `kernel_mark_process_signaled(pid, signum)` export, which is what makes
+  `WIFSIGNALED(status)` true and `WTERMSIG(status)` name the signal. That
+  export must be called on the kernel `Store`, which belongs to the pump
+  thread; the fault is detected on the guest's own OS thread, which has no
+  access to it. Closing this needs the guest thread to hand the classified
+  signal to the pump — a small shared slot the pump drains beside the exit it
+  already processes — rather than a new export.
+- **A guest's own `unreachable` is swallowed.** `run_fork_capable_entry`
+  treats `Trap::UnreachableCodeReached` as a clean return, because this host's
+  exit path unwinds the guest with exactly that trap once the kernel has
+  committed the exit status. A guest that genuinely executes `unreachable`
+  therefore ends silently where a JavaScript host reports SIGILL. Separating
+  the two needs a committed-exit flag the guest OS thread can read; the
+  coordinator's information is already there in the kernel, so this is
+  plumbing rather than a new decision.
+
+Every other trap kind — memory, table/array bounds, stack overflow, integer
+division and conversion faults, null and mistyped indirect calls — is
+classified and reported.
+
+### WASI modules that define their own memory cannot be run (proven boundary)
+
+`host/src/worker-main.ts:3292` refuses any WASI module that defines and
+exports its own linear memory rather than importing one, and
+`host/src/wasi-detect.ts:44` (`wasiModuleDefinesMemory`) is what detects it.
+This is the shape a **default wasi-sdk link emits**, so it is the first thing
+someone trying to run an off-the-shelf WASI binary will hit. The refusal is a
+real platform boundary with a proven cause, not a conservative stub, and it
+should stay a loud failure.
+
+Measured 2026-09-09 on Node v24.15.0, Chromium 151, and WebKit 26.5 (all
+agree). Harness and raw results: `docs/plans/probes/2026-09-09-k10/`, probe 4.
+
+- **A self-defined memory is not shared.** Kandelo's syscall channel needs a
+  shared memory: the guest side blocks on `memory.atomic.wait32` and the
+  kernel worker wakes it with `Atomics.notify`. Neither works on a
+  non-shared memory, so there is no way to make a syscall at all.
+- **`memory.atomic.wait32` on a non-shared memory fails, and the engines
+  disagree on how.** Node and Chromium throw `Atomics.wait cannot be called
+  in this context`; WebKit traps `Out of bounds memory access`.
+- **The `Atomics.notify` half fails SILENTLY — it returns `0`** rather than
+  throwing. Any future code that reaches this path would look like a lost
+  wakeup rather than an unsupported configuration. If this category is ever
+  revisited, assert shared-ness explicitly instead of relying on a failure.
+- **The guest-side translation cannot be moved out of the way either.** A
+  co-resident side module (the `crates/wasi-module` design) must declare its
+  imported memory `shared` in order to use `memory.atomic.wait32`, so it
+  cannot even be *linked* against a self-defined non-shared memory:
+  instantiation fails with a shared-state mismatch on all three engines.
+  Separately, the wiring is circular — the side module needs the guest's
+  memory at its own instantiation, and the guest needs the side module's
+  exports at its own instantiation.
+- **The one serviceable sub-case is not worth having.** A guest that defines
+  its memory but declares it `shared` *can* be served, but only by breaking
+  the cycle with a JavaScript trampoline that forwards every WASI call —
+  reinstating the per-call JS frame the Rust migration exists to remove. No
+  such artifact exists in this repository.
+
+To actually support off-the-shelf WASI binaries, the fix is not to soften the
+check: it is to relink or rewrite the module to import a shared memory
+(`--import-memory --shared-memory`), which is what Kandelo's own
+`wasm32-posix` toolchain already does. A future improvement could detect this
+category and say exactly that in the error message.
+
+Related and separate: the repository has **no way to build a realistic WASI
+guest** today. There is no wasi-libc sysroot in `flake.nix`
+(`clang --target=wasm32-wasi` fails in the dev shell) and the pinned Rust
+toolchain carries std only for `aarch64-apple-darwin` and
+`wasm32-unknown-unknown`, not `wasm32-wasip1`. Every WASI test fixture is
+therefore hand-written `.wat`, which can call every entry point but cannot
+exercise a real libc's heap growth, path handling, or multi-batch directory
+reads. Adding a wasi-sdk to the flake was considered and **declined**
+2026-09-09: it changes the build-environment contract and pulls a large nix
+closure for a capability with no in-repo consumer. Revisit only when a real
+WASI binary needs to ship.
 
 ### Complete SpiderMonkey nonblocking TLS cancellation and write ordering
 
@@ -488,3 +750,582 @@ runtime because the callback's call chain was not instrumented.
 
 **Files:** `crates/fork-instrument/src/call_graph.rs` plus a possible
 `instrument::analyze_callback_registrations` pass.
+
+### Native (wasmtime) exnref fork CAPTURE wiring + empirical exnref fork
+
+Context: the coarse-fork-module migration brought `crates/host-native` in line
+with the Node/browser hosts — the native fork driver now drives every phase
+through the coarse `fm_parent_*`/`fm_child_*` entries, and (like the other
+hosts) binds the guest's reference/GC/exception decode imports to the module's
+`fm_ref_*`/`fm_funcref_ordinal` feed and host-drives the topological GC/exnref
+reconstruction via `fm_drive_execute`.
+
+The exnref RECONSTRUCT side is fully wired on native and is NOT blocked by
+wasmtime: wasmtime 48 with `wasm_gc(true)` + `wasm_exceptions(true)` loads the
+fork-instrumented exnref-declaring guest and runs it (`smoke_loads_fork_
+instrumented_guest`), `ThrownException` + `Store::take_pending_exception` work,
+the guest's `__wpk_fork_ref_exn_{route,load,cache_index}` imports are bound to
+the module's `fm_ref_exn_*` exports, and the `_exception_materialize` drive-table
+slot is bound. So the maintainer's originally-flagged concern ("wasmtime cannot
+reconstruct exnref") is stale — reconstruction is not the blocker.
+
+The remaining gap is native's exnref CAPTURE side. The exception-codec CAPTURE
+imports the guest calls while spilling a live exnref across a fork —
+`__wpk_fork_ref_exn_claim`, `__wpk_fork_ref_exn_define`,
+`__wpk_fork_ref_exn_broker_encode`, `__wpk_fork_ref_exn_lookup`,
+`__wpk_fork_ref_exn_ingress_throw` (see `WPK_FORK_EXCEPTION_IMPORT_*` in
+`crates/shared/src/lib.rs`) — are NOT bound in `crates/host-native/src/guest.rs`
+(only the three reconstruct-side imports are). They fall through to
+`define_unknown_imports_as_traps`, so an exnref-carrying fork would TRAP during
+capture (fail loud — a wasm trap ending the guest OS thread — not silently
+wrong), rather than reconstruct or cleanly gate.
+
+This was not driven empirically because no exnref-carrying fork FIXTURE exists:
+the current fixtures cover frames-only, funcref, externref, and Wasm-GC
+struct/array/i31 forks, none of which hold a live exnref across `fork()`.
+Authoring one (a WAT with `try_table`/`throw` + an exnref local held across
+`fork()`, run through `scripts/run-wasm-fork-instrument.sh` so the tool emits the
+`kandelo.wpk_fork.exception_codec` section and the capture calls) is a
+substantial, separate effort.
+
+Recommended follow-up:
+- Bind the exception-codec CAPTURE imports on native, either to a full Rust
+  capture body (the exnref analogue of the `gc_lookup`/`gc_claim`/`gc_define`
+  bodies in `spawn_guest_thread`) so an exnref reconstructs end-to-end, or — as a
+  smaller first step — to a clean `NativeReferenceCapture::mark_unsupported(
+  "exnref")` gate (mirroring the `encode_externref` gate) so an exnref fork's
+  parent survives with `EOPNOTSUPP` instead of a raw unbound-import trap.
+- Author an exnref-carrying fork fixture and a `smoke_fork_exnref_reconstructs`
+  test to drive capture + reconstruct end-to-end and assert
+  `exnrefs_reconstructed > 0`.
+
+**Files:** `crates/host-native/src/guest.rs` (the reference/exception import
+binding block in `spawn_guest_thread`, and `NativeReferenceCapture`);
+`crates/host-native/fixtures/` (a new exnref fixture); `crates/host-native/src/
+lib.rs` (a new test).
+
+## Fork control-flow inversion and rust-first migration
+
+Deferred follow-ups from the fork control-flow-inversion / rust-first campaign.
+The behaviors below are enforced today (fail-loud or documented boundary); these
+items reduce host surface, remove fixed caps, or close truthful-failure gaps.
+
+- **Consolidate the per-type reference marshalling exports behind an opaque
+  encode/decode dispatch (the 71-export count is not the true floor).** The
+  ~43 per-type reference capture/reconstruction marshalling exports —
+  `fm_capture_*`, `fm_ref_*`, `fm_funcref_ordinal`, `fm_externref_handle`,
+  `fm_static_root_slot`, `fm_decoded_*`, `fm_decode_reference_graph`, and the
+  reconstruction drive/plan/install group — are a wide per-type guest<->module
+  surface. A follow-up PR should consolidate them behind a narrower opaque
+  encode/decode dispatch, driving the fork-module export count well below the 71
+  this PR reaches. **Files:** `crates/fork-module/src/lib.rs`,
+  `crates/fork-codec`, `host/src`.
+
+- **Move the pre-launch externref-handle scan out of TypeScript into
+  fork-codec (Rust).** The browser/production path scans the segmented fork
+  reference wire for externref handles in TypeScript
+  (`host/src/fork-reference-wire.ts` `scanSegmentedForkReferenceExternrefHandles`
+  + `parseSegmentedForkReferenceTransaction`, consumed by
+  `host/src/fork-externref-process-owner.ts`), re-decoding the fork-codec wire
+  format (node-record kind byte, handle words, manifest/segment layout) in the
+  host — duplicating decode logic `fork-codec` owns. `6da756719` deleted the
+  unused Rust scanner (`fm_scan_externref_handles`) rather than wiring it. A
+  follow-up should have `fork-codec` own the scan and the host consume decoded
+  handles (host keeps only the externref-identity / process-ownership
+  bookkeeping, which is legitimately host-side). Not done in this PR: it is not
+  a correctness bug, and re-adding a module export now would work against this
+  PR's export-reduction goal. **Files:** `crates/fork-codec`,
+  `host/src/fork-reference-wire.ts`, `host/src/fork-externref-process-owner.ts`.
+
+- **Retire the remaining test-only fine-grained `fm_*` fork-module exports.**
+  Two bounded, already-flagged reductions (~5 exports): (a) migrate the
+  `fm_drive_execute` store-#2 GC-integrity trap regression from the Node-only
+  `host/test/fork-module-drive-shim.test.ts` (driven by `fm_build_trivial_plan` /
+  `fm_trivial_plan_count`) into a host-native wasmtime instantiation test built on
+  `fork_codec::drive_plan::{trivial_struct_plan, serialize_plan}`, then delete both
+  exports; (b) retire the three V8 build-time `.mjs` harnesses and move their
+  fixed-arena unwind/serialize coverage into Rust wasmtime tests, then delete
+  `fm_begin_unwind_fixed_arena`, `fm_add_activation_unwind_fixed_arena`, and
+  `fm_serialize_journal_fixed_arena`. **Files:** `crates/fork-module/src/lib.rs`,
+  `crates/host-native`, `host/test/fork-module-drive-shim.test.ts`, the
+  fork-module `.mjs` harnesses.
+
+- **Migrate host-native's fork engine onto the coarse drive-table entries
+  (major).** `crates/host-native` is a second, complete fork engine that drives
+  the guest through the fine-grained reference-decode import plane, interleaved
+  wasmtime-native reference materialization, and direct guest phase calls, so it
+  cannot adopt the coarse `fm_parent_*` / `fm_child_*` entries without a ground-up
+  rewrite; roughly 29 native seed/phase exports stay on the fine-grained surface
+  until then (and about 10 reference-decode import exports are irreducible on
+  native regardless). **Files:** `crates/host-native/src/guest.rs`.
+
+- **Fold the capture-begin and child-seed fork phases into coarse module
+  entries.** `fm_begin_unwind` / `fm_add_activation_unwind` (capture-begin) and
+  `fm_begin_child_replay` / `fm_add_activation_child_replay` (+ borrowed variants,
+  child-seed) still run as host-called seed ops because they exchange KFMS
+  arena-root, journal-image, and continuation-manifest metadata bidirectionally
+  with the host. Folding them requires moving KFMS arena-root ownership and
+  journal/manifest decode into the Rust module; the child-seed fold is on the
+  browser-gated reentrant child-drive path and must be validated on browser, not
+  Node alone. **Files:** `crates/fork-module/src/lib.rs`, `crates/fork-codec`,
+  `host/src/fork-process-continuation.ts`.
+
+- **Make the fork resume-catalog cap dynamic.** The per-activation resume catalog
+  is a fixed 65536-entry fork-module BSS array (`RESUME_CATALOG_CAP` /
+  `ACTIVATION_CATALOG_ORD_CAP`), sized to survive the per-fork bump-heap reset; a
+  guest with more fork-instrumented functions fails loud (`E2BIG`) rather than
+  growing. A module-owned catalog backed by a host-provided persistent
+  (non-bump-reset) region would remove the cap if a future guest approaches it.
+  **Files:** `crates/fork-module/src/lib.rs`, `host/src/fork-module-backend.ts`,
+  `crates/host-native/src/guest.rs`.
+
+- **Bound or reclaim the native externref/GC provenance registry.** Wasmtime 48
+  has no weak GC-ref primitive, so the native reference-provenance registry uses a
+  4096-entry cap with a loud diagnostic instead of the TypeScript hosts' WeakMap;
+  revisit if wasmtime gains weak references or a guest exceeds the cap.
+  **Files:** `crates/host-native/src/guest.rs`.
+
+- **Preempt the pre-exec thread and memory leaked by native `execve`.** A
+  successful native (wasmtime) `execve` cannot preempt the old guest's parked OS
+  thread — no engine epoch-interruption or fuel is configured — so each call
+  permanently leaks one OS thread plus its backing `SharedMemory`; a guest that
+  `execve`s in a loop leaks unboundedly. A multi-threaded `execve` also does not
+  reconcile the old process's worker/pthread channels against the kernel's
+  `clear_threads`. Both need engine-wide epoch interruption. **Files:**
+  `crates/host-native/src/guest.rs`.
+
+- **Close the fork/exec-from-thread and concurrent-fork residuals (post-ship
+  truthful-failure boundaries).** (a) Instrumented fork-from-thread parent replay
+  traps in `RewindDriver::resume_peek` / `ResumeSlotTable::slot_for` for a
+  `wpk_fork_resume_thread`-reached (non-`_start`) resume chain the host resume
+  table does not cover — cross-crate and high blast radius. (b) `execve` from a
+  non-main thread and compute-bound sibling-thread teardown on multi-threaded
+  `execve` need engine-wide epoch interruption. (c) Concurrent `fork()` from two
+  threads of one process contends on the shared fork-module region. (d) Nested
+  `pthread_create` / `kernel_clone` from a worker thread hits the same
+  unwired-import shape as (a). **Files:** `crates/fork-codec`,
+  `crates/host-native/src/guest.rs`, `host/src/worker-main.ts`.
+
+- **Support references held across a borrowed vfork child and mid-borrow
+  teardown.** References held across a borrowed vfork child are out of scope
+  today, and there is no nuclear-teardown path if a process crashes mid-borrow.
+  **Files:** `crates/host-native/src/guest.rs`.
+
+- **Wire the pthread worker's fork-module frame imports so a dlopen'd
+  fork-instrumented side module can instantiate on a foreign pthread.** The
+  two pthread-hosted dlopen tests in `host/test/fork-dlopen-replay-e2e.test.ts`
+  ("replays pthread-hosted dlopen table state into a fresh fork child" and
+  "blocks a foreign pthread until the staged loader owner commits") fail with
+  `WebAssembly.Instance(): Import "env" "__wpk_fork_frame_reserve": function
+  import requires a callable`. This is pre-existing (baseline red before the
+  fork control-flow inversion, not caused by it); the three main-thread dlopen
+  siblings in the same file pass. Root cause: the pthread worker in
+  `host/src/worker-main.ts` builds `threadForkModuleInstance` /
+  `threadForkModuleBackend` but never constructs a thread-side
+  `ForkModuleTrampolines`, and `replicaActivationOwner` is created without a
+  `forkModuleFrameFlip`, so a dlopen'd fork-instrumented side module on a
+  foreign pthread instantiates with `__wpk_fork_frame_reserve === undefined`.
+  Fix (host-side import wiring only, no ABI bump — mirror the main process
+  worker's path): (1) declare a thread-side `threadForkModuleTrampolines:
+  ForkModuleTrampolines | null` alongside the existing thread fork-module
+  instance/backend; (2) after `threadForkModuleBackend.setup()` construct
+  `new ForkModuleTrampolines(threadForkModuleInstance.exports)` and pass the
+  eviction callback on the thread `enableModuleBacking` call, mirroring the
+  main-worker call; (3) add `forkModuleFrameFlip` (the thread trampolines plus
+  backend, when both exist) to the `replicaActivationOwner` options. Deferred
+  because it is pre-existing and a shared pthread-worker-lifecycle change beyond
+  this PR's inversion scope. **Files:** `host/src/worker-main.ts`.
+
+### `cargo run -p xtask` needs an explicit host target
+
+`.cargo/config.toml` sets `[build] target = "wasm32-unknown-unknown"` for the
+whole workspace, so `cargo run -p xtask -- verify-fresh` compiles **xtask
+itself** for wasm32. xtask depends on `ring`, `getrandom` and `zstd-sys`, none
+of which build for that target, and nix's `NIX_HARDENING_ENABLE=…zerocallusedregs`
+expands to `-fzero-call-used-regs=used-gpr`, which clang rejects for wasm32.
+The failure is a wall of `cc-rs` errors that names none of this.
+
+The freshness gate — the thing that makes stale artifacts fail loudly — is
+therefore unreachable by its obvious invocation. Correct form:
+
+```
+./scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin -- verify-fresh
+```
+
+**Fixed (2026-09-10) by `scripts/xtask.sh`**, which derives the host triple and
+passes `--target`. Use it for any direct xtask verb:
+
+```
+./scripts/dev-shell.sh scripts/xtask.sh verify-fresh
+```
+
+The properly-declarative fix is `forced-target` in `tools/xtask/Cargo.toml`,
+which is what the manifest's own comment recommends. It is still unavailable:
+it is gated on the nightly-only `per-package-target` feature, and re-testing it
+on this repo's current pinned toolchain (2026-09-10) still panics the cargo
+resolver rather than erroring cleanly. Revisit when that lands; the wrapper can
+then be deleted.
+
+### The shared source cache captures absolute paths from the worktree that filled it
+
+`$HOME/.cache/kandelo/source-only` is shared by every worktree on a machine,
+and a cache entry records the **absolute source path** of whichever worktree
+populated it first. A later `./run.sh setup` in a *different* worktree can then
+execute that other tree's build script against that other tree.
+
+Observed 2026-09-10: `setup` in worktree B ran worktree A's
+`build-kandelo-sdk.sh` against A, which failed on a missing `fzstd` because A
+had no `node_modules`. The failure names neither worktree and looks like a
+dependency problem in the tree you are standing in.
+
+This is **distinct from** the resolved cache-key drift investigated in 2026-08,
+and distinct from ordinary contention (two agents mutating
+`program-packages.json` concurrently, which cost one agent three consecutive
+`prepare-browser` attempts and made several suites appear flaky).
+
+Two things follow:
+
+1. **Workaround, available today:** set `KANDELO_SOURCE_CACHE_ROOT` to an
+   absolute path unique to the worktree (`run.sh:25`,
+   `tools/xtask/src/local_build.rs:406`). Costs a cold first build.
+2. **Real fix:** a cache entry should either key on, or be independent of, the
+   populating worktree's absolute path. Silently running another checkout's
+   build script is the kind of cross-tree action the build contract otherwise
+   forbids, and it produces failures that are indistinguishable from real
+   defects in the current tree — the property that makes it dangerous rather
+   than merely annoying.
+
+### Check `no_std` targets, not just the host
+
+`cargo check -p runtime-core --target aarch64-apple-darwin` passing does not
+mean the crate builds. On 2026-09-10 a `String` reference that resolves through
+`std` on the host failed on wasm32/wasm64, where the crate is `no_std` and must
+name it through `alloc`. A native-only check called that code green.
+
+Runtime-core and the kernel ship to wasm. Check **wasm32 and wasm64** before
+claiming a Rust change builds.
+
+Two reproducible symptoms of the shared-cache contention above, recorded so
+they are recognized rather than investigated as defects in the current tree:
+
+- `trusted source-only cache entry vanished before capture` — two agents
+  populating the same entry concurrently.
+- `source-only build input changed while it was validated and digested` — a
+  concurrent Vitest run regenerating `packages/registry/program-packages.json`
+  underneath an in-flight build.
+
+Both cost one agent several build cycles and three consecutive
+`prepare-browser` attempts.
+
+### `./run.sh setup` does not install the repository's root npm dependencies
+
+`rootfs` and `node-browser-bundle` both fail in a fresh worktree because
+`node_modules/tsx/dist/cli.mjs` is absent at the **repository root**. Neither
+message said so, and the campaign's own recorded recipe —
+`npm --prefix host install`, which exists because `vitest` is a `host/`
+devDependency — does not satisfy it.
+
+`rootfs` failing then **cascade-blocks every browser product**:
+`platform-rootfs`, `browser-main-shell`, `browser-nginx`, `browser-wordpress`,
+`shell`, `node-vfs`, `nginx-vfs`, `lamp`, `coreutils-docs`. An agent told not to
+fight browser provisioning hits this and reasonably reads it as the browser
+being broken.
+
+Both messages now name `npm ci` at the repo root and say explicitly that
+`npm --prefix host install` is not enough. **That is the diagnostic half.** The
+open question is whether `./run.sh setup` should install root dependencies
+itself, the way it already bootstraps `host/` and `tools/mkrootfs/` in the
+non-sealed path. It is the one provisioning step a fresh worktree needs that
+`setup` does not perform, which makes it the odd one out rather than a
+deliberate boundary.
+
+### epoll fork inheritance and OFD keying are ONE change, not two
+
+The K3 grounding lists these as D2 ("serialize `epolls` across fork") and D3
+("re-key `EpollInterest` on OFD identity"), and calls D3 "separable". Measured:
+they are the same change.
+
+`Process.epolls` is a per-process `Vec<Option<EpollInstance>>`. `fork.rs` does
+`child.epolls.clear()`, so a child's inherited epoll fd resolves to nothing and
+`epoll_ctl`/`epoll_pwait` return `EBADF`. On Linux an epoll fd names an open
+file description: the child's duplicated descriptor refers to the **same**
+instance, and `epoll_ctl` through either descriptor is visible to both.
+
+Implementing that sharing means the instance cannot live in `Process`. It has to
+move to an OFD-keyed machine-wide table — which *is* D3. Doing D2 without D3
+would mean copying the instance into the child, and a copy gets the common case
+right (child forks, then uses its own epoll) while being **silently wrong** on
+shared mutation.
+
+**That is why the copy shortcut is not taken.** The platform-values contract
+says a POSIX gap stays visible as a gap rather than becoming silent success.
+`EBADF` on a valid inherited descriptor is wrong, but it is *loud*; a copy would
+be wrong and *quiet*. Trading the first for the second to make a fork/epoll test
+pass would be the worse outcome by this project's own standard.
+
+Estimated shape when taken: relocate `EpollInstance` ownership to an OFD-keyed
+table alongside the socket table's model, then key `EpollInterest` on OFD
+identity and prune on close/exec. `docs/posix-status.md` now records both gaps
+against the three epoll entries, which previously read "Full".
+
+### The agent scratchpad is not isolated between concurrent agents
+
+An agent wrote a helper script to its scratchpad path, and by the time it ran
+it, **another agent had overwritten that path with its own script**. The
+executed script `cd`'d into the sibling's worktree and ran that worktree's
+`install_local_binary kernel`, refreshing a sibling's
+`local-binaries/kernel.wasm`.
+
+No data was lost, and the agent caught and reported it. But the environment
+presents the scratchpad as session-isolated, and with several agents running it
+is not isolated between them.
+
+**Confirmed as systematic, not a one-off.** The same agent later found a
+sibling's `./run.sh setup` writing its log into that agent's scratchpad
+directory. It verified via `lsof` that the sibling's working directory was its
+own worktree, so no tree was mutated that time — but the collision is the same,
+and it has now happened twice from two different directions.
+
+**The defensive pattern that worked:** a uniquely-named file *plus* an in-script
+guard that asserts the expected worktree before acting. A unique name alone is
+not enough, because the failure is a replacement between write and execute.
+
+This belongs in agent briefs beside the `KANDELO_SOURCE_CACHE_ROOT` note,
+because the failure mode is identical in shape: **a mitigation that looks
+applied and is not.** The cache flag was stripped by
+`nix develop --ignore-environment` while every brief mandated setting it; the
+scratchpad is described as session-isolated while being shared. Both produce
+cross-worktree side effects, and both produce failures that name neither
+worktree.
+
+### `npm run typecheck` did not type-check
+
+`host/package.json`'s `typecheck` script was `tsup --dts-only`, which emits
+declaration files rather than checking every source file. It passed with an
+`import` statement placed **inside a leading block comment** — so the imported
+symbol was never in scope, and every use of it should have been an error.
+
+Repointed at `tsc -p tsconfig.typecheck.json`; the old behaviour remains as
+`typecheck:dts`.
+
+**Why a separate tsconfig:** `tsc --noEmit -p tsconfig.json` reports 35
+`TS6059` "not under rootDir" errors, all structural. They come from
+`host/src/networking/tls-network-backend.ts` importing TypeScript source
+directly out of `packages/registry/openssl/src/`. `rootDir` and `declaration`
+constrain where output may be written and are irrelevant to type checking, so
+the check-only config drops them.
+
+**Baseline after the change: 19 errors, and they are real** — the previous
+gate reported none of them.
+
+- **7 × TS2307** on Vite virtual modules (`@kernel-wasm?url`,
+  `@fork-module32-wasm?url`, `./worker-entry-browser.ts?worker&url`, …) and
+  **2 × TS2339** on `ImportMeta.env`. These need Vite's ambient client types in
+  the program; they are a **typing gap, not defects**.
+- **~8 in `packages/registry/openssl`**, mostly `SharedArrayBuffer` not being
+  assignable to `BufferSource`. Out of campaign scope, but in host's program
+  because host imports that source directly.
+- **2 that look like genuine defects** and deserve their own look:
+  `fork-replay-gate.ts:208` reads `.status` off a union
+  (`Partial<WorkerExitMessage> | Partial<WorkerErrorMessage>`) where only one
+  arm has it, and `tls-network-backend.ts:213` passes a
+  `Uint8Array<ArrayBufferLike>` where a `BufferSource` is required.
+
+The Vite-typing gap should be closed first, so the remaining count is small
+enough that a new error is visible — the property this gate lacked.
+
+### The TLS code's type errors describe a browser-only runtime hazard
+
+With Vite's ambient types in the program, the host typecheck baseline is **9
+errors**, and **8 are Web Crypto calls in `packages/registry/openssl/src/tls/`**
+(`crypto.subtle.importKey`, `crypto.subtle.sign`, and the certificate path)
+receiving `Uint8Array<ArrayBufferLike>` where `BufferSource` is required. The
+ninth is `host/src/networking/tls-network-backend.ts:213`, the same shape.
+
+`ArrayBufferLike` is `ArrayBuffer | SharedArrayBuffer`. **`BufferSource`
+excludes `SharedArrayBuffer`, and SubtleCrypto throws a `TypeError` when handed
+a view backed by one.**
+
+In Kandelo a guest's memory **is** a `SharedArrayBuffer`. So the type error is
+not pedantry: it says that if TLS key or secret material ever reaches these
+calls as a view over guest memory, rather than copied into a non-shared buffer
+first, the call fails at runtime — in the browser, in the TLS path.
+
+**Not yet proven reachable**, and that is the next step rather than a fix. What
+is established is that the types permit a value Web Crypto forbids, on a path
+where the forbidden value is the ambient case rather than an exotic one. A
+short probe — pass a SAB-backed view to `crypto.subtle.importKey` in each
+engine — would settle it, in the way the K0/K0c probes settled their questions.
+
+Out of the rust-first campaign's scope (`packages/**`), and
+`tls-network-backend.ts` belongs to K11's outstanding second pass, so this is
+recorded rather than fixed.
+
+### `install-local-artifact` refreshes the copy the tests do not read
+
+The binary resolver tries `local-binaries/source-only-v1/` **before** ambient
+`local-binaries/` (`host/src/binary-resolver.ts:291`). `./run.sh rebuild kernel`
+refreshes the first; `build-deps … install-local-artifact` refreshes the second.
+
+So running only the install refreshes the copy guest tests do not read: they go
+on executing the previous kernel while the command reports success. That cost
+one agent two hours, and `verify-fresh` had named both build keys the whole
+time.
+
+The workaround is to run both, in that order, and it is now written into the
+provisioning list. The real fix is for one command to leave every tier
+consistent, or for the install to fail loudly when it leaves a higher-priority
+tier stale — the current behaviour is a partial update that looks complete.
+
+### No SysV IPC conformance coverage exists
+
+Checked, not assumed, while migrating the SysV shared-memory mirror: nothing in
+`tests/posix`, `tests/libc` or `tests/sortix` exercises System V IPC. The
+kernel owns message queues, semaphores and shared memory, and its only
+end-to-end coverage is the repo's own `examples/sysv-ipc` case plus host unit
+tests.
+
+**Deferred deliberately** (maintainer's call, 2026-09-10). Neither upstream
+suite carries SysV cases, so this is writing new conformance tests rather than
+adopting existing ones — a different size of job from wiring up a suite that
+already exists.
+
+Worth doing because the migration moved real decisions into the kernel: the
+`semctl` GETALL/SETALL sizing defect found during K6 (the guest sized its array
+with a preliminary `IPC_STAT`, which needs READ permission where SETALL needs
+only WRITE, so a `0222` set failed `EACCES` on a call POSIX permits) is exactly
+the class a conformance suite catches and unit tests do not.
+
+### Closed: `report_writeback_loss` is kernel state, not a console log
+
+Closed on 2026-09-11, the way this entry proposed. A console log was a weak
+home for **unrecoverable data loss**: the event says a shared file mapping's
+dirty pages could not be written back, and a developer who was not watching a
+console at that moment had no way to learn it happened.
+
+The kernel now records the loss as its own state in
+`runtime_core::writeback_loss` — pid, mapping address, and reason as separate
+fields — and publishes it at `/proc/kandelo/writeback_losses`. It costs no
+import and no new export: the ordinary `read(2)` path already exists, and
+adding a kernel export to retire a host import would have been a wash for the
+minimize-host-surface goal while growing the ABI's export surface.
+
+The record keeps the first 64 losses and counts every one, publishing `total`,
+`recorded` and `dropped`, so a loss it could not store still raises the total
+the reader sees. The mapping layer's old "report at most 50, then stop" cap
+went in the same change: with a counting sink behind it, that cap would have
+made the kernel's own total saturate.
+
+`host_debug_log` was this entry's only caller, so the import went with it and
+the host import count moved 73 -> 72, measured on the built kernel artifact.
+The loss is also now testable, which a console log was not:
+`procfs::tests::a_recorded_writeback_loss_is_readable_through_procfs` fails if
+the diagnostic is dropped on the floor rather than recorded.
+
+### Closed: pthread control slots are placed by the kernel on every host
+
+Closed on 2026-09-10. Both entries that stood here — host-native reporting its
+own 16-slot arena as a process's concurrent-thread ceiling instead of the
+program's `__wasm_posix_thread_slots` declaration, and the slot placement
+arithmetic existing once per host — had the same fix, and it is the one the
+second entry proposed: `sys_clone` reserves the slot from
+`MemoryManager::reserve_host_region` and records the address, and each host
+reads it back through `kernel_thread_slot_addr`.
+
+The division of labour is the one the open question could not settle from the
+outside. Only a host can grow a `WebAssembly.Memory`, so the kernel decides
+*where* a slot goes — it is the only party that can see every mapping,
+reservation and heap boundary in the address space — and the host makes that
+range addressable, zeroes it, and launches the thread. That is the same split
+`CLONE_PARENT_SETTID` and the child-tid clear already used: the kernel names an
+address, the host performs the store.
+
+Releasing a slot stayed a host act, and deliberately so. The kernel does not
+free the range at thread exit, because a worker terminated without publishing a
+quiescence fence can still write into its slot; the host calls
+`kernel_release_host_region` when it knows that has settled. That preserved the
+JavaScript hosts' existing `terminationProvesQuiescence || quiescent` rule
+without restating it in the kernel.
+
+Two costs, both accepted before the work started and both realized:
+host-native's `brk_base` moved down by the 16-slot arena that no longer exists
+(its layout is now byte-identical to `computeProcessMemoryLayout`'s), and the
+change had to be right across fork and exec. Neither needed new code: a fork
+child inherits no host reservations, and both exec paths replace
+`Process::memory` with a fresh `MemoryManager` before `clear_threads()`.
+
+`examples/pthread-concurrent-slots.c` is the evidence, run on both hosts: 20
+threads live at once, where the native arena stopped at 16.
+
+### Two realms that cannot read artifacts, and both blame the artifact
+
+Measured 2026-09-10. Running the host Vitest suites from a worktree checkout,
+every guest process died with:
+
+    [process-worker] Kernel worker failed: Could not find repo root
+    (expected workspace Cargo.toml + package.json)
+
+The chain: running from source, `NodeWorkerAdapter` bundles the worker entry
+with esbuild into `mkdtempSync(join(tmpdir(), "kandelo-worker-entry-"))`
+(`host/src/worker-adapter.ts`) rather than spawning a `tsx` loader per worker.
+Inside that bundle every module is inlined, so `currentModuleDir()` is the
+temporary directory. `useNodeWasmArtifactModule` then calls `findRepoRoot()`
+with no starting point (`host/src/wasm-artifact-module-node.ts`), which walks
+up from there looking for the workspace `Cargo.toml` plus a `package.json`
+named `kandelo` -- and under the default `TMPDIR`
+(`/private/tmp/nix-shell.*` inside `scripts/dev-shell.sh`) there is nothing to
+find. The artifact reader is never installed, so the worker cannot judge a
+single `.wasm`.
+
+Pointing `TMPDIR` at a directory inside the checkout makes the same suites pass
+unchanged, which is what this session did to run them. That is a workaround,
+not a fix: nothing about a guest process should depend on where the operating
+system puts temporary files.
+
+`WASM_POSIX_BINARY_RESOLVER_REPO_ROOT` does not help -- it is read by
+`resolverRepoRoot()`, not by the artifact-module loader's bare `findRepoRoot()`
+call. The fix is for the worker to be *told* where its artifacts live rather
+than deducing it from its own file path: the parent host already knows, and
+already sends the worker its program bytes, memory and channel offsets.
+
+How this passes in continuous integration is unclear, and that question is
+worth answering before a fix is chosen -- a bundling path that silently differs
+between CI and a developer's checkout is its own problem.
+
+The same *class* of defect blocks the browser dev server, in a way that reads
+as something else entirely. `apps/browser-demos`'s Vite realm never calls
+`installWasmArtifactModule`, so `hasWasmArtifactPolicyFailures` cannot read an
+artifact at all and fails closed. Every candidate is then reported as
+
+    Binary exists but was rejected by artifact policy: kernel.wasm
+
+which names the artifact and implicates the build, when the artifact is fine
+and the *reader* is missing. Reproduced directly on 2026-09-10: calling
+`tryResolveBinary("kernel.wasm")` after `installWasmArtifactModule` returns the
+path; the identical call without it produces exactly that rejection, against a
+kernel rebuilt through `./run.sh rebuild kernel` with `xtask verify-fresh`
+green. A realm that cannot read artifacts should say *that*, not accuse the
+artifact.
+
+### `KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache
+
+Measured 2026-09-10 while a machine filled its disk: with the flag set, the
+private cache held **1.2 MB** and the shared tree held **237 GB**. The flag
+isolates the source-only projection cache and **not** the built-programs cache,
+so concurrent agents still share the expensive half.
+
+This is the **third** mitigation this session that looked applied and was not,
+after `nix develop --ignore-environment` stripping this very variable, and the
+per-session scratchpad being shared between agents. All three share a shape: an
+instruction that is present, plausible, and inert.
+
+Consequences observed:
+- A machine reached **100% of 1.8 TiB** with 151 GB in 34 agent worktrees,
+  which fails builds with `StorageFull` errors that name a package rather than
+  the disk.
+- One agent discarded a full test run whose 15 failures were all `StorageFull`.
+
+Two things worth doing: make the flag cover the programs cache too, or rename
+it so it stops promising isolation it does not deliver; and give agent
+worktrees a cleanup path, since 34 full checkouts with build artifacts is the
+steady state of a parallel campaign rather than an accident.

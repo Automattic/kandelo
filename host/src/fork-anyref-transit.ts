@@ -1,110 +1,83 @@
 /**
- * The ABI 43 transaction-local Wasm-GC routing table.
+ * The process-owned `(ref null any)` transit table, as the host sees it.
  *
- * WebKit can import and export `(ref null any)` tables, but its JavaScript
- * `WebAssembly.Table` constructor does not accept `element: "anyref"`.
- * Creating the table in this fixed Wasm provider therefore gives Node and all
- * browser engines the same host-owned object without weakening its type.
+ * The table itself is the MODULE's: the injector defines and exports
+ * `__wpk_fork_ref_gc_transit`, and growth is the module's `fm_transit_grow`.
+ * What is left for a host is reading and writing slots, which Rust cannot do to
+ * a reference-typed table.
+ *
+ * So this is a view, not an owner. The version it replaces minted its own table
+ * when no fork module was present -- a branch that cannot happen now the module
+ * is unconditional, and one that could silently give the guest, the module and
+ * the host three different tables to disagree about.
  */
-export const FORK_ANYREF_TRANSIT_IMPORT = "__wpk_fork_ref_gc_transit";
-const FORK_ANYREF_TRANSIT_CLEAR_EXPORT =
-  "__wpk_fork_ref_gc_transit_clear";
 
-/*
- * Deterministic encoding of:
- *
- * (module
- *   (table (export "__wpk_fork_ref_gc_transit") 1 (ref null any))
- *   (func (export "__wpk_fork_ref_gc_transit_clear")
- *     i32.const 0
- *     ref.null any
- *     table.size 0
- *     table.fill 0))
- *
- * Keep this provider deliberately closed: no imports, memory, globals, start
- * function, or mutable state other than the exported scratch table.
- */
-const FORK_ANYREF_TRANSIT_PROVIDER_BYTES = Uint8Array.of(
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60,
-  0x00, 0x00, 0x03, 0x02, 0x01, 0x00, 0x04, 0x04, 0x01, 0x6e, 0x00, 0x01,
-  0x07, 0x3f, 0x02, 0x19, 0x5f, 0x5f, 0x77, 0x70, 0x6b, 0x5f, 0x66, 0x6f,
-  0x72, 0x6b, 0x5f, 0x72, 0x65, 0x66, 0x5f, 0x67, 0x63, 0x5f, 0x74, 0x72,
-  0x61, 0x6e, 0x73, 0x69, 0x74, 0x01, 0x00, 0x1f, 0x5f, 0x5f, 0x77, 0x70,
-  0x6b, 0x5f, 0x66, 0x6f, 0x72, 0x6b, 0x5f, 0x72, 0x65, 0x66, 0x5f, 0x67,
-  0x63, 0x5f, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x74, 0x5f, 0x63, 0x6c,
-  0x65, 0x61, 0x72, 0x00, 0x00, 0x0a, 0x0e, 0x01, 0x0c, 0x00, 0x41, 0x00,
-  0xd0, 0x6e, 0xfc, 0x10, 0x00, 0xfc, 0x11, 0x00, 0x0b,
-);
+/** Slot 0 is the staging slot every publish passes through. */
+export const FORK_TRANSIT_STAGING_SLOT = 0;
 
-let providerModule: WebAssembly.Module | undefined;
-
-function compileProviderModule(): WebAssembly.Module {
-  if (providerModule) return providerModule;
-  try {
-    providerModule = new WebAssembly.Module(
-      FORK_ANYREF_TRANSIT_PROVIDER_BYTES as BufferSource,
-    );
-  } catch (cause) {
-    throw new Error(
-      "this host cannot construct the ABI 43 Wasm-GC transit table",
-      { cause },
-    );
-  }
-  return providerModule;
-}
-
-/** Copy the audited provider binary for cross-engine contract tests. */
-export function forkAnyrefTransitProviderBytes(): Uint8Array {
-  return FORK_ANYREF_TRANSIT_PROVIDER_BYTES.slice();
-}
-
-/**
- * One process-worker owner for the scratch table shared by all activations.
- *
- * The generated codecs may grow the table, but every entry is null-filled by
- * Wasm at transaction boundaries. Using `table.fill` avoids one JS call per
- * recipe while guaranteeing that no stale GC object remains a strong root.
- */
 export class ForkAnyrefTransitTable {
-  readonly table: WebAssembly.Table;
-  private readonly clearTable: () => void;
+  private readonly table: WebAssembly.Table;
+  private readonly growTransit: (needed: number) => number;
+  private readonly lastErrno: () => number;
 
-  constructor() {
-    const instance = new WebAssembly.Instance(compileProviderModule());
-    const table = instance.exports[FORK_ANYREF_TRANSIT_IMPORT];
-    const clearTable = instance.exports[FORK_ANYREF_TRANSIT_CLEAR_EXPORT];
-    if (!(table instanceof WebAssembly.Table) || typeof clearTable !== "function") {
-      throw new Error("invalid ABI 43 Wasm-GC transit provider exports");
+  /**
+   * Takes the module's EXPORTS, and names the one that is missing.
+   *
+   * All three are read by name because the one production call site passed the
+   * transit TABLE instead of the exports. A table has no
+   * `__wpk_fork_ref_gc_transit` property, so the old constructor rejected it
+   * saying "the fork module exports no __wpk_fork_ref_gc_transit table" -- true
+   * of the argument and useless about the mistake -- and anything that got past
+   * that would have failed inside `grow` with `undefined is not a function`.
+   */
+  constructor(
+    exports: Record<string, unknown>,
+    private readonly label = "fork anyref transit",
+  ) {
+    const table = exports.__wpk_fork_ref_gc_transit;
+    if (!(table instanceof WebAssembly.Table)) {
+      throw new TypeError(
+        `${label}: the fork module exports no __wpk_fork_ref_gc_transit table`,
+      );
+    }
+    const grow = exports.fm_transit_grow;
+    const errno = exports.fm_last_errno;
+    if (typeof grow !== "function" || typeof errno !== "function") {
+      throw new TypeError(
+        `${label}: the fork module exports no ` +
+          `${typeof grow !== "function" ? "fm_transit_grow" : "fm_last_errno"}()`,
+      );
     }
     this.table = table;
-    this.clearTable = clearTable as () => void;
-    this.clear();
+    this.growTransit = grow as (needed: number) => number;
+    this.lastErrno = errno as () => number;
   }
 
-  clear(): void {
-    this.clearTable();
+  get length(): number {
+    return this.table.length;
   }
 
   /**
-   * Reserve the canonical `recipe + 1` slot before generated Wasm publishes
-   * an identity there. The table has no maximum, but keeping growth here lets
-   * the host reject integer overflow before it becomes an engine-dependent
-   * `table.grow` trap.
+   * Reserve the canonical `recipe + 1` slot before generated wasm publishes an
+   * identity there.
+   *
+   * The bound check is here rather than left to `table.grow` because an overflow
+   * there is an engine-dependent trap, and a recipe id is host-supplied.
    */
   ensureRecipeSlot(recipeId: number): void {
-    if (
-      !Number.isInteger(recipeId)
-      || recipeId <= 0
-      || recipeId > 0x7fff_fffe
-    ) {
-      throw new RangeError(`invalid Wasm-GC recipe id ${recipeId}`);
+    if (!Number.isInteger(recipeId) || recipeId <= 0 || recipeId > 0x7fff_fffe) {
+      throw new RangeError(`${this.label}: invalid Wasm-GC recipe id ${recipeId}`);
     }
-    const requiredLength = recipeId + 2;
-    if (this.table.length >= requiredLength) return;
-    const delta = requiredLength - this.table.length;
-    const previous = this.table.grow(delta, null);
-    if (previous + delta !== requiredLength) {
-      throw new Error("Wasm-GC transit table grew to an unexpected length");
+    const needed = recipeId + 2;
+    if (this.table.length >= needed) return;
+    // The MODULE grows its own table: it knows the element type and it is the
+    // party that must still be able to index every slot afterwards.
+    const grown = this.growTransit(needed);
+    const errno = this.lastErrno();
+    if (grown < 0 || errno !== 0) {
+      throw new Error(
+        `${this.label}: fm_transit_grow(${needed}) failed with errno ${errno}`,
+      );
     }
   }
 
@@ -123,13 +96,22 @@ export class ForkAnyrefTransitTable {
     this.table.set(slot, null);
   }
 
+  /**
+   * Drop every reference the table holds.
+   *
+   * Slot by slot, not by growing a fresh table: the module and the guest both
+   * hold this exact table object, so replacing it would leave them pointing at
+   * references this host had abandoned.
+   */
+  clear(): void {
+    for (let i = 0; i < this.table.length; i += 1) this.table.set(i, null);
+  }
+
   private assertSlot(slot: number): void {
-    if (
-      !Number.isInteger(slot)
-      || slot < 0
-      || slot >= this.table.length
-    ) {
-      throw new RangeError(`Wasm-GC transit slot ${slot} is out of bounds`);
+    if (!Number.isInteger(slot) || slot < 0 || slot >= this.table.length) {
+      throw new RangeError(
+        `${this.label}: slot ${slot} is outside the transit table (length ${this.table.length})`,
+      );
     }
   }
 }

@@ -175,7 +175,6 @@ Key host components:
 | VirtualPlatformIO | `vfs/vfs.ts` | Mount-table router — used by both Node and browser hosts |
 | MemoryFileSystem | `vfs/memory-fs.ts` | SharedArrayBuffer-backed in-memory filesystem |
 | HostFileSystem | `vfs/host-fs.ts` | Backend that proxies to a Node host directory |
-| DeviceFileSystem | `vfs/device-fs.ts` | /dev/null, /dev/zero, /dev/urandom, /dev/ptmx |
 | OpfsFileSystem | `vfs/opfs.ts` | Origin Private File System (browser persistence) |
 | NetworkIO backends | `networking/*.ts` | Host-side external TCP/HTTP bridges and local virtual UDP/TCP networking |
 | Default mount spec | `vfs/default-mounts.ts` (+ `default-mounts-node.ts`) | Canonical mount layout + per-host resolvers |
@@ -338,14 +337,22 @@ limit: pathname consumers still apply the generated `PATH_MAX`, while generic
 C-string consumers may validly use more than `PATH_MAX` when the complete
 string fits channel scratch.
 
-Vector-message syscalls add a width-translation boundary. Musl's native
-`iovec`, `msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so
-their sizes, offsets, and alignments are generated from the shared Rust ABI
-source into TypeScript and a musl contract header. The kernel scratch wire is
-deliberately fixed: an eight-byte `KernelIovecWire`, a 28-byte
-`KernelMsghdrWire`, and a 12-byte-aligned `KernelCmsghdrWire`. These are
-separate contracts; copying a native wasm64 header and hoping the fixed parser
-interprets it is invalid even when the bytes fit in linear memory.
+Vector-message syscalls cross a width boundary. Musl's native `iovec`,
+`msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so their
+sizes, offsets, and alignments are generated from the shared Rust ABI source.
+`msg_iovlen` and `msg_controllen` are the traps worth naming: musl keeps both
+32-bit on wasm64 and pads after each, so reading either as a `size_t` folds
+unrelated padding into the high half of a count.
+
+**The kernel reads those structures in the caller's memory itself.**
+`sendmsg`/`recvmsg` declare their `msghdr` argument
+`SyscallArgSize::KernelDereferenced`, so the host copies nothing and passes
+the raw guest address with the caller's pointer width; `crates/runtime-core/`
+`src/msghdr.rs` walks the header, the `msg_iov` table and the CMSG chain
+through `host_proc_read_bytes` / `host_proc_write_bytes`. The
+`KernelIovecWire` / `KernelMsghdrWire` / `KernelCmsghdrWire` records still
+appear in `abi/snapshot.json` and still describe the opaque transport's
+msghdr region, but nothing in the kernel reads them.
 Socket-address sizing is likewise generated as two distinct contracts.
 The 128-byte `sockaddr_storage` bounds every generic input and output staging
 region; the 110-byte `sockaddr_un` bounds family-specific AF_UNIX parsing.
@@ -359,29 +366,33 @@ An exact 108-byte non-NUL pathname can make Linux-compatible `getsockname()`
 report 111 bytes after accounting for its appended terminator, which still
 fits the generic 128-byte output region.
 
-For `sendmsg`, the host validates the complete native header and iovec table,
-every nested caller range, `IOV_MAX`, and the complete fixed-wire footprint.
-It translates each ancillary record, flattens all caller iovecs in order into
-one capacity-owned payload, and invokes Rust with a zero-or-one-iovec wire
-inside one synchronous lease. Rust validates the complete aligned ancillary
-stream and the receiver-reconstructibility of every requested `SCM_RIGHTS`
-description before retaining any reference or publishing carrier bytes. Socket
+For `sendmsg`, the kernel decodes the caller's header, enforces `IOV_MAX`
+before reading the table, and gathers every iovec in order into one
+contiguous kernel-owned buffer bounded by `SSIZE_MAX` — a datagram must go
+out in one piece, and the bound is the operation's own limit rather than a
+transport's capacity. It then validates the aligned ancillary stream and the
+receiver-reconstructibility of every requested `SCM_RIGHTS` description
+before retaining any reference or publishing carrier bytes. Socket
 descriptions are not reconstructible from a process-local socket snapshot, so
 an ancillary batch containing one fails atomically with `EOPNOTSUPP`; Kandelo
-does not pretend that a copied socket record is the original endpoint. The
-exact flattened-iovec count is generated from the shared protocol contract,
-and a Rust compile-time guard makes changing that count fail until the fixed
-parser changes with it.
+does not pretend that a copied socket record is the original endpoint.
+
 Nested `sendmsg.msg_name` accepts exactly the same 128-byte input maximum as
-`sendto`; it cannot bypass that check by living inside `msghdr`. For
-`recvmsg`, the host proves and reserves at most 128 name bytes even when the
-caller advertises a larger buffer, derives fixed-wire control capacity from
-the caller-native data capacity,
-snapshots the result, validates the entire returned record, expands it with
-zeroed native padding, and scatters payload bytes across every caller iovec.
-A retry or malformed kernel result publishes none of those detached outputs.
-This flatten/scatter design preserves the public multi-iovec behavior while
-keeping the ordinary transport allocation fixed and cheap.
+`sendto`; it cannot bypass that check by living inside `msghdr`.
+
+For `recvmsg`, the kernel reserves at most 128 name bytes even when the
+caller advertises a larger buffer, derives `SCM_RIGHTS` capacity from the
+CALLER's `cmsghdr` size — 32 control bytes hold five descriptors for a wasm32
+receiver and four for a wasm64 one — receives into one contiguous buffer, and
+scatters the result across the caller's iovecs. It publishes `msg_namelen`,
+`msg_controllen` and `msg_flags` only for a delivered message, including a
+zero-length one: on EAGAIN the host parks a retry and calls again with the
+same header, so zeroing `msg_controllen` would leave that retry with no
+control capacity.
+
+Both retain what a retry must not re-read. A blocked `sendmsg` keeps its
+in-flight descriptors in `BlockingRetryTarget::Sendmsg` and a retry uses
+those, never a control buffer a peer thread may have changed meanwhile.
 
 Guest process memory is a separate owner, not another spelling for kernel
 scratch. `CentralizedKernelWorker.registerProcess` rejects the active kernel
@@ -578,15 +589,25 @@ select musl's target structure from the process pointer width:
 | `semid_ds` | 72 bytes | 88 bytes |
 | `shmid_ds` | 88 bytes | 112 bytes |
 
-The host stages `msgctl`/`shmctl` `IPC_STAT` and `IPC_SET` according to the
-command and passes that process pointer width in the otherwise host-private
-sixth dispatch slot. The kernel Wasm's own width is not a valid substitute
-because one kernel may serve both guest widths.
-`kernel_semctl_array_bytes(pid, tid, semid, command)` separately performs the
-permission-aware GETALL/SETALL size preflight. All four sizing exports are
-required in ABI 43. There is no `IPC_STAT` sizing fallback for semaphore
-arrays: a process may have permission to write a semaphore set without
-permission to read its metadata.
+The kernel reads and writes these structures in the caller's memory itself,
+through `host_proc_read_bytes` / `host_proc_write_bytes`, and takes the caller's
+pointer width from the otherwise host-private sixth dispatch slot. The kernel
+Wasm's own width is not a valid substitute because one kernel may serve both
+guest widths.
+
+The arguments are declared `SyscallArgSize::KernelDereferenced`, which is what
+makes that possible: the host copies nothing and passes the raw guest address
+through. No static size rule could describe them, because `msgctl`'s buffer is
+an input for `IPC_SET` and an output for `IPC_STAT`, and `semctl`'s fourth
+argument is a `union semun` whose GETALL/SETALL form is an `unsigned short`
+array sized by the set's own `nsems` — a fact that appears nowhere in the
+syscall arguments.
+
+There is still no `IPC_STAT` sizing fallback for semaphore arrays, and the
+reason is unchanged: a process may have permission to write a semaphore set
+without permission to read its metadata, so sizing the array through IPC_STAT
+would impose a read permission POSIX does not require. `semctl_array_bytes`
+applies the requested command's own permission check instead.
 
 Other caller-native records use the generated
 `SyscallArgSize::ProcessLayout` descriptor. Encountering that descriptor makes
@@ -1750,11 +1771,11 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 
 The writable root image honors set-ID on both hosts. Default scratch mounts,
-`/dev`, and `/dev/shm` explicitly use `nosuid`; this is an ordinary mount
+`/dev/shm` explicitly uses `nosuid`; this is an ordinary mount
 choice, not a trust classification for the image. Custom mount specifications
 may make the same choice. The browser and Node hosts apply the same rules.
 
-The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+The browser host layers one additional, host-specific mount on top: `/dev/shm`, the POSIX-semaphore SAB shared with main-thread surfaces. `/dev` itself is not a mount on either host — the kernel owns that namespace (`crates/runtime-core/src/devfs.rs` and `match_virtual_device`), and `crates/runtime-core/src/rootfs.rs` excludes it from the overlay the same way it excludes tmpfs. Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
 ### rootfs image as the source of truth
 
@@ -1822,7 +1843,7 @@ have not migrated.
 
 ### Browser host
 
-`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. Browser networking then replaces `/etc/ssl/certs/ca-certificates.crt` with its generated per-session MITM root; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.
+`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. The kernel then parses the same image bytes itself (`kernel_rootfs_load_image`) to build the authoritative `/` tree; the restored `MemoryFileSystem` stays only as the byte store a base file's contents are read from. Once the kernel exists, browser networking writes its generated per-session MITM root to `/etc/ssl/certs/ca-certificates.crt` through the kernel (`kernel_rootfs_mkdir_parents` + `kernel_rootfs_write_file`), before any guest process launches; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.
 
 The browser test runner and Git test assemble small kernel-owned VFS images with
 `createBuildFsWithEtc` in `apps/browser-demos/lib/kernel-owned-boot.ts`, then
@@ -2131,18 +2152,102 @@ Decompressed layout:
 Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
 4        4      Version: 1
-8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata
+8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata,
+                bit 3 = typed lazy archives, bit 4 = kernel lazy linkage
 12       4      SharedArrayBuffer data length (N)
 16       N      Raw SharedArrayBuffer bytes (block filesystem)
 16+N     4      Lazy entries JSON length (M)
 20+N     M      Lazy-file JSON (identity, aliases, URL, declared size)
 ...      4+L    Optional lazy-archive/deferred-tree JSON length and bytes (when bit 1 is set)
 ...      4+P    Optional image-metadata JSON length and bytes (when bit 2 is set)
+...      4+K    Kernel lazy-linkage section ("KLZY") length and bytes (when bit 4 is set)
 ```
+
+Bit 3 adds no section of its own; it asserts that every lazy-archive group in
+the bit-1 section carries a `kind` discriminator.
+
+### The kernel lazy-linkage section ("KLZY")
+
+The three JSON sections are the host's persistence form for host authority:
+fetch URLs and transport mirrors, integrity digests, activation modes,
+atomic-group seals, and per-builder image metadata. Exactly two facts in them
+are kernel-relevant — a lazy file's real size, and an archive member's
+`(archive_id, source_path, size)` — and the kernel already consumes both in
+binary today, through the RTFS boot manifest's `KIND_LAZY_FILE` entries, which
+the host produces by walking the restored filesystem after loading the image.
+
+`KLZY` carries that kernel-needed subset in the image itself, so an image's
+lazy linkage is readable without a JSON parser and without a host-side tree
+walk first. `archive_id` is assigned by the image writer rather than minted at
+boot, which makes "the kernel's archive table and the host's fetch table are
+the same table" a structural property of the image.
+
+The section is written today and read by
+`crates/runtime-core/src/klzy.rs`; the host still drives boot from the JSON,
+so both are emitted. Because the section is appended after the metadata
+section and readers stop there, an older reader neither sees the flag nor the
+bytes, and a reader of a newer image is unaffected by it.
+
+Its layout is documented once, next to its structural constants
+(`VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared/src/lib.rs`), in the `KFIG` idiom:
+a magic, `u16` version, `u16` header size, counts, then size-prefixed records
+with trailing length-prefixed UTF-8 names. Encoder:
+`host/src/vfs/kernel-lazy-section.ts`. Cross-language fixture:
+`crates/runtime-core/src/testdata/klzy-v1.bin`, emitted by the real encoder via
+`host/scripts/gen-klzy-fixture.mts`.
+
+Source paths are encoded explicitly. In every image the repo ships today a
+member's source path is exactly its VFS path with the mount prefix stripped,
+which would let the paths be derived instead — but that is a property of
+today's builders, not of the format, so the writer does not assume it. A group
+flag is reserved for a writer that proves the invariant per group and falls
+back to explicit paths otherwise.
 
 ## Networking
 
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
+
+### Readiness is a kernel decision; backends report facts
+
+A `NetworkIO` backend never decides whether a socket is readable or
+writable. It answers `readiness(handle)` with a
+`wasm_posix_shared::net_readiness` fact word — bytes buffered, end of
+stream observed, the engine will accept a write, the write half is gone,
+the connection is torn down, a sticky error and the errno the engine
+observed. `runtime_core::net_readiness::stream_revents` turns those facts
+plus the caller's `events` into `poll` `revents`, in one place, for every
+backend on both hosts.
+
+The split is deliberate: what an engine alone can see (a socket's
+OS-level state, a `fetch` promise's settlement) is a fact; which POLL
+bits follow from it is POSIX policy. The rule previously lived in eight
+places — the kernel, the `HostIO` default method, four backends, and two
+"no `poll` implementation" fallbacks — and the copies disagreed with
+POSIX and each other about whether `POLLHUP` is gated by `events`,
+whether it may accompany `POLLOUT`, and whether end-of-file is
+`POLLIN`.
+
+A backend that cannot observe readiness reports
+`NET_READINESS.UNOBSERVABLE` rather than a readiness claim. The kernel's
+response is wake-every-round: report the requested `POLLIN`/`POLLOUT` and
+let `recv`/`send` answer `EAGAIN`.
+
+The fact vocabulary is generated into `host/src/generated/abi.ts` by
+`cargo xtask dump-abi`, so the two sides share one definition.
+
+Backend failures on `send` and `recv` reach the guest as the errno the
+backend determined — a Node socket error's `code`, or an explicit POSIX
+`errno` — via `negErrno`, with `EIO` for a failure nothing classified.
+The transport does not choose an errno on a backend's behalf.
+
+Known divergence, not yet closed: the kernel's own pipe-backed socket
+path (AF_UNIX and loopback AF_INET) still raises `POLLHUP` when a peer
+closes its write end and never reports end-of-file as `POLLIN`, so
+`POLLHUP` doubles as the reader's EOF wakeup and can accompany
+`POLLOUT`. Linux treats that state as `RCV_SHUTDOWN` —
+`EPOLLIN | EPOLLRDHUP` with `EPOLLOUT` intact — and reserves `EPOLLHUP`
+for both directions down. Correcting it changes wakeups for every
+AF_UNIX and loopback socket and needs conformance-suite validation.
 
 AF_INET and AF_INET6 receive queues are currently bounded at 128 datagrams per
 socket. Once that fixed internal queue is full, a newly arriving UDP datagram
@@ -2210,7 +2315,9 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
 
-`TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
+The **kernel** owns the `getaddrinfo` name grammar (`crates/runtime-core/src/hostname.rs`). It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. A numeric address is answered by the kernel and never reaches a backend; a name that cannot be a host name is refused before `host_getaddrinfo` is called. What remains in `host/src/networking/hostname.ts` is narrower and specific to the backends that *fabricate* an address instead of resolving one: the RFC 6761 `.invalid` refusal and the host alias-table override, used by `FetchNetworkBackend` and `TlsNetworkBackend`. The Node TCP backend resolves validated names through the host resolver and does not use it. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
+
+HTTP/1.1 message framing for both browser backends lives once, in `host/src/networking/http1.ts`. It is host code because the bytes it frames are host-owned — produced by the MITM's Web Crypto decryption or arriving inside a `fetch()` `Response` — and the kernel's only data channels are anchored at a process address.
 
 WebRTC or proxy-based external transports should attach as additional `NetworkIO` backends behind the same POSIX socket layer rather than adding host-specific socket APIs visible to guest programs.
 

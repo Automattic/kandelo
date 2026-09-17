@@ -1,6 +1,7 @@
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
 import { runWithProcessWorkerQuiescence } from "./worker-quiescence";
+import { installBrowserWasmArtifactModule } from "./browser-wasm-artifact-module-install";
 
 // Web Worker global scope
 const sw = globalThis as unknown as {
@@ -31,7 +32,13 @@ sw.onmessage = (e: MessageEvent) => {
     void runWithProcessWorkerQuiescence(
       port,
       { pid: init.pid },
-      () => centralizedWorkerMain(port, init),
+      // The process worker refuses an unsafe program artifact before
+      // executing it and holds no kernel instance to ask, so the reader must
+      // be installed before `centralizedWorkerMain` reaches that check.
+      async () => {
+        await installBrowserWasmArtifactModule();
+        return centralizedWorkerMain(port, init);
+      },
       (error) =>
         console.error(
           `[worker-entry-browser] worker main error pid=${init.pid}`,
@@ -43,7 +50,10 @@ sw.onmessage = (e: MessageEvent) => {
     void runWithProcessWorkerQuiescence(
       port,
       { pid: init.pid, tid: init.tid },
-      () => centralizedThreadWorkerMain(port, init),
+      async () => {
+        await installBrowserWasmArtifactModule();
+        return centralizedThreadWorkerMain(port, init);
+      },
       (error) =>
         console.error(
           `[worker-entry-browser] thread worker main error`

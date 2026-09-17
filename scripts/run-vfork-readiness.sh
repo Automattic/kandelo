@@ -54,11 +54,10 @@ host_tests=(
   test/fork-from-dlopen-side-module-e2e.test.ts
   test/fork-memory-clone-guest.test.ts
   test/process-table-replication.test.ts
-  test/dylink-fork-archive.test.ts
+  test/dylink-planner-drive.test.ts
 )
 browser_tests=(
   test/vfork-lifecycle.spec.ts
-  test/borrowed-fork-replay.spec.ts
 )
 
 if $integration; then

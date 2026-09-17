@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -11,13 +12,11 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { findRepoRoot } from "../../../host/src/binary-tiers";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 
 const MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const MAX_INPUTS = 4_096;
-const SHA256 = /^[0-9a-f]{64}$/;
-const GIT_SHA = /^[0-9a-f]{40}$/;
-const STABLE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const CANONICAL_PAGES_PRODUCT =
   /^https:\/\/automattic\.github\.io\/kandelo\/products\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})-([0-9]+)\.vfs\.zst\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$/;
 const CANONICAL_PAGES_INPUT =
@@ -170,6 +169,20 @@ async function openVfsProductBuildWithPolicy(
   if (canonicalJson(parsed) !== inputText) {
     fail("resolved input document is not canonical JSON");
   }
+  // THE ENVELOPE IS JUDGED IN RUST, BEFORE THIS FILE LOOKS AT IT.
+  //
+  // Every scalar rule below duplicates one that already existed in
+  // `tools/xtask/src/vfs_products/canonical_json.rs`, and the duplicate is the
+  // WEAKER one: `assertNormalizedRelativePath` splits on a backslash, so `a\b`
+  // becomes two components and passes though on POSIX it is one legal
+  // filename, and it never looks for a NUL, which truncates the path in the
+  // first C API that receives it. The Rust refuses both.
+  //
+  // Calling it rather than fixing the copy is the point. A second
+  // implementation of a security rule is a second chance to get it subtly
+  // different, and this one already had.
+  validateResolvedInputEnvelope(absoluteInputsPath, allowLocalFixture);
+
   const inputs = parseResolvedInputs(
     parsed,
     dirname(absoluteInputsPath),
@@ -263,7 +276,7 @@ async function openVfsProductBuildWithPolicy(
         );
       }
       const outputBytes = readFileSync(absoluteOutputPath);
-      const metadata = MemoryFileSystem.readImageMetadata(
+      const metadata = SffsImageFs.readImageMetadata(
         new Uint8Array(
           outputBytes.buffer,
           outputBytes.byteOffset,
@@ -323,6 +336,55 @@ async function openVfsProductBuildWithPolicy(
   });
 }
 
+/**
+ * Ask `xtask` whether this document's envelope is well formed.
+ *
+ * Shape only, deliberately: whether the manifest it names is PRESENT is a
+ * different question, answered where the manifest is read. A document naming a
+ * missing file is still a valid document, and a validator that refused it
+ * could not run anywhere the repository is not fully checked out.
+ */
+function validateResolvedInputEnvelope(
+  documentPath: string,
+  allowLocalFixture: boolean,
+): void {
+  const args = [
+    "vfs",
+    "products",
+    "validate-resolved-inputs",
+    "--path",
+    documentPath,
+  ];
+  if (allowLocalFixture) args.push("--allow-local-fixture");
+
+  const probe = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
+  const hostTarget = probe.stdout
+    ?.split("\n")
+    .find((line) => line.startsWith("host:"))
+    ?.split(/\s+/)[1];
+  if (!hostTarget) fail("could not determine the host rust target");
+
+  const result = spawnSync(
+    "cargo",
+    ["run", "-p", "xtask", "--target", hostTarget, "--quiet", "--", ...args],
+    { cwd: findRepoRoot(), encoding: "utf8" },
+  );
+  if (result.error) {
+    fail(`resolved input document could not be validated: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    // The LAST non-empty line. `cargo run` writes its own build warnings to
+    // stderr, so the first line is a warning about an unrelated crate rather
+    // than the sentence naming which field refused.
+    const detail = (result.stderr ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .pop() ?? `exit ${result.status}`;
+    fail(detail);
+  }
+}
+
 function parseResolvedInputs(
   value: unknown,
   inputRoot: string,
@@ -358,7 +420,7 @@ function parseResolvedInputs(
   const product: ProductIdentity = {
     architecture,
     id: stableId(productValue.id, "product id"),
-    manifest_path: normalizedRelativePath(
+    manifest_path: relativePathValue(
       productValue.manifest_path,
       "product manifest path",
     ),
@@ -540,7 +602,7 @@ function parseResolvedInput(
   const path =
     record.path === undefined
       ? undefined
-      : normalizedRelativePath(record.path, `${label} path`);
+      : relativePathValue(record.path, `${label} path`);
   const descriptor = parseInputDescriptor(
     record.descriptor,
     id,
@@ -638,7 +700,7 @@ function parseInputDescriptor(
     targetAbiVersion,
     `${label} descriptor`,
   );
-  const path = normalizedRelativePath(
+  const path = relativePathValue(
     descriptor.path,
     `${label} descriptor path`,
   );
@@ -770,28 +832,39 @@ function string(value: unknown, label: string): string {
   return value;
 }
 
+/**
+ * Document scalars, narrowed to their JavaScript types and nothing more.
+ *
+ * THE RULES LIVE IN RUST — `validate_stable_id`, `validate_sha256`,
+ * `validate_git_sha` and the integer types in the resolved-input validator,
+ * all run before this file reads a byte of the document. What stood here was a
+ * second copy of each, and a second copy of a rule is a second chance to get it
+ * subtly different.
+ *
+ * Each was compared against its Rust counterpart before being removed rather
+ * than assumed equivalent: `/^[0-9a-f]{64}$/` against `validate_lower_hex(64)`,
+ * `/^[0-9a-f]{40}$/` against `validate_lower_hex(40)`, and
+ * `/^[a-z0-9][a-z0-9._-]{0,127}$/` against `validate_stable_id`'s byte checks.
+ * They agreed. `outputName` did NOT — see below — and the Rust was strengthened
+ * to match before that one was removed.
+ */
 function stableId(value: unknown, label: string): string {
-  const result = string(value, label);
-  if (!STABLE_ID.test(result)) fail(`${label} is not a stable identifier`);
-  return result;
+  return string(value, label);
 }
 
 function sha256(value: unknown, label: string): string {
-  const result = string(value, label);
-  if (!SHA256.test(result)) fail(`${label} must be 64 lowercase hexadecimal characters`);
-  return result;
+  return string(value, label);
 }
 
 function gitSha(value: unknown, label: string): string {
-  const result = string(value, label);
-  if (!GIT_SHA.test(result)) fail(`${label} must be 40 lowercase hexadecimal characters`);
-  return result;
+  return string(value, label);
 }
 
 function nonnegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    fail(`${label} must be a nonnegative safe integer`);
-  }
+  // Still a TYPE check: the Rust refused a non-integer by failing to
+  // deserialise it into a `u32`/`u64`, so by here the value is known to be one.
+  // This narrows `unknown` to `number` and asserts nothing further.
+  if (typeof value !== "number") fail(`${label} must be a number`);
   return value as number;
 }
 
@@ -806,26 +879,42 @@ function oneOf<const T extends readonly string[]>(
   return value as T[number];
 }
 
+/**
+ * The product's output filename, narrowed only.
+ *
+ * This is the one rule that did NOT already match its Rust counterpart. The
+ * Rust refused exactly `.` and `..`; this refused ANY leading dot, so deleting
+ * it as a duplicate would have quietly LOOSENED the rule and let `.hidden.vfs`
+ * through — a published artifact that does not appear in an ordinary listing,
+ * which is a poor property for something whose whole job is to be found.
+ *
+ * The Rust was strengthened to match FIRST, and only then was this removed.
+ * "Port it faithfully" would have produced the loosening; comparing the two
+ * rules line by line is what caught it.
+ */
 function outputName(value: unknown): string {
-  const result = string(value, "product output");
-  if (
-    result.length > 255 ||
-    result.startsWith(".") ||
-    result.includes("/") ||
-    result.includes("\\") ||
-    (!result.endsWith(".vfs") && !result.endsWith(".vfs.zst"))
-  ) {
-    fail(`invalid VFS output filename ${JSON.stringify(result)}`);
-  }
-  return result;
+  return string(value, "product output");
 }
 
-function normalizedRelativePath(value: unknown, label: string): string {
-  const result = string(value, label);
-  assertNormalizedRelativePath(result, label);
-  return result;
-}
-
+/**
+ * A shape check for paths this file COMPUTES, not for paths the document
+ * supplies.
+ *
+ * Two callers, and neither is a duplicate of the Rust rule: one checks the
+ * output path produced by `relative(reportRoot, absoluteOutputPath)`, and the
+ * other checks a path immediately before walking it on disk. Those paths never
+ * appeared in the resolved-input document, so the validator that judged the
+ * document never saw them.
+ *
+ * It is deliberately NOT the document rule, and the difference is recorded
+ * rather than quietly inherited: this one splits on a backslash where
+ * `validate_repo_path_shape` refuses one. For a path derived from two absolute
+ * paths on POSIX that divergence is unreachable in practice — but "unreachable
+ * in practice" is the sentence that precedes most surprises, so it is written
+ * down rather than assumed. Making them agree is a behaviour change to computed
+ * paths, which belongs with whoever ports THIS half rather than in the commit
+ * that ported the document half.
+ */
 function assertNormalizedRelativePath(value: string, label: string): void {
   const parts = value.split(/[\\/]/);
   if (
@@ -836,6 +925,25 @@ function assertNormalizedRelativePath(value: string, label: string): void {
   ) {
     fail(`${label} is not a normalized relative path: ${JSON.stringify(value)}`);
   }
+}
+
+/**
+ * A relative path from the document, narrowed to a string and nothing more.
+ *
+ * THE RULE LIVES IN RUST NOW — `canonical_json::validate_repo_path_shape`, run
+ * by `xtask vfs products validate-resolved-inputs` before this file reads a
+ * byte of the document. What used to be here was a SECOND rule, and a weaker
+ * one: it SPLIT on a backslash, so `a\b` became two components and passed
+ * though on POSIX it is one legal filename, and it never looked for a NUL,
+ * which truncates the path in the first C API that receives it.
+ *
+ * Deleting it rather than fixing it is the point. Two implementations of a
+ * path-safety rule are two chances to get it subtly different, and these two
+ * already had — they disagreed about what a path IS, not about how strict to
+ * be. A rule that only narrows a type cannot drift from one that decides.
+ */
+function relativePathValue(value: unknown, label: string): string {
+  return string(value, label);
 }
 
 function assertRegularNonsymlinkBelow(

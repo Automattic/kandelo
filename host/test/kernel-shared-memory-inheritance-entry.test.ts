@@ -7,6 +7,12 @@ import {
 import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
 import type { PlatformIO } from "../src/types";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import {
+  createSysvMirrorStub,
+  SYSV_MIRROR_EXPORT_NAMES,
+  type SysvMirrorStub,
+  type SysvMirrorStubOptions,
+} from "./support/sysv-mirror-stub";
 
 const KERNEL_EXPORT_NAMES = [
   "kernel_ipc_shm_read_chunk",
@@ -14,6 +20,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_ipc_shmat_for_process",
   "kernel_ipc_shmdt_addr_for_process",
   "kernel_ipc_shmdt_for_process",
+  ...SYSV_MIRROR_EXPORT_NAMES,
 ] as const;
 
 interface TestProcessRegistration {
@@ -31,14 +38,6 @@ interface TestSharedMapping {
   readonly writable: boolean;
   readonly backingKind: "anonymous" | "file";
   readonly backingKey: string;
-  readonly snapshot: Uint8Array;
-  readonly seenVersion: number;
-}
-
-interface TestSysvMapping {
-  readonly segId: number;
-  readonly size: number;
-  readonly readOnly: boolean;
   readonly snapshot: Uint8Array;
   readonly seenVersion: number;
 }
@@ -67,8 +66,11 @@ interface SharedInheritanceState {
   sharedMappings: Map<number, Map<number, TestSharedMapping>>;
   anonymousSharedBackings: Map<string, TestAnonymousBacking>;
   sharedMmapBackings: Map<string, TestFileBacking>;
-  shmMappings: Map<number, Map<number, TestSysvMapping>>;
-  shmSegmentVersions: Map<number, number>;
+  /**
+   * Cached count of processes owning SysV attachments. The mirror itself is
+   * Rust-owned; this is the predicate the host gates every entry into it on.
+   */
+  sysvActivePidCount: number;
 }
 
 interface InheritanceHarness {
@@ -76,6 +78,13 @@ interface InheritanceHarness {
   readonly state: SharedInheritanceState;
   readonly kernelMemory: WebAssembly.Memory;
   readonly implementations: Record<string, unknown>;
+  /** Stand-in for the Rust-owned SysV byte-coherence mirror. */
+  readonly sysv: SysvMirrorStub;
+  /**
+   * Seed a parent attachment and make the host's gate see it, exactly as a
+   * successful `shmat` would have.
+   */
+  seedSysv(pid: number, addr: number, segId: number, size: number): void;
 }
 
 function processMemory(): WebAssembly.Memory {
@@ -114,14 +123,17 @@ function makeHarness(
   options: {
     readonly io?: Partial<PlatformIO>;
     readonly implementations?: Record<string, unknown>;
+    readonly sysv?: SysvMirrorStubOptions;
   } = {},
 ): InheritanceHarness {
+  const sysv = createSysvMirrorStub(options.sysv);
   const implementations: Record<string, unknown> = {
     kernel_ipc_shm_read_chunk: () => 0,
     kernel_ipc_shm_record_mapping_for_process: () => 0,
     kernel_ipc_shmat_for_process: () => -1,
     kernel_ipc_shmdt_addr_for_process: () => 0,
     kernel_ipc_shmdt_for_process: () => 0,
+    ...sysv.exports,
     ...options.implementations,
   };
   const worker = createCentralizedKernelWorkerTestDouble({
@@ -140,8 +152,7 @@ function makeHarness(
     sharedMappings: new Map(),
     anonymousSharedBackings: new Map(),
     sharedMmapBackings: new Map(),
-    shmMappings: new Map(),
-    shmSegmentVersions: new Map(),
+    sysvActivePidCount: 0,
   };
   for (const [name, value] of Object.entries(state)) {
     setWorkerState(
@@ -150,7 +161,18 @@ function makeHarness(
       value,
     );
   }
-  return { worker, state, kernelMemory, implementations };
+  return {
+    worker,
+    state,
+    kernelMemory,
+    implementations,
+    sysv,
+    seedSysv(pid, addr, segId, size) {
+      sysv.seed(pid, addr, { segId, size, readOnly: false });
+      state.sysvActivePidCount = sysv.attachments.size;
+      setWorkerState(worker, "sysvActivePidCount", sysv.attachments.size);
+    },
+  };
 }
 
 describe("shared-memory inheritance entry authority", () => {
@@ -316,15 +338,7 @@ describe("shared-memory inheritance entry authority", () => {
         seenVersion: 0,
       }],
     ]));
-    harness.state.shmMappings.set(parentPid, new Map([
-      [sysvAddr, {
-        segId: 11,
-        size: length,
-        readOnly: false,
-        snapshot: new Uint8Array(length),
-        seenVersion: 0,
-      }],
-    ]));
+    harness.seedSysv(parentPid, sysvAddr, 11, length);
 
     expect(() => {
       harness.worker.inheritProcessSharedMappings(parentPid, childPid);
@@ -334,9 +348,12 @@ describe("shared-memory inheritance entry authority", () => {
     expect(reentrantErrors[0]).toBeInstanceOf(KernelReentrantEntryError);
     expect(shmat).not.toHaveBeenCalled();
     expect(shmdt).not.toHaveBeenCalled();
+    // Validation runs before the kernel is entered at all, so the SysV
+    // transaction never starts.
+    expect(harness.sysv.calls).toEqual([]);
     expect(backing.refCount).toBe(1);
     expect(harness.state.sharedMappings.has(childPid)).toBe(false);
-    expect(harness.state.shmMappings.has(childPid)).toBe(false);
+    expect(harness.sysv.count(childPid)).toBe(0);
     expect(new Uint8Array(originalMemory.buffer)[sharedAddr]).toBe(0x55);
     expect(new Uint8Array(originalMemory.buffer)[sysvAddr]).toBe(0x55);
     expect(new Uint8Array(replacementMemory.buffer)[sharedAddr]).toBe(0x66);
@@ -462,7 +479,15 @@ describe("shared-memory inheritance entry authority", () => {
     expect(harness.worker.finalizeAddressSpaceForExec(pid)).toBe(0);
   });
 
-  it("rolls back an earlier SysV attachment before publishing any child state", async () => {
+  // The per-attachment attach/record/detach interleaving and its rollback
+  // ordering moved into the kernel, where the whole transaction commits or
+  // unwinds as one. It is covered by
+  // `SharedMappingTable::inherit_sysv_attachments`'s tests in
+  // `crates/runtime-core/src/memory.rs`, four of which are rollback paths.
+  // What remains a host concern, and is tested here, is that a refused
+  // transaction leaves no child state behind and leaves the entry generation
+  // reusable for a retry.
+  it("leaves no child state and a reusable generation when SysV inheritance is refused", async () => {
     const parentPid = 51;
     const childPid = 52;
     const anonymousAddr = 0x1000;
@@ -471,40 +496,10 @@ describe("shared-memory inheritance entry authority", () => {
     const size = 16;
     const backingKey = "anon:test";
     const anonymousBytes = new Uint8Array(size).fill(0x31);
-    const segments = new Map<number, Uint8Array>([
-      [11, new Uint8Array(size).fill(0x41)],
-      [12, new Uint8Array(size).fill(0x42)],
-    ]);
     const childMemory = processMemory();
     new Uint8Array(childMemory.buffer).fill(0x77);
-    let harness!: InheritanceHarness;
-    const shmat = vi.fn((_pid: number, segId: number) =>
-      segId === 11 ? size : -12);
-    const shmdt = vi.fn(() => 0);
-    const recordMapping = vi.fn(() => 0);
-    const shmdtAddr = vi.fn(() => 0);
-    const readChunk = vi.fn((
-      segId: number,
-      offset: number,
-      pointer: number,
-      maxLength: number,
-    ) => {
-      const segment = segments.get(segId)!;
-      const length = Math.min(maxLength, segment.byteLength - offset);
-      new Uint8Array(harness.kernelMemory.buffer).set(
-        segment.subarray(offset, offset + length),
-        pointer,
-      );
-      return length;
-    });
-    harness = makeHarness({
-      implementations: {
-        kernel_ipc_shm_read_chunk: readChunk,
-        kernel_ipc_shm_record_mapping_for_process: recordMapping,
-        kernel_ipc_shmat_for_process: shmat,
-        kernel_ipc_shmdt_addr_for_process: shmdtAddr,
-        kernel_ipc_shmdt_for_process: shmdt,
-      },
+    const harness = makeHarness({
+      sysv: { fail: { kernel_shared_mapping_sysv_inherit: -12 } },
     });
     const backing: TestAnonymousBacking = {
       key: backingKey,
@@ -529,118 +524,44 @@ describe("shared-memory inheritance entry authority", () => {
         seenVersion: 0,
       }],
     ]));
-    const sysvMapping = (segId: number): TestSysvMapping => ({
-      segId,
-      size,
-      readOnly: false,
-      snapshot: new Uint8Array(size),
-      seenVersion: 0,
-    });
-    harness.state.shmMappings.set(parentPid, new Map([
-      [firstSysvAddr, sysvMapping(11)],
-      [secondSysvAddr, sysvMapping(12)],
-    ]));
+    harness.seedSysv(parentPid, firstSysvAddr, 11, size);
+    harness.seedSysv(parentPid, secondSysvAddr, 12, size);
 
     expect(() => {
       harness.worker.inheritProcessSharedMappings(parentPid, childPid);
-    }).toThrow(/SysV shmat inheritance failed for segment 12/);
+    }).toThrow(/SysV shared-memory inheritance failed for pid=52: errno 12/);
 
-    expect(shmat.mock.calls).toEqual([
-      [childPid, 11, firstSysvAddr, 0],
-      [childPid, 12, secondSysvAddr, 0],
+    expect(harness.sysv.callsTo("kernel_shared_mapping_sysv_inherit")).toEqual([
+      {
+        name: "kernel_shared_mapping_sysv_inherit",
+        args: [parentPid, childPid, BigInt(childMemory.buffer.byteLength)],
+      },
     ]);
-    expect(readChunk).toHaveBeenCalledOnce();
-    expect(recordMapping).toHaveBeenCalledExactlyOnceWith(
-      childPid,
-      firstSysvAddr,
-      11,
-      size,
-    );
-    expect(shmdtAddr).toHaveBeenCalledExactlyOnceWith(
-      childPid,
-      firstSysvAddr,
-    );
-    expect(shmdt).not.toHaveBeenCalled();
+    // The anonymous half must not have published either: a refused SysV
+    // transaction aborts the whole inheritance, not just its own half.
     expect(backing.refCount).toBe(1);
     expect(harness.state.sharedMappings.has(childPid)).toBe(false);
-    expect(harness.state.shmMappings.has(childPid)).toBe(false);
-    expect(
-      new Uint8Array(childMemory.buffer)[anonymousAddr],
-    ).toBe(0x77);
-    expect(
-      new Uint8Array(childMemory.buffer)[firstSysvAddr],
-    ).toBe(0x77);
+    expect(harness.sysv.count(childPid)).toBe(0);
+    expect(new Uint8Array(childMemory.buffer)[anonymousAddr]).toBe(0x77);
+    expect(new Uint8Array(childMemory.buffer)[firstSysvAddr]).toBe(0x77);
 
     // Expected errno rollback leaves the generation reusable.
     await Promise.resolve();
-    shmat.mockImplementation(() => size);
+    harness.implementations.kernel_shared_mapping_sysv_inherit = (
+      _parentPid: number,
+      pid: number,
+    ): number => {
+      for (const [addr, attachment] of harness.sysv.attachments.get(parentPid)!) {
+        harness.sysv.seed(pid, addr, attachment);
+      }
+      return 0;
+    };
     harness.worker.inheritProcessSharedMappings(parentPid, childPid);
 
     expect(backing.refCount).toBe(2);
     expect(harness.state.sharedMappings.get(childPid)?.size).toBe(1);
-    expect(harness.state.shmMappings.get(childPid)?.size).toBe(2);
-    expect(
-      new Uint8Array(childMemory.buffer)[anonymousAddr],
-    ).toBe(0x31);
-    expect(
-      new Uint8Array(childMemory.buffer)[firstSysvAddr],
-    ).toBe(0x41);
-    expect(
-      new Uint8Array(childMemory.buffer)[secondSysvAddr],
-    ).toBe(0x42);
-  });
-
-  it("releases an unrecorded child attachment when Rust rejects its address", () => {
-    const parentPid = 53;
-    const childPid = 54;
-    const mapAddr = 0x2000;
-    const size = 16;
-    const childMemory = processMemory();
-    new Uint8Array(childMemory.buffer).fill(0x77);
-    const shmat = vi.fn(() => size);
-    const recordMapping = vi.fn(() => -12);
-    const shmdt = vi.fn(() => 0);
-    const shmdtAddr = vi.fn(() => 0);
-    const readChunk = vi.fn(() => size);
-    const harness = makeHarness({
-      implementations: {
-        kernel_ipc_shm_read_chunk: readChunk,
-        kernel_ipc_shm_record_mapping_for_process: recordMapping,
-        kernel_ipc_shmat_for_process: shmat,
-        kernel_ipc_shmdt_addr_for_process: shmdtAddr,
-        kernel_ipc_shmdt_for_process: shmdt,
-      },
-    });
-    harness.state.processes.set(
-      childPid,
-      processRegistration(childPid, childMemory),
-    );
-    harness.state.shmMappings.set(parentPid, new Map([
-      [mapAddr, {
-        segId: 11,
-        size,
-        readOnly: false,
-        snapshot: new Uint8Array(size),
-        seenVersion: 0,
-      }],
-    ]));
-
-    expect(() => {
-      harness.worker.inheritProcessSharedMappings(parentPid, childPid);
-    }).toThrow(/Cannot record inherited SysV segment 11/);
-
-    expect(shmat).toHaveBeenCalledExactlyOnceWith(childPid, 11, mapAddr, 0);
-    expect(recordMapping).toHaveBeenCalledExactlyOnceWith(
-      childPid,
-      mapAddr,
-      11,
-      size,
-    );
-    expect(shmdt).toHaveBeenCalledExactlyOnceWith(childPid, 11);
-    expect(shmdtAddr).not.toHaveBeenCalled();
-    expect(readChunk).not.toHaveBeenCalled();
-    expect(harness.state.shmMappings.has(childPid)).toBe(false);
-    expect(new Uint8Array(childMemory.buffer)[mapAddr]).toBe(0x77);
+    expect(harness.sysv.count(childPid)).toBe(2);
+    expect(new Uint8Array(childMemory.buffer)[anonymousAddr]).toBe(0x31);
   });
 
   it("restores bytes and prior refcounts if host publication fails mid-retain", () => {
@@ -715,39 +636,19 @@ describe("shared-memory inheritance entry authority", () => {
     expect(firstBacking.refCount).toBe(1);
     expect(secondRefCount).toBe(1);
     expect(harness.state.sharedMappings.has(childPid)).toBe(false);
-    expect(harness.state.shmMappings.has(childPid)).toBe(false);
+    expect(harness.sysv.count(childPid)).toBe(0);
     expect(new Uint8Array(childMemory.buffer)[firstAddr]).toBe(0x66);
     expect(new Uint8Array(childMemory.buffer)[secondAddr]).toBe(0x66);
   });
 
-  it("rejects a non-lossless wasm64 SysV address before attachment", () => {
-    const parentPid = 71;
-    const childPid = 72;
-    const highAddress = 0x1_0000_0000;
-    const shmat = vi.fn(() => 16);
-    const harness = makeHarness({
-      implementations: {
-        kernel_ipc_shmat_for_process: shmat,
-      },
-    });
-    harness.state.processes.set(
-      childPid,
-      processRegistration(childPid, processMemory()),
-    );
-    harness.state.shmMappings.set(parentPid, new Map([
-      [highAddress, {
-        segId: 11,
-        size: 16,
-        readOnly: false,
-        snapshot: new Uint8Array(16),
-        seenVersion: 0,
-      }],
-    ]));
-
-    expect(() => {
-      harness.worker.inheritProcessSharedMappings(parentPid, childPid);
-    }).toThrow(/Cannot inherit SysV mapping/);
-    expect(shmat).not.toHaveBeenCalled();
-    expect(harness.state.shmMappings.has(childPid)).toBe(false);
-  });
+  // The host used to re-check here that a parent SysV address above 4 GiB
+  // could not be narrowed into the kernel's pointer model. That guard is gone
+  // because the case became unconstructible rather than merely unhandled: an
+  // attachment enters the mirror only through
+  // `kernel_shared_mapping_sysv_track`, whose address parameter IS the
+  // kernel's `usize`, and the host's `toKernelPtr` refuses an address it
+  // cannot represent before the export is ever called. A wasm32 kernel's
+  // mirror therefore cannot hold an address a wasm32 kernel cannot name.
+  // The equivalent guard on the shmdt path, which takes an address straight
+  // from the guest, is still exercised in `shared-memory-coherence.test.ts`.
 });

@@ -172,9 +172,19 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
     const memory = createSharedMemory();
     const channel = createChannel(18, memory);
     const commitExit = vi.fn(() => 0);
+    const commitProcessOnlyExit = vi.fn(() => 0);
     const drain = vi.fn(() => 0);
     const worker = createWorker({
-      kernel_commit_process_exit: commitExit,
+      // This case drives `ExitGroup`, and production selects its commit export
+      // by exit SCOPE: `exit_group` commits the whole group, `exit` commits one
+      // process. The fixture stubbed only the per-process export, so it had
+      // been failing with `Kernel missing required
+      // kernel_commit_process_group_exit export` -- a stale double, not a
+      // platform defect. Both are stubbed now, and the assertions below pin
+      // which one a group exit must use, so the fixture cannot drift back into
+      // agreeing with a scope it does not exercise.
+      kernel_commit_process_group_exit: commitExit,
+      kernel_commit_process_exit: commitProcessOnlyExit,
       kernel_drain_wakeup_events: drain,
       kernel_get_process_state: vi.fn(() => PROCESS_STATE_EXITED),
     });
@@ -197,6 +207,8 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
 
     expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
     expect(drain).toHaveBeenCalledOnce();
+    expect(commitExit).toHaveBeenCalledOnce();
+    expect(commitProcessOnlyExit).not.toHaveBeenCalled();
     expect(commitExit.mock.invocationCallOrder[0]).toBeLessThan(
       drain.mock.invocationCallOrder[0],
     );

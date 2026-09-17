@@ -20,13 +20,6 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   FCNTL_FLOCK_BYTES,
-  KERNEL_IOVEC_WIRE_BASE_OFFSET,
-  KERNEL_IOVEC_WIRE_LEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_FLAGS_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
   PROCESS_MSGHDR_WASM32_CONTROLLEN_OFFSET,
   PROCESS_MSGHDR_WASM32_CONTROL_OFFSET,
   PROCESS_MSGHDR_WASM32_FLAGS_OFFSET,
@@ -210,7 +203,6 @@ function createRetryHarness(
     kernel_generate_host_signal: () => 0,
     kernel_handle_channel: () => 0,
     kernel_is_fd_nonblock: () => 0,
-    kernel_mq_descriptor_msgsize: () => 4,
     kernel_pick_signal_target_tid: vi.fn(() => pid),
     kernel_set_current_tid: () => 0,
     kernel_thread_has_deliverable: vi.fn(() => 1),
@@ -540,14 +532,24 @@ describe("blocking retry snapshot contract", () => {
     expect(flagWrite).toBeGreaterThan(wakeAuthority);
     expect(pendingWrite).toBeGreaterThan(flagWrite);
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);",
+      "return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0);",
     );
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);",
+      "long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1);",
     );
-    expect(CHANNEL_SYSCALL_SOURCE).toContain(
+    // WHY: guest libc issues no deferred-delivery request of its own. The
+    // only glue that ever did was ppoll's SA_RESTART deadline arithmetic,
+    // which became unreachable once ppoll stopped being classified
+    // restartable, so the whole `extra_request_flags` channel is gone from
+    // the syscall hot path. The ABI flag itself is still live -- the process
+    // worker's continuation allocator and the Rust fork module both raise it
+    // for channel syscalls the guest consumes outside libc's post-syscall
+    // signal trampoline -- so this asserts only that libc does not resurrect
+    // a per-syscall flag argument it has no caller for.
+    expect(CHANNEL_SYSCALL_SOURCE).not.toContain(
       "CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY",
     );
+    expect(CHANNEL_SYSCALL_SOURCE).not.toContain("extra_request_flags");
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
       "request_flags |= CH_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED",
     );
@@ -638,15 +640,17 @@ describe("blocking retry snapshot contract", () => {
     ]) {
       expect(genericSet).toContain(`ABI_SYSCALLS.${syscall}`);
     }
-    // These families need nested-layout-specific plans and are deliberately
-    // reviewed outside the generic channel abstraction.
-    for (const kind of [
-      "flattened-transfer",
-      "sendmsg",
-      "recvmsg",
-      "sysv-message",
-    ]) {
-      expect(KERNEL_WORKER_SOURCE).toContain(`kind: "${kind}"`);
+    // `flattened-transfer` (writev/readv/preadv/pwritev) still needs a
+    // nested-layout-specific plan and is deliberately reviewed outside the
+    // generic channel abstraction.
+    expect(KERNEL_WORKER_SOURCE).toContain('kind: "flattened-transfer"');
+    // sendmsg/recvmsg and the SysV messages used to be here too. Their
+    // arguments are KernelDereferenced now, so the kernel reads the caller's
+    // structures at every dispatch and retains what a retry must not re-read
+    // — `msgsnd`'s payload — in its own binding. A host snapshot for one of
+    // these would be a second, competing record of the same operation.
+    for (const kind of ["sendmsg", "recvmsg", "sysv-message"]) {
+      expect(KERNEL_WORKER_SOURCE).not.toContain(`kind: "${kind}"`);
     }
   });
 
@@ -740,7 +744,6 @@ describe("blocking retry snapshot contract", () => {
       "mq_timedsend",
       "open",
       "openat",
-      "ppoll",
       "pread",
       "preadv",
       "preadv2",
@@ -767,6 +770,19 @@ describe("blocking retry snapshot contract", () => {
     // progress cannot be reconstructed by the host.
     for (const syscall of [
       "poll",
+      // WHY `ppoll` is HERE and not on the allowlist above: a caught handler
+      // must yield EINTR for the whole poll/select family, which is what Linux
+      // expresses as ERESTARTNOHAND and what this suite's own `.posix`
+      // expectations require -- `signal.expect/ppoll-block-raise.posix` is
+      // exactly `SIGUSR1` then `ppoll: EINTR`. `ppoll` was the lone member of
+      // the family still classified as restartable, disagreeing with
+      // `pselect6` beside it, and two conformance cases hung forever as a
+      // result. It was moved in commit 553e96a2d; this assertion was left
+      // behind asserting the old truth, so the suite went red on the very
+      // change it exists to police. Restating it as a prohibition rather than
+      // deleting it keeps the guard pointed at the regression it was written
+      // for.
+      "ppoll",
       "select",
       "pselect6",
       "epoll_wait",
@@ -1276,27 +1292,29 @@ describe("blocking retry request snapshots", () => {
         2n,
       ]);
 
+      // The host no longer flattens anything: it publishes the caller's own
+      // table address and count, and the kernel walks them. So what a retry
+      // must preserve, and what this observes, is the ADDRESS and COUNT of the
+      // request as first made -- never the guest's replacement mailbox.
       const attempts: Array<{
         syscall: number;
         fd: number;
-        payload: number[];
+        iovAddr: number;
+        iovCount: number;
       }> = [];
       harness.kernelExports.kernel_handle_channel = vi.fn(
         (rawPointer: number | bigint) => {
           const view = kernelView(harness, rawPointer);
-          const length = Number(kernelArg(view, 2));
-          const dataPointer = Number(kernelArg(view, 1));
           attempts.push({
             syscall: view.getUint32(CH_SYSCALL, true),
             fd: Number(kernelArg(view, 0)),
-            payload: Array.from(
-              harness.kernelBytes.slice(dataPointer, dataPointer + length),
-            ),
+            iovAddr: Number(kernelArg(view, 1)),
+            iovCount: Number(kernelArg(view, 2)),
           });
           if (attempts.length === 1) {
             publishKernelResult(view, -1, EAGAIN);
           } else {
-            publishKernelResult(view, length, 0);
+            publishKernelResult(view, 5, 0);
           }
           return 0;
         },
@@ -1320,712 +1338,46 @@ describe("blocking retry request snapshots", () => {
       harness.processBytes.fill(0xee, originalSecond, originalSecond + 3);
       await retryAfterDefaultDelay(harness);
 
+      // Both attempts carry the request as first made: writev under its own
+      // number (no scalar rewrite), the original descriptor, the original
+      // table address, and the original count -- although the guest rewrote
+      // its mailbox to fd 88, table 0x1400, count 1, repointed the original
+      // table's first entry, and scribbled over both original buffers.
+      //
+      // The BYTES the second attempt writes are the kernel's to preserve, not
+      // the host's: `BlockingRetryTarget::Vector` holds what was gathered at
+      // entry, so the payload cannot become copy-at-success. That half is
+      // proven in `crates/runtime-core/src/blocked_retry.rs` and end to end,
+      // not against this fake kernel.
       expect(attempts).toEqual([
         {
-          syscall: ABI_SYSCALLS.Write,
+          syscall: ABI_SYSCALLS.Writev,
           fd: 7,
-          payload: [1, 2, 3, 4, 5],
+          iovAddr: originalTable,
+          iovCount: 2,
         },
         {
-          syscall: ABI_SYSCALLS.Write,
+          syscall: ABI_SYSCALLS.Writev,
           fd: 7,
-          payload: [1, 2, 3, 4, 5],
+          iovAddr: originalTable,
+          iovCount: 2,
         },
       ]);
       expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Writev);
     },
   );
 
-  it.each(WIDTHS)(
-    "%s retains sendmsg's native header, iovec table, and payload",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const originalMessage = 0x1000;
-      const originalTable = 0x1100;
-      const replacementMessage = 0x1400;
-      const replacementTable = 0x1500;
-      const originalPayloadPointer = 0x2000;
-      const replacementPayloadPointer = 0x2200;
-      const originalPayload = [0x31, 0x32, 0x33, 0x34];
-      const replacementPayload = [0x91, 0x92, 0x93];
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        originalTable,
-        0,
-        originalPayloadPointer,
-        originalPayload.length,
-      );
-      writeNativeMessage(
-        harness.processBytes,
-        pointerWidth,
-        originalMessage,
-        originalTable,
-        1,
-      );
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        replacementTable,
-        0,
-        replacementPayloadPointer,
-        replacementPayload.length,
-      );
-      writeNativeMessage(
-        harness.processBytes,
-        pointerWidth,
-        replacementMessage,
-        replacementTable,
-        1,
-      );
-      harness.processBytes.set(originalPayload, originalPayloadPointer);
-      harness.processBytes.set(replacementPayload, replacementPayloadPointer);
-      writeRequest(harness, ABI_SYSCALLS.Sendmsg, [
-        7n,
-        BigInt(originalMessage),
-        0n,
-      ]);
-
-      const attempts: Array<{ fd: number; payload: number[] }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const messagePointer = Number(kernelArg(view, 1));
-          const messageView = new DataView(
-            harness.kernelBytes.buffer,
-            messagePointer,
-          );
-          const iovecPointer = messageView.getUint32(
-            KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-            true,
-          );
-          const iovecView = new DataView(
-            harness.kernelBytes.buffer,
-            iovecPointer,
-          );
-          const dataPointer = iovecView.getUint32(
-            KERNEL_IOVEC_WIRE_BASE_OFFSET,
-            true,
-          );
-          const length = iovecView.getUint32(
-            KERNEL_IOVEC_WIRE_LEN_OFFSET,
-            true,
-          );
-          attempts.push({
-            fd: Number(kernelArg(view, 0)),
-            payload: Array.from(
-              harness.kernelBytes.slice(dataPointer, dataPointer + length),
-            ),
-          });
-          if (attempts.length === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            publishKernelResult(view, length, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.Sendmsg, [
-        88n,
-        BigInt(replacementMessage),
-        0n,
-      ]);
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        originalTable,
-        0,
-        replacementPayloadPointer,
-        replacementPayload.length,
-      );
-      harness.processBytes.fill(
-        0xee,
-        originalPayloadPointer,
-        originalPayloadPointer + originalPayload.length,
-      );
-      await retryAfterDefaultDelay(harness);
-
-      expect(attempts).toEqual([
-        { fd: 7, payload: originalPayload },
-        { fd: 7, payload: originalPayload },
-      ]);
-      expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Sendmsg);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains recvmsg's native header, iovec table, and destinations",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const originalMessage = 0x1000;
-      const originalTable = 0x1100;
-      const replacementMessage = 0x1400;
-      const replacementTable = 0x1500;
-      const originalDestination = 0x2000;
-      const replacementDestination = 0x2200;
-      const payload = [0x51, 0x52, 0x53, 0x54];
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        originalTable,
-        0,
-        originalDestination,
-        payload.length,
-      );
-      writeNativeMessage(
-        harness.processBytes,
-        pointerWidth,
-        originalMessage,
-        originalTable,
-        1,
-      );
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        replacementTable,
-        0,
-        replacementDestination,
-        payload.length,
-      );
-      writeNativeMessage(
-        harness.processBytes,
-        pointerWidth,
-        replacementMessage,
-        replacementTable,
-        1,
-      );
-      harness.processBytes.fill(
-        0x10,
-        originalDestination,
-        originalDestination + payload.length,
-      );
-      harness.processBytes.fill(
-        0x20,
-        replacementDestination,
-        replacementDestination + payload.length,
-      );
-      writeRequest(harness, ABI_SYSCALLS.Recvmsg, [
-        7n,
-        BigInt(originalMessage),
-        0n,
-      ]);
-
-      let attempts = 0;
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          attempts++;
-          const view = kernelView(harness, rawPointer);
-          const messagePointer = Number(kernelArg(view, 1));
-          const messageView = new DataView(
-            harness.kernelBytes.buffer,
-            messagePointer,
-          );
-          if (attempts === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            const iovecPointer = messageView.getUint32(
-              KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-              true,
-            );
-            const iovecView = new DataView(
-              harness.kernelBytes.buffer,
-              iovecPointer,
-            );
-            const dataPointer = iovecView.getUint32(
-              KERNEL_IOVEC_WIRE_BASE_OFFSET,
-              true,
-            );
-            harness.kernelBytes.set(payload, dataPointer);
-            messageView.setUint32(KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET, 0, true);
-            messageView.setUint32(
-              KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-              0,
-              true,
-            );
-            messageView.setUint32(KERNEL_MSGHDR_WIRE_FLAGS_OFFSET, 0x20, true);
-            publishKernelResult(view, payload.length, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.Recvmsg, [
-        88n,
-        BigInt(replacementMessage),
-        0n,
-      ]);
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        originalTable,
-        0,
-        replacementDestination,
-        payload.length,
-      );
-      await retryAfterDefaultDelay(harness);
-
-      expect(
-        Array.from(
-          harness.processBytes.slice(
-            originalDestination,
-            originalDestination + payload.length,
-          ),
-        ),
-      ).toEqual(payload);
-      expect(
-        Array.from(
-          harness.processBytes.slice(
-            replacementDestination,
-            replacementDestination + payload.length,
-          ),
-        ),
-      ).toEqual([0x20, 0x20, 0x20, 0x20]);
-      const layout = nativeMessageLayout(pointerWidth);
-      expect(
-        new DataView(harness.processBytes.buffer).getUint32(
-          originalMessage + layout.flagsOffset,
-          true,
-        ),
-      ).toBe(0x20);
-      expect(
-        new DataView(harness.processBytes.buffer).getUint32(
-          replacementMessage + layout.flagsOffset,
-          true,
-        ),
-      ).toBe(0);
-      expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Recvmsg);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains mq_timedsend's descriptor, priority, and message bytes",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const originalMessage = 0x1000;
-      const replacementMessage = 0x2000;
-      const originalPayload = [0x61, 0x62, 0x63, 0x64];
-      const replacementPayload = [0x91, 0x92, 0x93, 0x94];
-      harness.processBytes.set(originalPayload, originalMessage);
-      harness.processBytes.set(replacementPayload, replacementMessage);
-      writeRequest(harness, ABI_SYSCALLS.MqTimedsend, [
-        7n,
-        BigInt(originalMessage),
-        4n,
-        3n,
-        0n,
-      ]);
-
-      const attempts: Array<{
-        descriptor: number;
-        priority: number;
-        payload: number[];
-      }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const length = Number(kernelArg(view, 2));
-          const dataPointer = Number(kernelArg(view, 1));
-          attempts.push({
-            descriptor: Number(kernelArg(view, 0)),
-            priority: Number(kernelArg(view, 3)),
-            payload: Array.from(
-              harness.kernelBytes.slice(dataPointer, dataPointer + length),
-            ),
-          });
-          if (attempts.length === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            publishKernelResult(view, 0, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.MqTimedsend, [
-        88n,
-        BigInt(replacementMessage),
-        4n,
-        9n,
-        0n,
-      ]);
-      harness.processBytes.fill(
-        0xee,
-        originalMessage,
-        originalMessage + originalPayload.length,
-      );
-      await retryAfterDefaultDelay(harness);
-
-      expect(attempts).toEqual([
-        {
-          descriptor: 7,
-          priority: 3,
-          payload: originalPayload,
-        },
-        {
-          descriptor: 7,
-          priority: 3,
-          payload: originalPayload,
-        },
-      ]);
-      expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.MqTimedsend);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains mq_timedreceive's descriptor and output destinations",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const originalDestination = 0x1000;
-      const originalPriority = 0x1100;
-      const replacementDestination = 0x2000;
-      const replacementPriority = 0x2100;
-      const payload = [0x71, 0x72, 0x73, 0x74];
-      harness.processBytes.fill(
-        0x10,
-        originalDestination,
-        originalDestination + payload.length,
-      );
-      harness.processBytes.fill(
-        0x20,
-        replacementDestination,
-        replacementDestination + payload.length,
-      );
-      writeRequest(harness, ABI_SYSCALLS.MqTimedreceive, [
-        7n,
-        BigInt(originalDestination),
-        4n,
-        BigInt(originalPriority),
-        0n,
-      ]);
-
-      const descriptors: number[] = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          descriptors.push(Number(kernelArg(view, 0)));
-          if (descriptors.length === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            harness.kernelBytes.set(payload, Number(kernelArg(view, 1)));
-            new DataView(harness.kernelBytes.buffer).setUint32(
-              Number(kernelArg(view, 3)),
-              17,
-              true,
-            );
-            publishKernelResult(view, payload.length, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.MqTimedreceive, [
-        88n,
-        BigInt(replacementDestination),
-        4n,
-        BigInt(replacementPriority),
-        0n,
-      ]);
-      await retryAfterDefaultDelay(harness);
-
-      expect(descriptors).toEqual([7, 7]);
-      expect(
-        Array.from(
-          harness.processBytes.slice(
-            originalDestination,
-            originalDestination + payload.length,
-          ),
-        ),
-      ).toEqual(payload);
-      expect(
-        Array.from(
-          harness.processBytes.slice(
-            replacementDestination,
-            replacementDestination + payload.length,
-          ),
-        ),
-      ).toEqual([0x20, 0x20, 0x20, 0x20]);
-      const processView = new DataView(harness.processBytes.buffer);
-      expect(processView.getUint32(originalPriority, true)).toBe(17);
-      expect(processView.getUint32(replacementPriority, true)).toBe(0);
-      expectExactRetryBindingLifecycle(
-        harness,
-        ABI_SYSCALLS.MqTimedreceive,
-      );
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains msgsnd's queue, native type, flags, and payload",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const originalMessage = 0x1000;
-      const replacementMessage = 0x2000;
-      const originalPayload = [0x21, 0x22, 0x23];
-      const replacementPayload = [0x81, 0x82, 0x83];
-      writeNativeSysvMessage(
-        harness.processBytes,
-        pointerWidth,
-        originalMessage,
-        5n,
-        originalPayload,
-      );
-      writeNativeSysvMessage(
-        harness.processBytes,
-        pointerWidth,
-        replacementMessage,
-        9n,
-        replacementPayload,
-      );
-      writeRequest(harness, ABI_SYSCALLS.Msgsnd, [
-        7n,
-        BigInt(originalMessage),
-        BigInt(originalPayload.length),
-        0n,
-      ]);
-
-      const attempts: Array<{
-        queue: number;
-        type: bigint;
-        payload: number[];
-      }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const dataPointer = Number(kernelArg(view, 1));
-          const length = Number(kernelArg(view, 2));
-          const dataView = new DataView(
-            harness.kernelBytes.buffer,
-            dataPointer,
-          );
-          attempts.push({
-            queue: Number(kernelArg(view, 0)),
-            type: dataView.getBigInt64(0, true),
-            payload: Array.from(
-              harness.kernelBytes.slice(
-                dataPointer + STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-                dataPointer + STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER + length,
-              ),
-            ),
-          });
-          if (attempts.length === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            publishKernelResult(view, 0, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.Msgsnd, [
-        88n,
-        BigInt(replacementMessage),
-        BigInt(replacementPayload.length),
-        0n,
-      ]);
-      writeNativeSysvMessage(
-        harness.processBytes,
-        pointerWidth,
-        originalMessage,
-        11n,
-        [0xee, 0xee, 0xee],
-      );
-      await retryAfterDefaultDelay(harness);
-
-      expect(attempts).toEqual([
-        {
-          queue: 7,
-          type: 5n,
-          payload: originalPayload,
-        },
-        {
-          queue: 7,
-          type: 5n,
-          payload: originalPayload,
-        },
-      ]);
-      expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Msgsnd);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains msgrcv's queue, type selector, flags, and destination",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const originalDestination = 0x1000;
-      const replacementDestination = 0x2000;
-      const payload = [0x31, 0x32, 0x33];
-      writeNativeSysvMessage(
-        harness.processBytes,
-        pointerWidth,
-        originalDestination,
-        0n,
-        [0x10, 0x10, 0x10],
-      );
-      writeNativeSysvMessage(
-        harness.processBytes,
-        pointerWidth,
-        replacementDestination,
-        0n,
-        [0x20, 0x20, 0x20],
-      );
-      writeRequest(harness, ABI_SYSCALLS.Msgrcv, [
-        7n,
-        BigInt(originalDestination),
-        BigInt(payload.length),
-        5n,
-        0n,
-      ]);
-
-      const attempts: Array<{
-        queue: number;
-        typeSelector: bigint;
-        flags: number;
-      }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          attempts.push({
-            queue: Number(kernelArg(view, 0)),
-            typeSelector: kernelArg(view, 3),
-            flags: Number(kernelArg(view, 4)),
-          });
-          if (attempts.length === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            const dataPointer = Number(kernelArg(view, 1));
-            const dataView = new DataView(
-              harness.kernelBytes.buffer,
-              dataPointer,
-            );
-            dataView.setBigInt64(0, 9n, true);
-            harness.kernelBytes.set(
-              payload,
-              dataPointer + STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-            );
-            publishKernelResult(view, payload.length, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.Msgrcv, [
-        88n,
-        BigInt(replacementDestination),
-        BigInt(payload.length),
-        12n,
-        0x800n,
-      ]);
-      await retryAfterDefaultDelay(harness);
-
-      expect(attempts).toEqual([
-        { queue: 7, typeSelector: 5n, flags: 0 },
-        { queue: 7, typeSelector: 5n, flags: 0 },
-      ]);
-      expect(
-        readNativeSysvMessage(
-          harness.processBytes,
-          pointerWidth,
-          originalDestination,
-          payload.length,
-        ),
-      ).toEqual({
-        type: 9n,
-        payload,
-      });
-      expect(
-        readNativeSysvMessage(
-          harness.processBytes,
-          pointerWidth,
-          replacementDestination,
-          payload.length,
-        ),
-      ).toEqual({
-        type: 0n,
-        payload: [0x20, 0x20, 0x20],
-      });
-      expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Msgrcv);
-    },
-  );
-
-  describe.each([
-    ["msgsnd", ABI_SYSCALLS.Msgsnd, [7n, 0x1000n, 3n, 0x800n]],
-    [
-      "msgrcv",
-      ABI_SYSCALLS.Msgrcv,
-      [7n, 0x1000n, 3n, 5n, 0x800n],
-    ],
-  ] as const)("%s IPC_NOWAIT", (_syscallName, syscall, args) => {
-    it.each(WIDTHS)(
-      "%s publishes EAGAIN only after releasing the exact queue pin",
-      (_name, pointerWidth) => {
-        const harness = createRetryHarness(pointerWidth);
-        writeNativeSysvMessage(
-          harness.processBytes,
-          pointerWidth,
-          0x1000,
-          3n,
-          [1, 2, 3],
-        );
-        writeRequest(harness, syscall, args);
-        harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 78n);
-        harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) => {
-            publishKernelResult(
-              kernelView(harness, rawPointer),
-              -1,
-              EAGAIN,
-            );
-            return 0;
-          },
-        );
-
-        harness.worker.handleSyscall(harness.channel);
-
-        expect(requestResult(harness)).toEqual({
-          status: CHANNEL_STATUS_COMPLETE,
-          returnValue: -1,
-          errno: EAGAIN,
-        });
-        expect(harness.worker.pendingPollRetries.has(harness.channel)).toBe(
-          false,
-        );
-        expect(
-          harness.kernelExports.kernel_blocking_retry_token,
-        ).toHaveBeenCalledWith(
-          harness.channel.pid,
-          harness.channel.pid,
-          syscall,
-        );
-        expect(
-          harness.kernelExports.kernel_blocking_retry_release,
-        ).toHaveBeenCalledWith(
-          harness.channel.pid,
-          harness.channel.pid,
-          78n,
-        );
-        expect(
-          (
-            harness.kernelExports.kernel_handle_channel as ReturnType<
-              typeof vi.fn
-            >
-          ).mock.calls.map((call) => call[3]),
-        ).toEqual([0n]);
-      },
-    );
-  });
+  // The sendmsg/recvmsg, mqueue and SysV message retry-snapshot cases that
+  // stood here died with their subject. They proved the HOST retained a
+  // request snapshot — a native msghdr, an mqueue message, a msgbuf — and
+  // replayed it on each EAGAIN. Those arguments are KernelDereferenced now:
+  // the kernel reads the caller's structures at every dispatch, and retains
+  // the one thing a retry must NOT re-read, `msgsnd`'s payload, in
+  // `BlockingRetryTarget::SysvMessage::pending_send`. A host snapshot would
+  // be a second, competing record of the same operation.
+  //
+  // The queue-pin release the IPC_NOWAIT cases checked is likewise kernel
+  // state now; `crates/runtime-core/src/blocked_retry.rs` covers it.
 
   it.each(WIDTHS)(
     "%s retains semop's semid and detached sembuf array across ID reuse",
@@ -5051,7 +4403,10 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         const key =
           `${harness.channel.pid}:${harness.channel.channelOffset}`;
         expect(harness.worker.pendingSignalWaits.has(key)).toBe(false);
-        expect(harness.worker.signalWaitDeadlines.has(key)).toBe(false);
+        // The deadline is kernel state keyed on this channel's execution
+        // generation now, not a host map keyed on `pid:offset`. Retiring it
+        // clears the handle.
+        expect(harness.channel.waitHandle).toBeUndefined();
       }
 
       {
@@ -5513,7 +4868,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
       const signalWaitKey =
         `${targetChannel.pid}:${targetChannel.channelOffset}`;
       expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(true);
-      expect(harness.worker.signalWaitDeadlines.has(signalWaitKey)).toBe(true);
+      expect(targetChannel.waitHandle).toBeTypeOf("bigint");
 
       writeRequest(
         harness,
@@ -5534,7 +4889,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         errno: EINTR,
       });
       expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(false);
-      expect(harness.worker.signalWaitDeadlines.has(signalWaitKey)).toBe(false);
+      expect(targetChannel.waitHandle).toBeUndefined();
       expect(harness.worker.pendingCancels.has(targetChannel)).toBe(false);
       expect(
         Array.from(

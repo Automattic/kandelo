@@ -32,6 +32,13 @@ inputs = [
   "host/src/vfs/tar.ts",
   "host/src/vfs/types.ts",
   "host/src/vfs/zip.ts",
+  "host/src/vfs/kernel-lazy-section.ts",
+  "host/src/vfs/lazy-archive-paths.ts",
+  "host/src/vfs/vfs-errors.ts",
+  "host/src/vfs/vfs-image-transport.ts",
+  "host/src/wasm-artifact-driver.ts",
+  "host/src/wasm-artifact-module-registry.ts",
+  "images/vfs/lib/sffs-image-fs.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"

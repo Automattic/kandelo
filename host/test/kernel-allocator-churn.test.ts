@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const churnProgram = resolve(
@@ -22,7 +22,7 @@ function readArrayBuffer(path: string): ArrayBuffer {
 }
 
 async function spawnChurnRootfs(): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  const fs = SffsImageFs.create();
   fs.mkdir("/bin", 0o755);
   fs.createFileWithOwner(
     "/bin/kernel_allocator_churn_test",

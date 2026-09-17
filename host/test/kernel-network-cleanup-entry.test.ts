@@ -215,7 +215,6 @@ describe("network cleanup entry authority", () => {
           [41, []],
           [42, []],
         ]),
-        usePolling: true,
       });
 
       harness.worker.unregisterProcess(41);

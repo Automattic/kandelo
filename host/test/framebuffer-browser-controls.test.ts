@@ -5,10 +5,8 @@ import {
   DEFAULT_POINTER_LOCK_MOUSE_SENSITIVITY,
   encodeKeyboardEventAsLinuxMediumRaw,
   encodeLinuxMediumRawKeyCode,
-  injectChunkedMouseMotion,
   linuxKeyCodeFromKeyboardEvent,
   scalePointerLockMouseDelta,
-  type MouseEventSink,
 } from "../src/framebuffer/browser-controls.js";
 
 describe("framebuffer browser controls", () => {
@@ -106,14 +104,21 @@ describe("framebuffer browser controls", () => {
     keyboard.close();
   });
 
-  it("scales CSS-pixel pointer-lock movement into PS/2 deltas", () => {
+  // These assert SCREEN sense throughout: positive dy is down, exactly as the
+  // browser reports `movementY`. They used to assert the PS/2 sense, because
+  // this function inverted Y itself. That inversion now lives in
+  // `crates/runtime-core/src/mouse.rs`, with the packet layout and sign bits it
+  // exists to satisfy -- so what changed is which layer owns the convention,
+  // not the bytes a guest eventually reads. `mouse.rs`'s
+  // `screen_sense_dy_is_inverted_into_the_ps2_packet` pins the other half.
+  it("scales CSS-pixel pointer-lock movement into screen-sense deltas", () => {
     expect(scalePointerLockMouseDelta(10, -5, {
       sensitivity: 2,
       canvasWidth: 640,
       canvasHeight: 400,
       clientWidth: 320,
       clientHeight: 200,
-    })).toEqual({ dx: 40, dy: 20 });
+    })).toEqual({ dx: 40, dy: -20 });
   });
 
   it("defaults to screen-space-ish Doom mouse scaling", () => {
@@ -123,25 +128,13 @@ describe("framebuffer browser controls", () => {
       canvasHeight: 400,
       clientWidth: 640,
       clientHeight: 400,
-    })).toEqual({ dx: 40, dy: -8 });
+    })).toEqual({ dx: 40, dy: 8 });
   });
 
-  it("splits large mouse movement into legal signed-byte PS/2 packets", () => {
-    const packets: Array<{ dx: number; dy: number; buttons: number }> = [];
-    const sink: MouseEventSink = {
-      injectMouseEvent: (dx, dy, buttons) => {
-        packets.push({ dx, dy, buttons });
-      },
-    };
-
-    injectChunkedMouseMotion(sink, 300, -260, 0b101);
-
-    expect(packets).toEqual([
-      { dx: 127, dy: -128, buttons: 0b101 },
-      { dx: 127, dy: -128, buttons: 0b101 },
-      { dx: 46, dy: -4, buttons: 0b101 },
-    ]);
-  });
+  // Splitting a large displacement into legal signed-byte PS/2 packets is the
+  // kernel's job now, and is covered by `mouse::tests::
+  // large_displacement_splits_across_packets_preserving_total` in
+  // `crates/runtime-core/src/mouse.rs` with this same 300/-260/0b101 case.
 
   it("keeps the retired PCM scheduler export explicitly unavailable", async () => {
     let drainCalls = 0;

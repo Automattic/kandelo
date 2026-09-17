@@ -27,6 +27,7 @@ import {
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS } from "../../images/vfs/lib/init/shell-binaries";
 import {
+  NCURSES_TERMINFO_RUNTIME_FILE,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "../../images/vfs/scripts/shell-lazy-archives";
@@ -256,6 +257,21 @@ function fixturePaths(root: string) {
       }),
     );
   }
+  // The terminfo database is materialized eagerly rather than lazily (see
+  // NCURSES_TERMINFO_RUNTIME_FILE), so it is not in SHELL_LAZY_ARCHIVE_SPECS
+  // and has to be staged separately. Every image build reads it, so a fixture
+  // without it fails before reaching whatever the test was actually asserting.
+  writeFileSync(
+    join(
+      dependencyRoots.get(NCURSES_TERMINFO_RUNTIME_FILE.dependency)!,
+      NCURSES_TERMINFO_RUNTIME_FILE.resolverPath.split("/").at(-1)!,
+    ),
+    zipSync({
+      [NCURSES_TERMINFO_RUNTIME_FILE.requiredEntry]: new TextEncoder().encode(
+        "xterm-256color fixture",
+      ),
+    }),
+  );
   const resolveArtifact: ShellLazyArchiveResolver = (
     resolverPath,
     requestedDependency,
@@ -348,7 +364,14 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*30$/m);
+    // The revision must be declared, not pinned to a literal here. What this
+    // test is about is a closed build graph -- an unpublished commit and no
+    // Git inputs, asserted above and below. A revision bump is ordinary,
+    // correct maintenance (it is how cache invalidation is expressed), and
+    // pinning the number made every legitimate bump fail a test that has
+    // nothing to say about the number: it sat at 30 while the package moved
+    // to 32.
+    expect(buildToml).toMatch(/^revision\s*=\s*\d+$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",

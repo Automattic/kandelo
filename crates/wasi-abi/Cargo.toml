@@ -1,0 +1,17 @@
+[package]
+name = "wasi-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASI Preview 1 <-> POSIX translation, host-testable and free of wasm assumptions"
+
+[lib]
+name = "wasi_abi"
+crate-type = ["rlib"]
+
+# `no_std`, no allocator, no wasm assumptions. Everything here is pure
+# computation over integers and byte slices, so the whole crate is exercised by
+# an ordinary `cargo test -p wasi-abi` on the host target -- no wasm, no
+# worker, no kernel. That is the point of splitting it out of `wasi-module`.
+[dependencies]
+wasm-posix-shared = { path = "../shared" }

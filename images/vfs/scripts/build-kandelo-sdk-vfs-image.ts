@@ -10,7 +10,8 @@ import {
 import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   exactVfsImageMetadata,
@@ -43,7 +44,7 @@ export interface KandeloSdkVfsInputs {
 }
 
 function copyTree(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   hostRoot: string,
   vfsRoot: string,
   fileMode = 0o644,
@@ -133,7 +134,11 @@ export async function buildKandeloSdkVfsImage(
   }
 
   const maximumBytes = inputs.maximumBytes ?? 256 * 1024 * 1024;
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(maximumBytes));
+  const fs = SffsImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(maximumBytes);
   for (const dir of [
     "/usr", "/usr/bin", "/usr/lib", "/usr/lib/llvm", "/usr/lib/llvm/bin",
     "/usr/lib/llvm/lib", "/usr/lib/llvm/lib/clang", "/usr/wasm32posix", "/home",

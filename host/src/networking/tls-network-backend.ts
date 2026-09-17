@@ -14,11 +14,9 @@
  */
 
 import type { NetworkIO } from "../types";
+import { NET_READINESS } from "../generated/abi";
 import { EagainError } from "./fetch-backend";
-import {
-  parseNumericIpv4Hostname,
-  validateSyntheticDnsHostname,
-} from "./hostname";
+import { validateSyntheticDnsHostname } from "./hostname";
 import {
   BrowserCorsProxy,
   type BrowserCorsProxyConfig,
@@ -31,11 +29,18 @@ import {
   certificateToPEM,
   type GeneratedCertificate,
 } from "../../../packages/registry/openssl/src/tls/certificates";
+// HTTP/1.1 framing is shared with `fetch-backend.ts` — see `http1.ts` for why
+// the two copies this file used to carry were not merely redundant.
+import {
+  browserRepresentableHeaders,
+  findHeaderEnd,
+  formatHttpResponse,
+  headersFromOccurrences,
+  lastHeaderValue,
+  parseContentLength,
+  parseHttpRequest,
+} from "./http1";
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 // ------------------------------------------------------------------ types
@@ -87,44 +92,6 @@ function concatBuffers(a: Uint8Array, b: Uint8Array): Uint8Array {
   return result;
 }
 
-function findHeaderEnd(buf: Uint8Array): number {
-  for (let i = 0; i <= buf.length - 4; i++) {
-    if (buf[i] === 0x0d && buf[i + 1] === 0x0a && buf[i + 2] === 0x0d && buf[i + 3] === 0x0a) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-function parseContentLength(headers: string): number {
-  const match = headers.match(/content-length:\s*(\d+)/i);
-  return match ? parseInt(match[1], 10) : 0;
-}
-
-function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
-  method: string;
-  path: string;
-  version: string;
-  headers: HttpHeaderOccurrence[];
-  body: Uint8Array | null;
-} {
-  const headerStr = new TextDecoder().decode(buf.subarray(0, headerEnd));
-  const lines = headerStr.split("\r\n");
-  const [method, path, version] = lines[0].split(" ");
-  const headers: HttpHeaderOccurrence[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const colon = lines[i].indexOf(":");
-    if (colon > 0) {
-      headers.push([
-        lines[i].substring(0, colon).trim(),
-        lines[i].substring(colon + 1).trim(),
-      ]);
-    }
-  }
-  const bodyStart = headerEnd + 4;
-  const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
-  return { method, path, version, headers, body };
-}
 
 function indexOfCRLF(buf: Uint8Array, from: number): number {
   for (let i = from; i + 1 < buf.length; i++) {
@@ -209,8 +176,15 @@ async function decodeContentEncodingBody(
     ? "deflate"
     : null;
   if (format === null) return null;
+  // `Response` takes a `BodyInit`, which excludes a `SharedArrayBuffer`-backed
+  // view — and this body came out of guest process memory, which is exactly
+  // that. Every engine this platform targets throws rather than reading one,
+  // so copy at the boundary and only when the copy is actually needed.
+  const bodyBytes: Uint8Array<ArrayBuffer> = body.buffer instanceof ArrayBuffer
+    ? body as Uint8Array<ArrayBuffer>
+    : new Uint8Array(body) as Uint8Array<ArrayBuffer>;
   const decoded = new Response(
-    new Response(body).body!.pipeThrough(new DecompressionStream(format)),
+    new Response(bodyBytes).body!.pipeThrough(new DecompressionStream(format)),
   );
   return new Uint8Array(await decoded.arrayBuffer()) as Uint8Array<ArrayBuffer>;
 }
@@ -236,63 +210,6 @@ function requestKeepsConnectionAlive(
   return true;
 }
 
-function lastHeaderValue(
-  headers: readonly HttpHeaderOccurrence[],
-  name: string,
-): string | undefined {
-  let result: string | undefined;
-  for (const [headerName, value] of headers) {
-    if (headerName.toLowerCase() === name) result = value;
-  }
-  return result;
-}
-
-function browserRepresentableHeaders(
-  headers: readonly HttpHeaderOccurrence[],
-): HttpHeaderOccurrence[] {
-  return headers.filter(([name]) => {
-    const lower = name.toLowerCase();
-    return lower !== "host" && lower !== "connection";
-  });
-}
-
-function headersFromOccurrences(
-  occurrences: readonly HttpHeaderOccurrence[],
-): Headers {
-  const headers = new Headers();
-  for (const [name, value] of occurrences) headers.append(name, value);
-  return headers;
-}
-
-const HOP_BY_HOP_HEADERS = new Set([
-  "transfer-encoding",
-  "content-encoding",
-  "connection",
-  "keep-alive",
-]);
-
-function formatHttpResponse(
-  status: number,
-  statusText: string,
-  headers: Headers,
-  body: ArrayBuffer,
-): Uint8Array {
-  const bodyBytes = new Uint8Array(body);
-  let headerStr = `HTTP/1.1 ${status} ${statusText}\r\n`;
-  headers.forEach((value, key) => {
-    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase()) && key.toLowerCase() !== "content-length") {
-      headerStr += `${key}: ${value}\r\n`;
-    }
-  });
-  headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
-  headerStr += "\r\n";
-
-  const headerBytes = new TextEncoder().encode(headerStr);
-  const result = new Uint8Array(headerBytes.length + bodyBytes.length);
-  result.set(headerBytes);
-  result.set(bodyBytes, headerBytes.length);
-  return result;
-}
 
 // ------------------------------------------------------------------ backend
 
@@ -375,8 +292,6 @@ export class TlsNetworkBackend implements NetworkIO {
   // ---- NetworkIO implementation ----
 
   getaddrinfo(hostname: string): Uint8Array {
-    const literalIp = parseNumericIpv4Hostname(hostname);
-    if (literalIp) return literalIp;
     validateSyntheticDnsHostname(hostname, this.dnsAliases);
 
     const ip = this.syntheticIp(hostname);
@@ -817,42 +732,43 @@ export class TlsNetworkBackend implements NetworkIO {
     return result;
   }
 
-  poll(handle: number, events: number): number {
+  /**
+   * Report what each transport makes observable. No POSIX readiness decision
+   * is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
 
-    let revents = 0;
-    if ((events & POLLOUT) !== 0 && (conn.kind === "http" || !conn.closed)) {
-      revents |= POLLOUT;
-    }
+    let facts = 0;
 
     if (conn.kind === "http") {
-      if (conn.fetchError) return revents | POLLERR;
-      if (
-        (events & POLLIN) !== 0 &&
-        conn.responseBuf &&
-        conn.responseOffset < conn.responseBuf.length
-      ) {
-        revents |= POLLIN;
+      if (conn.fetchError) facts |= NET_READINESS.ERROR;
+      if (conn.responseBuf && conn.responseOffset < conn.responseBuf.length) {
+        facts |= NET_READINESS.RECV_READY;
       }
       if (
-        conn.fetchDone &&
-        conn.responseBuf &&
-        conn.responseOffset >= conn.responseBuf.length
+        conn.fetchDone
+        && !conn.fetchError
+        && (!conn.responseBuf || conn.responseOffset >= conn.responseBuf.length)
       ) {
-        revents |= POLLHUP;
+        facts |= NET_READINESS.RECV_EOF;
       }
-      return revents;
+      // `send` buffers the request and dispatches when it is complete.
+      return facts | NET_READINESS.SEND_READY;
     }
 
-    if (conn.error) return revents | POLLERR;
-    if ((events & POLLIN) !== 0 && conn.clientDownstreamBuf.length > 0) {
-      revents |= POLLIN;
-    }
+    if (conn.error) facts |= NET_READINESS.ERROR;
+    if (conn.clientDownstreamBuf.length > 0) facts |= NET_READINESS.RECV_READY;
     if (conn.closed && conn.clientDownstreamBuf.length === 0) {
-      revents |= POLLHUP;
+      facts |= NET_READINESS.RECV_EOF | NET_READINESS.HANGUP;
     }
-    return revents;
+    if (conn.closed) {
+      facts |= NET_READINESS.SEND_CLOSED;
+    } else {
+      facts |= NET_READINESS.SEND_READY;
+    }
+    return facts;
   }
 
   // ---- Utilities ----

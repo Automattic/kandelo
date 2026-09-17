@@ -10,15 +10,47 @@ function source(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), "utf8");
 }
 
+/** The single implementation both entries call for shared lifecycle logic. */
+const sharedLifecycle = source("host/src/process-lifecycle.ts");
+
+/**
+ * Slice one top-level function's body out of an entry file.
+ *
+ * `nextName` is optional and only narrows the slice further. The default
+ * bound is the entry's own structure — the next declaration at column 0 —
+ * because naming a neighbouring function couples this assertion to code it
+ * is not testing: moving that neighbour (for instance into
+ * `host/src/process-lifecycle.ts`) silently turns the slice into `-1` and
+ * fails a test whose subject has not changed at all.
+ */
 function functionSource(
   text: string,
   startName: string,
-  nextName: string,
+  nextName?: string,
 ): string {
   const start = text.indexOf(startName);
-  const end = text.indexOf(nextName, start + startName.length);
   expect(start, `missing ${startName}`).toBeGreaterThanOrEqual(0);
-  expect(end, `missing ${nextName} after ${startName}`).toBeGreaterThan(start);
+  const bodyStart = start + startName.length;
+  let end: number;
+  if (nextName !== undefined) {
+    end = text.indexOf(nextName, bodyStart);
+    expect(end, `missing ${nextName} after ${startName}`).toBeGreaterThan(start);
+  } else {
+    // Bound at the next declaration written at the SAME indent as this one.
+    // Anchoring to the start marker's own indent is what lets the same helper
+    // slice a top-level entry function and a function inside
+    // `createProcessLifecycle`, without a two-space-indented `const` in a
+    // body ending the slice early.
+    const indent = /^ */.exec(startName)![0];
+    const next = text.slice(bodyStart).search(
+      new RegExp(
+        "\\n" + indent
+        + "(?:export )?(?:async )?(?:function|const|let|class|interface|type) ",
+      ),
+    );
+    end = next === -1 ? text.length : bodyStart + next;
+    expect(end, `no declaration follows ${startName}`).toBeGreaterThan(start);
+  }
   return text.slice(start, end);
 }
 
@@ -29,11 +61,17 @@ describe.each([
   const entry = source(relativePath);
 
   it("replaces PID-stable authority only in the committed exec transition", () => {
-    const exec = functionSource(
-      entry,
-      "async function handleExec(",
-      "async function handlePosixSpawnResolve(",
-    );
+    // `handleExec` is one implementation in `host/src/process-lifecycle.ts`
+    // serving both hosts, so it is sliced from there. That makes this
+    // assertion stronger, not weaker: the authority replacement can no longer
+    // sit inside one host's committed transition and outside the other's.
+    // Both entries are still required to bind it, so sharing the function
+    // cannot read as deleting it.
+    expect(
+      entry.includes("  handleExec,\n") && entry.includes("} = lifecycle;"),
+      `${relativePath} must bind handleExec from ./process-lifecycle`,
+    ).toBe(true);
+    const exec = functionSource(sharedLifecycle, "  async function handleExec(");
     const commit = exec.indexOf(
       "kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)",
     );
@@ -52,11 +90,17 @@ describe.each([
   });
 
   it("gives pthread Workers the main process image generation", () => {
-    const clone = functionSource(
-      entry,
-      "async function handleClone(",
-      "function handleThreadExit(",
-    );
+    // `handleClone` is one implementation in `host/src/process-lifecycle.ts`
+    // serving both hosts, so it is sliced from there. That makes this
+    // assertion stronger, not weaker: a pthread worker can no longer be given
+    // the right generation on one host's clone path and the wrong one — or
+    // none — on the other's. Both entries are still required to bind it, so
+    // sharing the function cannot read as deleting it.
+    expect(
+      entry.includes("  handleClone,\n") && entry.includes("} = lifecycle;"),
+      `${relativePath} must bind handleClone from ./process-lifecycle`,
+    ).toBe(true);
+    const clone = functionSource(sharedLifecycle, "  async function handleClone(");
     expect(clone).toContain(
       "externrefGenerationId: processInfo.externrefGeneration.id",
     );
@@ -68,10 +112,14 @@ describe.each([
     const terminateStart = relativePath.includes("browser")
       ? "async function handleTerminateProcess("
       : "async function handleTerminate(";
+    // `finishProcessExit` is one implementation in
+    // `host/src/process-lifecycle.ts` serving both hosts, so it is sliced from
+    // there. That makes this assertion stronger, not weaker: the release can no
+    // longer be present on one host's exit path and missing on the other's.
     const exit = functionSource(
-      entry,
-      "async function finishProcessExit(",
-      terminateStart,
+      sharedLifecycle,
+      "  async function finishProcessExit(",
+      "  async function awaitFinalizedProcessTeardown(",
     );
     const destroyStart = "async function handleDestroy(";
     const terminate = functionSource(entry, terminateStart, destroyStart);

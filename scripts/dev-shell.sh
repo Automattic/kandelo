@@ -113,6 +113,41 @@ nix_develop=(
     --keep GITHUB_EVENT_NAME \
     --keep GITHUB_EVENT_PATH \
     --keep KANDELO_NIX_BIN \
+    # WHY this one is kept: `./run.sh` re-enters this script to run xtask
+    # (e.g. `rebuild`), so an override set OUTSIDE the dev shell is stripped by
+    # --ignore-environment before xtask ever sees it, and the build silently
+    # falls back to the shared $HOME/.cache/kandelo/source-only. That is worse
+    # than not offering the flag: a cache entry records the absolute source
+    # path of whichever worktree populated it first, so concurrent worktrees
+    # can run each other's build scripts and fail in ways that name neither.
+    --keep KANDELO_SOURCE_CACHE_ROOT \
+    # WHY this one is kept: it is the same hazard as the line above, for the
+    # other half of the cache. `run.sh` reads it OUTSIDE this shell (see the
+    # `cache_root` local in `cmd_local_build`) and xtask reads it INSIDE, so
+    # stripping it did not disable the override -- it made the override
+    # SILENTLY INEFFECTIVE, and the build fell back to the shared
+    # $HOME/.cache/kandelo/programs while its caller believed it was isolated.
+    # That was found the expensive way: an agent asked to keep its package
+    # cache to itself was writing into the shared one, and nothing said so.
+    # A knob that cannot be reached from where people set it is worse than no
+    # knob, because it reports success.
+    --keep WASM_POSIX_BINARY_CACHE_ROOT \
+    # WHY this one is kept: the sortix conformance runners take the os-test
+    # checkout to build from here, and they run INSIDE this shell. On a
+    # case-insensitive filesystem the submodule checkout is case-collapsed and
+    # the runners refuse it, so the only way to run the suite truthfully is to
+    # point them at a case-sensitive checkout. Stripping this would make that
+    # override silently ineffective and leave the suite permanently refused on
+    # macOS. See scripts/ensure-case-sensitive-os-test.sh.
+    --keep KANDELO_OS_TEST_DIR \
+    # WHY this one is kept: it is the companion knob to the line above --
+    # `ensure-case-sensitive-volume.sh` defaults the image location to
+    # $HOME/.cache/kandelo and offers this as the override, and it runs inside
+    # this shell as part of setup. Stripped, the override would be accepted
+    # without effect and the image would land in the default location anyway.
+    # An override that reports success while doing nothing is the failure this
+    # keep-list exists to prevent, not a missing feature.
+    --keep KANDELO_CASE_IMAGE_DIR \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \
@@ -130,6 +165,9 @@ nix_develop=(
     --keep WASM_POSIX_FETCH_SKIP_PKGS \
     --keep WASM_POSIX_SYSROOT \
     --keep WASM_POSIX_LLVM_DIR \
+    --keep WASM_POSIX_LOCAL_BUILD_JOBS \
+    --keep WASM_POSIX_LOCAL_INSTALL_SOURCE \
+    --keep WASM_POSIX_LOCAL_INSTALL_SESSION \
     --accept-flake-config
 )
 

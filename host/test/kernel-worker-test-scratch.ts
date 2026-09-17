@@ -22,6 +22,13 @@ interface KernelWorkerTestScratchOptions {
   readonly kernelExportNames?: readonly string[];
 }
 
+/**
+ * The page-aligned control-slot address a test kernel reports for a cloned
+ * thread. Any aligned address will do: these fixtures do not model a real
+ * address space, and the tests that do supply their own export.
+ */
+const DEFAULT_THREAD_SLOT_ADDR = 8 * 65536;
+
 /** Neutral Rust-owned timer teardown result for tests without platform timers. */
 export function emptyProcessTimerCleanup(
   memory: WebAssembly.Memory,
@@ -75,6 +82,7 @@ export function installKernelWorkerTestScratch(
     // Rust-owned cleanup record is the neutral production result; timer
     // ownership tests override this implementation explicitly.
     const defaultTimerCleanup = emptyProcessTimerCleanup(memory);
+    const defaultThreadSlotAddr = () => BigInt(DEFAULT_THREAD_SLOT_ADDR);
     const rawInstance = createKernelScratchTestInstance(
       pointerWidth,
       memory,
@@ -84,6 +92,12 @@ export function installKernelWorkerTestScratch(
       // one-time spread would silently ignore later fault injection.
       () => ({
         kernel_take_process_timer_cleanup: defaultTimerCleanup,
+        // Placement is the kernel's: `sys_clone` reserves a pthread's control
+        // slot and the host reads the address back through
+        // `kernel_thread_slot_addr`. Most worker tests do not model an address
+        // space, so the neutral answer is one page-aligned slot; tests that
+        // care about placement override it.
+        kernel_thread_slot_addr: defaultThreadSlotAddr,
         ...options.kernelExports,
       }),
       () => pointerWidth === 8 ? BigInt(pointer) : pointer,

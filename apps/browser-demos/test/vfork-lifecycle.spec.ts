@@ -24,9 +24,16 @@ const browserKernelModulePath = resolve(
   __dirname,
   "../../../host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm is handed in as bytes from Node, the same
+// shape the program fixtures already use -- the bridge stopped importing node
+// builtins, so a page can transform it like any other module.
+const sffsImageFsModulePath = resolve(
   __dirname,
-  "../../../host/src/vfs/memory-fs.ts",
+  "../../../images/vfs/lib/sffs-image-fs.ts",
+);
+const sffsModuleWasmPath = resolve(
+  __dirname,
+  "../../../local-binaries/sffs_module32.wasm",
 );
 const lifecycleProgramPath = resolveBinary("programs/vfork-lifecycle.wasm");
 const threadProgramPath = resolveBinary("programs/vfork-from-thread.wasm");
@@ -117,7 +124,8 @@ async function runBrowserVforkFixture(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      memoryFsModuleUrl,
+      sffsImageFsModuleUrl,
+      sffsModuleBytes,
       fixtureUrl,
       execChildFixtureUrl,
       sideModuleFixtureUrl,
@@ -131,8 +139,8 @@ async function runBrowserVforkFixture(
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsModuleUrl
+      const { SffsImageFs } = await import(
+        /* @vite-ignore */ sffsImageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -172,9 +180,7 @@ async function runBrowserVforkFixture(
       let initialized = false;
 
       try {
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(2 * 1024 * 1024),
-        );
+        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
         imageOwner.mkdir("/tmp", 0o755);
         if (execChildFixtureUrl) {
           const childResponse = await fetch(execChildFixtureUrl);
@@ -236,7 +242,8 @@ async function runBrowserVforkFixture(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      sffsImageFsModuleUrl: asViteFsUrl(sffsImageFsModulePath),
+      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
       fixtureUrl: asViteFsUrl(fixturePath),
       execChildFixtureUrl: execChildFixturePath
         ? asViteFsUrl(execChildFixturePath)

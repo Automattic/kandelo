@@ -1,4 +1,4 @@
-import { concatUint8Arrays } from './shims';
+import { concatUint8Arrays, toCryptoBufferSource } from './shims';
 
 /**
  * Generates an X.509 certificate from the given description.
@@ -77,7 +77,7 @@ class CertificateGenerator {
 				hash: 'SHA-256',
 			},
 			privateKey,
-			tbsCertificate.buffer
+			toCryptoBufferSource(tbsCertificate.buffer)
 		);
 
 		// Step 4: Build the final Certificate sequence

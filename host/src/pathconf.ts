@@ -1,115 +1,56 @@
-import {
-  FILE_MODES,
-  PATHCONF_NAMES,
-  POSIX_PATH_MAX_BYTES,
-} from "./generated/abi";
-import type { PathconfValue, StatResult } from "./types";
+import { PATHCONF_NAMES } from "./generated/abi";
+import type { PathconfValue } from "./types";
 
-const {
-  ALLOC_SIZE_MIN,
-  ASYNC_IO,
-  CHOWN_RESTRICTED,
-  FALLOC,
-  FILESIZEBITS,
-  LINK_MAX,
-  MAX_CANON,
-  MAX_INPUT,
-  NAME_MAX,
-  NO_TRUNC,
-  PATH_MAX,
-  PIPE_BUF,
-  POSIX2_SYMLINKS,
-  PRIO_IO,
-  REC_INCR_XFER_SIZE,
-  REC_MAX_XFER_SIZE,
-  REC_MIN_XFER_SIZE,
-  REC_XFER_ALIGN,
-  SOCK_MAXBUF,
-  SYMLINK_MAX,
-  SYNC_IO,
-  TEXTDOMAIN_MAX,
-  TIMESTAMP_RESOLUTION,
-  VDISABLE,
-} = PATHCONF_NAMES;
-const { S_IFDIR, S_IFIFO, S_IFMT, S_IFREG } = FILE_MODES;
+const { POSIX2_SYMLINKS, TIMESTAMP_RESOLUTION } = PATHCONF_NAMES;
 
+/**
+ * The two `pathconf` answers that belong to a JavaScript VFS backend rather
+ * than to the kernel: whether this backend can create symbolic links, and the
+ * resolution of the timestamps it reports. Neither is derivable from the
+ * Kandelo namespace, so neither can be answered in Rust.
+ */
 export interface PathconfProfile {
   supportsSymlinks: boolean;
   timestampResolutionNs: number | null;
 }
 
-function invalidAssociation(name: number): never {
+function notThisHostsAnswer(name: number): never {
   const error = new Error(
-    `EINVAL: pathconf name ${name} is not associated with this object`,
+    `ENOSYS: pathconf name ${name} is not a value this host can source`,
   ) as Error & { code: string };
-  error.code = "EINVAL";
+  error.code = "ENOSYS";
   throw error;
 }
 
 /**
- * Answer filesystem-backed pathconf names after the owning backend has
- * validated the path or live handle. Kernel-owned pipes, sockets, and PTYs
- * are handled in Rust instead.
+ * Answer the `pathconf` names a backend genuinely owns, and refuse the rest.
+ *
+ * Every other name in `wasm_posix_shared::pathconf` is a property of the
+ * Kandelo namespace (`_PC_NAME_MAX`, `_PC_PATH_MAX`, `_PC_NO_TRUNC`,
+ * `_PC_CHOWN_RESTRICTED`) or of the file type (`_PC_PIPE_BUF`,
+ * `_PC_ASYNC_IO`), and `filesystem_pathconf_value` in
+ * `crates/runtime-core/src/syscalls.rs` is its single authority. This file used
+ * to carry a second copy of that whole table, and the two had already drifted:
+ * `_PC_PIPE_BUF` on a FIFO or directory answered -1 here and `EINVAL` in Rust,
+ * so which one a guest saw depended only on whether its path happened to route
+ * through `host_fpathconf`.
+ *
+ * `ENOSYS` is how a host says "not mine". The kernel then answers from its own
+ * table (`host_pathconf_or_default`). A host that CAN query a real filesystem
+ * answers everything instead — `crates/host-native` calls `fpathconf(3)` on the
+ * live descriptor, so a host mount over ext4 or APFS reports that filesystem's
+ * own limits rather than Kandelo's.
  */
-export function filesystemPathconf(
-  stat: StatResult,
+export function backendPathconf(
   name: number,
   profile: PathconfProfile,
 ): PathconfValue {
   switch (name) {
-    case LINK_MAX:
-      return null; // no backend currently enforces an authoritative maximum
-    case NAME_MAX:
-      return 255; // enforced in bytes by the common namespace resolver
-    case PATH_MAX:
-      return POSIX_PATH_MAX_BYTES; // enforced by the common namespace resolver
-    case CHOWN_RESTRICTED:
-      // The kernel enforces chown authorization before every backend call,
-      // including backends without persistent ownership metadata.
-      return 1;
-    case NO_TRUNC:
-      return 1; // the common resolver rejects overlong byte components
-    case ASYNC_IO:
-      // musl implements AIO with guest pthreads over pread/pwrite/fsync.
-      return (stat.mode & S_IFMT) === S_IFREG
-        ? 1
-        : invalidAssociation(name);
-    case SYNC_IO:
-    case PRIO_IO:
-    case FILESIZEBITS:
-    case REC_INCR_XFER_SIZE:
-    case REC_MAX_XFER_SIZE:
-    case REC_MIN_XFER_SIZE:
-    case REC_XFER_ALIGN:
-    case ALLOC_SIZE_MIN:
-    case SYMLINK_MAX:
-    case FALLOC:
-      return null;
     case POSIX2_SYMLINKS:
       return profile.supportsSymlinks ? 1 : null;
-    case TEXTDOMAIN_MAX:
-      return 255;
     case TIMESTAMP_RESOLUTION:
       return profile.timestampResolutionNs;
-    case PIPE_BUF: {
-      const fileType = stat.mode & S_IFMT;
-      // Named FIFO support and host atomicity are not uniform yet. Preserve
-      // the valid association without fabricating a numeric guarantee. For a
-      // directory the value applies to FIFOs created within that directory.
-      if (fileType === S_IFIFO || fileType === S_IFDIR) return null;
-      return invalidAssociation(name);
-    }
-    case MAX_CANON:
-    case MAX_INPUT:
-    case VDISABLE:
-    case SOCK_MAXBUF:
-      return invalidAssociation(name);
-    default: {
-      const error = new Error(`EINVAL: invalid pathconf name ${name}`) as Error & {
-        code: string;
-      };
-      error.code = "EINVAL";
-      throw error;
-    }
+    default:
+      return notThisHostsAnswer(name);
   }
 }

@@ -19,7 +19,7 @@ inputs = [
   "host/src/generated/abi.ts",
   "host/src/vfs/materialization-plan.ts",
   "host/src/pathconf.ts",
-  "host/src/shell-runtime-layout.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",
   "host/src/vfs",
@@ -27,6 +27,10 @@ inputs = [
   "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
+  "host/src/binary-tiers.ts",
+  "host/src/wasm-artifact-driver.ts",
+  "host/src/wasm-artifact-module-registry.ts",
+  "images/vfs/lib/sffs-image-fs.ts",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"

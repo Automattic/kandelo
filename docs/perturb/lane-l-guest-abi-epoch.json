@@ -1,0 +1,21 @@
+{
+  "file": "crates/host-native/src/guest.rs",
+  "build": "cargo build -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --tests",
+  "verify": "cargo test -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --lib a_guest_from_another_abi_epoch_is_refused_and_a_pre_marker_one_is_not",
+  "trials": [
+    {
+      "name": "L-D4: the epoch comparison stops refusing anything",
+      "scope": "fn guest_module_for_this_epoch",
+      "scope_end": "\n}\n",
+      "find": "if declared != crate::EXPECTED_ABI_VERSION {",
+      "replace": "if false {"
+    },
+    {
+      "name": "L-D4: a binary predating the marker is refused instead of allowed",
+      "scope": "fn guest_module_for_this_epoch",
+      "scope_end": "\n}\n",
+      "find": "if let Some(declared) = wasm_artifact::read_abi_version(program_bytes) {",
+      "replace": "if let Some(declared) = Some(wasm_artifact::read_abi_version(program_bytes).unwrap_or(0)) {"
+    }
+  ]
+}

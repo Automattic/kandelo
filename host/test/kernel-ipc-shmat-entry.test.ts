@@ -22,6 +22,10 @@ import {
   CH_TOTAL_SIZE,
 } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import {
+  createSysvMirrorStub,
+  SYSV_MIRROR_EXPORT_NAMES,
+} from "./support/sysv-mirror-stub";
 
 const EINVAL = 22;
 const KERNEL_EXPORT_NAMES = [
@@ -35,6 +39,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_ipc_shmdt_for_process",
   "kernel_set_current_tid",
   "kernel_validate_task",
+  ...SYSV_MIRROR_EXPORT_NAMES,
 ] as const;
 
 interface TestChannel {
@@ -120,7 +125,12 @@ function makeHarness(
       ptrWidth: pointerWidth,
       explicitMaxAddr: true,
     }]]),
-    usePolling: true,
+  });
+  // This harness installs its channels directly instead of registering a
+  // process, and drives them synchronously, so suppress arming an
+  // Atomics.waitAsync listener on them.
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    listenOnChannel: () => {},
   });
   worker.testAuthority.initializeKernelForTest({
     instance: gatedInstance,
@@ -178,13 +188,24 @@ describe("IPC shmat rollback entry authority", () => {
     ["wasm32", 4],
     ["wasm64", 8],
   ] as const)(
-    "%s records Rust ownership only after bytes and the host mirror exist",
+    "%s records Rust ownership only after the segment bytes reach the guest",
     (_name, pointerWidth) => {
       const address = 0x7_000;
       const segment = new Uint8Array([3, 1, 4, 1]);
       const recordMapping = vi.fn(() => 0);
       const shmdt = vi.fn(() => 0);
-      const harness = makeHarness(
+      let harness!: ReturnType<typeof makeHarness>;
+      // The kernel seeds the process's mapped range from the segment inside
+      // `track`; the host no longer pulls those bytes back through scratch.
+      const sysv = createSysvMirrorStub({
+        seedProcessBytes: (_pid, addr, _segId, size) => {
+          new Uint8Array(harness.channel.memory.buffer).set(
+            segment.subarray(0, size),
+            addr,
+          );
+        },
+      });
+      harness = makeHarness(
         pointerWidth,
         {},
         (_worker, kernelMemory) => ({
@@ -218,6 +239,7 @@ describe("IPC shmat rollback entry authority", () => {
           kernel_ipc_shmdt_for_process: shmdt,
           kernel_set_current_tid: () => 0,
           kernel_validate_task: () => 0,
+          ...sysv.exports,
         }),
       );
       writeShmat(harness.channel, 17, address);
@@ -241,10 +263,18 @@ describe("IPC shmat rollback entry authority", () => {
           ),
         ),
       ).toEqual(Array.from(segment));
-      expect(harness.worker.shmMappings.get(41)?.get(address)).toMatchObject({
+      expect(sysv.attachments.get(41)?.get(address)).toMatchObject({
         segId: 17,
         size: segment.byteLength,
       });
+      // Ownership is recorded last: a failed mirror registration must not
+      // leave an attachment record the mirror cannot describe.
+      expect(
+        sysv.calls.findIndex(
+          (call) => call.name === "kernel_shared_mapping_sysv_track",
+        ),
+      ).toBeGreaterThanOrEqual(0);
+      expect(recordMapping.mock.invocationCallOrder[0]).toBeGreaterThan(0);
       expect(readResult(harness.channel)).toEqual({
         status: CHANNEL_STATUS_COMPLETE,
         retVal: address,
@@ -258,6 +288,7 @@ describe("IPC shmat rollback entry authority", () => {
     const segmentSize = 4;
     const syscalls: number[] = [];
     const shmdt = vi.fn(() => 0);
+    const sysv = createSysvMirrorStub();
     const harness = makeHarness(4, {}, (_worker, kernelMemory) => ({
       kernel_drain_wakeup_events: () => 0,
       kernel_get_memory_pages: () => 256,
@@ -292,6 +323,7 @@ describe("IPC shmat rollback entry authority", () => {
       kernel_ipc_shmdt_for_process: shmdt,
       kernel_set_current_tid: () => 0,
       kernel_validate_task: () => 0,
+      ...sysv.exports,
     }));
     writeShmat(harness.channel, 19, address);
 
@@ -302,7 +334,17 @@ describe("IPC shmat rollback entry authority", () => {
       ABI_SYSCALLS.Munmap,
     ]);
     expect(shmdt).toHaveBeenCalledExactlyOnceWith(41, 19);
-    expect(harness.worker.shmMappings.has(41)).toBe(false);
+    // The mirror was registered before the record was attempted, so the
+    // refusal has to unwind it -- without publishing, because these bytes are
+    // the segment's own and the attachment is about to be released.
+    expect(sysv.callsTo("kernel_shared_mapping_sysv_drop_mapping")).toEqual([
+      {
+        name: "kernel_shared_mapping_sysv_drop_mapping",
+        args: [41, address, 19, segmentSize],
+      },
+    ]);
+    expect(sysv.callsTo("kernel_shared_mapping_sysv_publish_mapping")).toEqual([]);
+    expect(sysv.count(41)).toBe(0);
     expect(readResult(harness.channel)).toEqual({
       status: CHANNEL_STATUS_COMPLETE,
       retVal: -12,
@@ -317,6 +359,7 @@ describe("IPC shmat rollback entry authority", () => {
     const readChunk = vi.fn(() => segmentSize);
     const recordMapping = vi.fn(() => 0);
     const shmdt = vi.fn(() => 0);
+    const sysv = createSysvMirrorStub();
     const harness = makeHarness(
       8,
       {},
@@ -346,6 +389,7 @@ describe("IPC shmat rollback entry authority", () => {
         kernel_ipc_shmdt_for_process: shmdt,
         kernel_set_current_tid: () => 0,
         kernel_validate_task: () => 0,
+        ...sysv.exports,
       }),
       4,
     );
@@ -360,7 +404,10 @@ describe("IPC shmat rollback entry authority", () => {
     expect(readChunk).not.toHaveBeenCalled();
     expect(recordMapping).not.toHaveBeenCalled();
     expect(shmdt).toHaveBeenCalledExactlyOnceWith(41, 19);
-    expect(harness.worker.shmMappings.has(41)).toBe(false);
+    // The kernel address model is validated before the mirror is told
+    // anything, so no attachment is ever registered for it to unwind.
+    expect(sysv.callsTo("kernel_shared_mapping_sysv_track")).toEqual([]);
+    expect(sysv.count(41)).toBe(0);
     expect(readResult(harness.channel)).toEqual({
       status: CHANNEL_STATUS_COMPLETE,
       retVal: -5,
@@ -392,10 +439,12 @@ describe("IPC shmat rollback entry authority", () => {
         }
         return 0;
       });
+      const sysv = createSysvMirrorStub();
       harness = makeHarness(pointerWidth, {}, (_worker, kernelMemory) => ({
         kernel_drain_wakeup_events: () => 0,
         kernel_get_memory_pages: () => 256,
         kernel_get_process_exit_signal: () => 0,
+        ...sysv.exports,
         kernel_handle_channel: (rawPointer: number | bigint) => {
           const view = new DataView(
             kernelMemory.buffer,
@@ -445,7 +494,7 @@ describe("IPC shmat rollback entry authority", () => {
         retVal: -EINVAL,
         errno: EINVAL,
       });
-      expect(harness.worker.shmMappings.has(41)).toBe(false);
+      expect(sysv.count(41)).toBe(0);
     },
   );
 
@@ -478,6 +527,7 @@ describe("IPC shmat rollback entry authority", () => {
         kernel_ipc_shmdt_for_process: () => -5,
         kernel_set_current_tid: () => 0,
         kernel_validate_task: () => 0,
+        ...createSysvMirrorStub().exports,
       }),
     );
     writeShmat(harness.channel, 19, 0x6_000);

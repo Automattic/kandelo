@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 
 export const DEMO_LOGIN_USERNAME = "maker";
 export const DEMO_LOGIN_HOME = "/home/maker";
@@ -31,7 +31,7 @@ export interface DemoLoginOptions {
  * libc and the guest programs.
  */
 export function configureDemoLogin(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   options: DemoLoginOptions = {},
 ): void {
   const home = options.home ?? DEMO_LOGIN_HOME;
@@ -71,9 +71,32 @@ export function configureDemoLogin(
  * entry. Privileged-product publication separately proves the executable
  * bytes and trusted mount provenance before the browser grants session policy.
  */
+/**
+ * "Are this path's bytes in the image?", asked so that either filesystem can
+ * answer it completely.
+ *
+ * `MemoryFileSystem` splits the question: `isPathDeferred` covers archive- and
+ * tree-backed files and MISSES a URL-backed single lazy file, so its callers
+ * compute the union with `getLazyEntry`. The module bridge does not split it —
+ * a deferred file is deferred whether an archive or a URL stands behind it —
+ * and deliberately has no `getLazyEntry` at all.
+ *
+ * Asking only the union broke against the bridge, and broke SILENTLY: the
+ * missing method threw, the caller's `try` swallowed it, and a predicate about
+ * login policy answered "not configured" when what happened was "could not
+ * tell". Asking only `isPathDeferred` would weaken the check against
+ * MemoryFileSystem, which is the case lane S's defect is about. So: ask the
+ * narrow question first, and add the union only where it exists.
+ */
+function isDeferredEitherWay(fs: VfsImageFilesystem, path: string): boolean {
+  if (fs.isPathDeferred(path)) return true;
+  const perFile = (fs as Partial<{ getLazyEntry(p: string): unknown }>).getLazyEntry;
+  return typeof perFile === "function" && perFile.call(fs, path) !== null;
+}
+
 export function hasConfiguredDemoLogin(
-  fs: MemoryFileSystem,
-  privilegedProgramFs: Pick<MemoryFileSystem, "stat"> = fs,
+  fs: VfsImageFilesystem,
+  privilegedProgramFs: Pick<VfsImageFilesystem, "stat"> = fs,
 ): boolean {
   try {
     const login = privilegedProgramFs.stat(DEMO_LOGIN_PROGRAM_PATH);
@@ -81,7 +104,7 @@ export function hasConfiguredDemoLogin(
     // tree. Only the ordinary MemoryFS path can carry a deferred entry.
     const loginIsEager =
       privilegedProgramFs === fs
-        ? fs.getLazyEntry(DEMO_LOGIN_PROGRAM_PATH) === null
+        ? !isDeferredEitherWay(fs, DEMO_LOGIN_PROGRAM_PATH)
         : true;
     const loginIsStaged =
       (login.mode & 0o170000) === 0o100000 &&
@@ -202,7 +225,7 @@ function addGroupMember(
   return `${lines.join("\n")}\n`;
 }
 
-function readVfsText(fs: MemoryFileSystem, path: string): string {
+function readVfsText(fs: VfsImageFilesystem, path: string): string {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -225,7 +248,7 @@ function readVfsText(fs: MemoryFileSystem, path: string): string {
 }
 
 function writeRootFile(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   content: string,
   mode: number,

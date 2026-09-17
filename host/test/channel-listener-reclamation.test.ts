@@ -95,7 +95,6 @@ function createHarness(channels: ChannelFixture[]): ListenerHarness {
     pendingResumePids: new Set<number>(),
     parkedChannelCompletions: new Map(),
     deferredStoppedChannels: new Map(),
-    usePolling: false,
     relistenBatchSize: 64,
     relistenCount: 0,
   }) as ListenerHarness;

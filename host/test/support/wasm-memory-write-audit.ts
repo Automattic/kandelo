@@ -8300,6 +8300,22 @@ function isOrdinaryTestHarness(relativePath: string): boolean {
   return (
     relativePath.startsWith("host/test/") ||
     relativePath.includes("/test/") ||
+    // WHY: this classifier was written for the TypeScript layout, where test
+    // code lives under `test/`. Rust crates use the Cargo convention `tests/`,
+    // and the fixture generators that build their `.wasm` inputs sit in
+    // `testdata/`. Those `.mts` generators are test infrastructure by exactly
+    // the same argument as `host/test/` -- they run at build time to produce
+    // fixtures and never ship -- but the `/test/` match misses them purely on
+    // directory spelling. Recognizing both spellings applies one rule across
+    // both language conventions rather than granting Rust an exemption.
+    relativePath.includes("/tests/") ||
+    relativePath.includes("/testdata/") ||
+    // WHY: probe harnesses committed beside a plan are recorded measurements,
+    // not runtime sources. They exist to prove or disprove a claim about an
+    // engine (see `docs/plans/probes/`), are run by hand, and never enter the
+    // product. Auditing them would make this contract depend on which
+    // experiments happen to be committed.
+    relativePath.startsWith("docs/plans/probes/") ||
     /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/.test(relativePath)
   );
 }

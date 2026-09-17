@@ -1,0 +1,50 @@
+{
+  "file": "tools/xtask/src/vfs_image_describe.rs",
+  "build": "scripts/dev-shell.sh cargo build -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "verify": "scripts/dev-shell.sh cargo test -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" vfs_image_describe >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the KLZY deferred set is never read, making the bar vacuous",
+      "scope": "fn read_deferred<S: sffs::BlockSource>",
+      "scope_end": "\n}\n",
+      "find": "        for file in &linkage.files {",
+      "replace": "        for file in linkage.files.iter().take(0) {"
+    },
+    {
+      "name": "content digests are dropped",
+      "scope": "fn walk<S: sffs::BlockSource>",
+      "scope_end": "\n}\n",
+      "find": "            Some(digest_file(fs, dirent.ino, st.size, &path)?)",
+      "replace": "            None"
+    },
+    {
+      "name": "mode is not reported",
+      "scope": "fn walk<S: sffs::BlockSource>",
+      "scope_end": "\n}\n",
+      "find": "            mode: st.mode,",
+      "replace": "            mode: 0,"
+    },
+    {
+      "name": "the walk never descends into directories",
+      "scope": "fn walk<S: sffs::BlockSource>",
+      "scope_end": "\n}\n",
+      "find": "            walk(fs, dirent.ino, &path, entries, by_ino, deferred)?;",
+      "replace": "            let _ = &path;"
+    },
+    {
+      "name": "the growth ceiling is not part of the description",
+      "scope": "pub fn describe_container",
+      "scope_end": "\n}\n",
+      "find": "            growth_ceiling_bytes: fs\n                .growth_ceiling_bytes()\n                .map_err(|e| format!(\"{}: growth ceiling: {e:?}\", path.display()))?,",
+      "replace": "            growth_ceiling_bytes: 0,"
+    },
+    {
+      "name": "the loader accepts an image describing its deferred files nowhere",
+      "scope": "fn load_into_kernel(",
+      "scope_end": "\n}\n",
+      "find": "    .map_err(|e| format!(\"{what}: {e:?}\"))",
+      "replace": "    .or(Ok(0))"
+    }
+  ],
+  "_comment": "One trial was removed rather than fixed: 'a load failure is reported as a successful load of nothing', which mutated the non-Image arm of load_into_kernel's byte source. A load walks STRUCTURE and never content, so that arm is unreachable during a load and the mutant changes nothing observable -- the same class as sm_alloc's max(len,1). The reason is recorded at the arm itself so nobody re-adds it."
+}

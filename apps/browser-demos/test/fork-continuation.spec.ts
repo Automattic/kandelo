@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -13,9 +13,16 @@ const browserKernelModulePath = resolve(
   __dirname,
   "../../../host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use; the bridge no longer imports node builtins,
+// so a page can transform it like any other module.
+const sffsImageFsModulePath = resolve(
   __dirname,
-  "../../../host/src/vfs/memory-fs.ts",
+  "../../../images/vfs/lib/sffs-image-fs.ts",
+);
+const sffsModuleWasmPath = resolve(
+  __dirname,
+  "../../../local-binaries/sffs_module32.wasm",
 );
 const catchRefFixtureSource = resolve(
   __dirname,
@@ -51,19 +58,20 @@ async function runBrowserFixture(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      memoryFsModuleUrl,
+      sffsImageFsModuleUrl,
+      sffsModuleBytes,
       fixtureUrl,
       argv0,
       maxMemoryPages,
     }) => {
-      // WHY: BrowserKernel already imports MemoryFileSystem. Loading the host
+      // WHY: BrowserKernel already imports the VFS modules. Loading the host
       // entry first avoids asking a cold Vite server to optimize the same
       // dependency graph through two concurrent dynamic imports.
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsModuleUrl
+      const { SffsImageFs } = await import(
+        /* @vite-ignore */ sffsImageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -91,9 +99,7 @@ async function runBrowserFixture(
         // WHY: these fixtures do not use files. A minimal image keeps this a
         // BrowserKernel integration proof without coupling it to the much
         // larger shell image or its package publication state.
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(1024 * 1024),
-        );
+        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
         const vfsImage = await imageOwner.saveImage();
         await kernel.initFromImage({ vfsImage });
         initialized = true;
@@ -115,7 +121,8 @@ async function runBrowserFixture(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      sffsImageFsModuleUrl: asViteFsUrl(sffsImageFsModulePath),
+      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
       fixtureUrl: asViteFsUrl(fixturePath),
       argv0,
       maxMemoryPages,
@@ -206,7 +213,17 @@ test("Chromium reconstructs CatchRef state in a fresh child worker", async ({
       "-o",
       rawPath,
     ]);
-    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
+    // Stamp the current ABI at instrumentation time (test-only flag) so the
+    // committed fixture, whose __abi_version is a placeholder sentinel rather
+    // than a real epoch, tracks the running ABI instead of going stale. This
+    // only unblocks the artifact gate; the reconstruction assertions below are
+    // what prove correctness.
+    execFileSync(forkInstrumenterPath, [
+      "--stamp-abi-version",
+      rawPath,
+      "-o",
+      programPath,
+    ]);
 
     // The parent waits for the child, whose exit 91 means CatchRef payload
     // reconstruction failed after the browser worker instantiated a fresh
@@ -253,7 +270,17 @@ test("Chromium reconstructs reference-bearing catches in fresh child workers", a
       "-o",
       rawPath,
     ]);
-    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
+    // Stamp the current ABI at instrumentation time (test-only flag) so the
+    // committed fixture, whose __abi_version is a placeholder sentinel rather
+    // than a real epoch, tracks the running ABI instead of going stale. This
+    // only unblocks the artifact gate; the reconstruction assertions below are
+    // what prove correctness.
+    execFileSync(forkInstrumenterPath, [
+      "--stamp-abi-version",
+      rawPath,
+      "-o",
+      programPath,
+    ]);
 
     // One fresh child calls the reconstructed non-null funcref; a second
     // verifies the nullable externref path. Either child exits nonzero if its
@@ -291,7 +318,17 @@ test("Chromium reconstructs aliased Wasm GC state in a fresh child worker", asyn
       rawPath,
       Buffer.from(RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX, "hex"),
     );
-    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
+    // Stamp the current ABI at instrumentation time (test-only flag) so the
+    // committed fixture, whose __abi_version is a placeholder sentinel rather
+    // than a real epoch, tracks the running ABI instead of going stale. This
+    // only unblocks the artifact gate; the reconstruction assertions below are
+    // what prove correctness.
+    execFileSync(forkInstrumenterPath, [
+      "--stamp-abi-version",
+      rawPath,
+      "-o",
+      programPath,
+    ]);
 
     // The child verifies one cyclic identity through a live parameter,
     // operand-stack carryover, mutable reference global, and mutated typed

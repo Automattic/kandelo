@@ -1,0 +1,39 @@
+[package]
+name = "wasi-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Co-resident WASI Preview 1 side module for the process worker"
+
+# Built for wasm32 as a PIC side module (`cdylib`) that imports the guest's
+# shared linear memory and exports the `wasi_snapshot_preview1` functions, the
+# same shape as `crates/fork-module`. Also built as an `rlib` for the host so
+# `cargo test -p wasi-module` can exercise every entry point against an
+# in-memory fake memory and fake channel -- no wasm, no worker, no kernel.
+[lib]
+name = "wasi_module"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasi-abi = { path = "../wasi-abi" }
+wasm-posix-shared = { path = "../shared" }
+
+# Turn the `testing` feature on for this crate's own test targets, and only
+# there.
+#
+# WHY THIS RATHER THAN A DEFAULT FEATURE: `tests/entry_points.rs` opens with
+# `#![cfg(feature = "testing")]`, so without the feature the whole file
+# compiles to nothing and `cargo test -p wasi-module` reports
+# "ok. 0 passed" with exit 0 -- a green that proves nothing, on the 60 tests
+# that are the only coverage of 40 of the 46 WASI entry points. Making
+# `testing` a default feature would instead compile the fakes into the wasm
+# cdylib that ships in a guest's address space. A dev-dependency on this same
+# crate is the way to get the feature exactly where it belongs: Cargo unifies
+# it into the test targets and leaves the cdylib build untouched.
+[dev-dependencies]
+wasi-module = { path = ".", features = ["testing"] }
+
+[features]
+# Enables the host-side FakeMemory/FakeChannel used by `cargo test`.
+# Never enabled for the wasm cdylib build.
+testing = []

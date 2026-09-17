@@ -26,6 +26,8 @@ inputs = [
   "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
+  "images/vfs/lib/sffs-image-fs.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"

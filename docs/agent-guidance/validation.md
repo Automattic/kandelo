@@ -76,6 +76,56 @@ part of the task. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
+
+   **On macOS, `os-test` does not check out correctly by default.** The suite
+   tracks 17 pairs of paths that differ only in letter case, such as
+   `include/inttypes/PRIx16.c` and `include/inttypes/PRIX16.c`. A
+   case-insensitive filesystem — the macOS default — can hold only one file
+   per pair, so `git submodule update --init` leaves 17 files modified that
+   nobody edited.
+
+   Only one spelling per pair keeps a directory entry, and the suite discovers
+   its tests by listing directories. The other 17 are therefore **never found
+   and never run**: measured on this branch, the `include` suite reports
+   **3,741 tests on a collapsed checkout against 3,758 on a case-sensitive
+   one**, and nothing in the output says 17 are missing. The `include` suite
+   is compile-only and supplies most of this project's conformance passes, so
+   a collapsed checkout silently under-reports it. (The surviving file also
+   answers to the missing spelling, so anything that opens one of those paths
+   directly compiles its sibling's source.)
+
+   `scripts/run-sortix-tests.sh` and `scripts/run-browser-sortix-tests.sh`
+   refuse to start on such a checkout and name every affected path. Provision
+   a real one, then point the runner at it:
+
+   ```bash
+   export KANDELO_OS_TEST_DIR="$(scripts/ensure-case-sensitive-os-test.sh --print-dir)"
+   ```
+
+   That creates and mounts a case-sensitive APFS sparse image
+   (`~/.cache/kandelo/KandeloCaseBuild.sparseimage`) via
+   `scripts/ensure-case-sensitive-volume.sh`, clones `os-test` onto it at the
+   exact commit the submodule pins, and prints the directory. Both scripts are
+   idempotent and are no-ops on Linux and on any checkout already sitting on a
+   case-sensitive filesystem, so provisioning can run them unconditionally.
+   Neither touches the repository's own submodule checkout.
+
+   `./run.sh setup` runs the same provisioning automatically when — and only
+   when — it finds a collapsed checkout, so a fresh macOS worktree is
+   prepared without a separate step.
+
+   **Cost: none measurable.** Three interleaved runs of the `include` suite,
+   alternating between the two checkouts on the same machine, gave 230 / 203 /
+   188 s on the collapsed checkout and 211 / 200 / 231 s on the case-sensitive
+   one — a 7 s difference in the means, smaller than the 42 s spread within
+   either arm, and the case-sensitive arm compiles 17 more tests. Measured
+   under a 1-minute load average of 30–50 from concurrent builds, which is why
+   the runs were interleaved rather than batched.
+
+   Read sources from the image, but keep build output off it. Both runners pin
+   `BUILD_DIR` to the repository's own filesystem for exactly this reason: an
+   earlier revision put build output on the sparse image and the same suite
+   took 3,200 s instead of 290 s.
 2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
    builds the musl sysroot from scratch on a fresh checkout (or just
    re-syncs overlay headers when a sysroot already exists), then the
@@ -135,10 +185,60 @@ Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for
 environment or artifact reasons unrelated to a given diff. Reproduce the failure
 on a pristine `origin/main` build of the same artifact before attributing it —
-rebuild just the kernel wasm (`cargo build --release -p kandelo -Z
-build-std=core,alloc && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm
-local-binaries/kernel.wasm`) at `origin/main` and re-run the one test. Report a
+rebuild just the kernel wasm at `origin/main` and re-run the one test. Report a
 pre-existing failure as pre-existing, not as your regression.
+
+### Rebuilding just the kernel — and what each way costs you
+
+Two ways, and they are not interchangeable. Pick with the trade-off in view:
+
+```bash
+# The engine path. Produces a VERIFIABLE artifact in the tier the resolver
+# reads first, and `cargo xtask verify-fresh` can judge it.
+scripts/dev-shell.sh cargo run -p xtask -- bootstrap kernel
+
+# The cheap path. Works in a bare worktree with no submodules, and produces an
+# artifact nothing can freshness-check.
+scripts/dev-shell.sh cargo build --release -p kandelo -Z build-std=core,alloc
+scripts/dev-shell.sh bash -c 'source scripts/install-local-binary.sh;
+  install_local_binary kernel \
+    target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+    kandelo-kernel.wasm'
+```
+
+**The cheap path stages an artifact `verify-fresh` cannot verify, and the
+command says so as it installs.** Only the local-build engine stamps
+`kandelo.build.key`; it appends the key at cache-store time, and `verify-fresh`
+compares that stamp against the key the source tree currently resolves to. An
+artifact staged by `install_local_binary` carries no stamp, so the gate refuses
+it rather than judging it:
+
+```
+local-binaries/kernel.wasm carries no build key stamp; rebuild with
+`./run.sh setup` so freshness can be verified.
+```
+
+`./run.sh test` runs that gate before its suites, so a cheaply-provisioned
+worktree fails it. That is correct — an unverifiable artifact must not be scored
+as fresh — but it is a real cost of the cheap path, and the reason the engine
+path is the default recommendation here. The installer does not invent a stamp
+to make the gate pass: it is handed a caller-supplied file and cannot know the
+bytes came from this source tree, and a stamp it invented would claim a
+provenance it never checked.
+
+Use the cheap path when the engine path cannot run — a bare worktree with no
+`libc/musl` submodule cannot generate the VFS product catalog, so `bootstrap`
+stops before it builds anything. Initialising that one submodule is usually
+cheaper than losing the freshness gate:
+
+```bash
+git submodule update --init libc/musl
+```
+
+Whichever you use, stage through `install_local_binary` rather than `cp`: the
+resolver searches `local-binaries/source-only-v1/` **before** ambient
+`local-binaries/`, so a plain copy into the ambient tier can be shadowed by an
+older kernel and leave you testing the artifact you did not just build.
 
 After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
 Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale

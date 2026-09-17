@@ -35,7 +35,6 @@ interface MutableCopybackWorkerState {
     explicitMaxAddr: boolean;
   }>;
   activeChannels: TestChannel[];
-  usePolling: boolean;
 }
 
 function createTestChannel(
@@ -83,9 +82,12 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
     ],
   ]);
   state.activeChannels = [channel];
-  // Completion normally relistens the mailbox. Polling mode keeps this
-  // focused harness synchronous without replacing a worker method.
-  state.usePolling = true;
+  // Completion normally relistens the mailbox. Suppressing the listener keeps
+  // this focused harness synchronous without replacing a worker method, which
+  // the sealed worker does not permit.
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    listenOnChannel: () => {},
+  });
   Atomics.store(
     channel.i32View,
     CH_STATUS / Int32Array.BYTES_PER_ELEMENT,

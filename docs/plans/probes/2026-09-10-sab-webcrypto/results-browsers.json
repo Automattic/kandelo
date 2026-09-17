@@ -1,0 +1,72 @@
+[
+  {
+    "engine": "chromium",
+    "version": "151.0.7922.34",
+    "crossOriginIsolated": true,
+    "sabAvailable": true,
+    "rows": [
+      {
+        "name": "control_plain_digest",
+        "outcome": "accepted"
+      },
+      {
+        "name": "control_plain_importKey",
+        "outcome": "accepted"
+      },
+      {
+        "name": "sab_digest",
+        "outcome": "threw",
+        "error": "TypeError: Failed to execute 'digest' on 'SubtleCrypto': The provided ArrayBufferView value must not be shared."
+      },
+      {
+        "name": "sab_importKey",
+        "outcome": "threw",
+        "error": "TypeError: Failed to execute 'importKey' on 'SubtleCrypto': The provided ArrayBufferView value must not be shared."
+      },
+      {
+        "name": "sab_copied_then_importKey",
+        "outcome": "accepted"
+      },
+      {
+        "name": "sab_sign",
+        "outcome": "threw",
+        "error": "TypeError: Failed to execute 'sign' on 'SubtleCrypto': The provided ArrayBufferView value must not be shared."
+      }
+    ]
+  },
+  {
+    "engine": "webkit",
+    "version": "26.5",
+    "crossOriginIsolated": true,
+    "sabAvailable": true,
+    "rows": [
+      {
+        "name": "control_plain_digest",
+        "outcome": "accepted"
+      },
+      {
+        "name": "control_plain_importKey",
+        "outcome": "accepted"
+      },
+      {
+        "name": "sab_digest",
+        "outcome": "threw",
+        "error": "TypeError: SharedArrayBuffer is not allowed"
+      },
+      {
+        "name": "sab_importKey",
+        "outcome": "threw",
+        "error": "TypeError: SharedArrayBuffer is not allowed"
+      },
+      {
+        "name": "sab_copied_then_importKey",
+        "outcome": "accepted"
+      },
+      {
+        "name": "sab_sign",
+        "outcome": "threw",
+        "error": "TypeError: SharedArrayBuffer is not allowed"
+      }
+    ]
+  }
+]

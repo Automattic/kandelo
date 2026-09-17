@@ -9,7 +9,7 @@
 import { readFileSync, readdirSync, lstatSync, statSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import {
   writeVfsBinary,
   ensureDir,
@@ -159,8 +159,11 @@ export async function buildPerlVfsImage(
   }
 
   // Create a 16MB SharedArrayBuffer + MemoryFileSystem
-  const sab = new SharedArrayBuffer(16 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
+  const fs = SffsImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(16 * 1024 * 1024);
 
   // Create standard directories
   ensureDir(fs, "/tmp");

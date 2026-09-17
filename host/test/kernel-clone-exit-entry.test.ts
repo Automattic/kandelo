@@ -42,6 +42,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_set_current_tid",
   "kernel_take_process_timer_cleanup",
   "kernel_thread_exit",
+  "kernel_thread_slot_addr",
 ] as const;
 
 afterEach(() => {
@@ -107,6 +108,9 @@ function makeHarness(
     kernel_set_current_tid: () => 0,
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: () => 0,
+    // `sys_clone` places the new thread's control slot and the host reads the
+    // address back inside the same entry, so a kernel double has to answer.
+    kernel_thread_slot_addr: () => BigInt(2 * 65536),
     ...implementations,
   };
   const gate = new KernelEntryGate();
@@ -155,7 +159,12 @@ function makeHarness(
     syscallTraceEnabled: false,
     syscallTraceRing: [],
     threadForkContexts: new Map(),
-    usePolling: true,
+  });
+  // This harness installs its channels directly instead of registering a
+  // process, and drives them synchronously, so suppress arming an
+  // Atomics.waitAsync listener on them.
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    listenOnChannel: () => {},
   });
   worker.testAuthority.initializeKernelForTest({
     instance: gatedInstance,

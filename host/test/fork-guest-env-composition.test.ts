@@ -1,0 +1,265 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+
+import { describeWasmArtifactPolicyFailures } from "../src/constants";
+import { buildForkGuestImports } from "../src/fork-guest-imports";
+
+/**
+ * The pieces of the thin layer, composed against a REAL instrumented artifact.
+ *
+ * Each piece has its own unit tests, and every one of them passes against
+ * hand-built inputs. That proves each piece, and proves nothing about whether
+ * they add up to a complete `env` for a guest the production instrumentation
+ * actually emits -- which is the only question that matters at the moment
+ * `worker-main.ts` stops building that object by hand.
+ *
+ * The gap this closes is not hypothetical. The artifact below imports FIFTY-ONE
+ * things from `env`. The generated contract tables enumerate forty-eight of them
+ * (46 functions + 2 tables). The other three -- two GLOBALS and a TAG -- are
+ * covered by no list at all, so a binder driven only by the tables reports
+ * success and the failure arrives later inside `WebAssembly.instantiate` as a
+ * type complaint that names no import.
+ *
+ * The fixture is built through the production pipeline
+ * (`scripts/build-fork-instrumented-test-fixture.sh` -> `run-wasm-fork-instrument.sh`,
+ * the same tool every fork-using package build runs) rather than hand-written,
+ * so a change to what instrumentation emits cannot silently stop this from
+ * testing what it claims.
+ */
+
+const repoRoot = join(import.meta.dirname, "..", "..");
+
+/**
+ * A stand-in resume table for the cases that test the BINDER, not ownership.
+ *
+ * The real one is the module's export now, and `buildForkGuestImports` takes it
+ * from there -- so where these tests pass stub module exports, something has to
+ * stand in. It is a plain table on purpose: `ForkResumeTable` no longer mints
+ * one, and reaching through it here would test this file's scaffolding.
+ */
+function resumeTable(): WebAssembly.Table {
+  return new WebAssembly.Table({ element: "anyfunc", initial: 1 });
+}
+const script = join(repoRoot, "scripts", "build-fork-instrumented-test-fixture.sh");
+
+let workspace: string | null = null;
+
+function instrumentedFixture(): WebAssembly.Module | null {
+  if (!existsSync(script)) return null;
+  workspace ??= mkdtempSync(join(tmpdir(), "kandelo-fork-env-"));
+  const out = join(workspace, "fixture32.wasm");
+  if (!existsSync(out)) {
+    try {
+      execFileSync("bash", [script, "--arch", "wasm32", "--output", out], {
+        cwd: repoRoot,
+        stdio: "pipe",
+      });
+    } catch {
+      return null;
+    }
+  }
+  return new WebAssembly.Module(readFileSync(out));
+}
+
+afterAll(() => {
+  if (workspace) rmSync(workspace, { recursive: true, force: true });
+});
+
+/** Everything the co-resident module would serve, stubbed by name. */
+function moduleExportsFor(guest: WebAssembly.Module): Record<string, unknown> {
+  // Every `env` function the guest declares: there is no floor left to
+  // subtract. The real module serves all of them.
+  const exports: Record<string, unknown> = {};
+  for (const imported of WebAssembly.Module.imports(guest)) {
+    if (imported.module !== "env") continue;
+    if (imported.kind !== "function") continue;
+    exports[imported.name] = () => 0;
+  }
+  // The two non-function imports the real module OWNS and exports. A host does
+  // not supply these; the binder takes them from the module.
+  exports.__wpk_fork_ref_gc_transit = new WebAssembly.Table({
+    element: "anyref" as "externref",
+    initial: 1,
+  });
+  exports.__wpk_fork_unwind = new WebAssembly.Tag({ parameters: [] });
+  return exports;
+}
+
+describe("the thin layer composed against a real instrumented guest", () => {
+  const guest = instrumentedFixture();
+  const guard = guest === null ? it.skip : it;
+
+  guard("binds every single thing the artifact imports from env", () => {
+
+    const env = buildForkGuestImports({
+      moduleExports: moduleExportsFor(guest!),
+      // Only THREE entries: the resume table the host owns, and the two
+      // per-process globals. The transit table and the unwind tag are not here
+      // -- the module exports them and the binder takes them from there.
+      extras: {
+        __wpk_fork_resume_table: resumeTable(),
+        __wpk_fork_module_activation: new WebAssembly.Global(
+          { value: "i32", mutable: false },
+          0,
+        ),
+        __wpk_fork_module_state_table_generation_addr: new WebAssembly.Global(
+          { value: "i32", mutable: false },
+          0,
+        ),
+      },
+      guestModule: guest!,
+      label: "composition test",
+    });
+
+    const unbound = WebAssembly.Module.imports(guest!)
+      .filter((i) => i.module === "env" && !(i.name in env))
+      .map((i) => `${i.name} (${i.kind})`);
+    expect(unbound).toEqual([]);
+  });
+
+  guard("counts three env imports that no generated list enumerates", () => {
+    // Stated as a NUMBER rather than a list so that instrumentation adding a
+    // fourth unlisted import fails here instead of passing quietly. If this
+    // trips, the right response is usually to check the binder still reports
+    // the new one -- not to bump the number.
+    const envImports = WebAssembly.Module.imports(guest!)
+      .filter((i) => i.module === "env");
+    const listed = envImports.filter(
+      (i) => i.kind === "function" || i.kind === "table",
+    );
+    expect(envImports.length - listed.length).toBe(3);
+  });
+
+  guard("reports the unlisted kinds when a caller forgets them", () => {
+    let message = "";
+    try {
+      buildForkGuestImports({
+        moduleExports: moduleExportsFor(guest!),
+        extras: { __wpk_fork_resume_table: resumeTable() },
+        guestModule: guest!,
+        label: "composition test",
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    // Both globals, each named, in one failure rather than two instantiation
+    // attempts. The TAG is absent from this list on purpose: the module exports
+    // it, so forgetting it is no longer something a host can do.
+    expect(message).toContain("__wpk_fork_module_activation");
+    expect(message).toContain("__wpk_fork_module_state_table_generation_addr");
+    expect(message).not.toContain("__wpk_fork_unwind");
+  });
+
+  guard("has its module-state descriptor validated by the artifact policy", () => {
+    // `worker-main.ts` used to re-validate this descriptor for the main program
+    // at process init. That check is deleted, on the argument that the artifact
+    // policy already made the identical comparison during exec. This is the
+    // argument turned into a test: corrupt the pointer width the descriptor
+    // declares and require the policy to reject the artifact.
+    //
+    // Without this, "the Rust check already covers it" is a claim about code I
+    // read once. The deleted check and this one must reject the same input, or
+    // the deletion removed coverage.
+    const pristine = readFileSync(join(workspace!, "fixture32.wasm"));
+    const clean = describeWasmArtifactPolicyFailures(
+      pristine.buffer.slice(
+        pristine.byteOffset,
+        pristine.byteOffset + pristine.byteLength,
+      ) as ArrayBuffer,
+      {},
+    );
+    expect(clean.join("\n")).not.toContain("module_state");
+
+    // The descriptor is `KFMD`, version, size, then the pointer width at byte
+    // 8. Flipping 4 to 8 makes it disagree with the linked-frame descriptor and
+    // with the module's own memories -- exactly what the deleted line compared.
+    const corrupted = Uint8Array.from(pristine);
+    const magic = Buffer.from("kandelo.wpk_fork.module_state", "utf8");
+    const at = Buffer.from(corrupted).indexOf(magic);
+    expect(at).toBeGreaterThan(0);
+    const ptrWidthByte = at + magic.length + 8;
+    expect(corrupted[ptrWidthByte]).toBe(4);
+    corrupted[ptrWidthByte] = 8;
+
+    const failures = describeWasmArtifactPolicyFailures(
+      corrupted.buffer.slice(
+        corrupted.byteOffset,
+        corrupted.byteOffset + corrupted.byteLength,
+      ) as ArrayBuffer,
+      {},
+    );
+    // Rejected, and the report NAMES the section -- which the deleted host
+    // check could not do. Its message read identically for a stale artifact
+    // and a byte-corrupted one.
+    expect(failures.join("\n")).toContain("module_state");
+  });
+
+  it("pins which object imports the built module actually serves", () => {
+    // `forkGuestObjectImportsUnserved` in the surface budget counts the object
+    // imports (tables, globals, the tag) the module does NOT serve, and it
+    // decides "served" by reading this artifact. This pins the answer so that
+    // a change to what the module exports moves a ratchet deliberately rather
+    // than silently.
+    //
+    // It used to decide by grepping `fork-module-inject/src/main.rs` for
+    // quoted `__wpk_fork*` literals, which a doc COMMENT satisfies: adding
+    // `// ... "__wpk_fork_resume_table" ...` to that file dropped the measure
+    // from 3 to 2 and moved the surface toward its target of 0 without the
+    // module serving anything. Measured against the artifact it stays 3.
+    const exports = new Set(
+      WebAssembly.Module.exports(
+        new WebAssembly.Module(
+          readFileSync(join(repoRoot, "host/wasm/fork_module32.wasm")),
+        ),
+      ).map((entry) => entry.name),
+    );
+    expect(exports.has("__wpk_fork_unwind")).toBe(true);
+    expect(exports.has("__wpk_fork_ref_gc_transit")).toBe(true);
+    // The resume table joined them on 2026-09-16. It was argued as host floor
+    // -- "Rust cannot hold a funcref, so the table has to exist outside the
+    // module" -- and the conclusion did not follow from the premise: the
+    // INJECTOR declares the funcref table, exactly as it declares the anyref
+    // transit one, and nothing has to hold a funcref for a table to exist.
+    // Census 198.
+    expect(exports.has("__wpk_fork_resume_table")).toBe(true);
+    // The two a JS host must still supply, each argued in census section 101.
+    expect(exports.has("__wpk_fork_module_activation")).toBe(false);
+    expect(
+      exports.has("__wpk_fork_module_state_table_generation_addr"),
+    ).toBe(false);
+  });
+
+  guard("takes the transit table and the unwind tag from the MODULE", () => {
+    // The point is ownership, not presence. A host that mints its own tag makes
+    // the module and the guest disagree the moment the module throws one, and
+    // that disagreement is invisible until an unwind crosses the boundary.
+    const moduleExports = moduleExportsFor(guest!);
+    const env = buildForkGuestImports({
+      moduleExports,
+      extras: {
+        __wpk_fork_resume_table: resumeTable(),
+        __wpk_fork_module_activation: new WebAssembly.Global(
+          { value: "i32", mutable: false }, 0,
+        ),
+        __wpk_fork_module_state_table_generation_addr: new WebAssembly.Global(
+          { value: "i32", mutable: false }, 0,
+        ),
+        // A host trying to supply its own. The module's must win.
+        __wpk_fork_unwind: new WebAssembly.Tag({ parameters: [] }),
+        __wpk_fork_ref_gc_transit: new WebAssembly.Table({
+          element: "anyref" as "externref",
+          initial: 4,
+        }),
+      },
+      guestModule: guest!,
+      label: "composition test",
+    });
+    expect(env.__wpk_fork_unwind).toBe(moduleExports.__wpk_fork_unwind);
+    expect(env.__wpk_fork_ref_gc_transit).toBe(
+      moduleExports.__wpk_fork_ref_gc_transit,
+    );
+  });
+});

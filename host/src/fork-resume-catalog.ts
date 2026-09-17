@@ -1,4 +1,16 @@
-import type { ForkResumeTarget } from "./fork-replay-events";
+/**
+ * One resume target the guest can be re-entered at.
+ *
+ * Declared here rather than imported from the replay journal: this file reads a
+ * host-known custom section, and the journal is replay orchestration the
+ * co-resident module now owns. Importing it for a two-field shape would keep
+ * 738 lines of that alive.
+ */
+export interface ForkResumeTarget {
+  readonly functionOrdinal: number;
+  /** No-parameter Wasm thunk that restores params from the unconsumed frame. */
+  readonly thunk: CallableFunction;
+}
 
 export const FORK_RESUME_CATALOG_SECTION =
   "kandelo.wpk_fork.resume_catalog";

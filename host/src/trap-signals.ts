@@ -1,139 +1,82 @@
-export const SIGILL = 4;
-export const SIGFPE = 8;
-export const SIGSEGV = 11;
+import { SIGNAL_EXIT_STATUS_BASE, TRAP_SIGNALS } from "./generated/abi";
 
-export type WasmCrashCategory =
-  | "memory"
-  | "bounds"
-  | "stack"
-  | "arithmetic"
-  | "illegal-instruction";
+/**
+ * Turning a Wasm trap into a POSIX signal is platform policy, and it lives in
+ * `wasm_posix_shared::trap_signal` — one table, shared by Node, the browser,
+ * and `crates/host-native`, reached from here through the kernel's
+ * `kernel_classify_wasm_trap_signal` export.
+ *
+ * What stays here is the part only a JavaScript host can do: recovering the
+ * text. `WebAssembly` reports a trap by throwing a `RuntimeError` whose
+ * `message` is engine-defined prose, and only this host holds that object.
+ * Once the text exists it is bytes, so the decision travels to Rust rather
+ * than being made twice.
+ */
 
-export interface WasmCrashSignalClassification {
-  category: WasmCrashCategory;
-  signum: number;
-  signalName: "SIGILL" | "SIGFPE" | "SIGSEGV";
-  matched: string;
-}
+export const SIGILL = TRAP_SIGNALS.SIGILL;
+export const SIGFPE = TRAP_SIGNALS.SIGFPE;
+export const SIGSEGV = TRAP_SIGNALS.SIGSEGV;
 
-interface TrapPattern {
-  category: WasmCrashCategory;
-  signum: number;
-  signalName: WasmCrashSignalClassification["signalName"];
-  patterns: RegExp[];
-}
+/** Classifies an engine trap message into a signal number, or 0 for "not a trap". */
+export type WasmTrapClassifier = (text: string) => number;
 
-const TRAP_PATTERNS: TrapPattern[] = [
-  {
-    category: "arithmetic",
-    signum: SIGFPE,
-    signalName: "SIGFPE",
-    patterns: [
-      /divide by zero/i,
-      /division by zero/i,
-      /remainder by zero/i,
-      /integer overflow/i,
-      /integer divide by zero/i,
-    ],
-  },
-  {
-    category: "memory",
-    signum: SIGSEGV,
-    signalName: "SIGSEGV",
-    patterns: [
-      /memory access out of bounds/i,
-      /out of bounds memory access/i,
-      /out-of-bounds memory/i,
-      /index out of bounds.*memory/i,
-      /memory out of bounds/i,
-      /unaligned accesses?/i,
-    ],
-  },
-  {
-    category: "bounds",
-    signum: SIGSEGV,
-    signalName: "SIGSEGV",
-    patterns: [
-      /RuntimeError:[^\n]*\bindex out of bounds\b/i,
-      /table index (?:is )?out of bounds/i,
-      /table index (?:is )?outside/i,
-      /out of bounds call_indirect/i,
-      /indirect call.*out of bounds/i,
-    ],
-  },
-  {
-    category: "illegal-instruction",
-    signum: SIGILL,
-    signalName: "SIGILL",
-    patterns: [
-      /\bunreachable\b/i,
-      /call_indirect.*null/i,
-      /call_indirect.*type mismatch/i,
-      /call_indirect.*signature.*does not match/i,
-      /indirect call.*null/i,
-      /indirect call.*type mismatch/i,
-      /function signature mismatch/i,
-      /signature mismatch/i,
-      /signature.*does not match/i,
-      /type mismatch/i,
-      /null function/i,
-      /undefined element/i,
-      /uninitialized element/i,
-    ],
-  },
-  {
-    category: "stack",
-    signum: SIGSEGV,
-    signalName: "SIGSEGV",
-    patterns: [
-      /maximum call stack/i,
-      /call stack size exceeded/i,
-      /call stack exhausted/i,
-      /stack overflow/i,
-      /stack exhausted/i,
-    ],
-  },
-];
-
-function crashText(reason: unknown): string {
+/**
+ * Flatten a rejection reason into the text a classifier can read.
+ *
+ * The stack is included because some engines put the trap wording only there
+ * — V8's `RuntimeError` message is terse while the stack names the faulting
+ * instruction.
+ */
+export function crashText(reason: unknown): string {
   if (reason instanceof Error) {
     return reason.stack ? `${reason.message}\n${reason.stack}` : reason.message;
   }
   return String(reason ?? "");
 }
 
-export function classifyWasmCrashSignal(reason: unknown): WasmCrashSignalClassification | null {
-  const text = crashText(reason);
-  if (!text) return null;
-
-  for (const group of TRAP_PATTERNS) {
-    for (const pattern of group.patterns) {
-      const match = pattern.exec(text);
-      if (!match) continue;
-      return {
-        category: group.category,
-        signum: group.signum,
-        signalName: group.signalName,
-        matched: match[0],
-      };
-    }
-  }
-
-  return null;
-}
-
+/**
+ * The wait status a shell reports for a process killed by `signum`.
+ *
+ * `SIGNAL_EXIT_STATUS_BASE` is generated from
+ * `wasm_posix_shared::trap_signal::signal_exit_status`, so the convention is
+ * stated once, in Rust.
+ */
 export function signalExitStatus(signum: number): number {
-  return 128 + signum;
+  return SIGNAL_EXIT_STATUS_BASE + signum;
 }
 
+/**
+ * The signal a trap raised, or `fallback` when the text is not a trap.
+ *
+ * `SIGSEGV` is the default because an unrecognised failure inside a running
+ * guest is far more often a memory fault than anything else, and because it is
+ * what every caller here has always used.
+ */
 export function classifiedSignalOrFallback(
+  classify: WasmTrapClassifier,
   reason: unknown,
   fallback: number = SIGSEGV,
 ): number {
-  return classifyWasmCrashSignal(reason)?.signum ?? fallback;
+  const text = crashText(reason);
+  if (!text) return fallback;
+  const signum = classify(text);
+  return signum > 0 ? signum : fallback;
 }
 
-export function classifiedTrapExitStatus(reason: unknown): number | null {
-  const classification = classifyWasmCrashSignal(reason);
-  return classification ? signalExitStatus(classification.signum) : null;
+/**
+ * The wait status for a classified trap, or `null` when the reason is not a
+ * trap at all.
+ *
+ * The `null` is load-bearing: a `CompileError`, a `LinkError`, or an ABI
+ * mismatch is a launch failure, and reporting one as a fatal signal would tell
+ * the guest's parent that a program ran and faulted when it never started.
+ */
+export function classifiedTrapExitStatus(
+  classify: WasmTrapClassifier,
+  reason: unknown,
+): number | null {
+  const text = crashText(reason);
+  if (!text) return null;
+  const signum = classify(text);
+  return signum > 0 ? signalExitStatus(signum) : null;
 }

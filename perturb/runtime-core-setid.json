@@ -1,0 +1,27 @@
+{
+ "file": "crates/runtime-core/src/rootfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a zero-length write clears set-ID as if it had modified the file",
+   "scope": "        if !buf.is_empty() {",
+   "scope_end": "\n        }\n",
+   "find": "        if !buf.is_empty() {\n            inode.clear_setid_on_modify();\n        }",
+   "replace": "        inode.clear_setid_on_modify();"
+  },
+  {
+   "name": "a truncate that changes no bytes clears set-ID anyway",
+   "scope": "        if changed {",
+   "scope_end": "\n        }\n",
+   "find": "        if changed {\n            inode.clear_setid_on_modify();\n        }",
+   "replace": "        inode.clear_setid_on_modify();"
+  },
+  {
+   "name": "set-group-ID is cleared even when the group cannot execute the file",
+   "scope": "    fn clear_setid_on_modify(&mut self) {",
+   "scope_end": "\n    }\n",
+   "find": "        if self.mode & S_IXGRP != 0 {\n            self.mode &= !S_ISGID;\n        }",
+   "replace": "        self.mode &= !S_ISGID;"
+  }
+ ]
+}

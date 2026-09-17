@@ -1,0 +1,13 @@
+{
+ "file": "crates/runtime-core/src/rootfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "an unlinked inode is freed while a handle still holds it",
+   "scope": "    fn maybe_free(&mut self, idx: u32) {",
+   "scope_end": "\n    }\n",
+   "find": "            .map(|inode| inode.nlink == 0 && inode.open_count == 0)",
+   "replace": "            .map(|inode| inode.nlink == 0)"
+  }
+ ]
+}

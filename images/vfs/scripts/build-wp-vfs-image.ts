@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress browser demo. The image
  * starts from shell.vfs.zst, then dinit, the first user process, brings up:
@@ -14,7 +15,6 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
@@ -69,13 +69,13 @@ const WORDPRESS_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 
 // --- Service configs (reuse logic from init modules) ---
 
-function ensureWritableByPhpFpm(fs: MemoryFileSystem, path: string): void {
+function ensureWritableByPhpFpm(fs: VfsImageFilesystem, path: string): void {
   ensureDirRecursive(fs, path);
   fs.chown(path, PHP_FPM_UID, PHP_FPM_GID);
   fs.chmod(path, 0o775);
 }
 
-function populateNginxConfig(fs: MemoryFileSystem): void {
+function populateNginxConfig(fs: VfsImageFilesystem): void {
   const dirs = [
     "/etc/nginx", "/var/www/html", "/var/log/nginx",
     "/tmp/nginx_client_temp", "/tmp/nginx-wasm/logs",
@@ -174,7 +174,7 @@ ${extraLocations}
 }
 
 function populatePhpFpmConfig(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   opcache: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");

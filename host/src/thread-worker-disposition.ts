@@ -1,6 +1,7 @@
 import {
   classifiedTrapExitStatus,
   SIGSEGV,
+  type WasmTrapClassifier,
 } from "./trap-signals";
 
 export type ThreadWorkerFailureDisposition =
@@ -32,8 +33,11 @@ function signalFromExitStatus(exitStatus: number): number | null {
   return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
 }
 
-export function threadWorkerFailureDisposition(reason: unknown): ThreadWorkerFailureDisposition {
-  const exitStatus = classifiedTrapExitStatus(reason);
+export function threadWorkerFailureDisposition(
+  classify: WasmTrapClassifier,
+  reason: unknown,
+): ThreadWorkerFailureDisposition {
+  const exitStatus = classifiedTrapExitStatus(classify, reason);
   if (exitStatus === null) {
     return { kind: "host-thread-failure" };
   }

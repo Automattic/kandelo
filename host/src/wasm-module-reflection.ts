@@ -18,7 +18,7 @@ const registeredReflection = new WeakMap<
 /**
  * Bind one compiled module to the exact bytes from which the host created it.
  *
- * WHY: WebKit can compile ABI 43 fork artifacts containing exception-reference
+ * WHY: WebKit can compile fork artifacts containing exception-reference
  * imports while `WebAssembly.Module.imports()` throws instead of returning
  * their name/kind descriptors. Kandelo already parses and validates these
  * bytes before admission, so retain that exact ordered reflection alongside

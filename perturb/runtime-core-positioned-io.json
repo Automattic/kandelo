@@ -1,0 +1,21 @@
+{
+ "_comment": "The fd/OFD layer's positioned-I/O contract. Its own spec because a spec mutates ONE file and these guards live in syscalls.rs, not in a filesystem -- which is the whole reason the assertions moved here from the TypeScript filesystem's tests. sys_pread and sys_pwrite are correct by construction, so every trial here ADDS an offset movement rather than removing a guard: there is no check to break, only a behaviour to violate.",
+ "file": "crates/runtime-core/src/syscalls.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "pread advances the shared offset, moving a file pointer its caller never asked to move",
+   "scope": "pub fn sys_pread(",
+   "scope_end": "\n}\n",
+   "find": "    let ofd_idx = resolve_io_ofd(proc, fd)?;",
+   "replace": "    let ofd_idx = resolve_io_ofd(proc, fd)?;\n    let _ = sys_lseek(proc, host, fd, offset, SEEK_SET);"
+  },
+  {
+   "name": "pwrite advances the shared offset, which a forked peer would see move",
+   "scope": "pub fn sys_pwrite(",
+   "scope_end": "\n}\n",
+   "find": "    let ofd_idx = resolve_io_ofd(proc, fd)?;",
+   "replace": "    let ofd_idx = resolve_io_ofd(proc, fd)?;\n    let _ = sys_lseek(proc, host, fd, offset, SEEK_SET);"
+  }
+ ]
+}

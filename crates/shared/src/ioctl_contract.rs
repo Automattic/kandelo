@@ -43,6 +43,29 @@ pub const KDGKBTYPE: u32 = 0x4b33;
 pub const KDGKBMODE: u32 = 0x4b44;
 pub const KDSKBMODE: u32 = 0x4b45;
 
+// Network-interface ioctls.
+//
+// `SIOCGIFCONF` is in this table at the size of its OUTER `struct ifconf`
+// only. The buffer its `ifc_buf` member points at is sized by the caller at
+// runtime, which this table's one-static-size-per-request model cannot
+// express; the kernel reaches that inner buffer itself, through
+// `HostIO::proc_write_bytes`, in `runtime_core::syscalls::sys_ioctl`.
+//
+// It used to be absent entirely, on the stated grounds that a process-memory
+// address is something "the kernel's separate Wasm instance cannot itself
+// reach". That was never true — `host_proc_read_bytes` /
+// `host_proc_write_bytes` have read and written guest memory from inside the
+// kernel Wasm instance since the DRI/KMS paths were written — and it is the
+// fourth "floor" the Rust-first campaign inherited as fact and then disproved
+// by reading the code. Recorded here rather than quietly deleted, because the
+// pattern is worth more than the instance: a claimed platform boundary is a
+// claim to verify, not a constraint to design around.
+pub const SIOCGIFNAME: u32 = 0x8910;
+pub const SIOCGIFCONF: u32 = 0x8912;
+pub const SIOCGIFADDR: u32 = 0x8915;
+pub const SIOCGIFHWADDR: u32 = 0x8927;
+pub const SIOCGIFINDEX: u32 = 0x8933;
+
 /// How the request's third argument is represented by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoctlArgKind {
@@ -136,13 +159,22 @@ macro_rules! pointer {
             wasm64_size: Some($size),
         }
     };
+    ($request:expr, $direction:ident, $wasm32_size:expr, $wasm64_size:expr) => {
+        IoctlRequestContract {
+            request: $request,
+            arg_kind: IoctlArgKind::Pointer,
+            direction: IoctlDirection::$direction,
+            wasm32_size: Some($wasm32_size),
+            wasm64_size: Some($wasm64_size),
+        }
+    };
 }
 
 /// Ioctls that may reach the Rust kernel dispatcher.
 ///
-/// Keep entries sorted by unsigned request number. Network-interface ioctls
-/// are deliberately absent: the host intercepts those before kernel scratch
-/// because their outer structures contain process-memory pointers.
+/// Keep entries sorted by unsigned request number. `SIOCGIFCONF`'s entry
+/// covers only its outer `struct ifconf`; see the comment above the
+/// `SIOCGIF*` constants for the buffer it nests.
 pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // Kandelo GLES requests use small private request numbers.
     pointer!(crate::gl::GLIO_INIT, In, 4),
@@ -192,6 +224,18 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     no_arg!(crate::dri::DRM_IOCTL_SET_MASTER),
     no_arg!(crate::dri::DRM_IOCTL_DROP_MASTER),
     pointer!(SIOCATMARK, Out, 4),
+    // ifreqSize differs by pointer width: `struct ifmap`'s `unsigned long`
+    // members double from 4 to 8 bytes under wasm64.
+    pointer!(SIOCGIFNAME, InOut, 32, 40),
+    // `struct ifconf`: `int ifc_len` plus a pointer union, so 8 bytes on
+    // wasm32 and 16 on wasm64. Only the OUTER struct has a static size; the
+    // buffer `ifc_buf` points at is sized by the caller at runtime, and the
+    // kernel reaches it directly via `HostIO::proc_write_bytes` rather than
+    // through this table.
+    pointer!(SIOCGIFCONF, InOut, 8, 16),
+    pointer!(SIOCGIFADDR, InOut, 32, 40),
+    pointer!(SIOCGIFHWADDR, InOut, 32, 40),
+    pointer!(SIOCGIFINDEX, InOut, 32, 40),
     pointer!(crate::oss::SNDCTL_DSP_SETBLKSIZE, In, 4),
     pointer!(crate::oss::SNDCTL_DSP_SETTRIGGER, In, 4),
     pointer!(TIOCSPTLCK, In, 4),

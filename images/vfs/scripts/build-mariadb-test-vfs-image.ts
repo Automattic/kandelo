@@ -19,7 +19,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -233,8 +233,11 @@ export async function buildMariadbTestVfsImage(
 
   console.log("==> Building MariaDB test-runner VFS image");
 
-  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
+  const fs = SffsImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(256 * 1024 * 1024);
 
   for (const dir of [
     "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",

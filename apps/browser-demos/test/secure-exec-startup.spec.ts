@@ -8,9 +8,16 @@ const browserKernelModulePath = resolve(
   here,
   "../../../host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use; the bridge no longer imports node builtins,
+// so a page can transform it like any other module.
+const sffsImageFsModulePath = resolve(
   here,
-  "../../../host/src/vfs/memory-fs.ts",
+  "../../../images/vfs/lib/sffs-image-fs.ts",
+);
+const sffsModuleWasmPath = resolve(
+  here,
+  "../../../local-binaries/sffs_module32.wasm",
 );
 const probePath = resolve(
   here,
@@ -41,18 +48,17 @@ test("ordinary startup receives the kernel-owned non-secure marker", async ({
   const asViteUrl = (path: string) => new URL(`/@fs${path}`, baseURL).href;
   const result = await page.evaluate(async ({
     browserKernelModuleUrl,
-    memoryFsModuleUrl,
+    sffsImageFsModuleUrl,
+    sffsModuleBytes,
     probeBytes,
   }) => {
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { MemoryFileSystem } = await import(
-      /* @vite-ignore */ memoryFsModuleUrl
+    const { SffsImageFs } = await import(
+      /* @vite-ignore */ sffsImageFsModuleUrl
     );
-    const image = MemoryFileSystem.create(
-      new SharedArrayBuffer(2 * 1024 * 1024),
-    );
+    const image = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
     let stdout = "";
     let stderr = "";
     const hostDiagnostics: unknown[] = [];
@@ -81,7 +87,8 @@ test("ordinary startup receives the kernel-owned non-secure marker", async ({
     }
   }, {
     browserKernelModuleUrl: asViteUrl(browserKernelModulePath),
-    memoryFsModuleUrl: asViteUrl(memoryFsModulePath),
+    sffsImageFsModuleUrl: asViteUrl(sffsImageFsModulePath),
+    sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
     probeBytes: Array.from(readFileSync(probePath)),
   });
 
@@ -116,19 +123,18 @@ test("browser worker preserves postcommit secure-exec state", async ({
   const asViteUrl = (path: string) => new URL(`/@fs${path}`, baseURL).href;
   const result = await page.evaluate(async ({
     browserKernelModuleUrl,
-    memoryFsModuleUrl,
+    sffsImageFsModuleUrl,
+    sffsModuleBytes,
     probeBytes,
   }) => {
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { MemoryFileSystem } = await import(
-      /* @vite-ignore */ memoryFsModuleUrl
+    const { SffsImageFs } = await import(
+      /* @vite-ignore */ sffsImageFsModuleUrl
     );
     const probe = Uint8Array.from(probeBytes);
-    const imageFs = MemoryFileSystem.create(
-      new SharedArrayBuffer(Math.max(4 * 1024 * 1024, probe.byteLength * 2)),
-    );
+    const imageFs = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
     imageFs.mkdir("/bin", 0o755);
     imageFs.mkdir("/usr", 0o755);
     imageFs.mkdir("/usr/bin", 0o755);
@@ -222,7 +228,8 @@ test("browser worker preserves postcommit secure-exec state", async ({
     };
   }, {
     browserKernelModuleUrl: asViteUrl(browserKernelModulePath),
-    memoryFsModuleUrl: asViteUrl(memoryFsModulePath),
+    sffsImageFsModuleUrl: asViteUrl(sffsImageFsModulePath),
+    sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
     probeBytes: Array.from(readFileSync(probePath)),
   });
 

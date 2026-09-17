@@ -22,6 +22,11 @@ const processWorkerSource = readFileSync(
   join(repoRoot, "host/src/worker-main.ts"),
   "utf8",
 );
+/** The single implementation both entries call for shared lifecycle logic. */
+const sharedLifecycleSource = readFileSync(
+  join(repoRoot, "host/src/process-lifecycle.ts"),
+  "utf8",
+);
 
 describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   const source = readFileSync(path, "utf8");
@@ -33,16 +38,34 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   });
 
   it("routes lifecycle, protocol, exec, clone, and thread failures as host diagnostics", () => {
+    // The subject is that each failure class reaches main as a host
+    // diagnostic, not which file raises it. `worker protocol` is now raised
+    // once in `host/src/process-lifecycle.ts` on behalf of both entries, so
+    // it is asserted there — and the entry must still bind the reporter, so
+    // deleting the wire keeps failing this test.
+    expect(source).toContain('source: "worker-main error message"');
+    // `clone allocation` and `thread worker failure` join `worker protocol`
+    // in `host/src/process-lifecycle.ts`: `handleClone` is now one
+    // implementation serving both hosts, so each is raised once. That is
+    // stronger than asserting it twice — a clone failure can no longer be
+    // reported on one host and swallowed on the other — and the entry must
+    // still bind the reporter and the handler, so deleting either wire keeps
+    // failing this test.
+    // `exec post-commit transition` joined them when `handleExec` became one
+    // implementation: an exec that fails after the commit point can no longer
+    // be reported on one host and swallowed on the other.
     for (const diagnosticSource of [
       "worker protocol",
-      "worker-main error message",
-      "exec post-commit transition",
       "clone allocation",
       "thread worker failure",
+      "exec post-commit transition",
     ]) {
-      expect(source).toContain(`source: "${diagnosticSource}"`);
+      expect(sharedLifecycleSource).toContain(`source: "${diagnosticSource}"`);
     }
-    expect(source).toContain("reportHostDiagnostic({");
+    expect(source).toContain("handleClone");
+    expect(source).toContain("handleExec");
+    expect(source).toContain("reportWorkerProtocolError");
+    expect(source).toContain("reportHostDiagnostic");
   });
 
   it("does not classify an ordinary nonzero process exit as a host failure", () => {
@@ -52,15 +75,26 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   });
 
   it("wires a poisoned shared kernel instance to definitive worker teardown", () => {
-    expect(source).toMatch(
+    // The teardown itself is one implementation in
+    // `host/src/process-lifecycle.ts` now, so it is asserted there. What each
+    // entry still owes is the wire into the kernel and the one irreducibly
+    // host-specific step: stopping its own worker realm once the kernel can no
+    // longer coordinate anything.
+    expect(sharedLifecycleSource).toMatch(
       /\bfunction\s+terminatePoisonedKernelWorker\s*\(\s*error:\s*Error\s*\)/,
     );
-    expect(source).toMatch(
-      /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
-    );
-    expect(source).toMatch(
+    expect(sharedLifecycleSource).toMatch(
       /post\(\{\s*type:\s*"kernel_fatal",\s*error:\s*detail\s*\}\)/,
     );
+    expect(sharedLifecycleSource).toContain("host.stopKernelRealm()");
+    // The kernel callback record is shared now, so the wire is asserted
+    // there; the entry must still take that record.
+    expect(sharedLifecycleSource).toMatch(
+      /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
+    );
+    expect(source).toContain("...processLifecycleKernelCallbacks(),");
+    expect(source).toContain("terminatePoisonedKernelWorker,");
+    expect(source).toMatch(/\bstopKernelRealm:\s*\(\)\s*=>/);
   });
 });
 
@@ -157,4 +191,53 @@ it("rejects malformed worker-side proxy data before binding consumers", () => {
   })).toThrow("browser CORS proxy URL must be an HTTP(S) URL");
   expect(createLazyFetcher).not.toHaveBeenCalled();
   expect(createTlsBackend).not.toHaveBeenCalled();
+});
+
+describe("an aborted fork says why", () => {
+  // WHY THIS EXISTS. A fork that aborts leaves the parent intact and returns
+  // `-errno` to the guest, which is correct -- and until 2026-09-15 it said
+  // nothing to anyone. A guest that does not check `fork()`'s return then
+  // fails somewhere else entirely, and the reason is gone: three separate
+  // defects wore that disguise in a single day, each costing an afternoon of
+  // probes compiled into the worker (census section 189).
+  //
+  // The invariant is EVERY abort path reports, not that some do. That is what
+  // a new abort site added without a report would break, and it is checkable
+  // from the source: the worker sets `forkAbortErrno` on exactly the paths
+  // that abort.
+  it("reports on every path that sets an abort errno", () => {
+    const assignments =
+      processWorkerSource.match(/forkAbortErrno = (?!0;)/g) ?? [];
+    // The helper's own declaration is `const reportForkAborted = (` , so this
+    // counts CALLS only.
+    const reports = processWorkerSource.match(/reportForkAborted\(/g) ?? [];
+    expect(assignments.length, "abort paths in worker-main").toBeGreaterThan(0);
+    expect(reports.length, "one report per abort path").toBe(assignments.length);
+  });
+
+  it("names the errno and a reason a reader can act on", () => {
+    expect(processWorkerSource).toMatch(
+      /type: "fork_aborted", pid, errno, reason/,
+    );
+    // The three causes, each in words rather than a code.
+    expect(processWorkerSource).toContain("the capture could not seal");
+    expect(processWorkerSource).toContain("cannot reconstruct in a fresh child");
+    expect(processWorkerSource).toContain(
+      "the kernel refused to create the child process",
+    );
+  });
+
+  it("reaches the host as a WARNING, because an abort can be correct", () => {
+    // An abort is the right outcome for a reference kind the platform refuses
+    // to reconstruct, so this must not read as a fault on the error channel.
+    const forward = sharedLifecycleSource.slice(
+      sharedLifecycleSource.indexOf('message.type === "fork_aborted"'),
+    );
+    const head = forward.slice(0, 800);
+    expect(head).toContain("reportHostDiagnostic(");
+    expect(head).toContain(
+      "`fork aborted with errno=${message.errno}: ${message.reason}`",
+    );
+    expect(head).toContain('"warn",');
+  });
 });
