@@ -31,7 +31,8 @@ import {
   type SourceOnlyBinarySnapshot,
 } from "../host/src/binary-resolver.ts";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
-import { restoreVerifiedVfsImage } from "../host/src/vfs/load-image.ts";
+import { createBaseImageFromContainer } from "../host/src/vfs/module-base-image.ts";
+import { imageReadFromContainer } from "../host/src/vfs/rootfs-lazy-archives.ts";
 import {
   validateVfsAssetGroupManifest,
   type VfsAssetGroupManifestV1,
@@ -159,7 +160,16 @@ export async function buildLocalVfsAssetGroup(
   );
   const expectedAssets = new Map<string, ExpectedAsset>();
   for (const [index, snapshot] of imageSnapshots.entries()) {
-    const fs = await restoreVerifiedVfsImage(snapshot.bytes);
+    // READ the container, do not RESTORE it. This used to build a whole
+    // `MemoryFileSystem` from each product image so it could enumerate the
+    // lazy bodies the image references — a filesystem for a listing. The
+    // reader built for exactly that question does it without one, and it also
+    // reads the module-written half, which `restoreVerifiedVfsImage` could not
+    // see: the two producers record a deferred URL in different places.
+    const { baseImage: fs } = createBaseImageFromContainer(
+      snapshot.bytes,
+      imageReadFromContainer(snapshot.bytes),
+    );
     for (const entry of fs.exportLazyEntries()) {
       addExpectedAsset(expectedAssets, entry.url, { bytes: entry.size });
     }
