@@ -3920,7 +3920,13 @@ export async function centralizedWorkerMain(
       const importedStateCapture = new ForkImportIdentity(
         requireForkModuleBackend(forkModuleBackend, pid),
         `pid=${pid}: imported activation state`,
-        processTableStateOwners,
+        // A borrowed vfork child must not publish: storing an identity mmaps and
+        // WRITES a chunk in the parked parent's memory, which breaks the exact
+        // teardown fence. It never reads them either -- identities are capture
+        // state and a borrowed child only replays. See the constructor note.
+        // Shares a line with the owners argument because this surface sits at
+        // its ceiling, and a diagnostic-free extra line is not worth a raise.
+        processTableStateOwners, !borrowedForkChild,
       );
       let importedStatePlanner: ForkChildImports | null = null;
       let earlyChildReferences: ForkChildReferences | null = null;

@@ -90,7 +90,14 @@ export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
  * for `SYS_MMAP`, accepts `SYS_MUNMAP`, and refuses anything else with EINVAL
  * rather than inventing a plausible answer.
  */
-const RESPONDER = `
+/**
+ * The channel responder script, shared.
+ *
+ * Exported because identity storage became on-demand: any test that publishes
+ * an identity now needs a serviced channel, not just the capture-drive tests.
+ * One responder rather than a copy per file keeps them answering the same way.
+ */
+export const CHANNEL_RESPONDER = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { sab, channelBase, floor } = workerData;
 const i32 = new Int32Array(sab);
@@ -178,7 +185,7 @@ export function fixture(): Fixture {
     { env: { __wpk_fork_publish: () => {} } },
   ).exports as Record<string, CallableFunction>;
 
-  const worker = new Worker(RESPONDER, {
+  const worker = new Worker(CHANNEL_RESPONDER, {
     eval: true,
     workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
   });

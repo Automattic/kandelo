@@ -1,7 +1,16 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
+import { Worker } from "node:worker_threads";
 import { instantiateForkModule } from "../src/fork-module-instance";
+import {
+  CHANNEL_BASE,
+  CHANNEL_RESPONDER,
+  MMAP_FLOOR,
+} from "./fork-module-capture-fixture";
+
+/** Responders spawned by `fixture()`, terminated in `afterAll`. */
+const liveResponders: Worker[] = [];
 
 /**
  * Seeding an activation's imported-global (KFIG) custom section.
@@ -46,7 +55,26 @@ function fixture() {
     label: "kfig seed",
   });
   const x = fm.exports as Record<string, unknown>;
-  (x.fm_set_format as (pw: number, prefix: number) => void)(4, 0);
+  // A SERVICED CHANNEL, because identity storage is now on-demand: the module
+  // `SYS_MMAP`s a chunk when it needs one instead of writing into a fixed
+  // static, so a publish without a channel is a truthful `EINVAL` rather than a
+  // silent success. `fm_set_format(..., CHANNEL_BASE)` plus the shared
+  // responder is what the other module tests already do; this file predated the
+  // need for one.
+  const responder = new Worker(CHANNEL_RESPONDER, {
+    eval: true,
+    workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
+  });
+  liveResponders.push(responder);
+  (
+    x.fm_set_format as (
+      pw: number,
+      prefix: number,
+      archive: number,
+      owner: number,
+      channelBase: number,
+    ) => void
+  )(4, 0, 0, 0, CHANNEL_BASE);
   return {
     memory,
     errno: () => (x.fm_last_errno as () => number)(),
@@ -334,3 +362,6 @@ describe("one seed surface over two import spaces", () => {
   });
 });
 
+afterAll(async () => {
+  await Promise.all(liveResponders.map((worker) => worker.terminate()));
+});

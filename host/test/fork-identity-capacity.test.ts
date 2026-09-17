@@ -32,13 +32,6 @@ const moduleSource = readFileSync(
   "utf8",
 );
 
-/** The module's own cap, read from its source so the two cannot drift. */
-function identityCap(): number {
-  const match = /const GLOBAL_IDENTITY_MAX: usize = ([0-9_]+);/.exec(moduleSource);
-  if (!match) throw new Error("fork-module no longer defines GLOBAL_IDENTITY_MAX");
-  return Number(match[1].replace(/_/g, ""));
-}
-
 /** Count catalog exports by scanning the export section's name bytes. */
 function catalogExportCount(bytes: Uint8Array): number {
   // A name scan rather than a section walk: these prefixes are long and
@@ -177,26 +170,54 @@ describe("fork-module fixed caps vs a real program", () => {
 });
 
 describe("fork-module identity table capacity", () => {
-  it("holds every catalog export a php process loads", () => {
+  it("has no fixed identity cap to exceed", () => {
+    // WHAT THIS REPLACED, and why the shape changed. This test used to assert
+    // php's measured need (7,684 entries) against `GLOBAL_IDENTITY_MAX`, and it
+    // did its job: it is how the E2BIG that blocked wordpress and lamp was
+    // found, and raising the cap to 16,384 is what made them build.
+    //
+    // But a cap that is large enough for php is also 256 KiB of the module's
+    // `dylink` static, and the host mmaps that whole region out of the GUEST's
+    // window before the guest allocates anything. That broke P-11, whose
+    // process is deliberately capped at 384 pages. Measured then: 16,384 left
+    // 2.0 pages of window and P-11 failed; 512 left 5.0 and it passed. There
+    // was no value that satisfied both -- the viable range topped out around
+    // 9,216 against a need of 7,684.
+    //
+    // So the bound is gone rather than retuned. Identity entries live in chunks
+    // the module `SYS_MMAP`s when it needs one and `SYS_MUNMAP`s when a dlclose
+    // empties one. Nothing is reserved, so there is no number to compare a
+    // program against, and this assertion guards the one thing that could
+    // silently come back: a static bound reappearing in the source.
+    expect(
+      moduleSource,
+      "a fixed identity cap is back in crates/fork-module/src/lib.rs. It cannot " +
+        "be sized: too small refuses php (7,684 entries), and large enough for " +
+        "php takes 256 KiB out of every guest's mmap window, which is what broke " +
+        "P-11. Allocate chunks on demand instead.",
+    ).not.toMatch(/const GLOBAL_IDENTITY_MAX/);
+  });
+
+  it("still measures what php would need, as scale rather than a bound", () => {
     const artifacts = phpArtifacts();
     if (artifacts.length === 0) {
-      // Absence is not a pass, and it is not a failure either: a tree that has
-      // not built php cannot answer this. Say which, rather than going green.
       console.warn(
-        "fork-identity-capacity: php is not built in this tree, so the capacity " +
-          "bound was NOT checked against it. Build it to exercise this test.",
+        "fork-identity-capacity: php is not built in this tree, so its identity " +
+          "scale was NOT measured. Build it to exercise this test.",
       );
       return;
     }
-    // The interpreter plus every extension it can dlopen, because the table is
-    // ONE table for the worker and a process can hold all of them at once.
+    // Kept because the NUMBER is still worth having in front of a reader, even
+    // with nothing to compare it to: it is what makes "on demand" concrete, and
+    // it is the figure any future bound would have to answer to.
     const need = artifacts.reduce((sum, a) => sum + catalogExportCount(a.bytes), 0);
-    const cap = identityCap();
-    expect(
-      need,
-      `php's artifacts need ${need} identity entries but GLOBAL_IDENTITY_MAX is ` +
-        `${cap}; a fork in wordpress or lamp will fail with E2BIG. Per-artifact: ` +
-        artifacts.map((a) => `${a.name}=${catalogExportCount(a.bytes)}`).join(" "),
-    ).toBeLessThanOrEqual(cap);
+    const per = artifacts
+      .map((a) => `${a.name}=${catalogExportCount(a.bytes)}`)
+      .join(" ");
+    expect(need, `php identity entries: ${per}`).toBeGreaterThan(0);
+    // One 64 KiB chunk holds 4,095 entries, so php spans a handful. A change
+    // that made this need hundreds of chunks would be worth noticing.
+    expect(Math.ceil(need / 4095), `php spans chunks; per-artifact: ${per}`)
+      .toBeLessThan(16);
   });
 });

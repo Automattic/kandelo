@@ -148,7 +148,22 @@ export class ForkImportIdentity {
     private readonly label: string,
     private readonly tables?: {
       register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
-    },
+    /**
+     * Publish catalog identities at all. FALSE for a vfork BORROWED child.
+     *
+     * A borrowed child runs in the PARKED PARENT's linear memory and must leave
+     * it exactly as it found it -- `process-lifecycle.ts` refuses the teardown
+     * otherwise ("exited without exact ownership fences"). Identity storage is
+     * on-demand `SYS_MMAP` chunks in that shared memory, and WRITING one dirties
+     * a page the parent owns. Measured: allocating a chunk and writing nothing
+     * leaves P-08 green; writing to it exits the child 139.
+     *
+     * Nothing is lost by skipping. Identities exist for CAPTURE -- the module
+     * reads them only in `write_imported_global_bindings` and the KFBT table
+     * record -- and a borrowed child never captures; it drives one replay and
+     * exits. Publishing into it was always work with no reader.
+     */
+    }, private readonly publishIdentities = true,
   ) {}
 
   /**
@@ -263,11 +278,14 @@ export class ForkImportIdentity {
 
   /** Publish this activation's catalog entries into their identity groups. */
   private publishCatalogs(activationId: number, instance: WebAssembly.Instance): void {
+    // Table registration still runs below: it is host-side bookkeeping in this
+    // realm, not a write into the parent's memory. Only the module publish is
+    // skipped.
     for (const [name, value] of Object.entries(instance.exports)) {
       for (const [space, prefix] of CATALOGS) {
         const owner = catalogOwner(name, prefix, this.label);
         if (owner === null) continue;
-        this.sink.setIdentityGroup(space, activationId, owner, this.group(value as object));
+        if (this.publishIdentities) this.sink.setIdentityGroup(space, activationId, owner, this.group(value as object));
         if (space === FORK_IMPORT_SPACE_TABLE && value instanceof WebAssembly.Table) {
           this.tables?.register(activationId, owner, value);
         }
