@@ -13721,12 +13721,15 @@ working rather than a judgement call.
    subtraction had nothing to subtract and the guard fired on the exclusion
    itself.
 
-**WHAT IS OWED, and neither is a formality.** The full host-suite comparison
-against the pre-deletion baseline captured at `9aefdf505` — **39 failing files
-/ 84 failing tests of 4,402**, with `dinit-scripted-service` among them only
-under full-suite contention (it passes 2/2 alone) — and the wasm32 kernel build
-owed by the runtime-core doc-comment edit. Both were in flight when the commit
-landed; the commit says so in those words rather than implying they passed.
+**THE BOTH-SIDES COMPARISON CAME BACK CLEAN.** Baseline at `9aefdf505`: 39
+failing files / 84 failing tests of 4,402. After the deletion: **39 failing
+files / 84 failing tests of 4,067** — the same failing set file for file, 335
+fewer tests because the deleted suites are gone, **zero new failures**.
+`dinit-scripted-service` is in both sets and only under full-suite contention;
+it passes 2/2 alone. The commit was landed before this reported and said so in
+those words; it now carries the verdict.
+
+**Still owed**: the wasm32 kernel build for the runtime-core doc-comment edit.
 
 **AND THE BROWSER CYCLE IS BLOCKED ON PROVISIONING, not on this work.** The
 worktree's source-only tier is stale: `xtask verify-fresh` names
