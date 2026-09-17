@@ -1298,3 +1298,91 @@ verify-fresh 0, and 11 tests green across worker-instantiation,
 shipped-artifact and identity-capacity. Worth stating because run 3 left a
 TRAPPING fork module staged, which would have broken every fork in the tree if
 it had been left there.
+
+## What it would take for forking to work without co-resident guest memory
+
+Asked by the maintainer, 2026-09-17, after P-11. Two different questions hide
+in it, and only one of them is hard.
+
+### First, why it is co-resident at all
+
+The fork-module is a PIC side module that IMPORTS the guest's linear memory. A
+wasm module's statics live in the memory it is linked against, so the engine's
+state necessarily sits in the guest's address space. This is the real
+difference from the TypeScript engine it replaced: that one kept its state as
+JS objects on the worker's heap and cost the guest essentially nothing.
+
+And the region is not carved from some reserved low area.
+`instantiateForkModule`'s `reserve` callback calls `continuationMmap`, so the
+module's region is an mmap from the SAME arena the guest's own `mmap()` draws
+on -- taken first, and held for the worker's life.
+
+### Question one: stop RESERVING the guest's window. Achievable now.
+
+This is what P-11 actually objects to, and it needs no new engine feature.
+The static is 6.18 MiB, and 94% of it is seven capped arrays:
+
+    4.00 MiB  HEAP, the bump allocator
+    0.75 MiB  RESUME_SLOT_CAP      [[u32; 3]; 65_536]
+    0.25 MiB  RESUME_CATALOG_CAP   [u32; 65_536]
+    0.25 MiB  ACTIVATION_CATALOG_ORD_CAP
+    0.25 MiB  ACT_EXN_TAGS_ORD_CAP
+    0.25 MiB  ACT_GC_CODEC_BYTES_CAP
+    0.06 MiB  ACT_KFIG_BYTES_CAP
+    ------
+    5.81 MiB  of 6.18 MiB
+
+Every one is the same shape the identity table was: a fixed array sized for the
+largest program anyone might run, reserved whether that program is running or
+not. The identity work took 0.25 MiB back by the mechanism that already
+existed (`channel_mmap` / `channel_munmap`, as the frame arena does), and the
+same move applies to each.
+
+The bump heap is the interesting one at 65%. It is not a cap on a data
+structure but a whole allocator, and `ALLOC.reset()` mid-fork is load-bearing
+for how the module manages fork lifetimes -- so it is the biggest prize and the
+most careful change, not a mechanical repeat.
+
+Plausible end state: a module region of a few hundred KiB that grows only while
+a fork is in flight, instead of 7.44 MiB held permanently. That would take
+P-11's window from 6.0 pages to over a hundred, and make the co-residency
+question academic for every process that is not deliberately squeezed.
+
+### Question two: not being IN the guest's memory at all. Blocked on toolchain.
+
+Genuinely separating the two address spaces needs the module to keep its own
+statics, stack and heap in a memory the guest cannot see, while still reading
+and writing the guest's memory to capture and replay frames. That is the
+multi-memory proposal, and three things have to line up:
+
+  * ENGINE: multi-memory. Broadly available in current engines; the least of
+    the problems.
+  * TOOLCHAIN: `wasm-ld` must place a PIC side module's `.data`/`.bss` in a
+    memory other than index 0. This is the blocker. The dylink ABI is built
+    around `__memory_base` being an offset into memory 0, and neither LLVM nor
+    Rust has a way to say "put this program's own data in memory 1". Nothing
+    in this repo can route around that.
+  * CODE: every address in the module becomes ambiguous. Today a `u64` is a
+    guest offset and `mem_mut()` is the only view. With two memories, each
+    pointer must say which memory it belongs to, and the module's own Rust
+    references would implicitly be in its private memory while every
+    `fork-codec` offset stays a guest one. That is a pervasive, error-prone
+    distinction that the type system would not be checking.
+
+Copying between memories instead of sharing is not a way out either: without
+multi-memory a copy has to go through the HOST (JS reading one memory and
+writing the other), which puts the fork data path back in TypeScript -- the
+exact direction this campaign is unwinding.
+
+### Recommendation
+
+Do question one and treat question two as blocked-upstream. Seven arrays and
+one allocator stand between the current 7.44 MiB and a region that is
+negligible for any realistic process, all using machinery already in the module
+and already proven by the frame arena and now the identity table. Question two
+buys isolation rather than space, and cannot start until a toolchain can place
+side-module statics outside memory 0.
+
+Worth recording that P-11 found all of this. A test deliberately capped at 384
+pages is the only thing in the tree that notices what the fork engine takes
+from a guest, which is an argument for keeping it exactly as tight as it is.
