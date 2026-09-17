@@ -679,7 +679,22 @@ when the projection cannot.
 test files. Add to that: while it stands, one of the two freshness checks over
 the module every fork depends on is switched off.
 
-## The same shadowing is LIVE in two sibling modules — needs a ruling
+## The same shadowing is LIVE in two sibling modules — RESOLVED
+
+> **RESOLVED 2026-09-17 by `b26ca3240c`.** One shared helper
+> (`scripts/lib/side-module-tier.sh`) stages and checks the tier copy, and all
+> four co-resident scripts call it. Each call site was perturbed separately --
+> append a byte to that module's tier copy, run that module's `--verify-fresh`
+> -- and all four failed naming their OWN label and file pair, which is what
+> distinguishes "the shared function works" from "this call site passes the
+> right arguments". See "The tier guard, perturbed at all four call sites".
+>
+> **One claim below is also wrong as stated.** `resolveBinary` does NOT
+> reliably serve the `source-only-v1` copy: measured twice in one session, it
+> returned `local-binaries/` after a hand-staged `build-wasm.sh` and the tier
+> copy after `./run.sh setup` republished the projection. The hazard is real;
+> which copy wins is not fixed. See `bd63c6203`.
+
 
 Found by measuring rather than reasoning, in this worktree, today. Reported
 rather than fixed, because `dylink`, `wasi` and `wasm-artifact` are not this
@@ -978,7 +993,15 @@ Neither check subsumes the other, and each is blind exactly where the other
 looks. Worth keeping in view when either is next proposed for simplification:
 they look redundant (both compare hashes of the same file) and are not.
 
-## NEEDS A DECISION: the pkg-config guard is inert -- nothing runs sdk's tests
+## The pkg-config guard was inert -- RESOLVED
+
+> **RESOLVED 2026-09-17 by `d11e73e3d`**, on the maintainer's instruction
+> ("CI is not currently active. Can we make this part of a regular test suite
+> for the build?"). `./run.sh test` gained an `sdk` suite in its default set.
+> That was 8 files and 115 tests nothing was running. Perturbed until it
+> failed: dropping the `resolverProvided.has(p)` arm takes the suite from 115
+> passed to `2 failed | 113 passed`, naming the case.
+
 
 The `sdk/src/bin/pkg-config.ts` path-spelling fix is the change that unblocked
 php, and through php the wordpress and lamp products. The FIX is proven by the
