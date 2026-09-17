@@ -133,22 +133,6 @@ export async function openVfsProductBuild(
   inputsPath: string,
   reportPath: string,
 ): Promise<VfsProductBuild> {
-  return openVfsProductBuildWithPolicy(inputsPath, reportPath, false);
-}
-
-/** Local content references are accepted only by the inert transition proof. */
-export async function openMiniatureVfsProductBuild(
-  inputsPath: string,
-  reportPath: string,
-): Promise<VfsProductBuild> {
-  return openVfsProductBuildWithPolicy(inputsPath, reportPath, true);
-}
-
-async function openVfsProductBuildWithPolicy(
-  inputsPath: string,
-  reportPath: string,
-  allowLocalFixture: boolean,
-): Promise<VfsProductBuild> {
   const absoluteInputsPath = resolve(inputsPath);
   const absoluteReportPath = resolve(reportPath);
   assertRegularNonsymlink(absoluteInputsPath, "resolved input document");
@@ -181,13 +165,9 @@ async function openVfsProductBuildWithPolicy(
   // Calling it rather than fixing the copy is the point. A second
   // implementation of a security rule is a second chance to get it subtly
   // different, and this one already had.
-  validateResolvedInputEnvelope(absoluteInputsPath, allowLocalFixture);
+  validateResolvedInputEnvelope(absoluteInputsPath);
 
-  const inputs = parseResolvedInputs(
-    parsed,
-    dirname(absoluteInputsPath),
-    allowLocalFixture,
-  );
+  const inputs = parseResolvedInputs(parsed, dirname(absoluteInputsPath));
   const byId = new Map(inputs.inputs.map((input) => [input.id, input]));
   const consumed = new Map<string, ResolvedInput>();
   const allInputIds = Object.freeze(inputs.inputs.map((input) => input.id));
@@ -344,10 +324,7 @@ async function openVfsProductBuildWithPolicy(
  * missing file is still a valid document, and a validator that refused it
  * could not run anywhere the repository is not fully checked out.
  */
-function validateResolvedInputEnvelope(
-  documentPath: string,
-  allowLocalFixture: boolean,
-): void {
+function validateResolvedInputEnvelope(documentPath: string): void {
   const args = [
     "vfs",
     "products",
@@ -355,7 +332,6 @@ function validateResolvedInputEnvelope(
     "--path",
     documentPath,
   ];
-  if (allowLocalFixture) args.push("--allow-local-fixture");
 
   const probe = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
   const hostTarget = probe.stdout
@@ -388,7 +364,6 @@ function validateResolvedInputEnvelope(
 function parseResolvedInputs(
   value: unknown,
   inputRoot: string,
-  allowLocalFixture: boolean,
 ): ResolvedInputs {
   const root = exactRecord(
     value,
@@ -453,14 +428,15 @@ function parseResolvedInputs(
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) {
     fail("source repository must be an exact owner/name identity");
   }
-  if (root.reference_class === "local-fixture" && !allowLocalFixture) {
-    fail("local-fixture references are accepted only by the miniature builder");
-  }
+  // The `local-fixture` class points outside the exact-source world. It was
+  // reachable through `openMiniatureVfsProductBuild`, whose only caller,
+  // `build-abi-staging-mini-vfs.ts`, went with the Homebrew staging pipeline in
+  // `fc2f3ef834`. With no builder left to grant the permission, the class has
+  // no accepting caller and needs no exception here: it is refused by not being
+  // in the list, the same way every other unknown class is.
   const referenceClass = oneOf(
     root.reference_class,
-    allowLocalFixture
-      ? (["candidate", "canonical", "local-fixture"] as const)
-      : (["candidate", "canonical"] as const),
+    ["candidate", "canonical"] as const,
     "reference class",
   );
   if (!Array.isArray(root.inputs) || root.inputs.length > MAX_INPUTS) {

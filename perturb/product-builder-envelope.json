@@ -1,14 +1,14 @@
 {
-  "_comment": "The builder's call to the Rust envelope validator. Killed by the two tests that drive documents the TypeScript rule alone accepted \u2014 a backslash it splits on, and a NUL it never looks for.",
+  "_comment": "The builder's call to the Rust envelope validator. Killed by the two tests that drive documents the TypeScript rule alone accepted \u2014 a backslash it splits on, and a NUL it never looks for. RETIRED 2026-09-17, one trial: \"the miniature builder's permission is granted to every builder\". It pinned `if (allowLocalFixture) args.push(...)`, and that line is gone with the permission: the only caller of `openMiniatureVfsProductBuild` was `build-abi-staging-mini-vfs.ts`, deleted with the Homebrew staging pipeline in `fc2f3ef834`, and the entry point outlived it by a year. TypeScript now never sends the flag, which is strictly stronger than sending it conditionally. The permission itself still exists in Rust and is perturbed there -- `perturb/xtask-resolved-inputs.json`, \"a local-fixture reference needs no permission\".",
   "file": "images/vfs/scripts/vfs-product-builder-contract.ts",
   "verify": "cd host && npx vitest run test/vfs-product-builder-contract.test.ts >/dev/null 2>&1",
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true",
   "trials": [
     {
       "name": "the envelope is never validated in Rust",
-      "scope": "async function openVfsProductBuildWithPolicy(",
+      "scope": "export async function openVfsProductBuild(",
       "scope_end": "\n}\n",
-      "find": "  validateResolvedInputEnvelope(absoluteInputsPath, allowLocalFixture);",
+      "find": "  validateResolvedInputEnvelope(absoluteInputsPath);",
       "replace": "  void absoluteInputsPath;"
     },
     {
@@ -25,14 +25,7 @@
       "find": "      .pop() ?? `exit ${result.status}`;",
       "replace": "      .shift() ?? `exit ${result.status}`;"
     },
-    {
-      "name": "the miniature builder's permission is granted to every builder",
-      "scope": "function validateResolvedInputEnvelope(",
-      "scope_end": "\n}\n",
-      "find": "  if (allowLocalFixture) args.push(\"--allow-local-fixture\");",
-      "replace": "  args.push(\"--allow-local-fixture\");"
-    },
-    {
+        {
      "name": "an output built for another kernel ABI is accepted",
      "scope": "      if (metadata?.kernelAbi !== inputs.target_abi.version) {",
      "scope_end": "\n      }",

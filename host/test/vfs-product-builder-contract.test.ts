@@ -199,11 +199,19 @@ describe("VFS product builder contract", () => {
     ).rejects.toThrow(/not normalized/);
   });
 
-  it("refuses a local-fixture reference to every builder but the miniature one", async () => {
-    // A local-fixture reference points outside the exact-source world, so only
-    // one builder may ask for it. Without a test the permission could be
-    // handed to every caller and nothing would notice — the flag would simply
-    // always be sent.
+  it("refuses a local-fixture reference, which no builder may ask for", async () => {
+    // A local-fixture reference points outside the exact-source world. It used
+    // to be askable, by `openMiniatureVfsProductBuild` -- whose only caller,
+    // `build-abi-staging-mini-vfs.ts`, went with the Homebrew staging pipeline
+    // in `fc2f3ef834`. The entry point outlived it; it is gone now, so the
+    // class has no accepting caller at all.
+    //
+    // NAMING THE LAYER THAT REFUSES, because two of them can. The Rust
+    // envelope validator runs BEFORE the TypeScript parse, so its message is
+    // the one that arrives; the parse's `oneOf` over the reference class is a
+    // second opinion that a local-fixture document never reaches. Asserting
+    // the Rust text is therefore asserting what actually happens rather than
+    // what the file nearest the test appears to do.
     const fixture = await createFixture();
     const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
     inputs.reference_class = "local-fixture";
