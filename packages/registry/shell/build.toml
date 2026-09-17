@@ -22,7 +22,6 @@ inputs = [
   "host/src/types.ts",
   "host/src/vfs/deferred-tree-limits.ts",
   "host/src/vfs/image-helpers.ts",
-  "host/src/vfs/canonical-text.ts",
   "host/src/vfs/tar.ts",
   "host/src/vfs/types.ts",
   "host/src/vfs/zip.ts",
