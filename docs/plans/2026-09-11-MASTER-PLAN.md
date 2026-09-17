@@ -14433,9 +14433,40 @@ lines of `hostVfsTypeScript` and the whole of `memoryFsTypeScript`. This is the
 one place in the merge where a plausible-looking resolution silently raises a
 ceiling, which is the move this campaign forbids everywhere else.
 
-**This document will also conflict.** The entries describing lane Y/V's 2026-09-17
-work were committed directly to THIS branch, so resolve in favour of the parent;
-the lane's copy is 445 commits stale.
+**THE CONFLICT SET IS EXACTLY TWO FILES, verified rather than predicted** with
+`git merge-tree --write-tree --name-only` (which computes the merge without
+touching a worktree):
+
+```
+docs/surface-budget.json
+host/test/surface-budget.test.ts
+```
+
+Everything else auto-merges, **including this document** — an earlier draft of
+this section said to resolve MASTER-PLAN in favour of the parent, which was
+unnecessary. Nothing needs doing there.
+
+**THE SECOND CONFLICT IS THE COUPLED HALF OF THE FIRST, and it is the one
+nobody would anticipate.** `surface-budget.test.ts` defines the MEASURES the
+ceilings are compared against, and this lane changed three of them:
+
+* `deletedSurface(globs)` is new — it returns 0 only when every listed path is
+  ABSENT, so a half-deleted surface still fails;
+* `memoryFsTypeScript` and `imageFsTypeScript` now use it instead of
+  `lineCount`;
+* `hostVfsTypeScript` is now a plain `lineCount(["host/src/vfs/*.ts"])`, because
+  the files it used to subtract are gone.
+
+**The lane's side of those three measures must win**, because after the merge
+those paths do not exist and `lineCount` REFUSES a missing path on purpose — a
+renamed file must not read as a reduction. Keep the parent's measures and the
+budget fails with a missing-path error rather than a ceiling violation, which
+reads like a broken test and invites someone to "fix" it by restoring a ceiling.
+
+**Resolve the two files together or not at all.** A ceiling of 0 for
+`memoryFsTypeScript` requires the `deletedSurface` measure; pair the parent's
+7,123 with the lane's measure and the budget fails for falling more than `slack`
+BELOW its ceiling, which is the guard working and the diagnosis unobvious.
 
 **Two commits need a judgment call rather than a re-run**: `02423a018` changes a
 user-visible surface order in five shipped demos (maintainer-approved, the only
