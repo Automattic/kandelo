@@ -13661,6 +13661,36 @@ the useful part of the answer: the audit could have concluded "port 61 claims",
 and the reason it does not is that two thirds are already made where they now
 matter and the rest describe a filesystem the platform no longer has.
 
+### THE WHOLE HOST SUITE, BOTH SIDES — no regression across 4,463 tests, 2026-09-17
+
+**Run because a narrow sweep had just hidden a red for two commits**, not
+because anything looked wrong. The full `host` suite at the lane's HEAD and
+again at `b04528668`, the commit before this session's work, with the same
+artifacts on disk:
+
+| | files | failing cases |
+|---|---|---|
+| before this session | 41 failed / 438 | **89** |
+| after | 41 failed / 437 | **85** |
+
+**The failing FILE sets are identical** — none added, none removed — and the
+failing CASE sets differ only in one direction: four `php-intl` cases were
+failing at baseline and are not now. Nothing here touched PHP or ICU, so those
+are artifact variance rather than a fix, and they are recorded that way.
+
+**Zero cases fail that did not fail before.** That is the evidence the tranche
+owed: fourteen commits that moved a filesystem out of the host's mount path,
+retired a security boundary's host half, repointed the helper feeding 89 test
+files, and deleted two production modules — and the suite that exercises all
+of it is where it was.
+
+**Worth keeping as a habit rather than a one-off.** The comparison cost two
+full runs and answered a question no amount of reading the diff could: it
+distinguishes *"the tests I thought to run are green"* from *"the suite is
+where it was"*. The four php-intl cases are the reason the second sentence is
+not derivable from the first — a suite this size moves a little on its own,
+and only a both-sides run tells you which movement is yours.
+
 ### THE ENDGAME'S RULES — maintainer decisions, 2026-09-16
 
 **Four answers that settle how lane V finishes.** Recorded here because they
