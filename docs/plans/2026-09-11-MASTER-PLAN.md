@@ -14407,23 +14407,42 @@ kernel is rebuilt**, when most of these 38 should disappear and a genuine
 both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 "38 vs 39" as if it were the clean result the earlier deletion got.
 
-### THE STALE-KERNEL BLOCKER IS CLEARED — 2026-09-17, and it was one cargo build
+### I BROKE THE TIER TRYING TO UNBLOCK IT — 2026-09-17, and the retraction is the entry
 
-**`cargo xtask verify-fresh` now exits 0 in the lane worktree.** The artifact
-that blocked the browser cycle, degraded the retirement's both-sides comparison,
-and failed eleven host test files with *"void kernel ingress kernel
-initialization completion failed"* was rebuilt by a single command:
-`./run.sh build kernel`.
+**RETRACTED, same day, by the next measurement.** This section first said the
+blocker was cleared by one cargo build. `cargo xtask verify-fresh` did start
+exiting 0 — and the host suite got WORSE:
 
-**THE HOLD WAS COSTING MORE THAN IT SAVED, and the sizing was wrong.** This plan
-recorded `./run.sh setup` as the fix, and I had deferred it as an expensive,
-machine-wide operation better done after lane F merges. But `kernel` is a
-local-build engine package whose build is a **pure `cargo build`**: 15.76s of
-compile after the dependency crates, no sysroot, no package-source graph. The
-`rebuild` verb would have added `rm -rf target/wasm32-unknown-unknown/` for
-nothing, because the key moved from source edits rather than a corrupt tree.
-**"Provisioning is expensive" was an assumption about a command nobody had
-priced.**
+| | failing files | failing tests | tests run |
+|---|---|---|---|
+| before `./run.sh build kernel` | 38 | 82 | 4,038 |
+| after it | **54** | 69 | **3,853** |
+
+More files failing, fewer tests running, is the signature of files failing
+BEFORE they execute. The cause, 27 times: **"Package artifact closure is
+incomplete: no single provenance tier contains every accepted artifact."**
+Rebuilding the kernel alone moved it to `ea67b4c3…` while every other artifact
+in `source-only-v1` was built against the old kernel key, and the resolver
+refuses to mix tiers.
+
+**`verify-fresh` going green was true and local.** It checks the kernel. It does
+not check the closure around the kernel, so it cannot see the state a targeted
+kernel build creates.
+
+**THE MISTAKE WAS AN INFERENCE FROM A TRUE NUMBER.** `kernel` is a local-build
+engine package whose build is a pure `cargo build` — **15.76s** after its
+dependency crates. That figure is correct. What was wrong was concluding from it
+that "provisioning is expensive" had been an unpriced assumption, and that a
+targeted build substituted for the documented `./run.sh setup`. **The cost was
+never in the kernel.** It is in everything downstream, because cache keys are
+closure-derived: a kernel change invalidates every image and tier built on it.
+That property is already recorded in this campaign, and I had it in working
+memory when I chose the narrow command.
+
+**The rule this earns**: `verify-fresh` answers a per-artifact question, so a
+green `verify-fresh` after a targeted rebuild is evidence about ONE artifact and
+says nothing about whether the tree still resolves. When the documented fix is
+the whole front door, the reason is usually the closure, not the artifact.
 
 **IT PUBLISHED NOWHERE THE FRESHNESS PROPOSAL EXPECTED, which settles that
 document's open item.** The build installed to
@@ -14448,6 +14467,11 @@ an index plus a copy-on-pack step rather than a link.
 **Nothing regenerated that this lane may not touch.** `git status` after the
 build shows only the known build cache; `abi/snapshot.json` and
 `host/src/generated/abi.ts` were CHECKED and reported in sync, not rewritten.
+
+**`./run.sh setup` is running to restore the closure**, which is what should
+have been run if provisioning was going to happen at all. **Neither host-suite
+run so far is usable as the retirement's both-sides comparison**: the first was
+dominated by the stale kernel, the second by the inconsistency this created.
 
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
