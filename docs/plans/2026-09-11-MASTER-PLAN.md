@@ -13752,6 +13752,62 @@ no job runs `tsc -p images/tsconfig.typecheck.json`. Wiring it is the thing
 that would make the number mean something, and that is the same shape as the
 `node:test` files no runner includes.
 
+### THE HOST'S LAZY PIPE IS A PIPE — `ba0b7ed34`, `23c91cfcd`, 2026-09-17
+
+**Asked "why should there be a host-side transport table at all?", the answer
+is that there should not be one.** The maintainer's question settled a decision
+this plan had written up as a choice between plumbing module bytes into a
+browser worker and accepting an empty table. Neither: the table held two things
+and **neither had a producer**.
+
+* **Mirrors cannot be expressed.** `registerArchiveMember` takes a single
+  `archiveUri`, so every `DeferredBody` ever built carried exactly
+  `[address]`. The alternate-URL list came from the legacy JSON carrier whose
+  writer is deleted. A field whose only possible value is a copy of another
+  field is a second spelling, not a capability.
+* **The length check was a weaker duplicate.** It compared a fetched body's
+  byte count against a declared size. The kernel checks those bytes against the
+  image's DIGEST on materialization — `digest_accepts`, asserted and perturbed
+  — which decides whether they are the RIGHT bytes rather than the right number
+  of them.
+
+**THE CASCADE IS THE POINT, and it is the shape this campaign keeps finding.**
+With no table to fill, `configureRootfsOverlayFromImage` had no use for a
+`RootfsOverlayBaseImage` — the archive list was the only thing it asked one for
+— so both worker entries stopped building one and now pass
+`imageReadFromContainer(container)` straight through, which is **the same
+function they were already handing in and getting back**. That left
+`createBaseImageFromContainer` with one caller in the repository, the Pages
+asset closure, so the reader followed it out of the runtime into
+`images/vfs/lib/` and took `DeferredBody` and `RootfsOverlayBaseImage` with it.
+`host/src/vfs`: 6091 → 5991 code lines, inside slack, ceiling left where the
+budget's own verdict says it may stay.
+
+**And the progress event stopped guessing.** Its `kind` was read out of table
+membership — "in the table" meant archive — which is a second opinion about
+identity from the last place one could live. `host_fetch_deferred(uri, offset,
+dest)` carries no kind and the kernel that knows does not send one, so every
+transfer is now reported under one kind. Whether `LazyDownloadEvent` should
+carry a kind at all is a protocol question for the session library's owner,
+filed here rather than decided in this lane. Its only consumer,
+`lazyDownloadAssetLabel`, already ended at the URL for both values.
+
+Six tests and four trials retired with the policy they described. What survives
+— EAGAIN then bytes, failed once and stays failed, cached per address, one
+report per transfer — is still asserted.
+
+**A STRAY MUTATION WAS SITTING IN THE TREE, and it is worth its own line.** An
+interrupted `xtask perturb` run left one trial APPLIED — `if (uri === "")
+return EAGAIN` where the source says `EIO` — with `.perturb-in-progress` still
+on disk and no revert. The suite failed exactly where that trial aims, and it
+would have read as a bug in the rewrite if the trial's name had not matched the
+failure. **A perturbation run that does not finish leaves the tree mutated, and
+`git status` is what says so.**
+
+**Still owed for this change**: the five surviving trials in
+`deferred-uri-provider.json` have not been RUN against the rewritten pipe.
+`--validate` says all 417 anchor, and anchoring is not killing.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
