@@ -13694,6 +13694,63 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### A SECOND READER WAS HIDING A TRUNCATION — `91ad210d2`, 2026-09-17
+
+**`KandeloImageFs.readFile` returned the first N bytes of any file read through
+a symlink, where N is the length of the link's own target string.** It sized
+its buffer with `lstat` — which answers about the LINK — and filled it with
+`sm_read_file`, which follows one. A 4 KiB script read through a 17-byte
+symlink came back as 17 bytes, with no error anywhere. **A builder copying a
+file through an alias would have written a truncated file into an image, and
+the image would have looked fine.**
+
+Fixing it exposed a second defect in the same path. `stat` follows the chain
+itself and joined a relative target onto the link's directory **without
+resolving `..`** — so `../../shared/curl`, the ordinary way an archive spells a
+sibling, arrived at the module as a path with `..` still in it and came back
+ENOENT for a link that resolves perfectly well. The module takes CANONICAL
+paths because the kernel's walk looks up every component as a name; the
+normalization is path arithmetic the caller owes, and it now happens at the one
+place the join happens.
+
+**NEITHER WAS FOUND BY REVIEW. Both were found by deleting the second reader.**
+`tools/mkrootfs`'s builder suite reads back through the very symlinks it
+creates from archive metadata, and it had been reading them with
+`MemoryFileSystem`, which does its own resolution. **For as long as two readers
+existed, the working one hid the broken one** — which is the lane's thesis
+arriving as a bug report rather than as an argument.
+
+**AND FOUR GUARDS IN THAT SUITE COULD NOT FAIL.** Four cases assert that a
+malformed manifest path is rejected BEFORE a VFS is created, by spying on
+`MemoryFileSystem.create`. `buildImage` stopped calling it when it repointed at
+the module, so the spy watched a constructor nobody was going to call either
+way and `expect(create).not.toHaveBeenCalled()` was true of nothing. They watch
+`KandeloImageFs.create` now. **A repoint that leaves a spy pointing at the old
+class is a guard that silently retires itself** — the sixth cause, arriving
+through a mock rather than through a branch.
+
+**A THIRD DISPOSITION KEEPS RECURRING, and it is worth naming as a rule.**
+Four separate claims in this tranche were asserted by reading per-inode
+timestamps back — `SOURCE_DATE_EPOCH` in the CLI, `sourceDateEpochSeconds` in
+the builder, normalized timestamps in the shell build, reproducibility in the
+builder. The module's `lstat` reports no times, because a builder has nothing
+to do with them. **Every one of those claims is about REPRODUCIBILITY, and
+reproducibility is checkable in the bytes**: the same input twice must produce
+identical images, and a different declared epoch must produce a different one.
+The second half is what makes the first meaningful — a builder ignoring the
+option entirely passes the first — and together they are a stronger statement
+than any stamp read, because no stamp can be wrong under byte identity.
+
+**THE ABI REFUSAL HAS A COST, paid in four places now.** Reading an image's
+metadata means LOADING it, and the loader refuses an image declaring an ABI it
+does not speak. So no reader can report what a stale artifact claims — not
+`mkrootfs inspect`, not `KandeloImageFs.readImageMetadata`, not a publication
+gate. Every test that built with an arbitrary `--kernel-abi 11` now declares
+the current one. **Adding a metadata-without-policy entry point would breach
+`kandeloImageModuleEntryPoints` (ceiling 22, slack 0)**, and the standing rule
+is to look for an export that can go before arguing for one that must come.
+Recorded as a known cost rather than fixed.
+
 ### NOTHING PASSES `moduleLazyEntries`, AND ONE CONSUMER IS BLIND — found 2026-09-17
 
 **`createBaseImageFromContainer`'s fourth argument has no caller in the
