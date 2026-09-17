@@ -918,7 +918,44 @@ mod wasm {
     // which owners are imported. That section is exactly what the host would
     // otherwise have had to decode, so the election moves here and the host is
     // left with identity alone.
-    const GLOBAL_IDENTITY_MAX: usize = 512;
+    // MEASURED, not guessed. 512 was never sized against a real program: it is
+    // one table for the WHOLE worker, and every activation adds every catalog
+    // export it has. Counting `__wpk_fork_{global,table}_*` exports in the php
+    // artifacts this repo builds:
+    //
+    //     php.wasm      1601      curl.so     129      phar.so   52
+    //     php-fpm.wasm  1604      opcache.so   67      zip.so    39
+    //     intl.so       4127
+    //
+    // php with its full extension set needs 7,684 by the capacity test's own
+    // count (`host/test/fork-identity-capacity.test.ts`, which is the number to
+    // trust -- an earlier estimate here said ~6,000 from a hand objdump that
+    // omitted `zend_test.so`). That is FIFTEEN TIMES the old cap. So
+    // `wordpress` and `lamp` could not fork at all: both load intl, every fork
+    // died with `fm_set_identity_group failed with errno 7`, and no smaller
+    // program ever reached the limit. Found when the pkg-config fix unblocked
+    // php and let those two packages run for the first time.
+    //
+    // 16,384 is 2.1x that measured worst case, at 256 KiB of static BSS
+    // (`[[u32; 4]; N]`). It is a bound with a reason rather than a round
+    // number.
+    //
+    // The failure is still HARD TO READ, and that cost real time here: the
+    // whole diagnosis started from `fm_set_identity_group failed with errno 7`
+    // with no count, no cap and no activation named. An E2BIG from this table
+    // should say how many entries were wanted against how many exist, which
+    // needs either an `fm_stats` field (the host pins that array's order, so it
+    // is a surface change) or a detail word beside `fm_last_errno`. Not done
+    // here; recorded so the next reader of this errno is not where I was.
+    //
+    // THE CLASS IS NOT FIXED. This is still a static sized for programs we have
+    // seen. The identity count scales with the guest's module set, so the
+    // durable answer is storage that grows -- which the bump heap cannot
+    // provide (`ALLOC.reset()` reclaims it mid-fork, and these entries are
+    // published at instantiation and read at fork). That needs mmap-backed
+    // growth like the capture arena, which is a memory-placement change and
+    // the maintainer's call.
+    const GLOBAL_IDENTITY_MAX: usize = 16_384;
 
     #[repr(C, align(4))]
     struct GlobalIdentityGroups(UnsafeCell<[[u32; 4]; GLOBAL_IDENTITY_MAX]>);
