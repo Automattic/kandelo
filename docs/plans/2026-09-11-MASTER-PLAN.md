@@ -13473,6 +13473,67 @@ half is the next step, and it needs
 `apps/browser-demos/test/vfs-import-seal-boundary.spec.ts` to expect the
 kernel's refusal instead of `Lazy atomic activation (member|group)`.
 
+### THE HOST STOPPED MATERIALIZING `/` — `0cd9fec21`, 2026-09-16
+
+**Landed once the blocker below was retracted.** An image mount now gets no
+`MountConfig` at all, `host/src/vfs/load-image.ts` went with its last caller,
+and both worker entries read the two facts they still need — is there a `/`
+image, was it declared `nosuid` — from the SPEC, where they are declared.
+
+**Five cases pinned an ordering and it is retired deliberately**: authenticate
+before Node scratch directories, before browser scratch filesystems, before
+kernel compilation. A kernel that refuses an image must first be compiled. The
+argument is in the retraction above; the property UNDER the ordering — a
+refused image leaves no half-built machine — is asserted on both hosts, with a
+negative control on the Node side so the refusal is about the declared ABI and
+not about the fixture.
+
+**Five resolver cases INVERTED rather than retired.** They asserted `/` came
+back as an image-backed `MemoryFileSystem`; they now pin its ABSENCE, which is
+what stops the restore coming back. Two content cases retired, and their claim
+was ported: `a_load_leaves_the_image_it_was_handed_byte_for_byte_unchanged`
+makes it of the loader that now reads the bytes.
+
+**The peer budget caught a real cost, and the fix was not a rename.** Making
+both hosts answer the same two questions the same way put the same two
+declarations in both entries, and `hostPeerDuplicateDeclarations` is pinned at
+its audited floor with zero slack. Giving the two copies different names would
+have satisfied the metric and worsened the parity it exists to protect. One
+module — `vfs/root-image-facts.ts`, imported as a namespace so call sites read
+`rootImage.has()` — removes the duplication instead of hiding it.
+
+### WHAT IS LEFT OF V5 IS ONE ROLE, AND IT IS A REAL ONE
+
+**Re-measured after the removal**, with the plan's own rule:
+
+| | rule was written | 2026-09-16 evening |
+|---|---|---|
+| `host/src` files referencing `./memory-fs` | 14 | **5** |
+| of those, using it as a VALUE | 6 | **2** |
+
+One of the two is `vfs/index.ts`, the barrel. **The last production use is a
+single line**: `MemoryFileSystem.create(sab)` in `default-mounts.ts`, backing
+a browser SCRATCH mount.
+
+**It is not dead, and it is not the image role.** The in-kernel tmpfs owns
+eight prefixes — `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`,
+`/root`, `/srv`, `/dev/shm` — and `filterMountSpecForKernelTmpfs` removes
+those from the spec. A scratch mount at any OTHER path stays host-backed by
+design, and `default-mounts.test.ts` pins that with `/run`. No shipped product
+declares one: all seventeen are `/` plus `/tmp`, so the branch never runs in
+production — but it is a declared capability rather than an accident.
+
+**So the last step is a kernel question, not a host one**: should the in-kernel
+tmpfs serve ANY declared scratch path rather than a fixed table of eight? If it
+should, the host backend has no remaining role and `memory-fs.ts` goes. If it
+should not, the host keeps one filesystem for the mounts the kernel declines,
+and that is the floor — in which case the honest end state is a much smaller
+scratch backend, not the 7,000-line class.
+
+**That is the next increment, and it is unblocked.** It needs no decision this
+plan has not already made: the kernel owning scratch is the same cutover that
+took `/`, applied to the paths it left behind.
+
 ### THE BLOCKER WAS WRONG, AND THE WORD THAT CARRIED IT WAS "THEREFORE" — 2026-09-16
 
 **Two entries below say this removal is blocked on a maintainer decision about
