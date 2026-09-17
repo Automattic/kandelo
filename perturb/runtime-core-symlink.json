@@ -1,0 +1,22 @@
+{
+  "_comment": "The two symlink claims ported from `host/test/symlink.test.ts` when that file retired with the TypeScript filesystem. Both mutations are behaviours a filesystem can plausibly have -- one erases the link's type, the other makes `unlink` follow a final symlink, which would delete the file an alias points at.",
+  "file": "crates/runtime-core/src/rootfs.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" -- symlink >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo check -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a symlink reports itself as an ordinary file, so a broken alias looks like a file",
+      "scope": "            InodeKind::Symlink(_) => S_IFLNK,",
+      "scope_end": "\n",
+      "find": "            InodeKind::Symlink(_) => S_IFLNK,",
+      "replace": "            InodeKind::Symlink(_) => S_IFREG,"
+    },
+    {
+      "name": "unlink follows a final symlink, so deleting an alias deletes what it points at",
+      "scope": "pub fn unlink(path: &[u8]) -> Result<(), Errno> {",
+      "scope_end": "\n}\n",
+      "find": "        let last = last.ok_or(Errno::ENOENT)?;",
+      "replace": "        let link = match state.get(target).map(|i| &i.kind) {\n            Some(InodeKind::Symlink(t)) => Some(t.clone()),\n            _ => None,\n        };\n        let target = match link {\n            Some(t) => {\n                let root = state.mount_root();\n                state.walk(root, &split_components(&t))?\n            }\n            None => target,\n        };\n        let last = last.ok_or(Errno::ENOENT)?;"
+    }
+  ]
+}

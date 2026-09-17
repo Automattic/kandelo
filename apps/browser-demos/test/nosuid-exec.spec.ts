@@ -4,7 +4,14 @@ import { expect, test } from "@playwright/test";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../../..");
-const memoryFsModulePath = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
+// A BACKEND THE TEST WRITES OUT, not a filesystem. What this spec is about is
+// the MOUNT's policy — whether `nosuid` strips a set-ID bit, and whether two
+// mounts of one backend agree — so what it needs from a backend is a stat it
+// chose, set-ID bits included. `MemoryFileSystem` was here because it existed.
+const fixedBackendModulePath = resolve(
+  repoRoot,
+  "host/test/support/fixed-tree-backend.ts",
+);
 const timeModulePath = resolve(repoRoot, "host/src/vfs/time.ts");
 const typesModulePath = resolve(repoRoot, "host/src/vfs/types.ts");
 const vfsModulePath = resolve(repoRoot, "host/src/vfs/vfs.ts");
@@ -17,7 +24,7 @@ test("browser mount policy honors set-ID unless nosuid is explicit", async ({
   expect(baseURL).toBeTruthy();
   const asViteFsUrl = (path: string) => new URL(`/@fs${path}`, baseURL).href;
   const modules = [
-    asViteFsUrl(memoryFsModulePath),
+    asViteFsUrl(fixedBackendModulePath),
     asViteFsUrl(timeModulePath),
     asViteFsUrl(typesModulePath),
     asViteFsUrl(vfsModulePath),
@@ -36,22 +43,18 @@ test("browser mount policy honors set-ID unless nosuid is explicit", async ({
   const result = await page.evaluate(async ({ modules }) => {
     // Load the shared dependency graph serially so a cold Vite server never
     // optimizes the same host modules through concurrent dynamic entries.
-    const memory = await import(/* @vite-ignore */ modules[0]);
+    const backendModule = await import(/* @vite-ignore */ modules[0]);
     const time = await import(/* @vite-ignore */ modules[1]);
     const types = await import(/* @vite-ignore */ modules[2]);
     const vfsModule = await import(/* @vite-ignore */ modules[3]);
     const abi = await import(/* @vite-ignore */ modules[4]);
-    const mutable = memory.MemoryFileSystem.create(
-      new SharedArrayBuffer(2 * 1024 * 1024),
-    );
-    mutable.mkdir("/bin", 0o755);
-    mutable.createFileWithOwner(
-      "/bin/tool",
-      0o6755,
-      0,
-      42,
-      new Uint8Array([0, 97, 115, 109]),
-    );
+    // 0o6755: set-user-ID and set-group-ID. The bits are the subject, so the
+    // backend states them rather than a filesystem happening to preserve them.
+    const mutable = new backendModule.FixedTreeBackend({
+      "/": { mode: 0o040755, ino: 1 },
+      "/bin": { mode: 0o040755, ino: 2 },
+      "/bin/tool": { mode: 0o100000 | 0o6755, uid: 0, gid: 42, ino: 3, size: 4 },
+    });
     const ordinary = new vfsModule.VirtualPlatformIO(
       [{ mountPoint: "/", backend: mutable }],
       new time.BrowserTimeProvider(),

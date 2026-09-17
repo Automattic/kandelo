@@ -1,0 +1,28 @@
+{
+  "file": "crates/runtime-core/src/vfsi_container.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" vfsi_container >/dev/null 2>&1 && scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" rootfs:: >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the container always claims a kernel-lazy section",
+      "scope": "    pub fn flags(&self) -> u32 {",
+      "scope_end": "\n    }\n",
+      "find": "        let mut flags = 0;\n        if self.kernel_lazy.is_some() {\n            flags |= wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;\n        }",
+      "replace": "        let mut flags = wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;"
+    },
+    {
+      "name": "the container never claims a kernel-lazy section",
+      "scope": "    pub fn flags(&self) -> u32 {",
+      "scope_end": "\n    }\n",
+      "find": "        if self.kernel_lazy.is_some() {\n            flags |= wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;\n        }",
+      "replace": ""
+    },
+    {
+      "name": "the trailer writes an empty kernel-lazy section when there is none",
+      "scope": "pub fn trailer(",
+      "scope_end": "\n}\n",
+      "find": "    if let Some(kernel_lazy) = sections.kernel_lazy {\n        push(kernel_lazy, \"kernel lazy\")?;\n    }",
+      "replace": "    push(sections.kernel_lazy.unwrap_or(b\"\"), \"kernel lazy\")?;"
+    }
+  ]
+}

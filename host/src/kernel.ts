@@ -857,13 +857,15 @@ export class WasmPosixKernel {
    *
    * The kernel owns the `/` tree and, since the image-backed byte route, reads
    * an image-backed file's CONTENT out of the image itself. What the host still
-   * answers for is what the image does not carry: a URL-backed lazy file
-   * (`kind === HOST_DEFERRED_KIND_FILE`, `id` its inode number) and a lazy
-   * archive (`kind === HOST_DEFERRED_KIND_ARCHIVE`, `id` the image-assigned
-   * archive id, whose raw bytes the kernel decodes itself — the host is purely
-   * a transport). Both are the same capability: fetch a resource from a host
-   * transport and serve positioned bytes of it, reporting `-EAGAIN` while the
-   * fetch is in flight, so they are one provider behind one import.
+   * answers for is what the image does not carry, and the kernel names it by
+   * the URI the image recorded — a complete address, not a number this host
+   * would have to own a table to resolve. A URL-backed lazy file and a lazy
+   * archive are the same request at different addresses: fetch a resource from
+   * a host transport and serve positioned bytes of it, reporting `-EAGAIN`
+   * while the fetch is in flight.
+   *
+   * Carrying the address authorises nothing. Whoever fetches decides whether a
+   * URI may be fetched at all; this seam relays it.
    *
    * Fills `dest` from `offset` and returns the count, or a negative errno.
    * Wired by the worker at boot; until set, `host_fetch_deferred` reports
@@ -871,8 +873,7 @@ export class WasmPosixKernel {
    */
   #rootfsDeferredProvider:
     | ((
-      kind: number,
-      id: bigint,
+      uri: string,
       offset: bigint,
       dest: Uint8Array,
     ) => number)
@@ -973,8 +974,7 @@ export class WasmPosixKernel {
    */
   setRootfsDeferredProvider(
     provider: (
-      kind: number,
-      id: bigint,
+      uri: string,
       offset: bigint,
       dest: Uint8Array,
     ) => number,
@@ -1624,9 +1624,8 @@ export class WasmPosixKernel {
           }
         },
         host_fetch_deferred: (
-          kind: number,
-          idLo: number,
-          idHi: number,
+          uriPtr: KernelPointer,
+          uriLen: number,
           bufPtr: KernelPointer,
           bufLen: number,
           offsetLo: number,
@@ -1634,8 +1633,7 @@ export class WasmPosixKernel {
         ): number => {
           try {
             return this.#hostFetchDeferred(
-              kind,
-              u64FromWords(idLo, idHi),
+              this.#readComponentFromMemory(uriPtr, uriLen),
               u64FromWords(offsetLo, offsetHi),
               this.#rustLentKernelDestination(
                 bufPtr,
@@ -2739,18 +2737,20 @@ export class WasmPosixKernel {
   }
 
   /**
-   * host_fetch_deferred(kind, id, buf_ptr, buf_len, offset) -> i32
+   * host_fetch_deferred(uri_ptr, uri_len, buf_ptr, buf_len, offset) -> i32
    *
-   * Serve positioned bytes of a deferred resource — a URL-backed lazy file or
-   * a lazy archive — from the installed provider. Bytes are staged outside
-   * kernel memory and published once (never lend a live view of Rust-owned
-   * memory to the provider), mirroring `#hostReadAt`. Reports ENOSYS when no
-   * provider is installed, so the seam is truthfully unbacked until the worker
-   * wires it.
+   * Serve positioned bytes of the deferred resource at `uri` from the installed
+   * provider. Bytes are staged outside kernel memory and published once (never
+   * lend a live view of Rust-owned memory to the provider), mirroring
+   * `#hostReadAt`. Reports ENOSYS when no provider is installed, so the seam is
+   * truthfully unbacked until the worker wires it.
+   *
+   * The address is whatever the image recorded, relayed verbatim. This host
+   * does not interpret it, and relaying it is not a decision that it may be
+   * fetched — that decision belongs to the provider that goes and fetches.
    */
   #hostFetchDeferred(
-    kind: number,
-    id: bigint,
+    uri: string,
     offset: bigint,
     destination: RustLentKernelDestination,
   ): number {
@@ -2767,7 +2767,7 @@ export class WasmPosixKernel {
     }
     let result: number;
     try {
-      result = provider(kind, id, offset, staged);
+      result = provider(uri, offset, staged);
     } catch {
       return -5; // EIO: the provider violated its byte-source contract.
     }

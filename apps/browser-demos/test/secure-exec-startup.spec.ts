@@ -11,13 +11,13 @@ const browserKernelModulePath = resolve(
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsModulePath = resolve(
+const imageFsModulePath = resolve(
   here,
-  "../../../images/vfs/lib/sffs-image-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
-const sffsModuleWasmPath = resolve(
+const imageModuleWasmPath = resolve(
   here,
-  "../../../local-binaries/sffs_module32.wasm",
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
 const probePath = resolve(
   here,
@@ -48,17 +48,17 @@ test("ordinary startup receives the kernel-owned non-secure marker", async ({
   const asViteUrl = (path: string) => new URL(`/@fs${path}`, baseURL).href;
   const result = await page.evaluate(async ({
     browserKernelModuleUrl,
-    sffsImageFsModuleUrl,
-    sffsModuleBytes,
+    imageFsModuleUrl,
+    imageModuleBytes,
     probeBytes,
   }) => {
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { SffsImageFs } = await import(
-      /* @vite-ignore */ sffsImageFsModuleUrl
+    const { KandeloImageFs } = await import(
+      /* @vite-ignore */ imageFsModuleUrl
     );
-    const image = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+    const image = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
     let stdout = "";
     let stderr = "";
     const hostDiagnostics: unknown[] = [];
@@ -87,8 +87,8 @@ test("ordinary startup receives the kernel-owned non-secure marker", async ({
     }
   }, {
     browserKernelModuleUrl: asViteUrl(browserKernelModulePath),
-    sffsImageFsModuleUrl: asViteUrl(sffsImageFsModulePath),
-    sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+    imageFsModuleUrl: asViteUrl(imageFsModulePath),
+    imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
     probeBytes: Array.from(readFileSync(probePath)),
   });
 
@@ -123,18 +123,18 @@ test("browser worker preserves postcommit secure-exec state", async ({
   const asViteUrl = (path: string) => new URL(`/@fs${path}`, baseURL).href;
   const result = await page.evaluate(async ({
     browserKernelModuleUrl,
-    sffsImageFsModuleUrl,
-    sffsModuleBytes,
+    imageFsModuleUrl,
+    imageModuleBytes,
     probeBytes,
   }) => {
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { SffsImageFs } = await import(
-      /* @vite-ignore */ sffsImageFsModuleUrl
+    const { KandeloImageFs } = await import(
+      /* @vite-ignore */ imageFsModuleUrl
     );
     const probe = Uint8Array.from(probeBytes);
-    const imageFs = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+    const imageFs = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
     imageFs.mkdir("/bin", 0o755);
     imageFs.mkdir("/usr", 0o755);
     imageFs.mkdir("/usr/bin", 0o755);
@@ -228,8 +228,8 @@ test("browser worker preserves postcommit secure-exec state", async ({
     };
   }, {
     browserKernelModuleUrl: asViteUrl(browserKernelModulePath),
-    sffsImageFsModuleUrl: asViteUrl(sffsImageFsModulePath),
-    sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+    imageFsModuleUrl: asViteUrl(imageFsModulePath),
+    imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
     probeBytes: Array.from(readFileSync(probePath)),
   });
 

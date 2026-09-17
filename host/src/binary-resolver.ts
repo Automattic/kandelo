@@ -59,7 +59,6 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "./generated/abi";
-import { MemoryFileSystem } from "./vfs/memory-fs";
 
 const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS = ["__abi_version", "_start"] as const;
 
@@ -2971,35 +2970,23 @@ function hasWasmArtifactPolicyFailuresForBytes(
   }
 }
 
-function hasVfsArtifactPolicyFailures(path: string, relPath = path): boolean {
-  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
-    return false;
-  }
-  try {
-    return hasVfsArtifactPolicyFailuresForBytes(readFileSync(path), relPath);
-  } catch {
-    return true;
-  }
-}
-
-function hasVfsArtifactPolicyFailuresForBytes(
-  bytes: Uint8Array,
-  relPath: string,
-): boolean {
-  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
-    return false;
-  }
-  try {
-    const metadata = MemoryFileSystem.readImageMetadata(bytes);
-    const declaredAbi = metadata?.kernelAbi;
-    return declaredAbi !== undefined && declaredAbi !== ABI_VERSION;
-  } catch {
-    // A path declared as a VFS image must remain fail-closed when its header,
-    // compression, or metadata cannot be inspected. This also keeps the
-    // TypeScript and shell resolvers aligned.
-    return true;
-  }
-}
+// THE `.vfs` ABI GATE LIVED HERE, and it is the kernel's now.
+//
+// It read an image's declared `kernelAbi` and refused a mismatch, which meant
+// this resolver -- a file CHOOSER -- parsed an image header, and imported a
+// filesystem implementation to do it. `image_policy::check_declared_abi`
+// performs the same refusal at `rootfs::load_image`, in the layer that owns
+// the ABI contract, and returns `EPROTO` rather than `EINVAL` because the
+// image is not malformed: it speaks a different version of the contract.
+//
+// What the resolver LOSES is the ability to pick a different file: it could
+// skip a stale local image when a fetched ABI-matching one existed. The
+// maintainer removed that capability deliberately along with its five tests.
+// `binaries/` holds ten `shadowed-*.wasm` fixtures and zero `.vfs`, so the
+// second provenance tier it selected between is not machinery this project
+// still uses for images.
+//
+// Wasm artifact policy stays here, because nothing else performs it.
 
 function hasBinaryArtifactPolicyFailures(
   path: string,
@@ -3010,8 +2997,7 @@ function hasBinaryArtifactPolicyFailures(
     path,
     relPath,
     capturedForkInstrumentation,
-  ) ||
-    hasVfsArtifactPolicyFailures(path, relPath);
+  );
 }
 
 /**
@@ -3067,17 +3053,6 @@ function describeBinaryArtifactRejection(
       }`;
     }
   }
-  if (relPath.endsWith(".vfs") || relPath.endsWith(".vfs.zst")) {
-    try {
-      return hasVfsArtifactPolicyFailuresForBytes(bytes, relPath)
-        ? "rejected by artifact policy: VFS image declares a different kernel ABI"
-        : null;
-    } catch (error) {
-      return `could not be inspected: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
-    }
-  }
   return null;
 }
 
@@ -3090,7 +3065,7 @@ function hasBinaryArtifactPolicyFailuresForBytes(
     bytes,
     relPath,
     capturedForkInstrumentation,
-  ) || hasVfsArtifactPolicyFailuresForBytes(bytes, relPath);
+  );
 }
 
 function chooseBinaryCandidate(

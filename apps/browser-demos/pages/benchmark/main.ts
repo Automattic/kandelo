@@ -13,8 +13,9 @@
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { restoreVerifiedVfsImage } from "../../../../host/src/vfs/load-image";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
+import { ensureDirRecursive } from "../../../../host/src/vfs/image-helpers";
+import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import {
   createEmptyBuildFs,
   finalizeKernelOwnedImage,
@@ -90,12 +91,17 @@ async function fetchWasm(url: string): Promise<ArrayBuffer> {
   return resp.arrayBuffer();
 }
 
-async function readVfsBytes(fs: MemoryFileSystem, path: string): Promise<ArrayBuffer> {
-  await fs.ensureMaterialized(path);
+async function readVfsBytes(fs: KandeloImageFs, path: string): Promise<ArrayBuffer> {
+  // No `ensureMaterialized`. That asked a filesystem to fetch a deferred file
+  // before reading it, which a BUILD-time image has no notion of: it holds what
+  // it was given, and anything deferred is deferred for the kernel to fetch
+  // later, not for this page. `stat` by path rather than `fstat` by descriptor
+  // for the same reason — the path is right here, and the bridge describes an
+  // image rather than a live filesystem with open-file state.
+  const size = fs.stat(path).size;
   const fd = fs.open(path, 0, 0);
   try {
-    const stat = fs.fstat(fd);
-    const buf = new Uint8Array(stat.size);
+    const buf = new Uint8Array(size);
     fs.read(fd, buf, 0, buf.length);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   } finally {
@@ -103,7 +109,7 @@ async function readVfsBytes(fs: MemoryFileSystem, path: string): Promise<ArrayBu
   }
 }
 
-async function readVfsText(fs: MemoryFileSystem, path: string): Promise<string> {
+async function readVfsText(fs: KandeloImageFs, path: string): Promise<string> {
   return new TextDecoder().decode(await readVfsBytes(fs, path));
 }
 
@@ -121,7 +127,7 @@ async function runProgram(
   argv: string[],
 ): Promise<{ exitCode: number; stdout: string }> {
   let stdout = "";
-  const vfsImage = await finalizeKernelOwnedImage(createEmptyBuildFs());
+  const vfsImage = await finalizeKernelOwnedImage(await createEmptyBuildFs());
   const kernel = new BrowserKernel({
     kernelOwnedFs: true,
     maxWorkers: 4,
@@ -157,8 +163,12 @@ async function runProgramWithExecMap(
   let stdout = "";
   // Bake the exec-map entries into the image as lazy files; the worker fetches
   // them on demand when the child execs them.
-  const buildFs = createEmptyBuildFs();
+  const buildFs = await createEmptyBuildFs();
   for (const e of execMap) {
+    // Each entry's parent, explicitly. A fresh image is `/` and nothing else,
+    // and the Rust writer refuses a file whose directory does not exist, as
+    // POSIX does. The incumbent created parents silently.
+    ensureDirRecursive(buildFs, e.path.slice(0, e.path.lastIndexOf("/")) || "/");
     buildFs.registerLazyFile(e.path, e.url, e.size, 0o755);
   }
   const vfsImage = await finalizeKernelOwnedImage(buildFs);
@@ -339,7 +349,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let lastOutputTime = 0;
   let outputSeen = false;
 
-  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 256 * 1024 * 1024,
   });
   const vfsImage = await finalizeKernelOwnedImage(buildFs);
@@ -478,7 +488,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   // Assemble the image in a transient build FS: base WP image + config +
   // dynamic wp-config/mu-plugin, minus any stale database. The kernel worker
   // then owns the live VFS (kernelOwnedFs).
-  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
@@ -642,7 +652,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     fetchWasm(kernelWasmUrl),
     vfsResp.arrayBuffer(),
   ]);
-  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   const mariadbBytes = await readVfsBytes(buildFs, "/usr/sbin/mariadbd");

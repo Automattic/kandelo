@@ -27,7 +27,7 @@ import {
   type ShellLazyArchiveSpec,
 } from "../../images/vfs/scripts/shell-lazy-archives";
 import { resolveVfsArtifact } from "../../images/vfs/scripts/shell-vfs-build";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -306,6 +306,37 @@ function zipEntryMetadata(
   return metadata;
 }
 
+/**
+ * "Which archives did this image record, and under what prefix?"
+ *
+ * `MemoryFileSystem.exportLazyArchiveEntries()` answered that with
+ * `SerializedLazyArchiveEntry[]` — `{ url, mountPrefix, ... }`. The bridge
+ * answers it through `lazyEntries()`, whose archives carry `uri` and a sealed
+ * DESCRIPTOR. The fact is the same; only the spelling differs, which is why
+ * this file needed no new method on the producer to be repointed.
+ *
+ * The descriptor is unwrapped the way `module-base-image.ts` unwraps it —
+ * `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]`,
+ * `seal::encode` in `crates/kandelo-image-module/src/seal.rs` — because a test
+ * that parsed the raw payload would assert against something no consumer sees.
+ */
+function recordedArchives(
+  fs: KandeloImageFs,
+): Array<{ url: string; mountPrefix: unknown }> {
+  return fs.lazyEntries().archives.map((archive) => {
+    const view = new DataView(
+      archive.descriptor.buffer,
+      archive.descriptor.byteOffset,
+      archive.descriptor.byteLength,
+    );
+    const length = view.getUint32(4, true);
+    const described = JSON.parse(
+      new TextDecoder().decode(archive.descriptor.subarray(8, 8 + length)),
+    ) as { mountPrefix?: unknown };
+    return { url: archive.uri, mountPrefix: described.mountPrefix };
+  });
+}
+
 describe("declared shell lazy-archive inputs", () => {
   it("creates byte-identical lazy ZIPs across source order and mtime changes", () => {
     const firstRoot = tempDir();
@@ -416,7 +447,7 @@ describe("declared shell lazy-archive inputs", () => {
       "deterministic payload\n".length * 512,
     );
 
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
     const vim = SHELL_LAZY_ARCHIVE_SPECS[0];
     const archive = registerDeclaredShellLazyArchive(
       fs,
@@ -496,9 +527,7 @@ describe("declared shell lazy-archive inputs", () => {
         calls.push([resolverPath, dependency]);
         return path;
       };
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(4 * 1024 * 1024),
-      );
+      const fs = KandeloImageFs.create();
 
       const archive = registerDeclaredShellLazyArchive(fs, spec, resolve);
 
@@ -515,11 +544,11 @@ describe("declared shell lazy-archive inputs", () => {
       expect(
         fs.stat(`${spec.mountPrefix}${spec.requiredMember}`).size,
       ).toBe(`${spec.id} executable`.length);
-      expect(fs.exportLazyArchiveEntries()).toEqual([
-        expect.objectContaining({
-          url: spec.archiveUrl,
-          mountPrefix: spec.mountPrefix.replace(/\/$/, ""),
-        }),
+      // The prefix is compared WITHOUT stripping a trailing slash. Both
+      // producers normalize it now (`f20d51f4e`); the strip that used to be
+      // here was papering over a difference between them.
+      expect(recordedArchives(fs)).toEqual([
+        { url: spec.archiveUrl, mountPrefix: "/usr" },
       ]);
     },
   );
@@ -532,7 +561,7 @@ describe("declared shell lazy-archive inputs", () => {
       [spec.requiredMember]: new TextEncoder().encode(".TH LSOF 8\n"),
     });
     const path = writeArchive(spec.archiveUrl, bytes);
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
 
     const archive = registerDeclaredShellLazyArchive(fs, spec, () => path);
 
@@ -544,9 +573,7 @@ describe("declared shell lazy-archive inputs", () => {
       fs.stat(`${spec.mountPrefix}${spec.requiredMember}`).size,
     ).toBeGreaterThan(0);
     expect(
-      fs
-        .exportLazyArchiveEntries()
-        .filter((entry) => entry.url === spec.archiveUrl),
+      recordedArchives(fs).filter((entry) => entry.url === spec.archiveUrl),
     ).toHaveLength(1);
   });
 
@@ -558,14 +585,14 @@ describe("declared shell lazy-archive inputs", () => {
       "share/man/man8/other.8": new TextEncoder().encode(".TH OTHER 8\n"),
     });
     const path = writeArchive(spec.archiveUrl, bytes);
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
 
     expect(() =>
       registerDeclaredShellLazyArchive(fs, spec, () => path)
     ).toThrow(
       /lsof-docs output .* must contain exactly one regular member share\/man\/man8\/lsof\.8; found 0/,
     );
-    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+    expect(recordedArchives(fs)).toEqual([]);
   });
 
   it("propagates a missing declared dependency output instead of falling back", () => {
@@ -585,7 +612,7 @@ describe("declared shell lazy-archive inputs", () => {
     const vim = SHELL_LAZY_ARCHIVE_SPECS[0];
     const nethack = SHELL_LAZY_ARCHIVE_SPECS[1];
     const wrongPath = writeArchive(nethack.archiveUrl, archiveFor(nethack));
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
 
     expect(() =>
       registerDeclaredShellLazyArchive(fs, vim, () => wrongPath),
@@ -593,7 +620,7 @@ describe("declared shell lazy-archive inputs", () => {
       /vim-browser-bundle output .* must contain exactly one regular member bin\/vim; found 0/,
     );
     expect(() => fs.stat("/usr/bin/vim")).toThrow();
-    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+    expect(recordedArchives(fs)).toEqual([]);
   });
 
   it("reports a corrupt declared output as an invalid lazy ZIP", () => {

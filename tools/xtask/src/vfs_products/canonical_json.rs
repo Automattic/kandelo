@@ -1,6 +1,11 @@
-// These foundation helpers become live command dependencies in the following
-// product-manifest tasks; keep the first independently reviewable commit quiet.
-#![allow(dead_code)]
+//! Canonical JSON and the shape rules the product catalog validates with.
+//!
+//! This carried a blanket `#![allow(dead_code)]`, added so the first
+//! independently reviewable commit could land quiet while "these foundation
+//! helpers become live command dependencies in the following product-manifest
+//! tasks". They did, and then some of them stopped being: retiring the staged
+//! product path took `resolved_inputs.rs` with it, and the allow would have
+//! kept its orphans silent. The allow is gone so the compiler is the census.
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -53,10 +58,6 @@ pub fn validate_sha256(value: &str) -> Result<(), String> {
     validate_lower_hex(value, 64, "SHA-256")
 }
 
-pub fn validate_git_sha(value: &str) -> Result<(), String> {
-    validate_lower_hex(value, 40, "Git SHA")
-}
-
 fn validate_lower_hex(value: &str, expected_bytes: usize, field: &str) -> Result<(), String> {
     if value.len() != expected_bytes
         || !value
@@ -103,7 +104,7 @@ pub fn validate_stable_id(value: &str, field: &str) -> Result<(), String> {
 /// would disagree about what the path is rather than about how strict to be.
 /// A NUL truncates the path in the first C API that receives it, so a name
 /// carrying one means something different downstream than it says here.
-pub fn validate_repo_path_shape(value: &str) -> Result<PathBuf, String> {
+fn validate_repo_path_shape(value: &str) -> Result<PathBuf, String> {
     if value.is_empty() || value.len() > 4_096 {
         return Err("repository path must contain 1 through 4096 UTF-8 bytes".to_string());
     }
@@ -170,7 +171,7 @@ pub fn validate_absolute_posix_path(value: &str) -> Result<(), String> {
 mod tests {
     use super::{
         canonical_json_bytes, canonical_sha256, validate_absolute_posix_path,
-        validate_git_sha, validate_repo_path, validate_sha256, validate_stable_id,
+        validate_repo_path, validate_sha256, validate_stable_id,
     };
     use serde_json::json;
     use std::fs;
@@ -209,16 +210,13 @@ mod tests {
 
     #[test]
     fn digest_validators_require_full_lowercase_hex() {
+        // The Git-SHA half retired with `validate_git_sha`, whose only caller
+        // was the deleted `resolved_inputs.rs`. A validator kept alive by its
+        // own test is the pattern this retirement exists to remove.
         let sha256 = "a".repeat(64);
-        let git_sha = "b".repeat(40);
-
         assert!(validate_sha256(&sha256).is_ok());
-        assert!(validate_git_sha(&git_sha).is_ok());
         for invalid in ["a".repeat(63), "A".repeat(64), "g".repeat(64)] {
             assert!(validate_sha256(&invalid).is_err(), "accepted {invalid}");
-        }
-        for invalid in ["b".repeat(39), "B".repeat(40), "z".repeat(40)] {
-            assert!(validate_git_sha(&invalid).is_err(), "accepted {invalid}");
         }
     }
 

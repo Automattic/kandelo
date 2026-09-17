@@ -1,0 +1,427 @@
+{
+ "file": "crates/kandelo-image-module/src/lib.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "errno returned positive instead of negative",
+   "scope": "fn err(e: Errno) -> i32 {",
+   "scope_end": "\n}\n",
+   "find": "    -(e as i32)",
+   "replace": "    e as i32"
+  },
+  {
+   "name": "chown ignores the clear_setid flag",
+   "scope": "pub unsafe extern \"C\" fn sm_chown",
+   "scope_end": "\n}\n",
+   "find": "        clear_setid != 0,",
+   "replace": "        false,"
+  },
+  {
+   "name": "chown swaps uid and gid",
+   "scope": "pub unsafe extern \"C\" fn sm_chown",
+   "scope_end": "\n}\n",
+   "find": "        uid,\n        gid,",
+   "replace": "        gid,\n        uid,"
+  },
+  {
+   "name": "symlink ownership comes from nowhere",
+   "scope": "pub unsafe extern \"C\" fn sm_symlink",
+   "scope_end": "\n}\n",
+   "find": "        uid,\n        gid,",
+   "replace": "        0,\n        0,"
+  },
+  {
+   "name": "reset does not actually reset",
+   "scope": "pub extern \"C\" fn sm_reset",
+   "scope_end": "\n}\n",
+   "find": "    rootfs::reset();",
+   "replace": ""
+  },
+  {
+   "name": "writes never truncate",
+   "scope": "pub unsafe extern \"C\" fn sm_write_file",
+   "scope_end": "\n}\n",
+   "find": "content, mode, true,",
+   "replace": "content, mode, false,"
+  },
+  {
+   "name": "mode is ignored on write",
+   "scope": "pub unsafe extern \"C\" fn sm_write_file",
+   "scope_end": "\n}\n",
+   "find": "content, mode, true,",
+   "replace": "content, 0o644, true,"
+  },
+  {
+   "name": "read_file ignores the offset",
+   "scope": "pub unsafe extern \"C\" fn sm_read_file",
+   "scope_end": "\n}\n",
+   "find": "rootfs::read_file_at(path, offset, out,",
+   "replace": "rootfs::read_file_at(path, 0, out,"
+  },
+  {
+   "name": "read_file invents zeroes instead of reading the loaded image",
+   "scope": "pub unsafe extern \"C\" fn sm_read_file",
+   "scope_end": "\n}\n",
+   "find": "    match rootfs::read_file_at(path, offset, out, image_source) {",
+   "replace": "    match rootfs::read_file_at(path, offset, out, |_r, d: &mut [u8]| Ok(d.len())) {"
+  },
+  {
+   "name": "readlink returns success regardless of length",
+   "scope": "pub unsafe extern \"C\" fn sm_readlink",
+   "scope_end": "\n}\n",
+   "find": "        Ok(n) => n as i32,",
+   "replace": "        Ok(_n) => 0,"
+  },
+  {
+   "name": "an undersized buffer truncates instead of failing",
+   "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+   "scope_end": "\n}\n",
+   "find": "    if out_len < required {\n        return err(Errno::ERANGE);\n    }",
+   "replace": ""
+  },
+  {
+   "name": "a missing directory reports an empty listing",
+   "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+   "scope_end": "\n}\n",
+   "find": "        Err(e) => return err(e),\n    };",
+   "replace": "        Err(_) => return 0,\n    };"
+  },
+  {
+   "name": "the length prefix is dropped",
+   "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+   "scope_end": "\n}\n",
+   "find": "    let required: usize = names.iter().map(|n| 4 + n.len()).sum();",
+   "replace": "    let required: usize = names.iter().map(|n| n.len()).sum();"
+  },
+  {
+   "name": "entries stop after the first",
+   "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+   "scope_end": "\n}\n",
+   "find": "            Ok(Some((_ino, _kind, len))) => names.push(name_buf[..len].to_vec()),",
+   "replace": "            Ok(Some((_ino, _kind, len))) => { names.push(name_buf[..len].to_vec()); break; }"
+  },
+  {
+   "name": "export ignores the offset and always restarts",
+   "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+   "scope_end": "\n}\n",
+   "find": "rootfs::export_container_read(offset, out, &mut source)",
+   "replace": "rootfs::export_container_read(0, out, &mut source)"
+  },
+  {
+   "name": "the stat record forgets whether the bytes are present",
+   "scope": "    let fields: [u64; 8] = [",
+   "scope_end": "\n    ];\n",
+   "find": "        u64::from(deferred),",
+   "replace": "        0,"
+  },
+  {
+   "name": "the stat record forgets which archive backs the file",
+   "scope": "    let fields: [u64; 8] = [",
+   "scope_end": "\n    ];\n",
+   "find": "        u64::from(archive_id),",
+   "replace": "        0,"
+  },
+  {
+   "name": "deferred and archive_id are written in the wrong order",
+   "scope": "    let fields: [u64; 8] = [",
+   "scope_end": "\n    ];\n",
+   "find": "        u64::from(deferred),\n        u64::from(archive_id),",
+   "replace": "        u64::from(archive_id),\n        u64::from(deferred),"
+  },
+  {
+   "name": "the bridge declares an archive even when there is none",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "    if archive_id != 0 {",
+   "replace": "    if true {"
+  },
+  {
+   "name": "a standalone file's description is discarded at registration",
+   "scope": "        if archive_id == 0 { archive_payload } else { b\"\" },",
+   "scope_end": "\n",
+   "find": "        if archive_id == 0 { archive_payload } else { b\"\" },",
+   "replace": "        b\"\","
+  },
+  {
+   "name": "a headroom breach reports success",
+   "scope": "    let rc = if outcome.met { 0 } else { err(Errno::EDOM) };",
+   "scope_end": "\n",
+   "find": "    let rc = if outcome.met { 0 } else { err(Errno::EDOM) };",
+   "replace": "    let rc = 0;"
+  },
+  {
+   "name": "the verdict reports the required numbers as the free ones",
+   "scope": "    let fields = [\n        outcome.free_bytes,",
+   "scope_end": "\n    ];\n",
+   "find": "        outcome.free_bytes,\n        outcome.required_bytes,",
+   "replace": "        outcome.required_bytes,\n        outcome.free_bytes,"
+  },
+  {
+   "name": "the capacity field is written into the headroom slot",
+   "scope": "    let fields = [\n        outcome.free_bytes,",
+   "scope_end": "\n    ];\n",
+   "find": "        outcome.required_inodes,\n        capacity,",
+   "replace": "        capacity,\n        outcome.required_inodes,"
+  },
+  {
+   "name": "export reports a negative errno as a byte count",
+   "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+   "scope_end": "\n}\n",
+   "find": "        Err(e) => err(e),",
+   "replace": "        Err(_e) => 0,"
+  },
+  {
+   "name": "export silently invents base bytes",
+   "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+   "scope_end": "\n}\n",
+   "find": "    let mut source = image_source;",
+   "replace": "    let mut source = |_r: rootfs::ByteReq, d: &mut [u8]| Ok(d.len());"
+  },
+  {
+   "name": "a refused load adopts the host's buffer anyway",
+   "scope": "pub unsafe extern \"C\" fn sm_load_image",
+   "scope_end": "\n}\n",
+   "find": "            // Ownership did not transfer: clear the slot WITHOUT freeing, so\n            // the host's buffer is still the host's to free.\n            // SAFETY: single-threaded module.\n            unsafe { *IMAGE.0.get() = None };",
+   "replace": "            // Ownership did not transfer: clear the slot WITHOUT freeing, so\n            // the host's buffer is still the host's to free.\n            // SAFETY: single-threaded module.\n            unsafe { core::hint::black_box(&IMAGE) };"
+  },
+  {
+   "name": "loading a second image leaks the first",
+   "scope": "pub unsafe extern \"C\" fn sm_load_image",
+   "scope_end": "\n}\n",
+   "find": "    release_image();\n    // SAFETY: single-threaded module.\n    unsafe { *IMAGE.0.get() = Some((ptr, len)) };",
+   "replace": "    // release_image();\n    // SAFETY: single-threaded module.\n    unsafe { *IMAGE.0.get() = Some((ptr, len)) };"
+  },
+  {
+   "name": "a zero-length range is accepted as an image",
+   "scope": "pub unsafe extern \"C\" fn sm_load_image",
+   "scope_end": "\n}\n",
+   "find": "    if ptr == 0 || len == 0 {",
+   "replace": "    if ptr == 0 {"
+  },
+  {
+   "name": "reset keeps the image its tree was built on",
+   "scope": "pub extern \"C\" fn sm_reset(",
+   "scope_end": "\n}\n",
+   "find": "    release_image();",
+   "replace": "    // release_image();"
+  },
+  {
+   "name": "the byte source answers a blob or archive request from the image",
+   "scope": "fn image_source(",
+   "scope_end": "\n}\n",
+   "find": "    let rootfs::ByteReq::Image { offset } = req else {\n        return Err(Errno::EIO);\n    };",
+   "replace": "    let offset = match req {\n        rootfs::ByteReq::Image { offset } => offset,\n        rootfs::ByteReq::Base { offset, .. } => offset,\n        rootfs::ByteReq::Archive { offset, .. } => offset,\n    };"
+  },
+  {
+   "name": "the byte source reads past the end of the image",
+   "scope": "fn image_source(",
+   "scope_end": "\n}\n",
+   "find": "    let n = core::cmp::min(dst.len(), bytes.len() - start);",
+   "replace": "    let n = dst.len();"
+  },
+  {
+   "name": "the byte source serves bytes with nothing loaded",
+   "scope": "fn image_source(",
+   "scope_end": "\n}\n",
+   "find": "    let bytes = image_bytes().ok_or(Errno::EIO)?;",
+   "replace": "    let bytes = image_bytes().unwrap_or(&[]);"
+  },
+  {
+   "name": "the stat probe reports a length that is not the record's",
+   "scope": "pub unsafe extern \"C\" fn sm_lstat(",
+   "scope_end": "\n}\n",
+   "find": "    const RECORD: usize = 8 * 8;",
+   "replace": "    const RECORD: usize = 6 * 8;"
+  },
+  {
+   "name": "the stat probe is answered only after the path resolves",
+   "scope": "pub unsafe extern \"C\" fn sm_lstat(",
+   "scope_end": "\n}\n",
+   "find": "    if out_len == 0 {\n        return RECORD as i32;\n    }\n    let path = unsafe { slice(path_ptr, path_len) };\n    let stat = match rootfs::lstat(path) {\n        Ok(stat) => stat,\n        Err(e) => return err(e),\n    };",
+   "replace": "    let path = unsafe { slice(path_ptr, path_len) };\n    let stat = match rootfs::lstat(path) {\n        Ok(stat) => stat,\n        Err(e) => return err(e),\n    };\n    if out_len == 0 {\n        return RECORD as i32;\n    }"
+  },
+  {
+   "name": "the metadata probe reports a length that is not the metadata's",
+   "scope": "pub unsafe extern \"C\" fn sm_image_metadata",
+   "scope_end": "\n}\n",
+   "find": "    let len = metadata.as_ref().map_or(0, |bytes| bytes.len());",
+   "replace": "    let len = 0usize;"
+  },
+  {
+   "name": "the metadata read truncates into a buffer too small for it",
+   "scope": "pub unsafe extern \"C\" fn sm_image_metadata",
+   "scope_end": "\n}\n",
+   "find": "    if out_ptr == 0 || out_len < len {",
+   "replace": "    if out_ptr == 0 {"
+  },
+  {
+   "name": "reset leaves the filesystem with no root",
+   "scope": "pub extern \"C\" fn sm_reset(",
+   "scope_end": "\n}\n",
+   "find": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, uid, gid, 1))",
+   "replace": "    let _ = (root_mode, uid, gid);\n    0"
+  },
+  {
+   "name": "reset ignores the root mode it was given",
+   "scope": "pub extern \"C\" fn sm_reset(",
+   "scope_end": "\n}\n",
+   "find": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, uid, gid, 1))",
+   "replace": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", 0o700, uid, gid, 1))"
+  },
+  {
+   "name": "reset ignores the root owner it was given",
+   "scope": "pub extern \"C\" fn sm_reset(",
+   "scope_end": "\n}\n",
+   "find": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, uid, gid, 1))",
+   "replace": "    let _ = (uid, gid);\n    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, 0, 0, 1))"
+  },
+  {
+   "name": "registration stores the caller's bytes as the payload",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        if let Err(e) = rootfs::set_archive_payload(archive_id, &wrapped) {",
+   "replace": "        if let Err(e) = rootfs::set_archive_payload(archive_id, archive_payload) {"
+  },
+  {
+   "name": "an omitted description erases the one the archive has",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        if !archive_payload.is_empty() {",
+   "replace": "        if true {"
+  },
+  {
+   "name": "a second description silently replaces the first",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "            if !payload.descriptor.is_empty() && payload.descriptor != archive_payload {",
+   "replace": "            if false {"
+  },
+  {
+   "name": "an absent description is stored as an envelope describing nothing",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        let wrapped = if payload.descriptor.is_empty() && payload.seal == seal::SealState::None {",
+   "replace": "        let wrapped = if false {"
+  },
+  {
+   "name": "the archive's length is never declared",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {\n            return err(e);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "the export door does not seal",
+   "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+   "scope_end": "\n}\n",
+   "find": "    if offset == 0 {\n        let declared = rootfs::archive_payloads();",
+   "replace": "    if false {\n        let declared = rootfs::archive_payloads();"
+  },
+  {
+   "name": "a cohort declared at registration is ignored",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        if !cohort_id.is_empty() {",
+   "replace": "        if false {"
+  },
+  {
+   "name": "one archive may be declared in two different cohorts",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "                Some(existing) if existing != declared => return err(Errno::EINVAL),",
+   "replace": "                Some(existing) if existing != declared && false => return err(Errno::EINVAL),"
+  },
+  {
+   "name": "a resident file is enumerated as a deferred one",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
+   "scope_end": "\n}\n",
+   "find": "    let files = rootfs::lazy_entries();",
+   "replace": "    let files = rootfs::lazy_entries();\n    let files = { let mut f = files; f.push(rootfs::LazyEntryView { path: b\"/ghost\".to_vec(), ino: 0, size: 0, archive_id: 0, source_path: alloc::vec::Vec::new(), payload: alloc::vec::Vec::new(), uri: alloc::vec::Vec::new(), digest: runtime_core::sdef::DIGEST_NONE }); f };"
+  },
+  {
+   "name": "the enumeration writes into a buffer smaller than the record set",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
+   "scope_end": "\n}\n",
+   "find": "    if out_len < buf.len() {\n        return err(Errno::ERANGE);\n    }",
+   "replace": ""
+  },
+  {
+   "name": "a deferred member's archive linkage is dropped from the record",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
+   "scope_end": "\n}\n",
+   "find": "        put_u32(&mut buf, entry.archive_id);",
+   "replace": "        put_u32(&mut buf, 0);"
+  },
+  {
+   "name": "a normalized export timestamp is ignored",
+   "scope": "pub unsafe extern \"C\" fn sm_set_image_options",
+   "scope_end": "\n}\n",
+   "find": "    if let Err(e) = rootfs::set_export_timestamp(normalized) {\n        return err(e);\n    }",
+   "replace": ""
+  },
+  {
+   "name": "a deferred file reports itself as resident",
+   "scope": "    let fields: [u64; 8] = [",
+   "scope_end": "\n    ];\n",
+   "find": "        u64::from(deferred),",
+   "replace": "        u64::from(false),"
+  },
+  {
+   "name": "an archive member forgets which archive backs it",
+   "scope": "    let fields: [u64; 8] = [",
+   "scope_end": "\n    ];\n",
+   "find": "        u64::from(archive_id),",
+   "replace": "        0u64,"
+  },
+  {
+   "name": "an archive's address and digest are never recorded, so the kernel has nothing to check",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file(",
+   "scope_end": "\n}\n",
+   "find": "        if let Err(e) = rootfs::set_archive_source(archive_id, uri, digest) {\n            return err(e);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "a standalone file is registered with no address of its own",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file(",
+   "scope_end": "\n}\n",
+   "find": "        if archive_id == 0 { uri } else { b\"\" },",
+   "replace": "        b\"\","
+  },
+  {
+   "name": "a standalone file is registered with no digest",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file(",
+   "scope_end": "\n}\n",
+   "find": "        if archive_id == 0 { digest } else { b\"\" },",
+   "replace": "        b\"\","
+  },
+  {
+   "name": "a member carries the archive's address as its own, which the format refuses",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file(",
+   "scope_end": "\n}\n",
+   "find": "        if archive_id == 0 { uri } else { b\"\" },\n        if archive_id == 0 { digest } else { b\"\" },",
+   "replace": "        uri,\n        digest,"
+  },
+  {
+   "name": "the enumeration stops reporting each archive's address",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries(",
+   "scope_end": "\n}\n",
+   "find": "        if put_bytes(&mut buf, payload).is_err()\n            || put_bytes(&mut buf, uri).is_err()\n            || put_bytes(&mut buf, digest).is_err()",
+   "replace": "        if put_bytes(&mut buf, payload).is_err()\n            || put_bytes(&mut buf, b\"\").is_err()\n            || put_bytes(&mut buf, digest).is_err()"
+  },
+  {
+   "name": "the enumeration stops reporting each file's digest",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries(",
+   "scope_end": "\n}\n",
+   "find": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &entry.digest).is_err()",
+   "replace": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &runtime_core::sdef::DIGEST_NONE).is_err()"
+  }
+ ],
+ "build": "scripts/dev-shell.sh cargo build -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "retired": [
+  {
+   "name": "a null digest pointer is read as bytes anyway",
+   "why": "Unfalsifiable by construction. The trial deleted an `archive_digest_ptr == 0` check in `sm_register_lazy_file`, but `slice` already returns an empty slice for a null pointer and `digest_from` already reads empty as 'none declared', so the mutant took the same path and produced the same digest. The survivor was a redundant guard, not a missing test; the guard was removed and the test that documents the behaviour kept."
+  }
+ ],
+ "_comment": " RETIRED 2026-09-16: \"an image that failed to authenticate stays resident\" mutated `release_image()` away and expected a kill, so it asserted that a refused load must FREE the host's buffer. That IS the double free fixed in 81e95a3e9 -- the module freed and `KandeloImageFs.loadImage` freed again in its catch. A trial can encode the wrong contract, and this one then defended the defect for as long as it passed. It is replaced by its inverse, which kills the shipped behaviour instead of requiring it. RETIRED 2026-09-16, four trials, when `sm_load_image`'s own cohort check was deleted: `rootfs::load_image` authenticates now, so a load returning `Ok` has already verified and the module's arm could not fire. A guard that cannot fail is a second place for one rule to be written. Their subject did not disappear with them \u2014 the OWNERSHIP of a refusal is still covered by \"a refused load adopts the host's buffer anyway\" on the surviving `Err` arm, which is the arm every failure now takes, and the cohort check itself is trialled where it now lives, in `runtime-core-seal-load.json`."
+}

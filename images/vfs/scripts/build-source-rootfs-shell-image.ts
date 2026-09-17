@@ -3,8 +3,8 @@ import { lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { ABI_VERSION, ERRNO } from "../../../host/src/generated/abi";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
@@ -224,7 +224,7 @@ export function composeSourceRootfsDemoConfig(
 }
 
 function requireOwnedDemoCommands(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   demoBytes: Uint8Array,
 ): void {
   const config = parseKandeloDemoConfig(
@@ -255,7 +255,7 @@ function requireOwnedDemoCommands(
 }
 
 function requireImageExecutable(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   config: ExperimentalTerminalProgram,
 ): void {
   const stat = (() => {
@@ -277,7 +277,7 @@ function requireImageExecutable(
 }
 
 function readExperimentalTerminalSession(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
 ): ExperimentalTerminalSession {
   let stat;
   try {
@@ -343,12 +343,12 @@ function sameLazyIdentity(
 }
 
 type LazyRecords = {
-  files: ReturnType<SffsImageFs["lazyEntries"]>["files"];
-  trees: ReturnType<SffsImageFs["lazyEntries"]>["archives"];
+  files: ReturnType<KandeloImageFs["lazyEntries"]>["files"];
+  trees: ReturnType<KandeloImageFs["lazyEntries"]>["archives"];
 };
 
 function lazyRecords(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
 ): LazyRecords {
   const { files, archives } = fs.lazyEntries();
@@ -376,7 +376,7 @@ function lazyRecords(
  * description all still fail this.
  */
 function serializedLazyState(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
 ): string {
   const { files, trees } = lazyRecords(fs, omittedIdentities);
@@ -411,7 +411,7 @@ function stableJson(value: unknown): string {
 
 /** The lazy identity at `path`, or null if `path` is not a lazy file. */
 function optionalLazyIdentity(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   path: string,
 ): LazyIdentity | null {
   if (!fs.isPathDeferred(path)) return null;
@@ -429,7 +429,7 @@ function optionalLazyIdentity(
  * change or no change at all.
  */
 function requireManSupersededByMandoc(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   priorIdentity: LazyIdentity | null,
 ): void {
   if (priorIdentity === null) return;
@@ -448,7 +448,7 @@ function requireManSupersededByMandoc(
 
 function requireExpectedLazyState(
   before: string,
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   label: string,
 ): void {
   const after = serializedLazyState(fs);
@@ -462,7 +462,7 @@ function requireExpectedLazyState(
 
 function requirePreservedLazyState(
   expected: LazyRecords,
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   label: string,
 ): void {
   const actual = lazyRecords(fs);
@@ -480,7 +480,7 @@ function requirePreservedLazyState(
   }
 }
 
-function requireCompleteProductShellContract(fs: SffsImageFs): void {
+function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (!fs.isPathDeferred(spec.vfsPath)) {
       throw new Error(
@@ -554,7 +554,7 @@ function strictResolverFromDependencyEnvironment(
   };
 }
 
-function readVfsBytes(fs: SffsImageFs, path: string): Uint8Array {
+function readVfsBytes(fs: KandeloImageFs, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, 0, 0);
@@ -582,7 +582,7 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 function requireLazyBashIdentity(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
 ): SourceBashIdentity {
   const bashPath = REQUIRED_BASH_ALIASES[0];
   if (!fs.stat(bashPath).deferred) {
@@ -631,7 +631,7 @@ function requireLazyBashIdentity(
 }
 
 function requireMaterializedBashIdentity(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   contract: SourceBashIdentity,
   expectedBytes: Uint8Array,
 ): void {
@@ -689,19 +689,41 @@ export async function buildSourceRootfsShellImage(
   inputs: SourceRootfsShellInputs,
 ): Promise<Uint8Array> {
   const rootfs = readRegularInput(inputs.rootfsPath, "rootfs dependency");
-  const sourceMetadata = SffsImageFs.readImageMetadata(rootfs);
+  // READING THE METADATA LOADS THE IMAGE, and the loader refuses one that
+  // declares an ABI it does not speak. So a WRONG ABI arrives here as `EPROTO`
+  // rather than as a number this gate can compare, and the gate's own message
+  // — which names the requirement and is the reason a build's failure is
+  // actionable — would never be reached.
+  //
+  // The refusal is the loader's and stays the loader's; what this adds is the
+  // sentence a person building an image needs. A MISSING declaration still
+  // reaches the comparison below, because an image that declares no ABI makes
+  // no claim for the loader to refuse.
+  let sourceMetadata;
+  try {
+    sourceMetadata = KandeloImageFs.readImageMetadata(rootfs);
+  } catch (error) {
+    if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
+      throw new Error(
+        `rootfs dependency must explicitly declare kernel ABI ${ABI_VERSION}; ` +
+          `it declares a different one and this reader cannot say which — ` +
+          `rebuild it`,
+      );
+    }
+    throw error;
+  }
   if (sourceMetadata?.kernelAbi !== ABI_VERSION) {
     throw new Error(
       `rootfs dependency must explicitly declare kernel ABI ${ABI_VERSION}; ` +
         `got ${String(sourceMetadata?.kernelAbi)}`,
     );
   }
-  const sourceCapacity = SffsImageFs.readImageCapacity(rootfs);
+  const sourceCapacity = KandeloImageFs.readImageCapacity(rootfs);
   // The load AUTHENTICATES. Verification runs inside the module's
   // `sm_load_image`, so the source image gains its authority only after its
   // activation cohorts checked out -- there is no window between importing and
   // authenticating, and no second call to forget.
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   fs.loadImage(rootfs);
   const terminalSession = readExperimentalTerminalSession(fs);
   const demo = composeSourceRootfsDemoConfig(
@@ -777,12 +799,12 @@ export async function buildSourceRootfsShellImage(
     ),
   });
 
-  const outputMetadata = SffsImageFs.readImageMetadata(image);
+  const outputMetadata = KandeloImageFs.readImageMetadata(image);
   if (outputMetadata?.kernelAbi !== ABI_VERSION) {
     throw new Error("composed shell lost its explicit kernel ABI");
   }
   if (
-    SffsImageFs.readImageCapacity(image).maxByteLength !==
+    KandeloImageFs.readImageCapacity(image).maxByteLength !==
     sourceCapacity.maxByteLength
   ) {
     throw new Error("composed shell changed the rootfs capacity contract");
@@ -790,7 +812,7 @@ export async function buildSourceRootfsShellImage(
   // A separate import boundary on purpose: the post-save assertions check the
   // bytes that were WRITTEN rather than inheriting trust from the tree that
   // wrote them. Loading them back is what authenticates their seals.
-  const outputFs = SffsImageFs.create();
+  const outputFs = KandeloImageFs.create();
   outputFs.loadImage(image);
   requireMaterializedBashIdentity(outputFs, sourceBash, bash);
   requireExpectedLazyState(

@@ -1,0 +1,41 @@
+{
+  "file": "images/vfs/lib/kandelo-image-fs.ts",
+  "verify": "cd host && npx vitest run test/kandelo-image-fs.test.ts test/demo-login-image.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the caller's mode is spent on an existing file, so every rewrite is a chmod",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "    const effective = existing ?? mode;",
+      "replace": "    const effective = mode;"
+    },
+    {
+      "name": "the existing mode is read but the truncating write stamps the caller's anyway",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "      this.writeFile(path, new Uint8Array(0), effective);",
+      "replace": "      this.writeFile(path, new Uint8Array(0), mode);"
+    },
+    {
+      "name": "a created file is given the default mode instead of the one asked for",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "    const effective = existing ?? mode;",
+      "replace": "    const effective = existing ?? 0o644;"
+    },
+    {
+      "name": "the mode probe stops following symlinks, so a link's mode lands on its target",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "      existing = this.stat(path).mode & 0o7777;",
+      "replace": "      existing = this.lstat(path).mode & 0o7777;"
+    },
+    {
+      "name": "the handle's opening mode outranks the file's, so a chmod before a write is undone",
+      "scope": "    // The file's mode NOW, not the one the handle was opened with: a write is",
+      "scope_end": "\n    if (position === null)",
+      "find": "    this.writeFile(open.path, next, this.stat(open.path).mode & 0o7777);",
+      "replace": "    this.writeFile(open.path, next, open.mode);"
+    }
+  ]
+}

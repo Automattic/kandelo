@@ -13,6 +13,15 @@ const phpIcuRuntime = resolvePackageRuntimeFile(repoRoot, "php", "icu.dat");
 function resolveKernelArtifactsAlias(): Plugin {
   const KERNEL = "@kernel-wasm";
   const ROOTFS = "@rootfs-vfs";
+  // The image WRITER, which this harness needs because it edits the rootfs
+  // image before booting a kernel from it. `KandeloImageFs.create()` is
+  // synchronous and a fetch is not, so a browser page installs the module's
+  // bytes once up front — Node reads them off disk and the browser cannot.
+  //
+  // This config has its own alias list, separate from the browser demos', so
+  // an alias the demos resolve is not one this page resolves. That is why the
+  // import had to arrive here as well as in the page.
+  const IMAGE_MODULE32 = "@kandelo-image-module32-wasm";
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -27,6 +36,15 @@ function resolveKernelArtifactsAlias(): Plugin {
         this.error(
           "kernel.wasm was not accepted from the standard local, fetched, or packaged locations. " +
           "Run `bash build.sh` from the repo root or fetch package binaries.",
+        );
+      }
+
+      if (pathPart === IMAGE_MODULE32) {
+        const file = tryResolveBinary("kandelo_image_module32.wasm");
+        if (file) return file + query;
+        this.error(
+          "kandelo_image_module32.wasm was not accepted from the standard local, fetched, or packaged locations. " +
+          "Run `scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.",
         );
       }
 

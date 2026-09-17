@@ -110,7 +110,12 @@ test("kernel allocations and reusable exports remain bounded under churn in Chro
           if (!Number.isSafeInteger(size) || size <= 0) {
             throw new Error(`program response has invalid content length: ${size}`);
           }
-          const buildFs = createEmptyBuildFs();
+          const buildFs = await createEmptyBuildFs();
+          // The parent, explicitly. A fresh image is `/` and nothing else, and
+          // the Rust writer refuses a file whose directory does not exist —
+          // which is what POSIX does. The incumbent created parents silently,
+          // so this line was not needed until the writer changed.
+          buildFs.mkdir("/bin", 0o755);
           buildFs.registerLazyFile(spawnChildPath, programUrl, size, 0o755);
           vfsImage = await finalizeKernelOwnedImage(buildFs);
         }

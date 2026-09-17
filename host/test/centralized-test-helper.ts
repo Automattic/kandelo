@@ -12,6 +12,7 @@ import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
+import type { PreparedExecLaunchPlan } from "../src/exec-target";
 import { materializeThreadSlot, THREAD_SLOT_BYTES } from "../src/thread-allocator";
 import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "../src/constants";
 import {
@@ -24,7 +25,8 @@ import {
   NodeKernelHost,
   resolveRootfsArtifact,
 } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -196,6 +198,17 @@ export interface RunProgramOptions {
   /** Exact VFS image for tests that stage package runtime files. Overrides
    * `useDefaultRootfs`; omitted means the canonical image. */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /**
+   * How `/` is DECLARED, for the one fact a boot still reads from a spec:
+   * whether the image mount is `nosuid`.
+   *
+   * A host mount's `MountConfig.nosuid` used to carry this, so a test that
+   * needed a nosuid `/` built a `VirtualPlatformIO` and passed it as `io:` —
+   * which drops the whole run into main-thread mode. The kernel is the sole
+   * `/` authority now, so the declaration travels with the boot instead, and a
+   * test asserting set-ID behaviour can run where the product runs it.
+   */
+  rootfsNosuid?: boolean;
   /** Exact kernel wasm to boot (worker-thread mode). Omitted resolves the
    * kernel through the normal binary resolver. A caller that already holds
    * the kernel artifact — e.g. a build-time step that cannot rely on the
@@ -309,7 +322,17 @@ function centralizedForkModuleFields(
       const view = injected instanceof Uint8Array
         ? injected
         : new Uint8Array(injected);
-      mod = new WebAssembly.Module(view);
+      // The BUFFER, not the view. Since TypeScript 5.7 a
+      // `Uint8Array<ArrayBufferLike>` is not a `BufferSource`, because the
+      // buffer behind it may be shared — and `WebAssembly.Module` wants one it
+      // can hold. Slicing by the view's own bounds is what
+      // `KandeloImageFs.create` does for the same reason.
+      mod = new WebAssembly.Module(
+        view.buffer.slice(
+          view.byteOffset,
+          view.byteOffset + view.byteLength,
+        ) as ArrayBuffer,
+      );
     } else {
       const name = `fork_module${ptrWidth === 8 ? 64 : 32}.wasm`;
       mod = new WebAssembly.Module(readFileSync(resolveBinary(name)));
@@ -383,6 +406,13 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     execPrograms,
     rootfsImage,
+    rootfsMountSpec: options.rootfsNosuid === undefined
+      ? undefined
+      : DEFAULT_MOUNT_SPEC.map((mount) =>
+        mount.path === "/" && mount.source === "image"
+          ? { ...mount, nosuid: options.rootfsNosuid }
+          : mount
+      ),
     enableTcpNetwork: options.enableTcpNetwork,
     forkModuleBytesByWidth: options.forkModuleBytesByWidth,
     onStdout: (_pid: number, data: Uint8Array) => {
@@ -513,7 +543,12 @@ async function prepareExecTargetTestRootfs(
     return configured;
   }
 
-  let rootfs: MemoryFileSystem;
+  // BUILT BY THE MODULE every builder uses. This helper injects exec programs
+  // into a rootfs image for most of the suite, so what it writes decides which
+  // producer the tests downstream are actually exercising — and until now that
+  // was the TypeScript filesystem, whose images describe deferred files in a
+  // carrier no shipped artifact uses.
+  let rootfs: KandeloImageFs;
   if (configured === undefined) {
     let programBytes = 0;
     for (const hostPath of options.execPrograms.values()) {
@@ -527,14 +562,19 @@ async function prepareExecTargetTestRootfs(
     if (!Number.isSafeInteger(capacity)) {
       throw new Error("test exec target rootfs capacity overflows");
     }
-    rootfs = MemoryFileSystem.create(new SharedArrayBuffer(capacity));
+    rootfs = KandeloImageFs.create();
+    rootfs.setImageCapacity(capacity);
   } else {
     const image = configured === "default"
       ? new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath))
       : configured instanceof Uint8Array
         ? configured
         : new Uint8Array(configured);
-    rootfs = MemoryFileSystem.fromImagePreservingCapacity(image);
+    // `loadImage` IS the capacity-preserving load: the module restores the
+    // image's declared ceiling, which is what `fromImagePreservingCapacity`
+    // existed to do on the other side.
+    rootfs = KandeloImageFs.create();
+    rootfs.loadImage(image);
   }
 
   for (const [path, hostPath] of options.execPrograms) {
@@ -689,7 +729,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     }
   };
 
-  const kernelWorker = new CentralizedKernelWorker(
+  // ANNOTATED, because the callbacks in this call reference `kernelWorker`
+  // itself — an inference cycle TypeScript resolves as `any`, which then hides
+  // every mistake made through it. The same shape below for `onExec` and the
+  // two exec results it reads.
+  const kernelWorker: CentralizedKernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
@@ -1007,7 +1051,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           throw error;
         }
       },
-      onExec: async (request) => {
+      onExec: async (request): Promise<number | PreparedExecLaunchPlan> => {
         const {
           pid: execPid,
           targetBytes: newProgramBytes,
@@ -1017,7 +1061,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         } = request;
         const newPtrWidth = detectPtrWidth(newProgramBytes);
         const sourcePtrWidth = processPtrWidths.get(execPid) ?? newPtrWidth;
-        const metadataResult = kernelWorker.validateExecMetadata(argv, envp, sourcePtrWidth);
+        const metadataResult: number = kernelWorker.validateExecMetadata(argv, envp, sourcePtrWidth);
         if (metadataResult < 0) return metadataResult;
 
         const {
@@ -1030,7 +1074,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         );
         const newChannelOffset = newLayout.channelOffset;
 
-        const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(execPid);
+        const addressSpaceResult: number = kernelWorker.prepareAddressSpaceForExec(execPid);
         if (addressSpaceResult < 0) return addressSpaceResult;
         const oldMemory = processMemories.get(execPid);
         if (!oldMemory) {

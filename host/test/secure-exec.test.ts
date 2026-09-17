@@ -3,9 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { NodeTimeProvider } from "../src/vfs/time";
-import { VirtualPlatformIO } from "../src/vfs/vfs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -26,19 +24,25 @@ const SECURE_STDERR_SENTINEL = "secure-stderr-sentinel\n";
 // `check_sensitive_lookups`, through the same guest syscalls a real setuid
 // target would use.
 
-function createProbeIo(honorsSetId: boolean): VirtualPlatformIO {
+/**
+ * THE PROBE'S ROOT AS AN IMAGE, booted by a kernel in a worker.
+ *
+ * This built a `MemoryFileSystem`, mounted it at `/` with
+ * `nosuid: !honorsSetId`, and passed the `VirtualPlatformIO` as `io:` — which
+ * forces main-thread mode. `/` is the kernel's since the Phase 5 cutover, so
+ * the mount was not how the product serves a root filesystem, and the nosuid
+ * DECLARATION now travels with the boot (`rootfsNosuid`) rather than as a
+ * property of a host mount nothing consults.
+ */
+function probeRootfsImage(): Promise<Uint8Array> {
   const bytes = new Uint8Array(readFileSync(probeBinary!));
-  const root = MemoryFileSystem.create(
-    new SharedArrayBuffer(Math.max(4 * 1024 * 1024, bytes.byteLength * 3)),
-  );
+  const root = KandeloImageFs.create();
+  root.setImageCapacity(Math.max(4 * 1024 * 1024, bytes.byteLength * 3));
   root.mkdir("/bin", 0o755);
   root.mkdir("/dev", 0o755);
   root.createFileWithOwner("/bin/secure-parent", 0o4755, 0, 0, bytes);
   root.createFileWithOwner("/bin/secure-child", 0o755, 0, 0, bytes);
-
-  return new VirtualPlatformIO([
-    { mountPoint: "/", backend: root, nosuid: !honorsSetId },
-  ], new NodeTimeProvider());
+  return root.saveImage();
 }
 
 async function launch(
@@ -60,7 +64,8 @@ async function launch(
     env: ["KANDELO_UNTRUSTED=visible-only-outside-secure-startup"],
     uid: 1000,
     gid: 1000,
-    io: createProbeIo(trusted),
+    rootfsImage: await probeRootfsImage(),
+    rootfsNosuid: !trusted,
     execPrograms: new Map([["/bin/secure-child", probeBinary!]]),
     timeout: 20_000,
   });
@@ -94,7 +99,8 @@ describe.skipIf(!hasProbe)("secure exec startup", () => {
       programPath: probeBinary!,
       argv: ["secure-exec-probe", "target", "0", "0"],
       env: ["KANDELO_UNTRUSTED=visible-only-outside-secure-startup"],
-      io: createProbeIo(false),
+      rootfsImage: await probeRootfsImage(),
+    rootfsNosuid: true,
       uid: 1000,
       gid: 1000,
       timeout: 20_000,
@@ -202,7 +208,8 @@ describe.skipIf(!hasProbe)("secure exec startup", () => {
       env: ["KANDELO_UNTRUSTED=visible-only-outside-secure-startup"],
       uid: 1000,
       gid: 1000,
-      io: createProbeIo(true),
+      rootfsImage: await probeRootfsImage(),
+    rootfsNosuid: false,
       execPrograms: new Map([["/bin/secure-child", probeBinary!]]),
       timeout: 20_000,
     });

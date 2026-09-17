@@ -41,8 +41,9 @@ import {
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
   HostFileSystem,
-  MemoryFileSystem,
 } from "./vfs";
+import type { LazyFetch } from "./vfs/lazy-download-event";
+import * as rootImage from "./vfs/root-image-facts";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -52,7 +53,6 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
-import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
@@ -323,13 +323,14 @@ const processMemoryRetirementPressureHook =
 let execPrograms: Record<string, string> = {};
 let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
-let rootfsMemfs: MemoryFileSystem | null = null;
-/** The exact fetcher installed on `rootfsMemfs` via `setLazyFetcher`
- *  (closed-asset bundle, closed-asset-source, or the dev fallback below).
+/** The transport this boot resolves deferred addresses through: a
+ *  closed-asset bundle, a closed-asset source, or the dev fallback below.
  *  Captured here — rather than only as a local in `buildVirtualPlatformIO`
- *  — so the rootfs overlay wiring in `handleInit` can reuse the SAME
- *  transport for `host_fetch_deferred` (Phase 5 3b-wiring.3). */
-let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
+ *  — so the rootfs overlay wiring in `handleInit` can hand the SAME
+ *  transport to `host_fetch_deferred` (Phase 5 3b-wiring.3). It used to be
+ *  installed on the `/` MemoryFileSystem as well; that filesystem is no
+ *  longer built at all. */
+let rootfsLazyFetcher: LazyFetch | undefined;
 /** Canonical mount points of the sibling filesystems still mounted under `/`
  *  after the host `/` mount is dropped (e.g. `/dev/shm`, `/run/kandelo-run`
  *  session-seed trees, extra host mounts). Captured in `buildVirtualPlatformIO`
@@ -341,7 +342,6 @@ let rootfsForeignPrefixes: string[] = [];
  *  in-kernel rootfs overlay in `handleInit` so an overlay-served setuid/setgid
  *  exec target elevates (or, on a nosuid mount, does not) like the host `/`
  *  mount. Defaults set-ID honoring. */
-let rootfsNosuid = false;
 let initReady = false;
 let injectedExecWorkerConstructionFailure = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
@@ -452,7 +452,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   diagnosticPrefix: "[node-kernel-worker]",
   execMountIO: () => vfsExecIO,
   isInitReady: () => initReady,
-  rootfsBaseImage: () => rootfsMemfs,
+  hasRootfsImage: rootImage.has,
   // Node's worker-'exit' handler and vfork containment path synthesize the
   // crash reap themselves before entering the shared teardown.
   defaultExitCrashSignum: () => undefined,
@@ -761,7 +761,6 @@ async function buildVirtualPlatformIO(
     gid?: number;
   }>,
   sessionSeedTrees?: InitMessage["sessionSeedTrees"],
-  rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
   rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
 ): Promise<VirtualPlatformIO> {
@@ -800,16 +799,16 @@ async function buildVirtualPlatformIO(
     ...specMounts,
     ...extras,
   ];
-  const rootMount = mounts.find((m) => m.mountPoint === "/");
-  rootfsNosuid = rootMount?.nosuid === true;
-  rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
-    ? rootMount.backend
-    : null;
-  if (rootfsMemfs) {
-    // No rewriteLazy*Urls here any more, so `rootfsLazyUrlBase` is not read on
-    // this path: the deployment base is applied when the overlay reads its
-    // metadata out of the container, and nothing mutates a stored record to
-    // say where bytes live.
+  // Read from the SPEC rather than from a `/` mount, which no longer exists:
+  // the kernel serves `/` and `resolveForNodeKernelSession` emits no
+  // `MountConfig` for an image mount.
+  if (rootImage.record(rootfsMountSpec ?? DEFAULT_MOUNT_SPEC)) {
+    // No rewriteLazy*Urls here any more, and this function no longer TAKES
+    // `rootfsLazyUrlBase` — it was a parameter nothing in the body read, kept
+    // alive by two call sites passing it. A deployment that serves an image's
+    // addresses from hashed paths maps them in its FETCHER, which is where
+    // `imageOwnedRuntimeUrlTable` does it, and nothing mutates a stored record
+    // to say where bytes live.
     const lazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
@@ -826,7 +825,6 @@ async function buildVirtualPlatformIO(
           headers: { "content-length": String(bytes.byteLength) },
         });
       };
-    rootfsMemfs.setLazyFetcher(lazyFetcher);
     rootfsLazyFetcher = lazyFetcher;
   }
   // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
@@ -836,9 +834,8 @@ async function buildVirtualPlatformIO(
   // reads go through the overlay (`readExecFromOverlay`), so nothing depends
   // on `/` being mounted here. Leaving it mounted would double-fetch lazy
   // archives (this host mount plus the overlay's own lazy wiring both
-  // fetching). `rootMount` was already captured into `rootfsMemfs` above, so
-  // the backing MemoryFileSystem stays alive as the `blob_read` byte store and
-  // lazy-group source even though it is no longer mounted.
+  // fetching). Nothing captures a `/` backend any more: the resolver emits no
+  // mount for an image, so there is no second filesystem to keep alive.
   const guestMounts = mounts.filter((m) => m.mountPoint !== "/");
   // The mounts that survive dropping `/` are exactly the sibling filesystems the
   // overlay must not claim. Hand their prefixes to the overlay so `/dev/shm`,
@@ -862,7 +859,7 @@ function cleanupSessionDir(): void {
   }
   sessionDir = null;
   vfsExecIO = null;
-  rootfsMemfs = null;
+  rootImage.forget();
   rootfsLazyFetcher = undefined;
 }
 
@@ -889,7 +886,6 @@ async function handleInit(msg: InitMessage) {
       msg.rootfsMountSpec,
       msg.extraMounts,
       msg.sessionSeedTrees,
-      msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
       msg.rootfsLazyAssetSources,
     )
@@ -932,18 +928,17 @@ async function handleInit(msg: InitMessage) {
 
   // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
   // `/` authority. Hand the `/` image tree to the overlay and install the byte
-  // provider before init applies them. The `/` MemoryFileSystem is reachable
-  // only here in the entry.
-  if (rootfsMemfs) {
+  // provider before init applies them.
+  if (rootImage.has()) {
     const rootfsContainer = new Uint8Array(msg.rootfsImage!);
     // Metadata and bytes both from the container the kernel is itself handed.
-    const { baseImage, imageRead } = createBaseImageFromContainer(
-      rootfsContainer,
-      imageReadFromContainer(rootfsContainer),
-      msg.rootfsLazyUrlBase,
-    );
+    // THE BYTES, AND NOTHING ELSE. This built a `RootfsOverlayBaseImage`
+    // whose only remaining job was to hand the overlay an archive list
+    // for its transport table; the table is gone, so what is left is the
+    // window itself — and that was always this same function, passed in
+    // and handed back.
+    const imageRead = imageReadFromContainer(rootfsContainer);
     configureRootfsOverlayFromImage({
-      baseImage,
       imageRead,
       // Progress now comes from the PIPE rather than from the
       // filesystem's own fetch, and it covers archives as well as
@@ -951,7 +946,7 @@ async function handleInit(msg: InitMessage) {
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       imageBytes: rootfsContainer,
       foreignPrefixes: rootfsForeignPrefixes,
-      nosuid: rootfsNosuid,
+      nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
     });
   }

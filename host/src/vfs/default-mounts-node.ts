@@ -23,14 +23,12 @@ import {
   sep,
 } from "node:path";
 import type { MountConfig } from "./types";
-import { MemoryFileSystem } from "./memory-fs";
 import {
   createSessionOwnedHostFileSystem,
   HostFileSystem,
 } from "./host-fs";
 import {
   filterMountSpecForKernelTmpfs,
-  restoreVerifiedImageMounts,
   validateSpec,
   type MountSpec,
 } from "./default-mounts";
@@ -64,7 +62,6 @@ async function resolveValidatedForNode(
   shadowingMountPoints: readonly string[] = [],
 ): Promise<MountConfig[]> {
   const effective = filterMountSpecForKernelTmpfs(spec);
-  const imageMounts = await restoreVerifiedImageMounts(effective, rootfsImage);
   for (const m of effective) {
     if (m.source !== "scratch") continue;
     const hostDir = join(sessionDir, m.path);
@@ -84,16 +81,9 @@ async function resolveValidatedForNode(
   const out: MountConfig[] = [];
   for (const m of effective) {
     if (m.source === "image") {
-      const backend = imageMounts.get(m);
-      if (backend === undefined) {
-        throw new Error(`verified image mount is missing: ${m.path}`);
-      }
-      out.push({
-        mountPoint: m.path,
-        backend,
-        readonly: m.readonly,
-        nosuid: m.nosuid,
-      });
+      // No backend, and therefore no mount: the kernel serves `/` itself. See
+      // `default-mounts.ts` for the measurement behind that.
+      continue;
     } else {
       const hostDir = join(sessionDir, m.path);
       const backend = sessionOwned

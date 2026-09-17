@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import type { VfsImageFilesystem } from "../../src/vfs/vfs-image-filesystem";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -13,11 +14,13 @@ import {
   writeVfsBinary as writeBrowserVfsBinary,
   writeVfsFile as writeBrowserVfsFile,
 } from "../../../apps/browser-demos/lib/init/vfs-utils";
-import { EEXIST, ENOSPC } from "../../src/vfs/sharedfs-vendor";
+// Errnos from `vfs-errors.ts`, not from the vendored filesystem that
+// re-exports them: `sharedfs-vendor.ts` goes with `memory-fs.ts`.
+import { EEXIST, ENOSPC } from "../../src/vfs/vfs-errors";
 
 const O_RDONLY = 0;
 
-function readFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readFile(fs: VfsImageFilesystem, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, O_RDONLY, 0);
@@ -52,7 +55,7 @@ describe("VFS image write helpers", () => {
     const fs = {
       mkdir,
       symlink: createSymlink,
-    } as unknown as MemoryFileSystem;
+    } as unknown as VfsImageFilesystem;
 
     expect(() => ensureDir(fs, "/already-there")).not.toThrow();
     expect(() => ensureDir(fs, "/no-space")).toThrow(full);
@@ -65,14 +68,16 @@ describe("VFS image write helpers", () => {
     const mkdir = vi.fn((path: string) => {
       if (path === "/one/two") throw full;
     });
-    const fs = { mkdir } as unknown as MemoryFileSystem;
+    const fs = { mkdir } as unknown as VfsImageFilesystem;
 
     expect(() => ensureDirRecursive(fs, "/one/two/three")).toThrow(full);
     expect(mkdir.mock.calls.map(([path]) => path)).toEqual(["/one", "/one/two"]);
   });
 
+  // Built by `KandeloImageFs`, the producer that ships, because the claim is
+  // about the HELPER and any image filesystem can carry it.
   it("stages every byte of a binary file", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
     const data = new Uint8Array(256 * 1024);
     for (let i = 0; i < data.length; i++) data[i] = i & 0xff;
 
@@ -82,14 +87,20 @@ describe("VFS image write helpers", () => {
     expect(readFile(fs, "/payload.bin")).toEqual(data);
   });
 
-  it("reports terminal ENOSPC after preserving a positive partial write", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(128 * 1024));
-    const data = new Uint8Array(1024 * 1024).fill(0xa5);
-
-    expect(() => writeVfsBinary(fs, "/partial.bin", data)).toThrow();
-    expect(fs.stat("/partial.bin").size).toBeGreaterThan(0);
-    expect(fs.stat("/partial.bin").size).toBeLessThan(data.length);
-  });
+  // RETIRED 2026-09-17: "reports terminal ENOSPC after preserving a positive
+  // partial write". It stayed on `MemoryFileSystem` while that class existed,
+  // with the reason recorded: the claim is that a FIXED-CAPACITY backend
+  // running out mid-write leaves the partial bytes, and `KandeloImageFs` has
+  // no fixed capacity to run out of — it is module-backed with a declared
+  // growth ceiling rather than an allocation.
+  //
+  // Keeping it meant keeping the last import of the class this file otherwise
+  // no longer uses, for a condition no shipping producer can reach. Its
+  // sibling in `host/test/vfs-image-helpers.test.ts` went for the same reason
+  // in the same tranche. What both defended — that `writeVfsBinary`
+  // propagates a mid-write failure instead of silently omitting the file —
+  // survives in "continues from the correct offset after a positive short
+  // write" below and in the mock-driven write-failure case beside it.
 
   it("continues from the correct offset after a positive short write", () => {
     const data = new Uint8Array([1, 2, 3, 4]);
@@ -101,7 +112,7 @@ describe("VFS image write helpers", () => {
       open: vi.fn(() => 7),
       write,
       close,
-    } as unknown as MemoryFileSystem;
+    } as unknown as VfsImageFilesystem;
 
     writeVfsBinary(fs, "/fixture.bin", data);
 
@@ -132,7 +143,7 @@ describe("VFS image write helpers", () => {
           return outcome;
         }),
         close,
-      } as unknown as MemoryFileSystem;
+      } as unknown as VfsImageFilesystem;
 
       expect(() => writeVfsBinary(fs, "/fixture.bin", data)).toThrow();
       expect(close).toHaveBeenCalledTimes(1);

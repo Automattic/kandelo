@@ -34,7 +34,7 @@ const DEMO_HOME = "/home/maker";
 
 /** Write a binary file to the virtual filesystem. */
 function writeFileToFs(
-  fs: import("@host/vfs/memory-fs").MemoryFileSystem,
+  fs: import("../../../../images/vfs/lib/kandelo-image-fs").KandeloImageFs,
   path: string,
   data: ArrayBuffer,
 ): void {

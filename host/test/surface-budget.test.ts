@@ -288,6 +288,25 @@ function countMatches(relPath: string, pattern: RegExp): number {
   return text.split("\n").filter((line) => pattern.test(line)).length;
 }
 
+/**
+ * Zero, for a surface whose files the campaign deleted.
+ *
+ * Asserts the deletion rather than assuming it: every listed path must be
+ * absent. A surface with one file gone and one renamed fails here, which is
+ * the case `lineCount`'s existence check exists for.
+ */
+function deletedSurface(globs: string[]): number {
+  for (const glob of globs) {
+    if (existsSync(join(repoRoot, glob))) {
+      throw new Error(
+        `surface-budget: ${glob} is declared deleted but still exists. `
+          + "A surface counts zero only when every file it measures is gone.",
+      );
+    }
+  }
+  return 0;
+}
+
 const MEASURED: Record<string, () => number> = {
   // Split by purpose 2026-09-12: the module-facing half is DONE and banked at
   // its measurement, the platform half is unstarted. One ceiling over both
@@ -353,7 +372,6 @@ const MEASURED: Record<string, () => number> = {
     ]),
   workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
   workerMainForkTypeScript: () => workerMainForkLines(),
-  sffsTypeScript: () => codeLineCount(["host/src/vfs/sharedfs-vendor.ts"]),
   hostImportFunctions: () =>
     Number.parseInt(
       /EXPECTED_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
@@ -374,7 +392,8 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
-  memoryFsTypeScript: () => codeLineCount(["host/src/vfs/memory-fs.ts"]),
+  memoryFsTypeScript: () =>
+    deletedSurface(["host/src/vfs/memory-fs.ts"]),
   kernelWorkerTypeScript: () => codeLineCount(["host/src/kernel-worker.ts"]),
   // 91.6% of kernel-worker.ts is one class. A line gate alone permits
   // shuffling code between methods of the same god class; this does not.
@@ -830,11 +849,6 @@ const MEASURED: Record<string, () => number> = {
   forkModuleInjectorHelpers: () => forkModuleEntries().injectorOnly,
   forkModuleEntriesWithoutProductionCaller: () =>
     forkModuleEntries().noProductionCaller,
-  sffsModuleEntryPoints: () =>
-    countMatches(
-      "crates/sffs-module/src/lib.rs",
-      /^\s*pub (unsafe )?extern "C" fn sm_/,
-    ),
   committedBinariesWithoutProducer: () => {
     const tracked = execFileSync(
       "/bin/sh",
@@ -867,9 +881,10 @@ const MEASURED: Record<string, () => number> = {
       "crates/fork-module/src/lib.rs",
       /^\s*pub (unsafe )?extern "C" fn fm_/,
     ),
-  hostVfsTypeScript: () =>
-    codeLineCount(["host/src/vfs/*.ts"])
-      - codeLineCount(["host/src/vfs/memory-fs.ts", "host/src/vfs/sharedfs-vendor.ts"]),
+  // The rest of host/src/vfs. The subtraction of memory-fs.ts and
+  // sharedfs-vendor.ts is gone with the files themselves: lane V deleted
+  // both, so nothing is counted twice any more.
+  hostVfsTypeScript: () => codeLineCount(["host/src/vfs/*.ts"]),
   workerEntryTypeScript: () =>
     codeLineCount([
       "host/src/browser-kernel-worker-entry.ts",
@@ -879,6 +894,13 @@ const MEASURED: Record<string, () => number> = {
   // The rest of host/src/vfs. memory-fs.ts and sharedfs-vendor.ts are excluded
   // because memoryFsTypeScript and sffsTypeScript already count them, and a
   // line counted twice is banked twice.
+  kandeloImageModuleEntryPoints: () =>
+    countMatches(
+      "crates/kandelo-image-module/src/lib.rs",
+      /^\s*pub (unsafe )?extern "C" fn sm_/,
+    ),
+  imageFsTypeScript: () =>
+    deletedSurface(["host/src/vfs/sharedfs-vendor.ts"]),
 };
 
 /**

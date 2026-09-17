@@ -8,8 +8,9 @@
 // Worker.terminate() frees it deterministically. The only main-thread buffer
 // left is the small, transient per-boot image-build FS; these helpers track it
 // and nudge WebKit's collector to reclaim it between boots.
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
-import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import imageModuleUrl from "@kandelo-image-module32-wasm?url";
+import { overlayEtcFromRootfs } from "../../../images/vfs/lib/rootfs-etc-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 
@@ -74,9 +75,9 @@ export async function settleWebKitReclaim(): Promise<void> {
  * its `buildFs` reference right after; the kernel worker rebuilds and owns the
  * live VFS from these bytes.
  */
-export async function finalizeKernelOwnedImage(buildFs: MemoryFileSystem): Promise<Uint8Array> {
+export async function finalizeKernelOwnedImage(buildFs: KandeloImageFs): Promise<Uint8Array> {
   const bytes = await buildFs.saveImage();
-  trackTransientImageBuffer(buildFs.sharedBuffer);
+  trackTransientImageBuffer(buildFs.transientBuffer);
   return bytes;
 }
 
@@ -84,14 +85,85 @@ export async function finalizeKernelOwnedImage(buildFs: MemoryFileSystem): Promi
  *  that the kernel worker will own. Scratch mounts (/tmp, /var, /home/user, …)
  *  are provided worker-side, so only the image's `/` content (e.g. /etc, /bin)
  *  needs to live here. */
-export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFileSystem {
-  const SharedArrayBufferCtor = SharedArrayBuffer as new (
-    byteLength: number,
-    options?: { maxByteLength?: number },
-  ) => SharedArrayBuffer;
-  const initial = Math.min(16 * 1024 * 1024, maxByteLength);
-  const sab = new SharedArrayBufferCtor(initial, { maxByteLength });
-  return MemoryFileSystem.create(sab, maxByteLength);
+/**
+ * Restore an image for BUILDING on: mutate the tree, then re-export it.
+ *
+ * The app-side peer of what `host/src/vfs/load-image.ts` used to be, and the
+ * split is a
+ * layering fact rather than a preference. That module returns a live mount
+ * BACKEND and must stay `MemoryFileSystem`, which owes `append`, `seek`,
+ * `fpathconf` and the rest of the runtime surface. This returns an image
+ * BUILDER, which must be `KandeloImageFs`: the legacy writer cannot express the
+ * `SDEF` section, so restoring and re-saving through it empties an image's
+ * deferred half (defect B45 — 65 lazy binaries became zero-byte files marked
+ * complete).
+ *
+ * It lives here because `host/src` may not import from `images/`, which the
+ * host package's own `rootDir` enforces at build time — a rule worth obeying
+ * rather than working around, since the host runtime shipping the image
+ * BUILDER is the coupling this lane exists to remove.
+ *
+ * Verification is not a step: `loadImage` runs `seal::verify_cohorts` inside
+ * the load and unloads on failure, so an unverified loaded image is
+ * unrepresentable rather than merely discouraged.
+ */
+/**
+ * Fetch the image-writer module and install it, once per page.
+ *
+ * `KandeloImageFs.create()` is synchronous and a fetch is not, so the browser
+ * cannot supply module bytes at the call the way Node can (Node reads
+ * `local-binaries/kandelo_image_module32.wasm` off disk). It installs them here first,
+ * and every later create is as synchronous as Node's.
+ *
+ * MUST be awaited before the first `createEmptyBuildFs` or
+ * `restoreVerifiedImageForBuild` on a page. Forgetting it is loud: the bridge
+ * throws naming this function, rather than falling back to a reader that
+ * cannot see an `SDEF` section, which is what B45 was.
+ */
+let moduleInstall: Promise<void> | null = null;
+export function ensureImageWriterInstalled(): Promise<void> {
+  // One promise per page, not one fetch per call: concurrent boots share it,
+  // and a second demo switching images does not refetch a module that cannot
+  // have changed.
+  moduleInstall ??= (async () => {
+    const response = await fetch(imageModuleUrl);
+    if (!response.ok) {
+      throw new Error(
+        `failed to fetch the VFS image writer (${response.status} ${response.statusText}) `
+          + `from ${imageModuleUrl}`,
+      );
+    }
+    KandeloImageFs.installModuleBytes(new Uint8Array(await response.arrayBuffer()));
+  })();
+  return moduleInstall;
+}
+
+export async function restoreVerifiedImageForBuild(
+  image: Uint8Array,
+  options?: { maxByteLength?: number },
+): Promise<KandeloImageFs> {
+  await ensureImageWriterInstalled();
+  const fs = KandeloImageFs.create();
+  fs.loadImage(image);
+  // A declared ceiling, not a reservation: the bridge grows its own memory
+  // with the tree, so this is what the exported image DECLARES it may grow to.
+  if (options?.maxByteLength !== undefined) {
+    fs.setImageCapacity(options.maxByteLength);
+  }
+  return fs;
+}
+
+export async function createEmptyBuildFs(
+  maxByteLength = 64 * 1024 * 1024,
+): Promise<KandeloImageFs> {
+  await ensureImageWriterInstalled();
+  // No `SharedArrayBuffer`. The bridge owns its own module memory and grows it
+  // as the tree does, so `maxByteLength` stops being an up-front reservation
+  // and becomes what the exported image DECLARES — the same change
+  // `tools/mkrootfs` made when it moved to this writer.
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(maxByteLength);
+  return fs;
 }
 
 /**
@@ -99,8 +171,8 @@ export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFile
  * rootfs — the kernel-owned equivalent of the legacy empty-FS + init()-overlay
  * starting point.
  */
-export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<MemoryFileSystem> {
-  const buildFs = createEmptyBuildFs(maxByteLength);
+export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<KandeloImageFs> {
+  const buildFs = await createEmptyBuildFs(maxByteLength);
   await overlayEtcFromRootfs(buildFs, await fetchRootfsBytes());
   return buildFs;
 }

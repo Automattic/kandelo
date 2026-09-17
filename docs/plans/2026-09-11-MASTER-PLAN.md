@@ -6436,6 +6436,255 @@ the hard part and should not hold nineteen verified commits hostage.
 Rust export writes is now one the kernel can load back, which is what the lane
 existed to make possible. V6, V7, V8 done and V-D1 closed. Remaining: V5's
 producer side, then V9 (after lane Y) and V10. The 12,000-line finding below is NOT yet
+
+### THE URI IS THE ADDRESS — maintainer's correction, and an error of mine it
+### exposes, 2026-09-15
+
+**Their words:** *"The URI should be the only way any lazy reference is
+addressed, whether a lazy file or archive."*
+
+**This lane argued the opposite an hour earlier** — that relaying "the URI"
+would force the kernel to parse the archive's JSON descriptor, so the kernel
+should relay the blob opaquely instead. **That accepted the JSON as a
+constraint when it is the defect.**
+
+**What the formats actually carry, measured:**
+
+| record | fields |
+|---|---|
+| `KernelLazyArchive` (KLZY) | `archive_id`, `archive_bytes`, `mount_prefix` |
+| `DeferredArchive` (SDEF) | `archive_id`, `bytes` |
+| `KernelLazyFile` | `ino`, `size`, `archive_id`, `source_path` |
+
+**Not one of them carries a URI.** The formats record the STRUCTURE — ids,
+sizes, member paths, the mount prefix — and the ADDRESS exists only inside an
+opaque blob. So the fix is a URI field on the lazy records, uniform for files
+and archives, with the kernel relaying it. **No JSON in the addressing path at
+all**, and no kernel-side parsing to argue about.
+
+### THE ERROR THIS EXPOSES, COMMITTED HOURS EARLIER
+
+To let the host reconstruct archive records from module metadata, this lane
+**added `mountPrefix` and `bytes` to the archive descriptor** — a JSON blob —
+**while `KernelLazyArchive` already carries `mount_prefix` and `archive_bytes`
+as fields.** The commit message even argued the prefix "cannot be inferred from
+member paths", which is true and beside the point: it did not need inferring,
+because the format already had it.
+
+**It is the same defect the maintainer is naming, committed by this lane a few
+hours before being told about it.** The reconstruction could not read those
+fields because the HOST does not parse KLZY — so the fix for that was never a
+richer descriptor; it was the URI change.
+
+### WHAT STILL NEEDS A DECISION
+
+`sha256` is in **neither** struct. It lives only in the descriptor, so if the
+URI becomes the sole addressing, the integrity digest needs a home: its own
+field on the lazy record, or folded into the URI itself. **That is a format
+decision with a security property attached and is recorded as the maintainer's,
+not taken here.**
+
+### THE CENSUS, WALKED — which leads paid and which did not, 2026-09-15
+
+The per-file census (`pub fn` with no call in its own `#[cfg(test)]` module)
+produced 28 leads. **Three were real gaps; the rest are covered from another
+file.** Recorded so the next person does not re-walk them.
+
+**Paid out — a real hole, now closed and perturbed:**
+
+| function | what was missing |
+|---|---|
+| `fchown` | **no caller anywhere in the tree.** The path `sys_fchown` takes for a rootfs file. |
+| `is_nosuid` | exactly ONE reader — `statfs`'s `f_flags` — and no assertion. A mount could misreport `ST_NOSUID` and nothing would notice. |
+| `container_flags` | ONE caller, the refusal for an image declaring lazy archives it does not carry. **Zero references to the function or the flag in the test module.** |
+
+**Did not pay — covered from another file, which is the census
+under-reporting by construction:**
+
+* `check_export_headroom`, `export_capacity_bytes` — reached through
+  `sm_check_headroom`, which `sffs-module`'s own tests exercise;
+* `fchmod` — four callers, `syscalls.rs` has `test_fchmod`;
+* `statfs` (rootfs and tmpfs) — seven callers, and now directly asserted by the
+  nosuid test above;
+* `file_type`, `sffs_span`, `metadata_span` — many callers through the load
+  path, exercised by every `load_image` test.
+
+**Still open, and small:** `lazy_info` backs the module's deferred reporting in
+`lstat` and is exercised only from a TYPESCRIPT test
+(`sffs-image-fs.test.ts`'s `isPathDeferred`). That is the same shape
+`sm_image_read` had before it got a Rust test — coverage that disappears with
+the language this lane is deleting. Worth a Rust test; not urgent, because
+`isPathDeferred` itself is asserted.
+
+### WHAT MAKES THE CENSUS WORTH REPEATING
+
+**A line-coverage number would have called all three of the paid leads
+covered.** `is_nosuid` RUNS on every `statfs`; `container_flags` RUNS on every
+image load; `fchown` compiles and ships. What none of them did was **matter to
+an assertion**, and no green suite, coverage percentage or review of a passing
+diff can see that difference.
+
+The cost is one command and a few minutes of reading. **Three for twenty-eight
+is a good rate** for finding guards that exist and have never been run.
+
+### HANDOFF — `mount(2)` GOES TO A KERNEL LANE
+
+**Assigned by the maintainer 2026-09-15**, choosing *"implement it"* over
+documenting a boundary or keeping `memory-fs.ts` alive for four tests.
+
+### WHAT IS ACTUALLY BLOCKED, AND IT IS NOT WHAT WAS RECORDED
+
+The plan carried this as a step-5 concern. **Measured, it gates step 4 too.**
+Four tests hand the filesystem to the kernel as a **live mount backend**, not as
+a fixture, and every one fails the same way when repointed:
+
+```
+TypeError: backend.statfs is not a function
+```
+
+```
+host/test/nosuid-exec.test.ts                 host/test/login.test.ts
+host/test/sudo-lite.test.ts                   host/test/reusable-kernel-export-stack.test.ts
+```
+
+**They are invisible to a census that asks "does this test assert on the
+filesystem?"**, because a mount backend is never asserted on — the kernel
+consumes it. That is why six sizings put them with the fixtures.
+
+### WHAT THEY NEED, IN ONE LINE EACH
+
+`nosuid-exec` is the clearest statement of the requirement:
+
+```ts
+[{ mountPoint: "/normal",  backend },
+ { mountPoint: "/scratch", backend, nosuid: true }]
+```
+
+**Two mounts of an in-memory filesystem at caller-chosen prefixes, one of them
+`nosuid`.** The kernel HAS an in-memory filesystem — `tmpfs.rs` — and cannot be
+asked to place it at `/normal`. The mount table is the compile-time
+`SCRATCH_MOUNTS` constant plus whatever the host supplies at boot.
+
+### THE DECISION THIS RESOLVES
+
+`docs/posix-status.md` discusses resolution across mounts, `nosuid` on mounts,
+and mount flags through `statfs(2)` at length, and **there is no `SYS_MOUNT` in
+the syscall set and no handler in `syscalls.rs`** — so the gap is undocumented
+as well as unimplemented. The host-side `MemoryFileSystem` is not meeting a need
+the kernel cannot meet; **it is compensating for an unimplemented syscall**,
+which the platform-values contract names exactly: a workaround must document
+the boundary it belongs to and must not hide a platform defect.
+
+### WHAT LANE V HAS ALREADY DONE TOWARDS IT
+
+**`ST_NOSUID` is now asserted in the kernel** (`statfs_reports_nosuid_exactly_when_the_mount_is_nosuid`,
+perturbed both directions). `is_nosuid()` had exactly one reader in the tree and
+no assertion at all — so the mount-level nosuid property these four tests cover
+host-side **now has a kernel-side guard that does not depend on them surviving.**
+
+That is the piece worth knowing before starting: whoever implements `mount(2)`
+inherits a tested `ST_NOSUID` report rather than an unasserted one.
+
+### THE HOST INTERFACE SHOULD RELAY A URI — maintainer's refinement, 2026-09-15
+
+**Their words:** *"we need to adjust the host interface to relay the address of
+the reference to the host. It could be as simple as a URI since URIs are by
+definition designed to be reusable."*
+
+**This is better than relaying the descriptor, and the reason is not brevity.**
+This lane's proposal was to pass the opaque KLZY payload the kernel already
+holds. That payload is a JSON object with a schema — so the host would have to
+PARSE a format the kernel handed it, and the two would then have to agree about
+that format forever. **A URI has no such requirement**: its meaning is defined
+outside this system, and relaying one is not interpreting it.
+
+So the courier contract is not merely preserved, it is strengthened. The kernel
+carries a string it does not read. The host still decides whether the URI may
+be fetched and still validates the digest. **Nothing new has to be agreed
+between them**, which is the property the byte-layout decision was chosen for
+elsewhere in this plan.
+
+```
+host_fetch_deferred(kind, idLo, idHi, uriPtr, uriLen,
+                    bufPtr, bufLen, offsetLo, offsetHi) -> i32
+```
+
+### WHAT IT DELETES
+
+**The host's entire lazy metadata table and everything built to produce it:**
+
+* `RootfsOverlayBaseImage.exportLazyEntries` / `exportLazyArchiveEntries` — the
+  last two methods on an interface that started at six;
+* `createBaseImageFromContainer`'s metadata half, its module-sourced fallback,
+  and the archive reconstruction added tonight;
+* **the seal-envelope unwrap**, ~40 lines that exist ONLY because the host has
+  to dig a URL out of a payload it should never have been holding;
+* the producer-divergence problem itself — a memfs-built image records the URL
+  in host JSON, a module-built one in KLZY, and **neither writes both**. If the
+  kernel relays the URI, the host never asks where it came from.
+
+**The overlay would need nothing from a filesystem at all**, which is the end
+state lane V has been approaching from the consumer side all along.
+
+### WHY IT IS NOT LANE V'S TO MAKE
+
+A host-import signature is ABI: it needs an `ABI_VERSION` bump and a
+regenerated `abi/snapshot.json`, both forbidden to this lane by name. **Lanes F
+and L own the kernel-host import surface.**
+
+Checked and rejected: carrying the URI without a signature change. The host can
+read kernel memory only at a pointer it was handed, and `host_fetch_deferred`
+is a direct import call rather than a syscall through the channel, so no
+scratch region reaches it.
+
+### THE MEASUREMENTS THAT MAKE THIS SAFE TO PICK UP
+
+* the kernel already asks by `kind` + `id` and accepts `EAGAIN` while a fetch
+  is in flight — **the retry loop exists and needs no change**;
+* the kernel already holds every descriptor, with accessors
+  (`rootfs::archive_payloads`, `rootfs::archive_payload`), and `sffs-module`
+  calls them today;
+* the URI is already inside those descriptors, so **no new data has to be
+  produced by any builder** — only relayed.
+
+### H-24 COMPLETED ITSELF — I finished another agent's merge, 2026-09-15
+
+**What happened.** The parent-branch agent had the lane merge STAGED and
+uncommitted in `/Users/brandon/kandelo-abi44-reconcile`. I ran
+`git add docs/plans/… && git commit` to record a handoff, and **`git commit`
+commits everything staged** — so it finalised their merge under my docs commit
+message.
+
+**The merge itself is correct**: `5aef74226` is now an ancestor of the parent,
+34 files, +877/−241, both parents right, and no perturb mutant captured
+(`process-lifecycle.ts` was unstaged and is not in the commit). **Only the
+message is wrong**, and it describes one docs file rather than a merge.
+
+**Two failures, and the first is the embarrassing one.**
+
+1. **The mitigation already existed and I did not use it.** The recorded
+   guidance is *"stage and commit in a single path-limited command
+   (`git commit -- <paths>`)"*. I used `git add X && git commit`, which is
+   exactly the form the guidance names as unsafe. **Knowing the rule and
+   applying it are different acts**, which is the same gap that produced the
+   H-23 stale-kernel browser run an hour earlier.
+2. **`git status --porcelain | head -3` hid the evidence.** The staged merge
+   files were below the cut. A truncated status is worse than none: it looks
+   like a check.
+
+**What was NOT done, deliberately.** The commit is untouched. That worktree is
+running a perturb trial right now — `.perturb-in-progress` is present and
+`process-lifecycle.ts` holds a live mutation — and amending would change a SHA
+under an agent mid-run. A bad message is cheaper than that.
+
+**The corrected practice**, which belongs with the H-24 entry rather than in a
+session log: before writing in a shared worktree, read the FULL `git status`,
+check for `.git/MERGE_HEAD`, `.git/rebase-merge` and `.perturb-in-progress`,
+and commit with `git commit -- <paths>`. The path-limited form makes this
+failure unrepresentable rather than merely unlikely.
+
+**Status: partly characterized. V1–V3 landed; V4 blocked on a decision made;
+V5 designed and building. The 12,000-line finding below is NOT yet
 characterized and must not be dispatched until it is.**
 
 ## End state

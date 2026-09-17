@@ -4,10 +4,8 @@ import { lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { ABI_VERSION } from "../host/src/generated/abi";
-import {
-  MemoryFileSystem,
-  type LazyDownloadEvent,
-} from "../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs";
+import type { LazyDownloadEvent } from "../host/src/vfs/lazy-download-event";
 import {
   KANDELO_DEMO_CONFIG_PATH,
 } from "../web-libs/kandelo-session/src/demo-config";
@@ -49,8 +47,8 @@ const kernelBytes = new Uint8Array(readFileSync(kernelPath));
 if (!WebAssembly.validate(kernelBytes)) {
   throw new Error(`source-rootfs shell kernel is not valid Wasm: ${kernelPath}`);
 }
-const metadata = MemoryFileSystem.readImageMetadata(imageBytes);
-const capacity = MemoryFileSystem.readImageCapacity(imageBytes);
+const metadata = KandeloImageFs.readImageMetadata(imageBytes);
+const capacity = KandeloImageFs.readImageCapacity(imageBytes);
 assertVfsImageFitsProfile(
   capacity,
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
@@ -63,9 +61,15 @@ if (metadata?.kernelAbi !== ABI_VERSION) {
   );
 }
 
-const fs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
-// WHY: the acceptance assertions below trust deferred-tree metadata.
-await fs.verifyImportedLazyAtomicGroupSeals();
+// READ through the module that writes these images. `loadImage` restores the
+// declared capacity, which is what `fromImagePreservingCapacity` was for, and
+// it authenticates the deferred-tree seals the assertions below trust —
+// inherently, rather than through a separate `verify` a later author could
+// drop. The reader also matters: the previous one could not see an `SDEF`
+// section, so this smoke test and the image's own producer disagreed about
+// what the artifact says.
+const fs = KandeloImageFs.create();
+fs.loadImage(imageBytes);
 const terminalSessionConfigBytes = readVfsFile(
   fs,
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -235,7 +239,7 @@ function usage(): never {
   );
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
   const stat = fs.stat(path);
   if ((stat.mode & 0xf000) !== 0x8000) {
     throw new Error(`${path} is not a regular file`);

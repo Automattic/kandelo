@@ -23,7 +23,7 @@ import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import type { MountSpec } from "../src/vfs/default-mounts";
 import { resolveForNode } from "../src/vfs/default-mounts-node";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 // This suite exercises the host-owned scratch-mount machinery (HostFileSystem,
 // VirtualPlatformIO metadata, and the Node resolver's scratch-backend creation)
 // directly. The in-kernel tmpfs owns its scratch prefixes unconditionally, so
@@ -702,6 +702,10 @@ describe("VirtualPlatformIO on Node host mounts", () => {
 });
 
 async function buildEmptyImage(): Promise<Uint8Array> {
-  const sab = new SharedArrayBuffer(1024 * 1024);
-  return await MemoryFileSystem.create(sab).saveImage();
+  // An empty image from the producer that writes every shipped one. The test
+  // it feeds is about what the HOST does with a `/` image that carries
+  // nothing, so which writer produced it was never the point — but a fixture
+  // written by a producer no product uses can differ from a real image in
+  // exactly the way the test would not notice.
+  return await KandeloImageFs.create().saveImage();
 }

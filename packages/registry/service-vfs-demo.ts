@@ -3,9 +3,8 @@ import { Socket } from "node:net";
 import { join } from "node:path";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
 import { findRepoRoot, tryResolveBinary } from "../../host/src/binary-resolver";
-import type { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsFile } from "../../host/src/vfs/image-helpers";
-import { restoreVerifiedVfsImage } from "../../host/src/vfs/load-image";
 
 export const SERVICE_DEMO_ENV = [
   "HOME=/root",
@@ -28,7 +27,7 @@ export interface BootDinitServiceOptions {
   target?: string;
   maxWorkers?: number;
   maxPages?: number;
-  configure?: (fs: MemoryFileSystem) => void | Promise<void>;
+  configure?: (fs: KandeloImageFs) => void | Promise<void>;
   env?: string[];
   cwd?: string;
 }
@@ -43,9 +42,16 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
   const image = readFileSync(imagePath);
   // WHY: configuration rewrites are host-side effects derived from imported
   // image state, so reject forged lazy-tree seals before reading or writing it.
-  const fs = await restoreVerifiedVfsImage(image, {
-    maxByteLength: 1024 * 1024 * 1024,
-  });
+  // EDITS AN IMAGE, it does not mount one — which is why this needs the image
+  // module and not a filesystem. It loads the service image, rewrites ports and
+  // service files in it, saves it, and boots a kernel from the result.
+  //
+  // The seal check that used to be explicit here is inherent now: `loadImage`
+  // authenticates every cohort the image carries, because `sm_load_image`
+  // does. A verification a caller can forget is one some caller eventually
+  // will, and this call site is exactly the sort that forgets.
+  const fs = KandeloImageFs.create();
+  fs.loadImage(image, { maxDecompressedBytes: 1024 * 1024 * 1024 });
   await options.configure?.(fs);
 
   const rootfsImage = await fs.saveImage();
@@ -88,7 +94,7 @@ export function resolveServiceVfsImage(image: ServiceVfsImageRef): string {
   );
 }
 
-export function readVfsBytes(fs: MemoryFileSystem, path: string): ArrayBuffer {
+export function readVfsBytes(fs: KandeloImageFs, path: string): ArrayBuffer {
   const stat = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -105,11 +111,11 @@ export function readVfsBytes(fs: MemoryFileSystem, path: string): ArrayBuffer {
   }
 }
 
-export function readVfsText(fs: MemoryFileSystem, path: string): string {
+export function readVfsText(fs: KandeloImageFs, path: string): string {
   return new TextDecoder().decode(readVfsBytes(fs, path));
 }
 
-export function rewriteNginxListenPort(fs: MemoryFileSystem, port: number): void {
+export function rewriteNginxListenPort(fs: KandeloImageFs, port: number): void {
   const path = "/etc/nginx/nginx.conf";
   const conf = readVfsText(fs, path);
   const updated = conf.replace(/listen\s+8080\b/g, `listen ${port}`);
@@ -117,7 +123,7 @@ export function rewriteNginxListenPort(fs: MemoryFileSystem, port: number): void
 }
 
 export function rewriteDinitServiceCommand(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   service: string,
   rewrite: (command: string) => string,
 ): void {
@@ -129,7 +135,7 @@ export function rewriteDinitServiceCommand(
   writeVfsFile(fs, path, updated);
 }
 
-export function removeServiceLogfiles(fs: MemoryFileSystem, services: string[]): void {
+export function removeServiceLogfiles(fs: KandeloImageFs, services: string[]): void {
   for (const service of services) {
     const path = `/etc/dinit.d/${service}`;
     try {
@@ -142,7 +148,7 @@ export function removeServiceLogfiles(fs: MemoryFileSystem, services: string[]):
 }
 
 export function configureWordPressRuntime(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   options: { port: number; freshSqliteDatabase?: boolean; phpFpmWorkers?: number },
 ): void {
   rewriteNginxListenPort(fs, options.port);

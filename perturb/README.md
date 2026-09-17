@@ -53,16 +53,33 @@ mode `0o777` rather than its target's mode.
 An invalid mutation now fails the run, because a trial that proves nothing is a
 gap in the evidence rather than a pass.
 
+## A deleted guard takes its spec with it
+
+`mkrootfs-sdef-guard.json` was deleted on 2026-09-17, four trials, when
+`tools/mkrootfs/src/cli/sdef-reader-guard.ts` was deleted. The guard refused
+any image whose deferred files the CLI's reader could not see, because the
+verbs read with `MemoryFileSystem` (which sees `KLZY`) while the builder writes
+`SDEF`; all three verbs read with `KandeloImageFs` now, so there is no second
+reader left to disagree with.
+
+The empty-file convention `deferred-until-v4.json` uses does not apply here.
+That stub still names a file that exists, so `--validate` can read it; a stub
+naming a deleted source is reported ROTTED on every run, which is the same
+permanently-red gate this file warns against above. When the guarded code is
+gone, delete the spec and leave the reasoning beside what replaced it — in this
+case a retirement note in `tools/mkrootfs/test/builder.test.ts`, where the
+three tests it verified used to be.
+
 ## Deferred is not accepted
 
 `deferred-until-v4.json` holds two trials that are **not** part of the green
 contract and are **not** accepted survivors either. They cannot be killed today
 because the export turns base files and lazy members into empty stubs without
 consulting its byte source — lane V's V4 hazard, reproduced and pinned in
-`crates/sffs-module/src/lib.rs`. When V4's identity contract lands, that source
+`crates/kandelo-image-module/src/lib.rs`. When V4's identity contract lands, that source
 becomes reachable and both trials become killable.
 
 **They are the tests that will prove V4 is finished.** Move them back into
-`sffs-module-abi.json` then. The distinction from an accepted survivor is
+`kandelo-image-module-abi.json` then. The distinction from an accepted survivor is
 worth keeping: one can never be killed, the other cannot be killed *yet*, and
 collapsing them would lose the fact that someone owes work here.

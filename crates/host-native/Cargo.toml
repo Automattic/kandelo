@@ -49,6 +49,17 @@ wasmtime = "48"
 # never hand-copied magic numbers.
 wasm-posix-shared = { path = "../shared" }
 
+# The kernel's own image writer, so this host hands the kernel a real VFS
+# image rather than an RTFS-v3 manifest.
+#
+# A manifest is a HOST-side description of a filesystem, built by the host and
+# trusted by the kernel — the two-authors shape this campaign exists to remove,
+# sitting in the reference host. Building the artifact the kernel actually
+# reads is more faithful to the contract, not less; and the writer is the
+# kernel's, so using it here is the host agreeing with the kernel rather than
+# describing a filesystem alongside it.
+runtime-core = { path = "../runtime-core" }
+
 # The artifact reader that answers "what did this program declare?" from wasm
 # bytes -- here, `__wasm_posix_thread_slots`. The JavaScript hosts read the
 # same declaration through the same crate (compiled to `wasm-artifact-module`),

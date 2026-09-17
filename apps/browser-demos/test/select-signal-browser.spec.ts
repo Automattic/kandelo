@@ -8,8 +8,8 @@ const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsPath = resolve(repoRoot, "images/vfs/lib/sffs-image-fs.ts");
-const sffsModuleWasmPath = resolve(repoRoot, "local-binaries/sffs_module32.wasm");
+const imageFsModulePath = resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts");
+const imageModuleWasmPath = resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
 const fixturePaths = {
   wasm32: resolve(repoRoot, "examples/select_signal_test.wasm"),
   wasm64: resolve(repoRoot, "examples/select_signal_test.wasm64.wasm"),
@@ -25,12 +25,12 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
   const result = await page.evaluate(
-    async ({ browserKernelUrl, sffsImageFsUrl, sffsModuleBytes, wasm32Bytes, wasm64Bytes }) => {
+    async ({ browserKernelUrl, imageFsModuleUrl, imageModuleBytes, wasm32Bytes, wasm64Bytes }) => {
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { SffsImageFs } = await import(
-        /* @vite-ignore */ sffsImageFsUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       const pendingMarker = "TASK16_GATE=";
@@ -172,7 +172,7 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
           },
         });
         try {
-          const image = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+          const image = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
           await kernel.initFromImage({ vfsImage: await image.saveImage() });
           const exitCode = await kernel.spawn(
             new Uint8Array(bytes).buffer,
@@ -212,8 +212,8 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
     },
     {
       browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
-      sffsImageFsUrl: new URL(`/@fs/${sffsImageFsPath}`, baseURL).href,
-      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+      imageFsModuleUrl: new URL(`/@fs/${imageFsModulePath}`, baseURL).href,
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       wasm32Bytes: Array.from(readFileSync(fixturePaths.wasm32)),
       wasm64Bytes: Array.from(readFileSync(fixturePaths.wasm64)),
     },

@@ -36,14 +36,15 @@ import type {
 import {
   VirtualPlatformIO,
 } from "./vfs/vfs";
-import { MemoryFileSystem } from "./vfs/memory-fs";
+import type { LazyFetch } from "./vfs/lazy-download-event";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
-import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
+import { DEFAULT_MOUNT_SPEC } from "./vfs/default-mounts";
+import * as rootImage from "./vfs/root-image-facts";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import {
   BROWSER_MITM_CA_BUNDLE_PATH,
@@ -195,7 +196,7 @@ function sideModuleInitFields(ptrWidth: 4 | 8): {
   };
 }
 let workerAdapter: BrowserWorkerAdapter;
-let memfs: MemoryFileSystem;
+
 let io: VirtualPlatformIO;
 /** Canonical mount points of the sibling filesystems still mounted under `/`
  *  after the host `/` mount is dropped (e.g. `/dev/shm`, session-seed trees,
@@ -342,7 +343,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   diagnosticPrefix: "[browser-kernel-worker]",
   execMountIO: () => io,
   isInitReady: () => initReady,
-  rootfsBaseImage: () => memfs,
+  hasRootfsImage: rootImage.has,
   defaultExitCrashSignum: (exitStatus) =>
     signalFromExitStatus(exitStatus) ?? SIGSEGV,
   threadWorkerSettleMs: THREADED_WORKER_TERMINATION_SETTLE_MS,
@@ -666,9 +667,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     msg.vfsImage,
     msg.rootfsMountSpec,
   );
-  const rootMount = specMounts.find((m) => m.mountPoint === "/");
-  if (!rootMount) throw new Error("rootfs mount spec missing / mount");
-  memfs = rootMount.backend as MemoryFileSystem;
+  // The `/` mount has no host backend any more, so there is nothing to find:
+  // `resolveForBrowser` emits no `MountConfig` for an image mount. What the
+  // boot still needs from the SPEC is whether `/` was declared `nosuid`, which
+  // is a declared property rather than one read back off a filesystem.
+  if (!rootImage.record(msg.rootfsMountSpec ?? DEFAULT_MOUNT_SPEC)) {
+    throw new Error("rootfs mount spec missing / mount");
+  }
   // No rewriteLazy*Urls here any more. The deployment base is applied when the
   // overlay reads its metadata out of the container, so nothing mutates a
   // stored record to say where bytes live.
@@ -677,16 +682,39 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // in-kernel LazyMember path fetches raw archives over the identical
   // transport (closed-asset bundle or CORS proxy) as System A's first-touch
   // materialization.
-  let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
+  // Resolve an ADDRESS the image recorded to the URL this deployment serves it
+  // at, immediately before fetching it. The image is never rewritten: it holds
+  // the canonical address, and where those bytes actually live is transport
+  // policy, which is the host's job and now travels as data (`lazyUrlMap` for a
+  // build whose asset names are known statically, `lazyAssetAuthority` for one
+  // that computes them against a manifest).
+  //
+  // An address neither shape recognises is fetched as written, which is the
+  // courier contract working rather than a hole in a table: the image said
+  // where the bytes are, and nothing here knows better.
+  // A TABLE, computed by the app, not a resolver running here. The deployment
+  // knows its own asset names -- it imports every one of them -- so it can
+  // build the whole mapping without asking the image what it contains. That
+  // matters twice over: enumerating an image's deferred entries host-side is
+  // the operation B45 is about, and a resolver here would need `web-libs`,
+  // which `host/src` is not allowed to import.
+  //
+  // An address the table does not carry is fetched as written, which is the
+  // courier contract working rather than a hole: the image said where the
+  // bytes are, and nothing here knows better. An address NO deployment can
+  // serve is a build-time defect, and belongs to the builder to refuse.
+  let rootfsLazyFetcher: LazyFetch | undefined;
   if (msg.closedLazyAssets !== undefined) {
+    // NOT wrapped: a closed-asset bundle is already keyed by the canonical URL
+    // the image stores, so it resolves the address itself and a second mapping
+    // would look one up that was never put in.
     rootfsLazyFetcher = createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets);
-    memfs.setLazyFetcher(rootfsLazyFetcher);
   } else if (corsProxyLazyFetcher !== undefined) {
     // WHY: guest networking and lazy VFS downloads are separate fetch paths.
     // Lazy VFS must read and verify release-asset bytes, which requires CORS.
     // CORP alone cannot make an opaque response body readable to JavaScript.
-    rootfsLazyFetcher = corsProxyLazyFetcher;
-    memfs.setLazyFetcher(rootfsLazyFetcher);
+    rootfsLazyFetcher = (url, init) =>
+      corsProxyLazyFetcher(msg.lazyUrlMap?.[url] ?? url, init);
   }
   // `/dev/shm` is NOT mounted here. POSIX shared memory moved into the
   // in-kernel tmpfs, which already serves every other scratch prefix, so a
@@ -699,9 +727,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // reads go through the overlay (`readExecFromOverlay`), so nothing depends
   // on `/` being mounted here. Leaving it mounted would double-fetch lazy
   // archives (this host mount plus the overlay's own lazy wiring both
-  // fetching). `memfs` was already captured from `rootMount` above, so the
-  // backing MemoryFileSystem stays alive as the `blob_read` byte store and
-  // lazy-group source even though it is no longer mounted.
+  // fetching). Nothing captures a `/` backend any more: the resolver emits no
+  // mount for an image, so there is no second filesystem to keep alive.
   const guestMounts = mounts.filter((m) => m.mountPoint !== "/");
   // The mounts that survive dropping `/` are exactly the sibling filesystems the
   // overlay must not claim. Hand their prefixes to the overlay so `/dev/shm`,
@@ -760,19 +787,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
   // `/` authority. Hand the `/` image tree to the overlay and install the byte
-  // provider before init applies them. The `/` MemoryFileSystem is reachable
-  // only here in the entry.
-  if (memfs) {
+  // provider before init applies them.
+  if (rootImage.has()) {
     // The overlay's metadata and bytes both come from the container the kernel
     // is itself handed, not from the host's filesystem. `memfs` is no longer
     // asked anything here.
-    const { baseImage, imageRead } = createBaseImageFromContainer(
-      msg.vfsImage,
-      imageReadFromContainer(msg.vfsImage),
-      msg.lazyUrlBase,
-    );
+    // THE BYTES, AND NOTHING ELSE. This built a `RootfsOverlayBaseImage`
+    // whose only remaining job was to hand the overlay an archive list
+    // for its transport table; the table is gone, so what is left is the
+    // window itself — and that was always this same function, passed in
+    // and handed back.
+    const imageRead = imageReadFromContainer(msg.vfsImage);
     configureRootfsOverlayFromImage({
-      baseImage,
       imageRead,
       // Progress now comes from the PIPE rather than from the
       // filesystem's own fetch, and it covers archives as well as
@@ -780,7 +806,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       imageBytes: msg.vfsImage,
       foreignPrefixes: rootfsForeignPrefixes,
-      nosuid: rootMount?.nosuid === true,
+      nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
     });
   }
@@ -801,7 +827,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // connection in this session is terminated by the MITM, so a guest that does
   // not trust the CA fails later with a confusing certificate error instead of
   // the real cause.
-  if (memfs) {
+  if (rootImage.has()) {
     try {
       kernelWorker.rootfsMkdirParents(BROWSER_MITM_CA_BUNDLE_PATH, 0o755);
       kernelWorker.rootfsWriteFile(

@@ -1,0 +1,42 @@
+{
+ "file": "host/src/vfs/vfs-image-transport.ts",
+ "verify": "cd host && npx vitest run test/vfs-image-transport.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the frame walk is skipped, so the bound is measured only after decompressing",
+   "scope": "    assertBoundedZstdFrames(image, maximum);",
+   "scope_end": "\n",
+   "find": "    assertBoundedZstdFrames(image, maximum);",
+   "replace": "    void assertBoundedZstdFrames;"
+  },
+  {
+   "name": "the running total resets per frame, so only the largest frame is judged",
+   "scope": "  const addBound = (count: number) => {",
+   "scope_end": "\n  };",
+   "find": "    totalBound += count;",
+   "replace": "    totalBound = count;"
+  },
+  {
+   "name": "a declared content size larger than the bound is allowed through",
+   "scope": "    if (contentBytes !== undefined && contentBytes > BigInt(maximum)) {",
+   "scope_end": "\n    }",
+   "find": "    if (contentBytes !== undefined && contentBytes > BigInt(maximum)) {",
+   "replace": "    if (false && contentBytes !== undefined && contentBytes > BigInt(maximum)) {"
+  },
+  {
+   "name": "an uncompressed image is exempted from the bound",
+   "scope": "  if (image.byteLength > maximum) {",
+   "scope_end": "\n  }",
+   "find": "  if (image.byteLength > maximum) {",
+   "replace": "  if (false && image.byteLength > maximum) {"
+  },
+  {
+   "name": "an unusable bound is accepted instead of refused",
+   "scope": "    !Number.isSafeInteger(maximum) || maximum < VFS_IMAGE_HEADER_SIZE ||",
+   "scope_end": "\n  ) {",
+   "find": "    !Number.isSafeInteger(maximum) || maximum < VFS_IMAGE_HEADER_SIZE ||\n    maximum > VFS_IMAGE_MAX_DECOMPRESSED_BYTES",
+   "replace": "    false"
+  }
+ ],
+ "_comment": "These guards were reached only through `MemoryFileSystem.fromImage` until `vfs-image-transport.test.ts` existed, and `MemoryFileSystem` was deleted while this module was not -- `images/vfs/lib/kandelo-image-fs.ts` decompresses through it. Moving a guard's only test is exactly the moment to prove the move kept it, because a test that no longer kills its mutation has quietly deleted the guard. The first four are the decompression bomb: thirteen bytes can declare two gigabytes, so the frame walk refuses BEFORE a decompressor is asked to produce it, sums concatenated frames rather than judging each alone, and applies to uncompressed bytes too. RETIRED 2026-09-17, three trials: \"the container's magic is not checked\", \"an unimplemented container version is accepted\" and \"a body the container claims but does not carry is accepted\". They mutated `parseImageHeader`, which is DELETED: once `module-base-image.ts` lost its section-reading branch the census found no caller for it in any language, and a guard nothing reaches is not a guard. The claims live in Rust -- `crates/runtime-core/src/vfsi_container.rs` refuses a bad magic, an unknown version and a truncated body. `xtask perturb --validate` is what said so, reporting all three ROTTED the moment their scopes went."
+}

@@ -11,13 +11,13 @@ const browserKernelModulePath = resolve(
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsModulePath = resolve(
+const imageFsModulePath = resolve(
   here,
-  "../../../images/vfs/lib/sffs-image-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
-const sffsModuleWasmPath = resolve(
+const imageModuleWasmPath = resolve(
   here,
-  "../../../local-binaries/sffs_module32.wasm",
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
 const lifecycleProgramPath = resolve(
   here,
@@ -43,16 +43,16 @@ test("a replacement Worker failure after exact-target commit is fatal", async ({
 
   const result = await page.evaluate(async ({
     browserKernelModuleUrl,
-    sffsImageFsModuleUrl,
-    sffsModuleBytes,
+    imageFsModuleUrl,
+    imageModuleBytes,
     lifecycleBytes,
     childBytes,
   }) => {
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { SffsImageFs } = await import(
-      /* @vite-ignore */ sffsImageFsModuleUrl
+    const { KandeloImageFs } = await import(
+      /* @vite-ignore */ imageFsModuleUrl
     );
     const decoder = new TextDecoder();
     let stdout = "";
@@ -61,7 +61,7 @@ test("a replacement Worker failure after exact-target commit is fatal", async ({
       source: string;
       message: string;
     }> = [];
-    const image = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+    const image = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
     image.mkdir("/bin", 0o755);
     image.mkdir("/tmp", 0o755);
     image.createFileWithOwner(
@@ -95,8 +95,8 @@ test("a replacement Worker failure after exact-target commit is fatal", async ({
     }
   }, {
     browserKernelModuleUrl: asViteUrl(browserKernelModulePath),
-    sffsImageFsModuleUrl: asViteUrl(sffsImageFsModulePath),
-    sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+    imageFsModuleUrl: asViteUrl(imageFsModulePath),
+    imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
     lifecycleBytes: bytes(lifecycleProgramPath),
     childBytes: bytes(execChildPath),
   });

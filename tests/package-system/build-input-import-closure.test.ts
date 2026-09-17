@@ -41,7 +41,14 @@ describe("package build input import closure", () => {
       ]);
     }
 
-    expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
+    // A FILE EVERY VFS-IMAGE PACKAGE STILL DEPENDS ON, now that the one this
+    // named is deleted. `memory-fs.ts` was the example because every product
+    // image's build closure reached it. The generated ABI constants are what
+    // they all reach through today — every builder stamps `kernelAbi` into the
+    // image it writes — so the claim ("a change here is part of every derived
+    // image's cache identity") keeps a subject that is still true, and one
+    // whose breadth is not an accident of which filesystem a builder used.
+    expect(packagesAffectedBy("host/src/generated/abi.ts")).toEqual(packages);
 
     expect(
       packagesAffectedBy(

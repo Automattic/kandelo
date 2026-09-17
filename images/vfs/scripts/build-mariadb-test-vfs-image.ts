@@ -19,7 +19,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -233,7 +233,7 @@ export async function buildMariadbTestVfsImage(
 
   console.log("==> Building MariaDB test-runner VFS image");
 
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   // The declared capacity the product's publication gate checks the artifact
   // against. The SharedArrayBuffer it used to come from was never anything but
   // the old constructor's first argument.

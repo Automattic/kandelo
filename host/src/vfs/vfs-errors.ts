@@ -3,7 +3,7 @@
  *
  * # Why this module exists
  *
- * `sharedfs-vendor.ts` is a second implementation of the SFFS format that lane
+ * `sharedfs-vendor.ts` is a second implementation of the KIFS format that lane
  * V is deleting, and five files imported it **only** for these constants and
  * `SFSError` — not for any filesystem behaviour. Keeping them there meant the
  * implementation could not be removed until every consumer was rewritten.

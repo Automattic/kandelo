@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { KernelToMainMessage } from "../src/node-kernel-protocol";
-import type { LazyDownloadEvent } from "../src/vfs/memory-fs";
+import type { LazyDownloadEvent } from "../src/vfs/lazy-download-event";
 
 interface TestableNodeKernelHost {
   handleWorkerMessage(message: KernelToMainMessage): void;

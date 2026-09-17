@@ -1,0 +1,63 @@
+{
+ "file": "images/vfs/scripts/vfs-image-helpers.ts",
+ "verify": "cd host && npx vitest run test/vfs-image-helpers.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the capacity comparison accepts a ceiling that merely EXCEEDS the profile",
+   "scope": "  if (actualMaxByteLength !== expectedMaxByteLength) {",
+   "scope_end": "\n  }",
+   "find": "  if (actualMaxByteLength !== expectedMaxByteLength) {",
+   "replace": "  if (actualMaxByteLength < expectedMaxByteLength) {"
+  },
+  {
+   "name": "a nonsensical expected capacity is accepted instead of refused",
+   "scope": "  if (!Number.isSafeInteger(expectedMaxByteLength) || expectedMaxByteLength <= 0) {",
+   "scope_end": "\n  }",
+   "find": "  if (!Number.isSafeInteger(expectedMaxByteLength) || expectedMaxByteLength <= 0) {",
+   "replace": "  if (false) {"
+  },
+  {
+   "name": "free BYTES are ignored, so only the inode reserve is enforced",
+   "scope": "  if (freeBytes < headroom.minimumFreeBytes) {",
+   "scope_end": "\n  }",
+   "find": "  if (freeBytes < headroom.minimumFreeBytes) {",
+   "replace": "  if (false && freeBytes < headroom.minimumFreeBytes) {"
+  },
+  {
+   "name": "free INODES are ignored, so only the byte reserve is enforced",
+   "scope": "  if (freeInodes < headroom.minimumFreeInodes) {",
+   "scope_end": "\n  }",
+   "find": "  if (freeInodes < headroom.minimumFreeInodes) {",
+   "replace": "  if (false && freeInodes < headroom.minimumFreeInodes) {"
+  },
+  {
+   "name": "the headroom verdict is gathered and then not acted on",
+   "scope": "  if (failures.length > 0) {",
+   "scope_end": "\n  }",
+   "find": "  if (failures.length > 0) {",
+   "replace": "  if (false && failures.length > 0) {"
+  },
+  {
+   "name": "SOURCE_DATE_EPOCH accepts any string shape",
+   "scope": "  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {",
+   "scope_end": "\n  }",
+   "find": "  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {",
+   "replace": "  if (false) {"
+  },
+  {
+   "name": "SOURCE_DATE_EPOCH admits a second beyond the supported range",
+   "scope": "  if (!Number.isSafeInteger(seconds) || seconds > MAX_SOURCE_DATE_EPOCH_SECONDS) {",
+   "scope_end": "\n  }",
+   "find": "  if (!Number.isSafeInteger(seconds) || seconds > MAX_SOURCE_DATE_EPOCH_SECONDS) {",
+   "replace": "  if (false) {"
+  },
+  {
+   "name": "seconds reach the builders as seconds, not milliseconds",
+   "scope": "  return seconds * 1000;",
+   "scope_end": "\n}",
+   "find": "  return seconds * 1000;",
+   "replace": "  return seconds;"
+  }
+ ],
+ "_comment": "These three functions are the image builders' product contract -- the encoded growth ceiling a profile requires, the free bytes AND free inodes a shipped image must still have, and the reproducible timestamp every build derives from SOURCE_DATE_EPOCH. Four or more builder scripts call each, and until 2026-09-16 all of them were tested only inside `vfs-image.test.ts`, which step 5 deletes along with a filesystem none of them use. The claims moved to this module's own test file; these trials are what says the move kept them. The two headroom trials are separated deliberately: SharedFS accounts for blocks and inodes independently, so a check that enforced either one alone would pass a test that only ever exhausted the other."
+}

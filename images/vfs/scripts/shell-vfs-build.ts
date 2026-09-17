@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   resolveBinary,
@@ -153,7 +153,7 @@ export function resolvePolicyBoundVfsWasmArtifact(
 
 export async function loadShellBaseFileSystem(
   maxByteLength: number,
-): Promise<SffsImageFs> {
+): Promise<KandeloImageFs> {
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   const shellImage = new Uint8Array(readFileSync(shellImagePath));
   return await loadShellBaseFileSystemFromImage(shellImage, maxByteLength);
@@ -166,7 +166,7 @@ export async function loadShellBaseFileSystem(
  * build guest snapshot is the image's own serialization.
  */
 export async function saveShellDerivedBuildGuestSnapshot(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
 ): Promise<Uint8Array> {
   return fs.exportImage();
 }
@@ -176,7 +176,7 @@ export async function saveShellDerivedBuildGuestSnapshot(
  * independent block and inode capacity for normal runtime writes.
  */
 export function saveShellDerivedVfsImage(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   outFile: string,
   options: Omit<
     SaveImageOptions,
@@ -254,7 +254,7 @@ export function saveShellDerivedVfsImage(
 }
 
 function shellDerivedImageMetadata(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   inherited: VfsImageMetadata,
   kernelAbi: number,
   maxByteLength: number,
@@ -361,8 +361,8 @@ function sha256Hex(bytes: Uint8Array): string {
 export async function loadShellBaseFileSystemFromImage(
   shellImage: Uint8Array,
   maxByteLength: number,
-): Promise<SffsImageFs> {
-  const fs = SffsImageFs.create();
+): Promise<KandeloImageFs> {
+  const fs = KandeloImageFs.create();
   // The load AUTHENTICATES. Verification runs inside the module's
   // `sm_load_image`, so an image that reached this line is one whose activation
   // cohorts checked out -- there is no window in which an unverified image is
@@ -447,7 +447,7 @@ export interface ShellVfsOptions {
  * "archive registers stub" → "symlink aliases stub" sequencing.
  */
 export function populateShellEnvironment(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   opts: ShellVfsOptions,
 ): void {
   const resolveArtifact = opts.resolveArtifact ?? resolveVfsArtifact;
@@ -494,11 +494,11 @@ export function populateShellEnvironment(
 
 // ── System layout ───────────────────────────────────────────────
 
-function populateSystem(fs: SffsImageFs): void {
+function populateSystem(fs: KandeloImageFs): void {
   populateShellRuntimeLayout(fs);
 }
 
-function populateShellOverlay(fs: SffsImageFs): void {
+function populateShellOverlay(fs: KandeloImageFs): void {
   populateShellRuntimeLayout(fs);
 
   // A rootfs artifact may provide the lazy binary inodes without the
@@ -513,7 +513,7 @@ function populateShellOverlay(fs: SffsImageFs): void {
 // ── Shell binaries ──────────────────────────────────────────────
 
 function populateDash(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const dashBytes = readFileSync(resolveArtifact("programs/dash.wasm", "dash"));
@@ -524,7 +524,7 @@ function populateDash(
 }
 
 function populateBash(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bashBytes = readFileSync(resolveArtifact("programs/bash.wasm", "bash"));
@@ -532,7 +532,7 @@ function populateBash(
   symlink(fs, "/usr/bin/bash", "/bin/bash");
 }
 
-function populateCoreutilsSymlinks(fs: SffsImageFs): void {
+function populateCoreutilsSymlinks(fs: KandeloImageFs): void {
   for (const name of [...COREUTILS_NAMES, "["]) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
@@ -540,14 +540,14 @@ function populateCoreutilsSymlinks(fs: SffsImageFs): void {
 }
 
 function populateCoreutils(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/coreutils.wasm", "coreutils"));
   writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(bytes));
 }
 
-function populateGrepSedSymlinks(fs: SffsImageFs): void {
+function populateGrepSedSymlinks(fs: KandeloImageFs): void {
   symlink(fs, "/usr/bin/grep", "/bin/grep");
   symlink(fs, "/usr/bin/grep", "/usr/bin/egrep");
   symlink(fs, "/usr/bin/grep", "/bin/egrep");
@@ -558,7 +558,7 @@ function populateGrepSedSymlinks(fs: SffsImageFs): void {
 }
 
 function populateGrep(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/grep.wasm", "grep"));
@@ -566,7 +566,7 @@ function populateGrep(
 }
 
 function populateSed(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/sed.wasm", "sed"));
@@ -574,7 +574,7 @@ function populateSed(
 }
 
 function populateLazyBinaries(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
   opts: { skipExisting?: boolean } = {},
 ): void {
@@ -582,25 +582,31 @@ function populateLazyBinaries(
     if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
     const resolved = resolveArtifact(spec.resolverPath, spec.id);
     const size = statSync(resolved).size;
+    // Hashed from the artifact this line already opened to measure. Length was
+    // the only check these files had, and several of them ship setuid-root, so
+    // bytes of the same length from a substituting host or a poisoned cache
+    // executed as root inside the guest. The kernel refuses them now, but only
+    // because this says what they should have been.
     fs.registerLazyFile(
       spec.vfsPath,
       shellLazyPlaceholderUrl(spec),
       size,
       0o755,
+      createHash("sha256").update(readFileSync(resolved)).digest("hex"),
     );
   }
 }
 
 // ── Extended toolset ────────────────────────────────────────────
 
-function populateBaseExtendedSymlinks(fs: SffsImageFs): void {
+function populateBaseExtendedSymlinks(fs: KandeloImageFs): void {
   symlink(fs, "/usr/bin/bc", "/bin/bc");
   symlink(fs, "/usr/bin/file", "/bin/file");
   symlink(fs, "/usr/bin/m4", "/bin/m4");
   symlink(fs, "/usr/bin/make", "/bin/make");
 }
 
-function populateDemoExtendedSymlinks(fs: SffsImageFs): void {
+function populateDemoExtendedSymlinks(fs: KandeloImageFs): void {
   symlink(fs, "/usr/bin/less", "/bin/less");
   symlink(fs, "/usr/bin/tar", "/bin/tar");
   symlink(fs, "/usr/bin/curl", "/bin/curl");
@@ -668,7 +674,7 @@ function populateDemoExtendedSymlinks(fs: SffsImageFs): void {
 }
 
 function populateBaseExtendedBinaries(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
@@ -685,7 +691,7 @@ function populateBaseExtendedBinaries(
 
 /** Bake every demo extended-toolset binary. Required for kernelOwnedFs demos. */
 function populateDemoExtendedBinaries(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
@@ -757,7 +763,7 @@ function resolveMagicPath(
 }
 
 function populateMagic(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
   strictArtifactResolution: boolean,
 ): void {
@@ -777,7 +783,7 @@ function populateMagic(
 // ── Lazy archives ───────────────────────────────────────────────
 
 function populateVimArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -788,7 +794,7 @@ function populateVimArchive(
 }
 
 function populateNetHackArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -799,7 +805,7 @@ function populateNetHackArchive(
 }
 
 function populateRubyArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -810,7 +816,7 @@ function populateRubyArchive(
 }
 
 function populatePythonArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -821,7 +827,7 @@ function populatePythonArchive(
 }
 
 function populateNodeArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -832,7 +838,7 @@ function populateNodeArchive(
 }
 
 function populatePerlArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -843,7 +849,7 @@ function populatePerlArchive(
 }
 
 function populateManArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man on a
@@ -857,7 +863,7 @@ function populateManArchive(
 }
 
 function populateCoreutilsDocsArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -868,7 +874,7 @@ function populateCoreutilsDocsArchive(
 }
 
 function populateLsofDocsArchive(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(

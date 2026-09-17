@@ -1724,7 +1724,13 @@ export class LiveKernelHost implements KernelHost {
     }
 
     const policy = this.terminalSessions;
-    if (policy.afterExit === undefined) return;
+    // CAPTURED, not re-narrowed. The guard below proves `afterExit` is present
+    // HERE, but the restart runs inside two nested closures, and a narrowing
+    // does not survive into a closure over a mutable property — TypeScript has
+    // to assume something reassigned it in between. Binding the value makes
+    // the program the restart will run the same object this check approved.
+    const afterExit = policy.afterExit;
+    if (afterExit === undefined) return;
     const runtimeMs = Math.max(0, nowMs() - session.startedAt);
     const delayMs = runtimeMs >= policy.shortRunThresholdMs
       ? policy.initialRestartDelayMs
@@ -1759,7 +1765,7 @@ export class LiveKernelHost implements KernelHost {
             sessionKey,
             session,
             kernel,
-            policy.afterExit,
+            afterExit,
           );
         } catch (error) {
           this.reportPtyStartFailure(sessionKey, session, error);

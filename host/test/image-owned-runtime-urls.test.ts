@@ -1,72 +1,117 @@
 import { describe, expect, it } from "vitest";
 import {
-  bindImageOwnedRuntimeUrls,
+  imageOwnedRuntimeUrlMapper,
+  imageOwnedRuntimeUrlTable,
   normalizeImageOwnedLazyReference,
 } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import type { ZipEntry } from "../src/vfs/zip";
 
+/**
+ * These used to build a `MemoryFileSystem`, bind every lazy URL INTO it, and
+ * read the stored records back. They do not any more, because nothing rewrites
+ * the image: the image keeps the canonical address and the deployment maps it
+ * when it fetches (defect B45 — the rewriting was a host-side write to the
+ * image's deferred half, which the legacy writer silently erased once
+ * `tools/mkrootfs` began emitting `SDEF`).
+ *
+ * So the subject is a pure function now, and the tests need no image at all.
+ * That is worth noticing rather than just accepting: the old file had to build
+ * a two-archive, two-file fixture to ask "where would this URL end up", and the
+ * answer never depended on the image.
+ */
 describe("image-owned grouped runtime URLs", () => {
-  it("binds legacy lazy files and every archive mirror from the group manifest directory", () => {
-    const fs = groupedFixture();
+  const AUTHORITY = {
+    deploymentBase: "/a/",
+    directoryUrl: "https://demo.invalid/a/assets-group/",
+    manifestUrl: "https://demo.invalid/a/assets-group/manifest.json",
+  };
 
-    bindImageOwnedRuntimeUrls(fs, authority());
-
-    expect(fs.exportLazyEntries().map(({ path, url }) => ({ path, url }))).toEqual([
-      {
-        path: "/bin/program",
-        url: "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
-      },
-      {
-        path: "/bin/lazy-program",
-        url: "https://demo.invalid/a/assets-group/assets/programs/wasm32/lazy-program.wasm",
-      },
-    ]);
-    expect(
-      fs.exportLazyArchiveEntries().map((entry) => entry.content!.transports),
-    ).toEqual([
-      [
-        "https://demo.invalid/a/assets-group/assets/programs/wasm32/vim.zip",
-        "https://demo.invalid/a/assets-group/assets/programs/wasm32/vim-mirror.zip",
-      ],
-      [
-        "https://demo.invalid/a/assets-group/assets/programs/wasm32/nethack.zip",
-      ],
-    ]);
+  it("maps a legacy reference into the group manifest directory", () => {
+    const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
+    expect(map("binaries/programs/wasm32/program.wasm")).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
+    );
+    expect(map("kandelo-lazy:programs/lazy-program.wasm")).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/lazy-program.wasm",
+    );
+    expect(map("vim.zip")).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/vim.zip",
+    );
   });
 
-  it("binds /a/ and /candidate-b/ to their own exact manifest directories", () => {
-    const primary = groupedFixture();
-    bindImageOwnedRuntimeUrls(primary, authority());
-
-    const candidate = groupedFixture();
-    bindImageOwnedRuntimeUrls(candidate, {
+  it("maps /a/ and /candidate-b/ to their own exact manifest directories", () => {
+    const primary = imageOwnedRuntimeUrlMapper(AUTHORITY);
+    const candidate = imageOwnedRuntimeUrlMapper({
       deploymentBase: "/candidate-b/",
       directoryUrl: "https://demo.invalid/candidate-b/assets-group/",
       manifestUrl: "https://demo.invalid/candidate-b/assets-group/manifest.json",
     });
-
-    expect(primary.getLazyEntry("/bin/program")!.url).toBe(
+    const reference = "binaries/programs/wasm32/program.wasm";
+    expect(primary(reference)).toBe(
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
     );
-    expect(candidate.getLazyEntry("/bin/program")!.url).toBe(
+    expect(candidate(reference)).toBe(
       "https://demo.invalid/candidate-b/assets-group/assets/programs/wasm32/program.wasm",
     );
   });
 
-  it("rejects a malformed grouped transport without mutating a preceding valid transport", () => {
-    const fs = groupedFixture();
-    fs.rewriteLazyFileUrls((url, path) =>
-      path === "/bin/lazy-program" ? "https://demo.invalid/a/forged.wasm" : url,
+  // The old file asserted that a malformed transport did not mutate a PRECEDING
+  // valid one, because binding walked the image and wrote as it went, so a
+  // failure halfway could leave the image partly bound. A mapper has no
+  // partial state to leave: one reference failing is one call throwing.
+  it("refuses a reference outside the grammar, and the refusal is per call", () => {
+    const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
+    expect(() => map("https://demo.invalid/a/forged.wasm")).toThrow();
+    // The next call is unaffected. There is nothing to leave half-written.
+    expect(map("binaries/programs/wasm32/program.wasm")).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
     );
-    const before = transportSnapshot(fs);
-
-    expect(() => bindImageOwnedRuntimeUrls(fs, authority())).toThrow(
-      /reference is invalid/,
-    );
-    expect(transportSnapshot(fs)).toEqual(before);
   });
 
+  it("does not retain caller-mutable authority", () => {
+    const mutable = { ...AUTHORITY };
+    const map = imageOwnedRuntimeUrlMapper(mutable);
+    mutable.manifestUrl = "https://evil.invalid/a/assets-group/manifest.json";
+    mutable.directoryUrl = "https://evil.invalid/a/assets-group/";
+    expect(map("binaries/programs/wasm32/program.wasm")).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
+    );
+  });
+
+  it("builds a table whose keys come from the DEPLOYMENT, not from an image", () => {
+    // The point of the table: a worker can be handed the whole mapping without
+    // anyone enumerating an image's deferred entries, which is the operation
+    // that made B45 silent. The deployment imports every asset it serves, so
+    // it already knows the key set.
+    const table = imageOwnedRuntimeUrlTable(AUTHORITY);
+    const keys = Object.keys(table);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const [reference, url] of Object.entries(table)) {
+      expect(url, `${reference} must stay inside the deployment`)
+        .toMatch(/^https:\/\/demo\.invalid\/a\/assets-group\//);
+    }
+    // And a known rootfs binary is in it, so the table is not merely non-empty.
+    expect(table["binaries/programs/wasm32/dash.wasm"]).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/dash.wasm",
+    );
+  });
+
+  it("falls back to the deployment's own asset URLs when there is no asset group", () => {
+    const table = imageOwnedRuntimeUrlTable(undefined);
+    // No authority to resolve against, so the values are whatever this build
+    // emitted for each import. What must hold is that every key resolves to
+    // SOMETHING rather than being dropped.
+    expect(Object.keys(table).length).toBeGreaterThan(0);
+    for (const [reference, url] of Object.entries(table)) {
+      expect(typeof url, `${reference} must map to a string`).toBe("string");
+      expect(url.length).toBeGreaterThan(0);
+    }
+  });
+
+  // Authority validation, kept because it is the security half of this module
+  // and unchanged by the move: an authority is still snapshotted and refused up
+  // front. What is gone from the NAME is "before any transport mutation" —
+  // there are no transport mutations now, so the refusal is simply at
+  // construction, which is earlier and unconditional rather than merely first.
   it.each([
     ["mismatched directory", { directoryUrl: "https://demo.invalid/a/other/" }],
     ["cross-origin directory", { directoryUrl: "https://other.invalid/a/assets-group/" }],
@@ -80,50 +125,9 @@ describe("image-owned grouped runtime URLs", () => {
     ["manifest fragment", {
       manifestUrl: "https://demo.invalid/a/assets-group/manifest.json#part",
     }],
-  ])("rejects %s authority before any transport mutation", (_label, patch) => {
-    const fs = groupedFixture();
-    const before = transportSnapshot(fs);
-
-    expect(() => bindImageOwnedRuntimeUrls(fs, { ...authority(), ...patch })).toThrow(
-      /authority is invalid/,
-    );
-    expect(transportSnapshot(fs)).toEqual(before);
-  });
-
-  it("does not retain caller-mutable authority after binding", () => {
-    const fs = groupedFixture();
-    const supplied = authority();
-
-    bindImageOwnedRuntimeUrls(fs, supplied);
-    supplied.directoryUrl = "https://demo.invalid/a/forged/";
-    supplied.manifestUrl = "https://demo.invalid/a/forged/manifest.json";
-
-    expect(fs.getLazyEntry("/bin/program")!.url).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
-    );
-  });
-
-  it("retains exact grouped files and every archive transport through save and restore", async () => {
-    const fs = groupedFixture();
-    bindImageOwnedRuntimeUrls(fs, authority());
-    const before = transportSnapshot(fs);
-
-    const restored = MemoryFileSystem.fromImage(await fs.saveImage());
-
-    expect(transportSnapshot(restored)).toEqual(before);
-  });
-
-  it("binds a legacy archive entry URL when it has no transport content", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-    fs.registerLazyArchiveFromEntries("vim.zip", [legacyArchiveEntry()], "/");
-
-    bindImageOwnedRuntimeUrls(fs, authority());
-
-    const [archive] = fs.exportLazyArchiveEntries();
-    expect(archive!.content).toBeUndefined();
-    expect(archive!.url).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/vim.zip",
-    );
+  ])("refuses %s authority at construction", (_label, patch) => {
+    expect(() => imageOwnedRuntimeUrlMapper({ ...AUTHORITY, ...patch }))
+      .toThrow(/authority is invalid/);
   });
 
   it.each([
@@ -148,80 +152,3 @@ describe("image-owned grouped runtime URLs", () => {
     );
   });
 });
-
-function authority() {
-  return {
-    deploymentBase: "/a/",
-    directoryUrl: "https://demo.invalid/a/assets-group/",
-    manifestUrl: "https://demo.invalid/a/assets-group/manifest.json",
-  };
-}
-
-function groupedFixture(): MemoryFileSystem {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-  fs.registerLazyFile(
-    "/bin/program",
-    "binaries/programs/wasm32/program.wasm",
-    1,
-  );
-  fs.registerLazyFile(
-    "/bin/lazy-program",
-    "kandelo-lazy:programs/lazy-program.wasm",
-    1,
-  );
-  fs.registerLazyTree(
-    lazyTree("vim.zip", ["vim.zip", "binaries/programs/wasm32/vim-mirror.zip"]),
-    [entry("/opt/vim")],
-  );
-  fs.registerLazyTree(lazyTree("nethack.zip", ["nethack.zip"]), [entry("/opt/nethack")]);
-  return fs;
-}
-
-function lazyTree(url: string, transports: string[]) {
-  return {
-    decoder: "zip-v1" as const,
-    mediaType: "application/zip" as const,
-    sha256: "a".repeat(64),
-    bytes: 1,
-    expandedBytes: 1,
-    sourceEntryCount: 1,
-    transports,
-  };
-}
-
-function entry(vfsPath: string) {
-  return {
-    vfsPath,
-    sourcePath: vfsPath.slice(1),
-    type: "file" as const,
-    mode: 0o755,
-    size: 1,
-    inodeGroup: vfsPath,
-  };
-}
-
-function transportSnapshot(fs: MemoryFileSystem) {
-  return {
-    archives: fs.exportLazyArchiveEntries().map((entry) => ({
-      transports: entry.content?.transports ?? [entry.url],
-      url: entry.url,
-    })),
-    files: fs.exportLazyEntries().map(({ path, url }) => ({ path, url })),
-  };
-}
-
-function legacyArchiveEntry(): ZipEntry {
-  return {
-    fileName: "bin/vim",
-    fileNameBytes: new TextEncoder().encode("bin/vim"),
-    compressedSize: 1,
-    uncompressedSize: 1,
-    compressionMethod: 0,
-    localHeaderOffset: 0,
-    mode: 0o755,
-    isDirectory: false,
-    isSymlink: false,
-    externalAttrs: 0,
-    creatorOS: 3,
-  };
-}

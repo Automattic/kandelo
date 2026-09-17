@@ -1,0 +1,21 @@
+{
+ "file": "host/src/kernel-worker.ts",
+ "verify": "cd host && npx vitest run test/node-rootfs-export.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a short chunk ends the image, as a metadata reader's loop may correctly do",
+   "scope": "        // Zero is the end of the image. A short chunk is not.",
+   "scope_end": "\n      }",
+   "find": "        if (res.bytes === null) break;",
+   "replace": "        if (res.bytes === null || res.bytes.byteLength < chunkCap) break;"
+  },
+  {
+   "name": "the offset advances by the buffer rather than by what was read",
+   "scope": "        // Zero is the end of the image. A short chunk is not.",
+   "scope_end": "\n      }",
+   "find": "        offset += res.bytes.byteLength;",
+   "replace": "        offset += chunkCap;"
+  }
+ ],
+ "_comment": "The kernel's container export is streamed, and the two ways to walk a stream disagree here. `export_container_read` serves min(request, remaining) from a plan built at offset 0 and answers 0 only when the image is spent, so a SHORT chunk is ordinary mid-stream progress -- the first read of every image returns the 16-byte container header alone, because a chunk may not span two regions. A reader that stops at the first short chunk therefore ends the image after its header, and one that advances by the buffer instead of by what it received skips the whole body. Both produce plausible-looking bytes rather than an error, which is why the trials exist: the assertion that kills them is not `it did not throw` but a reload of the exported image."
+}

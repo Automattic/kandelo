@@ -71,7 +71,7 @@ function residentRegularFile(
     stat = fs.stat(path);
   } catch (error) {
     // The shared predicate, not an `instanceof` on one implementation's error
-    // class: the module bridge throws `SffsImageError` with a POSITIVE `errno`
+    // class: the module bridge throws `KandeloImageError` with a POSITIVE `errno`
     // where `MemoryFileSystem` throws `SFSError` with a NEGATIVE `code`. This
     // catch recognised only the second, so "missing" — a documented outcome of
     // this function — became an uncaught throw.
@@ -103,7 +103,7 @@ function residentDinitBinaryState(
     stat = fs.stat(path);
   } catch (error) {
     // The shared predicate, not an `instanceof` on one implementation's error
-    // class: the module bridge throws `SffsImageError` with a POSITIVE `errno`
+    // class: the module bridge throws `KandeloImageError` with a POSITIVE `errno`
     // where `MemoryFileSystem` throws `SFSError` with a NEGATIVE `code`. This
     // catch recognised only the second, so "missing" — a documented outcome of
     // this function — became an uncaught throw.

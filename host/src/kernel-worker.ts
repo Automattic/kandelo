@@ -278,7 +278,7 @@ const kernelEntryIntrinsicAtomicsNotify = Atomics.notify;
 const KERNEL_ENTRY_I32_BYTES = 4;
 /**
  * Size of the VFSI container header (magic, version, flags, body length), and
- * therefore the container offset at which the SFFS filesystem body starts.
+ * therefore the container offset at which the KIFS filesystem body starts.
  * Mirrors `VFS_IMAGE_HEADER_SIZE` in `host/src/vfs/memory-fs.ts`, the writer —
  * mirrored rather than imported because this module is the host-agnostic
  * runtime core and imports nothing from the VFS layer.
@@ -2754,15 +2754,18 @@ export class CentralizedKernelWorker {
    * hands this in via {@link configureRootfsOverlay} before `init()`;
    * `#maybeLoadKernelRootfs` installs it once the kernel instance exists.
    *
-   * It answers for what the `/` image does not carry: a URL-backed lazy file
-   * and a lazy archive. An image-backed file is not deferred and never reaches
-   * it — the kernel reads those bytes out of the image itself. Null until
+   * It answers for what the `/` image does not carry, addressed by the URI the
+   * image recorded. An image-backed file is not deferred and never reaches it —
+   * the kernel reads those bytes out of the image itself. Null until
    * configured.
+   *
+   * Type-only participation: this worker stores the provider and forwards it to
+   * `setRootfsDeferredProvider`, and does not call it. The address replaced a
+   * `(kind, id)` pair in the seam's contract, so the annotation moved with it.
    */
   #rootfsDeferredProvider:
     | ((
-      kind: number,
-      id: bigint,
+      uri: string,
       offset: bigint,
       dest: Uint8Array,
     ) => number)
@@ -2808,7 +2811,7 @@ export class CentralizedKernelWorker {
    */
   #rootfsImage: Uint8Array | null = null;
   /**
-   * A live view of the `/` image's SFFS body — the restored
+   * A live view of the `/` image's KIFS body — the restored
    * `MemoryFileSystem`'s own filesystem buffer, which is byte-for-byte the
    * image's body section (`MemoryFileSystem.imageBodyBytes`).
    *
@@ -5118,8 +5121,7 @@ export class CentralizedKernelWorker {
    */
   configureRootfsOverlay(
     deferredProvider: (
-      kind: number,
-      id: bigint,
+      uri: string,
       offset: bigint,
       dest: Uint8Array,
     ) => number,
@@ -5252,13 +5254,13 @@ export class CentralizedKernelWorker {
     // The container's header and trailing sections (lazy JSON, archive JSON,
     // metadata, `KLZY`) exist for the load and are never read again. The body
     // is different: the kernel serves every image-backed base file's content
-    // out of it, through its own SFFS reader, for the life of the session. So
+    // out of it, through its own KIFS reader, for the life of the session. So
     // the window stays open — but onto the copy the restored
     // `MemoryFileSystem` already holds, not onto a second one. See
     // KERNEL_IMAGE_WINDOW on `#rootfsImageRead`.
     //
     // Container coordinates are preserved across the swap: the kernel cached
-    // the image's own SFFS span at load and keeps addressing bytes by their
+    // the image's own KIFS span at load and keeps addressing bytes by their
     // offset in the container, so the body is served at
     // `VFS_IMAGE_HEADER_SIZE`. An offset outside the body is reported as
     // end-of-image rather than guessed at; nothing in the kernel asks for one,
@@ -5450,21 +5452,33 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Serialize the entire overlay-owned `/` tree (Phase 5 cutover export) as an
-   * RXPT metadata buffer through the in-kernel overlay. Runs in one kernel entry,
-   * reading region-sized chunks; the kernel serializes once (the overlay is
-   * quiescent during export) and serves the rest from a cache. Throws
-   * `KernelScratchError` (POSIX errno) on failure, or `KernelReentrantEntryError`
-   * if a kernel entry is already active (the RPC caller retries). See
-   * `host/src/vfs/rootfs-overlay-export.ts` for the buffer's reconciler.
+   * Stream the FINISHED `/` image the overlay would export.
+   *
+   * What REPLACES the host rebuilding that image itself.
+   * `host/src/vfs/rootfs-overlay-export.ts` used to clone the frozen base into
+   * a writable filesystem and replay the overlay onto it -- deletions,
+   * copy-on-writes, creates, owners, modes, times -- which was a second
+   * implementation of a reconciliation the kernel performs from the side that
+   * owns the tree. `kernel_rootfs_export_container_read` hands over the result,
+   * and that file is gone.
+   *
+   * **The end condition is a ZERO read, not a short one.**
+   * `export_container_read` serves `min(request, remaining)` from a plan built
+   * at offset 0 and answers 0 when the image is spent; a chunk shorter than the
+   * buffer is ordinary mid-stream progress. Breaking on a short read -- which
+   * is what a metadata reader whose buffer is its whole answer may do -- would
+   * truncate an image at the first boundary that did not divide evenly, and a
+   * truncated `lamp.vfs` is 249 MiB of plausible-looking bytes that do not
+   * mount.
    */
-  rootfsExportTree(): Uint8Array {
+  rootfsExportContainerRead(): Uint8Array {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let output = new Uint8Array(0);
     let failErrno = 0;
-    this.#runImmediateKernelEntry("kernel rootfs export tree", (entry) => {
+    this.#runImmediateKernelEntry("kernel rootfs export image", (entry) => {
       if (
-        typeof entry.instance.exports.kernel_rootfs_export_tree !== "function"
+        typeof entry.instance.exports.kernel_rootfs_export_container_read
+          !== "function"
       ) {
         failErrno = ENOSYS;
         return undefined;
@@ -5484,7 +5498,7 @@ export class CentralizedKernelWorker {
             const result = this.#invokeEntryScratchExport(
               entry,
               lease,
-              "kernel_rootfs_export_tree",
+              "kernel_rootfs_export_container_read",
               [
                 offset >>> 0,
                 Math.floor(offset / 0x1_0000_0000),
@@ -5503,11 +5517,10 @@ export class CentralizedKernelWorker {
           failErrno = res.errno;
           break;
         }
+        // Zero is the end of the image. A short chunk is not.
         if (res.bytes === null) break;
         chunks.push(res.bytes);
         offset += res.bytes.byteLength;
-        // A short read (min(request, remaining)) means end of buffer.
-        if (res.bytes.byteLength < chunkCap) break;
       }
       if (failErrno === 0) {
         let total = 0;
@@ -5523,7 +5536,7 @@ export class CentralizedKernelWorker {
       return undefined;
     });
     if (failErrno !== 0) {
-      throw new KernelScratchError("rootfs export tree failed", failErrno);
+      throw new KernelScratchError("rootfs export image failed", failErrno);
     }
     return output;
   }

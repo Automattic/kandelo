@@ -1,0 +1,61 @@
+{
+  "file": "tools/mkrootfs/src/builder.ts",
+  "verify": "cd tools/mkrootfs && npx vitest run test/builder.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "an image larger than its declared capacity is emitted anyway",
+      "scope": "export async function buildImage(",
+      "scope_end": "\n}\n",
+      "find": "  if (image.byteLength > maxSizeBytes) {",
+      "replace": "  if (false) {"
+    },
+    {
+      "name": "the capacity check compares against the wrong bound",
+      "scope": "export async function buildImage(",
+      "scope_end": "\n}\n",
+      "find": "  if (image.byteLength > maxSizeBytes) {",
+      "replace": "  if (image.byteLength > maxSizeBytes * 4) {"
+    },
+    {
+      "name": "the declared capacity never reaches the image",
+      "scope": "export async function buildImage(",
+      "scope_end": "\n}\n",
+      "find": "  mfs.setImageCapacity(maxSizeBytes);",
+      "replace": ""
+    },
+    {
+      "name": "a lazy file is embedded instead of described",
+      "scope": "  for (const f of files) {",
+      "scope_end": "\n  }\n",
+      "find": "    if (f.lazyUrl !== undefined) {",
+      "replace": "    if (false) {"
+    },
+    {
+      "name": "a lazy file loses the address that says where its bytes are",
+      "scope": "  for (const f of files) {",
+      "scope_end": "\n  }\n",
+      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);",
+      "replace": "      mfs.registerLazyFile(f.path, \"\", f.lazySize ?? 0, f.mode, f.lazyDigest);"
+    },
+    {
+      "name": "a lazy file reports the stub's length instead of its real one",
+      "scope": "  for (const f of files) {",
+      "scope_end": "\n  }\n",
+      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);",
+      "replace": "      mfs.registerLazyFile(f.path, f.lazyUrl, 0, f.mode, f.lazyDigest);"
+    },
+    {
+      "name": "a lazy file is registered without the digest the manifest carried",
+      "scope": "  for (const f of files) {",
+      "scope_end": "\n  }\n",
+      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);",
+      "replace": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);"
+    }
+  ],
+  "retired": [
+    {
+      "name": "a short write while building is not noticed",
+      "why": "Unfalsifiable by construction, and the guard it mutated was removed rather than covered. `createFileExactWithOwner` compared `stat(path).size` against the content it had just written, to catch a memfs SharedArrayBuffer running out mid-file. The Rust writer cannot short-write: `sm_write_file` stores the whole content or returns an errno, which `check` throws on. So the wrapper's entire body was a comparison that could not differ, and its two callers now call `createFileWithOwner` directly. The failure mode became impossible rather than caught, which is the better outcome — but a guard that cannot fail is a guard that lies about being one."
+    }
+  ]
+}

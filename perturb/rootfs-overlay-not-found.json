@@ -1,0 +1,28 @@
+{
+ "file": "images/vfs/lib/rootfs-etc-overlay.ts",
+ "verify": "cd host && npx vitest run test/image-build-round-trip.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the two errno sign conventions are compared directly, so the check is always false",
+   "scope": "function isNotFound(error: unknown): boolean {",
+   "scope_end": "\n}\n",
+   "find": "  return typeof errno === \"number\" && errno === -ENOENT;",
+   "replace": "  return typeof errno === \"number\" && errno === ENOENT;"
+  },
+  {
+   "name": "only the legacy filesystem's not-found is recognised",
+   "scope": "function isNotFound(error: unknown): boolean {",
+   "scope_end": "\n}\n",
+   "find": "  const errno = (error as { errno?: unknown } | null | undefined)?.errno;",
+   "replace": "  const errno: unknown = undefined;"
+  },
+  {
+   "name": "any errno counts as not-found, so a real failure reads as a missing path",
+   "scope": "function isNotFound(error: unknown): boolean {",
+   "scope_end": "\n}\n",
+   "find": "  return typeof errno === \"number\" && errno === -ENOENT;",
+   "replace": "  return typeof errno === \"number\";"
+  }
+ ],
+ "_comment": " MOVED 2026-09-16 with the module: the `/etc` overlay is an image BUILDER, its one production caller is the browser demo's boot, and it left `host/src` so it could read through `KandeloImageFs` -- which `host/src` may not import. The trials are unchanged; `isNotFound` still has to read both sign conventions, and now meets the module's positive `errno` where it used to meet only the bridge's."
+}

@@ -1,0 +1,34 @@
+{
+  "file": "images/vfs/lib/demo-login.ts",
+  "verify": "cd host && npx vitest run test/demo-login-image.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "any failure answers \"not configured\", so an unreadable image reads as one without login",
+      "scope": "export function hasConfiguredDemoLogin(",
+      "scope_end": "\n}\n",
+      "find": "    if (isNotFound(error)) return false;\n    throw error;",
+      "replace": "    void error;\n    return false;"
+    },
+    {
+      "name": "a genuinely absent file is reported as a failure instead of an answer",
+      "scope": "export function hasConfiguredDemoLogin(",
+      "scope_end": "\n}\n",
+      "find": "    if (isNotFound(error)) return false;\n    throw error;",
+      "replace": "    throw error;"
+    },
+    {
+      "name": "only the image bridge's errno sign is recognised, so the other filesystem's ENOENT escapes",
+      "scope": "function isNotFound(error: unknown): boolean {",
+      "scope_end": "\n}\n",
+      "find": "  if (errno === 2 || code === -2) return true;",
+      "replace": "  if (errno === 2) return true;"
+    },
+    {
+      "name": "the string form is dropped, so an ENOENT carrying only a code escapes",
+      "scope": "function isNotFound(error: unknown): boolean {",
+      "scope_end": "\n}\n",
+      "find": "  return typeof code === \"string\" && code === \"ENOENT\";",
+      "replace": "  return false;"
+    }
+  ]
+}

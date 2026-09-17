@@ -12,8 +12,8 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const modulePaths = {
   browserKernel: resolve(repoRoot, "host/src/browser-kernel-host.ts"),
-  sffsImageFs: resolve(repoRoot, "images/vfs/lib/sffs-image-fs.ts"),
-  sffsModuleWasm: resolve(repoRoot, "local-binaries/sffs_module32.wasm"),
+  imageFsModule: resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts"),
+  imageModuleWasm: resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm"),
   experimentalTerminalSession: resolve(
     repoRoot,
     "web-libs/kandelo-session/src/experimental-terminal-session.ts",
@@ -63,8 +63,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       experimentalTerminalSessionUrl,
       kernelUrl,
       loginUrl,
-      sffsImageFsUrl,
-      sffsModuleBytes,
+      imageFsModuleUrl,
+      imageModuleBytes,
       password,
       passwordHash,
       sessionHostUrl,
@@ -75,8 +75,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { SffsImageFs } = await import(
-        /* @vite-ignore */ sffsImageFsUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const {
         experimentalTerminalSessionPolicy,
@@ -96,7 +96,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         fetchBytes(loginUrl),
         fetchBytes(credentialsUrl),
       ]);
-      const fs = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+      const fs = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
       for (const path of [
         "/etc",
         "/bin",
@@ -379,8 +379,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       ),
       kernelUrl: asViteFsUrl(resolveBinary("kernel.wasm")),
       loginUrl: asViteFsUrl(loginWasm),
-      sffsImageFsUrl: asViteFsUrl(modulePaths.sffsImageFs),
-      sffsModuleBytes: Array.from(readFileSync(modulePaths.sffsModuleWasm)),
+      imageFsModuleUrl: asViteFsUrl(modulePaths.imageFsModule),
+      imageModuleBytes: Array.from(readFileSync(modulePaths.imageModuleWasm)),
       password: DEMO_LOGIN_PASSWORD,
       passwordHash: DEMO_LOGIN_PASSWORD_HASH,
       sessionHostUrl: asViteFsUrl(modulePaths.sessionHost),

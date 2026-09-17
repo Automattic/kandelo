@@ -535,7 +535,7 @@ resource_path=../packages/registry/ruby/test/posix-spawn.test.ts
 resource_exclude="--exclude=$resource_path"
 # The runner appends the disabled-software exclusions to every ordinary and
 # exact Vitest run. Mirror that exact suffix so the captured command lines match.
-disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=test/abi-staging-mini-vfs.test.ts --exclude=test/abi-staging-product-builders.test.ts --exclude=test/shell-vfs-build.test.ts --exclude=test/vfs-product-builder-contract.test.ts"
+disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=test/shell-vfs-build.test.ts"
 resource_manifest="$FIXTURE/scripts/ci-vitest-resource-isolated-cases.tsv"
 resource_manifest_valid="$TMP_DIR/vitest-resource-manifest-valid.tsv"
 resource_inventory="$TMP_DIR/vitest-resource-inventory"

@@ -1,4 +1,3 @@
-pub mod resolved_inputs;
 pub mod canonical_json;
 pub mod product_manifest;
 

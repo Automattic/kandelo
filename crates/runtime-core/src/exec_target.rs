@@ -555,10 +555,7 @@ fn target_pread(
 ) -> Result<usize, Errno> {
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
-            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
-            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-                host.fetch_archive(archive_id, b, offset)
-            }
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         })
     } else {

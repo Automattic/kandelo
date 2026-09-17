@@ -1,13 +1,13 @@
 /**
  * Browser test harness — runs PHP CLI via kandelo using
- * BrowserKernel + kernel-owned MemoryFileSystem image (the browser code path).
+ * BrowserKernel + a kernel-owned image built with `KandeloImageFs` (the
+ * browser code path).
  *
  * Runs multiple PHP invocations and reports results as JSON in #results.
  */
 
 import { BrowserKernel } from "../../../../../host/src/browser-kernel-host";
-import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
-import { restoreVerifiedVfsImage } from "../../../../../host/src/vfs/load-image";
+import { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -16,6 +16,7 @@ import {
 } from "../../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import rootfsVfsUrl from "@rootfs-vfs?url";
+import imageModuleUrl from "@kandelo-image-module32-wasm?url";
 
 const stdoutEl = document.getElementById("stdout")!;
 const stderrEl = document.getElementById("stderr")!;
@@ -40,7 +41,7 @@ interface BinaryFixture {
 }
 
 function assertVfsBinaryRoundTrip(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
   expected: Uint8Array,
 ): void {
@@ -89,10 +90,17 @@ async function runPhp(
   let stderr = "";
   const decoder = new TextDecoder();
 
-  // WHY: the harness stages programs and fixtures into imported state. Verify
-  // sealed lazy cohorts first so test setup cannot mutate forged input.
-  const memfs = await restoreVerifiedVfsImage(new Uint8Array(rootfsBytes), {
-    maxByteLength: PHP_BROWSER_VFS_MAX_BYTES,
+  // THE HARNESS EDITS AN IMAGE, it does not mount one: it loads the rootfs,
+  // stages PHP and the test fixtures into it, saves it, and boots a kernel
+  // from the result. That is the image module's job.
+  //
+  // The explicit seal verification this used to perform is inherent now —
+  // `loadImage` authenticates every cohort the image carries, because
+  // `sm_load_image` does — so forged input is refused by the act of reading
+  // it rather than by a call a later author might drop.
+  const memfs = KandeloImageFs.create();
+  memfs.loadImage(new Uint8Array(rootfsBytes), {
+    maxDecompressedBytes: PHP_BROWSER_VFS_MAX_BYTES,
   });
   for (const dir of ["/tmp", "/root", "/home", "/dev"]) ensureDir(memfs, dir);
   memfs.chmod("/tmp", 0o777);
@@ -150,11 +158,18 @@ async function runPhp(
 
 async function main() {
   try {
-    const [kernelBytes, rootfsBytes, phpBytes] = await Promise.all([
-      fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
-      fetch("/php-artifacts/php.wasm").then((r) => r.arrayBuffer()),
-    ]);
+    const [kernelBytes, rootfsBytes, phpBytes, imageModuleBytes] = await Promise
+      .all([
+        fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+        fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
+        fetch("/php-artifacts/php.wasm").then((r) => r.arrayBuffer()),
+        fetch(imageModuleUrl).then((r) => r.arrayBuffer()),
+      ]);
+    // `KandeloImageFs.create()` is synchronous and a fetch is not, so a browser
+    // page installs the image-writer module once before the first create. Node
+    // reads it off disk; the browser cannot, and the bridge says so by name
+    // rather than falling back to a reader that cannot see an `SDEF` section.
+    KandeloImageFs.installModuleBytes(new Uint8Array(imageModuleBytes));
 
     // Run the dedicated intl/fork contract only for its Playwright case. The
     // server exposes bytes and installation metadata from PHP's declared

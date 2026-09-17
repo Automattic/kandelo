@@ -1,0 +1,127 @@
+{
+ "_comment": "The seal codec and cohort verifier. Its own spec because a spec mutates ONE file, and these guards live in seal.rs rather than the ABI surface in lib.rs. The verifier is the one place in this lane where a surviving mutant means a security check that does not check. MOVED 2026-09-16 with `seal.rs` itself, from `kandelo-image-module` into `runtime-core`, so `rootfs::load_image` can authenticate cohorts at the door every caller passes through \u2014 the kernel's boot as well as a builder's derived load. The trials are unchanged; only the file they mutate and the crate they verify against moved. RETIRED 2026-09-16, the empty-payload pair: a second emptiness check was added to `verify_cohorts` when the verifier moved, and `decode` had already returned `SealState::None` for empty bytes since it was written. The trial for it survived because the guard could not fail -- the sixth cause, something else had already decided -- and the guard is deleted rather than given a test. The rule now lives as a comment on the early return that enforces it. AND THE VERIFY NAMES BOTH CRATES, which the move nearly cost. `seal.rs` moved to `runtime-core` and its unit tests went with it, but four trials are about the PRODUCER -- the export door that re-seals -- and the tests that kill those live in `kandelo-image-module`. Repointing the verify at the new crate alone made four trials survive that had been killed for weeks, which reads exactly like a regression and was a spec no longer running the tests that answer it.",
+ "file": "crates/runtime-core/src/seal.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "build": "scripts/dev-shell.sh cargo build -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a changed descriptor still authenticates",
+   "scope": "pub fn verify_cohorts",
+   "scope_end": "\n}\n",
+   "find": "        if sha256(&descriptor) != seal.descriptor_digest {",
+   "replace": "        if false {"
+  },
+  {
+   "name": "a cohort short of its expected count still authenticates",
+   "scope": "pub fn verify_cohorts",
+   "scope_end": "\n}\n",
+   "find": "        if u32::try_from(members.len()).map_err(|_| Errno::EINVAL)? != *expected {",
+   "replace": "        if false {"
+  },
+  {
+   "name": "the cohort identity is never checked against its seal",
+   "scope": "pub fn verify_cohorts",
+   "scope_end": "\n}\n",
+   "find": "        if sha256(&cohort_identity(id, members)?) != *declared {",
+   "replace": "        if false {"
+  },
+  {
+   "name": "members may disagree about their own cohort",
+   "scope": "pub fn verify_cohorts",
+   "scope_end": "\n}\n",
+   "find": "                if *expected != seal.expected_count || *digest != seal.cohort_digest {",
+   "replace": "                if false {"
+  },
+  {
+   "name": "one member name may stand for two archives",
+   "scope": "pub fn verify_cohorts",
+   "scope_end": "\n}\n",
+   "find": "                if members.iter().any(|(name, _)| *name == seal.member) {",
+   "replace": "                if false {"
+  },
+  {
+   "name": "the cohort identity depends on declaration order",
+   "scope": "pub fn cohort_identity",
+   "scope_end": "\n}\n",
+   "find": "    members.sort_by(|left, right| left.0.cmp(&right.0));",
+   "replace": "    // unsorted"
+  },
+  {
+   "name": "the cohort identity runs its fields together",
+   "scope": "pub fn cohort_identity",
+   "scope_end": "\n}\n",
+   "find": "        put_bytes(&mut out, member)?;",
+   "replace": "        out.extend_from_slice(member);"
+  },
+  {
+   "name": "a payload with trailing bytes decodes anyway",
+   "scope": "pub fn decode(bytes: &[u8])",
+   "scope_end": "\n}\n",
+   "find": "    if r.at != bytes.len() {",
+   "replace": "    if false {"
+  },
+  {
+   "name": "a payload version this reader does not know is guessed at",
+   "scope": "pub fn decode(bytes: &[u8])",
+   "scope_end": "\n}\n",
+   "find": "    if r.u32()? != PAYLOAD_VERSION {",
+   "replace": "    if r.u32()? == u32::MAX {"
+  },
+  {
+   "name": "the cohort digest is not domain-separated",
+   "scope": "pub fn cohort_identity",
+   "scope_end": "\n}\n",
+   "find": "    out.extend_from_slice(COHORT_TAG);",
+   "replace": "    // no domain tag"
+  },
+  {
+   "name": "a pending seal is treated as no seal at all",
+   "scope": "pub fn verify_cohorts",
+   "scope_end": "\n}\n",
+   "find": "            SealState::Pending { .. } => return Err(Errno::EPERM),",
+   "replace": "            SealState::Pending { .. } => continue,"
+  },
+  {
+   "name": "a pending declaration decodes as an absent seal",
+   "scope": "fn decode",
+   "scope_end": "\n}\n",
+   "find": "        2 => SealState::Pending {\n            id: r.bytes()?,\n            member: r.bytes()?,\n            expected_count: r.u32()?,\n        },",
+   "replace": "        2 => SealState::None,"
+  },
+  {
+   "name": "a cohort already sealed is left as it is instead of recomputed",
+   "scope": "impl SealState {",
+   "scope_end": "\n}\n",
+   "find": "            SealState::Sealed(seal) => Some((&seal.id, &seal.member, seal.expected_count)),",
+   "replace": "            SealState::Sealed(_) => None,"
+  },
+  {
+   "name": "the producer seals a cohort short of its declared count",
+   "scope": "pub fn seal_cohorts",
+   "scope_end": "\n}\n",
+   "find": "        if u32::try_from(cohort.members.len()).map_err(|_| Errno::EINVAL)?\n            != cohort.expected_count\n        {\n            return Err(Errno::EINVAL);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "the producer lets members disagree about the cohort size",
+   "scope": "pub fn seal_cohorts",
+   "scope_end": "\n}\n",
+   "find": "                if cohort.expected_count != expected_count {",
+   "replace": "                if false {"
+  },
+  {
+   "name": "the producer lets two archives share one member name",
+   "scope": "pub fn seal_cohorts",
+   "scope_end": "\n}\n",
+   "find": "                if cohort.members.iter().any(|(_, name, _, _)| name == member) {",
+   "replace": "                if false {"
+  },
+  {
+   "name": "a pending declaration's count is dropped in the encoding",
+   "scope": "pub fn encode",
+   "scope_end": "\n}\n",
+   "find": "            put_u32(&mut out, *expected_count);",
+   "replace": "            put_u32(&mut out, 0);"
+  }
+ ]
+}

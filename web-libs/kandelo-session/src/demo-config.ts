@@ -110,7 +110,16 @@ export function genericDemoPresentation(
     case "web":
       return {
         bootPrimary: "syslog",
-        runningPrimary: ["web", "terminal", "syslog"],
+        // Syslog second, not terminal. A web demo's HTTP preview is unavailable
+        // for as long as the server takes to come up, and falling back to a
+        // terminal in that window hides the boot log that says WHY it is not
+        // ready yet. The image builders have ordered it this way since they
+        // were written; this case had `terminal` second, so the SAME demo got a
+        // different order depending on whether its presentation came from the
+        // image's `/etc/kandelo/demo.json` or from `builtinDemoPresentation`
+        // below -- which maps nginx, nginx-php, wordpress, wordpress-sqlite,
+        // wordpress-mariadb and lamp to exactly this case.
+        runningPrimary: ["web", "syslog", "terminal"],
         terminalAccess: "drawer",
         internalsAccess: "drawer",
       };

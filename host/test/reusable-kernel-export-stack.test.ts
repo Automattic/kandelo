@@ -1,11 +1,33 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { createWasmPosixKernelTestHarness } from "../src/kernel";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { HostFileSystem } from "../src/vfs/host-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
+
+/**
+ * A `/` for the harness to hold, not a filesystem under test. Nothing in this
+ * file reads or writes through the mount — it drives the kernel's process and
+ * reap exports — so what `/` needs to be is a `FileSystemBackend` that exists.
+ * `HostFileSystem` is one the platform ships; `MemoryFileSystem` is the one
+ * lane V deletes.
+ */
+const scratchRoots: string[] = [];
+function emptyRootBackend(): HostFileSystem {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-reusable-kernel-"));
+  scratchRoots.push(root);
+  return new HostFileSystem(root);
+}
+
+afterAll(() => {
+  while (scratchRoots.length > 0) {
+    rmSync(scratchRoots.pop()!, { recursive: true, force: true });
+  }
+});
 
 interface ReusableKernelExports extends WebAssembly.Exports {
   kernel_commit_process_exit(status: number): number;
@@ -16,7 +38,7 @@ interface ReusableKernelExports extends WebAssembly.Exports {
 }
 
 async function reusableKernel(): Promise<ReusableKernelExports> {
-  const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+  const rootfs = emptyRootBackend();
   const capture: { instance: WebAssembly.Instance | null } = {
     instance: null,
   };

@@ -1148,6 +1148,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "The dylink planner module imports nothing at all -- the empty import object is the whole surface, and the build script enforces it -- so this instance owns only the planner's private linear memory inside the process worker and can reach neither kernel memory nor guest memory.",
   },
   {
+    key: "images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.create::wasm-instance-authority::new WebAssembly.Instance( new WebAssembly.Module( moduleBytes.buffer.slice( moduleBytes.byteOffset, moduleBytes.byteOffset + moduleBytes.byteLength, ) as ArrayBuffer, ), )",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The image-builder bridge instantiates `kandelo_image_module32.wasm`, a no_std module whose import object is ABSENT -- the second argument is not passed at all, so it declares no imports and receives none. It owns its own linear memory, holds the image tree being BUILT, and is addressed only through its `sm_*` exports; it runs in whatever context builds an image (a build script, a test, or a browser page) and reaches neither kernel memory nor any guest's. The bytes it instantiates come from `installModuleBytes`, which exists because the browser cannot read the module off disk the way Node can.",
+  },
+  {
     key: "host/src/fork-module-instance.ts::instantiateForkModule::wasm-instance-authority::new WebAssembly.Instance(module, imports)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",

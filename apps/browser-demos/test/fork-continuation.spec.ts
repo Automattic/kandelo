@@ -16,13 +16,13 @@ const browserKernelModulePath = resolve(
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsModulePath = resolve(
+const imageFsModulePath = resolve(
   __dirname,
-  "../../../images/vfs/lib/sffs-image-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
-const sffsModuleWasmPath = resolve(
+const imageModuleWasmPath = resolve(
   __dirname,
-  "../../../local-binaries/sffs_module32.wasm",
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
 const catchRefFixtureSource = resolve(
   __dirname,
@@ -58,8 +58,8 @@ async function runBrowserFixture(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      sffsImageFsModuleUrl,
-      sffsModuleBytes,
+      imageFsModuleUrl,
+      imageModuleBytes,
       fixtureUrl,
       argv0,
       maxMemoryPages,
@@ -70,8 +70,8 @@ async function runBrowserFixture(
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { SffsImageFs } = await import(
-        /* @vite-ignore */ sffsImageFsModuleUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -99,7 +99,7 @@ async function runBrowserFixture(
         // WHY: these fixtures do not use files. A minimal image keeps this a
         // BrowserKernel integration proof without coupling it to the much
         // larger shell image or its package publication state.
-        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+        const imageOwner = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
         const vfsImage = await imageOwner.saveImage();
         await kernel.initFromImage({ vfsImage });
         initialized = true;
@@ -121,8 +121,8 @@ async function runBrowserFixture(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      sffsImageFsModuleUrl: asViteFsUrl(sffsImageFsModulePath),
-      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+      imageFsModuleUrl: asViteFsUrl(imageFsModulePath),
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       fixtureUrl: asViteFsUrl(fixturePath),
       argv0,
       maxMemoryPages,

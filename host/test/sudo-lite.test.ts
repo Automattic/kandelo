@@ -9,9 +9,8 @@ import {
   DEMO_LOGIN_PASSWORD_HASH,
 } from "../../images/vfs/lib/demo-login";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { NodeTimeProvider } from "../src/vfs/time";
-import { VirtualPlatformIO } from "../src/vfs/vfs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { ERRNO } from "../src/generated/abi";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -122,14 +121,30 @@ function bytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
-function sudoPlatform(
+/**
+ * THE ROOT FILESYSTEM AS AN IMAGE, which is how a Kandelo machine boots.
+ *
+ * This built a `MemoryFileSystem`, mounted it at `/` through a
+ * `VirtualPlatformIO`, and handed that to the helper as `io:` — which forces
+ * MAIN-THREAD mode, the fallback kept for tests with a custom `PlatformIO`.
+ * The kernel has been the sole `/` authority since the Phase 5 cutover, so a
+ * host mount at `/` is not how any product runs, and the fixture was testing
+ * sudo policy over a filesystem the platform no longer uses through a path it
+ * no longer takes.
+ *
+ * It builds an image with `KandeloImageFs` now and boots a kernel from it, so
+ * the same policy is exercised where it actually runs: in the worker, against
+ * the kernel's own root filesystem.
+ */
+function sudoRootfsImage(
   options: {
     wheelMember?: boolean;
     sudoers?: string;
     sudoMode?: number;
   } = {},
-): VirtualPlatformIO {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+): Promise<Uint8Array> {
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(64 * 1024 * 1024);
   const enc = new TextEncoder();
   for (const path of [
     "/etc",
@@ -141,6 +156,11 @@ function sudoPlatform(
     "/tmp",
   ]) {
     ensureDirRecursive(fs, path);
+    try {
+      fs.mkdir(path, 0o755);
+    } catch (error) {
+      if ((error as { errno?: number }).errno !== ERRNO.EEXIST) throw error;
+    }
   }
   fs.mkdirWithOwner("/home/maker", 0o755, 1000, 1000);
   fs.chmod("/root", 0o700);
@@ -213,12 +233,7 @@ function sudoPlatform(
     0,
     bytes(identityWasm),
   );
-  return new VirtualPlatformIO(
-    [
-      { mountPoint: "/", backend: fs },
-    ],
-    new NodeTimeProvider(),
-  );
+  return fs.saveImage();
 }
 
 async function runSudo(
@@ -250,7 +265,7 @@ async function runSudo(
       "KANDELO_UNTRUSTED=must-not-survive",
     ],
     stdin: options.stdin ?? `${DEMO_LOGIN_PASSWORD}\n`,
-    io: sudoPlatform(options),
+    rootfsImage: await sudoRootfsImage(options),
     timeout: 20_000,
   });
   return result;
@@ -322,7 +337,7 @@ describe("first-party guest sudo-lite", () => {
       argv: ["sudo-tty-failure"],
       uid: 0,
       gid: 0,
-      io: sudoPlatform(),
+      rootfsImage: await sudoRootfsImage(),
       timeout: 20_000,
     });
 
