@@ -589,12 +589,27 @@ mod wasm {
     /// Slots freed by an unregistered activation, kept SORTED ASCENDING so the
     /// smallest is reused first -- the fourth of the four rules, and now the
     /// only implementation of it.
-    #[repr(C, align(4))]
-    struct ResumeFreeSlots(UnsafeCell<[u32; RESUME_SLOT_CAP]>);
+    /// A BITMAP, one bit per slot, not a sorted list of slot numbers.
+    ///
+    /// The list cost `[u32; RESUME_SLOT_CAP]` -- 256 KiB of the guest's mmap
+    /// window -- to hold at most `RESUME_SLOT_CAP` values it already knew the
+    /// range of. A bit each is 8 KiB for the same information.
+    ///
+    /// It was also the slower structure for both operations. Taking the
+    /// smallest free slot meant `free[0]` plus a `copy_within` shift of the
+    /// whole live prefix, and freeing one meant appending and re-sorting it --
+    /// O(n) and O(n log n) over as many as 65,536 entries, and php really does
+    /// assign 47,757. A bitmap frees in O(1) and finds the smallest by scanning
+    /// words for the first non-zero and taking its `trailing_zeros`, which is
+    /// the same answer the sorted list gave: lowest slot first.
+    const RESUME_FREE_WORDS: usize = RESUME_SLOT_CAP.div_ceil(64);
+
+    #[repr(C, align(8))]
+    struct ResumeFreeBits(UnsafeCell<[u64; RESUME_FREE_WORDS]>);
     // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ResumeFreeSlots {}
-    static RESUME_FREE_SLOTS: ResumeFreeSlots =
-        ResumeFreeSlots(UnsafeCell::new([0u32; RESUME_SLOT_CAP]));
+    unsafe impl Sync for ResumeFreeBits {}
+    static RESUME_FREE_BITS: ResumeFreeBits =
+        ResumeFreeBits(UnsafeCell::new([0u64; RESUME_FREE_WORDS]));
     static RESUME_FREE_COUNT: AtomicU32 = AtomicU32::new(0);
 
     /// The next never-used slot. Starts at 1: slot 0 is the reserved "no event"
@@ -605,13 +620,19 @@ mod wasm {
     fn resume_allocate_slot() -> u32 {
         let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
         if free_count > 0 {
-            // SAFETY: single-threaded; `free_count <= RESUME_SLOT_CAP`.
-            let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
-            let slot = free[0];
-            // Kept sorted, so removing the smallest is a shift by one.
-            free.copy_within(1..free_count, 0);
-            RESUME_FREE_COUNT.store((free_count - 1) as u32, Ordering::Relaxed);
-            return slot;
+            // SAFETY: single-threaded; the bitmap covers every slot in range.
+            let bits = unsafe { &mut *RESUME_FREE_BITS.0.get() };
+            for (word_index, word) in bits.iter_mut().enumerate() {
+                if *word == 0 {
+                    continue;
+                }
+                let bit = word.trailing_zeros() as usize;
+                *word &= *word - 1; // clear the lowest set bit
+                RESUME_FREE_COUNT.store((free_count - 1) as u32, Ordering::Relaxed);
+                return (word_index * 64 + bit) as u32;
+            }
+            // A non-zero count with no bit set is impossible; fall through to a
+            // fresh slot rather than returning a slot that is not free.
         }
         let slot = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
         RESUME_NEXT_SLOT.store(slot + 1, Ordering::Relaxed);
@@ -710,21 +731,25 @@ mod wasm {
                 continue;
             }
             let slot = index[position][2];
-            // SAFETY: single-threaded; freed slots never exceed assigned ones.
-            let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
-            let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
-            free[free_count] = slot;
-            RESUME_FREE_COUNT.store((free_count + 1) as u32, Ordering::Relaxed);
+            // SAFETY: single-threaded; the index below is bounds-checked against
+            // the bitmap, so a slot outside the table cannot corrupt it.
+            if (slot as usize) < RESUME_SLOT_CAP {
+                let bits = unsafe { &mut *RESUME_FREE_BITS.0.get() };
+                let word = &mut bits[slot as usize / 64];
+                if *word & (1u64 << (slot as usize % 64)) == 0 {
+                    *word |= 1u64 << (slot as usize % 64);
+                    let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed);
+                    RESUME_FREE_COUNT.store(free_count + 1, Ordering::Relaxed);
+                }
+            }
             // Compact: the last live entry takes this one's place.
             index[position] = index[count - 1];
             count -= 1;
             freed += 1;
         }
         RESUME_SLOT_COUNT.store(count as u32, Ordering::Relaxed);
-        let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded; sorting the live prefix only.
-        let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
-        free[..free_count].sort_unstable();
+        // No sort: a bitmap is ordered by construction, which is the whole
+        // reason the smallest-first rule costs nothing to maintain now.
         Ok(freed)
     }
 
@@ -3402,6 +3427,10 @@ mod wasm {
         // physical table, which it inherits nothing of, starts empty.
         RESUME_SLOT_COUNT.store(0, Ordering::Relaxed);
         RESUME_FREE_COUNT.store(0, Ordering::Relaxed);
+        // The bitmap is cleared with the count it describes: a stale bit would
+        // hand the child a slot the child never assigned.
+        // SAFETY: single-threaded per worker.
+        unsafe { &mut *RESUME_FREE_BITS.0.get() }.fill(0);
         RESUME_NEXT_SLOT.store(1, Ordering::Relaxed);
         ACT_FUNC_CATALOG_BASE_COUNT.store(0, Ordering::Relaxed);
         ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
