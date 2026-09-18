@@ -2317,3 +2317,76 @@ costs channel round trips and static costs none -- is true and small. Three
 tenths of one percent of a fork, and under a tenth of a percent of process
 startup. I do not think that number decides anything by itself, and I am not
 treating it as decisive; it is simply no longer unmeasured.
+
+## What main does today: nothing, because none of this exists there
+
+The maintainer asked what main does about sizing these catalogs. The answer
+is uncomfortable and it reframes this whole lane.
+
+`crates/fork-module` and `crates/fork-codec` DO NOT EXIST on main
+(`git ls-tree origin/main crates/` lists only `fork-instrument`, `kernel`,
+`runtime-core`, `shared`, `wasm-local-root-spill`). The co-resident module is
+campaign work that has never merged.
+
+On main the same data lives in growable JavaScript collections:
+
+  * `host/src/fork-resume-catalog.ts` -- `const records: ForkResumeCatalogRecord[]
+    = []`, pushed as the section decodes.
+  * `host/src/fork-activation-registry.ts` -- `new Map<number,
+    ForkActivationRegistration>()` and `new Map<number,
+    ForkActivationTableCatalogEntry[]>()`.
+  * `host/src/fork-gc-codec.ts` -- `new Map<number, ForkGcLayoutDescriptor>()`.
+    Its only limit, `MAX_RECIPE_ID = 0x7fff_fffe`, is a format-validity check,
+    not a storage bound.
+
+There is no floor, no cap, no arena and no pre-sizing anywhere on main. The
+sizing question does not exist there, because the JS heap answers it.
+
+**So every fixed bound in the fork-module is something this migration
+INTRODUCED.** A `no_std` PIC wasm module cannot reach a JS heap, so the port
+replaced growable collections with fixed Rust statics, and each static then
+needed a number that nobody had. That is where `RESUME_SLOT_CAP = 65_536`,
+`ACT_EXN_TAGS_ORD_FLOOR = 8_192` and the rest came from -- not from analysis
+of the workload, but from the port needing *a* number at the moment it removed
+the thing that made numbers unnecessary.
+
+This lane has been framing that as an optimization problem: how to shrink
+statics. It is more honestly regression repair. The identity table was the
+first instance -- "We keep trying to pre-reserve address space" -- and the
+arenas are the same defect wearing different constants.
+
+It also means the comparison that matters is not "static arena vs dynamic
+allocation". It is "what the JS heap did for free vs what we must now build to
+match it".
+
+## Can instrumentation make an informed guess at the size?
+
+Asked about the resume catalog specifically. Three-part answer.
+
+**Per module, there is nothing to guess.** `emit_resume_catalog`
+(`crates/fork-instrument/src/instrument.rs:4456`) writes the exact count into
+the 12-byte header; the count is `targets.len()`, the instrumented resume
+targets derived from the module's call graph. Reading it back costs twelve
+bytes and no parse. Any per-activation allocation can already be sized
+exactly, today, with no estimate anywhere.
+
+**The aggregate cannot be derived statically.** The instrumenter sees one
+module at a time, and there is no dependency edge to follow: php.wasm's
+`dylink` section declares NO needed libraries, and neither does `intl.so`. The
+extensions reach the process through runtime `dlopen` from `php.ini`, so no
+analysis at instrumentation time or link time can discover the set.
+
+**But the packaging layer already knows the set.**
+`packages/registry/php/package.toml` declares every output -- `php.wasm`,
+`php-fpm.wasm`, and all six extension `.so` files -- as `[[outputs]]` entries.
+Summing their catalog headers at image-build time is free and needs no new
+metadata format, only a walk of what the manifest already lists.
+
+The limit of that is what it measures: what the package SHIPS, not what a run
+LOADS. php selects extensions from `php.ini`, so the sum is an upper bound
+(28,568 ordinals for the php CLI stack), and it cannot cover an object built
+at runtime.
+
+So the honest form of "an informed guess at instrumentation time" is: the
+per-module number is not a guess and never was, and the aggregate is not
+knowable at instrumentation time at all -- only at packaging time, as a bound.
