@@ -1839,8 +1839,14 @@ mod wasm {
     /// `mmap_anonymous` rounds every length up to a whole 64 KiB wasm page
     /// (`runtime-core/src/memory.rs`, pinned by `test_mmap_aligns_to_page`:
     /// two 1-byte mappings land 0x10000 apart). That is mmap's contract, not a
-    /// shortcut -- a mapping must be independently protectable and unmappable,
-    /// and protection is tracked per page. So eight activations holding a few
+    /// shortcut, though NOT for the reason first written here. "Protection is
+    /// tracked per page" is false in Kandelo: `MemoryManager::Mapping::prot` is
+    /// "tracked but not enforced" and `sys_mprotect` is a no-op, because wasm
+    /// linear memory has no MMU. The real reasons are that 64 KiB is the wasm
+    /// page -- `memory.grow`'s unit, so the granularity the kernel can obtain
+    /// memory in -- and that `munmap` removes whole pages, so two mappings
+    /// sharing one could not be unmapped independently. So eight activations
+    /// holding a few
     /// hundred bytes each would claim 512 KiB of pages to replace a 256 KiB
     /// static they SHARED. Measured: that version passed 39 lifecycle tests and
     /// failed P-11, whose process has 2-6 pages of slack.

@@ -1916,3 +1916,196 @@ practice.
 It predates this lane and belongs to the dlopen archive subsystem rather than
 fork capture -- but it has the same root cause as the catalog mistake, and one
 non-reset allocator with exact-size allocation would fix both.
+
+## Why not just use the guest's allocator
+
+The maintainer pressed this twice, and it deserved a measured answer rather
+than the one I gave first ("malloc is not exported, musl static-links it"),
+which came from grepping ONE 51-export test fixture.
+
+Measured across real binaries:
+
+| binary | exports | malloc | free | __malloc_lock |
+|---|---|---|---|---|
+| `php.wasm` | 19,626 | yes | yes | yes |
+| `bash.wasm` | 53 | no | no | no |
+| `d_01_single_fork.wasm` | 51 | no | no | no |
+| `p_11_fork_continuation_enomem.wasm` | 51 | no | no | no |
+
+So php DOES export the allocator, and my first answer was wrong. But php is
+the outlier: it exports ~19,600 symbols because it is a dynamic-extension
+host. `bash` exports 53 and has no allocator among them; an ordinary
+SDK-linked program keeps `malloc` internal.
+
+**Availability rules it out as a general mechanism.** The module is
+instantiated against EVERY guest. Calling an export that one program in the
+tree happens to have would mean two code paths -- a real allocator for php and
+a hand-rolled one for everything else -- which is worse than either alone.
+
+**Safety points the same way, and `__malloc_lock` is the tell.** php also
+exports `__malloc_lock` and `__malloc_atfork`. Those exist because musl's
+allocator takes a LOCK and needs explicit coordination across `fork` -- the
+classic hazard, and the reason POSIX restricts what a forked child may call.
+The fork-module allocates exactly where that bites: during capture, and during
+child setup while the process is still being created. Taking a lock the guest
+may already hold, in a child that inherited it locked, deadlocks -- and that
+failure looks precisely like the slot-chunk attempt above: every process asleep
+at 0% CPU.
+
+Not proven, but unlike the earlier guesses this one has evidence pointing AT it
+rather than away: the guest's own libc ships an atfork handler for this exact
+problem.
+
+**What survives of the critique.** The module does need its own allocator. What
+it does not need is FOUR ad-hoc floors and a raw `mmap` per object. One
+non-reset allocator -- exact sizes, real free, mapping on demand, and per the
+floor finding above, no fixed floor at all once P-11 is realigned.
+
+### And why not the kernel's allocation APIs
+
+Asked next, since the module shares the process memory. The module ALREADY
+calls the kernel's allocator: `channel_mmap` issues `SYS_MMAP` over the syscall
+channel and lands in `mmap_anonymous`. Access was never the constraint --
+granularity is, and page granularity is mmap's contract rather than a
+shortcut.
+
+The kernel does have a byte-granular allocator, `kernel_alloc_scratch(size)`,
+which calls its own Rust `alloc_zeroed`. It is unusable here: it returns a
+KERNEL pointer, into the `Kernel` object's own `WebAssembly.Memory` in the
+kernel worker (`host/src/kernel.ts` allocates the API scratch region from
+`this.#memory`, and `KernelPointer` is a distinct type from a guest address).
+
+The fork-module's data has to live in the GUEST's memory, because `fork-codec`
+indexes it by absolute guest offset, capture and replay read it while operating
+on the guest's address space, and a COW child inherits it only by virtue of
+being inside the memory that gets copied. A kernel-heap pointer satisfies none
+of those.
+
+So the kernel offers a page-granular allocator over guest memory and a
+byte-granular one over kernel memory, and the module needs byte-granular over
+GUEST memory -- which neither provides, and which nothing else can, because
+sub-allocating inside a mapping is by definition the job of whoever owns the
+mapping.
+
+All three routes therefore close on evidence rather than preference:
+
+  * the guest's allocator -- absent from most guests, fork-hazardous where
+    present (`__malloc_lock`, `__malloc_atfork`);
+  * the kernel's fine-grained allocator -- wrong address space;
+  * the kernel's guest-memory allocator -- page-granular by contract.
+
+A module-owned allocator is not a taste; it is the only place the two
+requirements meet. What was wrong was the implementation -- four ad-hoc floors
+and a raw `mmap` per object -- not the decision to have one.
+
+### Correcting why mmap is page-granular
+
+I justified it as "mmap's contract -- a mapping must be independently
+protectable, and protection is tracked per page". That is FALSE in Kandelo, and
+the source says so: `MemoryManager::Mapping::prot` is commented "tracked but
+not enforced", and `sys_mprotect` is a no-op pinned by
+`test_mprotect_succeeds_noop`. Wasm linear memory has no MMU, so protection
+cannot be enforced at all. I reasoned from general POSIX systems instead of
+from this one.
+
+Asked for the spec citation, I could not give one honestly: no network access,
+and fabricating a URL or quoting text I cannot verify would be worse than
+admitting the gap. From memory and flagged as unverified: POSIX's strongest
+page language is in `munmap` (it removes mappings for ENTIRE PAGES containing
+the range), `mmap` speaks of zero-filling a partial page at the end of an
+object, and the page size itself is implementation-defined via
+`sysconf(_SC_PAGESIZE)`. "Conventional mmap semantics" is what I should have
+written, not "POSIX contract".
+
+What actually forces 64 KiB here:
+
+  * it is the WASM PAGE, `memory.grow`'s unit, so it is the granularity the
+    kernel can OBTAIN memory in -- though that governs acquisition, not the
+    bookkeeping of what is handed out;
+  * `munmap` removing whole pages means two mappings sharing a page could not
+    be unmapped independently, and unlike prot flags that IS guest-observable.
+
+Whether Kandelo needs guest-visible mmap to stay page-granular is a real
+question and not settled here, and the maintainer has said they do not want
+mmappings to be unnecessarily large regardless, so it stays on the table.
+
+What I wrote next -- "it does not change what the module should do: map one
+region and sub-allocate inside it" -- was a conclusion I stated as shared when
+it was mine alone, and the maintainer said so. It is also wrong for half the
+buckets. See the next section.
+
+## Is the aggregate catalog size known at allocation time?
+
+The maintainer asked this directly, and it is the question that dissolves
+half the argument above. Answer: yes for two of the four buckets, no for the
+other two, and the split is not about allocator design at all -- it is about
+WHEN each catalog is seeded.
+
+Every seeding entry point already carries an exact size, so no individual
+catalog is ever a guess:
+
+  * `fm_set_activation_gc_codec(activation_id, ptr, byte_len)` -- lib.rs:7191
+  * `fm_set_activation_exception_codec(activation_id, ptr, byte_len)` -- :2116
+  * `fm_set_activation_resume_catalog(activation_id, ptr, count)` -- :7124
+  * `fm_set_resume_catalog(ptr, count)` -- :7099
+
+### Known: the GC codec and exception codec arenas
+
+`host/src/worker-main.ts:4373` builds `gcCodecBytes` as a COMPLETE
+`Map<activationId, Uint8Array>` by walking every compiled module's custom
+sections; `:4391` does the same for `exceptionCodecBytes`. Both maps are
+finished at `:4386` and `:4401`. The loops that consume them do not run until
+`:4795` and `:4825`.
+
+Between those points the host holds every byte array it will ever hand over.
+The aggregate is one `reduce` over the map's values, available roughly four
+hundred lines before the first setter call.
+
+Those two maps back `ACT_GC_CODEC_FLOOR` (32 KiB) and `ACT_EXN_TAGS_ORD_FLOOR`
+(8,192 ordinals, 32 KiB) -- both of the arenas that got a floor plus a spill
+chunk list in this lane.
+
+For these, the right shape is neither a module sub-allocator nor a change to
+mmap granularity. It is ONE mmap of the exact summed size, rounded up once,
+taken before the seeding loop starts: no floor, no chunk list, no spill index,
+no allocator. Page rounding then costs at most 64 KiB ONCE for the whole
+worker rather than once per activation, and the size tracks the program
+instead of tracking P-11.
+
+This retires the sub-allocation claim for these buckets outright. There is
+nothing to sub-allocate when the total is a single known number.
+
+### Not known: the resume catalog
+
+`fm_set_activation_resume_catalog` is called from `instantiateSideActivation`
+(`worker-main.ts:897`), once per `dlopen`, as each module loads. Nothing at
+that moment knows how many `dlopen`s follow.
+
+That covers `ACTIVATION_CATALOG_ORD_FLOOR` (32 KiB) and `RESUME_SLOT_INDEX`
+(`RESUME_SLOT_CAP` 65,536 entries of `[u32; 3]`, 768 KiB).
+
+The aggregate for these IS known at fork time -- `forkActivations.ordered()`
+enumerates every activation -- but it is needed at dlopen time, which is
+strictly earlier. That ordering, not allocator design, is the whole of the
+difficulty.
+
+Options, none of them chosen here:
+
+  * geometric growth: mmap a larger region, copy, unmap the old one. Real
+    work, but bounded and amortized, and it is what a growable vector does.
+  * move the seed point later, so the aggregate is known before the first
+    write. This changes when resume slots are numbered, which resume-slot
+    parity depends on; not obviously safe.
+  * leave it. The `RESUME_SLOT_INDEX` floor+chunk attempt already DEADLOCKED
+    when forced below its floor (see the earlier section), so this bucket has
+    a measured reason to be treated separately.
+
+### What was measured, and what was not
+
+The 73%-occupancy figure for php (47,757 ordinals of 65,536) is the RESUME
+catalog -- the streaming side, not the known-aggregate side. It was one
+measurement earlier in this lane and should be re-derived before anyone rules
+on it.
+
+Nothing in this section has been implemented. It is a reading of the two call
+paths, with line numbers so it can be refuted in one step.
