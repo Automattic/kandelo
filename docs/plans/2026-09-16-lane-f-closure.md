@@ -1685,3 +1685,92 @@ And a gap in what "dynamic" currently means here: this is allocation on
 demand, NOT free. Chunks are retained for the worker's life; only the identity
 table releases, on dlclose. A long-lived worker that peaks once holds that
 memory forever.
+
+## Inventory: every fork-related allocation, and who frees it
+
+Assembled from source because the question "what are we actually allocating
+for?" had no single answer anywhere. All of it lives inside the process's ONE
+shared `WebAssembly.Memory`.
+
+### 1. The co-resident module's region -- reserved per process
+
+`instantiateForkModule`'s `reserve` goes through `continuationMmap`, so this
+comes out of the guest's own mmap window and is held for the worker's life:
+
+    alignUp(dylink memorySize + 1 MiB shadow stack) + 256 KiB staging slab
+    = 4.44 MiB today (7.44 MiB before this work)
+
+The staging slab is the host->module handover buffer; the shadow stack is the
+module's own call stack.
+
+### 2. Module statics, inside that memorySize
+
+Twenty arrays, by purpose:
+
+  * ALLOCATOR: `HEAP` (1 MiB floor), `SCRATCH` (64 KiB)
+  * RESUME SLOTS: `RESUME_SLOT_INDEX` (768 KiB), `RESUME_FREE_BITS` (8 KiB),
+    `RESUME_CATALOG` (256 KiB)
+  * PER-ACTIVATION CATALOGS: activation ordinals, GC codec, exn tags, KFIG
+    bytes -- each an arena plus a small index
+  * PER-ACTIVATION SMALL TABLES: func-catalog bases, static-root bases,
+    template ids, table-state owners (64-256 entries each, all tiny)
+  * CAPTURE WORKING STATE: captured externrefs (16 KiB), vector stack,
+    imported-global provenance (6 KiB)
+
+### 3. Dynamic: EIGHT mmap sites, THREE munmap sites
+
+| allocation | freed | by |
+|---|---|---|
+| frame chunks, per fork | yes | `ForkChunkList::release_all` |
+| journal image, per capture | yes | `release_fork_chunks` drains `extra_chunks` |
+| identity chunks | yes | `release_identity_activation`, on dlclose |
+| heap chunks past the floor | no | retained deliberately, so growth is paid once |
+| catalog / GC codec / exn-tag spills | no | live as long as the activation |
+| table-patch records | no | see below |
+
+`commit_table_mutation_impl` maps a record per table mutation, appends it into
+the dlopen archive chain, and records nothing in `extra_chunks` -- no release
+path names it. PREDATES this work, unmeasured, and flagged rather than
+claimed: the archive may be reclaimed wholesale somewhere else. It is simply
+the one site with no visible owner.
+
+So "dynamic allocation" here is DEFERRED RESERVATION, not reclamation. Five of
+eight sites never free, and everything added in this session is retained.
+
+### 4. Guest process layout, below the mmap window
+
+`mmapBase` is 16.19 MiB: control slab + syscall channel + a 16 MiB BRK
+RESERVE. The window is [mmapBase, maxAddr), and `maxAddr` is
+`maximumPages * 64 KiB`.
+
+Worth stating plainly: the brk reserve alone is more than twice the module
+region this session spent its effort shrinking, and it sits below the window
+rather than inside it. If the goal is address space for guests, that is the
+larger number, and it was never examined because the work anchored on the
+module.
+
+## P-11's origin, and why realigning it is sanctioned
+
+Fixture and test entry both arrived in `b68524efa8` (2026-07-25), a 253-file
+squashed "coherent ABI 42 platform foundation" commit whose message never
+mentions either. The history explains nothing; the campaign plan does.
+
+`docs/plans/2026-09-08-rust-first-fork-point-of-no-return.md` Phase 1, on
+restoring dynamic mmap frame allocation:
+
+> Realign the `fork-memory-clone` / P-10 / P-11 fixtures to the growable
+> model (as new correct behavior, not test-relaxing).
+
+and Phase 2 is titled "Module-mode partial-capture-abort (the P-11 /
+truthful-failure foundation)".
+
+So P-11's SUBJECT is a real correctness property -- allocation failure
+mid-capture must fail truthfully and preserve the parent -- and its 384-page
+budget is the MECHANISM for reaching that failure, calibrated for the old
+fixed-reservation model. The plan anticipated those fixtures needing
+realignment once allocation became growable.
+
+Which means the floors in this lane are P-11-shaped by a fixture the plan
+said to realign. The distinction the plan draws is the one to hold: realigning
+it to the growable model is the planned work; raising `maxPages` until it goes
+green is the test-relaxing it warns against. Those look alike and are not.
