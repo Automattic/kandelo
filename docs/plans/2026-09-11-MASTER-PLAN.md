@@ -819,6 +819,14 @@ place.
 OPEN, filed 2026-09-17. **Filed twice with the wrong mechanism first. The
 correction is the entry; read it before the history.**
 
+**DECIDED by the maintainer, 2026-09-17: the suite runs source-only,
+matching the dev server.** The ambient mode is not to be made explicit and
+kept; it is to be replaced. The expected consequence is accepted up front
+— moving to source-only will surface real failures that ambient mode was
+hiding behind stale artifacts, and those are findings to file, not reasons
+to reverse the decision. Dispatched as a lane brief at
+`docs/plans/lane-briefs/b54-browser-suite-resolution-mode.md`.
+
 ### What is established
 
 The browser E2E suite resolves artifacts differently depending on how it
