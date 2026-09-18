@@ -1844,3 +1844,75 @@ Checked per site, and none of the five that never free is prevented from it:
 So "five of eight never free" describes a gap in what was built, not a
 constraint that was discovered. Saying otherwise would be dressing an omission
 as a finding.
+
+## The floors have no remaining justification
+
+Asked whether the reserved space is contiguous and exclusive, and what the
+allocator actually allocates. Both answers point the same way.
+
+**It is contiguous, exclusive, and reserved whether touched or not.** The
+module's region comes from `mmap_anonymous`, which first-fits a gap by merging
+two address-ordered lists (`mappings`, `reserved_regions`) and records the
+result. So `find_gap` will never hand any of that range to another `mmap()`
+while it is mapped. A 4 MiB heap peaking at 512 KiB still denies the other
+3.5 MiB to everything else in the process. What it does NOT cost is committed
+physical memory.
+
+**It is both kinds of allocation at once**, which is the flaw. The bump
+allocator sub-allocates inside the already-reserved static region; the chunk
+growth I added obtains NEW address space by `channel_mmap`. A fixed floor with
+dynamic expansion bolted on.
+
+**And the floors are justified by nothing but P-11.** The original reason given
+-- "a fork child cannot syscall while it is being created" -- was disproved
+here: at a 4 KiB heap floor, where growth during child setup is mandatory, a
+real end-to-end fork passes; at 64 KiB, 40 of 41 lifecycle tests pass and the
+single failure is P-11.
+
+So every floor in this lane exists to satisfy one fixture whose tightness is
+manufactured twice: 384 pages AND a 16 MiB `__heap_base` fallback the fixture
+does not need. Realign that -- which Phase 1 of the point-of-no-return plan
+already sanctions as "new correct behavior, not test-relaxing" -- and the
+floors go to essentially zero.
+
+That reframes the allocator question. It is not "floor plus spill, done
+better". It is NO FLOOR: one allocator that maps on demand, sub-allocates exact
+sizes inside what it maps, and frees. The only thing in the way is a fixture
+the plan says to realign.
+
+## commit_table_mutation_impl leaks, and the chain is why
+
+Investigated on the maintainer's instruction. It is a real leak by inspection.
+
+`release_archive_writer` frees nothing -- it is a LOCK release, a
+`compare_exchange(WRITER -> IDLE)` plus a notify. And the record is mapped and
+then linked INTO the published archive:
+
+    let size      = appended_record_size(&patch)?;
+    let record_at = channel_mmap(channel_base()?, size)?;
+    let plan      = plan_table_patch_append(&archive, head, tail, record_at, &patch);
+
+The mapping's address becomes part of the structure later readers walk, so it
+cannot be freed while the chain references it -- and the chain only grows, each
+patch bumping `archive.generation` and appending.
+
+Three properties make it worse than a per-fork leak:
+
+  * PER TABLE MUTATION, not per fork. Every `dlopen` that mutates the indirect
+    function table appends one. A long-lived worker that dlopens repeatedly --
+    php-fpm loading extensions, the LXDE demo launching apps -- accumulates one
+    mapping each.
+  * PAGE GRANULARITY. `appended_record_size` is a small header plus runs, and
+    `mmap_anonymous` rounds to 64 KiB, so most of each page is waste. The same
+    defect as the per-object catalog mapping, already present here.
+  * PROCESS-WIDE. The archive lives in the dlopen control region shared across
+    the process's workers, so no fork or worker teardown resets it.
+
+NOT established: whether anything reclaims the archive wholesale at process
+exit, and what the real mutation rate is for a workload like php-fpm. Both are
+measurable; neither is measured. Structural leak by inspection, unquantified in
+practice.
+
+It predates this lane and belongs to the dlopen archive subsystem rather than
+fork capture -- but it has the same root cause as the catalog mistake, and one
+non-reset allocator with exact-size allocation would fix both.
