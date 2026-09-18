@@ -2461,3 +2461,78 @@ before. The audit was cheap -- extract main's fork TS to a scratch directory,
 grep for capacity-shaped constants, read the survivors. It should have run
 before the claim went out, and the cost of not running it was telling the
 maintainer something false about their own codebase.
+
+## Census: every fixed bound in the module, and what proportion each is
+
+The audit that caught the "no arena on main" error, turned on this module.
+Twenty fixed-size statics, every `UnsafeCell<[...]>` in `lib.rs`, with the
+bytes each costs.
+
+    HeapCell (bump heap floor)          1,048,576   1024.0 KiB   43.8%
+    ResumeSlotIndex                       786,432    768.0 KiB   32.8%
+    CatalogCell (RESUME_CATALOG_CAP)      262,144    256.0 KiB   10.9%
+    ScratchCell                            65,536     64.0 KiB
+    ActKfigBytes                           65,536     64.0 KiB
+    ActGcCodecBytes (FLOOR)                32,768     32.0 KiB
+    ActExnTagsOrds (FLOOR)                 32,768     32.0 KiB
+    ActivationCatalogOrds (FLOOR)          32,768     32.0 KiB
+    CapturedExternrefs                     16,384     16.0 KiB
+    ResumeFreeBits                          8,192      8.0 KiB
+    ImportedGlobalProvenanceTable           8,192      8.0 KiB
+    ActTableStateOwners                     3,072      3.0 KiB
+    ActTemplateIds                          2,304      2.3 KiB
+    ActKfigIndex                            2,048      2.0 KiB
+    ActivationCatalogIndex                  1,536      1.5 KiB
+    ActGcCodecIndex                         1,536      1.5 KiB
+    ActExnTagsIndex                         1,536      1.5 KiB
+    ActFuncCatalogBase                        512      0.5 KiB
+    ActStaticRootBase                         512      0.5 KiB
+    VectorInFlight                             96      0.1 KiB
+    ---------------------------------------------------------
+    sum                                 2,372,448      2.26 MiB
+
+The authoritative total is the built module's dylink `memorySize`, read from
+`local-binaries/fork_module32.wasm`: **2,395,460 bytes (2.28 MiB)**. The
+census accounts for 99.0% of it, so these twenty arrays essentially ARE the
+module's static memory; everything else -- code constants, strings, the Rust
+runtime -- is 23 KB.
+
+### The proportion check the decisions needed
+
+The two arenas the maintainer just ruled on -- GC codec and exception tags --
+are 32,768 bytes each, **2.7% of the module's static between them**. Making
+them dynamic is right on principle and nearly irrelevant to the total.
+
+Three statics are 88%:
+
+    HeapCell + ResumeSlotIndex + CatalogCell = 2,097,152 bytes of 2,395,460
+
+`HeapCell` already chunks above its floor (`7b3276bf5`); the floor itself is
+the reservation. `ResumeSlotIndex` is the one that DEADLOCKED when forced
+below its floor and was reverted. And the third has never been discussed in
+this lane at all.
+
+### CatalogCell: 256 KiB nobody has looked at
+
+`RESUME_CATALOG_CAP = 65_536` backs `static RESUME_CATALOG: CatalogCell` --
+`[u32; 65_536]`, 256 KiB. It is live, not legacy: `fm_set_resume_catalog`
+(`lib.rs:7099`) is called from the backend's setup path
+(`host/src/fork-module-backend.ts:275`) with `options.catalogOrdinals`, and
+reseeds activation 0.
+
+So the module stores the SAME KIND OF DATA two different ways, split by
+whether the activation is the main program:
+
+  * activation 0's ordinals -> `RESUME_CATALOG`, a fixed 256 KiB static;
+  * activations 1..N -> `ActivationCatalogOrds`, a 32 KiB floor with spill.
+
+And the split runs the wrong way round against the measurements. The main
+program is the LARGEST catalog in every case measured -- php.wasm needs
+19,025 ordinals against the largest extension's 7,750 -- so the biggest
+consumer is the one on the fixed static, and the small ones got the growth
+treatment. php uses 29% of the 256 KiB and wastes 182 KiB.
+
+I have not investigated why the two paths exist or whether they can be one.
+Recording it because a census is the only way it would have surfaced: it never
+came up in any discussion of "the catalogs", and I had been treating
+`ActivationCatalogOrds` as though it were the whole story.
