@@ -788,8 +788,9 @@ browser total is 160 passed / 14 failed, against 164/14 before this merge. The
 demo-visible surface improved; process semantics regressed.
 
 **This is what stands between the branch and merging PR #1350.** The campaign
-migrated fork; shipping it with three reproducible fork regressions would ship
-the one thing it was for.
+migrated fork; shipping it with two reproducible fork regressions would ship
+the one thing it was for. The brief for lane F is
+`docs/plans/lane-briefs/b52-fork-vfork-regressions.md`.
 
 ### Correction, 2026-09-17: the three are not one defect
 
@@ -801,7 +802,7 @@ them are process semantics:
 |---|---|---|
 | `ruby-posix-spawn.spec.ts:299` | `rootResult.diagnostics` is not `[]` | two `fork aborted with errno=12: the kernel refused to create the child process` (pid 100, source `fork`). ENOMEM. The assertions BEFORE it pass: exit code 0, empty stderr, the marker in stdout. So root's fork produces the right result after aborting twice. |
 | `process-memory-retirement.spec.ts:132` | `stdout.match(/child exited with 42/g)` is `null` | **zero** occurrences, where 100 are expected. Line 129 passes: all 100 churn iterations exit 0. So the fork and exec succeed and the child's output never arrives. This is missing child output, not memory exhaustion. |
-| `kandelo-merge-gate.spec.ts:331` | page text never contains `Ready` | the page reports `node-vfs.vfs.zst is not built. Run: ./run.sh fetch`. That is artifact resolution, not fork. |
+| `kandelo-merge-gate.spec.ts:331` | page text never contains `Ready` | the page reports `node-vfs.vfs.zst is not built. Run: ./run.sh fetch`. That is artifact resolution, not fork — and it is present in the browser run taken BEFORE this merge, so it is not a regression from it. Filed separately as B54. |
 
 The first two share a setting rather than a symptom: both fence process memory
 exactly — Ruby at `initialAddressSpaceBytes(rubyBinaryPath)`, the churn test at
@@ -812,6 +813,66 @@ Ruby spec. That was wrong: the run never reaches those assertions, because
 `diagnostics` fails first. Nothing is known about `childEvents` or
 `forkCounts`, and a brief that claims otherwise sends its reader to the wrong
 place.
+
+## B54 — optional demo VFS images do not resolve under source-only
+
+OPEN, filed 2026-09-17. **Pre-existing: it is present in the browser run
+taken BEFORE the lane Y/V merge, so it is not a regression from it and is
+not lane F's.**
+
+The Node.js demo never boots. The page reports
+
+```
+ERR  Failed to boot Node.js
+ERR  node-vfs.vfs.zst is not built. Run: ./run.sh fetch
+```
+
+and `kandelo-merge-gate.spec.ts:331` fails waiting for "Ready". The advice
+in that message is wrong: the artifact IS built. It is a proper member of
+the pinned projection —
+
+```
+NODE: node-vfs wasm32
+   member: programs/wasm32/node-vfs.vfs.zst  13810746
+```
+
+— and the bytes are on disk at
+`local-binaries/source-only-v1/programs/wasm32/node-vfs.vfs.zst`.
+
+**What the page actually gets.** `optional-demo-vfs.ts` reaches these
+images through six `import.meta.glob` calls over the AMBIENT mirror roots
+(`local-binaries/programs/wasm32/...` and `binaries/...`). Fetching the
+transformed module from the dev server shows all six evaluated to empty
+objects:
+
+```
+OPTIONAL_DEMO_VFS_IMPORTERS = {
+        .../* #__PURE__ */ Object.assign({ }),   (x6)
+};
+```
+
+That is Vite's own native glob expansion, not the SourceOnly rewrite's
+output — the rewrite emits either a keyed importer or a bare `({})`. So
+`rewriteMirrorGlobs` in `apps/browser-demos/source-only-vite-assets.ts`
+did not claim these globs, Vite expanded them itself against the ambient
+roots, and under the source-only policy nothing is there: the artifacts
+live only under `local-binaries/source-only-v1/`. An empty importer map
+is indistinguishable from "not built", so the page reports the artifact
+missing when the truth is that the resolution path never looked where it
+lives.
+
+The mechanism beyond that point is not established. The plugin is
+`enforce: "pre"` with a `transform` hook, and Vite's own `import.meta.glob`
+expansion is also early; `vite.config.ts` carries a comment saying "Vite
+expands import.meta.glob() before normal alias resolution", which would
+explain a transform that never sees the text it is meant to rewrite. That
+is a hypothesis, not a finding.
+
+**Why it matters beyond one demo.** This is the same shape as B53: a
+resolution path that is silent rather than loud when it cannot find what
+it needs. B53 at least failed loudly. This one produces a message that
+sends the reader to `./run.sh fetch`, which cannot help, for an artifact
+that is present and correct.
 
 ## B53 — the image-writer module reached no build and no projection
 

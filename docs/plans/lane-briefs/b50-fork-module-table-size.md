@@ -1,3 +1,16 @@
+> **WITHDRAWN 2026-09-17. The diagnosis below is wrong and lane F's code
+> was never at fault.** It blames three lines of the fork-module injector
+> for a `LinkError` about the module's table import. The module was
+> internally consistent all along — `wasm-tools dump` and the host's own
+> parser both read `table_size: 2`. The actual cause was a stale
+> `host/dist`: package-build workers run the compiled bundle, which was a
+> day older than `host/src`. Nothing checks that bundle's freshness, which
+> is filed as B51.
+>
+> This was the third wrong diagnosis in a row for B50, each stated too
+> confidently. The file is kept, unedited below, because the record of how
+> a diagnosis went wrong is worth more than the diagnosis. Do not act on it.
+
 # B50 — after the lane F merge, no process that forks can start
 
 Paste everything below into the lane F agent.
