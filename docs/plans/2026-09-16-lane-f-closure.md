@@ -1610,3 +1610,78 @@ reconsider if the remaining static ever matters.
 Also worth noting the asymmetry that made the heap tractable: it is reset per
 fork and reconstructed, so a child never depends on inheriting it, while the
 catalogs are state a child must have before it can run.
+
+## Static reduction: what it actually bought, and where it stops
+
+Five conversions landed, 63%:
+
+    baseline            6,480,916   6.18 MiB
+    heap floor          3,335,204              -3.00 MiB
+    resume free bitmap  3,081,236              -0.24 MiB
+    GC codec floor      2,852,644              -0.22 MiB
+    catalog ord floor   2,624,052              -0.22 MiB
+    exn tags floor      2,395,460   2.28 MiB   -0.22 MiB
+
+### What kind of saving this is -- read this before quoting the number
+
+Address space, not memory. The maintainer asked whether P-11 was driving the
+work, and separating the dimensions is the honest answer:
+
+  * PHYSICAL MEMORY: close to zero saved. A 4 MiB BSS heap that peaks at
+    512 KiB only ever commits 512 KiB of real pages. Shrinking the
+    DECLARATION does not free RSS that was never committed.
+  * FORK COPY COST: close to zero, for the same reason -- untouched pages are
+    not copied.
+  * ADDRESS SPACE: genuinely reduced. But at the 1 GiB default that is
+    7.44 MiB of a 1007 MiB window, 0.7%. It binds in constrained
+    configurations, which today means P-11.
+
+Nothing user-visible was measured: not fork latency, not RSS, not a program
+that failed before and works now. The number is real and the dimension mostly
+does not bind.
+
+### P-11 shaped every floor, and that is worth knowing
+
+`maxPages: 384` is a fixture choice, and the tightness is the POINT -- the
+exhaustion path cannot be tested without exhausting something. But every floor
+here was sized by it, not by a workload: the heap floor is 1 MiB because
+64 KiB fails P-11, and the GC codec shares a floor because a mapping per
+activation fails P-11. If that constraint is not representative, these floors
+are too conservative and the design should be driven by a real workload.
+
+### The one change that stands on its own merits
+
+The resume free list: `[u32; 65_536]` -- 256 KiB of storage for 8 KiB of
+information -- with an O(n) shift per allocation and an O(n log n) sort per
+unregister, on a path php drives to 47,757 slots. Smaller AND faster. Keep it
+whatever is decided about the rest.
+
+### BLOCKED, and this one is not about memory pressure
+
+`RESUME_SLOT_INDEX` (768 KiB, the largest remaining) converts to floor+chunks
+cleanly and DEADLOCKS. At the real 4,096-entry floor every suite passes,
+because no test ever needs a chunk. Forced with a 4-entry floor, every process
+sleeps at 0% CPU for 30 minutes -- the signature of `channel_mmap` parking in
+`memory_atomic_wait32` for a kernel that never services it, since a spin would
+burn CPU instead. Slot registration happens during catalog seeding, and the
+channel is not serviceable there.
+
+php assigns 47,757 slots and WOULD have needed chunks. So the version that
+measured 74% was one commit from a deadlock on the only workload that matters,
+with every suite green. Reverted, saved out of the tree.
+
+That also narrows an earlier claim of mine. "Children can syscall" was proven
+for heap growth and for the GC codec seed; it is FALSE for slot registration.
+They can syscall at some moments and not others, and which moment is the whole
+question. Three times today I generalised one measurement into a rule about
+the platform and three times it was wrong.
+
+### What is left
+
+`ACT_KFIG_BYTES` (64 KiB, same pattern, ~56 KiB to gain -- poor value for a
+build-and-suite cycle) and `RESUME_SLOT_INDEX` (768 KiB, blocked above).
+
+And a gap in what "dynamic" currently means here: this is allocation on
+demand, NOT free. Chunks are retained for the worker's life; only the identity
+table releases, on dlclose. A long-lived worker that peaks once holds that
+memory forever.
