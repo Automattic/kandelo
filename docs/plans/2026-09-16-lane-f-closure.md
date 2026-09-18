@@ -2258,3 +2258,62 @@ and would need rewriting on each move -- at most 64 of them.
 NOT MEASURED: the wall-clock cost of a 64 KiB `memory.copy` or of a
 `channel_mmap` round trip. Without those, option 3's cost is an argument, not
 a number, and nothing here should be decided on it.
+
+## Measured: what a channel round trip costs, and what a fork costs
+
+The previous section named the missing number. Here it is.
+
+SCOPE: Node host, one machine, one run each, via the repository's own
+`benchmarks/run.ts`. NOT browser, and not a before/after comparison of any
+change -- these are costs measured to inform a design discussion, not a
+performance claim about an implementation. A browser run would need
+`./run.sh browser` and has not been done.
+
+    syscall_latency_us      27.98      (getpid round trip, syscall-io suite)
+    fork_ms                 65.1       (process-lifecycle suite)
+    clone_ms                51.43
+    exec_ms                333.15
+    hello_start_ms         254.57
+
+    64 KiB copy              1.84 us   (35.6 GB/s)
+
+The copy figure is a PROXY: `Uint8Array.copyWithin` over a SharedArrayBuffer
+in Node, which is the same engine memmove `memory.copy` lowers to. It is not a
+measurement of `memory.copy` itself.
+
+`getpid` is the cheapest syscall there is, so 28 us is a FLOOR on
+`channel_mmap`, not an estimate of it -- mmap does real region bookkeeping and
+may grow the shared memory.
+
+### What that makes the options cost
+
+php's 7 activations, seeded once per worker (and again on each fork child,
+which re-seeds through the same path -- `worker-main.ts:889` says so):
+
+    current static arenas        0 channel ops        0 us
+    one mmap per activation      7 mmaps          >= 196 us
+    geometric growth             ~4 mmap/munmap   >= 116 us  + 2 copies (4 us)
+
+Against the measured denominators:
+
+    196 us / 65.1 ms fork          = 0.30%
+    196 us / 254.6 ms process start = 0.08%
+    116 us / 65.1 ms fork          = 0.18%
+
+### The finding that surprised me
+
+A 64 KiB copy costs 1.84 us and a channel round trip costs at least 27.98 us.
+**The copy is roughly fifteen times cheaper than the syscall.**
+
+So in geometric growth the copying is free and the MAPPING is the cost, which
+inverts the intuition I brought to this. The thing to minimise is the NUMBER
+OF MAPPINGS, not the amount of data moved. That is the same conclusion the
+page-waste arithmetic reached from the other direction: seven separate
+mappings is what turns 13% waste into 78%, and it is also what turns 116 us
+into 196 us.
+
+It also means the objection I had been carrying -- that dynamic allocation
+costs channel round trips and static costs none -- is true and small. Three
+tenths of one percent of a fork, and under a tenth of a percent of process
+startup. I do not think that number decides anything by itself, and I am not
+treating it as decisive; it is simply no longer unmeasured.
