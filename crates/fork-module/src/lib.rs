@@ -2006,23 +2006,28 @@ mod wasm {
     // section, so a re-seed is byte-IDENTICAL by construction: accept it as a no-op
     // so BOTH hosts converge on the same catalog. A CONFLICTING re-seed (same
     // activation, DIFFERENT tags) is a truthful `EINVAL`.
-    const ACT_EXN_TAGS_ORD_CAP: usize = 65_536; // total tag ordinals, all activations
+    /// A FLOOR of tag ordinals the activations SHARE, not a cap. Was
+    /// `[u32; 65_536]` = 256 KiB reserved out of the guest's mmap window
+    /// whether a program forked or not. Same shape, and same reason for
+    /// sharing rather than a mapping each, as the activation catalogs.
+    const ACT_EXN_TAGS_ORD_FLOOR: usize = 8_192; // ordinals, 32 KiB
     const ACT_EXN_TAGS_MAX_ACTS: usize = 64; // distinct activations
 
     #[repr(C, align(4))]
-    struct ActExnTagsOrds(UnsafeCell<[u32; ACT_EXN_TAGS_ORD_CAP]>);
+    struct ActExnTagsOrds(UnsafeCell<[u32; ACT_EXN_TAGS_ORD_FLOOR]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ActExnTagsOrds {}
     static ACT_EXN_TAGS_ORDS: ActExnTagsOrds =
-        ActExnTagsOrds(UnsafeCell::new([0u32; ACT_EXN_TAGS_ORD_CAP]));
+        ActExnTagsOrds(UnsafeCell::new([0u32; ACT_EXN_TAGS_ORD_FLOOR]));
 
-    /// Each live entry is `[activation_id, offset, len]` into the ordinal arena.
-    #[repr(C, align(4))]
-    struct ActExnTagsIndex(UnsafeCell<[[u32; 3]; ACT_EXN_TAGS_MAX_ACTS]>);
+    /// Each live entry is `[activation_id, guest_addr, len]`, absolute so a
+    /// floor-resident set and a spilled one read alike.
+    #[repr(C, align(8))]
+    struct ActExnTagsIndex(UnsafeCell<[[u64; 3]; ACT_EXN_TAGS_MAX_ACTS]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ActExnTagsIndex {}
     static ACT_EXN_TAGS_INDEX: ActExnTagsIndex =
-        ActExnTagsIndex(UnsafeCell::new([[0u32; 3]; ACT_EXN_TAGS_MAX_ACTS]));
+        ActExnTagsIndex(UnsafeCell::new([[0u64; 3]; ACT_EXN_TAGS_MAX_ACTS]));
 
     static ACT_EXN_TAGS_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_EXN_TAGS_ORD_USED: AtomicU32 = AtomicU32::new(0);
@@ -2044,12 +2049,9 @@ mod wasm {
         // comment): identical tags are a no-op; conflicting tags are `EINVAL`.
         // SAFETY: single-threaded; the index/ordinals are static buffers read here.
         let index = unsafe { &*ACT_EXN_TAGS_INDEX.0.get() };
-        let stored_all = unsafe { &*ACT_EXN_TAGS_ORDS.0.get() };
         for entry in index.iter().take(act_count) {
-            if entry[0] == activation_id {
-                let off = entry[1] as usize;
-                let len = entry[2] as usize;
-                let stored = stored_all.get(off..off + len).ok_or(Errno::EINVAL)?;
+            if entry[0] == u64::from(activation_id) {
+                let stored = guest_u32s(entry[1], entry[2] as usize)?;
                 if stored == incoming {
                     return Ok(()); // identical re-seed: no-op
                 }
@@ -2060,18 +2062,35 @@ mod wasm {
             return Err(Errno::E2BIG); // too many distinct activations
         }
         let ord_end = ord_used.checked_add(count).ok_or(Errno::EINVAL)?;
-        if ord_end > ACT_EXN_TAGS_ORD_CAP {
-            return Err(Errno::E2BIG); // combined catalogs exceed the arena
-        }
-        // Publish the ordinals into the flat static arena, then the index entry.
-        // SAFETY: single-threaded; the destination slice `[ord_used, ord_end)` is
-        // bounded by the cap check; `incoming` is a distinct local buffer.
-        let ords = unsafe { &mut *ACT_EXN_TAGS_ORDS.0.get() };
-        ords[ord_used..ord_end].copy_from_slice(incoming);
+        // Pack into the shared floor when it fits, else this set gets its own
+        // mapping. The index records an absolute address either way.
+        let addr = if count == 0 {
+            0
+        } else if ord_end <= ACT_EXN_TAGS_ORD_FLOOR {
+            let base = unsafe { ACT_EXN_TAGS_ORDS.0.get() as *mut u32 as usize };
+            // SAFETY: `[ord_used, ord_end)` is inside the floor; `incoming` is a
+            // distinct local buffer.
+            let ords = unsafe { &mut *ACT_EXN_TAGS_ORDS.0.get() };
+            ords[ord_used..ord_end].copy_from_slice(incoming);
+            ACT_EXN_TAGS_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
+            (base + ord_used * 4) as u64
+        } else {
+            let at = channel_mmap(channel_base()?, page_round_up((count * 4) as u64))?;
+            // Written AFTER the mapping, byte-wise: `channel_mmap` grows the
+            // shared memory, and the destination carries no alignment promise
+            // this write needs to rely on.
+            // SAFETY: the mapping is `count * 4` bytes and in bounds.
+            let m = unsafe { mem_mut() };
+            let at_usize = at as usize;
+            for (i, value) in incoming.iter().enumerate() {
+                m[at_usize + i * 4..at_usize + i * 4 + 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+            at
+        };
         let index = unsafe { &mut *ACT_EXN_TAGS_INDEX.0.get() };
-        index[act_count] = [activation_id, ord_used as u32, count as u32];
+        index[act_count] = [u64::from(activation_id), addr, count as u64];
         ACT_EXN_TAGS_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
-        ACT_EXN_TAGS_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
         Ok(())
     }
 
@@ -2140,12 +2159,9 @@ mod wasm {
         // SAFETY: single-threaded per worker; the buffers outlive every borrow and
         // every live entry's `[offset, len)` was bounded on seed.
         let index = unsafe { &*ACT_EXN_TAGS_INDEX.0.get() };
-        let ords = unsafe { &*ACT_EXN_TAGS_ORDS.0.get() };
         for entry in index.iter().take(act_count) {
-            if entry[0] == activation_id {
-                let offset = entry[1] as usize;
-                let len = entry[2] as usize;
-                return Some(&ords[offset..offset + len]);
+            if entry[0] == u64::from(activation_id) {
+                return guest_u32s(entry[1], entry[2] as usize).ok();
             }
         }
         None
