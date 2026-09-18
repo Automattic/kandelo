@@ -1544,6 +1544,37 @@ memory-constrained fork cannot fork. At 1 MiB it does.
 > each), so a small floor would refuse php. That half stands on measurement.
 > Whether dynamic growth is available to them is OPEN, and settling it means
 > bisecting the GC codec ENOMEM rather than accepting it.
+>
+> **SETTLED, later the same day, and the answer is neither of my guesses.**
+> Three probes ruled out the platform: a 64 KiB heap floor forces children to
+> grow and 40 of 41 lifecycle tests pass; a 4 KiB floor forces growth during
+> child SETUP and a real fork still passes; and a throwaway one-page mmap at
+> the exact failing point now succeeds (proven non-vacuous by inverting it to
+> trap on success and watching 7 tests fail). Children can syscall, during
+> setup, at that point.
+>
+> The first failure was ADDRESS-SPACE PRESSURE: the module region was 7.44 MiB
+> then and is 4.44 MiB now, because the bump heap stopped reserving 4 MiB. The
+> static and the dynamic allocation were competing for one window, and
+> shrinking the static is what made the mapping fit. So the work that made me
+> declare the rest blocked is what unblocked it.
+>
+> **The rebuilt conversion then failed P-11 anyway, for a THIRD reason: page
+> granularity.** A per-activation `SYS_MMAP` rounds to 64 KiB, so eight
+> activations holding a few hundred bytes each claim 512 KiB of pages -- to
+> replace a 256 KiB static they SHARED. It is bigger, not smaller, and only in
+> the processes that can least afford it: 39 lifecycle tests passed and P-11,
+> with 2-6 pages of slack, failed with the same `errno 12` in isolation.
+> Reverted.
+>
+> The fix is a SHARED growable arena -- the chunk mechanism the heap now uses,
+> minus the per-fork reset -- so small sections share a page instead of
+> claiming one each. Not built; it needs a floor decision like the heap's.
+>
+> Three wrong explanations for one failure, each confidently written down
+> before it was tested. The pattern worth extracting: a failure that reproduces
+> is still not a diagnosis, and "I know why" deserves the same experiment as
+> "I know it works".
 
 
 Two facts close this off, and both were measured rather than assumed.
