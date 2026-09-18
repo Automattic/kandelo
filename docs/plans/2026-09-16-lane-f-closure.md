@@ -1749,6 +1749,23 @@ rather than inside it. If the goal is address space for guests, that is the
 larger number, and it was never examined because the work anchored on the
 module.
 
+> **CORRECTION.** That 16 MiB is a FALLBACK, not what real programs get. It
+> arrived in `95e31d2588` "Reduce initial process memory allocation" (#595,
+> 2026-06-01) described as the "`MemoryManager::INITIAL_BRK` fallback for
+> binaries without `__heap_base`", and `extractHeapBase` uses the program's own
+> value when it has one. Measured: `php.wasm` declares 20.43 MiB, `bash.wasm`
+> 9.44 MiB. So it is not "the larger number" for guests and I should not have
+> said so.
+>
+> But the correction cuts a more interesting way. The TEST FIXTURES declare
+> nothing -- `p_11_fork_continuation_enomem` and `d_01_single_fork` both return
+> null from `extractHeapBase` -- so they take the 16 MiB fallback. P-11's mmap
+> window is 7.81 MiB of its 24 MiB budget because a C program that needs a
+> fraction of it is charged the fallback. With a 2 MiB heap base the same
+> process would have a 21.81 MiB window. That is a second sense in which P-11's
+> tightness is manufactured, and it is independent of the 384-page choice.
+
+
 ## P-11's origin, and why realigning it is sanctioned
 
 Fixture and test entry both arrived in `b68524efa8` (2026-07-25), a 253-file
@@ -1774,3 +1791,56 @@ Which means the floors in this lane are P-11-shaped by a fixture the plan
 said to realign. The distinction the plan draws is the one to hold: realigning
 it to the growable model is the planned work; raising `maxPages` until it goes
 green is the test-relaxing it warns against. Those look alike and are not.
+
+## The allocator is the real defect, and it is mine
+
+The maintainer's read: "It sounds like you implemented your own allocator, but
+that is wrong. You should allocate like the guest allocates." Researched, and
+it lands -- though not where I first thought.
+
+**The guest's allocator is not reachable.** `malloc`, `free`, `calloc` and
+`realloc` do not appear among the guest binary's export names; musl
+static-links them. The module cannot call the guest's allocator without the
+SDK exporting it, which is a guest-ABI change.
+
+**The module already allocates the way the guest does, mechanically.** The
+guest's malloc sub-allocates inside regions obtained by brk/mmap syscalls; the
+module's bump allocator sub-allocates inside chunks obtained by `SYS_MMAP`
+through the same channel, out of the same memory. Same shape.
+
+**The actual mistake is narrower.** For the per-activation catalogs I bypassed
+the allocator and called raw `mmap` PER OBJECT. That is not how a few hundred
+bytes get allocated, and it is the whole reason page granularity bit: an
+`mmap_anonymous` rounds to 64 KiB, so eight small sections claimed 512 KiB to
+replace a 256 KiB static they shared. The "shared floor" fix is sub-allocation
+reinvented badly -- four ad-hoc floors, one per arena, each with its own spill
+rule.
+
+**What it should be: ONE non-reset allocator for long-lived module data.**
+Exact sizes, real `free`, chunk-backed. The catalogs, GC codec, exn tags and
+identity table all draw from it, and the four floors collapse into one. It also
+closes the reclamation gap, because a real allocator has a free list where a
+bump arena has none.
+
+It cannot be the EXISTING heap: `ALLOC.reset()` rewinds that mid-fork and the
+catalogs must outlive it. So it is a second allocator, which is precisely what
+the four floors are impersonating one arena at a time.
+
+Cost of doing it: it REPLACES four of the five conversions already committed
+rather than extending them.
+
+## Freeing is not blocked -- it is unwired
+
+Checked per site, and none of the five that never free is prevented from it:
+
+  * heap chunks past the floor -- retained deliberately so growth is paid once;
+    could release at worker teardown.
+  * catalog / GC-codec / exn-tag spills -- bounded by activation lifetime, and
+    the hook already exists. `fm_resume_slots` op 1 is the dlclose signal the
+    identity table already uses to free its chunks. The others were simply not
+    wired to it.
+  * table-patch records -- the one with no visible owner, predating this lane.
+
+So "five of eight never free" describes a gap in what was built, not a
+constraint that was discovered. Saying otherwise would be dressing an omission
+as a finding.
