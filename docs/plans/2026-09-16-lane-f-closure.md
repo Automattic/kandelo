@@ -1581,6 +1581,9 @@ Two facts close this off, and both were measured rather than assumed.
 
 **They are not oversized.** Unlike the heap, they are sized for real programs:
 php uses 73% of each (47,757 resume-catalog ordinals against a 65,536 cap).
+CORRECTED 2026-09-18: 47,757 sums php.wasm AND php-fpm.wasm, which no single
+process loads together. Per process it is 28,568 or 28,732 -- 44%, not 73%.
+See the measurement section at the end of this document.
 A smaller floor would refuse php, which is the trap the identity table's old
 `512` fell into.
 
@@ -2103,9 +2106,155 @@ Options, none of them chosen here:
 ### What was measured, and what was not
 
 The 73%-occupancy figure for php (47,757 ordinals of 65,536) is the RESUME
-catalog -- the streaming side, not the known-aggregate side. It was one
-measurement earlier in this lane and should be re-derived before anyone rules
-on it.
+catalog -- the streaming side, not the known-aggregate side. It has now been
+re-derived: the arithmetic is exact, but the SCOPE is wrong. See the
+measurement section below.
 
 Nothing in this section has been implemented. It is a reading of the two call
 paths, with line numbers so it can be refuted in one step.
+
+## Measured: what actually fills each catalog (2026-09-18)
+
+Every number below is decoded from the wasm custom sections of the 399
+binaries under `local-binaries/`, using `WebAssembly.Module.customSections` --
+the same call `worker-main.ts:4374` makes. Record counts, not byte sizes.
+
+Wire formats, so any of this can be rederived:
+
+  * resume catalog: 12-byte header, count at `+8`, 8 bytes/record
+    (`host/src/fork-resume-catalog.ts:19`). The COUNT is readable from twelve
+    bytes; no parse of the body is needed to learn the size.
+  * GC codec: 16-byte header, layout count at `+8`, field count at `+12`,
+    44 bytes/layout, 12 bytes/field (`crates/fork-codec/src/gc_codec.rs:11`).
+  * exception codec: 8-byte header, count at `+4`, 16 bytes/record.
+
+### The GC codec catalog is EMPTY in every binary in the tree
+
+All 99 fork-instrumented modules report `layouts=0, fields=0`. The section is
+a bare 16-byte header, byte-identical across php, wget, node and the test
+fixtures alike:
+
+    4b464743 0100 1000 00000000 00000000
+     K F G C   v1  hdr=16  layouts=0  fields=0
+
+`crates/fork-instrument/src/module_gc_codec.rs:1950,1981,2114` builds layout
+records from the module's wasm GC `struct` and `array` types. clang/wasm32
+emits none, so the catalog is structurally empty for everything this toolchain
+produces.
+
+This measurement is admissible as "what exists" and INADMISSIBLE as "what will
+exist". A guest compiled from a GC-using language would produce a non-empty
+catalog scaling with its type graph, and no such guest exists here to measure.
+The committed fixture `crates/fork-codec/testdata/gc-codec-wasm32.bin` is 432
+bytes for 7 layouts and 9 fields; at that shape `ACT_GC_CODEC_FLOOR = 32_768`
+holds roughly 400 layouts. Whether that is the right target is not a question
+the empty measurement can answer, and the empty measurement does NOT license
+shrinking the floor.
+
+### The exception-tag floor has no defence
+
+Observed maximum across all 99 fork-instrumented binaries: **4 tags**. php,
+wget, node and ruby declare 1 each; plain-C programs declare 0. The hard
+ceiling from the wasm side is the module's tag section, whose largest instance
+in the tree is **5 entries** (`perl.wasm`) -- a module cannot declare more
+exception-codec records than it has tags.
+
+`ACT_EXN_TAGS_ORD_FLOOR = 8_192` ordinals stands against that.
+
+I sized it by symmetry with `ACTIVATION_CATALOG_ORD_FLOOR`, which is a RESUME
+catalog floor fed by an entirely different input, and never looked at what
+produces exception tags. It is the clearest case in this lane of a constant
+chosen to match a neighbour rather than to match its input.
+
+### `MAX_ACTS = 64` against an observed maximum of 7
+
+The largest real activation set in the tree is php: the program plus six
+extension `.so` files. Everything else is 1-3.
+
+The cap is not a reservation -- `ACT_GC_CODEC_INDEX` is `[[u64; 3]; 64]`,
+1,536 bytes -- so its cost is trivial and its risk is a program that exceeds
+it and takes `E2BIG`. Nothing here does. The same 64 appears in
+`ACTIVATION_CATALOG_MAX_ACTS`, `FUNC_CATALOG_BASE_MAX_ACTS`,
+`TEMPLATE_ID_MAX_ACTS`, `STATIC_ROOT_BASE_MAX_ACTS` and
+`ACT_EXN_TAGS_MAX_ACTS`; `ACT_KFIG_MAX_ACTS = 128` breaks the pattern for no
+reason found.
+
+### The resume catalog, and the scope error in 47,757
+
+Per-activation ordinal counts for the php package:
+
+    php.wasm        19,025      php-fpm.wasm    19,189
+    intl.so          7,750      curl.so            973
+    zip.so             307      phar.so            213
+    opcache.so         162      zend_test.so       138
+
+The 47,757 this document has been quoting is arithmetically EXACT -- it is the
+sum of all eight -- but it sums `php.wasm` AND `php-fpm.wasm`, and no single
+process loads both. The per-process figures are:
+
+    php CLI + 6 extensions      28,568 ordinals   (7 activations)
+    php-fpm + 6 extensions      28,732 ordinals   (7 activations)
+
+So `RESUME_SLOT_CAP = 65_536` is 44% used at php scale, not 73%. The
+occupancy argument in the earlier sections overstates by counting two mutually
+exclusive programs.
+
+I first reported this as "the figure is wrong, the real number is 28,568".
+That was itself wrong: the figure is right and its SCOPE is wrong, which is a
+different defect and a more dangerous one, because the arithmetic checks out.
+
+### Why mapping strategy matters for this catalog and not the others
+
+With one mmap per activation, sized exactly and rounded to the 64 KiB page:
+
+    php.wasm      76,100 bytes -> 2 pages      131,072
+    intl.so       31,000 bytes -> 1 page        65,536
+    curl.so        3,892 bytes -> 1 page        65,536
+    zip.so         1,228 bytes -> 1 page        65,536
+    phar.so          852 bytes -> 1 page        65,536
+    opcache.so       648 bytes -> 1 page        65,536
+    zend_test.so     552 bytes -> 1 page        65,536
+                                   total       524,288
+
+524,288 bytes mapped to hold 114,272 bytes of content: **78% waste**. Six of
+the seven activations are under 31 KiB and each still burns a whole page.
+
+One aggregate mapping of 114,272 bytes rounds to 131,072 -- **13% waste**.
+
+The waste is a function of HOW MANY SEPARATE MAPPINGS are made, not of mmap's
+granularity. That is the concrete form of "I don't want any mmappings to be
+unnecessarily large", and it splits the three catalogs by one property: how
+large one activation's content is relative to a page.
+
+  * resume catalog: 552 bytes to 76 KB per activation, aggregate over 100 KB.
+    Mapping strategy dominates.
+  * GC codec: 16 bytes today, unknown later. Mapping strategy is irrelevant at
+    today's sizes; the only real question is what it should be sized for.
+  * exception tags: 0 to 16 bytes, structural ceiling around 5 records. Will
+    never approach a page under any guest.
+
+### Knowing the resume aggregate ahead of time
+
+Three mechanisms, none chosen, listed with their costs:
+
+  1. BUILD-TIME MANIFEST. The VFS image builder already enumerates every `.so`
+     it ships and each count is a 12-byte header read, so the sum is free at
+     image-build time. But it is an upper bound over what MIGHT load, not what
+     does -- php selects extensions from `php.ini` -- and it cannot cover an
+     object built at runtime.
+  2. SCAN AT EXEC. Enumerate the program's extension directory and sum. This
+     puts program-specific knowledge in the kernel, which reads as squarely
+     against the platform-values contract. Accept or reject on contract
+     grounds, not performance.
+  3. DO NOT PREDICT; AMORTIZE. One region, geometric growth: on overflow map
+     the next power of two, `memory.copy` the contents over, unmap the old.
+     php would grow about twice, copying at most 64 KiB each time. Waste
+     converges on the aggregate case without needing the aggregate.
+
+What makes (3) cheap here is that the data is append-only and nothing reads it
+during seeding except the `ACT_*_INDEX` entries, which hold absolute addresses
+and would need rewriting on each move -- at most 64 of them.
+
+NOT MEASURED: the wall-clock cost of a 64 KiB `memory.copy` or of a
+`channel_mmap` round trip. Without those, option 3's cost is an argument, not
+a number, and nothing here should be decided on it.
