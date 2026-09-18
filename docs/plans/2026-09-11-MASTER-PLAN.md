@@ -814,112 +814,109 @@ Ruby spec. That was wrong: the run never reaches those assertions, because
 `forkCounts`, and a brief that claims otherwise sends its reader to the wrong
 place.
 
-## B54 — optional demo VFS images do not resolve under source-only
+## B54 — the browser E2E suite has no defined artifact-resolution mode
 
-OPEN, filed 2026-09-17. **Pre-existing: it is present in the browser run
-taken BEFORE the lane Y/V merge, so it is not a regression from it and is
-not lane F's.**
+OPEN, filed 2026-09-17. **Filed twice with the wrong mechanism first. The
+correction is the entry; read it before the history.**
 
-The Node.js demo never boots. The page reports
+### What is established
 
-```
-ERR  Failed to boot Node.js
-ERR  node-vfs.vfs.zst is not built. Run: ./run.sh fetch
-```
+The browser E2E suite resolves artifacts differently depending on how it
+is invoked, and nothing in the repository pins which is correct:
 
-and `kandelo-merge-gate.spec.ts:331` fails waiting for "Ready". The advice
-in that message is wrong: the artifact IS built. It is a proper member of
-the pinned projection —
+* `./run.sh browser` (the interactive dev server) runs
+  `cmd_prepare_browser`, which exports `WASM_POSIX_RESOLUTION_POLICY=source-only-v1`
+  and `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`.
+* `./run.sh test browser` runs `npx playwright test --grep-invert "@slow"`
+  from the repo root and exports **neither**.
+* `playwrightWebServerEnvironment` copies the parent environment, so the
+  dev server Playwright starts inherits whatever the caller had.
+* CI (`.github/workflows/browser-demos-ci.yml`) runs five smoke specs, not
+  the suite, and sets neither variable.
 
-```
-NODE: node-vfs wasm32
-   member: programs/wasm32/node-vfs.vfs.zst  13810746
-```
+Under the source-only policy a built package is written into
+`local-binaries/source-only-v1/`, not into the ambient
+`local-binaries/programs/wasm32/`. The demo VFS images are reached through
+`import.meta.glob` over the AMBIENT roots, in both
+`optional-demo-vfs.ts` (node-vfs, wordpress, lamp) and `live-setup.ts`
+(nginx-vfs, nginx-php-vfs). So in ambient mode those globs match whatever
+stale ambient copies happen to remain on disk, and report
+`<name> is not built` for artifacts that are present and correct in the
+projection.
 
-— and the bytes are on disk at
-`local-binaries/source-only-v1/programs/wasm32/node-vfs.vfs.zst`.
+That is why the nginx demo passed before this work and fails after it.
+Nothing about nginx changed: `./run.sh setup` republished the VFS-image
+packages once the image writer entered their identity (B53), a republish
+under source-only lands in the projection, and the ambient copy that the
+ambient-mode suite had been resolving stopped being there. It was passing
+on a leftover artifact.
 
-**What the page actually gets.** `optional-demo-vfs.ts` reaches these
-images through six `import.meta.glob` calls over the AMBIENT mirror roots
-(`local-binaries/programs/wasm32/...` and `binaries/...`). Fetching the
-transformed module from the dev server shows all six evaluated to empty
-objects:
-
-```
-OPTIONAL_DEMO_VFS_IMPORTERS = {
-        .../* #__PURE__ */ Object.assign({ }),   (x6)
-};
-```
-
-That is Vite's own native glob expansion, not the SourceOnly rewrite's
-output — the rewrite emits either a keyed importer or a bare `({})`. So
-`rewriteMirrorGlobs` in `apps/browser-demos/source-only-vite-assets.ts`
-did not claim these globs, Vite expanded them itself against the ambient
-roots, and under the source-only policy nothing is there: the artifacts
-live only under `local-binaries/source-only-v1/`. An empty importer map
-is indistinguishable from "not built", so the page reports the artifact
-missing when the truth is that the resolution path never looked where it
-lives.
-
-The mechanism beyond that point is not established. The plugin is
-`enforce: "pre"` with a `transform` hook, and Vite's own `import.meta.glob`
-expansion is also early; `vite.config.ts` carries a comment saying "Vite
-expands import.meta.glob() before normal alias resolution", which would
-explain a transform that never sees the text it is meant to rewrite. That
-is a hypothesis, not a finding.
-
-**Why it matters beyond one demo.** This is the same shape as B53: a
-resolution path that is silent rather than loud when it cannot find what
-it needs. B53 at least failed loudly. This one produces a message that
-sends the reader to `./run.sh fetch`, which cannot help, for an artifact
-that is present and correct.
-
-### Scope is wider than the Node demo, and it takes the merge gate with it
-
-`live-setup.ts` builds `OPTIONAL_BINARY_URLS` the same way, over the same
-ambient roots, for `nginx-vfs.vfs.zst` and `nginx-php-vfs.vfs.zst`. Its
-failure message differs ("Run: `./run.sh build programs`") but the
-mechanism is identical. So the affected set is at least node-vfs,
-wordpress, lamp, nginx-vfs and nginx-php-vfs.
-
-None of these exist under the ambient `local-binaries/programs/wasm32/`;
-all five are present in the projection:
+**With the source-only environment set, the Node.js demo boots.** It
+reaches line 393 — past "Ready", past evaluating JavaScript in the
+terminal — and fails only on a narrow assertion:
 
 ```
-nginx-vfs.vfs.zst   ambient:N projection:Y
-shell.vfs.zst       ambient:N projection:Y
-node-vfs.vfs.zst    ambient:N projection:Y
+expect(standaloneShellRuntimeFetches.filter(({name}) => name === "coreutils"))
+  .toHaveLength(expectSourceRootfsShell ? 1 : 0)
+
+Expected length: 0   Received length: 1
 ```
 
-`shell.vfs.zst` is the control, and it is the one that works: the shell
-demo (bash, vim, NetHack) passes, because `live-setup.ts` imports it as a
-static `@binaries/programs/wasm32/shell.vfs.zst?url` specifier, which the
-alias plugin resolves through the projection. Only the glob path fails.
+`expectSourceRootfsShell` is `KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL === "1"`,
+and **nothing in the repository ever sets that variable** — not `run.sh`,
+not a script, not a workflow. So the spec encodes two modes and the tree
+supplies no way to select the one the source-only composition actually
+produces.
 
-**The merge gate is serial** (`test.describe.configure({ mode: "serial" })`),
-so the Node demo's failure aborts the five demos after it. They are not
-passing and not failing; they do not run. Excluding the Node demo by
-`--grep-invert` advances the gate exactly one test, to nginx, which then
-fails the same way and stops it again.
+### Why this is one defect and not a test-harness annoyance
 
-**Leading hypothesis for why nginx passed before and fails now, NOT
-established.** The nginx demo passed in the browser run before this work.
-Between then and now, `./run.sh setup` republished `nginx-vfs` (the run
-reports disposition `published`, not `cached`), along with `lamp`,
-`shell`, `node-vfs`, `wordpress`, `nginx-php-vfs` and `mariadb-test` --
-the VFS-image packages, whose identity now includes the image writer that
-builds them. Under the source-only policy a republished package is
-written into the projection, not into the ambient mirror. So the likely
-story is that the glob path never worked under source-only and was masked
-by a leftover ambient artifact from an older build, and republishing
-removed the mask. What is NOT established is that the ambient copy existed
-at baseline time; that state was overwritten before it was recorded, and
-it should be checked on a fresh worktree rather than assumed.
+A suite whose artifact provenance depends on the caller's environment
+cannot support the claim the validation contract asks of it. In ambient
+mode it reads whatever the last build happened to leave behind; a green
+run says the stale copies were adequate, not that the tree is correct.
+This is the same failure shape as B53 — a resolution path that is silent
+rather than loud about not finding what it needs — and the same shape as
+the two-list disagreement B53's guards now close.
 
-If that hypothesis holds, the correct reading is not "the image-writer fix
-broke nginx" but "nginx was passing on a stale artifact, and now fails
-honestly" -- which is the platform-values contract's preferred outcome,
-and still a defect to fix before the gate can be trusted.
+### The first filing was wrong, and how
+
+This was first filed as "the SourceOnly rewrite does not claim these
+globs", with the transformed module as evidence: all six
+`import.meta.glob` calls served as `Object.assign({ })`, Vite's own
+expansion rather than the rewrite's output.
+
+**That evidence was gathered from a dev server started by hand with
+`npm exec vite`, which sets neither source-only variable, so the
+SourceOnly plugin was not in the config at all.** The observation was real
+and the inference from it was worthless.
+
+Instrumenting the plugin's `transform` hook and starting the server with
+both variables set shows the opposite:
+
+```
+PROBE optional-demo-vfs.ts hasGlobText=true hasObjectAssign=false
+```
+
+The hook runs before Vite's glob expansion, exactly as designed, and emits
+correct projection-backed importers:
+
+```
+"../../../../../local-binaries/programs/wasm32/node-vfs.vfs.zst":
+  () => import("/@id/__x00__kandelo-source-only-asset:programs%2Fwasm32%2Fnode-vfs.vfs.zst?import")
+```
+
+`tests/package-system/source-only-vite-assets.test.ts` already covered the
+unit ("rewrites an exact mirror glob when only SourceOnly owns the
+artifact"), which should have been read before concluding the unit was
+broken.
+
+**Consequence for every browser number reported this session.** They were
+all taken in ambient mode: the 160/14 baseline, the 159/20 run after B53,
+and every isolated re-run. They describe a resolution mode nobody chose.
+The two B52 fork regressions were confirmed under those conditions and
+their assertions are about process semantics rather than artifact
+provenance, but they have not been re-confirmed under source-only, and
+should be before lane F is held to them.
 
 ## B53 — the image-writer module reached no build and no projection
 
