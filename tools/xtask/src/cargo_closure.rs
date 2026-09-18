@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(first, second, "must be deterministic for an unchanged tree");
     }
 
-    // The same guard for the other three entries in `CORESIDENT_SIDE_MODULES`.
+    // The same guard for the other entries in `CORESIDENT_SIDE_MODULES`.
     // Each build script stamps `local-binaries/<artifact>.build-key` with this
     // digest and `xtask verify-fresh` re-derives it, so a crate missing from a
     // module's closure is a module that goes silently stale: its source can
@@ -347,7 +347,7 @@ mod tests {
     /// Every side-module build script must key itself through the ONE
     /// implementation, naming the same recipe the Rust table declares.
     ///
-    /// This is the guard for a defect that shipped. One of the four scripts
+    /// This is the guard for a defect that shipped. One of the scripts
     /// folded its own recipe hash into the key locally, while the Rust
     /// consumers -- the projection finalizer and the `verify-fresh` gate --
     /// compared against the crate closure alone. The script's own
@@ -383,6 +383,138 @@ mod tests {
                  that is how the key acquired two disagreeing implementations",
             );
         }
+    }
+
+    /// The TypeScript projection reader's root-level allowlist must name
+    /// exactly the modules `CORESIDENT_SIDE_MODULES` projects, with exactly
+    /// their artifacts.
+    ///
+    /// This is the guard for a defect that was created and caught in the same
+    /// hour. `standaloneModuleArtifacts` in `host/src/binary-resolver.ts` is a
+    /// hand-written mirror of the Rust table, and the two must agree in both
+    /// directions: the engine projects a node, and the reader decides whether a
+    /// node is admissible. Adding the image-writer row to the Rust table
+    /// without adding it to the allowlist did not break the image writer --
+    /// it made the WHOLE manifest unreadable, because the reader throws on the
+    /// first node it cannot classify. Every SourceOnly boot failed with "no
+    /// usable projection authority", for every artifact, including Ruby.
+    ///
+    /// The file's own comment already said this must be kept in step. A comment
+    /// is not a guard; this is, and it is textual for the same reason the
+    /// recipe check above is: what disagrees lives in two languages, so no
+    /// value-level assertion can see both sides.
+    ///
+    /// Confirmed to fail: removing the `kandelo-image-module` row from the
+    /// TypeScript allowlist trips it, and so does removing one artifact name
+    /// from a row that stays.
+    #[test]
+    fn the_typescript_allowlist_mirrors_the_coresident_table() {
+        let repo = crate::repo_root();
+        let reader = "host/src/binary-resolver.ts";
+        let text = std::fs::read_to_string(repo.join(reader))
+            .unwrap_or_else(|error| panic!("read {reader}: {error}"));
+        let marker = "const standaloneModuleArtifacts: Record<string, readonly string[]> = {";
+        let start = text
+            .find(marker)
+            .unwrap_or_else(|| panic!("{reader} no longer declares standaloneModuleArtifacts"))
+            + marker.len();
+        let end = start
+            + text[start..]
+                .find("};")
+                .unwrap_or_else(|| panic!("{reader} standaloneModuleArtifacts is unterminated"));
+        let block = &text[start..end];
+
+        // Every module the engine projects must be admissible, with every
+        // artifact it stages named on that module's row.
+        for module in crate::local_build::CORESIDENT_SIDE_MODULES {
+            let row_key = format!("\"{}\":", module.node_name);
+            let row_start = block.find(&row_key).unwrap_or_else(|| {
+                panic!(
+                    "{reader} standaloneModuleArtifacts omits {:?}, which                      CORESIDENT_SIDE_MODULES projects: the reader throws on the                      first node it cannot classify, so this breaks every                      SourceOnly boot, not just that module's",
+                    module.node_name,
+                )
+            }) + row_key.len();
+            let row_end = row_start
+                + block[row_start..]
+                    .find(']')
+                    .unwrap_or_else(|| panic!("{reader} row {:?} is unterminated", module.node_name));
+            let row = &block[row_start..row_end];
+            for (artifact, _arch, _required) in module.artifacts {
+                assert!(
+                    row.contains(artifact),
+                    "{reader} standaloneModuleArtifacts row {:?} does not name                      {artifact}, which its build script stages",
+                    module.node_name,
+                );
+            }
+        }
+
+        // And nothing else may claim a root path. The allowlist exists to stop
+        // an arbitrary node in an untrusted projection from doing so, which it
+        // cannot do if it admits a name the engine never projects.
+        let declared: Vec<&str> = crate::local_build::CORESIDENT_SIDE_MODULES
+            .iter()
+            .map(|module| module.node_name)
+            .collect();
+        for line in block.lines() {
+            let trimmed = line.trim();
+            let Some(rest) = trimmed.strip_prefix('"') else { continue };
+            let Some(name) = rest.split('"').next() else { continue };
+            assert!(
+                declared.contains(&name),
+                "{reader} standaloneModuleArtifacts admits {name:?} at a root                  path, but CORESIDENT_SIDE_MODULES projects no such module",
+            );
+        }
+    }
+
+    /// Every `crates/*/build-wasm.sh` must appear in `CORESIDENT_SIDE_MODULES`.
+    ///
+    /// This is the guard for a defect that shipped. `crates/kandelo-image-module`
+    /// gained a `build-wasm.sh` in the image-writer work and was never added to
+    /// the table, so nothing in the pipeline built it and nothing projected it.
+    /// `local-binaries/kandelo_image_module32.wasm` existed only when somebody
+    /// ran the script by hand, and because the artifact never became an owned
+    /// member of the SourceOnly projection, every module-on browser build died
+    /// at import with "kandelo_image_module32.wasm is not owned by the pinned
+    /// SourceOnly projection". Nothing failed at build time: `./run.sh setup`
+    /// completed green, because the missing module was missing from the only
+    /// list that would have asked for it.
+    ///
+    /// A digest- or freshness-level test cannot see this. Those check the
+    /// modules the table names; the defect is a module the table does not name.
+    /// So the check reads the directory instead, and the filesystem is the
+    /// authority it compares against.
+    ///
+    /// Confirmed to fail: removing the `kandelo-image-module` entry from
+    /// `CORESIDENT_SIDE_MODULES` trips it with that script named.
+    #[test]
+    fn every_side_module_build_script_is_in_the_coresident_table() {
+        let repo = crate::repo_root();
+        let mut on_disk: Vec<String> = std::fs::read_dir(repo.join("crates"))
+            .expect("read crates/")
+            .filter_map(|entry| {
+                let path = entry.expect("crates/ entry").path();
+                if !path.join("build-wasm.sh").is_file() {
+                    return None;
+                }
+                let name = path.file_name()?.to_str()?.to_string();
+                Some(format!("crates/{name}/build-wasm.sh"))
+            })
+            .collect();
+        on_disk.sort();
+
+        let mut declared: Vec<String> = crate::local_build::CORESIDENT_SIDE_MODULES
+            .iter()
+            .map(|module| module.script.to_string())
+            .collect();
+        declared.sort();
+
+        assert_eq!(
+            on_disk, declared,
+            "every crates/*/build-wasm.sh must be declared in \
+             CORESIDENT_SIDE_MODULES: an undeclared one is built by nobody and \
+             projected into local-binaries/source-only-v1/ by nobody, so the \
+             browser refuses to serve it while every build stays green",
+        );
     }
 
     #[test]

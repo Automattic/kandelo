@@ -791,6 +791,78 @@ demo-visible surface improved; process semantics regressed.
 migrated fork; shipping it with three reproducible fork regressions would ship
 the one thing it was for.
 
+### Correction, 2026-09-17: the three are not one defect
+
+The entry above was filed from a run whose per-spec detail had not been read.
+Re-extracted, the three failures are three different things, and only two of
+them are process semantics:
+
+| spec | the assertion that fails | what it says |
+|---|---|---|
+| `ruby-posix-spawn.spec.ts:299` | `rootResult.diagnostics` is not `[]` | two `fork aborted with errno=12: the kernel refused to create the child process` (pid 100, source `fork`). ENOMEM. The assertions BEFORE it pass: exit code 0, empty stderr, the marker in stdout. So root's fork produces the right result after aborting twice. |
+| `process-memory-retirement.spec.ts:132` | `stdout.match(/child exited with 42/g)` is `null` | **zero** occurrences, where 100 are expected. Line 129 passes: all 100 churn iterations exit 0. So the fork and exec succeed and the child's output never arrives. This is missing child output, not memory exhaustion. |
+| `kandelo-merge-gate.spec.ts:331` | page text never contains `Ready` | the page reports `node-vfs.vfs.zst is not built. Run: ./run.sh fetch`. That is artifact resolution, not fork. |
+
+The first two share a setting rather than a symptom: both fence process memory
+exactly — Ruby at `initialAddressSpaceBytes(rubyBinaryPath)`, the churn test at
+64 MiB — which is the region lane F's own closure describes.
+
+The original entry said "`childEvents` and `forkCounts` both wrong" for the
+Ruby spec. That was wrong: the run never reaches those assertions, because
+`diagnostics` fails first. Nothing is known about `childEvents` or
+`forkCounts`, and a brief that claims otherwise sends its reader to the wrong
+place.
+
+## B53 — the image-writer module reached no build and no projection
+
+RESOLVED 2026-09-17, found by the maintainer hitting it in the browser.
+
+`./run.sh browser` died at import with
+
+```
+[plugin:vite:import-analysis] Browser binary kandelo_image_module32.wasm
+is not owned by the pinned SourceOnly projection
+```
+
+from `apps/browser-demos/source-only-vite-assets.ts:302`, which refuses any
+binary that is not an owned member of the pinned projection. The module was not
+a member: the projection index at
+`local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json`
+named `kernel.wasm`, `fork_module32`, `wasi_module32`, `dylink_module32` and
+`wasm_artifact_module32`, and mentioned `kandelo_image_module` zero times.
+
+**The cause is one missing table entry.** `CORESIDENT_SIDE_MODULES` in
+`tools/xtask/src/local_build.rs` is the declarative table for a wasm module the
+local-build engine builds and projects but the package resolver does not model.
+One entry buys three things: the build (`ensure_coresident_side_modules_built`
+runs the script), the freshness gate, and projection as a root-level owned
+member. `crates/kandelo-image-module/build-wasm.sh` was written to that exact
+contract — closure crates, a `--recipe` key through the shared implementation,
+a `.build-key` stamp beside the artifact — and was never added to the table.
+
+So nothing in the pipeline built the image writer, and nothing projected it.
+`local-binaries/kandelo_image_module32.wasm` existed on this machine only
+because it had been built by hand while chasing B50. Any fresh worktree had no
+copy at all, and a module-on browser build could not start.
+
+**Nothing failed while this was broken.** `./run.sh setup` completed green
+throughout, because the missing module was missing from the only list that
+would have asked for it. That is the property worth noticing: the freshness
+machinery is thorough about the modules the table names, and silent about a
+module the table does not name.
+
+### The guard
+
+There are exactly five `crates/*/build-wasm.sh` scripts and, until this fix,
+four table entries, with nothing tying the two together. A digest- or
+freshness-level test cannot catch that: those check what the table declares,
+and the defect is something the table does not declare.
+
+`every_side_module_build_script_is_in_the_coresident_table` reads `crates/`
+and asserts the scripts on disk are exactly the scripts the table names, so a
+sixth module cannot repeat this. The filesystem is the authority it compares
+against, which is the only authority that cannot drift with the table.
+
 ## B49 — the host's lazy table is empty for an SDEF image — CLOSED 2026-09-15
 
 **CLOSED by the URI relay (B42), as a side effect rather than as a fix.** The

@@ -1725,9 +1725,9 @@ function readSourceOnlyProjectionAtRoot(
     // Modules the local-build engine projects at the root but the package
     // resolver does not model: the co-resident fork-module side modules
     // (`fork_module32.wasm` / `fork_module64.wasm`), the co-resident WASI
-    // module, the standalone dynamic-linking planner, and the standalone
-    // WebAssembly artifact reader. Each is built
-    // out-of-band by its own `build-wasm.sh` and carries no
+    // module, the standalone dynamic-linking planner, the standalone
+    // WebAssembly artifact reader, and the standalone VFS image writer. Each is
+    // built out-of-band by its own `build-wasm.sh` and carries no
     // `packages/registry/<name>/build.toml`, so none appears in the v2
     // `projection.packages` map. Admit each as its own single root-level member
     // node so every host resolves it through the same pinned projection as
@@ -1747,6 +1747,7 @@ function readSourceOnlyProjectionAtRoot(
       "wasi-module": ["wasi_module32.wasm"],
       "dylink-module": ["dylink_module32.wasm"],
       "wasm-artifact-module": ["wasm_artifact_module32.wasm"],
+      "kandelo-image-module": ["kandelo_image_module32.wasm"],
     };
     const isStandaloneModuleNode =
       !projection.packages.has(packageName)
