@@ -1525,7 +1525,26 @@ which deliberately exhausts a 384-page process, because growth needs an mmap and
 that fixture has no room for one. So the floor must cover the peak or a
 memory-constrained fork cannot fork. At 1 MiB it does.
 
-### Blocked: the five catalog arenas, 1.56 MiB
+### "Blocked": the five catalog arenas -- THE REASONING BELOW IS WRONG
+
+> **RETRACTED 2026-09-17, same day, on the maintainer asking whether I had
+> given up.** The claim below is that a fork child "cannot syscall" while
+> re-seeding, generalised from ONE failure: the GC codec conversion returning
+> `errno 12` in a child. My own heap work refutes it. At the 64 KiB probe floor
+> a child's allocations (measured peak 256-512 KiB) necessarily exceeded the
+> floor, so children WERE calling `channel_mmap` to grow the heap, and 40 of 41
+> lifecycle tests passed. Children can syscall.
+>
+> I never bisected the GC codec failure to find its real cause -- plausibly a
+> bug in that conversion (it needed a type fix and carried fresh `copy_within`
+> logic), or one specific moment in child setup rather than a blanket rule. I
+> inferred a design law from a single data point and wrote it here as settled.
+>
+> What IS still true below: the arenas are not oversized (php uses 73% of
+> each), so a small floor would refuse php. That half stands on measurement.
+> Whether dynamic growth is available to them is OPEN, and settling it means
+> bisecting the GC codec ENOMEM rather than accepting it.
+
 
 Two facts close this off, and both were measured rather than assumed.
 
