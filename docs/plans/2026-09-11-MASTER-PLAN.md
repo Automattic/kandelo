@@ -9155,6 +9155,31 @@ It also validates the target: 12,000 was guessed as "roughly a third", and the
 native host independently lands at 13,577. **This is the only lane whose
 provisional target survived its census.**
 
+### The ratio has drifted — re-derive before quoting it (2026-09-17)
+
+`guest.rs` is **14,814 lines**, not the 13,577 the census measured on
+2026-09-11. The Rust host is growing too, so the gap that is this lane's
+whole argument has narrowed from **2.21x to about 2.02x** (29,987 whole
+lines in `CentralizedKernelWorker` against 14,814).
+
+The argument survives; the number does not. `kernelWorkerTypeScript`'s
+target of 6,359 code lines is a conversion of the census ratio, so it is
+drifting out of date and should be re-derived before anyone is held to
+it. The ceiling is untouched — this note records a moving comparison, it
+does not relax a gate.
+
+Nothing else about the lane moved in the week since the census. The
+budget's own bounds put the file at 26,280-26,490 code lines and the
+class at 512-522 methods. An independent check for dead weight found
+**zero** of 336 method names referenced only at their own definition, so
+there is no unreferenced code to delete either.
+
+One thing the census named is worth surfacing as a decision rather than
+leaving in a list: `createTestAuthority` is ~1,458 lines and it **ships
+in the browser bundle** — `host/dist/browser.js` contains it, and
+`replaceTcpScratchForScratchBoundaryTest` too. Test scaffolding reaching
+users' browsers is the K3 trade, and it is the maintainer's to make.
+
 ## Increments
 
 - **K1 — census.** Done.
