@@ -2,7 +2,32 @@
 
 Date: 2026-09-18
 Lane: F (fork inversion)
-Status: proposed, awaiting maintainer approval
+Status: approved in shape; four scope decisions recorded below
+
+## Maintainer decisions
+
+Recorded 2026-09-18, in answer to a question batch.
+
+1. **`ResumeSlotIndex`: run the deadlock experiment first, then decide.** The
+   conversion's inclusion is not settled until the parking call is identified
+   with evidence.
+2. **Chunk testing: the full suite runs in BOTH builds** -- the default one and
+   one with every arena's first chunk forced small enough to chain.
+3. **`build-programs.sh`: use the SDK and delete the duplicate.** Test programs
+   route through the worktree-local SDK as `CLAUDE.md` requires; the
+   hand-maintained `LINK_POST_LIBS` array goes away entirely, so the two copies
+   of the link contract cannot drift again. If the SDK turns out to be
+   unavailable at that point in the build, that obstacle is reported rather
+   than routed around with a second copy.
+4. **Missing `__heap_base`: fail loud, AFTER the build is fixed.** The guard
+   and the build fix land together, guard sequenced second, so the suite is
+   never red on a defect the same change is removing.
+
+No static allocation exemptions are requested. `VECTOR_IN_FLIGHT` was
+withdrawn as a candidate: it is a matched push/pop stack whose lifetime fits
+the bump heap, and its depth-8 limit is a correctness assertion, not storage.
+As a bump-heap `Vec` with an explicit depth check the refusal becomes
+intentional rather than a side effect of array capacity.
 
 ## Why
 
@@ -144,16 +169,13 @@ payload codecs") and `CapturedExternrefs` (16,384 B, explicitly
 "capture-scoped: cleared when a capture begins"). Their lifetime IS the bump
 heap's lifetime, so they become ordinary allocations from it.
 
-**One static requested to remain, needing explicit permission:**
-
-`VectorInFlight` -- 96 bytes, `[[u32; 3]; 8]`. Its bound is semantic, not a
-capacity guess: it limits how deeply reference-vector builds may NEST, and the
-comment records "eight is far past what the emitted code reaches (a frame
-vector holding an aggregate whose field vector holds another aggregate is depth
-three), and an overflow is a loud refusal rather than a silently mis-counted
-vector". A depth limit on recursion is not the scaling hazard this work
-targets. **Maintainer permission required; if refused, it moves to the bump
-heap with the rest.**
+`VectorInFlight` (96 B) joins them. It is a matched push/pop stack -- depth
+incremented at `lib.rs:9860`, decremented at `:9923` -- used while building
+reference vectors during capture, so its lifetime is the bump heap's. Its
+depth-8 limit is a correctness assertion rather than storage ("an overflow is
+a loud refusal rather than a silently mis-counted vector"), and as a bump-heap
+`Vec` with an explicit depth check that refusal becomes intentional instead of
+a side effect of array capacity.
 
 ### P-11 realignment
 
