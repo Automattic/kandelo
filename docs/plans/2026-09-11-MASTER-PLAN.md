@@ -874,6 +874,53 @@ it needs. B53 at least failed loudly. This one produces a message that
 sends the reader to `./run.sh fetch`, which cannot help, for an artifact
 that is present and correct.
 
+### Scope is wider than the Node demo, and it takes the merge gate with it
+
+`live-setup.ts` builds `OPTIONAL_BINARY_URLS` the same way, over the same
+ambient roots, for `nginx-vfs.vfs.zst` and `nginx-php-vfs.vfs.zst`. Its
+failure message differs ("Run: `./run.sh build programs`") but the
+mechanism is identical. So the affected set is at least node-vfs,
+wordpress, lamp, nginx-vfs and nginx-php-vfs.
+
+None of these exist under the ambient `local-binaries/programs/wasm32/`;
+all five are present in the projection:
+
+```
+nginx-vfs.vfs.zst   ambient:N projection:Y
+shell.vfs.zst       ambient:N projection:Y
+node-vfs.vfs.zst    ambient:N projection:Y
+```
+
+`shell.vfs.zst` is the control, and it is the one that works: the shell
+demo (bash, vim, NetHack) passes, because `live-setup.ts` imports it as a
+static `@binaries/programs/wasm32/shell.vfs.zst?url` specifier, which the
+alias plugin resolves through the projection. Only the glob path fails.
+
+**The merge gate is serial** (`test.describe.configure({ mode: "serial" })`),
+so the Node demo's failure aborts the five demos after it. They are not
+passing and not failing; they do not run. Excluding the Node demo by
+`--grep-invert` advances the gate exactly one test, to nginx, which then
+fails the same way and stops it again.
+
+**Leading hypothesis for why nginx passed before and fails now, NOT
+established.** The nginx demo passed in the browser run before this work.
+Between then and now, `./run.sh setup` republished `nginx-vfs` (the run
+reports disposition `published`, not `cached`), along with `lamp`,
+`shell`, `node-vfs`, `wordpress`, `nginx-php-vfs` and `mariadb-test` --
+the VFS-image packages, whose identity now includes the image writer that
+builds them. Under the source-only policy a republished package is
+written into the projection, not into the ambient mirror. So the likely
+story is that the glob path never worked under source-only and was masked
+by a leftover ambient artifact from an older build, and republishing
+removed the mask. What is NOT established is that the ambient copy existed
+at baseline time; that state was overwritten before it was recorded, and
+it should be checked on a fresh worktree rather than assumed.
+
+If that hypothesis holds, the correct reading is not "the image-writer fix
+broke nginx" but "nginx was passing on a stale artifact, and now fails
+honestly" -- which is the platform-values contract's preferred outcome,
+and still a defect to fix before the gate can be trusted.
+
 ## B53 — the image-writer module reached no build and no projection
 
 RESOLVED 2026-09-17, found by the maintainer hitting it in the browser.
