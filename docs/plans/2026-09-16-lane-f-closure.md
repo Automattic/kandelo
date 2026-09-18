@@ -2390,3 +2390,74 @@ at runtime.
 So the honest form of "an informed guess at instrumentation time" is: the
 per-module number is not a guess and never was, and the aggregate is not
 knowable at instrumentation time at all -- only at packaging time, as a bound.
+
+## Correction: main DOES have a chunked arena, and it is the house pattern
+
+The previous section claimed "no floor, no cap, no arena and no pre-sizing
+anywhere on main". The first three-quarters of that is right and the word
+ARENA is wrong. I flagged the claim as the weak kind -- an assertion of
+absence resting on three files -- and auditing all 29 of main's fork TS files
+(29,586 lines) found the exception.
+
+`host/src/fork-module-state.ts` on main carries `ForkModuleStateArena`:
+`interface ArenaChunk { addr, size, used, recordCount }`, `private chunks:
+ArenaChunk[] = []`, and an `allocateChunk` that goes through the guest mmap
+path. The one capacity constant the audit surfaced,
+`FORK_REPLAY_EVENT_SEGMENT_CAPACITY = 4080`, says in its own comment that it
+is "allocation geometry, not a continuation-depth limit" -- a ~32 KiB event
+page sized to fit twice in "the arena's normal 64-KiB chunks".
+
+So the accurate split is:
+
+  * CATALOGS on main (resume, GC codec, activation registry) -- growable JS
+    collections, no bound, no reservation. The original claim holds here.
+  * MODULE STATE and the replay journal on main -- a chunked mmap arena in
+    guest memory. The original claim was wrong here.
+
+### What main's policy actually is
+
+From `fork-module-state.ts:2812` and `:3142-3148`:
+
+  * the root chunk is exactly `WASM_PAGE_SIZE` -- one page, the minimum;
+  * on overflow it allocates ONE new chunk of
+    `alignUp(max(WASM_PAGE_SIZE, header + totalSize), WASM_PAGE_SIZE)` --
+    exactly what the record needs, page-rounded, minimum one page;
+  * chunks are CHAINED through a pointer in the chunk header and tracked in
+    `chunks[]`;
+  * records go into `chunks[chunks.length - 1]`, the current tail, regardless
+    of which activation they belong to.
+
+Nothing is copied. Nothing is doubled. Nothing is pre-reserved. And crucially
+nothing needs the aggregate: the arena discovers its size by filling.
+
+### This is better than all three options I offered
+
+I put geometric growth to the maintainer as "mmap a new region, copy the
+contents over, unmap the old". That is not the house pattern and it is worse
+than the house pattern on two counts: it copies, and it needs a growth policy.
+Chunk-and-chain needs neither.
+
+It also answers the page-waste measurement. The 78% figure came from ONE
+MAPPING PER ACTIVATION -- six activations under 31 KiB each burning a whole
+64 KiB page. Main's arena packs every activation's records into the same tail
+chunk and only chains a new one when the tail is full, so the page waste falls
+on the LAST chunk alone. That is the 13% case, reached without knowing the
+aggregate.
+
+So the shape the two arenas should take, per the maintainer's decisions to
+make the GC codec's size question disappear and to give exception tags no
+exception, is not an invention. It is `ForkModuleStateArena`'s existing
+policy: replace the static floor with a first mmap'd chunk, and replace the
+per-activation spill mapping with a shared chained chunk.
+
+`7b3276bf5` (the bump heap becoming a floor plus chunks) already approximates
+this, which is why it is the one conversion that reads as consistent with the
+rest of the codebase rather than invented for this lane.
+
+### Method note
+
+This correction exists because the claim was audited AFTER being reported, not
+before. The audit was cheap -- extract main's fork TS to a scratch directory,
+grep for capacity-shaped constants, read the survivors. It should have run
+before the claim went out, and the cost of not running it was telling the
+maintainer something false about their own codebase.
