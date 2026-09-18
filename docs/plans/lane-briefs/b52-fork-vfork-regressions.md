@@ -1,6 +1,25 @@
-# B52 — two fork regressions, for lane F
+# B52 — one confirmed fork regression, for lane F
 
-**Status: OPEN. This is the last thing between the branch and PR #1350.**
+**Status: OPEN. Scope narrowed 2026-09-17 — read this box first.**
+
+Of the two defects below, **only the memory-retirement one is confirmed**.
+
+The browser suite resolves artifacts differently depending on how it is
+invoked, and nothing in the tree pins which mode is correct (B54).
+Everything in this brief was first observed WITHOUT the source-only
+policy the dev server uses. Re-run with it:
+
+* `process-memory-retirement` fails identically in both modes. It is real
+  and it is yours.
+* `ruby-posix-spawn` **does not run** under source-only. Its fixture
+  `exec-child.wasm` is not projected, so `artifactsAvailable` is false and
+  both Ruby tests skip silently. The ENOMEM finding below stands only as
+  an ambient-mode observation.
+
+**Do not treat the Ruby item as a defect to fix yet.** It needs the
+fixture-provisioning gap closed first so the spec can run in the
+sanctioned mode; it may or may not reproduce there. Start with the
+memory-retirement defect.
 
 Read the withdrawal at the bottom first if you have the B50 brief in hand.
 

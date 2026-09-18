@@ -910,6 +910,52 @@ unit ("rewrites an exact mirror glob when only SourceOnly owns the
 artifact"), which should have been read before concluding the unit was
 broken.
 
+### Test fixtures are ambient-only, so source-only mode SKIPS coverage
+
+The browser test fixtures are not projected. `exec-child.wasm` is on disk
+at `local-binaries/programs/wasm32/exec-child.wasm` and appears in the
+projection manifest **zero** times.
+
+`ruby-posix-spawn.spec.ts` resolves its inputs through the resolver:
+
+```ts
+const rubyBinaryPath = tryResolveBinary("programs/ruby/ruby.wasm");
+const execChildBinaryPath = tryResolveBinary("programs/exec-child.wasm");
+const artifactsAvailable = rubyBinaryPath !== null && execChildBinaryPath !== null;
+```
+
+Ruby itself IS projected. `exec-child.wasm` is not, so `artifactsAvailable`
+is false and **both Ruby tests skip silently** under source-only:
+
+```
+-  1 Ruby uid 1000 selects upstream vfork in every browser engine
+-  2 Ruby execs through vfork and root retains ordinary fork
+2 skipped
+```
+
+`process-memory-retirement.spec.ts` survives only because it reads its
+fixtures with `readFileSync` on ambient paths rather than resolving them,
+which is a bypass rather than a fix.
+
+So the sanctioned source-only composition silently drops the browser
+coverage of Ruby's fork and vfork paths — the campaign's own subject. A
+skip is worse than a failure here: the suite reports green for a
+contract it did not exercise, which is the exact shape of
+[Expected-failures can hide a dead suite].
+
+### Where that leaves B52
+
+Re-run under source-only:
+
+* `process-memory-retirement` **fails identically** — same assertion at
+  line 132, `null` where 100 are expected, with line 129 (all 100
+  iterations exit 0) still passing. Confirmed in both modes; this one is
+  real and is lane F's.
+* `ruby-posix-spawn` **cannot currently be confirmed**: it does not run.
+  The ENOMEM diagnostics finding stands only as an ambient-mode
+  observation, and lane F should not be held to it until a fixture-
+  provisioning fix lets the spec run under the sanctioned mode.
+
 **Consequence for every browser number reported this session.** They were
 all taken in ambient mode: the 160/14 baseline, the 159/20 run after B53,
 and every isolated re-run. They describe a resolution mode nobody chose.
