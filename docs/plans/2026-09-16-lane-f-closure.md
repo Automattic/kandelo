@@ -2536,3 +2536,82 @@ I have not investigated why the two paths exist or whether they can be one.
 Recording it because a census is the only way it would have surfaced: it never
 came up in any discussion of "the catalogs", and I had been treating
 `ActivationCatalogOrds` as though it were the whole story.
+
+## What else needs a registry: eight more, and the trigger already arrives
+
+The maintainer asked what, other than identity, needs registry treatment. The
+answer is every store keyed by `activation_id` whose lifetime is
+`dlopen`..`dlclose` -- the identity registry's exact shape. There are eight,
+and the reason to convert them is the principle, not their size: a foundation
+that still fits when the scenario changes.
+
+### The release trigger is already wired
+
+`fm_resume_slots` op 1 (`lib.rs:10944`) IS the dlclose entry point into the
+module. The host chain `__wasm_dlclose` -> `lk.dlclose` ->
+`unregisterActivation` -> `prepared.unregister()` ->
+`resumeTable.unregisterActivation` -> `releaseResumeSlots` reaches it on every
+`dlclose`, carrying the `activation_id`. Op 1 already calls two things:
+
+    resume_unregister_impl(activation)      // frees that activation's slots
+    release_identity_activation(activation) // frees that activation's chunks
+
+So exactly TWO stores have a per-activation release today, and the mechanism
+for the rest is an added call in a function that already runs, not a new
+seam.
+
+### Never released at all -- no reset, no per-activation release
+
+Their count atomics are never stored back to zero anywhere
+(`grep -c '<COUNT>.store(0'` returns 0), so they grow monotonically for the
+life of the worker:
+
+    ActKfigBytes + ActKfigIndex     65,536 + 2,048 B   imported-globals codec
+    ActGcCodecBytes + Index         32,768 + 1,536 B   GC codec sections
+    ActExnTagsOrds + Index          32,768 + 1,536 B   exception tag ordinals
+    ActTemplateIds                       2,304 B       module template ids
+
+`ActKfigBytes` is the largest of these at 64 KiB and has had no attention in
+this lane at all. The GC codec's non-reset is deliberate and documented --
+re-seeding is byte-identical by construction, and a blanket reset once
+destroyed the inherited catalog on the host that does not re-seed -- so
+"never reset" is correct there and "never RELEASED" is still the gap.
+
+### Bulk-reset on child re-seed, but still no per-activation release
+
+These zero their counts once, in `set_format_impl`, which is the child's
+whole-catalog reset. A `dlclose` in a long-lived parent leaks the entry until
+the next format reset, which on a parent may be never:
+
+    ActivationCatalogOrds + Index   32,768 + 1,536 B   per-activation catalogs
+    ActTableStateOwners                  3,072 B       table state owners
+    ActFuncCatalogBase                     512 B       function catalog bases
+    ActStaticRootBase                      512 B       static root bases
+
+### Already have a release
+
+    identity chunks        release_identity_activation  (and munmaps empties)
+    resume slots           resume_unregister_impl       (frees into the bitmap)
+
+### Not registries -- different shape or lifetime
+
+Listed so the census is exhaustive rather than selective:
+
+  * `HeapCell` -- the allocator itself, not keyed by anything.
+  * `ScratchCell`, `VectorInFlight`, `CapturedExternrefs` -- per-fork
+    transient, reset per capture.
+  * `ResumeFreeBits` -- a bitmap over slots, part of the resume machinery
+    rather than a store of its own.
+  * `CatalogCell` -- activation 0's resume catalog, the duplicate path the
+    census turned up; it is keyed by nothing because it holds exactly one
+    activation.
+  * `ImportedGlobalProvenanceTable` -- keyed by IMPORT, not by activation, and
+    never released either. 256 entries, 8 KiB. A registry by shape, on a
+    different key, so it needs a different lifetime answer.
+
+### What this makes the work
+
+Eight per-activation registries, all the same shape as identity, all with the
+release trigger already arriving. Plus `ImportedGlobalProvenanceTable` on a
+different key, which needs its own lifetime question answered before it can be
+converted.
