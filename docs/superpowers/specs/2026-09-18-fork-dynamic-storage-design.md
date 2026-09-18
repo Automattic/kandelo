@@ -227,11 +227,35 @@ before it is trusted.
 
 ## Risks
 
-1. **The `RESUME_SLOT_INDEX` deadlock is unexplained.** It must be understood
-   before that conversion is written, not after. `resume_register_impl` runs
-   only from `resume_reseed`, called from `fm_set_resume_catalog` and
-   `fm_set_activation_resume_catalog` -- both seeding entries. Why allocation
-   there parks every process is not yet known.
+1. **The `RESUME_SLOT_INDEX` deadlock is not yet explained.** It must be
+   understood before that conversion is written, not after.
+
+   What is established: `resume_register_impl` runs only from `resume_reseed`,
+   called from `fm_set_resume_catalog` and `fm_set_activation_resume_catalog`
+   -- both seeding entries. On a fork CHILD those run inside
+   `replayDlopens`, which `worker-main.ts:4679-4696` places in the `else`
+   branch of the parent's `setupChannelBase` call: the child seeds every side
+   activation "before the process transaction is attached".
+
+   The symptom was every process in state S at 0% CPU, parked in
+   `channel_mmap` on `memory_atomic_wait32`. That is a syscall ISSUED and
+   never answered -- not a missing channel base, which would return `EINVAL`,
+   and not the `ENOMEM` the GC codec attempt produced. So the child had a
+   usable channel and nobody serviced it.
+
+   HYPOTHESIS, not yet tested: the child issues its first `channel_mmap`
+   before the kernel has registered it as a schedulable process, so the
+   request parks forever; the parent stays blocked in `fork()` waiting for the
+   child, and the kernel waits on the fork it is still completing.
+
+   EXPERIMENT that would settle it: force the floor small again, and record in
+   the module which `fm_*` entry is on the stack when `channel_mmap` is
+   entered, together with whether the kernel has registered the child pid at
+   that moment. If the parking call is the child's first seed and registration
+   has not happened, the hypothesis holds and the fix is ordering rather than
+   allocation strategy. `setupChannelBase` itself is NOT the asymmetry -- it
+   concerns the guest's channel base (TLS slot or imported global), not the
+   module's, which `fm_set_format` supplies at `lib.rs:3532`.
 2. **`ResumeSlotIndex` is 89.7% of what remains** after the other conversions
    (786,432 of 876,640 bytes). Deferring it leaves most of the static in place;
    including it puts the one demonstrated failure inside the combined pass.
