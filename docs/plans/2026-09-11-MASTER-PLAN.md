@@ -673,7 +673,7 @@ writer. The relay re-applies onto whichever answer comes back.
 hunks — two of them textual accidents where git spliced the relay's rewrite of
 `host_fetch_deferred` into the `host_image_read` block that had replaced it.)*
 
-## B50 — after the lane F merge, no process that forks can start
+## B50 — a stale host bundle broke every fork — RESOLVED 2026-09-17
 
 OPEN and **urgent**, found 2026-09-16 validating the lane F merge `3ea310260`.
 
@@ -682,7 +682,39 @@ OPEN and **urgent**, found 2026-09-16 validating the lane F merge `3ea310260`.
       at instantiateForkModule (host/src/fork-module-instance.ts:600)
       at centralizedWorkerMain (host/src/worker-main.ts:3643)
 
-**The module is internally inconsistent.** `wasm-objdump` on the freshly built
+**RESOLVED 2026-09-17. The cause was a stale `host/dist`, and every other
+theory in this entry was wrong.**
+
+`host/dist/` was dated Sep 15 20:13 while `host/src/fork-module-instance.ts`
+was Sep 16 18:43. Package-build workers run the COMPILED bundle, not
+`host/src`, so they executed the old table logic against the new fork module.
+`cd host && npm run build` (tsup) cleared 400 LinkErrors to 0, and
+`./run.sh setup` then reached real exit code 0 with `"outcome":"succeeded"`.
+
+**Three diagnoses in this entry were wrong, and each was stated with more
+confidence than its evidence carried:**
+
+1. "The module is internally inconsistent." It is not. `wasm-tools dump` shows
+   `table_size: 2`, matching the import's `initial=2`, and running the host's
+   own parser against the same artifact also yields 2.
+2. "Lane F's injector writes the wrong table size." A brief was handed to that
+   agent naming three lines of `fork-module-inject/src/main.rs` on the
+   strength of that guess. **Lane F's code was never at fault**, and that
+   brief should be withdrawn.
+3. "It is a stale fork module." Plausible, and tested: `build-wasm.sh
+   --verify-fresh` reported exit 0 with the module current, and the failure
+   persisted. The stale artifact was one layer up.
+
+**What would have found it in seconds:** comparing `host/dist`'s timestamp to
+`host/src`. No check in the tree does that. `cargo xtask verify-fresh` covers
+Rust artifacts and `build-wasm.sh --verify-fresh` covers the modules; nothing
+covers the compiled host bundle that every package-build worker actually runs.
+**That is the defect worth fixing**, and it is filed as B51.
+
+**Superseded below**, kept because how three wrong diagnoses were reached is
+worth more than the right one:
+
+**The module was thought internally inconsistent.** `wasm-objdump` on the freshly built
 `host/wasm/fork_module32.wasm` shows its own import requiring
 `env.__indirect_function_table` with **initial=2**, while the `dylink` section
 the host parses for the same value (`fork-module-instance.ts:166`,
@@ -713,6 +745,51 @@ this is lane F's defect or something only the merge produces.
 **This is a maintainer decision:** have lane F fix the dylink/table
 disagreement, or revert `3ea310260` until it is fixed. The merge is already
 pushed to `brandonpayton/epoll-kernel-route`.
+
+## B51 — nothing checks that `host/dist` is fresh
+
+OPEN, filed 2026-09-17 out of B50, which cost most of a day.
+
+Package-build workers do not run `host/src`. They run the compiled bundle in
+`host/dist`, built by `tsup`. Nothing in the tree checks that bundle against
+its sources: `cargo xtask verify-fresh` covers Rust artifacts,
+`crates/fork-module/build-wasm.sh --verify-fresh` covers the wasm modules, and
+`./run.sh setup` rebuilds the bundle only as a side effect of other work.
+
+When it goes stale the symptom is a runtime error deep inside a package build
+— in B50's case a `LinkError` about a table import — which reads as a defect
+in whatever code the bundle interacts with. It sent this session to the wrong
+layer three times and produced a brief blaming another lane's injector.
+
+**What is wanted:** a freshness check on `host/dist` in the same shape as the
+existing two, failing loudly and naming the bundle, so the next occurrence is
+one line of output instead of a day.
+
+## B52 — three fork/vfork browser specs regressed, and they reproduce
+
+OPEN, found 2026-09-17 on the first browser run after the lane Y/V merge.
+**These are not flaky: all three fail in isolation as well as in the suite.**
+
+| spec | what it asserts |
+|---|---|
+| `ruby-posix-spawn.spec.ts` | Ruby execs through vfork and root retains ordinary fork — `childEvents` and `forkCounts` both wrong |
+| `process-memory-retirement.spec.ts` | the browser retires exact-fenced process memory |
+| `kandelo-merge-gate.spec.ts` | the Node.js demo evaluates JavaScript in the terminal |
+
+Two of the three are fork/vfork semantics, which is lane F's area, and lane F's
+own closure describes a vfork fix in exactly this region: "a borrowed child
+must not publish identities, because writing into the parked parent's memory
+breaks the exact-teardown fence."
+
+Context for whoever takes it: the same run shows **four** previously-failing
+specs now PASSING — Chromium GC reconstruction, browser profiles, the shell
+demo (bash, vim, NetHack) and WordPress SQLite reaching the installer. The
+browser total is 160 passed / 14 failed, against 164/14 before this merge. The
+demo-visible surface improved; process semantics regressed.
+
+**This is what stands between the branch and merging PR #1350.** The campaign
+migrated fork; shipping it with three reproducible fork regressions would ship
+the one thing it was for.
 
 ## B49 — the host's lazy table is empty for an SDEF image — CLOSED 2026-09-15
 
