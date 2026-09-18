@@ -515,24 +515,31 @@ mod wasm {
     // mapping each activation id to its `[offset, len)` slice. Both the ordinal
     // arena and the index are capped; overflow is a truthful `E2BIG` and the host
     // keeps the JavaScript continuation for that program.
-    const ACTIVATION_CATALOG_ORD_CAP: usize = 65_536; // total ordinals, all activations
+    /// A FLOOR of ordinals catalogs SHARE, not a cap. Was `[u32; 65_536]` --
+    /// 256 KiB reserved out of the guest's mmap window whether a program forked
+    /// or not. Catalogs pack into it and spill to a private mapping only when
+    /// one does not fit, for the reason the GC codec arena records: a mapping
+    /// per catalog would round each to a whole 64 KiB page and cost MORE than
+    /// the static it replaced.
+    const ACTIVATION_CATALOG_ORD_FLOOR: usize = 8_192; // ordinals, 32 KiB
     const ACTIVATION_CATALOG_MAX_ACTS: usize = 64; // distinct activations
 
     #[repr(C, align(4))]
-    struct ActivationCatalogOrds(UnsafeCell<[u32; ACTIVATION_CATALOG_ORD_CAP]>);
+    struct ActivationCatalogOrds(UnsafeCell<[u32; ACTIVATION_CATALOG_ORD_FLOOR]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ActivationCatalogOrds {}
     static ACT_CATALOG_ORDS: ActivationCatalogOrds =
-        ActivationCatalogOrds(UnsafeCell::new([0u32; ACTIVATION_CATALOG_ORD_CAP]));
+        ActivationCatalogOrds(UnsafeCell::new([0u32; ACTIVATION_CATALOG_ORD_FLOOR]));
 
-    /// The index: each entry is `[activation_id, offset, len]` into the ordinal
-    /// arena. Only the first `ACT_CATALOG_ACT_COUNT` entries are live.
-    #[repr(C, align(4))]
-    struct ActivationCatalogIndex(UnsafeCell<[[u32; 3]; ACTIVATION_CATALOG_MAX_ACTS]>);
+    /// The index: each entry is `[activation_id, guest_addr, len]`, the address
+    /// absolute so a floor-resident catalog and a spilled one read alike. Only
+    /// the first `ACT_CATALOG_ACT_COUNT` entries are live.
+    #[repr(C, align(8))]
+    struct ActivationCatalogIndex(UnsafeCell<[[u64; 3]; ACTIVATION_CATALOG_MAX_ACTS]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ActivationCatalogIndex {}
     static ACT_CATALOG_INDEX: ActivationCatalogIndex =
-        ActivationCatalogIndex(UnsafeCell::new([[0u32; 3]; ACTIVATION_CATALOG_MAX_ACTS]));
+        ActivationCatalogIndex(UnsafeCell::new([[0u64; 3]; ACTIVATION_CATALOG_MAX_ACTS]));
 
     static ACT_CATALOG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_CATALOG_ORD_USED: AtomicU32 = AtomicU32::new(0);
@@ -573,7 +580,11 @@ mod wasm {
     //
     // Fixed BSS like the catalogs above, for the same reason: it must survive
     // the per-fork bump-heap reset.
-    const RESUME_SLOT_CAP: usize = ACTIVATION_CATALOG_ORD_CAP;
+    /// Spelled out rather than aliased to the activation-catalog cap it used to
+    /// borrow: that cap is gone (catalogs share a floor now), and the two were
+    /// never the same quantity -- this bounds the resume SLOT table, that
+    /// bounded total ordinals.
+    const RESUME_SLOT_CAP: usize = 65_536;
 
     /// `[activation_id, ordinal, slot]` per assigned coordinate. Only the first
     /// `RESUME_SLOT_COUNT` entries are live; an entry freed by
@@ -791,15 +802,12 @@ mod wasm {
             return Err(Errno::E2BIG); // too many distinct activations
         }
         let ord_end = ord_used.checked_add(count).ok_or(Errno::EINVAL)?;
-        if ord_end > ACTIVATION_CATALOG_ORD_CAP {
-            return Err(Errno::E2BIG); // combined catalogs exceed the arena
-        }
         // Reject a re-seeded activation (each is seeded once per worker), matching
         // the once-per-worker `fm_set_format` / `fm_set_resume_catalog` contract.
         // SAFETY: single-threaded; the index is a static buffer read here only.
         let index = unsafe { &*ACT_CATALOG_INDEX.0.get() };
         for entry in index.iter().take(act_count) {
-            if entry[0] == activation_id {
+            if entry[0] == u64::from(activation_id) {
                 return Err(Errno::EINVAL);
             }
         }
@@ -815,21 +823,41 @@ mod wasm {
         // SAFETY: `[start, end)` is within guest linear memory (checked above);
         // the destination is the distinct static ordinal arena, at a slice
         // `[ord_used, ord_end)` bounded by the cap check above.
-        let ords = unsafe { &mut *ACT_CATALOG_ORDS.0.get() };
-        let src = core::hint::black_box(start) as *const u8;
-        for (index, slot) in ords[ord_used..ord_end].iter_mut().enumerate() {
-            let mut bytes = [0u8; 4];
-            unsafe {
-                core::ptr::copy(src.add(index * 4), bytes.as_mut_ptr(), 4);
+        // Pack into the shared floor when it fits, else give this catalog its
+        // own mapping. Either way the index records an absolute address.
+        let addr = if count == 0 {
+            0
+        } else if ord_end <= ACTIVATION_CATALOG_ORD_FLOOR {
+            let base = unsafe { ACT_CATALOG_ORDS.0.get() as *mut u32 as usize };
+            ACT_CATALOG_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
+            // SAFETY: `[ord_used, ord_end)` is inside the floor; the source is a
+            // distinct guest-memory region, read byte-wise because the guest's
+            // pointer carries no alignment promise.
+            let ords = unsafe { &mut *ACT_CATALOG_ORDS.0.get() };
+            let src = core::hint::black_box(start) as *const u8;
+            for (i, slot) in ords[ord_used..ord_end].iter_mut().enumerate() {
+                let mut bytes = [0u8; 4];
+                unsafe {
+                    core::ptr::copy(src.add(i * 4), bytes.as_mut_ptr(), 4);
+                }
+                *slot = u32::from_le_bytes(bytes);
             }
-            *slot = u32::from_le_bytes(bytes);
-        }
+            (base + ord_used * 4) as u64
+        } else {
+            let want = page_round_up((count * 4) as u64);
+            let at = channel_mmap(channel_base()?, want)?;
+            // Copied AFTER the mapping: `channel_mmap` grows the shared memory
+            // and invalidates any view taken before it.
+            // SAFETY: both ranges were bounds-checked against the live memory.
+            let m = unsafe { mem_mut() };
+            m.copy_within(start..start + count * 4, at as usize);
+            at
+        };
         // Publish the index entry, then bump the counters.
         // SAFETY: single-threaded; `act_count < MAX_ACTS` by the check above.
         let index = unsafe { &mut *ACT_CATALOG_INDEX.0.get() };
-        index[act_count] = [activation_id, ord_used as u32, count as u32];
+        index[act_count] = [u64::from(activation_id), addr, count as u64];
         ACT_CATALOG_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
-        ACT_CATALOG_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
         Ok(())
     }
 
@@ -842,12 +870,9 @@ mod wasm {
         // SAFETY: single-threaded per worker; the buffers outlive every borrow
         // and every live entry's `[offset, len)` was bounded on seed.
         let index = unsafe { &*ACT_CATALOG_INDEX.0.get() };
-        let ords = unsafe { &*ACT_CATALOG_ORDS.0.get() };
         for entry in index.iter().take(act_count) {
-            if entry[0] == activation_id {
-                let offset = entry[1] as usize;
-                let len = entry[2] as usize;
-                return Some(&ords[offset..offset + len]);
+            if entry[0] == u64::from(activation_id) {
+                return guest_u32s(entry[1], entry[2] as usize).ok();
             }
         }
         None
@@ -3959,6 +3984,33 @@ mod wasm {
     /// indistinguishable to a reader. Re-derived from a live `mem_mut()` each
     /// call: `channel_mmap` grows the shared memory and invalidates any view
     /// taken before it.
+    /// A read-only `u32` view of `count` ordinals at `addr`, or `EINVAL`.
+    ///
+    /// The `u32` twin of `guest_bytes`, for the catalogs that store ordinals
+    /// rather than opaque bytes. Alignment is CHECKED rather than assumed: the
+    /// shared floor is `align(4)` and `SYS_MMAP` returns page-aligned addresses,
+    /// so both sources satisfy it, but an index entry that ever held something
+    /// else must refuse rather than produce a misaligned slice.
+    fn guest_u32s(addr: u64, count: usize) -> Result<&'static [u32], Errno> {
+        if count == 0 {
+            return Ok(&[]);
+        }
+        let start = usize::try_from(addr).map_err(|_| Errno::EINVAL)?;
+        if start % 4 != 0 {
+            return Err(Errno::EINVAL);
+        }
+        let bytes = count.checked_mul(4).ok_or(Errno::EINVAL)?;
+        let end = start.checked_add(bytes).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: 4-aligned and in-bounds per the checks above; guest linear
+        // memory outlives every borrow the module takes of it.
+        Ok(unsafe {
+            core::slice::from_raw_parts(core::hint::black_box(start) as *const u32, count)
+        })
+    }
+
     fn guest_bytes(addr: u64, len: usize) -> Result<&'static [u8], Errno> {
         if len == 0 {
             return Ok(&[]);
