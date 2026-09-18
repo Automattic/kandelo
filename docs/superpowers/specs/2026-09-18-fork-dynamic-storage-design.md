@@ -22,6 +22,33 @@ Recorded 2026-09-18, in answer to a question batch.
 4. **Missing `__heap_base`: fail loud, AFTER the build is fixed.** The guard
    and the build fix land together, guard sequenced second, so the suite is
    never red on a defect the same change is removing.
+5. **`ResumeSlotIndex` is IN.** The phase clearing is accepted as sufficient:
+   the only concrete mechanism proposed was refuted, and the shared arena
+   differs from the reverted design in the way that matters -- its chunk list
+   lives in the chunks, not in a bump-heap `Vec` that `ALLOC.reset()` reclaims.
+6. **The `> 4 MiB` test is fixed in a PREREQUISITE commit**, landed before the
+   conversion work, asserting that the region covers the declared `memorySize`
+   plus shadow stack rather than a constant. Swept for siblings at the same
+   time: it was invisible until a reduction tripped it.
+7. **All NINE hand-maintained copies of the link contract converge onto the
+   SDK.** Not just `build-programs.sh`. The full list is
+   `scripts/build-programs.sh`, `scripts/run-browser-posix-tests.sh`,
+   `scripts/run-browser-sortix-tests.sh`,
+   `crates/host-native/fixtures/build-fixtures.sh`,
+   `examples/dlopen/build.sh`, and three fork side-module fixtures under
+   `host/test/`, against the authority in `sdk/src/lib/flags.ts`.
+8. **The build work is a SEPARATE change, landed BEFORE the storage work**, so
+   arena sizing decisions are made against the final memory layout rather than
+   one about to change.
+9. **P-11 becomes two fixtures**, and the tight one is pinned by `maxPages`,
+   NOT by stack size. The SDK's 8 MiB is a hard floor -- `mainThreadStackSize`
+   (`sdk/src/lib/flags.ts:230`) takes `max(floor, requested)` -- so a smaller
+   stack would require punching an opt-out through a floor that exists
+   precisely because a too-small stack silently corrupts `.bss`. Constraining
+   address space instead achieves the same determinism with nothing
+   program-specific in the platform.
+10. **The 4,096-deep recursion's stack headroom is investigated and fixed as
+    part of the plan**, not deferred.
 
 No static allocation exemptions are requested. `VECTOR_IN_FLIGHT` was
 withdrawn as a candidate: it is a matched push/pop stack whose lifetime fits
@@ -222,6 +249,43 @@ no child; no phantom child; parent syscalls still work; a 4,096-deep fork fails
 MID-UNWIND (exercising `ABORT_UNWINDING`, not the root-allocation path); the
 aborted transaction unmapped all three pages; and a later recovery fork
 succeeds. The tightness is the test.
+
+## P-11: two fixtures, and why both
+
+`fork_at_depth(4096)` and the address-space fill test different halves of the
+same contract, and one layout cannot serve both once the build path is fixed.
+
+**Tight fixture** -- the error paths: root-allocation `ENOMEM` with no child,
+no phantom child, parent syscalls still usable, mid-unwind `ABORT_UNWINDING`,
+all three pages reusable after abort, recovery fork succeeds. Reaching those
+requires a controlled small address space.
+
+Today that tightness comes from a DEFECT: the missing `__heap_base` export
+forces a 16 MiB brk fallback out of a 24 MiB process. The fixture is therefore
+calibrated against a bug, and fixing the bug without pinning the fixture would
+make it silently stop exercising what it claims. Pinning via `maxPages` makes
+the constraint intentional and stated.
+
+**Adaptive fixture** -- that the same behaviour holds at PRODUCTION layout:
+real `__heap_base`, the SDK's 8 MiB shadow stack, an ordinary page budget.
+That is the configuration real software runs in, and nothing covers it today.
+
+### The recursion headroom question
+
+`fork_at_depth(4096)` currently runs on wasm-ld's 64 KiB default shadow stack,
+because `build-programs.sh` never passes `-z,stack-size`. At 16 bytes per frame
+that is the entire stack, and WebAssembly has no guard page -- an overflow
+writes past `__data_end` into `.bss` rather than trapping.
+
+It passes today, so either the frames are smaller than that estimate or
+something else is true. Measuring `fork_at_depth`'s actual frame size is part
+of the plan, because a memory-exhaustion fixture running near a
+silent-corruption boundary is a live defect independent of this work, and it
+changes how carefully its layout may be altered.
+
+Note the stack-size measurement trap: `stackTop - dataEnd` OVERSTATES the
+stack by the whole of `.bss`, since `.bss` occupies address space but emits no
+data segment. The authoritative figure is the link flag, not the artifact.
 
 ## Testing
 
