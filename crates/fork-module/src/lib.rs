@@ -1806,23 +1806,41 @@ mod wasm {
     // bump-heap reset. Both are capped; overflow is a truthful `E2BIG` and the
     // host keeps the JS drive-order for that program. A re-seeded activation is a
     // truthful `EINVAL`.
-    const ACT_GC_CODEC_BYTES_CAP: usize = 262_144; // total section bytes, all activations
+    /// A FLOOR, not a cap. Was `[u8; 262_144]` sized for "every activation's
+    /// KFGC section at once", reserved out of the guest's mmap window whether a
+    /// program forked or not, and still a hard bound that a bigger program hit.
+    ///
+    /// ONE MMAP PER SECTION DOES NOT WORK, and the reason is worth keeping.
+    /// `mmap_anonymous` rounds every length up to a whole 64 KiB wasm page
+    /// (`runtime-core/src/memory.rs`, pinned by `test_mmap_aligns_to_page`:
+    /// two 1-byte mappings land 0x10000 apart). That is mmap's contract, not a
+    /// shortcut -- a mapping must be independently protectable and unmappable,
+    /// and protection is tracked per page. So eight activations holding a few
+    /// hundred bytes each would claim 512 KiB of pages to replace a 256 KiB
+    /// static they SHARED. Measured: that version passed 39 lifecycle tests and
+    /// failed P-11, whose process has 2-6 pages of slack.
+    ///
+    /// Sections therefore SHARE. Small ones pack into this floor; only when it
+    /// fills does a section get its own mapping. The index holds an ABSOLUTE
+    /// guest address either way, so a reader cannot tell the two apart and
+    /// nothing downstream has to care which it got.
+    const ACT_GC_CODEC_FLOOR: usize = 32_768;
     const ACT_GC_CODEC_MAX_ACTS: usize = 64; // distinct activations
 
     #[repr(C, align(8))]
-    struct ActGcCodecBytes(UnsafeCell<[u8; ACT_GC_CODEC_BYTES_CAP]>);
+    struct ActGcCodecBytes(UnsafeCell<[u8; ACT_GC_CODEC_FLOOR]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ActGcCodecBytes {}
     static ACT_GC_CODEC_BYTES: ActGcCodecBytes =
-        ActGcCodecBytes(UnsafeCell::new([0u8; ACT_GC_CODEC_BYTES_CAP]));
+        ActGcCodecBytes(UnsafeCell::new([0u8; ACT_GC_CODEC_FLOOR]));
 
-    /// Each live entry is `[activation_id, offset, byte_len]` into the byte arena.
-    #[repr(C, align(4))]
-    struct ActGcCodecIndex(UnsafeCell<[[u32; 3]; ACT_GC_CODEC_MAX_ACTS]>);
+    /// Each live entry is `[activation_id, guest_addr, byte_len]`.
+    #[repr(C, align(8))]
+    struct ActGcCodecIndex(UnsafeCell<[[u64; 3]; ACT_GC_CODEC_MAX_ACTS]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ActGcCodecIndex {}
     static ACT_GC_CODEC_INDEX: ActGcCodecIndex =
-        ActGcCodecIndex(UnsafeCell::new([[0u32; 3]; ACT_GC_CODEC_MAX_ACTS]));
+        ActGcCodecIndex(UnsafeCell::new([[0u64; 3]; ACT_GC_CODEC_MAX_ACTS]));
 
     static ACT_GC_CODEC_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_GC_CODEC_BYTES_USED: AtomicU32 = AtomicU32::new(0);
@@ -1890,12 +1908,9 @@ mod wasm {
         // truthful `EINVAL` — the guard's real purpose.
         // SAFETY: single-threaded; the index/bytes are static buffers read here.
         let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
-        let stored_bytes = unsafe { &*ACT_GC_CODEC_BYTES.0.get() };
         for entry in index.iter().take(act_count) {
-            if entry[0] == activation_id {
-                let off = entry[1] as usize;
-                let len = entry[2] as usize;
-                let stored = stored_bytes.get(off..off + len).ok_or(Errno::EINVAL)?;
+            if entry[0] == u64::from(activation_id) {
+                let stored = guest_bytes(entry[1], entry[2] as usize)?;
                 if stored == incoming {
                     return Ok(()); // identical re-seed: no-op
                 }
@@ -1905,24 +1920,35 @@ mod wasm {
         if act_count >= ACT_GC_CODEC_MAX_ACTS {
             return Err(Errno::E2BIG); // too many distinct activations
         }
+        // Pack into the shared floor when it fits; otherwise this one section
+        // gets its own mapping. Either way the index gets an absolute address.
         let end_used = used.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        if end_used > ACT_GC_CODEC_BYTES_CAP {
-            return Err(Errno::E2BIG); // combined catalogs exceed the arena
-        }
-        // Copy the raw section bytes out of guest memory into the flat static arena
-        // (the same aliasing-safe idiom the resume catalog uses).
-        // SAFETY: the destination is the distinct static byte arena slice
-        // `[used, end_used)`; `incoming` is a distinct guest-memory region.
-        let bytes = unsafe { &mut *ACT_GC_CODEC_BYTES.0.get() };
-        unsafe {
-            core::ptr::copy(incoming.as_ptr(), bytes.as_mut_ptr().add(used), byte_len);
-        }
+        let addr = if byte_len == 0 {
+            0
+        } else if end_used <= ACT_GC_CODEC_FLOOR {
+            let base = unsafe { ACT_GC_CODEC_BYTES.0.get() as *mut u8 as usize };
+            ACT_GC_CODEC_BYTES_USED.store(end_used as u32, Ordering::Relaxed);
+            // SAFETY: `[used, end_used)` is inside the floor, and `incoming` is a
+            // distinct guest-memory region.
+            unsafe {
+                core::ptr::copy(incoming.as_ptr(), (base + used) as *mut u8, byte_len);
+            }
+            (base + used) as u64
+        } else {
+            let at = channel_mmap(channel_base()?, page_round_up(byte_len as u64))?;
+            // Re-derive the view AFTER the mapping: `channel_mmap` grows the
+            // shared memory and invalidates anything taken before it, `incoming`
+            // included.
+            // SAFETY: both ranges were bounds-checked against the live memory.
+            let m = unsafe { mem_mut() };
+            m.copy_within(start..start + byte_len, at as usize);
+            at
+        };
         // Publish the index entry, then bump the counters.
         // SAFETY: single-threaded; `act_count < MAX_ACTS` by the check above.
         let index = unsafe { &mut *ACT_GC_CODEC_INDEX.0.get() };
-        index[act_count] = [activation_id, used as u32, byte_len as u32];
+        index[act_count] = [u64::from(activation_id), addr, byte_len as u64];
         ACT_GC_CODEC_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
-        ACT_GC_CODEC_BYTES_USED.store(end_used as u32, Ordering::Relaxed);
         Ok(())
     }
 
@@ -2131,13 +2157,10 @@ mod wasm {
         // SAFETY: single-threaded per worker; the buffers outlive every borrow and
         // every live entry's `[offset, byte_len)` was bounded on seed.
         let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
-        let bytes = unsafe { &*ACT_GC_CODEC_BYTES.0.get() };
         let mut map = BTreeMap::new();
         for entry in index.iter().take(act_count) {
-            let offset = entry[1] as usize;
-            let len = entry[2] as usize;
-            let slice = bytes.get(offset..offset + len).ok_or(Errno::EINVAL)?;
-            map.insert(entry[0], fork_codec::decode_gc_codec(slice)?);
+            let slice = guest_bytes(entry[1], entry[2] as usize)?;
+            map.insert(entry[0] as u32, fork_codec::decode_gc_codec(slice)?);
         }
         Ok(map)
     }
@@ -3926,6 +3949,25 @@ mod wasm {
     fn page_round_up(n: u64) -> u64 {
         const PAGE: u64 = 65_536;
         n.div_ceil(PAGE) * PAGE
+    }
+
+    /// A read-only view of `[addr, addr + len)` in guest memory, or `EINVAL`.
+    ///
+    /// The per-activation catalogs store an ABSOLUTE address rather than an
+    /// offset into one arena, because a section may sit either in the shared
+    /// static floor or in its own mapping. This is what makes those two
+    /// indistinguishable to a reader. Re-derived from a live `mem_mut()` each
+    /// call: `channel_mmap` grows the shared memory and invalidates any view
+    /// taken before it.
+    fn guest_bytes(addr: u64, len: usize) -> Result<&'static [u8], Errno> {
+        if len == 0 {
+            return Ok(&[]);
+        }
+        let start = usize::try_from(addr).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+        // SAFETY: bounds-checked against the live memory length.
+        let m = unsafe { mem_mut() };
+        m.get(start..end).ok_or(Errno::EINVAL)
     }
 
     /// A mutable view of the whole guest linear memory.
@@ -9216,7 +9258,8 @@ mod wasm {
         // SAFETY: single-threaded per worker; the buffer outlives the borrow.
         let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
         for entry in index.iter().take(act_count) {
-            let activation = entry[0];
+            // The index stores a 64-bit guest address beside the id now.
+            let activation = entry[0] as u32;
             if capture_probe_via_injector(activation, slot) == 0 {
                 continue; // this codec does not recognise the value
             }
