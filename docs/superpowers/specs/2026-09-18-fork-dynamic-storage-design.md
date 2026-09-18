@@ -294,3 +294,61 @@ before it is trusted.
   has no release path naming it (structural leak by inspection, unmeasured,
   predates this lane).
 * Any change to what P-11 asserts.
+
+## Experiment results (2026-09-18)
+
+The maintainer chose "run the experiment first". Rather than reconstruct the
+reverted chunked `RESUME_SLOT_INDEX`, the cheaper discriminator was to force
+the GC codec arena to spill on EVERY activation -- `ACT_GC_CODEC_FLOOR` from
+32,768 to 1 -- so each child seed calls `channel_mmap` through code that
+already exists. Build key moved `6c9de4d1…` -> `e504d969…`, confirming the
+perturbation reached the artifact; source and key were restored afterwards
+(`verify-fresh` 0).
+
+### 1. The ordering hypothesis is REFUTED
+
+`fork-module-gc-replay.test.ts` passed 5/5 with every activation's codec taking
+its own mapping during child seeding. **A fork child's `channel_mmap` is
+serviced.** The child does not park for want of registration, so the
+`RESUME_SLOT_INDEX` deadlock is not explained by the seeding phase and the
+remaining candidates are specific to that conversion's own code.
+
+This also retires the last trace of "children cannot syscall", which the
+`HEAP_FLOOR` comment still asserts.
+
+### 2. A test asserts the module must be LARGER than 4 MiB
+
+`host/test/fork-module-instance.test.ts:50` failed with
+`expected 3735552 to be greater than 4194304`. Shrinking one arena shrank the
+reserved region below a hard-coded 4 MiB expectation.
+
+That is a FLOOR ON MEMORY USE wearing the shape of a guard: it fails on any
+static reduction, including the ones this lane already landed, and it would
+have blocked this work at the first conversion. It must be reworked to assert
+what it actually cares about -- that the region covers the module's declared
+`memorySize` plus its shadow stack -- rather than a constant.
+
+### 3. `errno 12` is an ADMISSION BUDGET refusal, and the number is 16,973,824
+
+`fork-module-worker-instantiation.test.ts` failed with:
+
+    [kernel-worker] fork worker launch failed: ProcessMemoryCapacityError:
+      Process memory request exceeds admission budget 16973824
+    fork aborted with errno=12: the kernel refused to create the child process
+
+This is the SAME `errno 12` the GC codec conversion attempts produced, and it
+was never about children being unable to syscall. It is a process memory
+admission budget of 16,973,824 bytes (16.19 MiB) being exceeded.
+
+**It is also direct empirical support for the shared-arena design.** Giving
+each activation its own mapping -- approach B, and approach C for the
+size-declaring registries -- is exactly what blew the budget here, which is the
+78%-page-waste arithmetic showing up as a hard refusal rather than as waste.
+One shared chain does not. That choice is now measured rather than argued.
+
+### 4. The "both builds" requirement is practical
+
+The forced-spill build ran 185 tests across 29 files in about 25 minutes and
+surfaced both findings above immediately. Two failures out of 185, both real,
+neither visible in the default build. The requirement costs a suite run and
+earns a class of defect the default configuration cannot reach.
