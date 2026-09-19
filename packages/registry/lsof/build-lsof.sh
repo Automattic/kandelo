@@ -28,8 +28,18 @@ if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
     exit 1
 fi
 
-# Match scripts/build-programs.sh CC + flags so the resulting wasm is
-# binary-compatible with everything else in the release.
+# NOT in sync with scripts/build-programs.sh. This file carries its own copy
+# of the compiler selection and link flags (find_llvm_bin/CC/CFLAGS/LINK_FLAGS
+# below), and that copy has drifted from the contract sdk/src/lib/flags.ts
+# owns. build-programs.sh was routed through the SDK; this was not, so lsof.wasm
+# is currently linked WITHOUT --export=__heap_base and with wasm-ld's ~64 KiB
+# default shadow stack instead of the SDK's 8 MiB. A program with no
+# __heap_base export falls back to PROCESS_MEMORY_FALLBACK_BRK_BASE
+# (crates/wasm-artifact/src/facts.rs), so this artifact is NOT
+# binary-compatible with the rest of the release.
+#
+# Converting this to the SDK wrapper is pending; do not add flags here to
+# "catch up" by hand, which is what produced the drift in the first place.
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 

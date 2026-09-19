@@ -1,7 +1,17 @@
 #!/bin/bash
-# Rebuild the host-native guest fixtures (*.c -> *.wasm) through the SDK, using
-# the same compile/link recipe scripts/build-programs.sh uses for the example
-# programs. Run from inside scripts/dev-shell.sh (which sets $LLVM_BIN).
+# Rebuild the host-native guest fixtures (*.c -> *.wasm).
+#
+# This does NOT go through the SDK, and no longer matches
+# scripts/build-programs.sh either. It invokes "$LLVM_BIN/clang" directly
+# (below) with its own copy of the compile/link flags. That copy has drifted
+# from the contract sdk/src/lib/flags.ts owns: build-programs.sh was routed
+# through the SDK wrapper, so these fixtures are now linked WITHOUT
+# --export=__heap_base and with wasm-ld's ~64 KiB default shadow stack rather
+# than the SDK's 8 MiB.
+#
+# Converting this to the SDK wrapper is pending; do not hand-copy flags here to
+# close the gap, which is how the drift arose. Run from inside
+# scripts/dev-shell.sh (which sets $LLVM_BIN).
 #
 #   SYSROOT=<repo>/sysroot scripts/dev-shell.sh \
 #     crates/host-native/fixtures/build-fixtures.sh

@@ -8,6 +8,17 @@ set -euo pipefail
 # Uses the same toolchain and flags as libc-test builds.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# WHY: the SDK resolves the sysroot and glue dir by walking up from
+# process.cwd() (findSysroot/findGlueDir via projectRootOrSdk,
+# sdk/src/lib/toolchain.ts:111-131), not from this script's location. Invoked
+# with a cwd inside a different kandelo worktree, it would silently compile
+# against THAT worktree's sysroot while the prerequisite check below validated
+# this one. Pin the cwd so both agree.
+#
+# Do not "fix" this by exporting WASM_POSIX_SYSROOT instead: findSysroot()
+# returns that value regardless of arch (toolchain.ts:112-114), which would
+# hand the wasm64 build the wasm32 sysroot.
+cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
@@ -134,9 +145,10 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 # Everything the SDK already supplies is deliberately absent here. Its
-# compileFlags() (sdk/src/lib/flags.ts) owns --target, --sysroot, -matomics,
+# compileFlags() (sdk/src/lib/flags.ts) owns --target, -matomics,
 # -mbulk-memory, -mexception-handling, -fno-trapping-math and the -mllvm SjLj
-# / modern-EH pair; its executable link injects the syscall glue
+# / modern-EH pair; cc.ts:292 adds --sysroot from the resolved toolchain;
+# its executable link injects the syscall glue
 # (channel_syscall.c, compiler_rt.c, cxxrt.c), crt1.o, the sysroot libc.a and
 # linkFlags(). The optimization level is the only compile choice this script
 # still makes for itself.

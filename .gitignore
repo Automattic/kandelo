@@ -26,8 +26,13 @@ binaries.lock.pr
 node_modules/
 /.direnv/
 
-# Worktree-local SourceOnly build cache, isolated per run.sh:24-32
-# to prevent artifact-byte contamination across concurrent worktrees.
+# Leftover in-checkout SourceOnly build cache. No longer written to: the
+# worktree-local cache root moved to $HOME/.cache/kandelo-lane-f/source-only
+# (see .envrc.lane-f), because a resolver root under the checkout is refused
+# by packages/registry/rootfs/build-rootfs-package.sh. What remains here is
+# PRE-RELINK output that generated build inputs still reference by absolute
+# path (packages/registry/vim/vim-src/src/auto/config.mk), so it is pending
+# removal rather than merely obsolete.
 /.cache/
 
 # Worktrees
