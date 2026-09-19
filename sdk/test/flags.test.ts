@@ -242,12 +242,37 @@ describe('mainThreadStackSize', () => {
     }
   });
 
-  it('retains the largest request in the exact lld argv', () => {
+  it('resolves an ascending multi-occurrence request by last-one-wins', () => {
+    // Ascending order: the last occurrence and the largest occurrence
+    // coincide here, so this case alone passes under either a last-wins or
+    // an old max-wins reading. See the reversed-order case below, which is
+    // the one that can actually only pass under last-wins.
     expect(mainThreadStackSize([
       '-z', 'stack-size=1048576',
       'main.o',
       '-z', 'stack-size=16777216',
     ])).toBe(16 * 1024 * 1024);
+  });
+
+  it('resolves a descending multi-occurrence request by last-one-wins, not by maximum', () => {
+    // The larger value comes FIRST here, so a max-wins reading would keep
+    // 16 MiB; wasm-ld itself resolves repeated -z stack-size= operands
+    // last-one-wins (verified empirically against LLVM 21's wasm-ld:
+    // linking the same object twice with the operand order reversed shows
+    // the second occurrence's value winning both times), so 1 MiB is
+    // correct here. This is the case every other multi-occurrence test in
+    // this file (all ascending) cannot distinguish.
+    const restore = console.warn;
+    console.warn = () => {};
+    try {
+      expect(mainThreadStackSize([
+        '-z', 'stack-size=16777216',
+        'main.o',
+        '-z', 'stack-size=1048576',
+      ])).toBe(1048576);
+    } finally {
+      console.warn = restore;
+    }
   });
 
   it('recognizes both accepted lld -z spellings', () => {

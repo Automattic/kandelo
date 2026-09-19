@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe('Kandelo-native cc driver', () => {
-  it('applies the floor and retains larger direct and response-file requests', () => {
+  it('applies the floor only absent a request, and honours every explicit direct or response-file request (including sub-floor and last-wins)', () => {
     const root = mkdtempSync(join(tmpdir(), 'kandelo-native-cc-'));
     tempDirs.push(root);
 
@@ -137,14 +137,28 @@ done
     }> = [
       { linkArgs: [], expected: 'stack-size=8388608' },
       {
+        // Explicit sub-floor requests are honoured verbatim (with a
+        // warning on stderr, suppressed here by stdio: 'pipe' below), not
+        // silently raised to the 8 MiB floor.
         linkArgs: ['-Wl,-z,stack-size=1048576'],
-        expected: 'stack-size=8388608',
+        expected: 'stack-size=1048576',
         preserved: ['stack-size=1048576'],
       },
       {
         linkArgs: ['-Wl,-z,stack-size=020000000'],
-        expected: 'stack-size=8388608',
+        expected: 'stack-size=4194304',
         preserved: ['stack-size=020000000'],
+      },
+      {
+        // wasm-ld itself resolves repeated -z stack-size= operands
+        // last-one-wins, not by maximum (verified empirically against LLVM
+        // 21's wasm-ld). Every other multi-occurrence case below happens to
+        // be in ascending order, so "largest" and "last" coincide and would
+        // pass under either rule; this one is reversed so it can only pass
+        // under last-wins.
+        linkArgs: ['-Wl,-z,stack-size=16777216', '-Wl,-z,stack-size=1048576'],
+        expected: 'stack-size=1048576',
+        preserved: ['stack-size=16777216', 'stack-size=1048576'],
       },
       ...[
         '16777216',
@@ -207,7 +221,7 @@ done
       })),
       {
         linkArgs: [`-Wl,@${responses.leadingOctalSmall}`],
-        expected: 'stack-size=8388608',
+        expected: 'stack-size=4194304',
         preserved: [`@${responses.leadingOctalSmall}`],
       },
       ...[
@@ -255,9 +269,13 @@ done
     ];
 
     for (const { linkArgs, expected, preserved } of cases) {
+      // stdio: 'pipe' keeps the sub-floor warning (stderr) out of the test
+      // run's own output; its wording is covered at the unit level by
+      // flags.test.ts and isn't this test's concern.
       execFileSync('bash', [nativeCc, source, ...linkArgs, '-o', join(root, 'out.wasm')], {
         cwd: root,
         env,
+        stdio: 'pipe',
       });
       const emitted = readFileSync(capture, 'utf8').trim().split('\n');
       expect(emitted.filter((arg) => arg.startsWith('stack-size=')).at(-1)).toBe(expected);
