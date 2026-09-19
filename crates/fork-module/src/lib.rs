@@ -1161,9 +1161,28 @@ mod wasm {
 
     /// How many chunks the identity list holds. Zero means nothing is mapped.
     ///
-    /// A fixed array could not leak; a chunk list can, so the release path needs
-    /// an observable. This is what `fork-identity-capacity.test.ts` asserts
-    /// returns to zero after an activation is released.
+    /// A fixed array could not leak; a chunk list can, so the release path
+    /// needs an observable. Exposed through `fm_stats`
+    /// `IDENTITY_CHUNK_COUNT_FIELD` (100) and asserted by
+    /// `host/test/fork-identity-release.test.ts`, which publishes enough
+    /// identities to span more than one chunk and requires the count back at
+    /// zero after `fm_resume_slots` op 1.
+    ///
+    /// WHAT IT OBSERVES, EXACTLY: list membership. It walks `IDENTITY_HEAD` and
+    /// the `next` pointers, and `release_identity_activation` unlinks a chunk
+    /// BEFORE calling `channel_munmap`, which is best-effort by design (a
+    /// munmap hiccup must not fail an otherwise-complete `dlclose`). So a chunk
+    /// that is unlinked but never unmapped reads as zero here -- this count
+    /// alone cannot see a mapping leak, which is the very failure the sentence
+    /// above names. The test therefore asserts the `SYS_MUNMAP` tally beside
+    /// it: one unmap per chunk released. Both halves, or neither is a guard.
+    ///
+    /// This comment previously named `fork-identity-capacity.test.ts`, which
+    /// asserts nothing of the kind -- that file reads this source with a regex
+    /// and never calls the module. The function was dead code for its whole
+    /// existence and the compiler said so. It is the one comment here that has
+    /// already been wrong about its own coverage, so it states the boundary
+    /// rather than the intent.
     fn identity_chunk_count() -> u32 {
         let mut count = 0u32;
         let mut chunk = IDENTITY_HEAD.load(Ordering::Relaxed);
@@ -10894,8 +10913,36 @@ mod wasm {
         }
     }
 
+    /// The `fm_stats` field reading `identity_chunk_count()`.
+    ///
+    /// DELIBERATELY FAR ABOVE the reference table's index space, which is
+    /// contiguous from 0 and grows by one whenever a counter is appended. A
+    /// field number adjacent to that space would be claimed by the next
+    /// counter added, and the `if` below runs BEFORE the table, so that
+    /// counter's reads would silently return this count instead -- a plausible
+    /// number from the wrong source, which is the exact drift the host's
+    /// `FORK_MODULE_STATS` pin exists to prevent and could not see here.
+    /// `stats.get()` already answers -1 for any unclaimed field, so leaving a
+    /// gap costs nothing. `host/test/fork-module-backend.test.ts` asserts this
+    /// stays above `FORK_MODULE_STATS.length`, so the reservation is enforced
+    /// rather than merely described here.
+    const IDENTITY_CHUNK_COUNT_FIELD: u32 = 100;
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_stats(field: u32) -> i64 {
+        // The identity chunk list's live length. A fixed array could not leak;
+        // a chunk list can, so the release path needs an observable something
+        // actually reads -- this one was dead code for its whole existence,
+        // with a comment claiming a test asserted it.
+        //
+        // A single `if` compare BEFORE the reference table below, not a twelfth
+        // table entry and not a `match` arm: the count is walked, not loaded
+        // from an `AtomicU64`, so it cannot join the table, and the `match`
+        // shape is the one the table exists to avoid (see the note below it).
+        // One equality test against a constant generates no `br_table`.
+        if field == IDENTITY_CHUNK_COUNT_FIELD {
+            return identity_chunk_count() as i64;
+        }
         // Index a table of references rather than `match`-ing over the eleven
         // atomic loads directly: a `match field { 0 => A.load(), 1 => B.load(),
         // ... }` compiles to a `br_table` selecting among eleven distinct

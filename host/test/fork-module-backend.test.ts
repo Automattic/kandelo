@@ -32,6 +32,29 @@ describe("fork-module backend constants", () => {
     expect(emitted).toEqual(asSnake);
   });
 
+  it("keeps the identity-chunk-count field clear of the stats table", () => {
+    // `fm_stats` answers `IDENTITY_CHUNK_COUNT_FIELD` from an `if` that runs
+    // BEFORE the reference table, because the count is walked rather than
+    // loaded from an `AtomicU64` and so cannot join the table. That ordering is
+    // what makes this pin necessary: the table's indices are contiguous from 0
+    // and grow by one per counter appended, so if the reserved field ever sat
+    // inside that range, the next counter added would be intercepted and
+    // `stat()` would return the chunk count under its name. The pin above
+    // cannot see it -- it reads only the `let stats: [&AtomicU64;` block, and
+    // the `if` is outside that window, so appending a counter would leave the
+    // whole suite green.
+    const match = /const IDENTITY_CHUNK_COUNT_FIELD: u32 = ([0-9_]+);/.exec(
+      moduleSource,
+    );
+    expect(match, "the module no longer names IDENTITY_CHUNK_COUNT_FIELD")
+      .not.toBeNull();
+    expect(
+      Number(match![1].replace(/_/g, "")),
+      "a counter appended to the stats table must not be able to reach the " +
+        "identity-chunk-count field; raise the field, do not lower this",
+    ).toBeGreaterThanOrEqual(FORK_MODULE_STATS.length);
+  });
+
   it("matches the module's resume-catalog capacity", () => {
     // The module sizes a static `[u32; CAP]` arena from this. A host that staged
     // more than the cap would write past the end of that arena.
