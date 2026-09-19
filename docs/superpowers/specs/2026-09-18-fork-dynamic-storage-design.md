@@ -661,12 +661,45 @@ before it is trusted.
    violation of either is a silent wrong answer rather than a trap, which is
    the failure mode this lane has been worst at catching.
 
-7. **Two verifications were deferred rather than done.** The six-hop dlclose
-   chain from `__wasm_dlclose` to `resume_unregister_impl` was traced by
-   reading, not by execution; and whether `main`'s `ForkModuleStateArena` ever
-   FREES chunks was never checked, so it is a precedent for growth and
-   possibly not for release. Both are carried into the plan as verification
-   steps.
+7. **The release precedent this design cites has never been verified to run.**
+   Both deferred verifications were done, and one came back badly.
+
+   `main`'s `ForkModuleStateArena` DOES free: it takes a
+   `ContinuationDeallocate` and has `release()`
+   (`fork-module-state.ts:3371`). But it releases the WHOLE arena, not per
+   entry -- so it is a precedent for growth and bulk release, and the identity
+   registry remains the only precedent for per-ACTIVATION release.
+
+   And that precedent is unproven. `identity_chunk_count()` has exactly ONE
+   reference in the repository: its own definition. The compiler says so --
+   `warning: function identity_chunk_count is never used`. Its doc comment
+   claims "a fixed array could not leak; a chunk list can, so the release path
+   needs an observable. This is what `fork-identity-capacity.test.ts` asserts
+   returns to zero after an activation is released." That test asserts nothing
+   of the kind; it reads module source with a regex and never calls into the
+   module.
+
+   So the observable was written, documented as tested, never exported and
+   never called, and `release_identity_activation` has never been demonstrated
+   to run. It may be perfectly correct. Nothing shows it.
+
+   PREREQUISITE WORK, not plan-time verification: export the count through
+   `fm_stats` (which already maps a field number to a counter, so this is a
+   field addition rather than new machinery), assert it returns to zero after
+   a real `dlclose`, and correct the false comment in the same change. Until
+   that lands, "follow the identity registry" is guidance toward an unverified
+   path rather than a proven one.
+
+8. **The lifetime classifications may be wrong, and the failure is silent.**
+   The table in "Every static, and where it goes" assigns each store a
+   lifetime, derived from reading declarations and reset behaviour. Checking
+   three of them found two errors -- `ScratchCell` and `VectorInFlight` were
+   classified as bump-heap-safe when both are guest-reachable across a
+   mid-capture reset. A misclassification produces a wrong VALUE, not a trap,
+   and neither the default build nor the forced-chunk build would catch it.
+   The eleven durable stores were subsequently traced the same way and came
+   back clean, but a 2-of-3 error rate on the group checked second is the
+   reason this risk is listed rather than assumed away.
 
 ## Out of scope
 
