@@ -221,12 +221,45 @@ address into the chain. Releases remove a whole ACTIVATION's records at once
 and the directory entry naming them goes with it, so no stale address
 survives.
 
-THE DIRECTORY IS NOT A STATIC ARRAY. Activations need random lookup by
-`activation_id` -- `func_catalog_base` runs per funcref reference during
-replay, `table_state_owned` per guest import call. The directory answering
-those is itself a record kind in the chain, appended as activations register.
-With a measured maximum of 7 activations one chunk holds thousands, so the
-prefix scan is O(1) with a tiny constant. There is no `MAX_ACTS`.
+THE DIRECTORY IS ITS OWN CHAIN, WITH ITS OWN ROOT. Activations need random
+lookup by `activation_id` -- `func_catalog_base` runs per funcref reference
+during replay, `table_state_owned` per guest import call.
+
+A directory reached by walking the record chain would buy nothing: locating it
+would cost exactly what it was meant to save. So it has its own root pointer
+(`DIRECTORY_HEAD`) and its own chunks, holding one fixed-size entry per
+activation -- `activation_id` plus the addresses of that activation's records.
+Lookup dereferences the root and searches that chunk; the record chain is
+entered only at an address the directory supplies.
+
+Threading the directory through the SHARED chunks was considered and rejected:
+compaction moves surviving records down within a chunk, so any pointer into
+them breaks on the first release. The identity registry avoids this by storing
+no addresses outside the chain at all.
+
+SORTED BY CONSTRUCTION, SEARCHED IN O(log n). `claimActivationId`
+(`worker-main.ts:812`) hands out ids monotonically and refuses reuse
+("claimed twice"); entries are appended in registration order; and compaction
+preserves relative order. So the directory is already sorted ascending with no
+sort step and no insertion shuffle, and binary search is available for free.
+
+At today's measured maximum of 7 activations a linear scan is probably faster
+-- three unpredictable branches against seven sequential reads over about
+three cache lines. Binary search is chosen anyway so the structure still fits
+a program with hundreds of activations, which is the whole point of this work.
+
+APPEND MUST ASSERT ASCENDING ORDER. A binary search over data merely ASSUMED
+sorted fails silently: it reports "not found" for a live activation and the
+caller treats it as absent, with no trap and no errno. The invariant has a
+real threat -- `claimActivationId` accepts a caller-supplied
+`replayActivationId`, so on the replay path ordering depends on the child
+replaying activations in the order the parent registered them. That holds
+today, but it is a guarantee held by a different component than the one
+relying on it. Appending an id not strictly greater than the last is `EINVAL`,
+which turns a silent wrong answer into a truthful refusal for one comparison
+per activation.
+
+There is no `MAX_ACTS` anywhere in this.
 
 A TREE WOULD BUY NOTHING. Trees pay off on large keyspaces with arbitrary
 lookup. Every random-access key here ranges over single digits; the one large
