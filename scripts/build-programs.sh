@@ -9,7 +9,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
 # shellcheck source=/dev/null
@@ -107,25 +106,25 @@ package_owns_direct_program_path() {
         grep -Fxq -- "$arch/$mirror" <<<"$PACKAGE_OWNED_PROGRAM_MIRRORS"
 }
 
-find_llvm_bin() {
-    if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
-        echo "$LLVM_BIN"
-        return
-    fi
-    if [ -n "${LLVM_PREFIX:-}" ] && [ -x "$LLVM_PREFIX/bin/clang" ]; then
-        echo "$LLVM_PREFIX/bin"
-        return
-    fi
-    if command -v clang >/dev/null 2>&1; then
-        dirname "$(command -v clang)"
-        return
-    fi
-    echo "Error: LLVM/clang not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
-    exit 1
-}
-
-LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+# The SDK owns the link contract. This script used to carry its own copy in
+# LINK_POST_LIBS, which drifted and lost --export=__heap_base,
+# -z,stack-size and --global-base -- so every test program ran on a 16 MiB
+# brk fallback and a 64 KiB shadow stack. CLAUDE.md requires build scripts to
+# use the worktree-local SDK; one copy of a rule cannot disagree with itself.
+#
+# Absolute paths, never bare names: a bare `wasm32posix-c++` resolves through
+# PATH and can pick up a different worktree's SDK.
+#
+# Deliberately NOT named CC/CXX. Those names are already exported in the dev
+# shell, and bash keeps the export attribute when you assign to an exported
+# name -- so `CC=.../wasm32posix-cc` would reach every child process,
+# including the host `cargo run -p xtask` below, whose cc-rs build scripts
+# would then try to compile arm64-apple-macosx objects with a wasm
+# cross-compiler.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
+WASM64_CC="$REPO_ROOT/sdk/bin/wasm64posix-cc"
+WASM32_CXX="$REPO_ROOT/sdk/bin/wasm32posix-c++"
+WASM64_CXX="$REPO_ROOT/sdk/bin/wasm64posix-c++"
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 
 # Verify prerequisites
@@ -134,45 +133,15 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
+# Everything the SDK already supplies is deliberately absent here. Its
+# compileFlags() (sdk/src/lib/flags.ts) owns --target, --sysroot, -matomics,
+# -mbulk-memory, -mexception-handling, -fno-trapping-math and the -mllvm SjLj
+# / modern-EH pair; its executable link injects the syscall glue
+# (channel_syscall.c, compiler_rt.c, cxxrt.c), crt1.o, the sysroot libc.a and
+# linkFlags(). The optimization level is the only compile choice this script
+# still makes for itself.
 CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
-)
-
-LINK_PRE_LIBS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-)
-
-# libc.a + linker flags. Per-program extra archives (libdrm.a, libgbm.a,
-# libEGL.a, libGLESv2.a) are spliced BEFORE libc.a so the stubs'
-# internal references (mmap, ioctl, calloc, …) resolve in a single
-# linker pass.
-LINK_POST_LIBS=(
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
-    -Wl,--export=__abi_version
 )
 
 # Fork support comes from wasm-fork-instrument. The tool auto-discovers
@@ -233,10 +202,13 @@ build_program() {
     # Bash 3.2 (macOS system bash) under `set -u` treats expansion of
     # an empty array as unbound; the `${arr[@]+...}` guard suppresses
     # that when extra_libs is empty.
-    "$CC" "${CFLAGS[@]}" "$src" \
-        "${LINK_PRE_LIBS[@]}" \
+    #
+    # Per-program extra archives (libdrm.a, libgbm.a, libEGL.a, libGLESv2.a)
+    # still land BEFORE libc.a: the SDK forwards caller inputs verbatim and
+    # appends the sysroot libc.a after them, so the stubs' internal references
+    # (mmap, ioctl, calloc, …) resolve in a single linker pass.
+    "$WASM32_CC" "${CFLAGS[@]}" "$src" \
         ${extra_libs[@]+"${extra_libs[@]}"} \
-        "${LINK_POST_LIBS[@]}" \
         -o "$raw_wasm"
 
     # Apply fork instrumentation if the program can participate in fork. The
@@ -271,7 +243,7 @@ build_cpp_program() {
     # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
     # whole exception-propagation chain (libunwind + libc++abi) never
     # runs.
-    wasm32posix-c++ \
+    "$WASM32_CXX" \
         -O2 \
         -fwasm-exceptions \
         "$src" \
@@ -282,7 +254,7 @@ build_cpp_program() {
     # normally instrumented fork-bearing program.
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
-        wasm32posix-c++ \
+        "$WASM32_CXX" \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
@@ -382,38 +354,10 @@ SYSROOT64="$REPO_ROOT/sysroot64"
 if [ -f "$SYSROOT64/lib/libc.a" ]; then
     echo "Building wasm64 programs..."
 
+    # Same contract as the wasm32 side above: the wasm64 SDK driver owns the
+    # target, the sysroot64 path, the glue, crt1.o, libc.a and every -Wl flag.
     CFLAGS64=(
-        --target=wasm64-unknown-unknown
-        --sysroot="$SYSROOT64"
-        -nostdlib
         -O2
-        -matomics -mbulk-memory
-        -fno-trapping-math
-        -mllvm -wasm-enable-sjlj
-        -mllvm -wasm-use-legacy-eh=false
-    )
-
-    LINK_FLAGS64=(
-        "$GLUE_DIR/channel_syscall.c"
-        "$GLUE_DIR/compiler_rt.c"
-        "$SYSROOT64/lib/crt1.o"
-        "$SYSROOT64/lib/libc.a"
-        -Wl,--no-entry
-        -Wl,--export=_start
-        -Wl,--import-memory
-        -Wl,--shared-memory
-        -Wl,--max-memory=1073741824
-        -Wl,--allow-undefined
-        -Wl,--table-base=3
-        -Wl,--export-table
-        -Wl,--growable-table
-        -Wl,--export=__wasm_init_tls
-        -Wl,--export=__tls_base
-        -Wl,--export=__tls_size
-        -Wl,--export=__tls_align
-        -Wl,--export=__stack_pointer
-        -Wl,--export=__wasm_thread_init
-        -Wl,--export=__abi_version
     )
 
     for src in \
@@ -431,7 +375,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
             extra_flags=(-DWASM_POSIX_THREAD_SLOT_DECL=8)
         fi
         # Keep empty optional flags safe under Bash 3.2 with `set -u`.
-        "$CC" "${CFLAGS64[@]}" ${extra_flags[@]+"${extra_flags[@]}"} "$src" "${LINK_FLAGS64[@]}" \
+        "$WASM64_CC" "${CFLAGS64[@]}" ${extra_flags[@]+"${extra_flags[@]}"} "$src" \
             -o "$OUT_DIR_64/${local_name}.wasm"
     done
 
@@ -446,7 +390,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         source_path="$REPO_ROOT/$source_rel"
         output_path="$REPO_ROOT/${source_rel%.c}.wasm64.wasm"
         echo "  Compiling $(basename "$source_rel" .c) (wasm64)..."
-        "$CC" "${CFLAGS64[@]}" "$source_path" "${LINK_FLAGS64[@]}" \
+        "$WASM64_CC" "${CFLAGS64[@]}" "$source_path" \
             -o "$output_path"
     done <<< "$memory64_example_sources"
 
@@ -459,7 +403,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         ensure_libcxx_in_sysroot wasm64 "$SYSROOT64"
         mkdir -p "$TEST_FIXTURE_DIR/wasm64"
         echo "  Compiling sjlj_noexcept_boundary (raw wasm64 test fixture)..."
-        wasm64posix-c++ \
+        "$WASM64_CXX" \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
