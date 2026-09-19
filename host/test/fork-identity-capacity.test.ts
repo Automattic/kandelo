@@ -94,7 +94,13 @@ describe("fork-module fixed caps vs a real program", () => {
       return;
     }
 
-    let total = 0;
+    // A PROCESS runs ONE main program plus the extensions it loads, so the
+    // worst case is max(programs) + sum(extensions) -- NOT the sum of every
+    // artifact. Summing them counts php.wasm AND php-fpm.wasm together, which
+    // no process ever loads at once, and overstates the requirement by a whole
+    // interpreter: 47,757 ordinals against a real per-process 28,568/28,732.
+    let programMax = 0;
+    let extensionTotal = 0;
     const per: string[] = [];
     for (const { name, bytes } of artifacts) {
       let count = 0;
@@ -115,16 +121,21 @@ describe("fork-module fixed caps vs a real program", () => {
         }
         continue; // fork-instrumented modules only; others contribute nothing
       }
-      total += count;
+      if (name.endsWith(".so")) extensionTotal += count;
+      else programMax = Math.max(programMax, count);
       per.push(`${name}=${count}`);
     }
-    // All three share the same population: the catalog ordinals of every
-    // activation. Checking one and not the others would leave the same defect
-    // behind two different names.
-    for (const cap of [
-      "ACTIVATION_CATALOG_ORD_CAP",
-      "RESUME_CATALOG_CAP",
-    ]) {
+    const total = programMax + extensionTotal;
+    // `ACTIVATION_CATALOG_ORD_FLOOR` is deliberately NOT checked here. It was
+    // `..._ORD_CAP`, a hard bound, and this test asserted php fitted under it.
+    // It is now a FLOOR with spill: exceeding it allocates a chunk rather than
+    // failing, so "php exceeds the floor" is correct behaviour and asserting
+    // otherwise would forbid the growth the floor exists to allow. php DOES
+    // exceed it -- 19,025 for php.wasm alone against 8,192 -- which is what
+    // makes the spill path reachable at all.
+    //
+    // `RESUME_CATALOG_CAP` is still a real cap, so it is still checked.
+    for (const cap of ["RESUME_CATALOG_CAP"]) {
       const limit = moduleCap(cap);
       expect(
         total,
