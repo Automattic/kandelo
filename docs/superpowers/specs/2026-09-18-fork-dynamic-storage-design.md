@@ -457,6 +457,38 @@ live in the bump heap only when nothing outside the module holds a reference
 to it across a module call. A raw pointer handed to the guest, or a handle the
 guest presents later, both disqualify it.
 
+### The reservation has three terms, and this work only removes one
+
+`instantiateForkModule` reserves
+`staticBytes + SHADOW_STACK_BYTES + STAGING_SLAB_BYTES`
+(`host/src/fork-module-instance.ts:204-207`), per instance, per thread:
+
+    statics (dylink memorySize)   2,395,460   -> near zero (this work)
+    shadow stack                  1,048,576   -> see below
+    staging slab                    262,144   -> see below
+    per-thread total            ~3.56 MiB     -> ~1.25 MiB
+
+So the storage conversion alone is roughly a 65% per-thread reduction, NOT an
+elimination. Saying the per-thread preallocation is removed would be false.
+
+**The staging slab must shrink with the statics.** Its own comment calls it
+"a tuning choice, not a correctness boundary ... sized well above that
+internal scratch while staying small against the module's ~4 MiB static
+footprint" -- sized RELATIVE TO a static footprint this work deletes. The
+module is more specific (`lib.rs:443`): `FORK_MODULE_STAGING_BYTES` must hold
+`RESUME_CATALOG_CAP * 4` bytes, which is exactly the 256 KiB. Since
+`RESUME_CATALOG_CAP` is one of the constants removed by the `CatalogCell`
+merge, the slab's justification goes with it, and a request larger than the
+slab already falls back to the growing channel mmap. Resizing it is part of
+this work.
+
+**The shadow stack is genuine and stays for now.** It is the module's own Rust
+call stack and WebAssembly has no guard page, so an overflow corrupts rather
+than traps -- the same hazard the SDK's 8 MiB floor exists for. 1 MiB may well
+be more than the module needs, but shrinking it requires measuring the
+module's actual maximum stack depth across a fork, not asserting a number.
+Recorded as follow-up work with that measurement named, not done here.
+
 ### P-11 realignment
 
 Two threads, both in scope.
