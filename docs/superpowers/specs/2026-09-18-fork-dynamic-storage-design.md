@@ -361,20 +361,44 @@ retracted that claim (`docs/plans/2026-09-16-lane-f-closure.md:1531`): at a
 floor, so children WERE calling `channel_mmap`, and 40 of 41 lifecycle tests
 passed. The comment still asserts the retracted reason.
 
-**Per-fork transients -> the bump heap:**
+**Transients -- and "per-fork" is NOT the same as "bump-heap lifetime":**
 
-`ScratchCell` (65,536 B, "transient exchange storage for the guest's recursive
-payload codecs") and `CapturedExternrefs` (16,384 B, explicitly
-"capture-scoped: cleared when a capture begins"). Their lifetime IS the bump
-heap's lifetime, so they become ordinary allocations from it.
+`reset_bump_heap()` runs at FOUR points during a single fork --
+`begin_unwind_impl` (`:4580`), `begin_child_replay_impl` (`:5166`),
+`fm_capture_begin` (`:7928`) and `capture_peer_tables_impl` (`:10332`). So the
+bump heap's lifetime is BETWEEN RESETS, which is shorter than a capture. An
+earlier draft of this table classified three statics as "per-fork, therefore
+bump heap" and conflated the two. Two of the three were wrong.
 
-`VectorInFlight` (96 B) joins them. It is a matched push/pop stack -- depth
-incremented at `lib.rs:9860`, decremented at `:9923` -- used while building
-reference vectors during capture, so its lifetime is the bump heap's. Its
-depth-8 limit is a correctness assertion rather than storage ("an overflow is
-a loud refusal rather than a silently mis-counted vector"), and as a bump-heap
-`Vec` with an explicit depth check that refusal becomes intentional instead of
-a side effect of array capacity.
+`ScratchCell` (65,536 B) -> **its own chain, NOT the bump heap.** It is a
+GUEST-FACING allocator: `__wpk_fork_ref_scratch_reserve(len)` returns the raw
+address `SCRATCH.0.get() + top` and the guest writes into it directly across
+its own recursive encode, calling back into the module in between;
+`__wpk_fork_ref_scratch_release(ptr, len)` pops it and traps if the release
+does not name the top frame. A bump reset between reserve and release would
+hand the next reserve a region overlapping a live one -- which is precisely
+the corruption that release path already traps on, arriving by a route it
+cannot see.
+
+`VectorInFlight` (96 B) -> **its own chain too**, one step weaker and the same
+shape. `__wpk_fork_ref_vector_begin/append/finish` are guest imports; the
+guest holds a HANDLE rather than an address, so the module may move the
+storage -- but if a reset lands between `begin` and `finish` the backing is
+reclaimed and the handle resolves into reused memory. Its depth-8 limit stays
+an explicit assertion either way, since an overflow must be "a loud refusal
+rather than a silently mis-counted vector".
+
+`CapturedExternrefs` (16,384 B) -> **the bump heap, with an ordering
+requirement.** It is not guest-reachable: only `record_captured_externref`
+writes it and one `fm_*` host query reads it, and it is explicitly
+"capture-scoped: cleared when a capture begins". Since `fm_capture_begin` is
+itself one of the reset points, the allocation must happen AFTER the reset in
+that entry, not before.
+
+The general rule this yields, which the table above now follows: storage may
+live in the bump heap only when nothing outside the module holds a reference
+to it across a module call. A raw pointer handed to the guest, or a handle the
+guest presents later, both disqualify it.
 
 ### P-11 realignment
 
