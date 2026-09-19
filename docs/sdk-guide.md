@@ -281,12 +281,18 @@ Scope and cost:
 - The engine's native Wasm call stack (operand stack / call frames) is separate
   and host/engine-managed; it is not part of this linear-memory reservation.
 
-The SDK treats 8 MiB as a floor. It appends the larger of that floor and every
-valid user stack request after the other linker arguments, where lld gives it
-final precedence. The Node-hosted driver first asks pinned Clang for a `-###`
-job trace without injecting executable glue. Compiler-only traces, including
-`-fsyntax-only`, dependency generation, and analyzer jobs hidden in response
-files, continue without link preparation. Confirmed executable links get a
+The SDK applies 8 MiB only as a **default**, when the caller made no explicit
+request. An explicit request — larger or smaller — is honoured verbatim; a
+request below 8 MiB additionally prints a warning naming the hazard (no stack
+guard page; an overflow corrupts `.bss` silently instead of trapping), since
+the 8 MiB default, not the warning, is what actually protects a program that
+does not deliberately choose otherwise. When more than one `-z stack-size=`
+operand is present, the SDK resolves them the same way `wasm-ld` itself does:
+the last occurrence wins, not the largest. The Node-hosted driver first asks
+pinned Clang for a `-###` job trace without injecting executable glue.
+Compiler-only traces, including `-fsyntax-only`, dependency generation, and
+analyzer jobs hidden in response files, continue without link preparation.
+Confirmed executable links get a
 second `-###` trace with the complete SDK link inputs, and the SDK scans the
 exact `wasm-ld` argument vector Clang emits. This leaves option classification
 and ordering in Clang: positional inputs, `-Wl,`, `-Xlinker`, and direct `-z`
@@ -331,9 +337,10 @@ retain UTF-16's embedded NUL bytes, and the packaged SDK does not declare a
 transcoding tool. Generate UTF-8 response files when building inside Kandelo.
 Invalid spellings stay visible to LLVM so it can reject them; a valid stack
 larger than the SDK's fixed 1 GiB executable-memory maximum fails in the driver
-instead of being silently replaced by the floor. Smaller legacy requests
-therefore still receive 8 MiB, while programs such as SpiderMonkey that
-explicitly need 16 MiB retain that larger reservation. Changing the platform
+instead of being silently replaced by the floor. An explicit request below
+8 MiB is honoured verbatim rather than silently raised, with a warning on
+stderr naming the hazard; programs such as SpiderMonkey that explicitly need
+16 MiB retain that larger reservation the same way. Changing the platform
 floor or scanner requires updating both `sdk/kandelo/bin/wasm32posix-cc` and
 `sdk/src/lib/flags.ts`.
 

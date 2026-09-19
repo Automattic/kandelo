@@ -115,9 +115,13 @@ export type LinkerPreparation =
   | { kind: 'executable-link'; mainThreadStackSizeBytes: number };
 
 // Internal-only third variant, never returned by prepareExecutableLinker()
-// and never accepted by the public buildClangArgs(). It drives exactly one
-// caller: prepareExecutableLinker()'s own provisional trace, built solely to
-// discover what the caller actually asked for. That trace must never itself
+// and never accepted by the public buildClangArgs() — by construction in
+// TypeScript (LinkerPreparation, the public type, has no 'measure-only'
+// member), which is a compile-time guarantee here since the SDK runs
+// under --experimental-strip-types rather than through a build step. It
+// drives exactly one caller: prepareExecutableLinker()'s own provisional
+// trace, built solely to discover what the caller actually asked for.
+// That trace must never itself
 // inject a stack-size flag — doing so would plant an SDK-authored `-z
 // stack-size=` occurrence that sits after (and, since wasm-ld and
 // mainThreadStackSize() both resolve repeated occurrences last-one-wins,
@@ -353,12 +357,18 @@ function buildClangArgsInternal(
         // caller request below the floor is a choice mainThreadStackSize()
         // already honoured (with its own warning), and re-clamping it here
         // would silently reinstate the exact bug this floor stopped being
-        // an invariant of. Only integer-ness and the executable memory
-        // ceiling are structural requirements of the linker invocation.
-        if (!Number.isSafeInteger(preparedStackSize) || preparedStackSize > MAX_EXECUTABLE_MEMORY_SIZE) {
+        // an invariant of. Non-negativity, integer-ness, and the executable
+        // memory ceiling remain structural requirements of the linker
+        // invocation itself (a negative or fractional byte count is not a
+        // floor policy, it is nonsense wasm-ld cannot act on).
+        if (
+          !Number.isSafeInteger(preparedStackSize) ||
+          preparedStackSize < 0 ||
+          preparedStackSize > MAX_EXECUTABLE_MEMORY_SIZE
+        ) {
           throw new Error(
-            `prepared main-thread stack size must be an integer no greater than ` +
-            `${MAX_EXECUTABLE_MEMORY_SIZE} bytes`,
+            `prepared main-thread stack size must be a non-negative integer ` +
+            `no greater than ${MAX_EXECUTABLE_MEMORY_SIZE} bytes`,
           );
         }
       }

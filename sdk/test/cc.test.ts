@@ -243,16 +243,18 @@ describe('buildClangArgs', () => {
   it('rejects executable links without the matching Clang trace preparation', () => {
     expect(() => buildClangArgs(['foo.c', '-o', 'foo.wasm'], toolchain))
       .toThrow(/executable linker arguments are unprepared/);
-    // Non-integer and over-ceiling prepared sizes are still rejected: those
-    // are structural requirements of the linker invocation (MAX_EXECUTABLE_
-    // MEMORY_SIZE and integer-ness), not the 8 MiB floor. A sub-floor
-    // integer such as 1024 is now a valid, honoured caller choice — see
-    // mainThreadStackSize() in sdk/src/lib/flags.ts — so it must not throw
-    // here any more; asserted separately below.
+    // Non-integer, negative, and over-ceiling prepared sizes are still
+    // rejected: those are structural requirements of the linker invocation
+    // (non-negativity, integer-ness, MAX_EXECUTABLE_MEMORY_SIZE), not the
+    // 8 MiB floor. A sub-floor integer such as 1024 is now a valid, honoured
+    // caller choice — see mainThreadStackSize() in sdk/src/lib/flags.ts —
+    // so it must not throw here any more; asserted separately below.
     expect(() => build(['foo.c', '-o', 'foo.wasm'], toolchain, 1.5))
-      .toThrow(/prepared main-thread stack size must be an integer/);
+      .toThrow(/prepared main-thread stack size must be a non-negative integer/);
+    expect(() => build(['foo.c', '-o', 'foo.wasm'], toolchain, -1))
+      .toThrow(/prepared main-thread stack size must be a non-negative integer/);
     expect(() => build(['foo.c', '-o', 'foo.wasm'], toolchain, MAX_EXECUTABLE_MEMORY_SIZE + 1))
-      .toThrow(/prepared main-thread stack size must be an integer/);
+      .toThrow(/prepared main-thread stack size must be a non-negative integer/);
   });
 
   it('honours a prepared stack size below the 8 MiB default floor', () => {

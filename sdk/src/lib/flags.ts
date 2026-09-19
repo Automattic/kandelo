@@ -299,8 +299,11 @@ export function linkFlags(
     // real fault. POSIX leaves the default stack size implementation-defined,
     // but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream
     // C software (GTK, etc.) is written and tested against, so matching it
-    // maximizes portability. Treat it as a floor: callers retain explicit larger
-    // requests. This sizes only the main thread; pthreads get their own stacks
+    // maximizes portability. Applied only as a DEFAULT when no explicit
+    // request is present (see mainThreadStackSize() above); an explicit
+    // caller request, larger OR smaller, is honoured verbatim, since a
+    // request that is present is a choice, not an absence to fill in for.
+    // This sizes only the main thread; pthreads get their own stacks
     // from musl's __default_stacksize. Cost: at least ~8 MiB of initial linear
     // memory per process (it raises __heap_base 1:1). Keep in sync with the bash
     // wasm32posix-cc. See docs/sdk-guide.md.

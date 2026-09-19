@@ -11,6 +11,10 @@ die() {
   exit 1
 }
 
+warn() {
+  echo "wasm32posix-cc: $*" >&2
+}
+
 find_tool() {
   local name="$1"
   if [[ -n "${WASM_POSIX_LLVM_DIR:-}" && -x "${WASM_POSIX_LLVM_DIR}/${name}" ]]; then
@@ -380,7 +384,9 @@ exe_link_flags=(
   # out of bounds". POSIX leaves the default stack size implementation-defined,
   # but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream C
   # software (GTK, etc.) is written and tested against, so matching it maximizes
-  # portability. Treat it as a floor: explicit larger requests remain effective.
+  # portability. Applied only as a DEFAULT when no explicit request is
+  # present (see main_thread_stack_size_floor and consider_lld_stack_size
+  # below); an explicit request, larger OR smaller, is honoured verbatim.
   # Sizes the main thread only; pthreads use musl __default_stacksize. Cost: at
   # least ~8 MiB initial linear memory per process (raises __heap_base 1:1). Keep
   # in sync with sdk/src/lib/flags.ts. See docs/sdk-guide.md.
@@ -410,7 +416,14 @@ compile_args=()
 source_inputs=()
 object_inputs=()
 user_link_args=()
-main_thread_stack_size=8388608
+# The 8 MiB default is a floor applied only in the ABSENCE of an explicit
+# request. Keep the floor's value separate from main_thread_stack_size,
+# which the scan below overwrites with whatever the caller's last -z
+# stack-size= operand actually said (see consider_lld_stack_size). Keep
+# this constant in sync with DEFAULT_MAIN_THREAD_STACK_SIZE in
+# sdk/src/lib/flags.ts; see docs/sdk-guide.md.
+readonly main_thread_stack_size_floor=8388608
+main_thread_stack_size="$main_thread_stack_size_floor"
 
 parse_lld_stack_size() {
   local raw="$1"
@@ -469,9 +482,27 @@ consider_lld_stack_size() {
   local requested_stack_size parse_status
 
   if requested_stack_size="$(parse_lld_stack_size "$raw")"; then
-    if (( requested_stack_size > main_thread_stack_size )); then
-      main_thread_stack_size="$requested_stack_size"
+    # HONOUR IT, LOUDLY. Absence of a request still gets the floor (see
+    # main_thread_stack_size_floor above): that is a default. An explicit
+    # smaller request is a CHOICE, and the only situation that warrants one
+    # is a fixture deliberately exercising a constrained layout.
+    #
+    # The warning is informational, not the safety mechanism. WebAssembly
+    # has no stack guard page, so an overflow writes past __data_end into
+    # .bss and corrupts the pthread/TLS globals there rather than trapping.
+    # The DEFAULT is the protection.
+    if (( requested_stack_size < main_thread_stack_size_floor )); then
+      warn "stack-size=${requested_stack_size} is below the SDK floor of" \
+        "${main_thread_stack_size_floor}. Honouring it. WebAssembly has no" \
+        "stack guard page: an overflow will corrupt .bss silently instead" \
+        "of trapping."
     fi
+    # wasm-ld itself resolves repeated -z stack-size= operands last-one-wins
+    # (verified empirically against LLVM 21's wasm-ld: linking the same
+    # object twice with the operand order reversed shows the second
+    # occurrence's value winning both times), so mirror that here rather
+    # than keeping the largest value seen.
+    main_thread_stack_size="$requested_stack_size"
     return
   else
     parse_status=$?
