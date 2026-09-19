@@ -879,10 +879,14 @@ if [ ! -f Makefile ]; then
     # opcache's PASS_6 (DFA-based SSA optimization), which calls
     # zend_build_ssa and can otherwise overflow a too-small stack on large
     # functions like WordPress's wp-includes/ID3/module.audio-video.asf.php
-    # Analyze() (1700+ lines). That 4 MB request was itself already below
-    # the SDK's floor and so was always silently linking with 8 MiB in
-    # practice; removing it lets the actual, real value (the SDK default)
-    # apply without a stale number on this call site that nobody chose.
+    # Analyze() (1700+ lines). That 4 MB request predates the SDK's 8 MiB
+    # floor (it was set against wasm-ld's original 64 KiB default, when it
+    # was genuinely load-bearing); once the SDK floor existed, the request
+    # sat below it, and the SDK at the time silently raised any sub-floor
+    # request to 8 MiB, so this call site had already been linking with
+    # 8 MiB in practice for as long as the floor existed. Removing it lets
+    # the actual, real value (the SDK default) apply without a stale number
+    # on this call site that nobody chose.
     #
     # ac_cv_lib_iconv_libiconv=yes: PHP's autoconf probe calls `libiconv()`
     # with an old-style no-argument prototype. That is tolerated by native ELF

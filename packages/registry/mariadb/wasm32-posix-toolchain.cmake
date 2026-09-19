@@ -106,6 +106,16 @@ set(WASM32_LINK_FLAGS
   "-Wl,--export=__tls_align"
   "-Wl,--export=__stack_pointer"
   "-Wl,--export=__wasm_thread_init"
+  # This toolchain drives raw clang (CMAKE_C_COMPILER/CMAKE_CXX_COMPILER
+  # above are set from find_program(LLVM_CLANG NAMES clang), not
+  # wasm32posix-cc), so it never goes through the SDK driver and gets no
+  # SDK-applied stack-size default. Unlike the SDK-driven packages that had
+  # this same flag removed, deleting it here does not fall through to any
+  # default at all — it silently drops to wasm-ld's own ~64 KiB default
+  # instead. This toolchain must therefore keep naming its own stack size.
+  # Do not delete this without also giving mariadb a real default some
+  # other way.
+  "-Wl,-z,stack-size=1048576"
 )
 string(REPLACE ";" " " WASM32_LINK_FLAGS_STR "${WASM32_LINK_FLAGS}")
 

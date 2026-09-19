@@ -698,13 +698,19 @@ crash, not silent corruption. Possible approaches:
 
 Once a real guard is in place, the remaining per-program
 `-Wl,-z,stack-size=...` overrides should be audited: a package task already
-removed nine call sites whose explicit request was below the SDK's 8 MiB
-default and so was already linking at the default in practice — recording an
-intention nobody had actually formed. Programs that genuinely need a shadow
-stack *larger* than the SDK default (SpiderMonkey's 16 MiB is the current
-example) should keep their explicit override and document why; everything
-else should rely on the SDK default plus the guard, with no package-local
-flag at all.
+removed eight call sites across seven packages (sqlite-cli, vim, sqlite's
+testfixture build, bash, git, ruby's two call sites, and php) whose explicit
+request was below the SDK's 8 MiB default and so was already linking at the
+default in practice — recording an intention nobody had actually formed.
+mariadb's two toolchain files had the same explicit 1 MiB request, but
+mariadb links through raw clang rather than through `wasm32posix-cc`, so it
+gets no SDK-applied default to fall back to; its flag was restored rather
+than removed, since deleting it would have silently dropped mariadb to
+`wasm-ld`'s own ~64 KiB default instead of any 8 MiB floor. Programs that
+genuinely need a shadow stack *larger* than the SDK default (SpiderMonkey's
+16 MiB is the current example) should keep their explicit override and
+document why; everything else that goes through the SDK driver should rely
+on the SDK default plus the guard, with no package-local flag at all.
 
 **Files:** `sdk/src/lib/flags.ts` and `sdk/kandelo/bin/wasm32posix-cc` (current
 8 MiB default), `packages/registry/php/build-php.sh` (no stack-size override;
