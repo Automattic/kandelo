@@ -139,6 +139,37 @@ guest's own mmap window, whether a program forks or not. Twenty fixed-size
 arrays account for 99.0% of it (measured against the built module's `dylink.0`
 `memorySize` of 2,395,460 bytes).
 
+**And the cost is PER THREAD, not per process.** `instantiateForkModule` is
+called twice: once for the process worker (`worker-main.ts:3628`) and once for
+every pthread (`:6449`, inside `centralizedThreadWorkerMain`). Each call makes
+its own `continuationMmap` reservation of
+`alignUp(memorySize + 1 MiB shadow stack) + 256 KiB staging` -- about
+3.56 MiB -- and gets its own `__memory_base`, so every static in the module is
+per-instance.
+
+The only guard is `if (hasForkInstrumentation && threadActivationRegistry)`
+(`:6415`). So every pthread of a fork-instrumented program reserves 3.56 MiB
+at THREAD STARTUP, before it forks and whether it ever forks at all. A process
+with four such threads holds roughly 14 MiB of its own mmap window before a
+single `fork()` -- out of a window P-11 demonstrates can be 24 MiB in total.
+
+That also completes the admission-budget picture: the
+`ProcessMemoryCapacityError` ceiling of 16,973,824 bytes measured in the
+experiment is reachable by a few threads' module regions alone, before any
+fork allocates anything.
+
+The maintainer's rule was "I wouldn't want it pre-allocated when any
+fork-capable process is started". The reality is one level worse: it is
+pre-allocated when any fork-capable THREAD is started, and the multiplier is
+the thread count. Removing that per-thread reservation -- so a thread pays
+two 64 KiB chunks only if it actually forks -- is what this work is for, and
+the win scales with the same multiplier as the cost.
+
+Per-instance statics do mean concurrency is already safe: two threads forking
+at once touch different module instances, which is what "SAFETY:
+single-threaded per worker" means throughout `lib.rs` and why the chains this
+design adds need no locking. `fork-from-concurrent-threads.wasm` exercises it.
+
 None of those bounds exist on `main`. `crates/fork-module` and
 `crates/fork-codec` are not on `main` at all; the same data lives in growable
 JavaScript collections -- a plain array in `fork-resume-catalog.ts`, `Map`s in
