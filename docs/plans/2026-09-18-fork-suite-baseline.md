@@ -40,7 +40,7 @@ record Task 8 should trust.
 ## Primary run — exact command as specified in the task brief
 
 ```
-cd /Users/brandon/kandelo-lane-f && npx vitest run host/test/fork-*.test.ts > <workspace>/fork-baseline.txt 2>&1
+cd /Users/brandon/kandelo-lane-f && npx vitest run host/test/fork-*.test.ts > .superpowers/sdd/2026-09-18-fork-storage-phase0-and-build-path/fork-baseline.txt 2>&1
 echo "SUITE_EXIT: $?"
 ```
 
@@ -197,6 +197,26 @@ invocation artifact, symmetrically, on both sides of that diff). This
 section exists so a reader of the primary run's 47 `FAIL` lines does not
 mistake 43 of them for fork-logic damage.
 
+**The reproducibility claim above is not equally strong for all 43.** The
+40 timeouts are well-supported: 8.2-9.6s actual durations against a hard
+5s cutoff is a large, consistent margin, and I confirmed it with a
+targeted single-test rerun (above). The other 3 — the two zero-test
+suite failures in `fork-from-thread.test.ts` and
+`fork-module-kernel-abort.test.ts`, plus the one failed test in
+`fork-module-worker-instantiation.test.ts`, all carrying the
+`program package index target changed before publication` error text —
+were observed in a single run of the primary command. The mechanism I
+described for them (concurrent test files racing to republish the same
+generated file) is scheduling-dependent by construction, and I did not
+rerun the primary command a second time to check whether the same 3
+lines, or the same count, come back. **If Task 8's `diff <(grep FAIL
+baseline) <(grep FAIL after)` shows an added or dropped `FAIL` line whose
+text contains `program package index target changed before publication`,
+cross-check it against this race mechanism before attributing it to the
+build change** — it may simply be the same pre-existing race landing on a
+different file under different scheduling, not a regression Phase 1
+introduced.
+
 ## The 4 (later 2) genuine failures, and their attribution
 
 Of the corrected run's 4 failures, 2 resolved once a missing local build
@@ -319,9 +339,11 @@ mechanism level**, but the attribution (introduced by this lane, on
   code those commits touched.
 - **43 apparent failures are a repo-root-vs-`host/`-cwd invocation
   artifact** (40 default-5s timeouts + 2 zero-test suite crashes + 1 more
-  test failure from a shared-file race), reproducible on demand by running
-  the brief's exact command from the repository root, and absent when the
-  same files are run from `host/`.
+  test failure from a shared-file race), absent when the same files are
+  run from `host/`. The 40 timeouts reproduce reliably on demand
+  (confirmed by a targeted rerun); the 3 race-derived lines were seen
+  once and are scheduling-dependent — see the caveat above before
+  attributing a diff-visible change in those 3 specific lines to Phase 1.
 - `host/test/fork-identity-release.test.ts` (added by Task 3) is included
   in both runs above and passed in both; its presence is why the file
   count is 68 rather than 67.
