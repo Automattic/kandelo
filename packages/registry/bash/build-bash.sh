@@ -138,7 +138,7 @@ if [ ! -f Makefile ]; then
     # -gline-tables-only keeps DWARF line tables for symbolication and
     # debug stack traces; the flag is kept for general debuggability.
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
-    export LDFLAGS="-Wl,-z,stack-size=1048576 ${LDFLAGS_NCURSES:-}"
+    export LDFLAGS="${LDFLAGS_NCURSES:-}"
 
     # Stock shell startup uses compgen while resetting Bash's builtin command set
     # during every invocation. Keep programmable completion enabled even when

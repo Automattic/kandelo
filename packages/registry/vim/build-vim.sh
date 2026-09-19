@@ -176,7 +176,7 @@ if [ ! -f src/auto/config.mk ]; then
     # without it, LLVM's gc-sections drops the function because no
     # other object in the link graph calls it (the host does, after
     # instantiation).
-    export LDFLAGS="-Wl,-z,stack-size=1048576 -Wl,--export=__abi_version -L$NCURSES_PREFIX/lib"
+    export LDFLAGS="-Wl,--export=__abi_version -L$NCURSES_PREFIX/lib"
     export LIBS="-lncursesw -ltinfow"
 
     wasm32posix-configure \

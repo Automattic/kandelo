@@ -194,11 +194,6 @@ CFLAGS=(
     -I"$ZLIB_INSTALL/include"
 )
 
-# SQLite's recursive test cases need more than wasm-ld's default 64 KiB shadow
-# stack. Use 1 MiB without reviving the old 2 GiB maximum-memory workaround.
-TESTFIXTURE_LDFLAGS=(
-    -Wl,-z,stack-size=1048576
-)
 
 # TESTSRC — test C files (excluding test_thread.c)
 TESTSRC_FILES=(
@@ -332,7 +327,6 @@ wasm32posix-cc "${CFLAGS[@]}" \
     "${OBJ_FILES[@]}" \
     -L"$TCL_INSTALL/lib" -ltcl8.6 \
     -L"$ZLIB_INSTALL/lib" -lz \
-    "${TESTFIXTURE_LDFLAGS[@]}" \
     -o testfixture
 
 if [ ! -f testfixture ]; then

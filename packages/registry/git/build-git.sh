@@ -135,10 +135,6 @@ sysconfdir = /etc
 # debuggability.
 CFLAGS = -O2 -gline-tables-only
 
-# Increase shadow stack from default 64KB to 1MB — git's deeply nested
-# calls (strbuf_realpath, config parsing, snprintf) overflow 64KB.
-LDFLAGS = -Wl,-z,stack-size=1048576
-
 # Disable optional features that need unavailable infrastructure
 NO_PERL = YesPlease
 NO_PYTHON = YesPlease

@@ -873,18 +873,16 @@ if [ ! -f Makefile ]; then
     # musl so intl.so shares one libc state — one allocator, one pthread key
     # table; without -u they never enter php.wasm and intl.so fails to load.
     #
-    # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
-    # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
-    # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
-    # zend_build_ssa, which uses do_alloca() for its DFG bitsets and
-    # var-rename worklist; on large functions like WordPress's
-    # wp-includes/ID3/module.audio-video.asf.php Analyze() (1700+ lines),
-    # the alloca'd buffer plus the deep zend_ssa_rename recursion can
-    # underflow the stack into alloc_globals, scribbling garbage onto
-    # AG(mm_heap). The next _efree call then traps with "memory access
-    # out of bounds" because it tries to dereference the now-bogus heap
-    # pointer. 4 MB gives PASS_6 enough headroom for any function that
-    # passes its own `blocks*vars > 4M` size guard.
+    # No -z stack-size= override here: the SDK's own 8 MiB default main-
+    # thread stack (see sdk/src/lib/flags.ts and docs/sdk-guide.md) is
+    # already well above the 4 MiB this build once requested explicitly for
+    # opcache's PASS_6 (DFA-based SSA optimization), which calls
+    # zend_build_ssa and can otherwise overflow a too-small stack on large
+    # functions like WordPress's wp-includes/ID3/module.audio-video.asf.php
+    # Analyze() (1700+ lines). That 4 MB request was itself already below
+    # the SDK's floor and so was always silently linking with 8 MiB in
+    # practice; removing it lets the actual, real value (the SDK default)
+    # apply without a stale number on this call site that nobody chose.
     #
     # ac_cv_lib_iconv_libiconv=yes: PHP's autoconf probe calls `libiconv()`
     # with an old-style no-argument prototype. That is tolerated by native ELF
@@ -920,8 +918,7 @@ if [ ! -f Makefile ]; then
 -u pthread_cond_broadcast -u pthread_cond_destroy -u pthread_cond_signal \
 -u pthread_cond_timedwait -u pthread_cond_wait -u pthread_detach \
 -u pthread_getspecific -u pthread_key_create -u pthread_self \
--u pthread_setspecific \
--Wl,-z,stack-size=4194304" \
+-u pthread_setspecific" \
     ZLIB_CFLAGS="$ZLIB_CFLAGS_VALUE" \
     ZLIB_LIBS="$ZLIB_LIBS_VALUE" \
     SQLITE_CFLAGS="$SQLITE_CFLAGS_VALUE" \

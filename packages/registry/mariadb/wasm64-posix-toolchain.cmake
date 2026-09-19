@@ -104,7 +104,6 @@ set(WASM64_LINK_FLAGS
   "-Wl,--export=__tls_align"
   "-Wl,--export=__stack_pointer"
   "-Wl,--export=__wasm_thread_init"
-  "-Wl,-z,stack-size=1048576"
 )
 string(REPLACE ";" " " WASM64_LINK_FLAGS_STR "${WASM64_LINK_FLAGS}")
 

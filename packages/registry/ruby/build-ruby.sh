@@ -938,7 +938,7 @@ SITE_EOF
     WASM_POSIX_CROSS_COMPILE=1 \
     CFLAGS="-O2" \
     CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -I$ZLIB_PREFIX/include" \
-    LDFLAGS="-L$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576" \
+    LDFLAGS="-L$ZLIB_PREFIX/lib" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(uname -m)-apple-darwin" \
@@ -1172,7 +1172,7 @@ STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core
 STATIC_ENCOBJS="enc/encinit.o enc/libenc.a enc/libtrans.a"
 STATIC_EXTLIBS="-lyaml -lz"
 STATIC_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
-FINAL_RUBY_LDFLAGS="$STATIC_LINK_PATHS -Wl,-z,stack-size=1048576"
+FINAL_RUBY_LDFLAGS="$STATIC_LINK_PATHS"
 
 echo "==> Relinking Ruby with static extensions and encodings..."
 make -f exts.mk \
