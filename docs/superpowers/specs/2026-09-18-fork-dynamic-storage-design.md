@@ -8,9 +8,18 @@ Status: approved in shape; four scope decisions recorded below
 
 Recorded 2026-09-18, in answer to a question batch.
 
-1. **`ResumeSlotIndex`: run the deadlock experiment first, then decide.** The
-   conversion's inclusion is not settled until the parking call is identified
-   with evidence.
+1. **`ResumeSlotIndex` is IN, decided after the experiment.** The maintainer
+   first ruled that the deadlock experiment should run and that THEY would
+   decide on its result. It ran (see Experiment results below): it disproved
+   the proposed explanation -- that a forked child makes the mapping syscall
+   before the kernel can answer it -- without finding the real cause.
+
+   The maintainer then ruled the conversion in, on the grounds that the new
+   design differs from the broken one in the way that matters. The reverted
+   version tracked its chunks in a list living in the bump heap, which
+   `ALLOC.reset()` wipes on every fork while the chunks it points to stay
+   mapped. The shared arena keeps that list INSIDE the chunks, which is what
+   the identity registry already does and what `lib.rs:986` says to do.
 2. **Chunk testing: the full suite runs in BOTH builds** -- the default one and
    one with every arena's first chunk forced small enough to chain.
 3. **`build-programs.sh`: use the SDK and delete the duplicate.** Test programs
@@ -22,33 +31,80 @@ Recorded 2026-09-18, in answer to a question batch.
 4. **Missing `__heap_base`: fail loud, AFTER the build is fixed.** The guard
    and the build fix land together, guard sequenced second, so the suite is
    never red on a defect the same change is removing.
-5. **`ResumeSlotIndex` is IN.** The phase clearing is accepted as sufficient:
-   the only concrete mechanism proposed was refuted, and the shared arena
-   differs from the reverted design in the way that matters -- its chunk list
-   lives in the chunks, not in a bump-heap `Vec` that `ALLOC.reset()` reclaims.
-6. **The `> 4 MiB` test is fixed in a PREREQUISITE commit**, landed before the
-   conversion work, asserting that the region covers the declared `memorySize`
-   plus shadow stack rather than a constant. Swept for siblings at the same
-   time: it was invisible until a reduction tripped it.
-7. **All NINE hand-maintained copies of the link contract converge onto the
+5. **A test that requires the module to be BIG is fixed first, on its own.**
+   `host/test/fork-module-instance.test.ts` asserts the module's reserved
+   region exceeds 4 MiB, so it fails when the module gets SMALLER -- which is
+   the point of this work. The experiment tripped it:
+   `expected 3735552 to be greater than 4194304`.
+
+   It is fixed in its own commit before any conversion lands, asserting what
+   it actually cares about (the region holds the module's declared
+   `memorySize` plus its shadow stack) rather than a constant. The same commit
+   checks whether other tests hard-code sizes or layout constants the same
+   way; this one was invisible until something shrank.
+6. **All NINE hand-maintained copies of the link contract converge onto the
    SDK.** Not just `build-programs.sh`. The full list is
    `scripts/build-programs.sh`, `scripts/run-browser-posix-tests.sh`,
    `scripts/run-browser-sortix-tests.sh`,
    `crates/host-native/fixtures/build-fixtures.sh`,
    `examples/dlopen/build.sh`, and three fork side-module fixtures under
    `host/test/`, against the authority in `sdk/src/lib/flags.ts`.
-8. **The build work is a SEPARATE change, landed BEFORE the storage work**, so
+7. **The build work is a SEPARATE change, landed BEFORE the storage work**, so
    arena sizing decisions are made against the final memory layout rather than
    one about to change.
-9. **P-11 becomes two fixtures**, and the tight one is pinned by `maxPages`,
-   NOT by stack size. The SDK's 8 MiB is a hard floor -- `mainThreadStackSize`
-   (`sdk/src/lib/flags.ts:230`) takes `max(floor, requested)` -- so a smaller
-   stack would require punching an opt-out through a floor that exists
-   precisely because a too-small stack silently corrupts `.bss`. Constraining
-   address space instead achieves the same determinism with nothing
-   program-specific in the platform.
-10. **The 4,096-deep recursion's stack headroom is investigated and fixed as
+8. **P-11 becomes two fixtures, and the SDK learns to honour a smaller
+   stack.** The tight fixture keeps the error paths reachable; the adaptive
+   one proves the same behaviour at production layout.
+
+   `mainThreadStackSize` (`sdk/src/lib/flags.ts:218-231`) currently returns
+   `max(8 MiB, requested)`, so an explicit smaller request is silently
+   discarded -- the SDK builds something other than what was asked for and
+   does not say so. That changes: an explicit request below the floor is
+   HONOURED with a loud warning naming the risk, while ABSENCE of a request
+   still gets 8 MiB silently. Those are different situations -- a deliberate
+   choice versus flags lost to drift -- and the current code conflates them.
+
+   The warning is informational, not the safety mechanism. A build-log
+   warning is a weak guard, as this lane's own missing `__heap_base` shows.
+   The default remains the protection.
+9. **The 4,096-deep recursion's stack headroom is investigated and fixed as
     part of the plan**, not deferred.
+10. **The rule is "nothing reserved at process START", not "no statics".** A
+    statically sized list is acceptable when it corresponds to a known fixed
+    quantity. What is not acceptable is paying for it before it is needed: the
+    module's `dylink.0` `memorySize` is reserved out of the guest's mmap window
+    at instantiation, so every fixed array is billed to every fork-capable
+    process whether it ever forks. Allocation happens at first use during a
+    fork, and only forking processes pay.
+11. **A per-chain ROOT POINTER is allowed** -- one 8-byte `AtomicU64` naming
+    the first chunk, zero when nothing is mapped. It is a root, not a
+    reservation: it cannot overflow and its size does not vary with workload.
+    `IDENTITY_HEAD` is the existing precedent.
+12. **The module imports the host's resume table and places the thunks
+    itself**, and this lands BEFORE the storage conversion as its own change.
+
+    The module already owns the POLICY -- `fork-resume-table.ts:88` says "each
+    thunk goes where `fm_resume_slots` says, and the module made that
+    decision". The host owns only the MECHANISM, because `Table.set` acts on a
+    JS object the module has no handle to. Importing that table alongside the
+    guest's catalog table lets the module do the placement with
+    `table.get`/`table.set`.
+
+    Ordering matters and is not arbitrary. Today the host asks
+    `fm_resume_slots` op 0 once per thunk, and `resume_slot_of` answers by
+    LINEAR SCAN: for php that is 19,025 lookups over up to 28,568 entries,
+    about 10^8 comparisons per process start, on a fixed array, today. When
+    the module places thunks itself it walks one activation's assignment
+    sequentially instead. `fm_resume_slots` op 0 and the random
+    `(activation, ordinal)` lookup both disappear, which turns
+    `RESUME_SLOT_INDEX` from a random-access store into a WALK-ONLY one --
+    the hardest conversion in the storage change, made easy. Converting
+    storage first would mean designing around a lookup pattern about to be
+    deleted.
+
+    This is an ABI change: a new table import, and `required_imports` is in
+    `abi/snapshot.json`. ABI 44 is not released and this project defines its
+    contents, so the snapshot is regenerated in the same change.
 
 No static allocation exemptions are requested. `VECTOR_IN_FLIGHT` was
 withdrawn as a candidate: it is a matched push/pop stack whose lifetime fits
@@ -71,10 +127,24 @@ and no pre-sizing. A `no_std` PIC wasm module cannot reach a JS heap, so the
 port replaced growable collections with fixed statics, and each static then
 needed a number nobody had.
 
-**This is regression repair, not optimization.** Every fixed bound here was
-introduced by the migration. The identity table was the first instance the
-maintainer caught ("We keep trying to pre-reserve address space"); the rest are
-the same defect wearing different constants.
+Every fixed bound here was introduced by the migration. The identity table was
+the first instance the maintainer caught ("We keep trying to pre-reserve
+address space"); the rest are the same defect wearing different constants.
+
+**But this is intentional architecture, not only the repair of a regression.**
+`main` never designed these lifetimes -- it inherited them from a garbage
+collector. Its catalog storage is unbounded by ACCIDENT: a JS `Map` grows
+because the heap grows, and entries disappear when they become unreachable.
+`fork-activation-registry.ts` does delete per activation explicitly
+(`:751`, `:755`, `:757`), but `fork-gc-codec.ts` and `fork-resume-catalog.ts`
+free nothing at all; their storage simply stops being referenced.
+
+A `no_std` PIC wasm module has no collector, so every lifetime has to be
+STATED. That is more work than `main` ever did, and it is also a stronger
+guarantee: a stated lifetime can be audited, perturbed and tested, where
+reachability can only be reasoned about. Restoring `main`'s behaviour would
+mean growing without bound and freeing by luck. The target is better than
+that -- grow on demand, and release at a named, testable point.
 
 The principle is the reason, not the byte count: a foundation that still fits
 when the scenario changes. Two of these arenas are sized against workloads that
@@ -125,6 +195,48 @@ They must not share a chain. That is a correctness constraint, not a
 preference: a post-fork reset would hand out addresses sitting on live registry
 records. The codebase already learned this -- `lib.rs:986` reads "THE REGISTRY
 LIVES IN THE CHUNKS, not in a `Vec`. `ALLOC.reset()` runs...".
+
+### Finding a record, and releasing one
+
+Both follow the identity registry (`lib.rs:995-1159`) rather than inventing
+anything.
+
+CHUNK LAYOUT: `+0 next: u64` (0 ends the list), `+8 used: u32` (live entries,
+always a dense prefix), `+12 pad`, `+16` entries. The `next` pointer lives
+INSIDE the chunk it describes, deliberately: a bump-heap list of chunk
+addresses would be clobbered by the `ALLOC.reset()` that runs mid-fork, while
+the chunks it named stayed mapped.
+
+FINDING: walk the chain and scan each chunk's live prefix. No type tag, no
+absolute addresses stored outside the chain.
+
+RELEASING: compaction, not tombstones and not holes. Surviving entries are
+copied down over removed ones, `used` is rewritten, and a chunk that reaches
+zero is unlinked and `channel_munmap`ed (best-effort -- "a munmap hiccup must
+not fail an otherwise-complete dlclose"). Entries stay a dense prefix, which
+preserves publish order among survivors.
+
+WHY COMPACTION IS SAFE HERE: it moves records, so nothing may hold an absolute
+address into the chain. Releases remove a whole ACTIVATION's records at once
+and the directory entry naming them goes with it, so no stale address
+survives.
+
+THE DIRECTORY IS NOT A STATIC ARRAY. Activations need random lookup by
+`activation_id` -- `func_catalog_base` runs per funcref reference during
+replay, `table_state_owned` per guest import call. The directory answering
+those is itself a record kind in the chain, appended as activations register.
+With a measured maximum of 7 activations one chunk holds thousands, so the
+prefix scan is O(1) with a tiny constant. There is no `MAX_ACTS`.
+
+A TREE WOULD BUY NOTHING. Trees pay off on large keyspaces with arbitrary
+lookup. Every random-access key here ranges over single digits; the one large
+keyspace (`RESUME_SLOT_INDEX`) stops being randomly accessed once decision 12
+lands, and is walked sequentially instead.
+
+AN OBSERVABLE IS REQUIRED. `identity_chunk_count()` exists because "a fixed
+array could not leak; a chunk list can, so the release path needs an
+observable", and `fork-identity-capacity.test.ts` asserts it returns to zero.
+Each new chain needs the same.
 
 Shared chunks across all registries (rather than one chain per registry) is
 what keeps page waste bounded. Measured on php's 7 activations: one mapping per
