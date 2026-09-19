@@ -701,6 +701,26 @@ before it is trusted.
    back clean, but a 2-of-3 error rate on the group checked second is the
    reason this risk is listed rather than assumed away.
 
+9. **The build-path change alters cached artifact bytes, and the cache is
+   shared across 222 worktrees.** `local-binaries/` is per-worktree (a real
+   directory, gitignored), so that part is isolated. But the SourceOnly build
+   cache is not: `run.sh:24-32` documents that `KANDELO_SOURCE_CACHE_ROOT`
+   unset "shares the machine-wide cache at `$HOME/.cache/kandelo/source-only`,
+   so identical inputs build once and are reused across worktrees", and says to
+   "set it to isolate a worktree whose in-progress change alters cached
+   artifact bytes".
+
+   Converging nine link-contract copies onto the SDK is exactly that: every
+   program in the repo relinks with different flags and therefore different
+   bytes. `git worktree list` reports 222 worktrees on this machine.
+
+   MITIGATION, already designed for this case: set
+   `KANDELO_SOURCE_CACHE_ROOT` to a worktree-local path for the whole of the
+   build-path change. The cache is input-keyed, so new flags should produce
+   new entries rather than overwrite existing ones -- but the documentation
+   names this situation explicitly as one requiring isolation, and following
+   stated guidance beats reasoning about key derivation from a comment.
+
 ## Out of scope
 
 * `commit_table_mutation_impl`'s archive-chain record per table mutation, which
