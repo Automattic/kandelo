@@ -340,10 +340,36 @@ Its stated reason for being static is a lifetime requirement, not a sizing one:
 "A fixed BSS buffer holds the catalog so it survives the per-fork heap reset".
 Retained arena chunks satisfy that identically.
 
-One hazard to handle deliberately: `resume_register_impl` falls back to
-`resume_catalog()` when `activation_catalog(id)` is `None`, documented as a
-"legacy harness path: fall back to committed-ordinal numbering". The merge must
-either preserve that fallback or retire it explicitly, not silently.
+The `None` branch of `resume_register_impl` conflates two different things,
+and the merge retires both.
+
+FIRST, it is not a fallback at all -- it is the PRIMARY path for the main
+program. The host seeds activation 0 through `fm_set_resume_catalog`
+(`fork-module-backend.ts:275`) and side activations through
+`fm_set_activation_resume_catalog` (`:379`), so `resume_catalog()` IS
+activation 0's store. Two seeding entries and two stores for one kind of data,
+split only by whether the activation is 0. After the merge activation 0 seeds
+through the activation-keyed entry like everything else, and
+`fm_set_resume_catalog` and `RESUME_CATALOG` are both removed.
+
+SECOND, the `global.is_empty()` case falls back to committed-ordinal
+numbering, documented as a "legacy harness path". That is retired as a loud
+refusal. There is no backwards compatibility in this project and
+instrumentation ships with the fork support that consumes it, so a binary
+reaching the module with nothing seeded is a build that went wrong, not a
+legacy artifact. Silently switching numbering schemes is worse than failing:
+the module and the JS resume table would then number slots by different rules,
+which is exactly the divergence the seeded catalog exists to make impossible
+by construction.
+
+The refusal must distinguish two cases. Seeding an EMPTY catalog is legitimate
+for a program with no fork-instrumented functions -- register nothing, return
+0. NEVER seeding is the loud one. Every binary measured in this lane has at
+least 36 resume ordinals, so the zero case may be unreachable in practice, but
+99 binaries without one is not a proof.
+
+Both removals are ABI changes, which decision 12 already establishes as
+acceptable for an unreleased ABI.
 
 **The allocator itself:**
 
