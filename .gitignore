@@ -26,6 +26,10 @@ binaries.lock.pr
 node_modules/
 /.direnv/
 
+# Worktree-local SourceOnly build cache, isolated per run.sh:24-32
+# to prevent artifact-byte contamination across concurrent worktrees.
+/.cache/
+
 # Worktrees
 .worktrees/
 

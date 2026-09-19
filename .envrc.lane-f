@@ -1,0 +1,5 @@
+# Isolate this worktree's SourceOnly build cache for the duration of the
+# link-contract convergence. Without this, relinking every program writes
+# artifact bytes into a cache shared by every worktree on this machine
+# (222 at last count). See run.sh:24-32.
+export KANDELO_SOURCE_CACHE_ROOT="/Users/brandon/kandelo-lane-f/.cache/source-only"
