@@ -2615,3 +2615,263 @@ Eight per-activation registries, all the same shape as identity, all with the
 release trigger already arriving. Plus `ImportedGlobalProvenanceTable` on a
 different key, which needs its own lifetime question answered before it can be
 converted.
+
+## Guards that assert a minimum size (swept 2026-09-19)
+
+Task 1 converted `host/test/fork-module-instance.test.ts`'s
+`expect(reserved!.size).toBeGreaterThan(4 * 1024 * 1024)` because it was a
+floor on memory USE wearing a guard's clothing: it failed when the module got
+SMALLER, which is precisely what the storage work in this lane intends to do.
+It had already started failing, at 3,735,552 bytes, during a spec experiment,
+and nobody noticed until then. This sweep looks for its siblings in
+`host/test/` and `sdk/test/` before the storage work starts shrinking things
+in earnest.
+
+### Step 1: the brief's own grep
+
+The brief's pattern --
+`toBeGreaterThan(OrEqual)?\(\s*[0-9_]+\s*\*|toBeGreaterThan(OrEqual)?\(\s*[0-9]{5,}`
+-- against `host/test/*.test.ts` (no subdirectories) returns exactly two
+hits:
+
+    host/test/sffs-image-fs.test.ts:719:
+      expect(derived.exportCapacityBytes()).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+    host/test/vfs-image.test.ts:1109:
+      expect(rebased.sharedBuffer.byteLength).toBeGreaterThan(16 * 1024 * 1024);
+
+Two hits is too few for a sweep whose premise is "others may be waiting," and
+the brief's own Files line says `host/test/**/*.test.ts` -- subdirectories --
+which its own grep command does not match (it globs `host/test/*.test.ts`,
+one level). Running the identical pattern recursively over every `.ts` file
+in `host/test/` and `sdk/test/` returns the same two hits and no more: no
+subdirectory test file, and no non-`.test.ts` fixture or helper, contains an
+inline numeric literal of that shape. That rules out the most literal gap in
+the brief's own coverage, but a matcher that only looks for inline literals
+was exactly the kind of matcher that would have missed Task 1's own guard had
+it been phrased as `toBeGreaterThan(SOME_CONSTANT)` instead of
+`toBeGreaterThan(4 * 1024 * 1024)` -- so the sweep did not stop there.
+
+### Step 2: widening past inline literals
+
+Three more greps, all bounded to `host/test/` and `sdk/test/`, all recursive:
+
+1. Every `toBeGreaterThan(OrEqual)?(` call with any argument at all, to see
+   what population the size-shaped ones are drawn from: 292 hits across both
+   trees. Filtering that list for byte/size/capacity-shaped identifiers
+   (`byte`, `size`, `capacity`, `region`, `staging`, `table`, `memory`,
+   `heap`, `reserv`, `footprint`, `budget`, `page`) narrows it to 71
+   candidates worth reading in context.
+2. A precise pattern for R11's actual example shape --
+   `toBeGreaterThan(OrEqual)?(<identifier ending in Bytes/Size/Capacity/
+   _MIN/MAX_/Region/Pages>)` -- catches comparisons against a NAMED
+   size-like constant or property that step 1's literal-only pattern cannot
+   see. This adds three hits beyond the brief's two:
+
+       host/test/vfs-image.test.ts:1063:
+         expect(restored.sharedBuffer.byteLength).toBeGreaterThan(initialBytes);
+       host/test/vfs.test.ts:1254:
+         expect(sab.byteLength).toBeGreaterThan(initialBytes);
+       host/test/spawn-blob-transport.test.ts:286:
+         expect(blob.byteLength).toBeGreaterThan(CH_TOTAL_SIZE);
+
+3. `expect(x > N).toBe(true)` and `expect(x >= N).toBe(true)`, the two
+   alternate spellings R11 named: zero hits in either tree. Neither form is
+   in use here.
+
+Reading the 71 byte/size-shaped candidates from step 1 by hand turned up one
+more named-constant hit the precise pattern in step 2 missed because the
+constant sits on the LEFT of the comparison instead of the right --
+`host/test/vfs.test.ts:777: expect(MAX_FDS).toBeGreaterThan(64)` -- which is
+recorded below with the rest.
+
+### Classification
+
+**Minimum-size floors tied to a production constant, but not this lane's
+constant.**
+
+`host/test/vfs-image.test.ts:1109` asserts
+`rebased.sharedBuffer.byteLength` is greater than `16 * 1024 * 1024` after
+`rebaseToNewFileSystem` grows a tiny source image to fit a declared 2 GiB
+`maxByteLength`. `16 * 1024 * 1024` is not an arbitrary round number: it is
+`MIN_REBASE_INITIAL_BYTES` at `host/src/vfs/memory-fs.ts:501`, the floor the
+production code itself uses when picking the new buffer's initial size
+(`Math.max(sourceBytes.byteLength, MIN_REBASE_INITIAL_BYTES)`). This is the
+same shape of bug as Task 1's: a test hardcodes a production floor inline
+instead of importing and comparing against it, so if `MIN_REBASE_INITIAL_BYTES`
+is ever lowered as a memory optimization, the test breaks for a reason that
+has nothing to do with what the test is trying to prove (that rebase grows
+the buffer at all). It would break if someone shrinks the VFS image
+subsystem's default initial-buffer floor. It is very unlikely to be touched
+by THIS lane's storage work, which targets the fork module's memory region
+(`host/src/fork-module-instance.ts`, `crates/fork-module`), not
+`host/src/vfs/memory-fs.ts`'s rebase sizing. Flagging it because the sweep's
+job is to find the pattern, not to pre-judge which lane will trip it.
+
+**Minimum-size assertions that are actually relative-growth checks, not
+floors.** `host/test/vfs-image.test.ts:1063` and `host/test/vfs.test.ts:1254`
+both compare `sharedBuffer.byteLength`/`sab.byteLength` against `initialBytes`,
+a value the test captured at runtime immediately before the operation under
+test. These fail only if the buffer does not grow relative to its OWN
+pre-operation size, not if some absolute magnitude shrinks. That is a
+legitimate assertion in either direction: the storage work shrinking a fork
+module's static footprint has no bearing on whether a VFS image grows when
+files are added to it.
+
+**A capacity assertion that echoes its own input, not an internal size.**
+`host/test/sffs-image-fs.test.ts:719` -- `expect(derived.exportCapacityBytes())
+.toBeGreaterThanOrEqual(64 * 1024 * 1024)` -- follows
+`derived.setImageCapacity(64 * 1024 * 1024)` two lines above in the same
+test. The `64 * 1024 * 1024` on both sides is the same number because the
+test is checking that the capacity IT REQUESTED took effect, not asserting
+anything about how much memory the implementation needs internally.
+Renaming the local variable would make this obvious; as written it pattern-
+matches the brief's grep by coincidence of shape, not by kinship with Task
+1's bug. Not a floor on memory use, and not something the storage work would
+threaten.
+
+**A channel-size precondition, not a floor.**
+`host/test/spawn-blob-transport.test.ts:286` -- `expect(blob.byteLength)
+.toBeGreaterThan(CH_TOTAL_SIZE)` -- exists to prove the test's OWN fixture
+(96 synthetic 1 KiB environment variables) is bigger than the syscall
+channel's one-shot transfer capacity, so the test actually exercises the
+"large spawn, exclusive reservation" code path instead of the ordinary one.
+`CH_TOTAL_SIZE` is a generated ABI constant (`host/src/generated/abi.ts`,
+re-exported via `host/src/constants.ts:63`); the comparison direction means
+this only breaks if `CH_TOTAL_SIZE` grows past the fixture's size, not if it
+or anything fork-module-shaped shrinks. Unrelated to this lane's storage
+work.
+
+**A derived count, verified then sanity-checked against history, not an
+arbitrary floor.** `host/test/vfs.test.ts:777` --
+`expect(MAX_FDS).toBeGreaterThan(64)` -- comes one line after
+`expect(MAX_FDS).toBe(Math.floor((BLOCK_SIZE - FD_TABLE_OFFSET) /
+FD_ENTRY_SIZE))`, which pins `MAX_FDS` to its own derivation. The `> 64`
+follow-on is a regression guard documented in the test's own title ("opens
+more than the old 64-descriptor SharedFS table limit") against a SPECIFIC
+past regression, not a memory-use floor, and it counts file descriptor table
+ENTRIES, not bytes. Unrelated to fork module storage.
+
+**The fixed guard itself, read in place.**
+`host/test/fork-module-instance.test.ts:54` --
+`expect(fm.regionBytes).toBeGreaterThanOrEqual(fm.staticBytes +
+fm.shadowStackBytes + fm.stagingBytes)` -- is Task 1's replacement, still
+matching the brief's original literal-search shape closely enough to be
+worth confirming by eye: it sums the module's OWN reported components
+instead of asserting a magnitude, so it can never fail because the module got
+smaller, only because the region stops covering what the module itself says
+it needs. Correct as landed; no action.
+
+**Fork-module hits that are existence or ordering checks, not size floors.**
+Four more hits sit in fork-module test files and are worth naming precisely
+because they are exactly the family Task 1's bug came from, but none of them
+assert a minimum magnitude:
+
+  * `host/test/fork-module-placement.test.ts:126` --
+    `expect(fm.stagingBytes).toBeGreaterThan(0)` -- and line 127 --
+    `expect(fm.stagingBase).toBeGreaterThan(fm.memoryBase)` -- are an
+    existence check (the slab is non-empty) and an ordering check (the slab
+    sits after the base), neither of which encodes an assumed magnitude.
+  * `host/test/fork-module-shipped-artifact.test.ts:104` --
+    `expect(tableSize).toBeGreaterThan(0)` -- is explicitly documented in the
+    surrounding comment as checking for "not the zero that a module with
+    injected element entries cannot legitimately have," i.e. existence, not
+    a size.
+  * `host/test/fork-anyref-transit.test.ts:73` --
+    `expect(table.length).toBeGreaterThanOrEqual(9)` -- the `9` is derived
+    two lines earlier from the test's own `recipe + 2` (`7 + 2`), not an
+    assumption about the module's footprint.
+  * `host/test/fork-module-drive-r1-trace.test.ts:237` --
+    `expect(trace.liveSlots.length).toBeGreaterThanOrEqual(2)` -- counts two
+    nodes the SAME test constructed (a leaf and an aggregate), not bytes.
+
+**One export-count check worth watching, though it is a count and not a
+byte size.** `host/test/fork-module-host-obligation.test.ts:286` --
+`expect(Object.keys(instance.exports).length).toBeGreaterThan(50)` -- guards
+against a module that "instantiated but exported nothing," satisfying the
+import-completeness check vacuously. Fifty is not derived from anything; it
+is a snapshot of how many exports the real fork module happens to have today.
+If the storage work's Rust-side refactor consolidates or removes exports (as
+opposed to shrinking static memory, which is its stated target), this could
+break for a reason unrelated to what the test is protecting against. It is a
+count, not a size, so it falls outside this sweep's literal remit, but it is
+the one hit in the fork-module family that shares Task 1's actual failure
+shape -- "a number copied from today's build, asserted as a floor" -- closely
+enough to name here rather than fold into the bulk classification below.
+
+**`fork-identity-capacity.test.ts` is the sweep's negative control, not a
+finding.** `host/test/fork-identity-capacity.test.ts:228` --
+`expect(need, ...).toBeGreaterThan(0)` -- sits in a test file whose whole
+point, stated in its own comments, is that `crates/fork-module/src/lib.rs`
+must NOT carry a fixed identity cap ("It cannot be sized: too small refuses
+php ... large enough for php takes 256 KiB out of every guest's mmap window,
+which is what broke P-11. Allocate chunks on demand instead."). The `> 0`
+here only proves php needs some nonzero number of identity entries; the file
+around it is an existing guard against reintroducing exactly the anti-pattern
+this sweep exists to catch, on a different store. Recording it because it is
+directly on point for this lane, not because it is a defect.
+
+**`surface-budget.test.ts`'s "banked reduction" check is a floor by design,
+and it is the opposite failure mode from Task 1's bug.**
+`host/test/surface-budget.test.ts:1042` --
+`expect(actual, ...).toBeGreaterThan(surface.ceiling - surface.slack - 1)` --
+fails when a measured surface shrinks WITHOUT its ceiling in
+`docs/surface-budget.json` being lowered to match. That is deliberately a
+floor that the storage work is meant to trip, on purpose, so that a real
+reduction gets banked in the same commit instead of quietly funding the next
+change's growth (the file's own docstring: "which is how fork TypeScript grew
+while a 4,643-line deletion elsewhere made it look like progress"). Task 1's
+bug was invisible until it shrank; this one is built to make shrinking loud
+and to demand action. It measures TS surface line/symbol counts, not fork
+module memory bytes, so the storage work will not trip it directly, but
+whichever commit lands a TS-visible reduction from this lane should expect
+it. This is also the gate this task itself runs before committing (see
+below), so its current 109/109 green is direct evidence it is not presently
+tripped. The other `toBeGreaterThan` hits in the same file
+(`surface-budget.test.ts:1075,1087,1095,1099,1138,1220`) check checklist-item
+counts and `why`-string character lengths for lane-closure bookkeeping in
+`docs/surface-budget.json`; none of them measure a byte size.
+
+**Everything else: counts, indices, pids, timestamps, and orderings, not
+sizes.** The remaining hits from the 292-call population in step 2.1 --
+after removing the byte/size-shaped 71 and the ones classified above --
+are calls like `expect(pid).toBeGreaterThan(0)`,
+`expect(childPid).toBeGreaterThan(firstPid)`,
+`expect(mock.calls.length).toBeGreaterThan(1)`,
+`expect(sec).toBeGreaterThanOrEqual(0)`, and dozens of monotonic-ordering
+checks between two runtime-captured offsets (`expect(end).toBeGreaterThan
+(start)`) in the fork/spawn parity test files
+(`fork-externref-host-parity.test.ts`, `fork-replay-host-parity.test.ts`,
+`process-generation-detach-host-parity.test.ts`, `spawn-host-parity.test.ts`,
+and siblings). None of these assert a minimum MAGNITUDE of anything the
+storage work could shrink; they assert that something exists (`> 0`,
+`>= 0`), that two runtime-captured values are in the right relative order, or
+that a mock recorded at least one call. They are the third class the task
+brief allows for: assertions about counts or indices, not about size.
+
+Also checked and unrelated to fork-module storage, for completeness:
+`host/test/kernel-large-transfer-protocol.test.ts:469`
+(`expect(capacity).toBeGreaterThanOrEqual(5)`, a mock-observed slot count in
+the kernel scratch/transfer protocol, not a byte size) and
+`host/test/kernel-public-scratch.test.ts:288`
+(`expect(count).toBeGreaterThan(1024)`, redundant with the exact-value
+assertion the line above it already makes, against a test-local 64 KiB
+fixture that has nothing to do with fork module memory).
+
+### Nothing found already failing
+
+No hit in this sweep is currently red: `npx vitest run
+host/test/surface-budget.test.ts` exits 0 (109/109 passed), and every
+minimum-size candidate identified above was read in its passing context, not
+inferred from a failure. Nothing here is "about to" fail either, in the sense
+Task 1's guard was (a value already below a soon-to-be-crossed threshold);
+the one hit that shares Task 1's actual shape closely enough to be a genuine
+risk is `vfs-image.test.ts:1109`'s coupling to `MIN_REBASE_INITIAL_BYTES`,
+and it is not close to its own line today.
+
+### What this task did not do
+
+No guard was converted. `docs/plans/2026-09-16-lane-f-closure.md` is the only
+file this task changed. Whether `vfs-image.test.ts:1109` and
+`fork-module-host-obligation.test.ts:286` are worth converting now, later, or
+not at all is a decision for whoever picks up VFS rebase sizing or fork-module
+export-surface work, not this sweep.
