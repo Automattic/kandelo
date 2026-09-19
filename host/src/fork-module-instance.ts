@@ -44,8 +44,15 @@ export interface ForkModuleInstance {
   readonly exports: ForkModuleExports;
   /** Byte offset in guest memory where the module's region was placed. */
   readonly memoryBase: number;
-  /** Bytes reserved at `memoryBase`: static footprint plus the shadow stack. */
+  /**
+   * Bytes reserved at `memoryBase`: static footprint, shadow stack, and
+   * staging slab.
+   */
   readonly regionBytes: number;
+  /** The module's own aligned static/BSS footprint, from `dylink.0`. */
+  readonly staticBytes: number;
+  /** The shadow stack reserved above `staticBytes`. */
+  readonly shadowStackBytes: number;
   /** The module-owned `(ref null any)` transit table the injector exports. */
   readonly gcTransitTable: WebAssembly.Table;
   /** Host-supplied tables, exposed so a host can publish catalogs into them. */
@@ -300,6 +307,8 @@ export function instantiateForkModule(
     exports,
     memoryBase,
     regionBytes,
+    staticBytes,
+    shadowStackBytes: SHADOW_STACK_BYTES,
     gcTransitTable: exports.__wpk_fork_ref_gc_transit as WebAssembly.Table,
     functionCatalog,
     driveTable,

@@ -45,9 +45,15 @@ describe("instantiateForkModule", () => {
 
     expect(fm.memoryBase).toBe(reserveBase);
     expect(reserved).not.toBeNull();
-    // The reserved region covers the module's ~4 MiB static footprint plus the
-    // shadow stack, and fits inside the provided memory.
-    expect(reserved!.size).toBeGreaterThan(4 * 1024 * 1024);
+    // WHAT THIS ASSERTS, and why not a constant: the region must cover the
+    // module's OWN declared static footprint plus its shadow stack and staging
+    // slab. The previous `> 4 MiB` was a floor on memory USE -- it failed when
+    // the module shrank, which is the goal of the storage work, and it did
+    // fail during the spec experiment at 3,735,552 bytes.
+    expect(reserved!.size).toBe(fm.regionBytes);
+    expect(fm.regionBytes).toBeGreaterThanOrEqual(
+      fm.staticBytes + fm.shadowStackBytes + fm.stagingBytes,
+    );
     expect(fm.memoryBase + fm.regionBytes).toBeLessThanOrEqual(
       memory.buffer.byteLength,
     );
