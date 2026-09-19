@@ -194,7 +194,6 @@ CFLAGS=(
     -I"$ZLIB_INSTALL/include"
 )
 
-
 # TESTSRC — test C files (excluding test_thread.c)
 TESTSRC_FILES=(
     "$SQLITE_FULL/src/test1.c"
