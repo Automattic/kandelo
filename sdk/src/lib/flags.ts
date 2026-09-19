@@ -209,10 +209,13 @@ export function expandResponseFiles(
 }
 
 /**
- * Apply the SDK's stack-size floor while retaining explicit larger requests.
- * Callers pass the exact argv emitted for wasm-ld by Clang's `-###` trace. That
- * keeps Clang's option classification and ordering in Clang itself instead of
- * duplicating its driver option table here.
+ * Apply the SDK's stack-size floor when no explicit request is present, and
+ * otherwise honour the caller's explicit request verbatim — even below the
+ * floor — the same way repeated `-z stack-size=` operands resolve in
+ * wasm-ld itself: last one wins. Callers pass the exact argv emitted for
+ * wasm-ld by Clang's `-###` trace. That keeps Clang's option classification
+ * and ordering in Clang itself instead of duplicating its driver option
+ * table here.
  */
 export function mainThreadStackSize(
   linkerArgs: string[],
@@ -227,7 +230,27 @@ export function mainThreadStackSize(
         `stack-size=${value} exceeds the SDK's ${MAX_EXECUTABLE_MEMORY_SIZE}-byte executable memory limit`,
       );
     }
-    if (requested.kind === 'valid' && requested.value > result) result = requested.value;
+    if (requested.kind !== 'valid') return;
+    if (requested.value < DEFAULT_MAIN_THREAD_STACK_SIZE) {
+      // HONOUR IT, LOUDLY. Silently substituting the floor meant the SDK built
+      // something other than what was asked for and did not say so. Absence of
+      // a request still gets the floor (see the initial value of `result`):
+      // that is a default. An explicit smaller request is a CHOICE, and the
+      // only situation that warrants one is a fixture deliberately exercising
+      // a constrained layout.
+      //
+      // The warning is informational, not the safety mechanism. WebAssembly
+      // has no stack guard page, so an overflow writes past `__data_end` into
+      // `.bss` and corrupts the pthread/TLS globals there rather than
+      // trapping. The DEFAULT is the protection.
+      console.warn(
+        `wasm32posix: stack-size=${requested.value} is below the SDK floor of ` +
+          `${DEFAULT_MAIN_THREAD_STACK_SIZE}. Honouring it. WebAssembly has no ` +
+          `stack guard page: an overflow will corrupt .bss silently instead of ` +
+          `trapping.`,
+      );
+    }
+    result = requested.value;
   };
 
   const lldArgs = readResponseFile

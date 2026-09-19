@@ -221,9 +221,15 @@ describe('mainThreadStackSize', () => {
     expect(mainThreadStackSize(['main.o'])).toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
   });
 
-  it('raises smaller requests to the SDK floor', () => {
-    expect(mainThreadStackSize(['-z', 'stack-size=1048576', 'main.o']))
-      .toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
+  it('honours an explicit request smaller than the SDK floor instead of raising it', () => {
+    const restore = console.warn;
+    console.warn = () => {};
+    try {
+      expect(mainThreadStackSize(['-z', 'stack-size=1048576', 'main.o']))
+        .toBe(1048576);
+    } finally {
+      console.warn = restore;
+    }
   });
 
   it('retains the largest request in the exact lld argv', () => {
@@ -270,12 +276,23 @@ describe('mainThreadStackSize', () => {
   });
 
   it('treats leading-zero values as octal rather than padded decimal', () => {
-    expect(mainThreadStackSize(['-z', 'stack-size=020000000', 'main.o']))
-      .toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
-    expect(mainThreadStackSize(
-      ['@/tmp/objects.list'],
-      () => responseFile('-z\nstack-size=020000000\n'),
-    )).toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
+    // 0o20000000 = 4194304, which is below the SDK floor — a decimal
+    // misparse (20000000) would instead exceed the floor and be kept as-is,
+    // so asserting the exact octal value (not just "below the floor") is
+    // what actually distinguishes the two interpretations now that smaller
+    // requests are honoured rather than clamped.
+    const restore = console.warn;
+    console.warn = () => {};
+    try {
+      expect(mainThreadStackSize(['-z', 'stack-size=020000000', 'main.o']))
+        .toBe(4194304);
+      expect(mainThreadStackSize(
+        ['@/tmp/objects.list'],
+        () => responseFile('-z\nstack-size=020000000\n'),
+      )).toBe(4194304);
+    } finally {
+      console.warn = restore;
+    }
   });
 
   it('retains larger radix-prefixed requests in directly referenced response files', () => {
@@ -408,6 +425,24 @@ describe('mainThreadStackSize', () => {
     )).toThrow(
       `response-file expansion exceeds the ${MAX_RESPONSE_FILE_EXPANSIONS}-file safety limit`,
     );
+  });
+
+  it("honours an explicit stack smaller than the floor, and warns", () => {
+    const warnings: string[] = [];
+    const restore = console.warn;
+    console.warn = (msg: string) => warnings.push(String(msg));
+    try {
+      const size = mainThreadStackSize(["-z", "stack-size=65536"]);
+      expect(size, "the caller's explicit request wins").toBe(65536);
+      expect(warnings.join("\n")).toMatch(/stack-size=65536/);
+      expect(warnings.join("\n")).toMatch(/\.bss|guard page|corrupt/i);
+    } finally {
+      console.warn = restore;
+    }
+  });
+
+  it("still applies the floor when no stack size is requested", () => {
+    expect(mainThreadStackSize([])).toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
   });
 });
 
