@@ -765,10 +765,22 @@ layer three times and produced a brief blaming another lane's injector.
 existing two, failing loudly and naming the bundle, so the next occurrence is
 one line of output instead of a day.
 
-## B52 — three fork/vfork browser specs regressed, and they reproduce
+## B52 — one confirmed fork regression (filed as three)
 
 OPEN, found 2026-09-17 on the first browser run after the lane Y/V merge.
-**These are not flaky: all three fail in isolation as well as in the suite.**
+
+**SCOPE: read the corrections below before the entry.** This was filed as
+three regressions. It is one. `process-memory-retirement` is confirmed in
+both artifact-resolution modes and is lane F's. `ruby-posix-spawn` cannot
+currently be confirmed — it SKIPS under the source-only policy, because
+its `exec-child.wasm` fixture is not projected (B54). The Node.js demo was
+never fork and never a regression from this merge (B54). The heading and
+the body below are kept as filed, because what the filing got wrong is
+the instructive part; the corrections carry the current state.
+
+The brief is `docs/plans/lane-briefs/b52-fork-vfork-regressions.md`, which
+leads with the same narrowing so a lane cannot pick up the Ruby item by
+mistake.
 
 | spec | what it asserts |
 |---|---|
