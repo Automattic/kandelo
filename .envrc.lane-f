@@ -2,4 +2,19 @@
 # link-contract convergence. Without this, relinking every program writes
 # artifact bytes into a cache shared by every worktree on this machine
 # (222 at last count). See run.sh:24-32.
-export KANDELO_SOURCE_CACHE_ROOT="/Users/brandon/kandelo-lane-f/.cache/source-only"
+#
+# The path must be worktree-local AND outside the source checkout. Both
+# halves are load-bearing:
+#
+#   - worktree-local, so this lane's altered artifact bytes do not contend
+#     with the shared ~/.cache/kandelo/source-only the other worktrees use;
+#   - outside the checkout, because packages/registry/rootfs/
+#     build-rootfs-package.sh:35-44 refuses to build when the resolver
+#     output or work root resolves under $REPO_ROOT:
+#         ERROR: resolver output root must be outside the source checkout
+#     A root inside the checkout fails rootfs/wasm32, which cascades to
+#     BLOCKED shell/wasm32 and every product/browser-*, so `./run.sh browser`
+#     cannot complete at all.
+#
+# Do not move this back under the checkout to keep it "with" the worktree.
+export KANDELO_SOURCE_CACHE_ROOT="$HOME/.cache/kandelo-lane-f/source-only"
