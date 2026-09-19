@@ -370,3 +370,229 @@ cd host && npx vitest run test/surface-budget.test.ts
 - `host/dist/*` — rebuilt via `npm run build` (gitignored, not committed).
 - `crates/fork-module/build-wasm.sh` was **not** run; the fork-module build
   key above was read from the artifacts Task 3 already staged.
+
+## P-11 recursion headroom
+
+`programs/p_11_fork_continuation_enomem.c` calls `fork_at_depth(4096)` on
+whatever shadow stack `build-programs.sh` links it with (no `-z,stack-size`
+flag is passed, so wasm-ld's own default applies). Task 7/8 will move that
+default to the SDK's 8 MiB. This measures the margin before that move, on
+the artifact as built today — not rebuilt for this task.
+
+**Artifact measured:** `local-binaries/programs/wasm32/p_11_fork_continuation_enomem.wasm`,
+`ls -la` → size 88738 bytes, mtime `Sep 12 05:05` (2026), confirmed via
+`stat -f "%Sm"`. Built before this plan's work; not rebuilt here.
+
+### wasm-ld's default stack size is 65536 bytes, measured, not assumed
+
+The brief's premise (64 KiB default) was checked directly rather than taken
+on faith, and `build-programs.sh` was re-confirmed to pass no
+`-z,stack-size` anywhere in `CFLAGS`/`LINK_POST_LIBS`
+(`grep -n "stack-size" scripts/build-programs.sh` → no matches).
+
+To find wasm-ld's actual default, a trivial `void _start(void) {}` was
+compiled (`wasm32-unknown-unknown`, `-nostdlib`) and linked three ways —
+with no `-z stack-size`, with `-z stack-size=65536`, and with
+`-z stack-size=1048576` — then each linked module's `__stack_pointer`
+initializer was read with `wasm-objdump -x`:
+
+```
+default:            global[0] i32 mutable=1 <__stack_pointer> - init i32=66560
+-z stack-size=65536:  global[0] i32 mutable=1 <__stack_pointer> - init i32=66560
+-z stack-size=1048576: global[0] i32 mutable=1 <__stack_pointer> - init i32=1049600
+```
+
+The default and the explicit-65536 run produce byte-identical
+`__stack_pointer` initializers (66560 = `--global-base` default of 1024 +
+65536). This confirms wasm-ld's own default stack size is exactly 65536
+bytes (64 KiB) for this toolchain (LLVM/lld 21.1.7), by direct comparison
+against an explicit value — not inferred from `stackTop - dataEnd` on the
+real artifact, which the task brief flags as an overstatement (it would
+fold in the whole of `.bss`, which occupies address space but emits no
+data segment).
+
+### Locating `fork_at_depth` in the shipped artifact
+
+The shipped artifact carries almost no local function names — its `name`
+custom section (read via `llvm-objdump -t`, 90-ish entries) contains only
+`wpk_fork_*`/`__wpk_fork_*` symbols the fork-instrument tool itself injects;
+ordinary compiled C functions (including `fork_at_depth`, `main`, libc
+internals) have no name entries at all. This is not instrumentation
+stripping something — a scratch recompile of the same source **without**
+running the fork-instrument step (see below) shows the same absence of
+names for user functions, so it is just how this `-O2`, no-`-g` toolchain
+output looks by default.
+
+Without names, `fork_at_depth` was located by its structural signature: a
+custom wasm-binary parser (LEB128-aware, written for this task) established
+the true global-index numbering (`imported_globals=3`, so module-defined
+globals start at index 3; `__stack_pointer` is exported as `global[3]`) —
+`wasm-objdump -x` was independently checked against this and found to
+mis-parse this binary's Type/Global sections (it fails on the module's
+shared-reftype/exnref encodings — `wasm-objdump -d local-binaries/…wasm`
+throws `error: expected valid result type`, `error: table elem type must be
+a reference type`, and `warning: invalid function index: 166` on this exact
+file — so its section listings for this artifact are not trustworthy and
+were not used for the global-index or self-recursion analysis; `llvm-objdump`
+and the custom parser were used instead). A second script then scanned the
+`llvm-objdump -d` disassembly for a function that calls itself (`call N`
+where `N` is that function's own index, derived from position in the CODE
+section plus the confirmed 16 imported functions). Exactly one match: wasm
+function index 42 (address `0001028a`), which also matches the fork
+`c_04_fork_in_catch_external_throw.cpp`-style save/restore shape: its
+prologue checks a resume-state flag (`global.get 8; i32.const 2; i32.ge_u`)
+and, when set, restores six locals from six fixed offsets (16/20/24/28/32/36)
+of a state-struct pointer held in `global 9` — a per-function-specific
+restore sequence that only makes sense as fork-instrument's specialization
+for this exact function's local layout, not a generic shared helper. It is
+called from 43 sites across the `__wpk_fork_resume_*` dispatch functions,
+consistent with being the one place all logical recursion levels of
+`fork_at_depth` resume into.
+
+### All three hypotheses were tested; two hold together
+
+**Hypothesis 1 (a small per-frame shadow-stack cost N) — rejected.**
+Function 42's full body was dumped and searched for any reference to
+global index 3 (`__stack_pointer`, confirmed by the parser above and
+cross-checked against 63 other `global.get/set 3` references elsewhere in
+the binary that DO show the classic prologue shape, e.g.
+`global.get 3; i32.const 8128; i32.sub; local.tee 7; global.set 3` at
+address `0x1535` in an unrelated function — so global 3 is definitely the
+stack pointer and the shape is definitely present in this binary when a
+function needs it). `grep -c "global\.(get|set)\s*3\b"` restricted to
+function 42's address range returns **zero**. There is no
+`global.get 3 / i32.const N / i32.sub / global.set 3` prologue in this
+function at all — not for any N.
+
+**Hypothesis 2 (zero shadow-stack cost — ordinary scalar locals never touch
+it) — confirmed, from two independent artifacts.** In the shipped
+instrumented binary, function 42 never references global 3, at all, in any
+branch. To rule out this being an instrumentation artifact rather than a
+property of the source, the same `.c` file was recompiled in isolation
+(scratch only, not touching `local-binaries/` or the official build path,
+and **not** run through `scripts/run-wasm-fork-instrument.sh`) with the
+same `CFLAGS`/link flags `build-programs.sh` uses. In that raw,
+uninstrumented build, `fork_at_depth` is wasm function index 20 (address
+`0x4f5`), and its entire body is:
+
+```
+000004f5 <>:
+     4f7: 20 00        local.get   0
+     4f9: 45           i32.eqz
+     4fa: 04 40        if
+     4fc: 10 1a        call        26        # fork()
+     4fe: 0f           return
+     4ff: 0b           end
+     500: 20 00        local.get   0
+     502: 41 01        i32.const   1
+     504: 6b           i32.sub
+     505: 10 14        call        20        # fork_at_depth(depth - 1) — genuine self-call
+     507: 20 00        local.get   0
+     509: 41 7f        i32.const   -1
+     50b: 46           i32.eq
+     50c: 6a           i32.add
+     50d: 0b           end
+```
+
+This is a line-for-line match to the C source (`if (depth == 0) return
+fork(); …; fork_at_depth(depth - 1); …; return result + (depth == -1);`).
+There is no `.local` declaration at all — the function needs no locals
+beyond its one parameter — and it references no global whatsoever, so it
+cannot be adjusting `global[1]` (`__stack_pointer` in this un-instrumented
+build, confirmed by the same parser). `depth` and the fork() result are
+plain scalars with no address ever taken in the C source, so LLVM keeps
+them in wasm locals/on the value stack; nothing forces them onto the
+linear-memory shadow stack. **This holds independent of whether the call is
+genuinely recursive or has been transformed** — see below — because it is
+true in both the raw recursive form and the shipped instrumented form.
+
+**Hypothesis 3 (the recursion is not 4,096 real call frames at runtime) —
+also confirmed, but only in the shipped artifact, and by a different
+mechanism than plain `-O2` tail-call optimization.** The raw/uninstrumented
+build above shows genuine, real recursion: `call 20` targets its own
+function index, so an uninstrumented build of this program would make up
+to 4,096 real nested wasm `call` frames (the `asm volatile` in the source
+does its job of blocking LLVM's own tail-recursion-to-loop pass). But the
+**shipped** artifact's function 42 is shaped as an explicit loop instead: a
+resume-state check, then `loop … br_if 0` decrementing a local by 1 each
+iteration (`local.get 0; i32.const 1; i32.sub; local.tee 0; br_if 0`) is
+the entire "recursive descent" — one function invocation iterates 4,096
+times rather than 4,096 functions nesting. The resume-state-restore
+preamble (loading saved locals from a struct pointer, gated on a
+"phase >= 2" flag) could not come from plain `clang -O2`, which has no
+concept of a resumable phase; this loop shape is the fork-instrument tool's
+CFG transformation for making the function fork-resumable, not a LLVM
+optimizer artifact. (One genuine self-recursive `call 42` does still exist
+in the shipped function, guarded inside a `try_table`/`catch`-driven
+unwind path reached only when a real fork is captured mid-descent — but
+because function 42 itself never touches `global 3` in *any* branch, its
+contribution to shadow-stack usage is 0 bytes regardless of how many times,
+or in what shape, it executes.)
+
+**Both hold, and they reinforce each other**: the shipped artifact's
+"recursion" is a loop (H3), and even the genuinely-recursive raw form would
+have cost 0 bytes of shadow stack per frame (H2). Either fact alone is
+sufficient to clear the 64 KiB default; having both, from independently
+built artifacts, is stronger evidence than either alone.
+
+### The numbers
+
+- Per-frame shadow-stack cost, measured: **0 bytes** (no
+  `__stack_pointer`-adjusting prologue exists in `fork_at_depth`, in either
+  the shipped instrumented form or a from-scratch uninstrumented
+  recompile).
+- Total at 4,096 frames: `4096 × 0 = 0 bytes`.
+- Verdict against the 64 KiB (65536-byte) default: **fits, with the entire
+  budget unused by this recursion** — 0 of 65536 bytes, not a narrow
+  margin. **No overflow. No live defect** in the sense the brief's Step 3
+  warned about; `.bss` is not being silently corrupted by this fixture's
+  recursion depth.
+- Margin at 8 MiB (8,388,608 bytes, Task 8's target): also 0 of 8,388,608
+  bytes used. Task 7/8's stack-size change has **no effect** on this
+  fixture's shadow-stack usage, because the fixture never drew on the
+  existing 64 KiB budget to begin with. This is not "fits more
+  comfortably at 8 MiB" — it is unaffected by the stack-size change either
+  way.
+
+This conclusion is scoped to `fork_at_depth`'s own contribution, which is
+what recursion depth could have multiplied. It does not certify the peak
+shadow-stack usage of the whole `main()` call chain (printf, mmap, libc
+internals each have their own fixed, non-recursive frame costs — one
+unrelated function elsewhere in the binary was observed using 8128 bytes
+in a single frame, see above) — but none of those costs scale with the
+4,096 argument, so they are out of scope for "the recursion's headroom."
+
+### What actually bounds this recursion, since the shadow stack does not
+
+The depth-scaling resource in this test is not the wasm-ld shadow stack at
+all: it is the fork-module's own continuation-chunk allocator, which is
+mmap-backed and sized in `WASM_PAGE_BYTES` (65536-byte) pages, per the C
+file's own comments. Deep fork captures need "far more frame chunks than
+three pages hold" (source comment, line 168-171), and `main()` deliberately
+leaves the process's address space full except for exactly three
+releasable pages before calling `fork_at_depth(4096)`, so the ENOMEM this
+test expects is the continuation-chunk allocator running out — an
+intentional, already-tested platform behavior (this is P-11's entire
+purpose per its file-header comment), not a stack limit of any kind.
+
+A separate, hypothetical limit — the wasm engine's own native call-stack
+depth for genuine nested `call` instructions — would only be relevant to
+the raw/uninstrumented recursive form, not to what is actually shipped and
+run today (which is loop-shaped, per Hypothesis 3 above). That engine
+limit, where it applies at all, is a trap on overflow (not silent
+corruption) and is host/engine-dependent; it was not measured here because
+it does not apply to the artifact under test.
+
+### Surface-budget gate (this task)
+
+```
+cd host && npx vitest run test/surface-budget.test.ts > <output> 2>&1
+echo "BUDGET_EXIT: $?"
+```
+
+- **BUDGET_EXIT: 0**
+- `Test Files  1 passed (1)` / `Tests  109 passed (109)`
+
+Run from `host/`, per this plan's own established rule (a repo-root
+invocation silently drops `host/vitest.config.ts`). No ceiling was touched;
+this task added no production code and no test.
