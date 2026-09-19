@@ -7,6 +7,7 @@ import {
   linkerArgsFromClangTrace,
   workingDirectoryFromClangTrace,
 } from '../src/bin/cc.ts';
+import { MAX_EXECUTABLE_MEMORY_SIZE } from '../src/lib/flags.ts';
 
 describe('buildClangArgs', () => {
   const toolchain = {
@@ -242,8 +243,26 @@ describe('buildClangArgs', () => {
   it('rejects executable links without the matching Clang trace preparation', () => {
     expect(() => buildClangArgs(['foo.c', '-o', 'foo.wasm'], toolchain))
       .toThrow(/executable linker arguments are unprepared/);
-    expect(() => build(['foo.c', '-o', 'foo.wasm'], toolchain, 1024))
+    // Non-integer and over-ceiling prepared sizes are still rejected: those
+    // are structural requirements of the linker invocation (MAX_EXECUTABLE_
+    // MEMORY_SIZE and integer-ness), not the 8 MiB floor. A sub-floor
+    // integer such as 1024 is now a valid, honoured caller choice — see
+    // mainThreadStackSize() in sdk/src/lib/flags.ts — so it must not throw
+    // here any more; asserted separately below.
+    expect(() => build(['foo.c', '-o', 'foo.wasm'], toolchain, 1.5))
       .toThrow(/prepared main-thread stack size must be an integer/);
+    expect(() => build(['foo.c', '-o', 'foo.wasm'], toolchain, MAX_EXECUTABLE_MEMORY_SIZE + 1))
+      .toThrow(/prepared main-thread stack size must be an integer/);
+  });
+
+  it('honours a prepared stack size below the 8 MiB default floor', () => {
+    // The floor is applied by mainThreadStackSize() as a DEFAULT for an
+    // absent request; it is not re-enforced as an invariant of an already-
+    // prepared LinkerPreparation. A caller (prepareExecutableLinker(), or a
+    // fixture constructing LinkerPreparation directly) that has already
+    // decided on a smaller value gets exactly that value linked in.
+    const args = build(['foo.c', '-o', 'foo.wasm'], toolchain, 1024);
+    expect(args).toContain('-Wl,-z,stack-size=1024');
   });
 
   it('extracts the exact pinned wasm-ld argv from a Clang trace', () => {

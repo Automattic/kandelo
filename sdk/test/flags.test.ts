@@ -5,6 +5,7 @@ import {
   filterArgs,
   inferThreadSlotDeclaration,
   LINK_FLAGS,
+  linkFlags,
   MAX_EXECUTABLE_MEMORY_SIZE,
   MAX_RESPONSE_FILE_EXPANSIONS,
   mainThreadStackSize,
@@ -213,6 +214,15 @@ describe('LINK_FLAGS', () => {
 
   it('reserves an 8 MiB main-thread shadow stack (wasm-ld default ~64 KiB is too small)', () => {
     expect(LINK_FLAGS).toContain('-Wl,-z,stack-size=8388608');
+  });
+
+  it('omits the stack-size flag entirely for a null request', () => {
+    // sdk/src/bin/cc.ts's prepareExecutableLinker() relies on this to build
+    // an uncontaminated measurement trace: it must not itself inject any
+    // `-z stack-size=` occurrence that could shadow the caller's own,
+    // since mainThreadStackSize() resolves repeated occurrences last-wins.
+    const flags = linkFlags('wasm32', null);
+    expect(flags.some((f) => f.startsWith('-Wl,-z,stack-size='))).toBe(false);
   });
 });
 

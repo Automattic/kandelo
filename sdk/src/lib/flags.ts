@@ -278,7 +278,7 @@ export function mainThreadStackSize(
 
 export function linkFlags(
   arch: WasmArch,
-  mainThreadStackSizeBytes = DEFAULT_MAIN_THREAD_STACK_SIZE,
+  mainThreadStackSizeBytes: number | null = DEFAULT_MAIN_THREAD_STACK_SIZE,
 ): string[] {
   return [
     '-nostdlib',
@@ -304,7 +304,17 @@ export function linkFlags(
     // from musl's __default_stacksize. Cost: at least ~8 MiB of initial linear
     // memory per process (it raises __heap_base 1:1). Keep in sync with the bash
     // wasm32posix-cc. See docs/sdk-guide.md.
-    `-Wl,-z,stack-size=${mainThreadStackSizeBytes}`,
+    //
+    // `null` omits this flag entirely instead of falling back to the
+    // default. sdk/src/bin/cc.ts's prepareExecutableLinker() uses that to
+    // take an uncontaminated measurement of a caller's own
+    // `-z stack-size=` request: wasm-ld resolves repeated `-z stack-size=`
+    // operands last-one-wins, so injecting even the default value here
+    // would sit after (and so override) a genuine caller request in the
+    // same measurement trace.
+    ...(mainThreadStackSizeBytes === null
+      ? []
+      : [`-Wl,-z,stack-size=${mainThreadStackSizeBytes}`]),
     '-Wl,--global-base=1114112',
     '-Wl,--table-base=3',
     '-Wl,--export-table',
