@@ -112,6 +112,26 @@ the bump heap, and its depth-8 limit is a correctness assertion, not storage.
 As a bump-heap `Vec` with an explicit depth check the refusal becomes
 intentional rather than a side effect of array capacity.
 
+## The work is three changes, in this order
+
+1. **Build path.** All nine hand-maintained copies of the link contract onto
+   the SDK; the `__heap_base` guard (sequenced after the build fix, never
+   before); the SDK honouring an explicit smaller stack with a warning; P-11
+   split into a tight fixture and an adaptive one; and the 4,096-deep
+   recursion's stack headroom measured and fixed.
+2. **Resume-table import.** The module imports the host's resume table and
+   places thunks itself. `fm_resume_slots` op 0 and `resume_slot_of` both go
+   away, which turns `RESUME_SLOT_INDEX` from a randomly-accessed store into a
+   walk-only one. ABI snapshot regenerated.
+3. **Storage conversion.** The eleven stores onto the shared chain, the heap
+   floor to zero, the transients to the bump heap. Preceded by its own
+   prerequisite commit fixing the test that requires the module to be big.
+
+The ordering is not arbitrary. (2) before (3) because converting storage first
+would mean designing chunked storage around a lookup pattern that (2) deletes.
+(1) before both because arena sizing decided against a 16 MiB brk fallback
+that is about to disappear would be decided against the wrong layout.
+
 ## Why
 
 The co-resident fork module reserves 2.26 MiB of static memory out of the
@@ -172,11 +192,18 @@ The release trigger also already exists. `fm_resume_slots` op 1
 `releaseResumeSlots`, carrying the `activation_id`. It already calls
 `resume_unregister_impl` and `release_identity_activation`.
 
-**No new `fm_*` entries are required.** Every setter either declares its size
-(`fm_set_activation_gc_codec`, `_exception_codec`, `_resume_catalog`,
+**The STORAGE work needs no new `fm_*` entries.** Every setter either declares
+its size (`fm_set_activation_gc_codec`, `_exception_codec`, `_resume_catalog`,
 `_imports` all take a byte length or count) or appends one fixed-size entry
 (`_template_id`, `_catalog_base`, `_static_root_base`, `_table_state_owner`,
-`fm_set_import_provenance`). ABI stays 44.
+`fm_set_import_provenance`).
+
+The RESUME-TABLE work does change the ABI, deliberately (decision 12): the
+module gains a table import, and `fm_resume_slots` op 0 is REMOVED rather than
+added to, because nothing needs to ask where a thunk goes once the module
+places it. `required_imports` lives in `abi/snapshot.json`, so the snapshot is
+regenerated in that change. ABI 44 is not released and this project defines
+its contents.
 
 ## Design
 
@@ -376,11 +403,14 @@ large data section (e.g. mariadbd's `__heap_base` = 16.32MB), causing the heap
 and shadow stack to overlap". Whether mariadbd overlaps today is untested and
 must be checked.
 
-Work: converge `build-programs.sh` onto the SDK's link contract (preferably by
-using the SDK rather than duplicating its flags -- `CLAUDE.md` requires build
-scripts to "use the worktree-local SDK"), and add a guard that fails loudly
-when a program admits without `__heap_base` instead of silently taking a 16 MiB
-penalty.
+Work: converge ALL NINE hand-maintained copies onto the SDK, using it rather
+than duplicating its flags -- `CLAUDE.md` requires build scripts to "use the
+worktree-local SDK". `build-programs.sh` is only the one this lane tripped
+over; `run-browser-posix-tests.sh` is confirmed to lack the same two flags, so
+the browser conformance programs and the fork test side-module fixtures are on
+the same 16 MiB fallback and 64 KiB stack. Then add a guard that fails loudly
+when a program admits without `__heap_base`, sequenced AFTER the build fix so
+the suite is never red on a defect the same change removes.
 
 **Thread B -- the fallback's value.** Once the export is recovered, 16 MiB is
 serving the case it documents rather than every program. Its value should then
@@ -434,8 +464,10 @@ data segment. The authoritative figure is the link flag, not the artifact.
 
 ## Testing
 
-The maintainer chose one change with a combined test pass, which concentrates
-risk: nine-plus chunk boundaries land together.
+The storage conversion is one change with a combined test pass, which
+concentrates risk: every chunk boundary lands together. The build path and the
+resume-table import are separate changes with their own suite runs, so a
+failure in either is attributable without bisecting a module rewrite.
 
 **Every landed conversion in this lane has an unexercised spill path.** The GC
 codec floor is 32,768 bytes holding 16-byte sections, so spilling needs 2,048
@@ -453,49 +485,75 @@ chunk is forced small enough to chain, and the full suite must pass in that
 build as well as the default one. A conversion whose chunk path has not
 executed is not tested.
 
+This is already proven practical rather than assumed: forcing
+`ACT_GC_CODEC_FLOOR` to 1 ran 185 tests across 29 files in about 25 minutes
+and surfaced two real defects invisible in the default build (see Experiment
+results). It is also how the admission-budget ceiling was found.
+
+Each new chain needs a leak observable of its own, following
+`identity_chunk_count()` -- "a fixed array could not leak; a chunk list can,
+so the release path needs an observable" -- asserted to return to zero after
+release, as `fork-identity-capacity.test.ts` does today.
+
+The resume-table change carries its own requirement: thunk placement moves
+from host to module, so the test that matters is that every activation's
+thunks land at the same slots they do now. That is a before/after comparison,
+not a new assertion.
+
 Per-guard perturbation still applies: every new guard must be made to fail
 before it is trusted.
 
 ## Risks
 
-1. **The `RESUME_SLOT_INDEX` deadlock is not yet explained.** It must be
-   understood before that conversion is written, not after.
+1. **The `RESUME_SLOT_INDEX` deadlock's cause is still unknown.** The
+   experiment refuted the only mechanism proposed -- a fork child's
+   `channel_mmap` IS serviced -- without finding the real one. The maintainer
+   ruled the conversion in anyway on two grounds: the shared chain keeps its
+   chunk list INSIDE the chunks rather than in a bump-heap `Vec` that
+   `ALLOC.reset()` reclaims, which is the concrete difference from the
+   reverted design; and decision 12 makes the store walk-only, removing the
+   random lookup entirely.
 
-   What is established: `resume_register_impl` runs only from `resume_reseed`,
-   called from `fm_set_resume_catalog` and `fm_set_activation_resume_catalog`
-   -- both seeding entries. On a fork CHILD those run inside
-   `replayDlopens`, which `worker-main.ts:4679-4696` places in the `else`
-   branch of the parent's `setupChannelBase` call: the child seeds every side
-   activation "before the process transaction is attached".
+   That is a reasoned bet, not a proof. If the forced-chunk build reproduces
+   the deadlock, diagnosis happens inside the change rather than before it.
 
-   The symptom was every process in state S at 0% CPU, parked in
-   `channel_mmap` on `memory_atomic_wait32`. That is a syscall ISSUED and
-   never answered -- not a missing channel base, which would return `EINVAL`,
-   and not the `ENOMEM` the GC codec attempt produced. So the child had a
-   usable channel and nobody serviced it.
+2. **The nine-file link convergence relinks every program in the repo.** Six
+   of the nine have not been individually diffed against the SDK; three are
+   confirmed to be missing flags and the pattern was inferred for the rest.
+   Every program gains an 8 MiB shadow stack and `--global-base`, so any
+   latent dependence on the current layout surfaces at once -- including in
+   the fork side-module fixtures this work is validated against.
 
-   HYPOTHESIS, not yet tested: the child issues its first `channel_mmap`
-   before the kernel has registered it as a schedulable process, so the
-   request parks forever; the parent stays blocked in `fork()` waiting for the
-   child, and the kernel waits on the fork it is still completing.
+3. **The resume-table import is an ABI change to an unreleased ABI.** Low risk
+   by policy, but it means the snapshot, `required_imports`, and every
+   instantiation path move together. If `fm_resume_slots` op 0 is removed
+   while any caller remains, that caller fails at instantiation rather than at
+   use.
 
-   EXPERIMENT that would settle it: force the floor small again, and record in
-   the module which `fm_*` entry is on the stack when `channel_mmap` is
-   entered, together with whether the kernel has registered the child pid at
-   that moment. If the parking call is the child's first seed and registration
-   has not happened, the hypothesis holds and the fix is ordering rather than
-   allocation strategy. `setupChannelBase` itself is NOT the asymmetry -- it
-   concerns the guest's channel base (TLS slot or imported global), not the
-   module's, which `fm_set_format` supplies at `lib.rs:3532`.
-2. **`ResumeSlotIndex` is 89.7% of what remains** after the other conversions
-   (786,432 of 876,640 bytes). Deferring it leaves most of the static in place;
-   including it puts the one demonstrated failure inside the combined pass.
-3. **`ResumeFreeBits` is sized from `RESUME_SLOT_CAP`.** Making slots dynamic
-   requires the free-list representation to change with them.
-4. **The GC codec arena is sized for a workload that does not exist.** All 99
+4. **`ResumeFreeBits` is sized from `RESUME_SLOT_CAP`.** Making slots dynamic
+   requires the free-list representation to change with them; a bitmap over a
+   chain is not the same object as a bitmap over an array.
+
+5. **The GC codec arena is sized for a workload that does not exist.** All 99
    fork-instrumented binaries report `layouts=0, fields=0`; clang/wasm32 emits
    no wasm GC types. Making it dynamic removes the need to guess, which is why
-   the maintainer chose that over resizing it.
+   the maintainer chose that over resizing it. The corollary is that its chunk
+   path will not be exercised by any real guest until one uses wasm GC -- only
+   by the forced-chunk build.
+
+6. **Compaction and binary search are each safe only under an invariant.**
+   Compaction requires that nothing holds an absolute address into the chain
+   across a release; binary search requires the directory stay sorted. Both
+   invariants are stated and both are asserted at the append path, but a
+   violation of either is a silent wrong answer rather than a trap, which is
+   the failure mode this lane has been worst at catching.
+
+7. **Two verifications were deferred rather than done.** The six-hop dlclose
+   chain from `__wasm_dlclose` to `resume_unregister_impl` was traced by
+   reading, not by execution; and whether `main`'s `ForkModuleStateArena` ever
+   FREES chunks was never checked, so it is a precedent for growth and
+   possibly not for release. Both are carried into the plan as verification
+   steps.
 
 ## Out of scope
 
