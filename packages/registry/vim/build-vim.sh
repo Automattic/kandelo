@@ -185,7 +185,7 @@ if [ ! -f src/auto/config.mk ]; then
     # The ABI marker needs no linker flag: libc/glue/channel_syscall.c
     # exports it itself (export_name "__abi_version", used, retain), and an
     # export survives gc-sections.
-    export LDFLAGS="-Wl,-z,stack-size=1048576 -L$NCURSES_PREFIX/lib"
+    export LDFLAGS="-L$NCURSES_PREFIX/lib"
     export LIBS="-lncursesw -ltinfow"
 
     wasm32posix-configure \
