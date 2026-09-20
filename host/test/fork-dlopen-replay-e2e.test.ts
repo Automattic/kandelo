@@ -14,7 +14,7 @@
  */
 import { artifactGate } from "./support/artifact-gate";
 import { describe, it, expect, beforeAll } from "vitest";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,33 +28,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = process.env.KANDELO_TEST_SYSROOT ?? join(REPO_ROOT, "sysroot");
 const GLUE_DIR = join(REPO_ROOT, "libc", "glue");
-const clangDriver = process.env.CLANG ?? "clang";
-
-function llvmTool(name: "clang" | "clang++" | "wasm-ld"): string {
-  const override = name === "wasm-ld" ? process.env.WASM_LD : undefined;
-  if (override) return override;
-  try {
-    return execFileSync(clangDriver, [`-print-prog-name=${name}`], {
-      encoding: "utf8",
-    }).trim() || name;
-  } catch {
-    return name;
-  }
-}
-
-const CLANG = llvmTool("clang");
-const CLANGXX = llvmTool("clang++");
-const WASM_LD = llvmTool("wasm-ld");
-
-// The SDK owns the executable link contract (linkFlags() in
-// sdk/src/lib/flags.ts). buildMainProgram() used to carry its own copy, and
-// the copy had drifted: no -z stack-size=8388608, so the program ran on
-// wasm-ld's ~64 KiB default shadow stack instead of the SDK's 8 MiB, and no
-// --export=__abi_version, so nothing bound it to a kernel ABI epoch.
+// Every artifact in this file is built by the SDK drivers. The SDK owns both
+// link contracts involved: linkFlags() for the main program and
+// SHARED_LINK_FLAGS for the two side-module builders. This file used to carry
+// its own copy of each, and the main-program copy had drifted -- no
+// -z stack-size=8388608, so the program ran on wasm-ld's ~64 KiB default
+// shadow stack instead of the SDK's 8 MiB, and no --export=__abi_version, so
+// nothing bound it to a kernel ABI epoch.
 //
-// Absolute path, never a bare `wasm32posix-cc`: a bare name resolves through
+// Absolute paths, never a bare `wasm32posix-cc`: a bare name resolves through
 // PATH and can pick up a different worktree's SDK.
 const CC = join(REPO_ROOT, "sdk", "bin", "wasm32posix-cc");
+const CXX = join(REPO_ROOT, "sdk", "bin", "wasm32posix-c++");
 
 // The SDK normally resolves the sysroot by walking up from process.cwd(), and
 // that is the right answer here. KANDELO_TEST_SYSROOT is this file's existing
@@ -116,15 +101,16 @@ const CPP_RUNTIME_MAIN_EXPORTS = [
   "aligned_alloc", "strcmp", "pthread_mutex_lock", "pthread_mutex_unlock", "calloc",
 ];
 
-/** Build a shared Wasm library (.so side module) from C source. */
-// NOT routed through the SDK, deliberately. The SDK's `-shared -fPIC` path
-// emits SHARED_LINK_FLAGS and nothing else, while the C++ arm below needs an
-// explicit `--export=__tls_base` alongside the libc++ PIC archives. Both
-// side-module builds are left on wasm-ld until the SDK models those; copying
-// their flags into the SDK path would move the copy rather than retire it.
+/**
+ * Build a shared Wasm library (.so side module) from C source.
+ *
+ * `-shared -fPIC` selects the SDK's side-module link (SHARED_LINK_FLAGS:
+ * -nostdlib, --experimental-pic, --shared, --shared-memory, --export-all,
+ * --allow-undefined), straight from the .c with no intermediate object. `-I`
+ * still points at the glue dir for the generated `#include "abi_constants.h"`.
+ */
 function buildSharedLib(source: string, name: string): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
-  const objPath = join(BUILD_DIR, `${name}.o`);
   const soPath = join(BUILD_DIR, `${name}.so`);
 
   writeFileSync(srcPath, `${source}
@@ -133,65 +119,56 @@ function buildSharedLib(source: string, name: string): string {
     unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
   `);
 
-  execSync(
-    `${CLANG} --target=wasm32-unknown-unknown -fPIC -O2 -matomics -mbulk-memory -I${GLUE_DIR} -c ${srcPath} -o ${objPath}`,
-    { stdio: "pipe" },
-  );
-  execSync(
-    `${WASM_LD} --experimental-pic --shared --shared-memory --export-all --allow-undefined -o ${soPath} ${objPath}`,
-    { stdio: "pipe" },
-  );
-  execSync(`${FORK_INSTRUMENT} ${soPath} -o ${soPath}`, { stdio: "pipe" });
+  execFileSync(CC, [
+    "-shared",
+    "-fPIC",
+    "-O2",
+    `-I${GLUE_DIR}`,
+    srcPath,
+    "-o",
+    soPath,
+  ], { stdio: "pipe", env: CC_ENV });
+  execFileSync(FORK_INSTRUMENT, [soPath, "-o", soPath], { stdio: "pipe" });
 
   return soPath;
 }
 
-/** Build a real C++ EH side module, including its TLS-bearing unwinder. */
+/**
+ * Build a real C++ EH side module, including its TLS-bearing unwinder.
+ *
+ * Same SDK side-module link as buildSharedLib(), through the C++ driver.
+ * `-Wl,--export=__tls_base` and the two libc++ PIC archives are caller
+ * inputs: for a shared link cc.ts:298 leaves `deferExecutableInputs` false,
+ * so :305 forwards the caller's arguments verbatim and :332 appends
+ * SHARED_LINK_FLAGS after them. This exact combination -- SDK `-shared
+ * -fPIC`, an explicit `--export=__tls_base`, and libc++-pic/libc++abi-pic --
+ * is what packages/registry/php/build-php.sh:1329 uses to build the shipped
+ * intl.so.
+ */
 function buildCppSharedLib(source: string, name: string): string {
   if (!libcxxPrefix) throw new Error("libcxx PIC prefix unavailable");
   const srcPath = join(BUILD_DIR, `${name}.cpp`);
-  const objPath = join(BUILD_DIR, `${name}.o`);
   const soPath = join(BUILD_DIR, `${name}.so`);
   writeFileSync(srcPath, `${source}
     #include "abi_constants.h"
     extern "C" __attribute__((export_name("__abi_version")))
     unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
   `);
-  execFileSync(CLANGXX, [
-    "--target=wasm32-unknown-unknown",
-    `--sysroot=${SYSROOT}`,
-    "-nostdlib",
+  execFileSync(CXX, [
+    "-shared",
     "-fPIC",
     "-O2",
     "-fwasm-exceptions",
-    "-matomics",
-    "-mbulk-memory",
     `-I${GLUE_DIR}`,
     `-I${join(libcxxPrefix, "include", "c++", "v1")}`,
-    "-c",
     srcPath,
-    "-o",
-    objPath,
-  ], { stdio: "pipe" });
-  execFileSync(WASM_LD, [
-    "--experimental-pic",
-    "--shared",
-    "--shared-memory",
-    "--export-all",
-    "--allow-undefined",
-    "--export=__tls_base",
-    "-o",
-    soPath,
-    objPath,
+    "-Wl,--export=__tls_base",
     join(libcxxPrefix, "lib", "libc++-pic.a"),
     join(libcxxPrefix, "lib", "libc++abi-pic.a"),
-  ], { stdio: "pipe" });
-  execFileSync("bash", [
-    FORK_INSTRUMENT,
-    soPath,
     "-o",
     soPath,
-  ], { stdio: "pipe" });
+  ], { stdio: "pipe", env: CC_ENV });
+  execFileSync(FORK_INSTRUMENT, [soPath, "-o", soPath], { stdio: "pipe" });
   return soPath;
 }
 
@@ -220,10 +197,7 @@ function buildMainProgram(source: string, name: string, forceExports: string[] =
 
   // wasm-fork-instrument is required for fork support; without it,
   // kernel_fork returns ENOSYS and the bug-under-test never reproduces.
-  execSync(
-    `${FORK_INSTRUMENT} ${wasmPath} -o ${wasmPath}`,
-    { stdio: "pipe" },
-  );
+  execFileSync(FORK_INSTRUMENT, [wasmPath, "-o", wasmPath], { stdio: "pipe" });
 
   return wasmPath;
 }
