@@ -9,15 +9,17 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # WHY: the SDK resolves the sysroot and glue dir by walking up from
-# process.cwd() (findSysroot/findGlueDir via projectRootOrSdk,
-# sdk/src/lib/toolchain.ts:111-131), not from this script's location. Invoked
-# with a cwd inside a different kandelo worktree, it would silently compile
-# against THAT worktree's sysroot while the prerequisite check below validated
-# this one. Pin the cwd so both agree.
+# process.cwd() -- findSysroot (sdk/src/lib/toolchain.ts:114-118) and
+# findGlueDir (:129-133), both through projectRootOrSdk (:24), which calls
+# findProjectRoot to walk up from the cwd. Not from this script's location.
+# Invoked with a cwd inside a different kandelo worktree, it would silently
+# compile against THAT worktree's sysroot while the prerequisite check below
+# validated this one. Pin the cwd so both agree.
 #
 # Do not "fix" this by exporting WASM_POSIX_SYSROOT instead: findSysroot()
-# returns that value regardless of arch (toolchain.ts:112-114), which would
-# hand the wasm64 build the wasm32 sysroot.
+# short-circuits on that value regardless of arch (toolchain.ts:115-116,
+# before the arch-aware sysrootDir() call), which would hand the wasm64 build
+# the wasm32 sysroot.
 cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
