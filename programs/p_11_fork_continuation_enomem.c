@@ -12,7 +12,28 @@
 #define WASM_PAGE_BYTES (64u * 1024u)
 #define MAX_FILLER_MAPPINGS 512
 
-static void *filler_mappings[MAX_FILLER_MAPPINGS];
+// Starting granule (in wasm pages) for the coarse fill phase below. Chosen
+// at/above PROCESS_MEMORY_DEFAULT_MAX_PAGES = 16384 (host/src/generated/abi.ts),
+// the production per-process page budget (16384 * 64 KiB = 1 GiB), so the
+// very first mmap attempt at production layout can succeed immediately
+// instead of needing extra halving rounds to find a size that fits. A
+// tighter config (e.g. this fixture's own maxPages: 384 = 24 MiB) just makes
+// every attempt at this starting granule fail, and the halving below finds
+// the real size quickly regardless.
+#define COARSE_START_PAGES 16384u
+
+// Each filler entry tracks its own page count because the fill loop below
+// mixes coarse multi-page mappings (to cover a large address space in few
+// mmap calls) with single-page mappings at the tail (to land on an exact
+// page count). A plain `void *` array — one WASM_PAGE_BYTES assumed per
+// entry — would either leak the untracked remainder of a coarse mapping or
+// misinterpret how many bytes a later partial free actually covers.
+typedef struct {
+    void *addr;
+    size_t pages;
+} filler_mapping;
+
+static filler_mapping filler_mappings[MAX_FILLER_MAPPINGS];
 
 __attribute__((noinline))
 static pid_t fork_at_depth(int depth) {
@@ -28,9 +49,39 @@ static pid_t fork_at_depth(int depth) {
 static int release_fillers(size_t count) {
     int failed = 0;
     for (size_t i = 0; i < count; i++) {
-        if (munmap(filler_mappings[i], WASM_PAGE_BYTES) != 0) failed = 1;
+        if (munmap(filler_mappings[i].addr, filler_mappings[i].pages * WASM_PAGE_BYTES) != 0) {
+            failed = 1;
+        }
     }
     return failed;
+}
+
+// Frees exactly `pages_to_free` wasm pages from the END of the fill, in
+// address order, regardless of how those pages are distributed across
+// filler_mappings[] entries. Coarse entries can be many pages; POSIX
+// munmap() accepts freeing a page-aligned SUFFIX of a larger mapping, so a
+// chunk that is only partially consumed here has its recorded size shrunk
+// in place (not dropped from the array) so release_fillers() still frees
+// the rest of it later. This is what lets the fill loop use large,
+// few-in-number mappings for the bulk of the address space while still
+// supporting an exact small carve-out at the tail.
+static int free_pages_from_tail(size_t *filler_count, size_t pages_to_free) {
+    while (pages_to_free > 0) {
+        if (*filler_count == 0) return -1;
+        filler_mapping *entry = &filler_mappings[*filler_count - 1];
+        if (entry->pages > pages_to_free) {
+            const size_t remaining_pages = entry->pages - pages_to_free;
+            void *free_addr = (char *)entry->addr + remaining_pages * WASM_PAGE_BYTES;
+            if (munmap(free_addr, pages_to_free * WASM_PAGE_BYTES) != 0) return -1;
+            entry->pages = remaining_pages;
+            pages_to_free = 0;
+        } else {
+            if (munmap(entry->addr, entry->pages * WASM_PAGE_BYTES) != 0) return -1;
+            pages_to_free -= entry->pages;
+            (*filler_count)--;
+        }
+    }
+    return 0;
 }
 
 static int emit_marker(const char *text, size_t length) {
@@ -77,30 +128,58 @@ static int prove_parent_syscalls_remain_usable(void) {
 int main(void) {
     const pid_t original_pid = getpid();
     size_t filler_count = 0;
+    size_t total_pages_filled = 0;
+    size_t granule_pages = COARSE_START_PAGES;
+    int reached_true_enomem = 0;
+    int fill_errno = 0;
 
+    // Geometric backoff: fill at the current granule while mmap succeeds:
+    // on failure, halve the granule and keep going, all the way down to a
+    // single wasm page. This covers any address-space size (a handful of
+    // pages up to the full 16384-page production budget) using at most a
+    // few dozen of the MAX_FILLER_MAPPINGS entries, unlike a fixed
+    // granule (which either overshoots a tight config or, sized to divide
+    // 512 mappings evenly into the full budget, leaves no entries for a
+    // fine tail — see the fixed-3-page carve-out below). Because the
+    // granule always bottoms out at exactly one page, the entries added
+    // in that final phase are always single-page, and the true-ENOMEM
+    // stop condition is always tested at single-page granularity, so this
+    // reaches the same exact exhaustion point the original one-page-only
+    // loop did — just in far fewer mmap calls for a large address space.
     while (filler_count < MAX_FILLER_MAPPINGS) {
         void *mapping = mmap(
             NULL,
-            WASM_PAGE_BYTES,
+            (size_t)granule_pages * WASM_PAGE_BYTES,
             PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANONYMOUS,
             -1,
             0
         );
-        if (mapping == MAP_FAILED) break;
-        filler_mappings[filler_count++] = mapping;
+        if (mapping == MAP_FAILED) {
+            fill_errno = errno;
+            if (granule_pages == 1) {
+                reached_true_enomem = (fill_errno == ENOMEM);
+                break;
+            }
+            granule_pages /= 2;
+            continue;
+        }
+        filler_mappings[filler_count].addr = mapping;
+        filler_mappings[filler_count].pages = granule_pages;
+        filler_count++;
+        total_pages_filled += granule_pages;
     }
 
-    if (filler_count == MAX_FILLER_MAPPINGS || errno != ENOMEM) {
+    if (!reached_true_enomem) {
         printf(
             "FAIL: address-space fill count=%zu errno=%d\n",
             filler_count,
-            errno
+            fill_errno
         );
         release_fillers(filler_count);
         return 1;
     }
-    if (filler_count < 2) {
+    if (total_pages_filled < 2) {
         printf("FAIL: fewer than two filler mappings were available\n");
         return 1;
     }
@@ -169,16 +248,19 @@ int main(void) {
     // its continuation allocation fails AFTER frames have committed (its second
     // chunk fills and the next mmap is refused), exercising the mid-unwind
     // ABORT_UNWINDING path rather than the simpler root-allocation error path.
-    for (int i = 0; i < 3; i++) {
-        filler_count--;
-        if (munmap(filler_mappings[filler_count], WASM_PAGE_BYTES) != 0) {
-            printf(
-                "FAIL: could not make fork transaction page available errno=%d\n",
-                errno
-            );
-            release_fillers(filler_count);
-            return 1;
-        }
+    //
+    // free_pages_from_tail() (not a fixed 3-iteration munmap loop) because
+    // the fill above no longer guarantees the last entries are single
+    // pages — at production layout the tail is whatever the geometric
+    // backoff last landed on. The helper frees exactly 3 pages from the
+    // end regardless of how they are distributed across entries.
+    if (free_pages_from_tail(&filler_count, 3) != 0) {
+        printf(
+            "FAIL: could not make fork transaction page available errno=%d\n",
+            errno
+        );
+        release_fillers(filler_count);
+        return 1;
     }
 
     errno = 0;

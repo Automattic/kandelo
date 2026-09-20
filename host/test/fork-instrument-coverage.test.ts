@@ -5,7 +5,7 @@
  * The test IDs originated in:
  * docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
  *
- * Six categories, 51 test IDs:
+ * Six categories, 52 test IDs:
  *   D-* (10)  dispatch coverage — switch-dispatch and the runtime
  *             trampoline that replaces guard-dispatch.
  *   C-* (11)  catch-handler resume — B1/A2/A3/A4 patterns. (C-01..C-10
@@ -13,9 +13,13 @@
  *   S-* (8)   side-effects-during-rewind — atomic ops, table.*,
  *             non-nullable funcref, throw-from-outside.
  *   K-* (7)   callback-registration and asynchronous fork roots.
- *   P-* (11)  process / threading patterns — main thread, blocked
+ *   P-* (12)  process / threading patterns — main thread, blocked
  *             cond, held mutex, popen, posix_spawn, deep and failed
- *             continuation allocation.
+ *             continuation allocation. P-11 (root and later continuation
+ *             ENOMEM) runs as two fixtures over the same program: one at
+ *             a deliberately tight address-space ceiling and one at
+ *             production layout (2026-09-19), so it counts as 12 rather
+ *             than 11 runnable `it()`s.
  *   F-* (4)   explicit ucontext boundaries and Wasm-GC ownership.
  *
  * Modifiers describe the current ownership of each proof:
@@ -453,9 +457,14 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
   });
 
   // P-11 first exhausts the address space completely so the root continuation
-  // mmap fails before unwind, then frees one page so a deep fork fails on its
-  // second chunk after committing frames. Both real guest paths must leave no
-  // child and preserve a usable parent before a later fork succeeds.
+  // mmap fails before unwind, then frees exactly three pages so a deep fork
+  // fails on its second chunk after committing frames. Both real guest paths
+  // must leave no child and preserve a usable parent before a later fork
+  // succeeds. The fill itself (programs/p_11_fork_continuation_enomem.c) uses
+  // geometric backoff -- mmap a granule while it succeeds, halve on failure,
+  // down to one wasm page -- so the SAME program can drive both fixtures
+  // below to true ENOMEM regardless of how much address space it is given.
+  //
   // TIGHT FIXTURE. The address space is constrained DELIBERATELY so the
   // error paths are reachable: root-allocation ENOMEM with no child, no
   // phantom child, a mid-unwind ABORT_UNWINDING, full unmapping, and a
@@ -463,9 +472,45 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
   // the missing __heap_base export forced a 16 MiB brk fallback out of a
   // 24 MiB process -- so fixing the export would have made this fixture
   // quietly stop exercising what it claims. Constrained by maxPages, not
-  // by stack size: the stack stays at the SDK default. Confirmed
-  // 2026-09-19 (post Task 8's __heap_base fix): all nine markers below
-  // still fire at maxPages: 384, so this ceiling still bites and stays.
+  // by stack size: the stack stays at the SDK default.
+  //
+  // THE RULE, not just a number: the fill must leave the guest with at
+  // least 2 free pages (p_11_fork_continuation_enomem.c:182,
+  // `total_pages_filled < 2`) so there is room for the fixed-3-page
+  // carve-out before the deep fork. That is the ONLY hard lower bound.
+  //
+  // There used to also be a practical UPPER bound of 511 free pages,
+  // because the pre-2026-09-19 fill mapped one wasm page per array slot
+  // (MAX_FILLER_MAPPINGS = 512), so it could not represent more than 511
+  // free pages without running out of tracking slots before reaching real
+  // ENOMEM -- exactly the failure the adaptive fixture below used to hit
+  // at production layout (16384-page budget, 32x past that ceiling). The
+  // 2026-09-19 geometric-backoff rewrite (mmap a granule while it
+  // succeeds, halve on failure, down to one wasm page) removed that
+  // upper bound rather than just raising it: a large free-page count now
+  // costs on the order of a dozen mmap calls (one large chunk per binary
+  // digit of the free-page count), not one call per page, so it stays
+  // far under the 512-entry array regardless of size. Measured directly
+  // against the rewritten fill: maxPages 384 (this fixture), 448, AND
+  // 1024 all pass identically, and the unbounded production layout
+  // (16384 pages, the adaptive fixture below) now passes too. A "+64
+  // pages" perturbation will NOT find an edge here anymore -- there
+  // isn't one below the production ceiling. This means the earlier
+  // finding recorded against the pre-rewrite binary (that maxPages 1024
+  // broke the fill) is now STALE; the fix that finding argued for is
+  // exactly what removed it.
+  //
+  // So why keep maxPages: 384 for this fixture at all, if raising it no
+  // longer breaks anything? Because it is a small, fast, and PRECISELY
+  // KNOWN configuration -- roughly 5 free pages, not "however many
+  // hundreds or thousands the SDK's current heap_base/stack choices
+  // happen to leave" -- which is what makes it easy to reason about the
+  // fixed-3-page carve-out and to keep this test cheap to run repeatedly.
+  // See host/test/fork-identity-capacity.test.ts:192-197 for a case where
+  // that SAME free-page window (there, eaten into by the fork-module's
+  // identity-table static reservation) went red for real, which is a
+  // genuine reason this window is worth keeping small and legible rather
+  // than left to whatever the ambient layout happens to allow.
   it("P-11 root and later continuation allocation failures preserve the parent", async () => {
     await runFixture("programs/p_11_fork_continuation_enomem.wasm", {
       contains: [
@@ -486,35 +531,40 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
   });
 
   // ADAPTIVE FIXTURE. The same program at the layout real software gets: a
-  // real __heap_base, the SDK's 8 MiB shadow stack, the default page
-  // budget (no maxPages override). The tight fixture above proves the
-  // error paths are CORRECT; this one is meant to prove they are still
-  // REACHABLE without a hand-constrained address space. `contains` only
-  // asserts the terminal markers -- ENOMEM-reachability and overall PASS
-  // -- not the full nine-marker sequence the tight fixture checks, since
-  // the intermediate mechanism markers are already proven correct there;
-  // re-asserting all nine here would just make this a slower duplicate.
+  // real __heap_base, the SDK's 8 MiB shadow stack, the default page budget
+  // (no maxPages override, i.e. PROCESS_MEMORY_DEFAULT_MAX_PAGES = 16384
+  // pages = 1 GiB, host/src/generated/abi.ts:954). The tight fixture above
+  // proves the error paths are CORRECT at a hand-constrained layout; this
+  // one proves the SAME six error/success paths are still REACHABLE at
+  // production scale, which nothing covered before 2026-09-18.
   //
-  // Measured 2026-09-19: it does NOT reach PASS at production layout.
-  // The filler loop (programs/p_11_fork_continuation_enomem.c) hits its
-  // MAX_FILLER_MAPPINGS cap of 512 * 64 KiB = 32 MiB of anonymous mmap
-  // before mmap ever returns ENOMEM, because the default page budget at
-  // production layout is far larger than 32 MiB of headroom. Observed
-  // output: "FAIL: address-space fill count=512 errno=0", exit code 1.
-  // This is a genuine platform-observable finding, not a fixture bug:
-  // the same filler technique that exhausts a 384-page (24 MiB) process
-  // cannot exhaust a production-sized one within the compiled-in mapping
-  // cap. Raising MAX_FILLER_MAPPINGS would touch a package build input
-  // and require a rebuild, both out of scope for this task -- so this is
-  // marked it.fails(), the same convention this file uses for F-01/F-02:
-  // an explicit boundary expected to fail truthfully. An unexpected pass
-  // here means either the filler cap was raised or the production page
-  // budget shrank, and both are worth review.
-  it.fails("P-11 reaches ENOMEM at production layout too", async () => {
+  // This only works because the fill in
+  // programs/p_11_fork_continuation_enomem.c uses geometric backoff rather
+  // than one-wasm-page-at-a-time mmap calls. A single-page-at-a-time fill
+  // needs one MAX_FILLER_MAPPINGS array entry (512 max) per page, so it can
+  // only ever exhaust up to 512 * 64 KiB = 32 MiB -- a 32x shortfall against
+  // the 1 GiB production budget. Measured before the fix: the fill hit its
+  // own array cap having issued 512 successful 1-page mmaps and NEVER
+  // reached ENOMEM, so it exited from inside its own fill loop having never
+  // called fork() -- zero of the six error paths ran, and the fixture's
+  // "PASS: P-11" was unreachable at this layout. Geometric backoff (start
+  // at a large granule, halve on mmap failure, continue down to one page)
+  // covers the same 1 GiB budget in on the order of a dozen mmap calls,
+  // comfortably inside the 512-entry array, so the fill now reaches true
+  // ENOMEM here exactly as it does in the tight fixture. Asserting the full
+  // nine markers (not a subset) is deliberate: the whole point of this
+  // fixture is that production layout now proves the identical sequence of
+  // events the tight fixture proves, not merely that the program exits 0.
+  it("P-11 reaches ENOMEM at production layout too", async () => {
     await runFixture("programs/p_11_fork_continuation_enomem.wasm", {
       contains: [
         "ROOT_CONTINUATION_ENOMEM: ok",
+        "ROOT_NO_PHANTOM_CHILD: ok",
+        "ROOT_PARENT_USABLE: ok",
         "CONTINUATION_ENOMEM: ok",
+        "NO_PHANTOM_CHILD: ok",
+        "CONTINUATION_PAGE_REUSED: ok",
+        "RECOVERY_CHILD: ok",
         "RECOVERY_PARENT: child=",
         "PASS: P-11",
       ],
