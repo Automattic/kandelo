@@ -83,6 +83,12 @@ Recorded 2026-09-18, in answer to a question batch.
 12. **The module imports the host's resume table and places the thunks
     itself**, and this lands BEFORE the storage conversion as its own change.
 
+    > **SUPERSEDED 2026-09-20 — see "Amendment: decision 12's mechanism" at
+    > the end of this document.** The intent below stands and the performance
+    > argument is unaffected. The mechanism does not: there is no host-owned
+    > resume table to import. The reasoning is preserved here unedited
+    > because the amendment argues against it.
+
     The module already owns the POLICY -- `fork-resume-table.ts:88` says "each
     thunk goes where `fm_resume_slots` says, and the module made that
     decision". The host owns only the MECHANISM, because `Table.set` acts on a
@@ -119,10 +125,13 @@ intentional rather than a side effect of array capacity.
    before); the SDK honouring an explicit smaller stack with a warning; P-11
    split into a tight fixture and an adaptive one; and the 4,096-deep
    recursion's stack headroom measured and fixed.
-2. **Resume-table import.** The module imports the host's resume table and
-   places thunks itself. `fm_resume_slots` op 0 and `resume_slot_of` both go
-   away, which turns `RESUME_SLOT_INDEX` from a randomly-accessed store into a
-   walk-only one. ABI snapshot regenerated.
+2. **Resume-table ownership.** The fork-module DEFINES and exports one
+   resume table; each guest activation imports it. The module places the
+   thunks itself. `fm_resume_slots` op 0 and `resume_slot_of` both go away,
+   which turns `RESUME_SLOT_INDEX` from a randomly-accessed store into a
+   walk-only one. See the amendment at the end of this document: the earlier
+   wording ("imports the host's resume table", "ABI snapshot regenerated")
+   was wrong on both counts.
 3. **Storage conversion.** The eleven stores onto the shared chain, the heap
    floor to zero, the transients to the bump heap. Preceded by its own
    prerequisite commit fixing the test that requires the module to be big.
@@ -637,11 +646,17 @@ before it is trusted.
    latent dependence on the current layout surfaces at once -- including in
    the fork side-module fixtures this work is validated against.
 
-3. **The resume-table import is an ABI change to an unreleased ABI.** Low risk
-   by policy, but it means the snapshot, `required_imports`, and every
-   instantiation path move together. If `fm_resume_slots` op 0 is removed
-   while any caller remains, that caller fails at instantiation rather than at
-   use.
+3. **The resume-table change moves an ABI-adjacent contract, but probably
+   not `abi/snapshot.json`.** `required_imports` lives at
+   `/program_artifact/fork_instrumentation/required_imports` and describes the
+   GUEST's `env` func imports; the fork-module's own tables appear nowhere in
+   the snapshot. What actually pins the obligation is the Rust test
+   `fork_module_host_obligation_is_pinned`
+   (`crates/host-native/src/lib.rs:1379`, exact-list assert at `:1513-1521`).
+   Verify which surface moves before assuming a snapshot regeneration is
+   required. The instantiation hazard is real either way: if
+   `fm_resume_slots` op 0 is removed while any caller remains, that caller
+   fails at instantiation rather than at use.
 
 4. **`ResumeFreeBits` is sized from `RESUME_SLOT_CAP`.** Making slots dynamic
    requires the free-list representation to change with them; a bitmap over a
@@ -785,3 +800,150 @@ The forced-spill build ran 185 tests across 29 files in about 25 minutes and
 surfaced both findings above immediately. Two failures out of 185, both real,
 neither visible in the default build. The requirement costs a suite run and
 earns a class of defect the default configuration cannot reach.
+
+## Amendment: decision 12's mechanism
+
+Date: 2026-09-20. Supersedes decision 12's mechanism; its intent and its
+performance argument are unchanged.
+
+Decision 12 reads: "The module imports the host's resume table and places the
+thunks itself", justified by "The host owns only the MECHANISM, because
+`Table.set` acts on a JS object the module has no handle to." Research against
+the code found the premise false, and three consequences that follow from it
+equally false.
+
+### What the code actually does
+
+**There is no host-owned resume table.** `crates/fork-module-inject/src/main.rs:1042-1044`
+creates the table in the GUEST module and exports it:
+
+    let resume_table = module.tables.add_local(false, 1, None, RefType::FUNCREF);
+    module.tables.get_mut(resume_table).name = Some(RESUME_TABLE_EXPORT.to_string());
+    module.exports.add(RESUME_TABLE_EXPORT, resume_table);
+
+The comment immediately above it records that this move already happened:
+
+> This used to be a `WebAssembly.Table` the host minted and passed in
+> `extras`. Moving it here is the same move `TRANSIT_TABLE_IMPORT` made (M1)
+> and for the same reason: while the host minted it, "the guest's table" and
+> "the table the module numbers" were a per-caller convention rather than one
+> object.
+
+**The host is no longer a slot allocator either.** `host/src/fork-resume-table.ts:12-32`:
+
+> It is not a slot ALLOCATOR. It used to be, and the duplication was the
+> [problem] -- both sides implemented the same four rules -- slot 0 reserved,
+> ordinals sorted ascending, repeats rejected, freed slots reused
+> smallest-first ... The module now decides every slot once, when the host
+> seeds that activation's catalog, and this class ASKS (`fm_resume_slots`).
+
+So the migration decision 12 describes is already three-quarters complete:
+
+1. Host minted the table AND allocated slots -- two implementations of four rules.
+2. The table moved into the guest (the M1-style move quoted above).
+3. Slot allocation moved into the module; the host asks.
+4. **Outstanding:** the host still performs the per-thunk `Table.set`.
+
+Decision 12 is step 4 and nothing more.
+
+### Why the module cannot simply receive the guest's tables
+
+Wasm `table.set` takes a STATIC table index. A module cannot operate on a
+table handed to it at runtime, and a module's imports are fixed at
+instantiation. The fork-module is instantiated once per thread -- at
+`worker-main.ts` for the process worker and again inside
+`centralizedThreadWorkerMain` for every pthread -- before any dlopen
+activation exists. So activation N's table cannot be imported into an
+already-running fork-module. A `WebAssembly.Table` can be carried as an
+externref, but `table.set` cannot act through one.
+
+This is an engine constraint, not a design preference, and it is the only
+genuine constraint found in this area.
+
+### The corrected mechanism
+
+**The fork-module DEFINES and exports one resume table; each guest activation
+IMPORTS it.** That shape already exists in the ABI as
+`WPK_FORK_RESUME_IMPORT_TABLE` (`crates/shared/src/lib.rs:2908`, declared as a
+`ProgramArtifactTableImport` at `:3336`) and is still used by
+`crates/fork-instrument/src/module_state.rs:490` and
+`crates/host-native/src/guest.rs:8158`. The tree therefore currently carries
+BOTH shapes at once: injected guests export their own table while the
+fork-instrument and native paths import one from `env`. This change collapses
+that duplication rather than creating a new seam.
+
+What each side owns afterwards:
+
+* **fork-module** -- the table, the slot numbering, and placement. One object,
+  one owner, which is exactly the "per-caller convention rather than one
+  object" complaint the injector comment makes about the arrangement that
+  preceded it.
+* **guest** -- imports the table and `call_indirect`s on it. The injector
+  stops defining a table per activation.
+* **host** -- passes one export into one import object at instantiation. That
+  is wasm linking, not fork logic, and it is irreducible.
+
+`table.set` and `table.grow` from Rust require injected shims; three
+precedents exist: `inject_transit_grow_thunk` (`main.rs:501`),
+`inject_transit_grow` (`:1569`), `inject_table_apply_thunk` (`:2111`).
+
+### One slot space, and the machinery it deletes
+
+`crates/fork-module/src/lib.rs:498-505` states that "activation 0's table and
+activation 1's table are distinct JS `WebAssembly.Table`s with independent
+slot spaces", and derives the per-activation catalogs from it: the single
+process-wide `RESUME_CATALOG` "cannot number every activation's slots BY
+CONSTRUCTION".
+
+That "by construction" IS the distinct tables. Give the fork-module one table
+and the premise disappears, along with the machinery it forced:
+`fm_set_activation_resume_catalog`, `register_activation_slots`, and the flat
+ordinal arena plus index (`ActivationCatalogOrds` + `ActivationCatalogIndex`,
+34,304 bytes). Change 3 already wants to merge `CatalogCell` into that same
+store for an unrelated reason -- "the split runs backwards against
+measurement" -- so both pressures point the same way.
+
+A shared slot space is therefore a DELETION, not a cost. No benefit of
+independent slot spaces is documented anywhere: the comment above presents the
+independence as a given, and the rationale it cites -- D5 section "Other
+couplings" item 1 -- does not exist in this repository. `"Other couplings"`
+appears in exactly one place, that comment. The citation is dangling, which is
+the same defect class as the implementation claims moved out of `CLAUDE.md` on
+2026-09-20: a stated rationale a reader cannot check.
+
+**This is the part needing explicit sign-off**, because it changes what
+`call_indirect` indices mean for every activation. Slot numbers become
+globally unique rather than per-activation, and growth becomes `table.grow` on
+a module-owned table.
+
+### Corrections to consequences decision 12 asserted
+
+* **"ABI snapshot regenerated" does not follow.** `required_imports` lives at
+  `/program_artifact/fork_instrumentation/required_imports` and describes the
+  GUEST's `env` func imports. The fork-module's own tables appear nowhere in
+  `abi/snapshot.json`. The surface that actually pins this is the Rust test
+  `fork_module_host_obligation_is_pinned` (`crates/host-native/src/lib.rs:1379`,
+  exact-list assert at `:1513-1521`). Whether an `ABI_VERSION` bump is required
+  is a separate question to answer against the code, not an assumption.
+* **The `fm_*` entry count does not fall.** Slots are assigned during
+  `fm_set_resume_catalog`, but the guest instance holding the thunks is not
+  created until later, so placement cannot happen at seed time and needs its
+  own entry point called after instantiation. The change removes the op-0 arm
+  and adds a placement entry: net zero or +1, not a reduction. The win is the
+  19,025 host round-trips per php process start that stop happening, and the
+  single-sourcing of slot numbering -- not `fm_*` surface count.
+* **`crates/host-native/src/guest.rs:8155-8196` is in scope and was unnamed.**
+  It mints its own resume table and numbers slots `i+1` itself, never
+  consulting `fm_resume_slots`. Once the module owns placement, that path
+  imports a table nobody fills. Converting it is part of this change.
+
+### Two things the plan must build
+
+* **A before/after thunk-placement harness.** The spec says "the test that
+  matters is that every activation's thunks land at the same slots they do
+  now -- that is a before/after comparison, not a new assertion." Nothing in
+  the tree can produce that comparison today.
+* **Ordering care at the two `registerActivation` call sites.** They run in
+  opposite order relative to catalog publication (`worker-main.ts:1034`/`:1042`
+  versus `:4654`/`:4662`), which matters once placement reads from a
+  module-owned table.
