@@ -27,12 +27,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const sysroot = join(repoRoot, "sysroot");
 const glueDir = join(repoRoot, "libc", "glue");
-const clangDriver = process.env.CLANG ?? "clang";
-// The SDK owns the executable link contract (linkFlags() in
-// sdk/src/lib/flags.ts). buildMainProgram() used to carry its own copy, and
-// the copy had drifted: no -z stack-size=8388608, so the program ran on
-// wasm-ld's ~64 KiB default shadow stack instead of the SDK's 8 MiB, and no
-// --export=__abi_version, so nothing bound it to a kernel ABI epoch.
+// Every artifact in this file is built by the SDK driver. The SDK owns both
+// link contracts involved: linkFlags() for the main program and
+// SHARED_LINK_FLAGS for the side modules. This file used to carry its own
+// copy of each, and the main-program copy had drifted -- no
+// -z stack-size=8388608, so the program ran on wasm-ld's ~64 KiB default
+// shadow stack instead of the SDK's 8 MiB, and no --export=__abi_version, so
+// nothing bound it to a kernel ABI epoch.
 //
 // Absolute path, never a bare `wasm32posix-cc`: a bare name resolves through
 // PATH and can pick up a different worktree's SDK.
@@ -57,17 +58,6 @@ if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisite
   );
 }
 
-function llvmTool(name: "clang" | "wasm-ld"): string {
-  if (name === "wasm-ld" && process.env.WASM_LD) return process.env.WASM_LD;
-  // Nix's native clang wrapper injects Darwin hardening flags that are invalid
-  // for wasm32. Ask the driver for its underlying LLVM tools so this fixture
-  // follows the same cross-target path as the repository build scripts. Keep
-  // discovery lazy so a deliberately skipped fixture needs no compiler.
-  return execFileSync(clangDriver, [`-print-prog-name=${name}`], {
-    encoding: "utf8",
-  }).trim() || name;
-}
-
 function instrumentInPlace(wasmPath: string, entry?: string): void {
   const output = `${wasmPath}.instrumented`;
   const args = [wasmPath, "-o", output];
@@ -76,48 +66,46 @@ function instrumentInPlace(wasmPath: string, entry?: string): void {
   renameSync(output, wasmPath);
 }
 
-// NOT routed through the SDK, deliberately, and this is the one place in this
-// file that still carries its own flags. The SDK's `-shared -fPIC` path emits
-// SHARED_LINK_FLAGS and nothing else; it has no way to express `--Bdynamic`
-// followed by a dependency list, which is what the DT_NEEDED closure test
-// below relies on to get a `neededDynlibs` entry into the dylink section.
-// Converting this needs the SDK to model dynamic side-module dependencies
-// first; hand-copying flags into the SDK path would just move the copy.
+/**
+ * Build a side module.
+ *
+ * `-shared -fPIC` selects the SDK's side-module link (SHARED_LINK_FLAGS:
+ * -nostdlib, --experimental-pic, --shared, --shared-memory, --export-all,
+ * --allow-undefined), straight from the .c with no intermediate object.
+ *
+ * `--Bdynamic` and its dependency list are caller inputs: for a shared link
+ * cc.ts:298 leaves `deferExecutableInputs` false, so :305 pushes the caller's
+ * arguments verbatim and :332 appends SHARED_LINK_FLAGS after them. That
+ * ordering is what puts a `needed_dynlibs` entry in the consumer's dylink.0
+ * section for the DT_NEEDED closure test below.
+ *
+ * The dependencies are passed as plain positional arguments rather than
+ * folded into the `-Wl,` list. clang splits a `-Wl,` operand on COMMAS, so
+ * `-Wl,--Bdynamic,<path>` would corrupt any path containing one; a bare path
+ * with a known-unknown extension is forwarded to the linker untouched and in
+ * position.
+ */
 function buildSharedLibrary(
   source: string,
   name = "libforkinside",
   dependencies: readonly string[] = [],
 ): string {
   const sourcePath = join(buildDir, `${name}.c`);
-  const objectPath = join(buildDir, `${name}.o`);
   const libraryPath = join(buildDir, `${name}.so`);
   writeFileSync(sourcePath, `${source}
     #include "abi_constants.h"
     __attribute__((export_name("__abi_version")))
     unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
   `);
-  execFileSync(llvmTool("clang"), [
-    "--target=wasm32-unknown-unknown",
+  execFileSync(cc, [
+    "-shared",
     "-fPIC",
     "-O2",
-    "-matomics",
-    "-mbulk-memory",
     `-I${glueDir}`,
-    "-c",
     sourcePath,
-    "-o",
-    objectPath,
-  ], { stdio: "pipe" });
-  execFileSync(llvmTool("wasm-ld"), [
-    "--experimental-pic",
-    "--shared",
-    "--shared-memory",
-    "--export-all",
-    "--allow-undefined",
+    ...(dependencies.length === 0 ? [] : ["-Wl,--Bdynamic", ...dependencies]),
     "-o",
     libraryPath,
-    objectPath,
-    ...(dependencies.length === 0 ? [] : ["--Bdynamic", ...dependencies]),
   ], { stdio: "pipe" });
   instrumentInPlace(libraryPath, "env.fork");
   return libraryPath;
