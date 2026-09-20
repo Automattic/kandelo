@@ -1,23 +1,25 @@
 #!/bin/bash
 # Rebuild the host-native guest fixtures (*.c -> *.wasm).
 #
-# This does NOT go through the SDK, and no longer matches
-# scripts/build-programs.sh either. It invokes "$LLVM_BIN/clang" directly
-# (below) with its own copy of the compile/link flags. That copy has drifted
-# from the contract sdk/src/lib/flags.ts owns: build-programs.sh was routed
-# through the SDK wrapper, so these fixtures are now linked WITHOUT
-# --export=__heap_base and with wasm-ld's ~64 KiB default shadow stack rather
-# than the SDK's 8 MiB.
+# The C arm goes through the SDK wrappers (sdk/bin/wasm32posix-cc and
+# sdk/bin/wasm64posix-cc), so these fixtures carry exactly the compile/link
+# contract sdk/src/lib/flags.ts owns -- the same one scripts/build-programs.sh
+# gives user programs, including --export=__heap_base and the 8 MiB
+# main-thread shadow stack.
 #
-# Converting this to the SDK wrapper is pending; do not hand-copy flags here to
-# close the gap, which is how the drift arose. Run from inside
-# scripts/dev-shell.sh (which sets $LLVM_BIN).
+# It used to invoke "$LLVM_BIN/clang" with its own copy of those flags, and
+# the copy had drifted: the fixtures were linked WITHOUT --export=__heap_base
+# (so they ran on the 16 MiB brk fallback) and on wasm-ld's ~64 KiB default
+# shadow stack rather than the SDK's 8 MiB. Do not hand-copy flags back in.
+# Only the arch, the optimization level and the inputs belong here; every
+# other compile/link choice belongs to the SDK.
 #
-#   SYSROOT=<repo>/sysroot scripts/dev-shell.sh \
-#     crates/host-native/fixtures/build-fixtures.sh
+# Run from inside scripts/dev-shell.sh:
 #
-# SYSROOT must be a sysroot built for the CURRENT ABI (this branch's libc).
-# The committed .wasm files must match the running kernel's ABI or the native
+#   scripts/dev-shell.sh crates/host-native/fixtures/build-fixtures.sh
+#
+# The sysroots must be built for the CURRENT ABI (this branch's libc). The
+# committed .wasm files must match the running kernel's ABI or the native
 # host rejects them at load — see fixtures/README.md.
 #
 # B27b — the wasm64 arm. A handful of fixtures are additionally built for
@@ -31,9 +33,43 @@ set -euo pipefail
 
 FIXTURES_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$FIXTURES_DIR/../../.." && pwd)"
-SYSROOT="${SYSROOT:-$REPO_ROOT/sysroot}"
-SYSROOT64="${SYSROOT64:-$REPO_ROOT/sysroot64}"
-GLUE="$REPO_ROOT/libc/glue"
+# WHY: the SDK resolves each arch's sysroot and the glue dir by walking up
+# from process.cwd() looking for libc/glue/abi_constants.h (findSysroot /
+# findGlueDir via projectRootOrSdk, sdk/src/lib/toolchain.ts:13-31,112-131),
+# not from this script's location. Invoked with a cwd inside a different
+# kandelo worktree it would link against THAT worktree's sysroot while the
+# checks below validated this one. Pin the cwd so both agree.
+cd "$REPO_ROOT"
+
+# The SDK picks each arch's sysroot BY ARCH: wasm32posix-cc takes
+# <repo>/sysroot, wasm64posix-cc takes <repo>/sysroot64. The only env override
+# that redirects it, WASM_POSIX_SYSROOT, is returned for every arch alike
+# (toolchain.ts:112-114), so routing a caller-supplied SYSROOT through it
+# would hand the wasm64 arm the wasm32 sysroot and produce a fixture with the
+# wrong data model — precisely the failure that arm exists to catch.
+#
+# So these are no longer overridable. They name what the SDK will use, for the
+# existence checks below, and a caller asking for anything else is refused
+# rather than silently ignored. crates/host-native/src/fixtures.rs passes
+# these two exact values.
+for _sysroot_var in SYSROOT SYSROOT64; do
+    _requested="${!_sysroot_var-}"
+    case "$_sysroot_var" in
+        SYSROOT)   _expected="$REPO_ROOT/sysroot" ;;
+        SYSROOT64) _expected="$REPO_ROOT/sysroot64" ;;
+    esac
+    if [ -n "$_requested" ] && [ "$_requested" != "$_expected" ]; then
+        echo "error: $_sysroot_var=$_requested cannot be honoured." >&2
+        echo "       The SDK resolves the sysroot per arch from the repo" >&2
+        echo "       root; this script builds both arches, so it cannot" >&2
+        echo "       redirect one without redirecting the other." >&2
+        echo "       Expected $_expected (or unset)." >&2
+        exit 1
+    fi
+done
+unset _sysroot_var _requested _expected
+SYSROOT="$REPO_ROOT/sysroot"
+SYSROOT64="$REPO_ROOT/sysroot64"
 
 # Fixtures that are ALSO built at wasm64. Deliberately a short, explicit list
 # rather than every `*.c`: a second artifact per fixture is a committed binary
@@ -46,36 +82,61 @@ GLUE="$REPO_ROOT/libc/glue"
 # silently dropping coverage.
 WASM64_FIXTURES=(native_process_layout)
 
+# The SDK's findLlvmDir() reads LLVM_BIN (sdk/src/lib/toolchain.ts) before it
+# falls back to PATH, so requiring it here is the same prerequisite, checked
+# once with a message that names the fix.
 : "${LLVM_BIN:?run inside scripts/dev-shell.sh so LLVM_BIN is set}"
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "error: no sysroot at $SYSROOT (set SYSROOT=<repo>/sysroot)" >&2
+    echo "error: no sysroot at $SYSROOT — run scripts/build-musl.sh" >&2
     exit 1
 fi
 
-# One compile/link recipe, parameterised only by target triple and sysroot, so
-# the two arms cannot drift apart in flags.
+# Absolute paths to this worktree's SDK, never bare `wasm32posix-cc`: a bare
+# name resolves through PATH and can pick up a different worktree's SDK, whose
+# sysroot and glue would then disagree with the checks above.
+#
+# Deliberately NOT named CC/CXX. Those names are already exported in the dev
+# shell, and bash keeps the export attribute when you assign to an exported
+# name, so the value would reach every child process — including `wasm-tools`
+# and the fork instrumenter below, and any cargo a caller wraps this script in.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
+WASM64_CC="$REPO_ROOT/sdk/bin/wasm64posix-cc"
+
+# One compile/link recipe, parameterised only by the SDK driver (which fixes
+# the arch, and with it the sysroot), so the two arms cannot drift apart in
+# flags. Everything the SDK supplies is deliberately absent: compileFlags()
+# owns --target, -matomics, -mbulk-memory, -mexception-handling,
+# -fno-trapping-math and the -mllvm SjLj / modern-EH pair; cc.ts adds
+# --sysroot from the resolved toolchain and injects -nostdlib, the syscall
+# glue (channel_syscall.c, compiler_rt.c, cxxrt.c), crt1.o, the sysroot
+# libc.a and linkFlags(). The optimization level is the only compile choice
+# this script still makes for itself.
+#
+# `--kandelo-thread-slots -1` is THREAD_SLOT_USE_HOST_DEFAULT, and it is
+# declared rather than inferred for a measured reason. Left to infer, the SDK
+# reads the named source file and looks for `pthread_create`, `thrd_create`,
+# `clone(`, `dlopen` and friends (inferThreadSlotDeclaration,
+# sdk/src/lib/flags.ts); finding none it declares ZERO slots. That inference
+# is textual and does not follow #include, and several fixtures here are a
+# single `#include` of a shared source under examples/ -- deliberately, so the
+# native host and the Node/browser host run byte-identical fixture code. Their
+# text therefore mentions no thread API at all. Built on the inference,
+# native_thread_churn and native_thread_concurrency linked with zero slots and
+# their first pthread_create returned EAGAIN, failing smoke_pthread_* in
+# crates/host-native/src/lib.rs.
+#
+# The pre-SDK recipe passed no thread-slot define at all, so every fixture got
+# the host default. Declaring -1 keeps exactly that, uniformly, and states it
+# as a choice instead of relying on a guess about source text.
 build_fixture() {
-    local target="$1" sysroot="$2" src="$3" out="$4"
-    "$LLVM_BIN/clang" \
-        --target="$target" --sysroot="$sysroot" -nostdlib -O2 \
-        -matomics -mbulk-memory -fno-trapping-math \
-        -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false \
-        "$src" \
-        "$GLUE/channel_syscall.c" "$GLUE/compiler_rt.c" "$sysroot/lib/crt1.o" \
-        "$sysroot/lib/libc.a" \
-        -Wl,--no-entry -Wl,--export=_start -Wl,--import-memory -Wl,--shared-memory \
-        -Wl,--max-memory=1073741824 -Wl,--allow-undefined -Wl,--table-base=3 \
-        -Wl,--export-table -Wl,--growable-table \
-        -Wl,--export=__wasm_init_tls -Wl,--export=__tls_base -Wl,--export=__tls_size \
-        -Wl,--export=__tls_align -Wl,--export=__stack_pointer \
-        -Wl,--export=__wasm_thread_init -Wl,--export=__abi_version \
-        -o "$out"
+    local cc="$1" src="$2" out="$3"
+    "$cc" -O2 --kandelo-thread-slots -1 "$src" -o "$out"
 }
 
 for src in "$FIXTURES_DIR"/*.c; do
     name="$(basename "$src" .c)"
     echo "building $name.wasm"
-    build_fixture wasm32-unknown-unknown "$SYSROOT" "$src" "$FIXTURES_DIR/$name.wasm"
+    build_fixture "$WASM32_CC" "$src" "$FIXTURES_DIR/$name.wasm"
 done
 
 if [ ! -f "$SYSROOT64/lib/libc.a" ]; then
@@ -91,8 +152,7 @@ for name in "${WASM64_FIXTURES[@]}"; do
         exit 1
     fi
     echo "building $name.wasm64.wasm"
-    build_fixture wasm64-unknown-unknown "$SYSROOT64" "$src" \
-        "$FIXTURES_DIR/$name.wasm64.wasm"
+    build_fixture "$WASM64_CC" "$src" "$FIXTURES_DIR/$name.wasm64.wasm"
 done
 
 # The hand-written WAT arm. These exist because a live funcref/externref value
