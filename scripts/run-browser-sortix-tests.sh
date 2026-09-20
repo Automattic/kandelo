@@ -13,8 +13,15 @@ set -euo pipefail
 #   scripts/run-browser-sortix-tests.sh --all                 # run all suites
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# WHY: the SDK resolves the sysroot and glue dir by walking up from
+# process.cwd() (findSysroot/findGlueDir via projectRootOrSdk,
+# sdk/src/lib/toolchain.ts:13-31,112-131), not from this script's location.
+# Invoked with a cwd inside a different kandelo worktree it would compile
+# against THAT worktree's sysroot while the prerequisite check below validated
+# this one. Pin the cwd so both agree. (The browser runner below also needs
+# this cwd; it used to set it just before the npx call.)
+cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 # See scripts/run-sortix-tests.sh for why this override exists: on a
 # case-insensitive filesystem the submodule checkout collapses tracked paths
 # that differ only in letter case, and KANDELO_OS_TEST_DIR selects a
@@ -156,40 +163,48 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
 
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Identical to scripts/run-sortix-tests.sh, the Node.js runner for this same
+# suite. Conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix target
+# triple, the guest syscall glue, crt1/libc ordering, the pinned wasm-ld, and
+# the process memory layout (8 MiB main-thread shadow stack, `--global-base`,
+# `__heap_base`/`__abi_version` exports).
+#
+# This runner used to hand-maintain its own copy of that contract. The copy
+# drifted: its binaries reserved wasm-ld's ~64 KiB default shadow stack
+# instead of the SDK's 8 MiB and exported no `__heap_base`, so the browser
+# suite measured a memory layout no real Kandelo program runs under -- and a
+# different one from what its own Node.js twin measured. See docs/sdk-guide.md.
+#
+# Deliberately NOT named CC. That name is already exported in the dev shell,
+# and bash keeps the export attribute when you assign to an exported name, so
+# `CC=.../wasm32posix-cc` would reach every child process, including any
+# `cargo` the script's helpers run, whose cc-rs build scripts would then
+# compile host objects with a wasm cross-compiler. The parallel include build
+# below needs it across a `bash -c` boundary, so it is exported under this
+# name instead.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
+
+# ── Compile flags ──
+#
+# Only test-specific flags belong here. The SDK supplies the target,
+# sysroot, `-nostdlib`, atomics/bulk-memory/exception-handling, the SjLj
+# and wasm-EH lowering choices, and `-fno-trapping-math`.
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -O2
     -D__sortix__
 )
 
+# The SDK driver contributes the whole executable link line: syscall
+# glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
+# selects the dlopen glue this suite's dlfcn tests need -- it is how the SDK
+# spells the `libc/glue/dlopen.c` input this list used to name directly
+# (parseArgs/linkDl, sdk/src/bin/cc.ts).
 LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$GLUE_DIR/dlopen.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
+    -ldl
 )
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
@@ -267,21 +282,21 @@ build_include_one() {
         -Wno-error=deprecated -Wno-error=deprecated-declarations
         -I"$OS_TEST")
 
-    if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+    if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/dev/null; then
         echo "good" > "$result_file"; rm -f "$wasm"; return
     fi
-    if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
+    if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/dev/null; then
         echo "previous_posix" > "$result_file"; rm -f "$wasm"; return
     fi
-    if "$CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
+    if "$WASM32_CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/dev/null; then
         echo "extension" > "$result_file"; rm -f "$wasm"; return
     fi
 
     local err_file="$BUILD_DIR/include/${test_name}.err"
-    "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+    "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>"$err_file" || true
 
     if grep -q '/\*optional\*/' "$src" 2>/dev/null; then
@@ -313,7 +328,7 @@ build_runtime_test() {
 
     local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
 
-    "$CC" "${cflags[@]}" \
+    "$WASM32_CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/dev/null || return 1
     instrument_wasm "$wasm"
@@ -334,7 +349,7 @@ run_include_suite() {
     JOBS=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 
     # Export for parallel compilation
-    export OS_TEST CC BUILD_DIR SYSROOT GLUE_DIR
+    export OS_TEST WASM32_CC BUILD_DIR SYSROOT
     export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
     export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
 
@@ -352,21 +367,21 @@ run_include_suite() {
         # shellcheck disable=SC2086
         local -a link_flags=($LINK_FLAGS_STR)
 
-        if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+        if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
             "$src" "${link_flags[@]}" -o "$wasm" 2>/dev/null; then
             echo "good" > "$result_file"; rm -f "$wasm"; return
         fi
-        if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
+        if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
             "$src" "${link_flags[@]}" -o "$wasm" 2>/dev/null; then
             echo "previous_posix" > "$result_file"; rm -f "$wasm"; return
         fi
-        if "$CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
+        if "$WASM32_CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
             "$src" "${link_flags[@]}" -o "$wasm" 2>/dev/null; then
             echo "extension" > "$result_file"; rm -f "$wasm"; return
         fi
 
         local err_file="$BUILD_DIR/include/${test_name}.err"
-        "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+        "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
             "$src" "${link_flags[@]}" -o "$wasm" 2>"$err_file" || true
 
         if grep -q '/\*optional\*/' "$src" 2>/dev/null; then
@@ -504,7 +519,6 @@ run_runtime_suite() {
     RESULT_FILE=$(mktemp)
     STDERR_FILE=$(mktemp)
 
-    cd "$REPO_ROOT"
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
         --reload-interval 10 \
         --data-prefix "$BUILD_DIR/$suite" \
