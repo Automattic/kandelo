@@ -105,7 +105,25 @@ concept-level accounting is in
 ## Rust-first for kernel and fork control flow
 
 Kernel and fork control flow are Rust-first. Do NOT add kernel or fork
-control-flow TypeScript unless it is the irreducible host floor:
+control-flow TypeScript unless it is the irreducible host floor.
+
+**This list is a starting point, not a settled boundary.** A floor claim always
+takes the form "Wasm cannot do X, therefore Y must be host". In this campaign
+the premise has usually held while the inference failed: a 2026-09-03 probe
+found externref, exnref, anyref-transit and GC `ref.eq` all migratable to Wasm,
+leaving a much smaller floor than an earlier list of this kind implied. Probe
+the entry against the code before concluding something must stay in TypeScript,
+and shrink this list when a probe says you can. `CLAUDE.md` carries the rule;
+item B in `CLAUDE-too-specific-guidance.md` records why the version of this
+list that used to live there was pulled out of the contract router.
+
+This file is the ONE place the floor is enumerated. `debugging-and-posix.md`
+points here rather than keeping a second copy, because two hand-maintained
+lists disagree silently — these two already had: that file named the `fork()`
+syscall where this one names `fork()`/`vfork()`, and `vfork` has its own
+host-intercepted syscall (`SYS_VFORK`), its own `handleVfork` in
+`host/src/process-lifecycle.ts` and its own `host/src/vfork-lifetime.ts`.
+Add an entry here or nowhere.
 
 - worker spawn and lifecycle,
 - the `fork()`/`vfork()` syscall + the syscall-channel transport,
@@ -114,7 +132,22 @@ control-flow TypeScript unless it is the irreducible host floor:
 - anyref-transit `Table.grow` sizing (host must grow STORE #2 before drive),
 - PIC placement globals (`__memory_base`/`__stack_pointer`/`__table_base`/
   `__indirect_function_table`) chosen at instantiation,
-- the resume `WebAssembly.Table` (host-built import of guest funcref thunks),
+- the per-thunk `Table.set` into the resume table — and ONLY that. This entry
+  used to read "the resume `WebAssembly.Table` (host-built import of guest
+  funcref thunks)", and that is no longer true at HEAD: the table is created
+  and exported by the fork module
+  (`crates/fork-module-inject/src/main.rs:1042-1044`), the guest IMPORTS it
+  (`crates/fork-instrument/src/runtime.rs:469-475`), and the host reads it
+  back off the module's exports
+  (`host/src/worker-main.ts:3788`, `:6496`). Slot allocation moved into the
+  module too; the host asks via `fm_resume_slots`. Spec decision 12 and its
+  2026-09-20 amendment
+  (`docs/superpowers/specs/2026-09-18-fork-dynamic-storage-design.md`) propose
+  moving the remaining `Table.set`. Treat even this residue as contested:
+  `host/src/fork-resume-table.ts:4-8` still argues the table object "cannot
+  move into the fork module", which its own callers above have already
+  overtaken. This entry is exactly the "X cannot do Y, therefore Z must be
+  host" shape, and probing it is what shrank it,
 - the guest run-loop + the fork-unwind exception catch (a JS-level throw a Wasm
   module cannot `try/catch`), and
 - the Node/browser worker-message bridges.

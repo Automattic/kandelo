@@ -144,10 +144,11 @@ Every incompatible ABI change requires an `ABI_VERSION` bump in
 `crates/shared/src/lib.rs` and a regenerated `abi/snapshot.json` in the same
 change. Do not ship incompatible ABI changes under an existing `ABI_VERSION`.
 
-What the ABI covers is broad and changes as the ABI changes; derive the
-current surface from `abi/snapshot.json` and the snapshot-drift check rather
-than from a list in this file (see item A in
-`CLAUDE-too-specific-guidance.md`).
+What the ABI covers is broad and changes as the ABI changes, so it is not
+listed here. `docs/agent-guidance/abi.md:13-28` enumerates it ("Treat these as
+ABI surface"), and the Contract Map above already routes ABI work there. Read
+that list, not `abi/snapshot.json`: the snapshot records the structure a check
+can compare, which is narrower than the surface you must reason about.
 
 The snapshot check is necessary but not sufficient. Semantic changes to an
 existing syscall, errno, blocking behavior, fd inheritance, memory ownership,
@@ -322,9 +323,14 @@ pins current.
 
 Build freshness checks in this repository are not uniformly closure-derived,
 so a green setup does not always mean your source change reached the artifact.
-`docs/future-improvements.md` tracks the known gaps, and item D in
-`CLAUDE-too-specific-guidance.md` records one worked example. When a change
-must reach a built artifact, verify the artifact, not the setup command.
+The worked example that bites most often — `./run.sh setup` does not rebuild
+musl, so a `libc/musl-overlay/` or `libc/glue/channel_syscall.c` edit needs
+`scripts/build-musl.sh` first — is stated verbatim in
+`docs/agent-guidance/build-docs-and-prs.md:114` and `:118-123`.
+`docs/future-improvements.md` records separate freshness defects (the
+`has_programs()` hand-list, and `build-musl.sh` exiting 0 when its overlay
+copy fails), not that one. When a change must reach a built artifact, verify
+the artifact, not the setup command.
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,

@@ -21,8 +21,10 @@ session motivated the extraction:
   re-derived undercounted by two.
 
 **The healthy pattern already exists in this repository.**
-`fork_module_host_obligation_is_pinned` (`crates/host-native/src/lib.rs:1379`,
-exact-list assert at `:1513-1521`) pins the host obligation list in a Rust test
+`fork_module_host_obligation_is_pinned` (`crates/host-native/src/lib.rs:1379`)
+pins TWO exact lists, not one: the host FUNCTIONS at `:1489-1512` and the host
+TABLES at `:1513-1521`. This file previously cited only the second while
+describing the first. It pins the host obligation list in a Rust test
 — it cannot go stale silently, because drift turns it red. `docs/surface-budget.json`
 ceilings do the same for surface size. The question for each passage below is
 therefore not "is this true?" but "what would fail if it stopped being true?"
@@ -75,6 +77,29 @@ Candidate resolution: pin the floor as an exact-list assert the way
 `fork_module_host_obligation_is_pinned` pins host obligations, so removing an
 item is a deliberate, reviewed edit that turns a test red rather than a prose
 diff nobody validates.
+
+**Follow-up, 2026-09-20.** Moving this list out of `CLAUDE.md` did not achieve
+its purpose on its own, because the same list was still asserted as settled in
+both guides `CLAUDE.md` routes to. Two things were then found by reading the
+code rather than the prose:
+
+* The quoted list above has SEVEN members; both guides carried EIGHT. It omits
+  "the guest run-loop + the fork-unwind exception catch". A list small enough
+  to quote in three places was already inconsistent across all three.
+* The resume `WebAssembly.Table` entry — the one that prompted this
+  extraction — was not merely contested, it was FALSE. The table is created
+  and exported by the fork module
+  (`crates/fork-module-inject/src/main.rs:1042-1044`) and imported by the
+  guest (`crates/fork-instrument/src/runtime.rs:469-475`); the host reads it
+  off the module's exports (`host/src/worker-main.ts:3788`, `:6496`) rather
+  than minting it. Only the per-thunk `Table.set` is still host-side.
+
+`docs/agent-guidance/host-runtime.md` is now the single home for the list, with
+that entry corrected and the probe framing attached;
+`docs/agent-guidance/debugging-and-posix.md` points there instead of keeping a
+second copy. That is a mitigation, not the resolution: three prose copies
+became one, but one prose copy still rots silently. The exact-list assert above
+remains the real fix.
 
 ---
 

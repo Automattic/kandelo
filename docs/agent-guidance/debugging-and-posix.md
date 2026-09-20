@@ -130,16 +130,29 @@ must not implement substitute device semantics.
 
 When debugging or extending fork, exec, clone, or kernel behavior, keep new
 logic in Rust. Kernel and fork control flow are Rust-first: do NOT add kernel or
-fork control-flow TypeScript unless it is the irreducible host floor (worker
-spawn, the `fork()` syscall + syscall-channel transport, `resolve_externref`
-identity materialization, anyref-transit `Table.grow` sizing, PIC placement
-globals, the resume `WebAssembly.Table`, the guest run-loop + fork-unwind
-exception catch, and the Node/browser platform bridges). New
+fork control-flow TypeScript unless it is the irreducible host floor. New
 capture/replay/orchestration logic belongs in the Rust fork-module
 (`crates/fork-module`) and `crates/fork-codec`, driven through the `fm_*`
 host↔module contract, not in new TypeScript sequencing.
 
+**The floor is enumerated in exactly one place:
+`docs/agent-guidance/host-runtime.md`.** This section used to carry its own
+copy, and the two disagreed — that copy named the `fork()` syscall where the
+canonical list names `fork()`/`vfork()`, and `vfork` has its own
+host-intercepted syscall (`SYS_VFORK`), its own `handleVfork` in
+`host/src/process-lifecycle.ts` and its own `host/src/vfork-lifetime.ts`. Two
+hand-maintained lists of the same thing drift silently, and the shorter one is
+the one to distrust. The list still exists; it just has one home now.
+
+**Do not treat that list as settled either.** A floor claim takes the form
+"Wasm cannot do X, therefore Y must be host". In this campaign the premise has
+usually held while the inference failed — a 2026-09-03 probe found externref,
+exnref, anyref-transit and GC `ref.eq` all migratable to Wasm, and the resume
+table entry shrank to a single `Table.set` once someone read the code instead
+of the list. Probe the entry before concluding something must stay in
+TypeScript.
+
 A fork bug that seems to need more host-side sequencing is usually a signal that
 the module should own that step. When you face a dilemma about whether something
 must be TypeScript, STOP and discuss with the maintainer rather than growing the
-host surface. See `docs/agent-guidance/host-runtime.md` for the full floor list.
+host surface.
