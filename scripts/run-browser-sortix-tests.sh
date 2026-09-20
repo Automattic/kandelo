@@ -13,14 +13,6 @@ set -euo pipefail
 #   scripts/run-browser-sortix-tests.sh --all                 # run all suites
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# WHY: the SDK resolves the sysroot and glue dir by walking up from
-# process.cwd() (findSysroot/findGlueDir via projectRootOrSdk,
-# sdk/src/lib/toolchain.ts:13-31,112-131), not from this script's location.
-# Invoked with a cwd inside a different kandelo worktree it would compile
-# against THAT worktree's sysroot while the prerequisite check below validated
-# this one. Pin the cwd so both agree. (The browser runner below also needs
-# this cwd; it used to set it just before the npx call.)
-cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
 # See scripts/run-sortix-tests.sh for why this override exists: on a
 # case-insensitive filesystem the submodule checkout collapses tracked paths
@@ -32,6 +24,23 @@ OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 # from elsewhere; see scripts/run-sortix-tests.sh for the measured reason.
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
+
+# WHY: the SDK resolves the sysroot and glue dir by walking up from
+# process.cwd() (findSysroot/findGlueDir via projectRootOrSdk,
+# sdk/src/lib/toolchain.ts:13-31,112-131), not from this script's location.
+# Invoked with a cwd inside a different kandelo worktree it would compile
+# against THAT worktree's sysroot while the prerequisite check below validated
+# this one. Pin the cwd so both agree. The browser runner below needs this cwd
+# too; it used to set it just before the npx call.
+#
+# DELIBERATELY BELOW the path block above, not at the top of the file. A
+# relative KANDELO_OS_TEST_DIR must keep resolving against the CALLER's cwd,
+# the way it does in scripts/run-sortix-tests.sh, which never changes
+# directory globally. Pinning the cwd first would silently reinterpret that
+# override as repo-root-relative. Nothing above this line needs the pinned cwd:
+# every other path is built from $REPO_ROOT, and scripts/resolve-binary.sh
+# changes to its own repo root (:22) before doing anything.
+cd "$REPO_ROOT"
 
 # ── Expected failures (same as Node.js version) ──────────────────────
 INCLUDE_EXPECTED_FAIL=(
@@ -196,6 +205,21 @@ WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 # Only test-specific flags belong here. The SDK supplies the target,
 # sysroot, `-nostdlib`, atomics/bulk-memory/exception-handling, the SjLj
 # and wasm-EH lowering choices, and `-fno-trapping-math`.
+# DIVERGENCE FROM THE NODE.JS TWIN, left in place deliberately.
+# scripts/run-sortix-tests.sh applies `-D__sortix__` to the `udp` suite ONLY
+# (its suite_capability_cflags, :213), because the macro suppresses TWO
+# unrelated capabilities and only one claim is true of Kandelo: getifaddrs is
+# genuinely unreachable (musl implements it over AF_NETLINK, which this kernel
+# does not have), but SIGSTOP/SIGCONT DO work here, and asserting otherwise
+# makes signal/ppoll-block-sleep-{write-raise,raise-write} take their own
+# "Sortix does not implement SIGSTOP yet, so just race instead" fallback. See
+# run-sortix-tests.sh:185-207 for the full measurement.
+#
+# This runner still applies it suite-wide. Narrowing it is a CONFORMANCE
+# SEMANTICS change, not a link-contract one: it would move tests between the
+# pass and XFAIL columns, and the BROWSER_*_EXPECTED_FAIL lists in this file
+# are tuned to current behaviour. It cannot be validated without a browser
+# run. Fixing it needs its own task, with that run.
 CFLAGS_BASE=(
     -O2
     -D__sortix__
