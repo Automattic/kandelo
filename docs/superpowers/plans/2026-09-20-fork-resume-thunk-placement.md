@@ -7,17 +7,24 @@
 
 **Goal:** Move resume-thunk placement out of the host and into the fork
 module, so the slot numbering the module already decides is also applied by
-the module, and the per-thunk host round-trip disappears.
+the module, and the host's per-thunk round-trip collapses to one call per
+activation. The host still calls in; what goes away is asking the module
+where each individual thunk belongs -- 19,025 queries per php process start,
+each answered by a linear scan over up to 28,568 entries.
 
-**Architecture:** The fork module already OWNS and exports the resume table,
-and already has a wasm primitive for writing a funcref into a table
-(`__wpk_fork_table_apply`). What it lacks is a reachable SOURCE of thunk
-funcrefs: they live in each guest instance's own `__wpk_fork_resume_catalog`,
-and the module is instantiated before any guest exists. This adds a host-owned
-merged mirror of those catalogs — the pattern `ForkMergedFunctionCatalog`
-already uses — plus one placement entry point called after the guest instance
-is created. `fm_resume_slots` op 0 and `resume_slot_of` then have no callers
-and are deleted.
+**Architecture:** The fork module already OWNS and exports the resume table
+and already decides every slot. The thunks live in each guest's own
+`__wpk_fork_resume_catalog`, which the module cannot import because it is
+instantiated before any guest exists — but the GUEST's table index space
+already holds both tables: it owns the catalog and imports the resume table
+(`crates/fork-instrument/src/runtime.rs:469-471`), and `fork-instrument`
+already injects code that `call_indirect`s the resume table
+(`instrument.rs:4087-4111`). So the copy belongs in an injected guest shim
+reading the module's slot assignment, NOT in a host-owned mirror. The module
+keeps the policy; the shim is a mechanical primitive, exactly as
+`__wpk_fork_table_apply` is on the module side. `fm_resume_slots` op 0 and
+`resume_slot_of` then have no callers and are deleted, and no new host
+TypeScript is created.
 
 **Tech Stack:** Rust (`no_std` PIC wasm side module), walrus (wasm injection),
 TypeScript (host + Vitest), Rust integration tests (`crates/host-native`).
@@ -30,10 +37,12 @@ the amendment argues against it.
 
 ## Global Constraints
 
-- ABI is **44** (`crates/shared/src/lib.rs:122`) and unreleased. Whether this
-  change needs a bump is a QUESTION FOR TASK 8, not an assumption: the fork
-  module's own imports appear nowhere in `abi/snapshot.json`, so a
-  regeneration may produce an empty diff.
+- ABI is **44** (`crates/shared/src/lib.rs:122`), unreleased, and this lane is
+  already defining its contents. **No separate `ABI_VERSION` bump is required
+  for this change** -- it lands inside an in-progress bump. What Task 7 still
+  answers is the narrower question of whether `abi/snapshot.json` moves at
+  all; the fork module's own imports appear nowhere in it, so an empty diff is
+  the expected outcome and is itself the deliverable.
 - Run `cd host && npx vitest run test/surface-budget.test.ts` before **every**
   commit and gate on its exit status, not grep output. **Never raise a ceiling
   to make a check pass.** Note `forkTypeScript` and `forkPlatformTypeScript`
@@ -45,9 +54,14 @@ the amendment argues against it.
   vitest config; a repo-root run silently drops `testTimeout: 30_000`, the
   `forks` pool, and `globalSetup`.
 - **Never run vitest while a build is running**, and never edit a file under
-  `packages/registry/` while `xtask local-build` is live. `host/test/global-setup.ts:306-311`
-  regenerates `packages/registry/program-packages.json` — a build-graph input —
-  on every vitest invocation.
+  `packages/registry/` while `xtask local-build` is live. This is a WORKAROUND
+  for a defect, not a property to design around: `host/test/global-setup.ts:306-311`
+  regenerates `packages/registry/program-packages.json` -- a build-graph input
+  -- on every vitest invocation, so the test runner mutates the build graph
+  merely by running. A test suite should be isolated from build machinery.
+  Tracked in `docs/future-improvements.md` under Build freshness; if that is
+  fixed before this plan executes, drop this constraint rather than preserving
+  it out of habit.
 - After changing `crates/fork-module/src/**` or `crates/fork-module-inject/src/**`,
   rebuild with `bash crates/fork-module/build-wasm.sh` and confirm
   `--verify-fresh` exits 0. Confirm the build key CHANGED after a
@@ -74,35 +88,113 @@ the amendment argues against it.
 
 | File | Responsibility | Task |
 |---|---|---|
+| `crates/fork-module/src/lib.rs:498-505` | a comment asserting per-activation resume tables; corrected if Task 0 finds it stale | 0 |
 | `host/test/fork-resume-placement-baseline.test.ts` | NEW: records where every activation's thunks land today, as the before/after comparison the spec calls "the test that matters" | 1 |
-| `crates/fork-module/src/lib.rs` | comment correction; placement entry; deletion of `resume_slot_of` and op 0 | 1, 5, 7 |
-| `host/src/fork-merged-resume-catalog.ts` | NEW: host-owned merged mirror of per-activation guest resume catalogs | 2 |
-| `crates/fork-module-inject/src/main.rs` | declares the mirror import table for the module | 3 |
-| `host/src/fork-module-instance.ts` | creates and binds the mirror table; re-exports it on the instance record | 3 |
-| `crates/fork-module/src/lib.rs` + `host/src/fork-module-backend.ts` | the `fm_place_resume_thunks` entry and its host wrapper | 4, 5 |
-| `host/src/fork-resume-table.ts` | loses `Table.set`; becomes release-only | 6 |
-| `crates/host-native/src/guest.rs` | stops minting its own table and numbering slots | 7 |
-| `crates/host-native/src/lib.rs` | the host-obligation pin moves with the entry list | 7 |
+| `crates/fork-module/src/lib.rs` | placement-assignment publication; deletion of `resume_slot_of` and op 0 | 3, 6 |
+| `crates/fork-instrument/src/instrument.rs` | NEW injected guest shim that copies catalog thunks into the imported resume table | 2 |
+| `crates/fork-module/src/lib.rs` | publishes the slot assignment where the shim can read it | 3 |
+| `crates/fork-module/src/lib.rs` | the `fm_place_resume_thunks` entry itself | 4 |
+| `host/src/fork-module-backend.ts` | the host wrapper that calls that entry | 5 |
+| `host/src/worker-main.ts` | calls placement after the guest instance exists, at both worker sites | 5 |
+| the invocation site named by Task 0 | drives placement once per activation, after the guest instance exists | 4 |
+| `host/src/fork-resume-table.ts` | loses `Table.set`; becomes release-only | 5 |
+| `crates/host-native/src/guest.rs` | stops minting its own table and numbering slots | 6 |
+| `crates/host-native/src/lib.rs` | the host-obligation pin moves with the entry list | 6 |
 
 ---
 
-## Task 1: Record where thunks land today, and settle a stale comment
+## Task 0: Establish the two facts the rest of this plan assumes
+
+Tasks 2 through 5 are built on two assumptions that have not been checked
+against a running instance. Both are cheap to settle and expensive to get
+wrong, so they are settled FIRST, alone, before anyone writes a harness or a
+mirror.
+
+**Assumption 1 — the resume table is ONE module-owned object.**
+`crates/fork-module/src/lib.rs:498-505` says "activation 0's table and
+activation 1's table are distinct JS `WebAssembly.Table`s with independent
+slot spaces", while `crates/fork-module-inject/src/main.rs:130-134` says the
+resume table is "OWNED and exported by the module … one object". Both cannot
+be true now. The likeliest reading is that the module comment predates the
+move recorded at `main.rs:1037-1041` and was never updated — but this decides
+whether one slot space is a deletion or a redesign.
+
+**Assumption 2 — there is a single natural site to fill the mirror from.**
+Task 5 must fill the merged mirror before calling placement. The activation
+sink at `host/src/fork-activations.ts:106-116` drives the equivalent fill for
+the function catalog, but the two worker sites
+(`host/src/worker-main.ts:3905-3915` for the process worker, `:6510-6520` for
+the pthread worker) call it in OPPOSITE order relative to catalog
+publication — `:1034`/`:1042` versus `:4654`/`:4662`. Which site owns the fill
+determines where Task 5 edits.
+
+**Files:**
+- Read: `crates/fork-module/src/lib.rs`, `crates/fork-module-inject/src/main.rs`,
+  `host/src/fork-activations.ts`, `host/src/worker-main.ts`
+- Modify: `crates/fork-module/src/lib.rs:498-505` (comment only, and only if
+  Task 0 finds it stale)
+
+**Interfaces:**
+- Produces: a written answer to both assumptions, recorded in the task report
+  and — for assumption 1 — as a corrected comment in the source. Tasks 1
+  through 5 consume both.
+
+- [ ] **Step 1: Settle the table-identity question against a running instance**
+
+Do not infer this from comments; both comments are evidence and they disagree.
+Run an existing multi-activation fork test and inspect the instance. The fork
+module's exported tables are reachable from the instance record
+(`host/src/fork-module-instance.ts:59-61`, `:313-315`), and the guest's
+imports are bound at `host/src/fork-guest-imports.ts:140-149`.
+
+The question to answer precisely: when two activations are loaded, do their
+guests import the SAME `WebAssembly.Table` object, or two different ones?
+Object identity (`===`), not structural equality.
+
+- [ ] **Step 2: Record the answer and act on it**
+
+If ONE object: `lib.rs:498-505` is stale. Correct it in this task, saying what
+is true now and noting that the per-activation catalog machinery it justifies
+(`fm_set_activation_resume_catalog`, `register_activation_slots`) is therefore
+a candidate for deletion by the storage change that follows — flag it, do not
+delete it here.
+
+If TWO objects: **STOP AND REPORT.** Tasks 2 through 5 assume one table. A
+per-activation reality means the module cannot own placement the way this plan
+describes, and the plan needs rewriting rather than adapting.
+
+- [ ] **Step 3: Name the mirror-fill site**
+
+Read `host/src/fork-activations.ts:106-116` and both worker sites. State which
+owns the fill for the function catalog today, and whether the resume mirror
+can follow the same path or needs its own. Name the exact file and line Task 5
+will edit. If the two worker sites genuinely differ in ordering, say what the
+correct order is for a mirror that must be full BEFORE placement runs.
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd host && npx vitest run test/surface-budget.test.ts > /tmp/b.txt 2>&1
+echo "BUDGET_EXIT: $?"
+cd .. && git add crates/fork-module/src/lib.rs
+git commit -m "Fork: Correct what the resume table's ownership actually is"
+git push origin brandonpayton/lane-f-fork-inversion
+```
+
+If Step 2 found nothing to correct, commit nothing and say so in the report —
+a task whose finding is "the comment was right" produces a report, not a
+commit.
+
+---
+
+## Task 1: Record where thunks land today
 
 Nothing in the tree can produce the before/after comparison the spec requires.
-Build it first, against unmodified code, so the baseline is trustworthy.
-
-This task also settles a contradiction. `crates/fork-module/src/lib.rs:498-505`
-says "activation 0's table and activation 1's table are distinct JS
-`WebAssembly.Table`s with independent slot spaces", while
-`crates/fork-module-inject/src/main.rs:130-134` says the resume table is
-"OWNED and exported by the module … one object". Both cannot be true now. The
-likeliest reading is that the module comment predates the move recorded at
-`main.rs:1037-1041` and was never updated — but it decides whether one slot
-space is a deletion or a redesign, so it must be CHECKED, not inferred.
+Build it against unmodified code, so the baseline is trustworthy, and build it
+knowing Task 0's answer to the table-identity question.
 
 **Files:**
 - Create: `host/test/fork-resume-placement-baseline.test.ts`
-- Modify: `crates/fork-module/src/lib.rs:498-505` (comment only, if stale)
 
 **Interfaces:**
 - Produces: a JSON baseline artifact at
@@ -136,282 +228,231 @@ deleted and a baseline that depends on it cannot outlive the change.
 // `fm_resume_slots`, because op 0 is deleted by this same change.
 ```
 
-- [ ] **Step 3: Answer the stale-comment question and record it**
-
-With the fixture running, determine whether the resume table is ONE
-module-owned object shared by all activations, or one per activation. Inspect
-the live instance:
+- [ ] **Step 3: Run it and confirm the baseline is stable**
 
 ```bash
 cd host && npx vitest run test/fork-resume-placement-baseline.test.ts
 ```
 
-Report which it is, with the evidence. If `lib.rs:498-505` is stale, correct
-it in this task and say so; if it is accurate, STOP and report — the rest of
-this plan assumes one table, and a per-activation reality changes Tasks 2-5.
+Run it TWICE and confirm the recorded mapping is identical both times. A
+baseline that varies between runs is not a baseline — if the mapping moves,
+stop and report what varied, because the comparison Task 5 depends on would
+be meaningless.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 cd host && npx vitest run test/surface-budget.test.ts > /tmp/b.txt 2>&1
 echo "BUDGET_EXIT: $?"
-cd .. && git add host/test/fork-resume-placement-baseline.test.ts crates/fork-module/src/lib.rs
+cd .. && git add host/test/fork-resume-placement-baseline.test.ts
 git commit -m "Fork: Record where resume thunks land before moving placement"
 git push origin brandonpayton/lane-f-fork-inversion
 ```
 
 ---
 
-## Task 2: A merged mirror of the guests' resume catalogs
+## Task 2: Inject a placement shim into the guest
 
-The module cannot import N per-activation tables because it is instantiated
-before any guest exists. `ForkMergedFunctionCatalog` solves exactly this for
-the function catalog; its header says so verbatim: "The module is instantiated
-BEFORE its guests … so it cannot import a guest's
-`__wpk_fork_function_catalog` directly."
+The guest's table index space already holds BOTH tables it needs: it owns
+`__wpk_fork_resume_catalog` (emitted by
+`crates/fork-instrument/src/instrument.rs:4456-4489`) and imports the module's
+resume table (`crates/fork-instrument/src/runtime.rs:469-471`). So the copy
+that today crosses into JS — `table.get` the thunk, `table.set` it at its
+slot — is two instructions inside the guest.
 
-The resume thunks are NOT in that existing mirror. Verified two ways:
-`inject_function_catalog` runs at `crates/fork-instrument/src/lib.rs:444`,
-before `instrument_functions_with_targets_and_tail_sites` at `:485` creates
-the thunks; and a built artifact carries them as separate exports
-(`__wpk_fork_function_catalog` is table[3], `__wpk_fork_resume_catalog` is
-table[7] in `p_11_fork_continuation_enomem.wasm`). So this needs its own
-mirror.
+This is a mechanical primitive, not policy. The module still decides every
+slot; the shim only applies the decision, exactly as
+`__wpk_fork_table_apply` does on the module side
+(`crates/fork-module-inject/src/main.rs:2101-2108`: "Rust cannot emit
+`table.set` on an imported table … only the write itself lives in emitted
+wasm").
 
 **Files:**
-- Create: `host/src/fork-merged-resume-catalog.ts`
-- Test: `host/test/fork-merged-resume-catalog.test.ts`
+- Modify: `crates/fork-instrument/src/instrument.rs`
+- Modify: `crates/fork-instrument/src/runtime.rs` (name constant)
+- Test: `crates/fork-instrument`'s own test module, plus
+  `host/test/fork-instrument-coverage.test.ts` for the end-to-end shape
 
 **Interfaces:**
-- Consumes: `forkResumeTargetsFromInstance` (`host/src/fork-resume-catalog.ts:117-146`),
-  which reads a guest instance's `__wpk_fork_resume_catalog` by
-  `table.get(localCatalogSlot)`.
-- Produces: `ForkMergedResumeCatalog` with
-  `take(activation: number, instance: WebAssembly.Instance): number` returning
-  the base index at which that activation's thunks were copied.
+- Produces: a guest export `__wpk_fork_place_resume_thunks(ptr: i32, count: i32) -> i32`,
+  returning the number of thunks placed. `ptr` addresses `count` packed
+  `(ordinal: u32, slot: u32)` pairs in shared linear memory, written by the
+  module in Task 3.
 
-- [ ] **Step 1: Read the precedent in full before writing**
+- [ ] **Step 1: Read the two precedents before writing any injection**
 
 ```bash
-cd /Users/brandon/kandelo-lane-f
-sed -n '1,60p' host/src/fork-merged-catalog.ts
+sed -n '4456,4495p' crates/fork-instrument/src/instrument.rs   # emit_resume_catalog
+sed -n '4080,4120p' crates/fork-instrument/src/instrument.rs   # the existing call_indirect on resume_table
 ```
 
-Copy its shape: grow the mirror, copy the guest table slot-by-slot preserving
-funcref identity (its `:20-22` explains why identity matters), return the base.
-Do NOT invent a different structure.
+The second is the proof the resume table is reachable from injected guest
+code. Confirm both table IDs are available in the same `runtime` struct
+(`crates/fork-instrument/src/runtime.rs:255-257` holds `resume_table`), and
+say in your report which field gives you the catalog.
 
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 2: Write the failing test first**
 
-Assert that two activations' catalogs land at disjoint ranges, that the base
-returned for activation B equals activation A's length, and that a funcref
-read back from the mirror is IDENTICAL (`toBe`, not `toEqual`) to the one in
-the source guest table. Identity is the property that matters — a copied
-funcref that is merely equal would place a thunk that is not the guest's.
+Assert that after calling the new export with a two-entry assignment, the
+imported resume table holds, at each named slot, the SAME funcref object the
+catalog held at that ordinal. Identity, not equality — a merely-equal funcref
+would place a thunk that is not the guest's.
+
+Assert also that an out-of-range ordinal or slot TRAPS rather than writing
+elsewhere. Both bounds are wasm's own, which is the same argument
+`main.rs:2107-2108` makes for `table_apply`: "an out-of-range `dest` or
+`catalog_slot` traps rather than writing somewhere else." Do not add a
+hand-rolled bounds check that would mask it.
 
 - [ ] **Step 3: Run it and watch it fail**
 
-```bash
-cd host && npx vitest run test/fork-merged-resume-catalog.test.ts
-```
+Expected: FAIL — the export does not exist.
 
-Expected: FAIL — the module does not exist yet.
+- [ ] **Step 4: Inject the shim**
 
-- [ ] **Step 4: Implement, then re-run**
+A loop over `count` pairs: load `ordinal` and `slot` from `ptr`,
+`table.get(catalog, ordinal)`, `table.set(resume, slot, ref)`. Emit it beside
+the existing resume-catalog emission so the two stay together.
 
-Expected: PASS.
+Note the table64 hazard `main.rs:2131-2136` records: a wasm64 build needs `i64`
+widening on table indices, and its absence was caught by wasm64 validation
+rather than by a test. If this instrument path serves both widths, handle it
+and say how you verified.
 
-- [ ] **Step 5: Budget, then commit**
+- [ ] **Step 5: Rebuild the fixtures and re-run**
+
+Instrumented guests must be rebuilt for the new export to exist. Say exactly
+what you rebuilt.
+
+- [ ] **Step 6: Perturb**
+
+Change the shim to write `slot + 1`. The test must fail on identity at every
+slot. Restore by hand from a pristine copy; never `git checkout --`.
+
+- [ ] **Step 7: Budget, then commit**
 
 ```bash
 cd host && npx vitest run test/surface-budget.test.ts > /tmp/b.txt 2>&1
 echo "BUDGET_EXIT: $?"
-cd .. && git add host/src/fork-merged-resume-catalog.ts host/test/fork-merged-resume-catalog.test.ts
-git commit -m "Fork: Mirror guest resume catalogs where the module can reach them"
+cd .. && git add crates/fork-instrument/src/instrument.rs crates/fork-instrument/src/runtime.rs
+git commit -m "Fork: Let the guest place its own resume thunks"
 git push origin brandonpayton/lane-f-fork-inversion
 ```
 
 ---
 
-## Task 3: Give the module an import table for the mirror
+## Task 3: Publish the slot assignment the shim reads
 
-`crates/fork-module/src/lib.rs` declares ZERO real wasm table imports — its
-comment at `:182-191` records why ("a reference-typed call Rust/LLVM cannot
-emit"). All four existing tables are created by the injector.
+The module already holds every `(ordinal, slot)` decision — `resume_assignment_of`
+(`crates/fork-module/src/lib.rs:778-791`) is the walk that survives this
+change. This task writes that assignment somewhere the guest shim can read it,
+and decides who invokes the shim.
+
+The module and its guests are CO-RESIDENT in one `WebAssembly.Memory`, so a
+pointer written by the module is directly readable by the guest. No copy
+across a host boundary is required or wanted.
 
 **Files:**
-- Modify: `crates/fork-module-inject/src/main.rs` (new import table)
-- Modify: `host/src/fork-module-instance.ts:228-237`, `:264-266`, `:59-61`, `:313-315`
+- Modify: `crates/fork-module/src/lib.rs`
 
 **Interfaces:**
-- Produces: an `env` funcref import table named `__wpk_fork_resume_source`,
-  initial 0, no maximum, and a `resumeSource: WebAssembly.Table` field on the
-  `ForkModuleInstance` record.
+- Produces: `fm_publish_resume_assignment(activation: u32) -> i64`, returning
+  a packed `(ptr, count)` — or -1 with errno set. The storage must survive the
+  per-fork bump-heap reset, so it belongs in the same fixed BSS region the
+  per-activation catalogs use, NOT in the bump heap
+  (`reset_bump_heap` runs at four points during a single fork).
 
-- [ ] **Step 1: Declare the import table in the injector**
+- [ ] **Step 1: Choose the storage and justify it against the reset**
 
-Follow the drive-table call shape exactly (`main.rs:1009-1016`):
+Read why the existing catalogs are in fixed BSS (`crates/fork-module/src/lib.rs`,
+the "Like the global catalog, these live in a fixed BSS region so they survive
+the per-fork bump-heap reset" comment). State in your report where you put the
+assignment buffer and why it survives.
 
-```rust
-    let (resume_source, _resume_source_import_id) = module.add_import_table(
-        IMPORT_MODULE,
-        RESUME_SOURCE_IMPORT,
-        false,
-        0,
-        None,
-        RefType::FUNCREF,
-    );
-```
+- [ ] **Step 2: Decide the invocation path, and record the choice**
 
-with a constant beside the existing ones, and a comment saying WHY it is an
-import while the resume table beside it is module-owned: the destination is
-one object the module numbers, the source is a per-activation guest table the
-module cannot import, so the host mirrors it.
+Two options, and this plan does not pick for you:
 
-- [ ] **Step 2: Create and bind it on the host**
+* **Host-invoked** — the host calls `fm_publish_resume_assignment`, then calls
+  the guest's `__wpk_fork_place_resume_thunks(ptr, count)`. One host call per
+  activation, replacing 19,025 per process start.
+* **Module-driven** — the shim is registered in `__wpk_fork_drive_table` and
+  the module `call_indirect`s it, the way it already drives guest code. Zero
+  host calls, but it couples placement to the drive machinery.
 
-`host/src/fork-module-instance.ts` already has the helper:
+Read how the drive table is populated today before choosing. Say which you
+chose, what it costs, and what you would have needed to know to choose the
+other. If module-driven turns out to be straightforward, prefer it — it is the
+version with no host involvement at all, which is the campaign's direction.
 
-```ts
-  const emptyTable = (element: "anyfunc" | "anyref"): WebAssembly.Table =>
-    new WebAssembly.Table({ element: element as "anyfunc", initial: 0 });
-```
+- [ ] **Step 3: Write the failing test, implement, re-run**
 
-Add `const resumeSource = emptyTable("anyfunc");`, bind
-`__wpk_fork_resume_source: resumeSource` alongside the three existing table
-imports at `:264-266`, and re-export it on the instance record at `:59-61`
-and `:313-315`.
+Assert the published `(ptr, count)` describes exactly the assignment
+`resume_assignment_of` reports for that activation, and that a second call
+after a fork still returns a live buffer — the reset hazard is the reason
+Step 1 exists.
 
-- [ ] **Step 3: Rebuild and verify freshness**
+- [ ] **Step 4: Rebuild, verify fresh**
 
 ```bash
 bash crates/fork-module/build-wasm.sh
 bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"   # 0
 ```
 
-- [ ] **Step 4: Confirm the import is satisfied**
-
-```bash
-cd host && npx vitest run test/fork-module-instance.test.ts
-```
-
-Expected: PASS. An unsatisfied import fails at instantiation, so a green run
-here is the proof the binding is correct.
-
 - [ ] **Step 5: Budget, then commit**
 
 ```bash
 cd host && npx vitest run test/surface-budget.test.ts > /tmp/b.txt 2>&1
 echo "BUDGET_EXIT: $?"
-cd .. && git add crates/fork-module-inject/src/main.rs host/src/fork-module-instance.ts
-git commit -m "Fork: Import the merged resume source into the module"
+cd .. && git add crates/fork-module/src/lib.rs
+git commit -m "Fork: Publish the resume-slot assignment for the guest shim"
 git push origin brandonpayton/lane-f-fork-inversion
 ```
 
 ---
 
-## Task 4: Place the thunks from inside the module
+## Task 4: Wire the invocation and prove placement end to end
+
+Tasks 2 and 3 built the two halves — a guest shim that can place, and a module
+that publishes what to place. This task connects them at the path Task 3's
+Step 2 chose, and proves the result matches the Task 1 baseline.
+
+There is deliberately no module-side `table.set` here. An earlier draft of this
+plan routed the thunks through a host-owned mirror and a new module import
+table so the module could write them with `__wpk_fork_table_apply`. That was
+wrong: it added host TypeScript to a campaign whose direction is removing it,
+and it existed only because the draft had not noticed that the guest's own
+index space already holds both tables.
 
 **Files:**
-- Modify: `crates/fork-module/src/lib.rs` (new `fm_place_resume_thunks` entry)
-- Modify: `crates/fork-module-inject/src/main.rs` if the write shim needs a
-  second instantiation
+- Modify: whichever invocation path Task 3 Step 2 selected — the module's
+  drive-table registration, or the host call site named by Task 0
+- Modify: `host/src/fork-module-backend.ts` (the wrapper, if host-invoked)
+- Modify: `host/src/worker-main.ts` (the call site, if host-invoked)
 
 **Interfaces:**
-- Produces: `fm_place_resume_thunks(activation: u32, base: u32) -> i32`,
-  returning the number of thunks placed, or -1 with errno set.
-- Consumes: `__wpk_fork_table_apply(dest, catalog_slot, clear)`, the existing
-  write primitive (`crates/fork-module-inject/src/main.rs:2101-2108`:
-  "Rust cannot emit `table.set` on an imported table, so the fork module
-  declares `__wpk_fork_table_apply(dest, catalog_slot, clear)` as an import
-  and this replaces it with the three instructions it stands for").
+- Consumes: `__wpk_fork_place_resume_thunks(ptr, count)` (Task 2),
+  `fm_publish_resume_assignment(activation)` (Task 3).
 
-- [ ] **Step 1: Read the write primitive and confirm its source table**
+- [ ] **Step 1: Use Task 0's answer; do not re-derive it**
 
-```bash
-sed -n '2101,2170p' crates/fork-module-inject/src/main.rs
-```
+Task 0 named the invocation site and stated the correct ordering for the two
+worker sites, which register activations in OPPOSITE order relative to catalog
+publication (`host/src/worker-main.ts:1034`/`:1042` versus `:4654`/`:4662`).
+Read Task 0's report and follow it. If its answer does not match what you see
+in the code, STOP — one of you is wrong about a sequencing hazard, and
+guessing which costs a silently mis-placed thunk.
 
-`table_apply` reads from one table and writes to another. Establish which
-tables it is wired to today and whether it can be pointed at the new
-`__wpk_fork_resume_source` → `__wpk_fork_resume_table` pair, or whether a
-second shim instance is needed. Report which, with the line evidence. Do NOT
-guess: a shim wired to the wrong source silently places the wrong funcref,
-which is the failure mode this whole change exists to make impossible.
+- [ ] **Step 2: Connect the two halves at the chosen path**
 
-- [ ] **Step 2: Grow the destination before writing**
+If module-driven: register the shim in `__wpk_fork_drive_table` and invoke it
+from the module after the assignment is published. If host-invoked: publish,
+then call the guest export, once per activation, after the guest instance
+exists.
 
-The resume table starts at initial 1 (slot 0 is the reserved "no resume event"
-sentinel — `main.rs:1030-1032`). Growth uses the same pattern as
-`inject_transit_grow` (`main.rs:1569-1624`). Confirm whether a resume-table
-grow shim already exists; if not, add one following that precedent exactly.
-
-- [ ] **Step 3: Write the entry, with a test that fails first**
-
-The entry walks the activation's assignment (the walk that survives,
-`resume_assignment_of` at `lib.rs:778-791`), and for each `(ordinal, slot)`
-calls the write primitive with `dest = slot`, `catalog_slot = base + ordinal`.
-
-Write a module-level test asserting the destination table holds the expected
-funcref at each slot after the call, and that it returns the count. Run it,
-watch it fail, then implement.
-
-- [ ] **Step 4: Rebuild, verify fresh, re-run**
-
-```bash
-bash crates/fork-module/build-wasm.sh
-bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
-cd host && npx vitest run test/fork-module-instance.test.ts
-```
-
-- [ ] **Step 5: Perturb**
-
-Change the entry to write `slot + 1` instead of `slot`. The baseline
-comparison from Task 1 must go red. Restore by hand from a pristine copy,
-rebuild, and confirm the build key returns to its pre-perturbation value.
-
-- [ ] **Step 6: Budget, then commit**
-
-```bash
-cd host && npx vitest run test/surface-budget.test.ts > /tmp/b.txt 2>&1
-echo "BUDGET_EXIT: $?"
-cd .. && git add crates/fork-module/src/lib.rs crates/fork-module-inject/src/main.rs
-git commit -m "Fork: Place resume thunks from inside the module"
-git push origin brandonpayton/lane-f-fork-inversion
-```
-
----
-
-## Task 5: Switch the host to call placement, keeping op 0 alive
-
-Land the switch and the deletion separately, so a placement regression is
-attributable without also bisecting a deletion.
-
-**Files:**
-- Modify: `host/src/fork-module-backend.ts` (wrapper for the new entry)
-- Modify: `host/src/worker-main.ts` (call placement after guest instantiation)
-- Modify: `host/src/fork-activations.ts` if the mirror fill belongs in the
-  existing activation sink
-
-**Interfaces:**
-- Consumes: `ForkMergedResumeCatalog.take` (Task 2),
-  `fm_place_resume_thunks` (Task 4).
-
-- [ ] **Step 1: Find both call sites, and mind their ORDER**
-
-The process worker and the pthread worker register activations in OPPOSITE
-order relative to catalog publication — `host/src/worker-main.ts:1034`/`:1042`
-versus `:4654`/`:4662`. Placement reads a mirror the host fills, so the order
-matters. Read both and state what you found before editing either.
-
-The guest instance whose catalog you mirror is created at
-`host/src/worker-main.ts:4643-4652`; slots are assigned much earlier, at
-`:3780`. Placement must happen after the former.
-
-- [ ] **Step 2: Fill the mirror and call placement**
-
-At each site, after the guest instance exists: `take()` the activation's
-catalog into the mirror, then call the placement entry with the returned base.
+The one fact to re-confirm yourself, because everything depends on it: the
+guest instance is created at `host/src/worker-main.ts:4643-4652`, while slots
+are assigned much earlier at `:3780`. Placement must happen after the former.
 
 - [ ] **Step 3: Verify against the Task 1 baseline**
 
@@ -419,11 +460,21 @@ catalog into the mirror, then call the placement entry with the returned base.
 cd host && npx vitest run test/fork-resume-placement-baseline.test.ts
 ```
 
-Expected: identical mapping to the recorded baseline. This is the comparison
-the spec calls "the test that matters". A difference here is a regression, not
-a new normal — do not re-record the baseline to make it pass.
+Expected: the mapping is IDENTICAL to the recorded baseline. This is the
+comparison the spec calls "the test that matters". A difference is a
+regression, not a new normal — do not re-record the baseline to make it pass.
 
-- [ ] **Step 4: Run the fork surface**
+- [ ] **Step 4: Confirm the host no longer writes the table**
+
+```bash
+grep -n "\.set(" host/src/fork-resume-table.ts
+```
+
+The per-thunk `Table.set` should now be unreachable. Do not delete it yet —
+Task 5 does that, separately, so a placement regression stays attributable
+from a deletion.
+
+- [ ] **Step 5: Run the fork surface**
 
 ```bash
 cd host && npx vitest run test/fork-*.test.ts
@@ -432,19 +483,23 @@ cd host && npx vitest run test/fork-*.test.ts
 Compare against the last recorded baseline for that suite. Any new failure
 must be understood before proceeding.
 
-- [ ] **Step 5: Budget, then commit**
+- [ ] **Step 6: Budget, then commit**
 
 ```bash
 cd host && npx vitest run test/surface-budget.test.ts > /tmp/b.txt 2>&1
 echo "BUDGET_EXIT: $?"
-cd .. && git add host/src/fork-module-backend.ts host/src/worker-main.ts host/src/fork-activations.ts
-git commit -m "Fork: Let the module place thunks the host used to write"
+cd .. && git add -- ':!apps' ':!libc'
+git status --short
+git commit -m "Fork: Drive resume-thunk placement without the host writing it"
 git push origin brandonpayton/lane-f-fork-inversion
 ```
 
+Stage explicit paths rather than the pattern above if it stages anything you
+did not touch; check `git status --short` before committing either way.
+
 ---
 
-## Task 6: Make `ForkResumeTable` release-only
+## Task 5: Make `ForkResumeTable` release-only
 
 With placement gone, the class that was "not a slot ALLOCATOR" is no longer a
 slot WRITER either. What remains is release.
@@ -474,7 +529,37 @@ For each test whose expectation changes, record the original assertion, what
 it encoded, and why the new contract is correct. A test edited to match new
 code, without that record, hides a decision.
 
-- [ ] **Step 4: Budget, then commit**
+- [ ] **Step 4: Measure what actually moved, not just the line count**
+
+This task is where the campaign's goal lands, so measure the goal rather than
+its proxy. Line count is banked in Step 5; it is the CONSEQUENCE, not the
+result.
+
+**(a) Count the host's calls into the module, before and after.** The spec
+quantifies today's cost as 19,025 `fm_resume_slots` op-0 queries per php
+process start, each answered by a linear scan over up to 28,568 entries. Pick
+a multi-activation fixture you can actually run, instrument the boundary, and
+report the real number for that fixture both before this change and after.
+A before/after pair on a small fixture is worth more than php's number quoted
+from a document — quote php only as context, and say it is quoted.
+
+**(b) Audit what is left for RULES, not lines.** Go through every remaining
+member of `ForkResumeTable` and classify it: does it implement a rule the
+module could own (an allocation policy, an ordering, a numbering, a retry), or
+does it only hold a reference and forward a lifetime event? The file's own
+history says it "used to be" a slot allocator and stopped; the question this
+task answers is whether anything of that kind survives.
+
+Any surviving rule is a FINDING, not a leftover. Report it with the reason it
+could not move, because "the host still decides X" is precisely the claim this
+campaign exists to retire, and a rule nobody noticed is how one survives.
+
+**(c) State the end condition plainly.** After this task, is the host out of
+the resume-slot business entirely, or does it retain something? Write the
+answer in one sentence. If the honest answer is "it still does Y", that
+sentence is more valuable than the diffstat.
+
+- [ ] **Step 5: Budget, then commit**
 
 ```bash
 cd host && npx vitest run test/fork-resume-table.test.ts
@@ -484,7 +569,8 @@ echo "BUDGET_EXIT: $?"
 
 This should REDUCE `forkPlatformTypeScript`. The budget test fails on
 reductions too, so lower the ceiling in `docs/surface-budget.json` in the same
-commit and record the reduction as banked.
+commit and record the reduction as banked — with Step 4's measurement, not the
+line delta alone, as the reason.
 
 ```bash
 cd .. && git add host/src/fork-resume-table.ts host/test/fork-resume-table.test.ts docs/surface-budget.json
@@ -494,7 +580,7 @@ git push origin brandonpayton/lane-f-fork-inversion
 
 ---
 
-## Task 7: Delete op 0 and `resume_slot_of`, and convert the native host
+## Task 6: Delete op 0 and `resume_slot_of`, and convert the native host
 
 **Files:**
 - Modify: `crates/fork-module/src/lib.rs` (delete the op-0 arm and
@@ -556,14 +642,18 @@ git push origin brandonpayton/lane-f-fork-inversion
 
 ---
 
-## Task 8: Decide the ABI question against the code
+## Task 7: Settle whether the ABI snapshot moves
 
 The spec said "ABI snapshot regenerated". That does not follow, and this task
 answers it rather than assuming either way.
 
+**No `ABI_VERSION` bump is in scope.** ABI 44 is unreleased and this lane is
+already defining its contents, so this change lands inside an in-progress
+bump. Do not bump, and do not ask whether to -- that question is already
+answered. What remains is purely whether `abi/snapshot.json` moves.
+
 **Files:**
-- Possibly modify: `crates/shared/src/lib.rs:122` (`ABI_VERSION`),
-  `abi/snapshot.json`
+- Possibly modify: `abi/snapshot.json`
 
 - [ ] **Step 1: Regenerate the snapshot and diff it**
 
@@ -576,13 +666,15 @@ verb rather than guessing) and run it. Diff the result.
 and describes the GUEST's `env` imports. The fork module's own tables appear
 nowhere in the snapshot. So an empty diff is the expected outcome.
 
-If the diff IS empty: record that the ABI surface did not move, and state
-whether an `ABI_VERSION` bump is still wanted as an epoch marker — that is a
-maintainer decision, not an implementer one. **Stop and ask rather than
-bumping or not bumping on your own judgment.**
+If the diff IS empty: record that the ABI surface did not move, and why —
+`required_imports` describes the guest's `env` imports, and the fork module's
+own tables are not in the snapshot. An empty diff with that reasoning written
+down is the deliverable; it retires a claim the spec made.
 
-If the diff is NOT empty: the research was wrong, the snapshot moves, and an
-`ABI_VERSION` bump is required in the same commit per the ABI contract.
+If the diff is NOT empty: the research was wrong. Report what moved and stop —
+an unexpected snapshot change means something about this design reaches
+further than anyone established, and that is worth a maintainer's attention
+before it lands, even inside an in-progress ABI.
 
 - [ ] **Step 3: Commit whatever the answer was**
 
