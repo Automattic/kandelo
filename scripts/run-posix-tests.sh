@@ -59,6 +59,15 @@ LLVM_BIN="$(find_llvm_bin)"
 # runner used to hand-maintain a copy of that contract which had drifted
 # to wasm-ld's ~64 KiB default shadow stack and no `__heap_base` export.
 # See docs/sdk-guide.md.
+#
+# LIVE EXPORTED-CC LEAK, not yet fixed. `CC` is already exported in the dev
+# shell, and bash keeps the export attribute when you assign to an exported
+# name, so this value reaches every child started below -- including
+# scripts/resolve-binary.sh at :328, which builds xtask with cargo, whose
+# cc-rs build scripts then see a wasm cross-compiler as the HOST compiler.
+# The browser runners avoid this by assigning WASM32_CC instead (see the
+# comment in scripts/run-browser-libc-tests.sh); this file has not been
+# converted.
 CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ─────────────────────────────────────────
