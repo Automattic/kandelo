@@ -5,6 +5,10 @@ it as a contract router: it names the platform contracts that must be preserved
 and points to the focused guidance and reference docs that carry the full
 detail.
 
+See `CLAUDE-too-specific-guidance.md` (staged for review) for passages
+moved out of this file because they asserted checkable implementation
+facts rather than contracts.
+
 Kandelo is a POSIX-compatible multi-process kernel for WebAssembly. The project
 is built around contracts between the platform and processes, between hosts and
 the kernel, between packages and the build system, and between the platform and
@@ -140,11 +144,10 @@ Every incompatible ABI change requires an `ABI_VERSION` bump in
 `crates/shared/src/lib.rs` and a regenerated `abi/snapshot.json` in the same
 change. Do not ship incompatible ABI changes under an existing `ABI_VERSION`.
 
-The ABI includes syscall numbers and marshalling, channel layout, process
-memory layout, host-reserved control regions, `repr(C)` structs, kernel Wasm
-exports, ABI custom sections, process-expected globals, `wpk_fork_*` exports,
-generated TypeScript ABI constants, and VFS image metadata that binds Wasm
-programs to a kernel ABI.
+What the ABI covers is broad and changes as the ABI changes; derive the
+current surface from `abi/snapshot.json` and the snapshot-drift check rather
+than from a list in this file (see item A in
+`CLAUDE-too-specific-guidance.md`).
 
 The snapshot check is necessary but not sufficient. Semantic changes to an
 existing syscall, errno, blocking behavior, fd inheritance, memory ownership,
@@ -187,10 +190,12 @@ worker protocol, or Node/browser adapter behavior.
 ## Rust-First Kernel And Fork Contract
 
 Kernel and fork control flow are Rust-first. Do NOT add kernel or fork
-control-flow TypeScript unless it is the irreducible host floor: worker spawn,
-the `fork()` syscall + syscall-channel transport, `resolve_externref` identity
-materialization, anyref-transit `Table.grow` sizing, PIC placement globals, the
-resume `WebAssembly.Table`, and the Node/browser platform bridges. New
+control-flow TypeScript unless it is the irreducible host floor. Do not treat
+any written list of that floor as settled — floor claims take the form "X
+cannot do Y, therefore Z must be host", and in this campaign the premise has
+usually held while the inference failed. Probe it against the code before
+concluding something must stay in TypeScript (item B in
+`CLAUDE-too-specific-guidance.md` records a list previously kept here). New
 capture/replay/orchestration logic belongs in the Rust fork-module
 (`crates/fork-module`) and `crates/fork-codec`, driven through the `fm_*`
 host↔module contract, not in new TypeScript sequencing.
@@ -275,10 +280,10 @@ comparison. Narrower benchmark scopes are acceptable only for non-performance
 changes with plausible performance risk, or for claims that are explicitly
 bounded to one app, host, or subsystem.
 
-Do not repeat known-bad syscall hot-path "optimizations" in
-`host/src/kernel-worker.ts`: syscall argument count tables, syscall
-classification sets, cached channel `DataView`/`Int32Array` objects, or
-conditional debug-ring logging for "trivial" syscalls.
+Several specific syscall hot-path "optimizations" have been tried and rejected
+before; `docs/agent-guidance/performance.md` and item C in
+`CLAUDE-too-specific-guidance.md` name them. Check there before optimizing a
+syscall hot path.
 
 See `docs/agent-guidance/performance.md` before making or evaluating
 performance claims.
@@ -315,10 +320,11 @@ whoever can move the ref can change what executes in a job holding
 the sole exception; they resolve to the running commit. Dependabot keeps the
 pins current.
 
-`./run.sh setup` does not rebuild musl once a sysroot already exists —
-it only re-syncs overlay headers. After editing `libc/musl-overlay/` or
-`libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
-`./run.sh setup`, Vitest, or conformance tests.
+Build freshness checks in this repository are not uniformly closure-derived,
+so a green setup does not always mean your source change reached the artifact.
+`docs/future-improvements.md` tracks the known gaps, and item D in
+`CLAUDE-too-specific-guidance.md` records one worked example. When a change
+must reach a built artifact, verify the artifact, not the setup command.
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,
