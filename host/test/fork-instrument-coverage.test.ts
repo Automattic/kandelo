@@ -474,10 +474,15 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
   // quietly stop exercising what it claims. Constrained by maxPages, not
   // by stack size: the stack stays at the SDK default.
   //
-  // THE RULE, not just a number: the fill must leave the guest with at
-  // least 2 free pages (p_11_fork_continuation_enomem.c:182,
-  // `total_pages_filled < 2`) so there is room for the fixed-3-page
-  // carve-out before the deep fork. That is the ONLY hard lower bound.
+  // THE RULE, not just a number: the fixed-3-page carve-out before the
+  // deep fork (c:274, `free_pages_from_tail(&filler_count, 3)`) needs 3
+  // free pages -- that is the real hard lower bound. The guard at c:199
+  // (`total_pages_filled < 2`) only admits >= 2, so a fill that lands on
+  // exactly 2 free pages passes the guard and then fails at the
+  // carve-out instead, loudly and correctly ("FAIL: could not make fork
+  // transaction page available") rather than at the guard. The guard's
+  // threshold is looser than the real requirement; it does not change
+  // what actually has to be true for this fixture to reach ENOMEM.
   //
   // There used to also be a practical UPPER bound of 511 free pages,
   // because the pre-2026-09-19 fill mapped one wasm page per array slot

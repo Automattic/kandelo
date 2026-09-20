@@ -14,12 +14,20 @@
 
 // Starting granule (in wasm pages) for the coarse fill phase below. Chosen
 // at/above PROCESS_MEMORY_DEFAULT_MAX_PAGES = 16384 (host/src/generated/abi.ts),
-// the production per-process page budget (16384 * 64 KiB = 1 GiB), so the
-// very first mmap attempt at production layout can succeed immediately
-// instead of needing extra halving rounds to find a size that fits. A
-// tighter config (e.g. this fixture's own maxPages: 384 = 24 MiB) just makes
-// every attempt at this starting granule fail, and the halving below finds
-// the real size quickly regardless.
+// the production per-process page budget (16384 * 64 KiB = 1 GiB). Free
+// space is always LESS than this: the program image, stack, and channel
+// already occupy some of the budget before main() runs, at any layout.
+// So the very first mmap at this granule is guaranteed to fail -- that is
+// the point, not something to avoid. Starting at or above the true budget
+// means every granule level begins with the actual remaining free space
+// already smaller than that level's size, so each level can succeed AT
+// MOST ONCE before failing and halving to the next level down. That is
+// what keeps the whole fill to on the order of a dozen mmap calls (about
+// one per set bit in the free-page count) instead of needing multiple
+// successful mmaps at some coarse level. Starting BELOW the true budget
+// would not break correctness -- the halving still finds the exhaustion
+// point -- but could need more than one success at the starting granule,
+// using more of the fixed 512-entry array than necessary.
 #define COARSE_START_PAGES 16384u
 
 // Each filler entry tracks its own page count because the fill loop below
@@ -179,6 +187,15 @@ int main(void) {
         release_fillers(filler_count);
         return 1;
     }
+    // This admits >= 2 total free PAGES, not >= 2 array entries -- one
+    // coarse entry can now cover many pages. The message text below still
+    // says "filler mappings" from when each entry was exactly one page;
+    // it is stale wording now that this counts total_pages_filled, but
+    // changing the string is a compiled-binary change (a new .wasm), out
+    // of scope for a comments-only pass. Left for the next real rebuild
+    // of this fixture. Note also that 2 is not enough for what follows:
+    // the carve-out below needs 3 free pages, so a fill landing on
+    // exactly 2 passes this guard and fails at the carve-out instead.
     if (total_pages_filled < 2) {
         printf("FAIL: fewer than two filler mappings were available\n");
         return 1;
