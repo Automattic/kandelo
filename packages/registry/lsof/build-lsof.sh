@@ -28,20 +28,19 @@ if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
     exit 1
 fi
 
-# NOT in sync with scripts/build-programs.sh. This file carries its own copy
-# of the compiler selection and link flags (find_llvm_bin/CC/CFLAGS/LINK_FLAGS
-# below), and that copy has drifted from the contract sdk/src/lib/flags.ts
-# owns. build-programs.sh was routed through the SDK; this was not, so lsof.wasm
-# is currently linked WITHOUT --export=__heap_base and with wasm-ld's ~64 KiB
-# default shadow stack instead of the SDK's 8 MiB. A program with no
-# __heap_base export falls back to PROCESS_MEMORY_FALLBACK_BRK_BASE
-# (crates/wasm-artifact/src/facts.rs), so this artifact is NOT
-# binary-compatible with the rest of the release.
+# In sync with scripts/build-programs.sh, because both drive the SDK. The SDK
+# owns the compile/link contract (sdk/src/lib/flags.ts): the target, the
+# sysroot, the syscall glue, crt1/libc ordering, the pinned wasm-ld and the
+# process memory layout. This file used to carry its own copy of all of that,
+# and the copy had drifted -- lsof.wasm was linked WITHOUT
+# --export=__heap_base, and a program with no __heap_base export falls back to
+# PROCESS_MEMORY_FALLBACK_BRK_BASE (crates/wasm-artifact/src/facts.rs), so the
+# artifact was not binary-compatible with the rest of the release. It also ran
+# on wasm-ld's ~64 KiB default shadow stack instead of the SDK's 8 MiB.
 #
-# Converting this to the SDK wrapper is pending; do not add flags here to
-# "catch up" by hand, which is what produced the drift in the first place.
+# Do not add flags back by hand to "catch up" -- that is what produced the
+# drift. A missing flag is an SDK change.
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
@@ -61,7 +60,16 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# Absolute path into THIS worktree's SDK, matching the `<repo>/sdk/bin` the
+# local-build engine prepends to PATH for recipe scripts (build_deps.rs). A
+# bare `wasm32posix-cc` would resolve through PATH and, outside a resolver-run
+# build, could pick up a different worktree's SDK and its foreign sysroot.
+#
+# Deliberately NOT named CC. That name is already exported in the dev shell,
+# and bash keeps the export attribute when you assign to an exported name, so
+# the value would reach every child process this recipe starts.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -69,42 +77,15 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
-    -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
-)
-
-LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
-    -Wl,--export=__abi_version
-)
-
+# -O2 is the only compile choice this recipe still makes for itself.
+#
+# Run in a subshell pinned to $REPO_ROOT: the SDK resolves the sysroot and
+# glue dir by walking up from process.cwd() (findSysroot/findGlueDir via
+# projectRootOrSdk, sdk/src/lib/toolchain.ts), and this recipe inherits
+# whatever cwd its caller had. A subshell, not a plain `cd`, so the
+# caller-owned work/output roots this script was handed are unaffected.
 echo "==> Building lsof.wasm from $SRC"
-"$CC" "${CFLAGS[@]}" "$SRC" "${LINK_FLAGS[@]}" -o "$OUT_BIN"
+( cd "$REPO_ROOT" && "$WASM32_CC" -O2 "$SRC" -o "$OUT_BIN" )
 
 if [ -n "$WASM_OPT" ]; then
     "$WASM_OPT" -O2 "$OUT_BIN" -o "$OUT_BIN"
