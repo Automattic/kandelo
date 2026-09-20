@@ -102,6 +102,23 @@ export interface ProcessMemoryLayoutOptions {
 export function computeProcessMemoryLayout(
   options: ProcessMemoryLayoutOptions,
 ): ProcessMemoryLayout {
+  // TRUTHFUL FAILURE over a convenient illusion. A named program whose
+  // `__heap_base` could not be read used to get a silent 16 MiB brk fallback
+  // (`PROCESS_MEMORY_FALLBACK_BRK_BASE`), plus the heap/shadow-stack overlap
+  // `crates/runtime-core/src/memory.rs:384-392` describes for programs with a
+  // large data section. A binary arriving without the export is a build that
+  // went wrong, not a legacy artifact: there is no backwards compatibility
+  // here, and instrumentation ships with the fork support that consumes it.
+  //
+  // Absence of a PROGRAM is different and stays supported: `EMPTY_PROGRAM`
+  // below is the documented answer for a caller that names none.
+  if (options.programBytes !== undefined && options.heapBase === null) {
+    throw new Error(
+      "process memory layout: the program exports no __heap_base, so its " +
+        "initial program break cannot be derived. Rebuild it through the SDK " +
+        "(sdk/bin/wasm32posix-cc); see docs/sdk-guide.md.",
+    );
+  }
   const layout = readWasmProcessMemoryLayout(
     options.programBytes ?? EMPTY_PROGRAM,
     {

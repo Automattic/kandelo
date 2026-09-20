@@ -465,4 +465,37 @@ describe("one process memory layout", () => {
       ).toBe(false);
     }
   });
+
+  it("refuses a real program whose heap base could not be read", () => {
+    // A null heapBase used to mean a silent 16 MiB brk fallback plus the
+    // heap/shadow-stack overlap `crates/runtime-core/src/memory.rs:384-392`
+    // warns about. Every SDK-built program lacked `__heap_base` until the link
+    // contract was unified, and the kernel comment asserting "for programs
+    // built with our SDK this is always overridden" was false the whole time.
+    // Not the brief's bare relative path: this suite runs via
+    // `cd host && npx vitest run test/...` (see this repo's host-test
+    // convention), whose cwd is `host/`, not the repo root the literal path
+    // assumed. `REPO_ROOT`, already derived above from `import.meta.url` for
+    // `programBinaries()`, is invocation-directory-independent.
+    const programBytes = readFileSync(
+      `${REPO_ROOT}local-binaries/programs/wasm32/p_01_fork_main_thread.wasm`,
+    ).buffer as ArrayBuffer;
+    expect(() =>
+      computeProcessMemoryLayout({
+        ptrWidth: 4,
+        maxPages: 384,
+        programBytes,
+        heapBase: null,
+      }),
+    ).toThrow(/__heap_base/);
+  });
+
+  it("still serves a layout when no program is named at all", () => {
+    // Absence of a PROGRAM is not absence of an EXPORT. A caller asking for a
+    // layout without naming a program gets the documented empty-program answer,
+    // not a refusal.
+    expect(() =>
+      computeProcessMemoryLayout({ ptrWidth: 4, maxPages: 384 }),
+    ).not.toThrow();
+  });
 });
