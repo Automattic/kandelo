@@ -181,11 +181,14 @@ LLVM_BIN="$(find_llvm_bin)"
 #
 # Deliberately NOT named CC. That name is already exported in the dev shell,
 # and bash keeps the export attribute when you assign to an exported name, so
-# `CC=.../wasm32posix-cc` would reach every child process, including any
-# `cargo` the script's helpers run, whose cc-rs build scripts would then
-# compile host objects with a wasm cross-compiler. The parallel include build
-# below needs it across a `bash -c` boundary, so it is exported under this
-# name instead.
+# `CC=.../wasm32posix-cc` would reach every child process this script starts
+# after the assignment. This file's one cargo caller (scripts/resolve-binary.sh,
+# which builds xtask) happens to run ABOVE the assignment today, so the leak is
+# latent here rather than live -- it is live in
+# scripts/run-browser-posix-tests.sh, where the order is reversed. The naming
+# rule does not depend on that ordering, which is why it is a rule. The
+# parallel include build below needs the compiler across a `bash -c` boundary,
+# so it is exported under this safe name instead.
 WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ──
