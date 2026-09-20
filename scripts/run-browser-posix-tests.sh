@@ -11,8 +11,15 @@ set -euo pipefail
 #   scripts/run-browser-posix-tests.sh signal raise kill    # run specific interfaces
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# WHY: the SDK resolves the sysroot and glue dir by walking up from
+# process.cwd() (findSysroot/findGlueDir via projectRootOrSdk,
+# sdk/src/lib/toolchain.ts:13-31,112-131), not from this script's location.
+# Invoked with a cwd inside a different kandelo worktree it would compile
+# against THAT worktree's sysroot while the prerequisite check below validated
+# this one. Pin the cwd so both agree. (The browser runner below also needs
+# this cwd; it used to set it just before the npx call.)
+cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 POSIX_TEST="$REPO_ROOT/tests/posix/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
@@ -62,44 +69,42 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Identical to scripts/run-posix-tests.sh, the Node.js runner for this same
+# suite: conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix target
+# triple, the guest syscall glue, crt1/libc ordering, the pinned wasm-ld, and
+# the process memory layout (8 MiB main-thread shadow stack, `--global-base`,
+# `__heap_base`/`__abi_version` exports). This runner used to hand-maintain a
+# copy of that contract which had drifted to wasm-ld's ~64 KiB default shadow
+# stack, no `__heap_base` export (so every test program ran on the 16 MiB brk
+# fallback) and no `--global-base`. See docs/sdk-guide.md.
+#
+# Deliberately NOT named CC. That name is already exported in the dev shell,
+# and bash keeps the export attribute when you assign to an exported name, so
+# `CC=.../wasm32posix-cc` would reach every child process — including the
+# `cargo build -p xtask` that scripts/resolve-binary.sh runs below, whose cc-rs
+# build scripts would then compile host objects with a wasm cross-compiler.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ─────────────────────────────────────────
+#
+# Only test-specific flags belong here; the SDK supplies the target,
+# sysroot, `-nostdlib`, and the codegen/lowering flags.
 
 CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -O2
     -D_GNU_SOURCE
     -D_POSIX_C_SOURCE=200112L
     -I"$POSIX_TEST/include"
     -Wno-format
 )
 
-LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
-)
+# The SDK driver contributes the whole executable link line: syscall
+# glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag.
+LINK_FLAGS=()
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
@@ -212,7 +217,12 @@ for iface in "${INTERFACES[@]}"; do
         wasm="$BUILD_DIR/$iface/${test_name}.wasm"
         mkdir -p "$BUILD_DIR/$iface"
 
-        if ! "$CC" "${CFLAGS[@]}" "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/tmp/posix-test-build-err.txt; then
+        # Bash 3.2 under `set -u` treats expansion of an empty array as
+        # unbound; the `${arr[@]+...}` guard suppresses that now LINK_FLAGS
+        # is empty.
+        if ! "$WASM32_CC" "${CFLAGS[@]}" "$src" \
+            ${LINK_FLAGS[@]+"${LINK_FLAGS[@]}"} \
+            -o "$wasm" 2>/tmp/posix-test-build-err.txt; then
             if is_expected_fail "$local_test_id"; then
                 echo "XFAIL $local_test_id (expected — build failure)"
                 RESULTS+=("XFAIL $local_test_id")
@@ -240,7 +250,6 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
     RESULT_FILE=$(mktemp)
     trap "rm -f '$RESULT_FILE'" EXIT
 
-    cd "$REPO_ROOT"
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
         "${WASM_FILES[@]}" > "$RESULT_FILE" 2>/dev/null || true
 
