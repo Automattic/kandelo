@@ -103,87 +103,56 @@ the amendment argues against it.
 
 ---
 
-## Task 0: Establish the two facts the rest of this plan assumes
+## Task 0: SETTLED — read this before Tasks 1-7
 
-Tasks 2 through 5 are built on two assumptions that have not been checked
-against a running instance. Both are cheap to settle and expensive to get
-wrong, so they are settled FIRST, alone, before anyone writes a harness or a
-mirror.
+Task 0 was an investigation, and it is done. Its findings are recorded in
+`.superpowers/sdd/2026-09-18-fork-storage-phase0-and-build-path/change2-task0-reading.md`
+and summarised here because later tasks depend on them. **No live run was
+needed; all three questions were settled statically.** Do not re-derive these.
 
-**Assumption 1 — the resume table is ONE module-owned object.**
-`crates/fork-module/src/lib.rs:498-505` says "activation 0's table and
-activation 1's table are distinct JS `WebAssembly.Table`s with independent
-slot spaces", while `crates/fork-module-inject/src/main.rs:130-134` says the
-resume table is "OWNED and exported by the module … one object". Both cannot
-be true now. The likeliest reading is that the module comment predates the
-move recorded at `main.rs:1037-1041` and was never updated — but this decides
-whether one slot space is a deletion or a redesign.
+**1. The resume table is ONE object per WORKER, and `lib.rs:498-505` is
+STALE.** The module defines and exports it (`fork-module-inject/src/main.rs:1042-1044`);
+the guest imports it (`fork-instrument/src/runtime.rs:469-471`); there is one
+`instantiateForkModule` per worker (`worker-main.ts:3628` for the process
+worker, `:6449` for each pthread); and `fork-guest-imports.ts:140-149` assigns
+the module's `Table` export into the guest's `env` **by reference, with no
+clone**. Confirmed against built artifacts: in the guest, table 1 is the
+imported `__wpk_fork_resume_table` and table 7 is the local
+`__wpk_fork_resume_catalog`; in the module, table 5 is local and exported.
 
-**Assumption 2 — there is a single natural site to fill the mirror from.**
-Task 5 must fill the merged mirror before calling placement. The activation
-sink at `host/src/fork-activations.ts:106-116` drives the equivalent fill for
-the function catalog, but the two worker sites
-(`host/src/worker-main.ts:3905-3915` for the process worker, `:6510-6520` for
-the pthread worker) call it in OPPOSITE order relative to catalog
-publication — `:1034`/`:1042` versus `:4654`/`:4662`. Which site owns the fill
-determines where Task 5 edits.
+**The caveat that matters:** identity is per WORKER. The process worker and a
+pthread worker hold two DISTINCT tables, because each instantiates its own
+fork module. Activations within one worker share a table and therefore a slot
+space; activations in different workers do not. Any claim about "one slot
+space" must say "per worker" or it is wrong.
 
-**Files:**
-- Read: `crates/fork-module/src/lib.rs`, `crates/fork-module-inject/src/main.rs`,
-  `host/src/fork-activations.ts`, `host/src/worker-main.ts`
-- Modify: `crates/fork-module/src/lib.rs:498-505` (comment only, and only if
-  Task 0 finds it stale)
+`crates/fork-module/src/lib.rs:498-505` still describes per-activation tables
+with independent slot spaces. It is stale and should be corrected — fold that
+into whichever task first touches that file.
 
-**Interfaces:**
-- Produces: a written answer to both assumptions, recorded in the task report
-  and — for assumption 1 — as a corrected comment in the source. Tasks 1
-  through 5 consume both.
+**2. The fill/invocation owner is `ForkActivations.register()`
+(`host/src/fork-activations.ts:139-155`)** — not either worker. It is a single
+site serving both workers and all three call paths, and it is where the
+equivalent fill happens for the function catalog. Correct ordering:
+`forkActivations.register()` runs BEFORE placement.
 
-- [ ] **Step 1: Settle the table-identity question against a running instance**
+Two corrections to what this plan previously said:
+* There are **THREE** `registerActivation` sites, not two —
+  `host/src/worker-main.ts:1034`, `:4662`, and `:6971`. The pthread-main site
+  at `:6971` is named nowhere in the spec or in earlier drafts of this plan.
+  The process-main site is the lone ordering outlier; it is not "the two
+  workers disagree with each other".
+* `host/src/worker-main.ts:3905-3915` and `:6510-6520`, cited earlier as the
+  fill, are the sink's CONSTRUCTION. They are not where the fill happens.
 
-Do not infer this from comments; both comments are evidence and they disagree.
-Run an existing multi-activation fork test and inspect the instance. The fork
-module's exported tables are reachable from the instance record
-(`host/src/fork-module-instance.ts:59-61`, `:313-315`), and the guest's
-imports are bound at `host/src/fork-guest-imports.ts:140-149`.
-
-The question to answer precisely: when two activations are loaded, do their
-guests import the SAME `WebAssembly.Table` object, or two different ones?
-Object identity (`===`), not structural equality.
-
-- [ ] **Step 2: Record the answer and act on it**
-
-If ONE object: `lib.rs:498-505` is stale. Correct it in this task, saying what
-is true now and noting that the per-activation catalog machinery it justifies
-(`fm_set_activation_resume_catalog`, `register_activation_slots`) is therefore
-a candidate for deletion by the storage change that follows — flag it, do not
-delete it here.
-
-If TWO objects: **STOP AND REPORT.** Tasks 2 through 5 assume one table. A
-per-activation reality means the module cannot own placement the way this plan
-describes, and the plan needs rewriting rather than adapting.
-
-- [ ] **Step 3: Name the mirror-fill site**
-
-Read `host/src/fork-activations.ts:106-116` and both worker sites. State which
-owns the fill for the function catalog today, and whether the resume mirror
-can follow the same path or needs its own. Name the exact file and line Task 5
-will edit. If the two worker sites genuinely differ in ordering, say what the
-correct order is for a mirror that must be full BEFORE placement runs.
-
-- [ ] **Step 4: Commit**
-
-```bash
-cd host && npx vitest run test/surface-budget.test.ts > /tmp/b.txt 2>&1
-echo "BUDGET_EXIT: $?"
-cd .. && git add crates/fork-module/src/lib.rs
-git commit -m "Fork: Correct what the resume table's ownership actually is"
-git push origin brandonpayton/lane-f-fork-inversion
-```
-
-If Step 2 found nothing to correct, commit nothing and say so in the report —
-a task whose finding is "the comment was right" produces a report, not a
-commit.
+**3. Module-driven invocation is AVAILABLE, and is the pick.** The drive table
+is host-imported but filled by one existing loop
+(`host/src/fork-module-backend.ts:717-742`), the module already
+`call_indirect`s it, and `drive_plan.rs:233-234` explicitly sanctions growing
+the stride as an additive change. Cost: the stride goes 16 → 17 in three
+duplicated places, one binding entry is added, and three guards go red and
+must be updated deliberately. **Zero new host call sites** — which is why this
+is the pick over host-invoked.
 
 ---
 
@@ -278,6 +247,15 @@ wasm").
   returning the number of thunks placed. `ptr` addresses `count` packed
   `(ordinal: u32, slot: u32)` pairs in shared linear memory, written by the
   module in Task 3.
+
+**THE SHIM MUST GROW THE TABLE, NOT ONLY WRITE IT.** The resume table is
+created `initial=1, max=none` (`fork-module-inject/src/main.rs:1035-1044`) and
+the HOST grows it today (`host/src/fork-resume-table.ts:178-182`). A
+get/set-only shim traps on the very first activation, because slot N does not
+exist yet. Emit `table.size` / `table.grow` alongside the write, following
+`inject_transit_grow` (`crates/fork-module-inject/src/main.rs:1569-1624`),
+which is the same shape for the same reason. This was missing from an earlier
+draft of this plan and would have failed immediately.
 
 - [ ] **Step 1: Read the two precedents before writing any injection**
 
@@ -464,15 +442,20 @@ Expected: the mapping is IDENTICAL to the recorded baseline. This is the
 comparison the spec calls "the test that matters". A difference is a
 regression, not a new normal — do not re-record the baseline to make it pass.
 
-- [ ] **Step 4: Confirm the host no longer writes the table**
+- [ ] **Step 4: Confirm the host no longer writes the table for PLACEMENT**
 
 ```bash
 grep -n "\.set(" host/src/fork-resume-table.ts
 ```
 
-The per-thunk `Table.set` should now be unreachable. Do not delete it yet —
-Task 5 does that, separately, so a placement regression stays attributable
-from a deletion.
+The per-thunk placement `Table.set` should now be unreachable. Do not delete
+it yet — Task 5 does that, separately, so a placement regression stays
+attributable from a deletion.
+
+**One `Table.set` is legitimate and STAYS**: `host/src/fork-resume-table.ts:138`,
+inside `unregisterActivation`, which clears a released slot. This plan does not
+touch the dlclose path. Do not report its survival as an incomplete migration,
+and do not delete it in Task 5.
 
 - [ ] **Step 5: Run the fork surface**
 
@@ -585,7 +568,11 @@ git push origin brandonpayton/lane-f-fork-inversion
 **Files:**
 - Modify: `crates/fork-module/src/lib.rs` (delete the op-0 arm and
   `resume_slot_of`)
-- Modify: `crates/host-native/src/guest.rs:8155-8196`
+- Modify: `crates/host-native/src/guest.rs:8155-8196` AND
+  `crates/host-native/src/guest.rs:11262-11294` — there are TWO table-minting
+  sites in that file, not one. The second was named nowhere in the spec or in
+  earlier drafts of this plan; converting only the first would leave a path
+  that still numbers its own slots.
 - Modify: `crates/host-native/src/lib.rs:1379` (`fork_module_host_obligation_is_pinned`,
   exact-list assert at `:1513-1521`)
 

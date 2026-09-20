@@ -815,7 +815,11 @@ equally false.
 ### What the code actually does
 
 **There is no host-owned resume table.** `crates/fork-module-inject/src/main.rs:1042-1044`
-creates the table in the GUEST module and exports it:
+creates the table and exports it — **in the FORK MODULE, not the guest; the
+sentence that said "in the GUEST module" was wrong and is corrected in the
+next section.** `crates/fork-module-inject` injects into the fork module;
+guests are handled by `crates/fork-instrument`, which gives them an IMPORT of
+this table (`crates/fork-instrument/src/runtime.rs:469-471`):
 
     let resume_table = module.tables.add_local(false, 1, None, RefType::FUNCREF);
     module.tables.get_mut(resume_table).name = Some(RESUME_TABLE_EXPORT.to_string());
