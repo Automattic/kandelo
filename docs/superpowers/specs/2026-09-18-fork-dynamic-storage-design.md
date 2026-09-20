@@ -947,3 +947,61 @@ a module-owned table.
   opposite order relative to catalog publication (`worker-main.ts:1034`/`:1042`
   versus `:4654`/`:4662`), which matters once placement reads from a
   module-owned table.
+
+### Correction to this amendment, same day
+
+The amendment above proposes "the fork-module DEFINES and exports one resume
+table; each guest activation IMPORTS it" as the change to make. **That is
+already the case, and has been.** The correction is mine, not the spec's.
+
+`crates/fork-module-inject` injects into the FORK MODULE, not into guests
+(guests are handled by `crates/fork-instrument`). Its
+`main.rs:130-134` reads:
+
+> The funcref table of guest resume thunks, OWNED and exported by the module
+> for the same reason the transit table above is: one object, so the guest's
+> import, the module's slot numbering and the host's placement cannot be three
+> different tables. Rust cannot hold a funcref, so it is defined here.
+
+So the destination table needs no import and no move. What is actually missing
+is narrower, and one piece of it also already exists:
+
+* **Writing a funcref from Rust — SOLVED ALREADY.**
+  `__wpk_fork_table_apply(dest, catalog_slot, clear)` is declared as an import
+  and rewritten into three instructions by `inject_table_apply_thunk`
+  (`main.rs:2101-2108`), precisely because "Rust cannot emit `table.set` on an
+  imported table". `table.grow` has the same treatment via the
+  `fm_transit_grow` shim (`:1569-1624`).
+* **A source of thunk funcrefs reachable from wasm — MISSING.** The thunks
+  live in each guest instance's own exported `__wpk_fork_resume_catalog`
+  (emitted by `crates/fork-instrument/src/instrument.rs:4456-4489`), and a
+  fork-module instance is created before any guest and serves every
+  activation, so it cannot import N per-activation tables. The established
+  answer to exactly this problem is a host-owned MERGED MIRROR plus a
+  per-activation base, as `ForkMergedFunctionCatalog`
+  (`host/src/fork-merged-catalog.ts:1-55`) already does for the function
+  catalog, whose header states the reason verbatim: "The module is
+  instantiated BEFORE its guests … so it cannot import a guest's
+  `__wpk_fork_function_catalog` directly."
+
+**The resume thunks are not already in the existing function-catalog mirror.**
+Verified two ways: `inject_function_catalog` is called at
+`crates/fork-instrument/src/lib.rs:444`, before
+`instrument_functions_with_targets_and_tail_sites` at `:485` creates the
+thunks; and a built artifact carries them as separate exports —
+`__wpk_fork_function_catalog` is table[3] while `__wpk_fork_resume_catalog` is
+table[7] in `p_11_fork_continuation_enomem.wasm`. So a new merged mirror is
+required; the existing one cannot be reused by base+ordinal.
+
+**Unresolved, and the plan's first task must settle it empirically.**
+`crates/fork-module/src/lib.rs:498-505` says "activation 0's table and
+activation 1's table are distinct JS `WebAssembly.Table`s with independent slot
+spaces", which contradicts a single module-owned resume table. The likeliest
+reading is that the comment predates the move recorded at `main.rs:1037-1041`
+("This used to be a `WebAssembly.Table` the host minted and passed in
+`extras`") and was never updated — the same stale-comment failure this lane
+keeps finding. But it is load-bearing for whether one slot space is a deletion
+or a redesign, so it must be checked against a running instance rather than
+inferred. Until it is, treat the "one slot space" discussion above as
+unproven.
+
