@@ -18,9 +18,6 @@ export const PROCESS_MMAP_BASE_PAGE = PROCESS_MMAP_BASE / WASM_PAGE_SIZE;
 /** Kernel MemoryManager::INITIAL_BRK fallback for binaries without __heap_base. */
 export const PROCESS_FALLBACK_BRK_BASE = PROCESS_MEMORY_FALLBACK_BRK_BASE;
 
-/** @deprecated brk and mmap are now coordinated by the kernel allocator. */
-export const DEFAULT_BRK_RESERVE_PAGES = 256; // 16 MiB
-
 export const DEFAULT_PROCESS_INITIAL_PAGES = PROCESS_MEMORY_DEFAULT_INITIAL_PAGES;
 export const DEFAULT_PROCESS_THREAD_SLOTS = PROCESS_MEMORY_DEFAULT_THREAD_SLOTS;
 export const PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT =

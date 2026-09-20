@@ -64,9 +64,21 @@ impl MemoryManager {
 
     /// Fallback initial program break at 16MB, used only when the host
     /// has not called [`Self::set_brk_base`] with the program's
-    /// `__heap_base` export. For programs built with our SDK this is
-    /// always overridden before `_start` runs; the constant is a safety
-    /// net for non-standard binaries that lack `__heap_base`.
+    /// `__heap_base` export. On the TypeScript host, every named program
+    /// built through the SDK overrides this before `_start` runs, because
+    /// `sdk/src/lib/flags.ts` exports `__heap_base` and
+    /// `computeProcessMemoryLayout` (`host/src/process-memory.ts`) now
+    /// refuses a named program that lacks it. That guard is TypeScript-host
+    /// only: `crates/host-native/src/guest.rs` still substitutes this
+    /// fallback for a missing `heap_base` (see
+    /// `crates/shared/src/lib.rs`'s `FALLBACK_BRK_BASE`), so host-native
+    /// callers can still land here. This was NOT true before 2026-09-18:
+    /// `scripts/build-programs.sh` and ten other files carried their own
+    /// drifted copy of the link contract and had lost
+    /// `--export=__heap_base`, so every test program ran on this fallback
+    /// while this comment asserted the opposite. The constant remains a
+    /// safety net for non-standard binaries that genuinely lack
+    /// `__heap_base`.
     const INITIAL_BRK: usize = 0x01000000;
 
     /// Default address space limit (1GB, matching --max-memory).
