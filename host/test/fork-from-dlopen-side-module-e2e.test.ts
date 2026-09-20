@@ -28,6 +28,15 @@ const repoRoot = join(__dirname, "../..");
 const sysroot = join(repoRoot, "sysroot");
 const glueDir = join(repoRoot, "libc", "glue");
 const clangDriver = process.env.CLANG ?? "clang";
+// The SDK owns the executable link contract (linkFlags() in
+// sdk/src/lib/flags.ts). buildMainProgram() used to carry its own copy, and
+// the copy had drifted: no -z stack-size=8388608, so the program ran on
+// wasm-ld's ~64 KiB default shadow stack instead of the SDK's 8 MiB, and no
+// --export=__abi_version, so nothing bound it to a kernel ABI epoch.
+//
+// Absolute path, never a bare `wasm32posix-cc`: a bare name resolves through
+// PATH and can pick up a different worktree's SDK.
+const cc = join(repoRoot, "sdk", "bin", "wasm32posix-cc");
 const instrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
 // Stage the built `.so` under `<repoRoot>/target` (never an in-kernel tmpfs
 // scratch prefix) so the guest reaches the real host file through
@@ -67,6 +76,13 @@ function instrumentInPlace(wasmPath: string, entry?: string): void {
   renameSync(output, wasmPath);
 }
 
+// NOT routed through the SDK, deliberately, and this is the one place in this
+// file that still carries its own flags. The SDK's `-shared -fPIC` path emits
+// SHARED_LINK_FLAGS and nothing else; it has no way to express `--Bdynamic`
+// followed by a dependency list, which is what the DT_NEEDED closure test
+// below relies on to get a `neededDynlibs` entry into the dylink section.
+// Converting this needs the SDK to model dynamic side-module dependencies
+// first; hand-copying flags into the SDK path would just move the copy.
 function buildSharedLibrary(
   source: string,
   name = "libforkinside",
@@ -111,37 +127,15 @@ function buildMainProgram(source: string): string {
   const sourcePath = join(buildDir, "fork-from-side-main.c");
   const wasmPath = join(buildDir, "fork-from-side-main.wasm");
   writeFileSync(sourcePath, source);
-  execFileSync(llvmTool("clang"), [
-    "--target=wasm32-unknown-unknown",
-    `--sysroot=${sysroot}`,
-    "-nostdlib",
+  // The driver supplies the target, the sysroot, -nostdlib, the codegen
+  // flags, the syscall glue, compiler_rt.c, cxxrt.c, crt1.o, libc.a and every
+  // -Wl, flag. `-ldl` is how it spells the dlopen glue this program needs
+  // (parseArgs/linkDl, sdk/src/bin/cc.ts). `-Wl,--export-all` stays: it is
+  // this fixture's own requirement, not part of the platform contract.
+  execFileSync(cc, [
     "-O2",
-    "-matomics",
-    "-mbulk-memory",
-    "-fno-trapping-math",
+    "-ldl",
     sourcePath,
-    join(glueDir, "channel_syscall.c"),
-    join(glueDir, "compiler_rt.c"),
-    join(glueDir, "dlopen.c"),
-    join(sysroot, "lib", "crt1.o"),
-    join(sysroot, "lib", "libc.a"),
-    "-Wl,--no-entry",
-    "-Wl,--export=_start",
-    "-Wl,--export=__heap_base",
-    "-Wl,--import-memory",
-    "-Wl,--shared-memory",
-    "-Wl,--max-memory=1073741824",
-    "-Wl,--allow-undefined",
-    "-Wl,--global-base=1114112",
-    "-Wl,--table-base=3",
-    "-Wl,--export-table",
-    "-Wl,--growable-table",
-    "-Wl,--export=__wasm_init_tls",
-    "-Wl,--export=__tls_base",
-    "-Wl,--export=__tls_size",
-    "-Wl,--export=__tls_align",
-    "-Wl,--export=__stack_pointer",
-    "-Wl,--export=__wasm_thread_init",
     "-Wl,--export-all",
     "-o",
     wasmPath,
