@@ -12,8 +12,15 @@ set -euo pipefail
 #   scripts/run-browser-libc-tests.sh functional string   # run specific test(s)
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# WHY: the SDK resolves the sysroot and glue dir by walking up from
+# process.cwd() (findSysroot/findGlueDir via projectRootOrSdk,
+# sdk/src/lib/toolchain.ts:13-31,112-131), not from this script's location.
+# Invoked with a cwd inside a different kandelo worktree it would compile
+# against THAT worktree's sysroot while the prerequisite check below validated
+# this one. Pin the cwd so both agree. (The browser runner below also needs
+# this cwd; it used to set it just before the npx call.)
+cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
 BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
@@ -88,16 +95,35 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
 
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Identical to scripts/run-libc-tests.sh, the Node.js runner for this same
+# suite. Conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix target
+# triple, the guest syscall glue, crt1/libc ordering, the pinned wasm-ld, and
+# the process memory layout (8 MiB main-thread shadow stack, `--global-base`,
+# `__heap_base`/`__abi_version` exports). This runner used to hand-maintain a
+# copy of that contract which had drifted to wasm-ld's ~64 KiB default shadow
+# stack and no `__heap_base` export, so the browser suite measured a memory
+# layout no real Kandelo program runs under -- and a different one from what
+# its own Node.js twin measured. See docs/sdk-guide.md.
+#
+# Deliberately NOT named CC. That name is already exported in the dev shell,
+# and bash keeps the export attribute when you assign to an exported name, so
+# `CC=.../wasm32posix-cc` would reach every child process this script starts
+# after the assignment. This file's one cargo caller
+# (scripts/resolve-binary.sh, which builds xtask) happens to run ABOVE the
+# assignment today, so the leak is latent here rather than live -- it is live
+# in scripts/run-browser-posix-tests.sh, where the order is reversed. The
+# naming rule does not depend on that ordering, which is why it is a rule.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
+
+# Common compile flags (CFLAGS_BASE excludes -I common for overlay builds).
+# Only test-specific flags belong here; the SDK supplies the target,
+# sysroot, `-nostdlib`, and the codegen/lowering flags.
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -O2
     -D_GNU_SOURCE
 )
 CFLAGS=("${CFLAGS_BASE[@]}" -I"$LIBC_TEST/src/common")
@@ -112,26 +138,13 @@ COMMON_SRCS=(
     "$LIBC_TEST/src/common/vmfill.c"
 )
 
-LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
-)
+# The SDK driver contributes the whole executable link line: syscall
+# glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag.
+#
+# Expanded with the `${arr[@]+...}` guard at every use site: this array is now
+# empty, and bash 3.2 (the `/bin/bash` this shebang selects on macOS) treats
+# expansion of an empty array under `set -u` as an unbound variable.
+LINK_FLAGS=()
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
@@ -176,8 +189,8 @@ build_functional() {
     local wasm="$BUILD_DIR/functional/${test_name}.wasm"
     mkdir -p "$BUILD_DIR/functional"
 
-    "$CC" "${CFLAGS[@]}" \
-        "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
+    "$WASM32_CC" "${CFLAGS[@]}" \
+        "$src" "${COMMON_SRCS[@]}" ${LINK_FLAGS[@]+"${LINK_FLAGS[@]}"} \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
     instrument_wasm "$wasm"
 }
@@ -188,8 +201,8 @@ build_regression() {
     local wasm="$BUILD_DIR/regression/${test_name}.wasm"
     mkdir -p "$BUILD_DIR/regression"
 
-    "$CC" "${CFLAGS[@]}" \
-        "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
+    "$WASM32_CC" "${CFLAGS[@]}" \
+        "$src" "${COMMON_SRCS[@]}" ${LINK_FLAGS[@]+"${LINK_FLAGS[@]}"} \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
     instrument_wasm "$wasm"
 }
@@ -200,11 +213,11 @@ build_math() {
     local wasm="$BUILD_DIR/math/${test_name}.wasm"
     mkdir -p "$BUILD_DIR/math"
 
-    "$CC" "${CFLAGS[@]}" \
+    "$WASM32_CC" "${CFLAGS[@]}" \
         -I"$LIBC_TEST/src/math" \
         "$src" \
         "$LIBC_TEST/src/common/mtest.c" \
-        "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
+        "${COMMON_SRCS[@]}" ${LINK_FLAGS[@]+"${LINK_FLAGS[@]}"} \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
     instrument_wasm "$wasm"
 }
