@@ -45,6 +45,31 @@ function llvmTool(name: "clang" | "clang++" | "wasm-ld"): string {
 const CLANG = llvmTool("clang");
 const CLANGXX = llvmTool("clang++");
 const WASM_LD = llvmTool("wasm-ld");
+
+// The SDK owns the executable link contract (linkFlags() in
+// sdk/src/lib/flags.ts). buildMainProgram() used to carry its own copy, and
+// the copy had drifted: no -z stack-size=8388608, so the program ran on
+// wasm-ld's ~64 KiB default shadow stack instead of the SDK's 8 MiB, and no
+// --export=__abi_version, so nothing bound it to a kernel ABI epoch.
+//
+// Absolute path, never a bare `wasm32posix-cc`: a bare name resolves through
+// PATH and can pick up a different worktree's SDK.
+const CC = join(REPO_ROOT, "sdk", "bin", "wasm32posix-cc");
+
+// The SDK normally resolves the sysroot by walking up from process.cwd(), and
+// that is the right answer here. KANDELO_TEST_SYSROOT is this file's existing
+// override, honoured by the side-module builds and by the artifact gate, so
+// hand it to the driver too rather than letting the main program and the side
+// modules silently disagree about which libc they were built against.
+//
+// WASM_POSIX_SYSROOT is normally the WRONG lever, because findSysroot()
+// returns it for every arch alike: a script that builds both wasm32 and
+// wasm64 would hand the wasm64 link the wasm32 sysroot. This file builds
+// wasm32 only, so that hazard cannot arise.
+const CC_ENV = process.env.KANDELO_TEST_SYSROOT
+  ? { ...process.env, WASM_POSIX_SYSROOT: SYSROOT }
+  : process.env;
+
 const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
@@ -92,6 +117,11 @@ const CPP_RUNTIME_MAIN_EXPORTS = [
 ];
 
 /** Build a shared Wasm library (.so side module) from C source. */
+// NOT routed through the SDK, deliberately. The SDK's `-shared -fPIC` path
+// emits SHARED_LINK_FLAGS and nothing else, while the C++ arm below needs an
+// explicit `--export=__tls_base` alongside the libc++ PIC archives. Both
+// side-module builds are left on wasm-ld until the SDK models those; copying
+// their flags into the SDK path would move the copy rather than retire it.
 function buildSharedLib(source: string, name: string): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
   const objPath = join(BUILD_DIR, `${name}.o`);
@@ -172,44 +202,21 @@ function buildMainProgram(source: string, name: string, forceExports: string[] =
 
   writeFileSync(srcPath, source);
 
-  const cflags = [
-    "--target=wasm32-unknown-unknown",
-    `--sysroot=${SYSROOT}`,
-    "-nostdlib",
+  // The driver supplies the target, the sysroot, -nostdlib, the codegen
+  // flags, the syscall glue, compiler_rt.c, cxxrt.c, crt1.o, libc.a and every
+  // -Wl, flag. `-ldl` is how it spells the dlopen glue this program needs
+  // (parseArgs/linkDl, sdk/src/bin/cc.ts). The two remaining `-Wl,` entries
+  // are this fixture's own requirements, not part of the platform contract:
+  // --export-all and -u keep symbols a dlopened module resolves against.
+  execFileSync(CC, [
     "-O2",
-    "-matomics", "-mbulk-memory",
-    "-fno-trapping-math",
-  ];
-
-  const linkFlags = [
-    join(GLUE_DIR, "channel_syscall.c"),
-    join(GLUE_DIR, "compiler_rt.c"),
-    join(GLUE_DIR, "dlopen.c"),
-    join(SYSROOT, "lib", "crt1.o"),
-    join(SYSROOT, "lib", "libc.a"),
-    "-Wl,--no-entry",
-    "-Wl,--export=_start",
-    "-Wl,--export=__heap_base",
-    "-Wl,--import-memory",
-    "-Wl,--shared-memory",
-    "-Wl,--max-memory=1073741824",
-    "-Wl,--allow-undefined",
-    "-Wl,--global-base=1114112",
-    "-Wl,--table-base=3",
-    "-Wl,--export-table",
-    "-Wl,--growable-table",
-    "-Wl,--export=__wasm_init_tls",
-    "-Wl,--export=__tls_base",
-    "-Wl,--export=__tls_size",
-    "-Wl,--export=__tls_align",
-    "-Wl,--export=__stack_pointer",
-    "-Wl,--export=__wasm_thread_init",
+    "-ldl",
+    srcPath,
     ...(forceExports.length > 0 ? ["-Wl,--export-all"] : []),
     ...forceExports.map((symbol) => `-Wl,-u,${symbol}`),
-  ];
-
-  const allArgs = [...cflags, srcPath, ...linkFlags, "-o", wasmPath];
-  execSync(`${CLANG} ${allArgs.join(" ")}`, { stdio: "pipe" });
+    "-o",
+    wasmPath,
+  ], { stdio: "pipe", env: CC_ENV });
 
   // wasm-fork-instrument is required for fork support; without it,
   // kernel_fork returns ENOSYS and the bug-under-test never reproduces.
