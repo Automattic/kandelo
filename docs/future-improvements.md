@@ -414,6 +414,144 @@ letting a stale symlink survive a successful rebuild.
 **Files:** `run.sh` (`cmd_rebuild`, `cmd_local_build`),
 `tools/xtask/src/local_build.rs`, `tools/xtask/src/build_deps.rs`.
 
+### `run.sh`'s program-freshness check is a file-existence hand-list, not a derived cache key
+
+`has_programs()` at `run.sh:410` decides whether user-program artifacts need
+rebuilding by checking about a dozen specific paths for existence — `has_resolvable
+programs/fork-exec.wasm`, `[ -f .../pipe-throughput.wasm ]`, and so on through the
+benchmark and browser-memory64 fixture lists. `has_resolvable()` itself
+(`run.sh:190`) only asks `scripts/resolve-binary.sh` whether a binary can be
+found at all; it says nothing about whether that binary was built with today's
+contract. Nothing in either check derives from the actual build closure —
+not the contents of `scripts/build-programs.sh`, not the SDK's link flags, not
+a cache key computed from either.
+
+The consequence was confirmed during this branch's Phase 0/1 build-path work:
+after the program link contract changed to add `--export=__heap_base` (see
+the entry below on routing `build-programs.sh` through the SDK),
+`./run.sh setup` reported "programs" already present and **skipped the
+rebuild**, leaving binaries on disk that were still linked under the old
+contract with no `__heap_base` export and no error. Anyone validating the
+link-contract change by running `./run.sh setup` and trusting a clean exit
+was validating stale artifacts, silently.
+
+This is the same defect class as the `./run.sh rebuild kernel` entry above —
+a freshness check built from presence rather than from the closure that
+produced the artifact — recurring at a different layer (program binaries
+instead of the kernel projection). The fix belongs in the same family: derive
+`has_programs()`'s verdict from a cache key over `build-programs.sh`'s actual
+inputs (source files, SDK flags, toolchain version), not from a hand-maintained
+path list that has to be remembered and updated every time a new fixture is
+added.
+
+**Files:** `run.sh` (`has_programs`, `has_resolvable`), `scripts/build-programs.sh`.
+
+### Every host vitest invocation regenerates the program package index, and can race a live `local-build`
+
+`host/vitest.config.ts:59` wires `globalSetup: ["test/global-setup.ts"]` for
+every vitest run under `host/`, and `host/test/global-setup.ts:306-311` shells
+out unconditionally to `cargo run -p xtask ... build-deps program-index`,
+which overwrites `packages/registry/program-packages.json`. There is no
+narrower `include` path that skips it: a single focused test file pays the
+same regeneration as a full run. Roughly four minutes was observed for one
+file during this branch's work — enough to discourage the tight edit/test loop
+the platform-values contract expects.
+
+The sharper cost is that `program-packages.json` is a build-graph input, not a
+test fixture, and vitest mutates it as a side effect of merely starting. That
+makes it unsafe to run vitest while an `xtask local-build` is in flight against
+the same checkout. The collision happened for real on this branch: a
+concurrent edit/regeneration during a local-build closure produced
+
+```
+local-build scheduler invariant: prerequisite lsof (wasm32) is not a completed source-only cache hit
+```
+
+failing a node (`lsof`) that had itself reported `SUCCEEDED` earlier in the
+same run, and cascading to eleven blocked downstream nodes, including every
+browser product. The scheduler's invariant check did its job — it failed
+loudly rather than serving a torn artifact — but the root cause is that a test
+runner and a build engine were both allowed to write the same file
+concurrently with no coordination between them.
+
+This belongs in Build freshness rather than Testing because the defect is not
+about test coverage: it is that starting a test suite silently rewrites a file
+the build graph treats as authoritative input, with no lock, no staleness
+check, and no isolation from a concurrent build. Fixing it likely means either
+scoping the index regeneration to suites that actually need it, caching it the
+same closure-derived way other build outputs are cached (see the entries
+above), or giving `local-build` and `global-setup.ts` a shared lock over
+`program-packages.json` so one always fails loudly instead of the other
+silently consuming a half-written file.
+
+**Files:** `host/vitest.config.ts`, `host/test/global-setup.ts`,
+`packages/registry/program-packages.json`, `tools/xtask/src/local_build.rs`
+(scheduler invariant check), `tools/xtask/src/build_deps.rs` (`program-index`).
+
+### `scripts/build-programs.sh` builds programs serially while the Rust package builder does not
+
+The script's compile loop is a plain `for f in programs/*.c` with no
+`xargs -P`, no backgrounded jobs, and no `wait` — one program at a time, single
+core. By contrast, `xtask local-build run` was observed running with
+`--jobs 16` against the same machine. A full rebuild of the ~107 program
+artifacts this script produces took about 65 minutes; no before-number was
+benchmarked for comparison, so that is a mechanism observation (serial vs.
+parallel, one core vs. sixteen), not a measured regression.
+
+Per-program cost also rose independently of parallelism when the script was
+routed through the SDK wrapper instead of invoking clang directly (commit
+`8d9fe5c88`, "Build: Route test programs through the SDK, deleting a flag
+copy"). The wrapper runs `clang -###` once to classify the compile/link job
+and again to prepare the executable link, so each executable now costs
+roughly three clang invocations (two of them `-###` dry runs) where the
+script's old hand-maintained flag copy cost one. That commit's own message
+notes the same thing: "no before-number exists to compare against." The
+routing change was correct — the deleted flag copy had drifted and was
+silently dropping `--export=__heap_base` (see the `has_programs()` entry
+above for the resulting staleness) — but it makes the serial-loop cost higher
+per artifact than it used to be, which sharpens the case for parallelizing.
+
+**Files:** `scripts/build-programs.sh`.
+
+### Port the identity-free dev-artifact path from `build-programs.sh` into an xtask verb
+
+Planned follow-up, sequenced after the current Phase 0/1 build-path work on
+this branch and before the storage-design changes that follow it.
+
+`scripts/build-programs.sh` has two responsibilities welded together:
+orchestration (which sources to build, where output goes, when to run
+fork-instrument, how to maintain the ownership index) and, until commit
+`8d9fe5c88` removed it, a second copy of the SDK's own compile/link recipe.
+With that copy gone (−95 lines), what remains is orchestration written in
+bash — the serial-loop and freshness gaps described in the two entries above.
+
+The script's one genuinely distinct property is that it produces artifacts
+with no package generation identity, which is what lets `local-binaries/`
+override package-built binaries through the resolver's precedence. But that
+property is a hazard the script has to actively defend against, not a feature
+it is exploiting cleanly: its own comment at `scripts/build-programs.sh:38-41`
+explains that a regular file at a package-owned resolver path has no immutable
+package generation identity, that later package materialization must
+correctly refuse to replace it, and that the script therefore has to derive
+its complete ownership set from the generated package projection just to avoid
+colliding with it.
+
+`tools/xtask/src/local_build.rs` already solves the adjacent problem properly:
+content-addressed generations keyed by a cache key derived from real inputs
+(`:925`), with a hidden receipt sidecar recording what each generation
+mirrored into the output tree (`:1441`). Porting `build-programs.sh`'s
+orchestration into an xtask verb that writes identity-free dev artifacts
+through that same machinery would remove the collision-avoidance hazard
+rather than relocate it, and pick up closure-derived freshness (the
+`has_programs()` entry above) and real parallelism (the entry above that) as
+a consequence of reusing the engine, not as separate work. The boundary
+between the two is already blurred in practice: the script shells out to
+`cargo run -p xtask build-deps program-index` to compute the ownership set it
+must not touch, so it already depends on xtask to stay safe.
+
+**Files:** `scripts/build-programs.sh`, `tools/xtask/src/local_build.rs`,
+`tools/xtask/src/build_deps.rs`.
+
 ## Kernel — regressions
 
 ### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
