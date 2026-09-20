@@ -33,10 +33,17 @@ fi
 # sysroot, the syscall glue, crt1/libc ordering, the pinned wasm-ld and the
 # process memory layout. This file used to carry its own copy of all of that,
 # and the copy had drifted -- lsof.wasm was linked WITHOUT
-# --export=__heap_base, and a program with no __heap_base export falls back to
-# PROCESS_MEMORY_FALLBACK_BRK_BASE (crates/wasm-artifact/src/facts.rs), so the
-# artifact was not binary-compatible with the rest of the release. It also ran
-# on wasm-ld's ~64 KiB default shadow stack instead of the SDK's 8 MiB.
+# --export=__heap_base, so the artifact was not binary-compatible with the
+# rest of the release. At the time, a program with no __heap_base export was
+# silently given a fixed 16 MiB brk base (FALLBACK_BRK_BASE,
+# crates/shared/src/lib.rs:2208, surfaced to TypeScript as
+# PROCESS_MEMORY_FALLBACK_BRK_BASE in host/src/generated/abi.ts:961) out of a
+# process window that can be as small as 24 MiB. That fallback is GONE:
+# commit 359cb468f made computeProcessMemoryLayout REFUSE a named program
+# whose __heap_base cannot be read, because guessing hid exactly this defect.
+# So a mis-linked artifact now fails loudly rather than running on a guessed
+# break. It also ran on wasm-ld's ~64 KiB default shadow stack instead of the
+# SDK's 8 MiB.
 #
 # Do not add flags back by hand to "catch up" -- that is what produced the
 # drift. A missing flag is an SDK change.
