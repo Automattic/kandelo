@@ -62,6 +62,12 @@
   (global $__stack_pointer (export "__stack_pointer") (mut i32)
     (i32.const 65536))
 
+  ;; __heap_base: required for process admission by the
+  ;; computeProcessMemoryLayout guard in host/src/process-memory.ts.
+  ;; This fixture never allocates, so the value only needs to sit at
+  ;; the first page boundary past the reserved stack page.
+  (global (export "__heap_base") i32 (i32.const 65536))
+
   (func (export "__abi_version") (result i32)
     i32.const 44)
 

@@ -43,6 +43,14 @@
   (import "wasi_snapshot_preview1" "proc_exit"
     (func $proc_exit (param i32)))
 
+  ;; __heap_base: required for process admission by the
+  ;; computeProcessMemoryLayout guard in host/src/process-memory.ts. This
+  ;; fixture never allocates, so the value only needs to sit at the first
+  ;; page boundary past the end of its data (well inside the first page
+  ;; here, including the 4 KiB dirent buffer at 1024), i.e. the start of
+  ;; page 1.
+  (global (export "__heap_base") i32 (i32.const 65536))
+
   ;; 0    iovec
   ;; 16   nwritten / bufused
   ;; 32   opened fd

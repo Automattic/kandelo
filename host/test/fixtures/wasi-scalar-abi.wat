@@ -26,6 +26,13 @@
   (import "wasi_snapshot_preview1" "proc_exit"
     (func $proc_exit (param i32)))
 
+  ;; __heap_base: required for process admission by the
+  ;; computeProcessMemoryLayout guard in host/src/process-memory.ts. This
+  ;; fixture never allocates, so the value only needs to sit at the first
+  ;; page boundary past the end of its data (well inside the first page
+  ;; here), i.e. the start of page 1.
+  (global (export "__heap_base") i32 (i32.const 65536))
+
   (data (i32.const 1024) "tmp/wasi-scalar-offset.tmp")
 
   (func $require_success (param $errno i32) (param $exit_code i32)
