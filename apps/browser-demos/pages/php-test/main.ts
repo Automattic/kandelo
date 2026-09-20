@@ -5,11 +5,11 @@
  * transient PHP scripts inside a VFS image containing php-src test assets.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
+import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
 import { finalizeKernelOwnedImage } from "../../lib/kernel-owned-boot";
-import { rewriteRootfsLazyFileUrls } from "../../lib/init/rootfs-lazy-files";
+import { imageOwnedRuntimeUrlTable } from "../../lib/init/image-owned-runtime-urls";
 
 interface RunPhpScriptRequest {
   testId: string;
@@ -42,25 +42,27 @@ declare global {
 }
 
 let kernelBytes: ArrayBuffer | null = null;
-let initialFs: MemoryFileSystem | null = null;
+let initialFs: KandeloImageFs | null = null;
 let kernel: BrowserKernel | null = null;
 let kernelInitialization: Promise<BrowserKernel> | null = null;
 let activeOutput: { stdout: string; stderr: string; output: string } | null = null;
 
-async function createFs(vfsImageBytes: Uint8Array): Promise<MemoryFileSystem> {
+async function createFs(vfsImageBytes: Uint8Array): Promise<KandeloImageFs> {
   // WHY: the test runner rewrites permissions and source files immediately.
   // Authenticate imported lazy-tree seals before any fixture mutation.
-  const fs = await restoreVerifiedVfsImage(vfsImageBytes, {
+  const fs = await restoreVerifiedImageForBuild(vfsImageBytes, {
     maxByteLength: 2 * 1024 * 1024 * 1024,
   });
-  // Resolve canonical rootfs placeholders before serializing the transient
-  // build FS into the image that the kernel worker will own.
-  rewriteRootfsLazyFileUrls(fs);
+  // NOT rewritten. This used to resolve the image's canonical rootfs
+  // placeholders in place before serializing it — a host-side write to the
+  // image's deferred half, which is exactly what defect B45 is about. The
+  // addresses stay as the image recorded them and the deployment maps them
+  // when it fetches (`lazyUrlMap` below).
   return fs;
 }
 
 function makeTreeWritableByGuest(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
 ): void {
   const st = fs.lstat(path);
@@ -88,7 +90,7 @@ function makeTreeWritableByGuest(
 }
 
 function prepareGuestWritableWorkspace(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   _scriptPath: string,
   uid?: number,
   gid?: number,
@@ -152,6 +154,7 @@ async function ensureKernel(uid?: number, gid?: number): Promise<BrowserKernel> 
       await nextKernel.initFromImage({
         kernelWasm: kernelBytes,
         vfsImage,
+        lazyUrlMap: imageOwnedRuntimeUrlTable(),
       });
     } catch (err) {
       await nextKernel.destroy().catch(() => {});

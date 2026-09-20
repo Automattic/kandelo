@@ -1,0 +1,27 @@
+{
+  "file": "tools/mkrootfs/src/manifest.ts",
+  "verify": "cd tools/mkrootfs && npx vitest run test/manifest.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a set-ID lazy entry with no lazy_sha256= is accepted",
+      "scope": "function validateRequiredExtras(",
+      "scope_end": "\n}\n",
+      "find": "    if ((node.mode & 0o6000) !== 0 && node.lazyDigest === undefined) {",
+      "replace": "    if (false) {"
+    },
+    {
+      "name": "only set-user-ID is guarded, so a set-group-ID lazy entry needs no digest",
+      "scope": "function validateRequiredExtras(",
+      "scope_end": "\n}\n",
+      "find": "    if ((node.mode & 0o6000) !== 0 && node.lazyDigest === undefined) {",
+      "replace": "    if ((node.mode & 0o4000) !== 0 && node.lazyDigest === undefined) {"
+    },
+    {
+      "name": "a malformed lazy_sha256= is ignored rather than refused, so a typo becomes no digest",
+      "scope": "function validateRequiredExtras(",
+      "scope_end": "\n}\n",
+      "find": "    if (node.lazyDigest !== undefined && !/^[0-9a-f]{64}$/.test(node.lazyDigest)) {",
+      "replace": "    if (false) {"
+    }
+  ]
+}

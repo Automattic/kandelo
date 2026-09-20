@@ -1,97 +1,60 @@
 import { describe, it, expect } from "vitest";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { resolveLazyUrl } from "../src/vfs/lazy-url";
-import type { SerializedLazyArchiveEntry } from "../src/vfs/memory-fs";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
-import { createBaseImageFromContainer } from "../src/vfs/module-base-image";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { createBaseImageFromContainer } from "../../images/vfs/lib/module-base-image";
 import { imageReadFromContainer } from "../src/vfs/rootfs-lazy-archives";
 
 /**
- * The body-offset oracle, written HERE rather than imported.
+ * WHAT THESE TEST NOW THAT THERE IS NO INCUMBENT.
  *
- * A `SharedFS` buffer is the bare image body, so container offset `at` is body
- * offset `at - 16`. This lived in the production module until its last
- * production caller went, when the overlay started reading the container
- * directly — and a parity test that imports its oracle from the module it is
- * checking compares that module against itself. An oracle the test owns cannot
- * drift with the implementation.
- */
-function bodyWindowOracle(backend: { imageBodyBytes(): Uint8Array }) {
-  return (at: number, dest: Uint8Array): number => {
-    const body = backend.imageBodyBytes();
-    const start = at - 16;
-    if (start >= body.byteLength) return 0;
-    const n = Math.min(dest.byteLength, body.byteLength - start);
-    dest.set(body.subarray(start, start + n));
-    return n;
-  };
-}
-
-/**
- * PARITY tests, deliberately, against the incumbent rather than against the
- * new code's internals. An internals test passes whenever the implementation
- * is self-consistent; that is how an earlier version of this adapter looked
- * correct while returning empty URLs for every lazy file.
+ * They were parity tests against `MemoryFileSystem`, deliberately, because an
+ * internals test passes whenever the implementation is self-consistent — which
+ * is how an earlier version of this adapter looked correct while returning
+ * empty URLs for every lazy file. That oracle is gone with the class, so each
+ * case now states the ANSWER rather than comparing two readers: an address, a
+ * length, a digest, or a refusal, written out as literals a wrong reader
+ * cannot satisfy by being consistently wrong.
  */
 describe("a module-backed base image", () => {
-  it("exports the lazy entries MemoryFileSystem exports for the same image", async () => {
-    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    source.mkdirWithOwner("/opt", 0o755, 0, 0);
-    source.registerLazyFile("/opt/one.bin", "https://example.test/one", 11, 0o644);
-    source.registerLazyFile("/opt/two.bin", "https://example.test/two", 22, 0o755);
+  // RETIRED 2026-09-17 WITH THE SECTION-READING BRANCH, five cases: the
+  // parity export, the deployment base applied to section URLs, an archive's
+  // transports and derived address, the sections winning over the module, and
+  // the untouched-URL case.
+  //
+  // Each built its fixture with `MemoryFileSystem`, because the branch they
+  // exercised reads host-side JSON sections only that writer emits. Every
+  // builder writes `SDEF` now, so the branch had no producer: it answered "no
+  // deferred files" for every shipped image, which is why nothing but a test
+  // reached it.
+  //
+  // What they were ABOUT survives where it now happens: the deployment base is
+  // asserted on the module path by "reads a module-built image's deferred
+  // URLs", and a rebased archive by "reads a module-built image's archives as
+  // an address, a length and a digest". The parity claim has no second
+  // implementation left to be parity WITH, which is the whole point of the
+  // lane.
+
+
+  it("serves the same image window bytes as the container array itself", async () => {
+    // TWO SUPPLIERS, not three. The third was `MemoryFileSystem`'s body view
+    // through `bodyWindowOracle` — a `SharedFS` buffer is the bare image body,
+    // so container offset `at` is body offset `at - 16`, and comparing against
+    // it proved the module's window was in CONTAINER coordinates. The two that
+    // remain are independent in the way that matters: one is the module's Rust
+    // reader over a loaded image, the other a TypeScript slice of the array,
+    // and both worker entries use the second.
+    const source = KandeloImageFs.create();
+    source.mkdir("/d", 0o755);
+    source.writeFile("/d/f", new Uint8Array(9000).fill(0x5a), 0o644);
     const container = await source.saveImage();
 
-    const module = SffsImageFs.create();
-    module.loadImage(container);
-    const { baseImage } = createBaseImageFromContainer(
-      container,
-      (at, dest) => module.imageRead(BigInt(at), dest),
-    );
-
-    const shape = (e: { path: string; url: string; size: number }) =>
-      ({ path: e.path, url: e.url, size: e.size });
-    const expected = source.exportLazyEntries().map(shape)
-      .sort((a, b) => a.path.localeCompare(b.path));
-    const actual = baseImage.exportLazyEntries().map(shape)
-      .sort((a, b) => a.path.localeCompare(b.path));
-
-    expect(actual).toEqual(expected);
-    // Guards the guard: an adapter returning [] would satisfy `toEqual` if the
-    // incumbent also returned [], and this image has two lazy files.
-    expect(actual.length).toBe(2);
-    expect(actual[0].url).toContain("https://example.test/");
-  });
-
-  it("serves the same image window bytes as the body-holding backend", async () => {
-    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    source.mkdirWithOwner("/d", 0o755, 0, 0);
-    source.createFileWithOwner("/d/f", 0o644, 0, 0, new Uint8Array(9000).fill(0x5a));
-    const container = await source.saveImage();
-
-    const restored = MemoryFileSystem.fromImage(container);
-    const incumbent = bodyWindowOracle(restored);
-
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.loadImage(container);
     const { imageRead } = createBaseImageFromContainer(
       container,
       (at, dest) => module.imageRead(BigInt(at), dest),
     );
 
-    // The kernel addresses in CONTAINER coordinates and never below the header.
-    for (const at of [16, 4096, 8192]) {
-      const a = new Uint8Array(64);
-      const b = new Uint8Array(64);
-      const na = incumbent(at, a);
-      const nb = imageRead(at, b);
-      expect(nb).toBe(na);
-      expect(Array.from(b)).toEqual(Array.from(a));
-    }
-
-    // The third supplier of the same window: the container array itself. Both
-    // worker entries use this one, so it is the path in production, and it
-    // has to agree with the module byte-for-byte or the kernel reads a
-    // different image depending on who wired it.
     const direct = imageReadFromContainer(container);
     for (const at of [16, 4096, 8192]) {
       const a = new Uint8Array(64);
@@ -104,96 +67,36 @@ describe("a module-backed base image", () => {
     expect(direct(container.byteLength, new Uint8Array(8))).toBe(0);
   });
 
-  it("applies the deployment base to relative URLs and leaves absolute ones alone", async () => {
-    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    source.mkdirWithOwner("/opt", 0o755, 0, 0);
-    source.registerLazyFile("/opt/rel.bin", "assets/rel.bin", 11, 0o644);
-    source.registerLazyFile("/opt/abs.bin", "https://cdn.test/abs.bin", 22, 0o644);
-    source.registerLazyFile("/opt/root.bin", "/already/rooted.bin", 33, 0o644);
-    const container = await source.saveImage();
+  it("applies the deployment base to a relative address and to no other kind", async () => {
+    // RESTORED ON THE MODULE PATH, 2026-09-17, because retiring the section
+    // version left a mutant alive: `rebaseUrl` prepending the base to every
+    // address — absolute and rooted included — survived the trial run, which
+    // is the harness saying the claim had lost its test rather than its
+    // subject. A deployment base pasted onto `https://cdn.test/abs.bin` is a
+    // URL that fetches nothing, and onto `/already/rooted.bin` one that
+    // fetches the wrong thing.
+    const module = KandeloImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerLazyFile("/opt/rel.bin", "assets/rel.bin", 11, 0o644);
+    module.registerLazyFile("/opt/abs.bin", "https://cdn.test/abs.bin", 22, 0o644);
+    module.registerLazyFile("/opt/root.bin", "/already/rooted.bin", 33, 0o644);
+    const container = await module.saveImage();
 
-    // PARITY with the incumbent: this is exactly what the worker entries used
-    // to do by mutating a restored MemoryFileSystem before handing it over.
-    const incumbent = MemoryFileSystem.fromImage(container);
-    incumbent.rewriteLazyFileUrls((url) => resolveLazyUrl("/kandelo/", url));
-
+    const reader = KandeloImageFs.create();
+    reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
       imageReadFromContainer(container),
       "/kandelo/",
+      () => reader.lazyEntries(),
     );
 
-    const byPath = (entries: readonly { path: string; url: string }[]) =>
-      Object.fromEntries(entries.map((e) => [e.path, e.url]));
-    expect(byPath(baseImage.exportLazyEntries()))
-      .toEqual(byPath(incumbent.exportLazyEntries()));
-    // Guards the guard: an implementation that rebased nothing would match an
-    // incumbent that also rebased nothing.
-    expect(byPath(baseImage.exportLazyEntries())["/opt/rel.bin"])
-      .toBe("/kandelo/assets/rel.bin");
-    expect(byPath(baseImage.exportLazyEntries())["/opt/abs.bin"])
-      .toBe("https://cdn.test/abs.bin");
-    expect(byPath(baseImage.exportLazyEntries())["/opt/root.bin"])
-      .toBe("/already/rooted.bin");
-  });
-
-  it("rebases an archive's transports AND the url derived from them", async () => {
-    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    // A legacy archive carries only a `url`; a tree archive carries ordered
-    // transports whose first element IS the url. Those are rebaseArchive's two
-    // branches, and an implementation that rewrote transports while leaving
-    // `url` pointing at the un-based mirror would fetch from the wrong place
-    // while looking rewritten.
-    source.registerLazyArchiveFromEntries("archives/vim.zip", [zipEntry()], "/");
-    // And a tree archive, whose ordered transports are the shape whose `url`
-    // is DERIVED rather than stored. Without one, the derived-url branch is
-    // never reached and a mutant that drops the derivation survives.
-    source.registerLazyTree(
-      {
-        decoder: "zip-v1" as const,
-        mediaType: "application/zip" as const,
-        sha256: "a".repeat(64),
-        bytes: 1,
-        expandedBytes: 1,
-        sourceEntryCount: 1,
-        transports: ["archives/tree.zip", "mirrors/tree.zip"],
-      },
-      [{
-        vfsPath: "/opt/tree",
-        sourcePath: "opt/tree",
-        type: "file" as const,
-        mode: 0o755,
-        size: 1,
-        inodeGroup: "/opt/tree",
-      }],
-    );
-    const container = await source.saveImage();
-
-    const incumbent = MemoryFileSystem.fromImage(container);
-    incumbent.rewriteLazyArchiveUrls((url) => resolveLazyUrl("/kandelo/", url));
-
-    const { baseImage } = createBaseImageFromContainer(
-      container,
-      imageReadFromContainer(container),
-      "/kandelo/",
-    );
-
-    const shape = (e: SerializedLazyArchiveEntry) =>
-      ({ url: e.url, transports: e.content?.transports });
-    const actual = baseImage.exportLazyArchiveEntries().map(shape);
-    expect(actual).toEqual(incumbent.exportLazyArchiveEntries().map(shape));
-    // Guards the guard: an image with no archives would satisfy the equality,
-    // and one carrying only the legacy shape would never reach the branch
-    // where `url` is derived from the first transport.
-    expect(actual.length).toBe(2);
-    const derived = actual.find((a) => a.transports !== undefined)!;
-    const legacy = actual.find((a) => a.transports === undefined)!;
-    expect(legacy.url).toBe("/kandelo/archives/vim.zip");
-    expect(derived.transports).toEqual([
-      "/kandelo/archives/tree.zip",
-      "/kandelo/mirrors/tree.zip",
-    ]);
-    expect(derived.url).toBe("/kandelo/archives/tree.zip");
+    expect(baseImage.deferredFiles().map((body) => body.address).sort())
+      .toEqual([
+        "/already/rooted.bin",
+        "/kandelo/assets/rel.bin",
+        "https://cdn.test/abs.bin",
+      ]);
   });
 
   it("reads a module-built image's deferred URLs, which its sections do not carry", async () => {
@@ -201,7 +104,7 @@ describe("a module-backed base image", () => {
     // no host-side JSON sections at all. Reading only the sections would give
     // an empty list for an image that has a deferred file, which is a load
     // failure reported as a successful load of nothing.
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyFile("/opt/one.bin", "assets/one.bin", 11, 0o644);
     const container = await module.saveImage();
@@ -212,9 +115,9 @@ describe("a module-backed base image", () => {
     );
     // Without the module source, the sections are genuinely empty. This is the
     // state step 5 would have shipped.
-    expect(blind.baseImage.exportLazyEntries()).toEqual([]);
+    expect(blind.baseImage.deferredFiles()).toEqual([]);
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -222,20 +125,19 @@ describe("a module-backed base image", () => {
       "/kandelo/",
       () => reader.lazyEntries(),
     );
-    const entries = baseImage.exportLazyEntries();
-    expect(entries.length).toBe(1);
-    expect(entries[0].path).toBe("/opt/one.bin");
-    expect(entries[0].size).toBe(11);
+    const bodies = baseImage.deferredFiles();
+    expect(bodies.length).toBe(1);
+    expect(bodies[0].bytes).toBe(11);
     // The deployment base applies to a module-sourced URL exactly as it does
     // to a section-sourced one.
-    expect(entries[0].url).toBe("/kandelo/assets/one.bin");
+    expect(bodies[0].address).toBe("/kandelo/assets/one.bin");
   });
 
   it("does not mistake an archive MEMBER for a standalone deferred file", async () => {
     // Both kinds in one image. A member's bytes come from its archive, and its
     // descriptor is not a URL — reporting it as a standalone lazy file would
     // hand the pipe a fetch target that is not one.
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyFile("/opt/standalone.bin", "assets/one.bin", 11, 0o644);
     module.registerArchiveMember({
@@ -252,7 +154,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -261,40 +163,15 @@ describe("a module-backed base image", () => {
       () => reader.lazyEntries(),
     );
 
-    const paths = baseImage.exportLazyEntries().map((e) => e.path);
-    expect(paths).toEqual(["/opt/standalone.bin"]);
+    // ONE body, and it is the standalone's address. A member reported as a
+    // standalone file would arrive with the member's own `uri`, which is empty
+    // — a fetch target that is not one.
+    expect(baseImage.deferredFiles().map((b) => b.address))
+      .toEqual(["assets/one.bin"]);
   });
 
-  it("prefers the sections over the module when an image carries both", async () => {
-    // A MemoryFileSystem-built image records the URL in the sections and
-    // leaves the module's descriptor EMPTY. Consulting the module anyway would
-    // return an entry whose url is "", which fetches nothing and reports no
-    // error — so which source wins is not a preference, it is correctness.
-    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    source.mkdirWithOwner("/opt", 0o755, 0, 0);
-    source.registerLazyFile("/opt/one.bin", "assets/one.bin", 11, 0o644);
-    const container = await source.saveImage();
-
-    const reader = SffsImageFs.create();
-    reader.loadImage(container);
-    // Proves the premise rather than assuming it: the module really does hold
-    // an empty descriptor for this image.
-    expect(new TextDecoder().decode(reader.lazyEntries().files[0]!.descriptor))
-      .toBe("");
-
-    const { baseImage } = createBaseImageFromContainer(
-      container,
-      imageReadFromContainer(container),
-      "/kandelo/",
-      () => reader.lazyEntries(),
-    );
-    const entries = baseImage.exportLazyEntries();
-    expect(entries.length).toBe(1);
-    expect(entries[0].url).toBe("/kandelo/assets/one.bin");
-  });
-
-  it("reconstructs a module-built image's archives, members included", async () => {
-    const module = SffsImageFs.create();
+  it("reads a module-built image's archives as an address, a length and a digest", async () => {
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyArchive({
       url: "archives/tool.zip",
@@ -304,7 +181,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -313,38 +190,54 @@ describe("a module-backed base image", () => {
       () => reader.lazyEntries(),
     );
 
-    const [archive] = baseImage.exportLazyArchiveEntries();
+    const [archive] = baseImage.deferredArchives();
     expect(archive).toBeDefined();
-    expect(archive.url).toBe("/kandelo/archives/tool.zip");
-    // The mount prefix is written into the kernel's lazy manifest, so losing
-    // it is not cosmetic — it is a wrong manifest.
-    expect(archive.mountPrefix).toBe("/opt");
-    expect(archive.integrity).toEqual({ sha256: "b".repeat(64), bytes: 4242 });
-    // A member, with the source path the fetcher needs to find it in the zip.
-    expect(archive.entries.length).toBe(1);
-    expect(archive.entries[0].sourcePath).toBe("bin/vim");
-    expect(archive.entries[0].vfsPath).toBe("/opt/bin/vim");
+    expect(archive.address).toBe("/kandelo/archives/tool.zip");
+    expect(archive.bytes).toBe(4242);
+    expect(archive.sha256).toBe("b".repeat(64));
 
-    // And the whole point: the consumer accepts it. The wiring no longer
-    // reports a manifest -- the kernel parses its own KLZY section -- so the
-    // observable result is that the deferred provider recognises the archive
-    // and starts fetching it rather than refusing an unknown id.
-    const { buildRootfsLazyWiring, HOST_DEFERRED_KIND_ARCHIVE } =
+    // RETIRED WITH THE FIELDS THEY READ: `mountPrefix` and the member list.
+    //
+    // This asserted both, and the mount-prefix case said losing it "is not
+    // cosmetic — it is a wrong manifest". That was true while a host WROTE the
+    // kernel's lazy manifest, encoding the prefix and the members into `KLZY`.
+    // A module-built image carries `SDEF` and the kernel reads its own
+    // manifest out of it, so the host writes none — the reconstruction existed
+    // to fill a record that was then reduced back to this line, and nothing in
+    // between ever looked at either field. The reader no longer JSON-parses an
+    // archive's descriptor to recover the prefix, which is why two refusal
+    // cases below it went as well.
+
+    // And the whole point: the consumer accepts it. The wiring reports no
+    // manifest -- the kernel parses its own section -- so the observable result
+    // is that asking for the archive's ADDRESS starts a fetch, and starts it at
+    // the rebased URL rather than the raw one the image recorded.
+    const { buildRootfsLazyWiring } =
       await import("../src/vfs/rootfs-lazy-archives");
-    const { deferredProvider } = buildRootfsLazyWiring(
-      baseImage.exportLazyArchiveEntries(),
-      async () => new Uint8Array(4242),
-    );
-    // -11 is EAGAIN: the id was known and a fetch began. -5 would mean the
-    // reconstruction produced an archive the provider never minted.
-    expect(deferredProvider(HOST_DEFERRED_KIND_ARCHIVE, 1n, 0n, new Uint8Array(8)))
+    const fetched: string[] = [];
+    // THE PIPE TAKES NO ARCHIVE LIST since 2026-09-17 — it fetches the address
+    // the kernel names. What this still shows is that the address the reader
+    // produced is the one a fetch goes to, rebased and all.
+    const { deferredProvider } = buildRootfsLazyWiring(async (url) => {
+      fetched.push(url);
+      return new Uint8Array(4242);
+    });
+    // -11 is EAGAIN: a fetch began. Asserting the address that was FETCHED is
+    // what makes this a test — a provider handed any address at all answers
+    // EAGAIN, so the return value alone would pass without the reconstruction
+    // being right.
+    expect(deferredProvider("/kandelo/archives/tool.zip", 0n, new Uint8Array(8)))
       .toBe(-11);
+    expect(fetched).toEqual(["/kandelo/archives/tool.zip"]);
   });
 
-  it("keeps each archive's members its own, and standalone files out of both", async () => {
+  it("keeps two archives apart, and standalone files out of both", async () => {
     // TWO archives plus a standalone file. With one archive, a grouping bug is
-    // invisible: everything lands in the only bucket there is.
-    const module = SffsImageFs.create();
+    // invisible: everything lands in the only bucket there is. The members
+    // themselves are no longer reported — see the retirement note above — so
+    // what this now holds is that each archive keeps its OWN address, length
+    // and digest, and that the loose file is in neither list.
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyFile("/opt/loose.bin", "assets/loose.bin", 3, 0o644);
     module.registerLazyArchive({
@@ -361,7 +254,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -370,30 +263,44 @@ describe("a module-backed base image", () => {
       () => reader.lazyEntries(),
     );
 
-    const archives = baseImage.exportLazyArchiveEntries();
-    expect(archives.length).toBe(2);
-    const sources = archives.map((a) => a.entries.map((e) => e.sourcePath).sort());
-    expect(sources).toEqual([["one/a"], ["two/b"]]);
+    const archives = baseImage.deferredArchives();
+    expect(archives.map((a) => ({ address: a.address, bytes: a.bytes, sha256: a.sha256 })))
+      .toEqual([
+        { address: "archives/one.zip", bytes: 11, sha256: "1".repeat(64) },
+        { address: "archives/two.zip", bytes: 22, sha256: "2".repeat(64) },
+      ]);
     // The standalone file belongs to neither.
-    for (const archive of archives) {
-      expect(archive.entries.map((e) => e.vfsPath)).not.toContain("/opt/loose.bin");
-    }
-    expect(baseImage.exportLazyEntries().map((e) => e.path)).toEqual(["/opt/loose.bin"]);
+    expect(archives.map((a) => a.address)).not.toContain("assets/loose.bin");
+    expect(baseImage.deferredFiles().map((b) => b.address))
+      .toEqual(["assets/loose.bin"]);
   });
 
-  it("refuses a descriptor that is not the shape this reader knows", async () => {
-    // Producers cannot hand the reader a malformed ENVELOPE: the module wraps
-    // whatever it is given in its own well-formed one, so a descriptor that is
-    // itself an envelope arrives double-wrapped. What the reader can meet is a
-    // descriptor whose CONTENT it does not understand, and it must say so
-    // rather than build an archive from a guess.
-    const envelope = new Uint8Array(8 + 4);
-    const view = new DataView(envelope.buffer);
-    view.setUint32(0, 1, true);
-    view.setUint32(4, 0xffff, true);
-    envelope.set(new TextEncoder().encode("{}"), 8);
+  // RETIRED 2026-09-17, two cases: "refuses a descriptor that is not the shape
+  // this reader knows" and "refuses a module-built archive whose descriptor it
+  // cannot parse".
+  //
+  // Both asserted refusals this reader can no longer make, because it no
+  // longer opens an archive's descriptor. It opened one to recover
+  // `mountPrefix`, the single field that was not typed — which meant a boot
+  // JSON-parsed an opaque blob, on input that can arrive from a shared link,
+  // to fill a slot no consumer read. The envelope check went with it: the seal
+  // half is authenticated by `rootfs::load_image`, and the descriptor half is
+  // "whatever the producer writes", which this reader now passes over rather
+  // than parsing.
+  //
+  // What is NOT retired is the refusal below. An archive with no address is
+  // still a refusal, and it is the one that matters: the address is the whole
+  // of what says where the bytes come from, so accepting one without it mounts
+  // an image whose archives silently never activate.
 
-    const module = SffsImageFs.create();
+  it("refuses a module-built archive that declares no address", async () => {
+    // The address is the whole of what says where an archive's bytes come
+    // from. It used to live inside the descriptor, where this reader had to
+    // parse a blob the image format says nobody parses — and parse it on
+    // untrusted input, since an image can arrive from a shared link. Now it is
+    // a typed field the section decoder already checked, and its absence is a
+    // refusal rather than an archive that mounts and silently never activates.
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerArchiveMember({
       path: "/opt/member",
@@ -401,13 +308,15 @@ describe("a module-backed base image", () => {
       sourcePath: "member",
       size: 1,
       mode: 0o644,
-      ino: 4243,
-      archiveBytes: 5,
-      archiveDescriptor: envelope,
+      ino: 4244,
+      archiveBytes: 7,
+      // A descriptor that is otherwise complete, so the missing address is the
+      // only fault and no other rule can be the one that refuses.
+      archiveDescriptor: new TextEncoder().encode('{"mountPrefix":"/opt"}'),
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -415,51 +324,11 @@ describe("a module-backed base image", () => {
       undefined,
       () => reader.lazyEntries(),
     );
-    expect(() => baseImage.exportLazyArchiveEntries())
-      .toThrow(/cannot parse/);
+    expect(() => baseImage.deferredArchives())
+      .toThrow(/declares no address/);
   });
 
-  it("refuses a module-built archive whose descriptor it cannot parse", async () => {
-    const module = SffsImageFs.create();
-    module.mkdir("/opt", 0o755);
-    module.registerArchiveMember({
-      path: "/opt/member",
-      archiveId: 1,
-      sourcePath: "member",
-      size: 1,
-      mode: 0o644,
-      ino: 4242,
-      archiveBytes: 99,
-      archiveDescriptor: new TextEncoder().encode('{"url":"archives/a.zip"}'),
-    });
-    const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
-    reader.loadImage(container);
-    const { baseImage } = createBaseImageFromContainer(
-      container,
-      imageReadFromContainer(container),
-      undefined,
-      () => reader.lazyEntries(),
-    );
-    // Refused, not half-answered. Returning [] here would mount an image whose
-    // archives silently never activate.
-    expect(() => baseImage.exportLazyArchiveEntries())
-      .toThrow(/declares no url or no mount prefix/);
-  });
-
-  it("leaves every URL untouched when no deployment base is given", async () => {
-    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
-    source.mkdirWithOwner("/opt", 0o755, 0, 0);
-    source.registerLazyFile("/opt/rel.bin", "assets/rel.bin", 11, 0o644);
-    const container = await source.saveImage();
-
-    const { baseImage } = createBaseImageFromContainer(
-      container,
-      imageReadFromContainer(container),
-    );
-    expect(baseImage.exportLazyEntries()[0].url).toBe("assets/rel.bin");
-  });
 });
 
 /** The minimal ZIP member a legacy archive registration accepts. */

@@ -6,23 +6,34 @@ import { fileURLToPath } from "node:url";
 import { PATHCONF_NAMES } from "../src/generated/abi";
 import { backendPathconf } from "../src/pathconf";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
-import {
-  ENOENT,
-  O_CREAT,
-  O_RDONLY,
-  O_RDWR,
-  SFSError,
-} from "../src/vfs/sharedfs-vendor";
+// POSIX constants from where the platform publishes them, not from the
+// vendored filesystem: `sharedfs-vendor.ts` goes with `memory-fs.ts`, and
+// `SFSError` went with the assertion that named it — the claim is an errno.
+import { OPEN_FLAGS } from "../src/generated/abi";
+import { ENOENT } from "../src/vfs/vfs-errors";
+
+const { O_CREAT, O_RDONLY, O_RDWR } = OPEN_FLAGS;
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
-function memoryFileSystem(): MemoryFileSystem {
-  return MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+/**
+ * A backend for the ROUTING cases below, which assert which mount
+ * `VirtualPlatformIO` consulted and not what any filesystem answered — one of
+ * them spies `pathconf` and returns a literal for exactly that reason.
+ *
+ * `HostFileSystem`, already imported here for the profile cases, rather than
+ * `MemoryFileSystem`: both implement `FileSystemBackend`, and this is one the
+ * platform still ships.
+ */
+const routingRoots: string[] = [];
+function routingBackend(): HostFileSystem {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pathconf-routing-"));
+  routingRoots.push(root);
+  return new HostFileSystem(root);
 }
 
 describe("pathconf capability values", () => {
@@ -80,8 +91,8 @@ describe("pathconf capability values", () => {
 
 describe("pathconf VFS routing", () => {
   it("uses the longest-prefix mount for pathname queries", () => {
-    const root = memoryFileSystem();
-    const mounted = memoryFileSystem();
+    const root = routingBackend();
+    const mounted = routingBackend();
     const rootQuery = vi.spyOn(root, "pathconf").mockReturnValue(111);
     const mountedQuery = vi.spyOn(mounted, "pathconf").mockReturnValue(222);
     const io = new VirtualPlatformIO(
@@ -99,8 +110,8 @@ describe("pathconf VFS routing", () => {
   });
 
   it("keeps fpathconf on the open handle's backend after unlink", () => {
-    const root = memoryFileSystem();
-    const mounted = memoryFileSystem();
+    const root = routingBackend();
+    const mounted = routingBackend();
     root.mkdir("/mnt", 0o755);
     const io = new VirtualPlatformIO(
       [
@@ -118,8 +129,16 @@ describe("pathconf VFS routing", () => {
       io.pathconf("/mnt/file", PATHCONF_NAMES.TIMESTAMP_RESOLUTION);
       throw new Error("pathconf unexpectedly accepted an unlinked path");
     } catch (error) {
-      expect(error).toBeInstanceOf(SFSError);
-      expect((error as SFSError).code).toBe(ENOENT);
+      // ENOENT, whichever backend spells it. The claim is that an unlinked
+      // path stops answering `pathconf` while the OPEN HANDLE keeps answering
+      // `fpathconf` — not that a particular filesystem's error class reached
+      // the caller. `SFSError` is the vendored filesystem's, and it goes with
+      // `sharedfs-vendor.ts`.
+      const errno = (error as { errno?: number; code?: number });
+      expect(
+        Math.abs(errno.errno ?? errno.code ?? 0),
+        `expected ENOENT, got ${String(error)}`,
+      ).toBe(Math.abs(ENOENT));
     }
     io.close(fd);
   });

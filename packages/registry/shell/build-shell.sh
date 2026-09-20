@@ -7,11 +7,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-if [ "$#" -ne 0 ]; then
-    exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-        "$REPO_ROOT/images/vfs/scripts/staged-product-inputs.ts" \
-        browser-main-shell "$@"
-fi
 
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-}"

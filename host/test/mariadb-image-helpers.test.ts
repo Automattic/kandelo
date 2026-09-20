@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   MARIADB_DATA_DIRS,
   MARIADB_DATA_MODE,
@@ -10,13 +10,13 @@ import {
 
 describe("MariaDB VFS image ownership", () => {
   it("round-trips writable mysql-owned data directories and sticky /tmp", async () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     prepareMariadbWritableDirectories(fs);
 
     // A round trip through the Rust writer AND the Rust reader: the image is
     // produced by one and mounted by the other, so ownership and the sticky
     // bit have to survive the format rather than a shared in-memory object.
-    const restored = SffsImageFs.create();
+    const restored = KandeloImageFs.create();
     restored.loadImage(await fs.saveImage());
 
     for (const dir of MARIADB_DATA_DIRS) {

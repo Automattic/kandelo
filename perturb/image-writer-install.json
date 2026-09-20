@@ -1,0 +1,27 @@
+{
+  "file": "images/vfs/lib/kandelo-image-fs.ts",
+  "verify": "cd host && npx vitest run test/kandelo-image-module-bytes.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a second, different module is swapped in rather than refused",
+      "scope": "  static installModuleBytes(bytes: Uint8Array): void {",
+      "scope_end": "\n  }\n",
+      "find": "      if (!same) {",
+      "replace": "      if (false) {"
+    },
+    {
+      "name": "the refusal fires for the SAME module too, so a second boot on a page breaks",
+      "scope": "  static installModuleBytes(bytes: Uint8Array): void {",
+      "scope_end": "\n  }\n",
+      "find": "      const same = installedModuleBytes.byteLength === bytes.byteLength;",
+      "replace": "      const same = false;"
+    },
+    {
+      "name": "the report names neither size, so it cannot say which module disagreed",
+      "scope": "  static installModuleBytes(bytes: Uint8Array): void {",
+      "scope_end": "\n  }\n",
+      "find": "            + `(${installedModuleBytes.byteLength} bytes vs ${bytes.byteLength}). `",
+      "replace": "            + \"(sizes differ). \""
+    }
+  ]
+}

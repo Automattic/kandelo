@@ -1413,6 +1413,39 @@ mod tests {
     }
 
     #[test]
+    fn the_canonical_maker_home_is_writable_and_owned_by_the_maker() {
+        // PORTED from `apps/browser-demos/test/default-maker-profile.spec.ts`,
+        // which asserted this of a host `MemoryFileSystem` the browser
+        // resolver built for `/home/maker`. The kernel has owned that prefix
+        // since the Phase 5 cutover, so the browser spec had been failing
+        // against a mount that no longer exists — a red that was reporting the
+        // move rather than a defect.
+        //
+        // The claim is a product one: a default profile writes into the maker
+        // home, so the home must exist, be writable, and belong to the maker
+        // rather than to root.
+        let st = lstat(b"/home/maker").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFDIR);
+        assert_eq!(st.st_mode & 0o7777, 0o755);
+        assert_eq!(st.st_uid, 1000, "the maker's home, not root's");
+        assert_eq!(st.st_gid, 1000);
+
+        let p = b"/home/maker/profile.txt";
+        let h = open(p, O_CREAT | O_RDWR, 0o644, 1000, 1000).unwrap();
+        assert_eq!(write(h, 0, b"maker browser profile").unwrap(), 21);
+        assert_eq!(read_all(h), b"maker browser profile");
+        let st = lstat(p).unwrap();
+        assert_eq!(st.st_uid, 1000, "a file the maker created is the maker's");
+        assert_eq!(st.st_gid, 1000);
+        assert!(release_handle(h));
+
+        // NOT VACUOUS: `/home` itself is not a scratch mount, so the home is
+        // the mount and not an incidental directory under one.
+        assert!(!owns_path(b"/home"));
+        assert!(owns_path(b"/home/maker"));
+    }
+
+    #[test]
     fn create_write_read_roundtrip() {
         let p = b"/tmp/roundtrip.txt";
         let h = open(p, O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();

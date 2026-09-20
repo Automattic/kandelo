@@ -14,7 +14,7 @@ import {
 } from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
@@ -303,12 +303,12 @@ export function assertVfsImageCapacity(
   }
   // Ask the producer when there is one, and otherwise ask the MODULE to read
   // the artifact. Neither branch parses a container here: the ceiling lives in
-  // the container header and the SFFS superblock, and reading it in TypeScript
+  // the container header and the KIFS superblock, and reading it in TypeScript
   // would be format knowledge on the wrong side of the boundary this lane
   // exists to draw. Callers that hold only bytes take the second branch.
   const actualMaxByteLength = fs?.exportCapacityBytes
     ? fs.exportCapacityBytes()
-    : SffsImageFs.readImageCapacity(image).maxByteLength;
+    : KandeloImageFs.readImageCapacity(image).maxByteLength;
   if (actualMaxByteLength !== expectedMaxByteLength) {
     throw new Error(
       `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +

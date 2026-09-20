@@ -31,7 +31,9 @@ import {
   type SourceOnlyBinarySnapshot,
 } from "../host/src/binary-resolver.ts";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
-import { restoreVerifiedVfsImage } from "../host/src/vfs/load-image.ts";
+import { createBaseImageFromContainer } from "../images/vfs/lib/module-base-image.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
+import { imageReadFromContainer } from "../host/src/vfs/rootfs-lazy-archives.ts";
 import {
   validateVfsAssetGroupManifest,
   type VfsAssetGroupManifestV1,
@@ -159,23 +161,56 @@ export async function buildLocalVfsAssetGroup(
   );
   const expectedAssets = new Map<string, ExpectedAsset>();
   for (const [index, snapshot] of imageSnapshots.entries()) {
-    const fs = await restoreVerifiedVfsImage(snapshot.bytes);
-    for (const entry of fs.exportLazyEntries()) {
-      addExpectedAsset(expectedAssets, entry.url, { bytes: entry.size });
+    // READ the container, do not RESTORE it. This used to build a whole
+    // `MemoryFileSystem` from each product image so it could enumerate the
+    // lazy bodies the image references — a filesystem for a listing. The
+    // reader built for exactly that question does it without one, and it also
+    // reads the module-written half, which `restoreVerifiedVfsImage` could not
+    // see: the two producers record a deferred URL in different places.
+    // THE MODULE IS ASKED, because a shipped image no longer carries the
+    // host-side JSON sections this reader was written against.
+    //
+    // Measured, not assumed: every builder under `images/` writes with
+    // `KandeloImageFs`, whose images describe their deferred files in the
+    // in-body `SDEF` section and write no JSON trailer at all. A two-argument
+    // call reads only the trailer, so it answered "no deferred bodies" for a
+    // product image full of them — and this closure would then have staged
+    // NOTHING while reporting the count as its own failure.
+    //
+    // `moduleLazyEntries` is the fourth argument the reader grew for exactly
+    // this, and it is the thing nothing was passing.
+    const reader = KandeloImageFs.create();
+    reader.loadImage(snapshot.bytes);
+    const { baseImage: fs } = createBaseImageFromContainer(
+      snapshot.bytes,
+      imageReadFromContainer(snapshot.bytes),
+      undefined,
+      () => reader.lazyEntries(),
+    );
+    for (const body of fs.deferredFiles()) {
+      if (body.bytes === undefined) {
+        throw new Error(
+          `product ${products[index]!.id} has a lazy file without a declared size`,
+        );
+      }
+      addExpectedAsset(expectedAssets, body.address, { bytes: body.bytes });
     }
-    for (const entry of fs.exportLazyArchiveEntries()) {
-      const identity = entry.content ?? entry.integrity;
-      if (identity === undefined) {
+    for (const body of fs.deferredArchives()) {
+      // A body with no declared length cannot be staged: the asset group
+      // records what each reference weighs, and an archive nobody sized is a
+      // reference this closure cannot account for.
+      if (body.bytes === undefined) {
         throw new Error(
           `product ${products[index]!.id} has an archive without byte integrity`,
         );
       }
-      for (const reference of entry.content?.transports ?? [entry.url]) {
-        addExpectedAsset(expectedAssets, reference, {
-          bytes: identity.bytes,
-          sha256: identity.sha256,
-        });
-      }
+      // ONE ADDRESS, not a mirror list. `transports` was always `[address]` —
+      // no producer can express an alternate — so iterating it registered the
+      // same reference once and read as though more were possible.
+      addExpectedAsset(expectedAssets, body.address, {
+        bytes: body.bytes,
+        sha256: body.sha256,
+      });
     }
   }
   if (expectedAssets.size !== 80) {

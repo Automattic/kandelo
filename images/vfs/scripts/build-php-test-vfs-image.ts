@@ -25,7 +25,7 @@ import { createHash, type Hash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -195,7 +195,7 @@ function collectPhptSupportDirs(sourceRoot: string, phptDirs: string[]): string[
 }
 
 function copySupportFiles(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   sourceRoot: string,
   dir: string,
 ): number {
@@ -327,7 +327,7 @@ export async function buildPhpTestVfsImage(
     // The load AUTHENTICATES: verification runs inside the module's
     // `sm_load_image`, so the base gains its authority only after its
     // activation cohorts checked out.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.loadImage(inputs.baseImage);
     if (inputs.targetAbi !== undefined) {
       const metadata = fs.getImageMetadata();

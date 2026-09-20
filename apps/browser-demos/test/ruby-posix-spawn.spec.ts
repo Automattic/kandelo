@@ -29,7 +29,13 @@ const browserKernelModulePath = resolve(
   repoRoot,
   "host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
+// The IMAGE BUILDER a browser demo uses, not a filesystem. `createEmptyBuildFs`
+// installs the image module's wasm before creating one, which a page must do
+// because `KandeloImageFs.create()` is synchronous and a fetch is not.
+const kernelOwnedBootModulePath = resolve(
+  repoRoot,
+  "apps/browser-demos/lib/kernel-owned-boot.ts",
+);
 const imageHelpersModulePath = resolve(
   repoRoot,
   "host/src/vfs/image-helpers.ts",
@@ -85,7 +91,7 @@ async function runRubyCases(
   return page.evaluate(
     async ({
       browserKernelUrl,
-      memoryFsUrl,
+      kernelOwnedBootUrl,
       imageHelpersUrl,
       rubyUrl,
       execChildUrl,
@@ -95,8 +101,8 @@ async function runRubyCases(
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsUrl
+      const { createEmptyBuildFs } = await import(
+        /* @vite-ignore */ kernelOwnedBootUrl
       );
       const { ensureDirRecursive, writeVfsBinary } = await import(
         /* @vite-ignore */ imageHelpersUrl
@@ -115,16 +121,9 @@ async function runRubyCases(
       const execChildBytes = await execChildResponse.arrayBuffer();
 
       const maxImageBytes = 8 * 1024 * 1024;
-      const SharedArrayBufferCtor = SharedArrayBuffer as new (
-        byteLength: number,
-        options?: { maxByteLength?: number },
-      ) => SharedArrayBuffer;
-      const imageOwner = MemoryFileSystem.create(
-        new SharedArrayBufferCtor(2 * 1024 * 1024, {
-          maxByteLength: maxImageBytes,
-        }),
-        maxImageBytes,
-      );
+      // No buffer to size: capacity is what the exported image DECLARES it may
+      // grow to, and the builder's memory grows with the tree.
+      const imageOwner = await createEmptyBuildFs(maxImageBytes);
       ensureDirRecursive(imageOwner, "/tmp");
       ensureDirRecursive(imageOwner, "/bin");
       writeVfsBinary(
@@ -210,7 +209,7 @@ async function runRubyCases(
     },
     {
       browserKernelUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsUrl: asViteFsUrl(memoryFsModulePath),
+      kernelOwnedBootUrl: asViteFsUrl(kernelOwnedBootModulePath),
       imageHelpersUrl: asViteFsUrl(imageHelpersModulePath),
       // WHY: `@binaries` intentionally resolves a complete provenance tier.
       // This focused runtime test already selected exact artifacts through

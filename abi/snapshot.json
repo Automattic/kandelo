@@ -2634,6 +2634,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_export_container_read",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_export_tree",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },

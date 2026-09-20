@@ -21,11 +21,11 @@ import {
 } from "../../images/vfs/scripts/wordpress-source-layout";
 import { resolveNodeNpmSource } from "../../images/vfs/scripts/build-node-vfs-image";
 import { resolveLampSystemTablesDirectory } from "../../images/vfs/scripts/build-lamp-vfs-image";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const O_RDONLY = 0;
 
-function readFile(fs: SffsImageFs, path: string): string {
+function readFile(fs: KandeloImageFs, path: string): string {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, O_RDONLY, 0);
@@ -113,7 +113,7 @@ describe("WordPress product source layout", () => {
         pluginRoot,
         join(plugins, "sqlite-database-integration"),
       );
-      const fs = SffsImageFs.create();
+      const fs = KandeloImageFs.create();
 
       expect(copyWordPressCoreSource(fs, root)).toBe(2);
       expect(readFile(fs, `${WORDPRESS_CORE_GUEST_PATH}/index.php`)).toBe(
@@ -156,7 +156,7 @@ describe("WordPress product source layout", () => {
         "index.php",
         join(plugins, "sqlite-database-integration-copy"),
       );
-      const fs = SffsImageFs.create();
+      const fs = KandeloImageFs.create();
 
       expect(() => copyWordPressCoreSource(fs, root)).toThrow(
         new RegExp(
@@ -175,7 +175,7 @@ describe("WordPress product source layout", () => {
       writeFileSync(join(source, "load.php"), "plugin loader");
       writeFileSync(join(source, "includes", "driver.php"), "driver");
       writeFileSync(join(source, "build-state.db"), "excluded state");
-      const fs = SffsImageFs.create();
+      const fs = KandeloImageFs.create();
 
       expect(materializeWordPressSqlitePlugin(fs, source)).toBe(2);
       expect(readFile(
@@ -199,7 +199,7 @@ describe("WordPress product source layout", () => {
     try {
       writeFileSync(join(source, "load.php"), "plugin loader");
       symlinkSync("load.php", join(source, "unexpected-alias.php"));
-      const fs = SffsImageFs.create();
+      const fs = KandeloImageFs.create();
 
       expect(() => materializeWordPressSqlitePlugin(fs, source)).toThrow(
         new RegExp(

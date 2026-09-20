@@ -65,7 +65,7 @@ export interface VfsImageMetadata {
  *
  * Builder recipes — which packages go in the LAMP image, how WordPress is
  * preinstalled — are product configuration and stay in TypeScript. What should
- * NOT stay is their dependence on a particular implementation of the SFFS
+ * NOT stay is their dependence on a particular implementation of the KIFS
  * format. Eighteen of them took `MemoryFileSystem` purely as a parameter type
  * and never constructed one, so the coupling the budget counts was a type
  * import and nothing more.
@@ -186,7 +186,13 @@ export interface VfsImageFilesystem {
    * not here — only two recipes register one, and giving both operations one
    * name is what hid a missing capability in the bridge until it was measured.
    */
-  registerLazyFile(path: string, url: string, size: number, mode?: number): number;
+  /**
+   * `digestHex` is the SHA-256 the fetched bytes must hash to, as 64 hex
+   * characters. Optional because `KLZY` has no field for one, so
+   * `MemoryFileSystem` ignores it rather than failing — the image then says,
+   * truthfully, that it carries no digest.
+   */
+  registerLazyFile(path: string, url: string, size: number, mode?: number, digestHex?: string): number;
 
   /**
    * Free space and free inodes in the image, judged against a profile.

@@ -95,7 +95,7 @@ import type {
   ForkModuleProofMessage,
   HostDiagnosticMessage,
 } from "./host-diagnostic";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type {
   ClosedLazyAsset,
   ClosedLazyAssetSource,

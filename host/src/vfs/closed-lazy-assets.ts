@@ -480,7 +480,7 @@ function hex(bytes: Uint8Array): string {
  * This is public so staged consumers can enforce one aggregate count/byte
  * budget before fetching an authority document and only then its dependents.
  */
-export function validateClosedLazyAssetSources(
+function validateClosedLazyAssetSources(
   sources: readonly ClosedLazyAssetSource[],
 ): ClosedLazyAssetSource[] {
   if (!Array.isArray(sources) || sources.length === 0) {

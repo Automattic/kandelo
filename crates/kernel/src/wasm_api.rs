@@ -88,20 +88,26 @@ unsafe extern "C" {
     // carry, which the host fetches from its own transport and serves bytes of,
     // reporting `-EAGAIN` while the fetch is in flight.
     //
-    // `kind` is `abi::HOST_DEFERRED_KIND_*`: a URL-backed lazy FILE addressed by
-    // its inode number, or a lazy ARCHIVE addressed by its image-assigned id.
-    // One import, because it is one capability — the kind travels as its own
-    // argument rather than as a reserved range of one opaque id.
+    // The resource is named by the URI its image recorded — bytes in THIS
+    // module's memory, passed through unread. It used to be named by a `kind`
+    // discriminator plus an id from one of two namespaces, which the host could
+    // only resolve by keeping its own table mapping ids back to addresses. That
+    // table was a second author for where a file's bytes live, and the image
+    // was the first. A URI is a complete address by construction, so the table
+    // has nothing to hold and the discriminator has nothing to discriminate:
+    // a base file's blob and a lazy archive's raw bytes are the same request.
+    //
+    // The kernel does not parse the URI, and carrying it authorises nothing —
+    // whoever fetches decides whether that address may be fetched at all.
     //
     // An image-backed file is NOT deferred and never reaches here: the kernel
-    // reads its bytes out of the image through its own SFFS reader.
+    // reads its bytes out of the image through its own KIFS reader.
     //
-    // `id` and `offset` are 64-bit values split into 32-bit words for the JS
-    // boundary, matching the host_pread offset convention.
+    // `offset` is a 64-bit value split into 32-bit words for the JS boundary,
+    // matching the host_pread offset convention.
     fn host_fetch_deferred(
-        kind: u32,
-        id_lo: u32,
-        id_hi: u32,
+        uri_ptr: *const u8,
+        uri_len: u32,
         buf_ptr: *mut u8,
         buf_len: u32,
         offset_lo: u32,
@@ -346,17 +352,19 @@ fn checked_host_transfer_result(result: i32, capacity: usize) -> Result<usize, E
     Ok(transferred)
 }
 
-/// One positioned read of a deferred resource, for both
-/// [`HostIO::blob_read`] and [`HostIO::fetch_archive`]: same staging, same
-/// result checking, only the `abi::HOST_DEFERRED_KIND_*` discriminator and the
-/// id namespace differ.
-fn fetch_deferred(kind: u32, id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+/// One positioned read of a deferred resource, named by its URI.
+///
+/// An address-less resource never reaches here: `rootfs::fetch_at` refuses one
+/// before any request is made, because the filesystem is the layer that knows
+/// an image described a file and said nothing about where its bytes are. A
+/// second check here would be a guard that cannot fail.
+fn fetch_deferred_uri(uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
     let capacity = checked_host_buffer_len(buf.len())?;
+    let uri_len = u32::try_from(uri.len()).map_err(|_| Errno::EIO)?;
     let result = unsafe {
         host_fetch_deferred(
-            kind,
-            id as u32,
-            (id >> 32) as u32,
+            uri.as_ptr(),
+            uri_len,
             buf.as_mut_ptr(),
             capacity,
             offset as u32,
@@ -455,17 +463,8 @@ impl HostIO for WasmHostIO {
         checked_host_transfer_result(result, buf.len())
     }
 
-    fn blob_read(&mut self, blob_id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
-        fetch_deferred(abi::HOST_DEFERRED_KIND_FILE, blob_id, buf, offset)
-    }
-
-    fn fetch_archive(&mut self, archive_id: u32, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
-        fetch_deferred(
-            abi::HOST_DEFERRED_KIND_ARCHIVE,
-            u64::from(archive_id),
-            buf,
-            offset,
-        )
+    fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        fetch_deferred_uri(uri, buf, offset)
     }
 
     fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
@@ -1983,10 +1982,7 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
     let mut host = WasmHostIO;
     match crate::rootfs::load_image(image_len, |req, b| match req {
-        crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
-        crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-            host.fetch_archive(archive_id, b, offset)
-        }
+        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
         Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
@@ -2178,10 +2174,7 @@ pub extern "C" fn kernel_rootfs_read_file(
     let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
     let mut host = WasmHostIO;
     match crate::rootfs::read_file_at(path, offset, buf, |req, b| match req {
-        crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
-        crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-            host.fetch_archive(archive_id, b, offset)
-        }
+        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
         Ok(read) => read as i32,
@@ -2229,10 +2222,7 @@ pub extern "C" fn kernel_rootfs_write_file(
         mode,
         truncate != 0,
         |req, b| match req {
-            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
-            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-                host.fetch_archive(archive_id, b, offset)
-            }
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         },
     ) {
@@ -2283,6 +2273,67 @@ pub extern "C" fn kernel_rootfs_export_tree(
     };
     let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
     match crate::rootfs::export_tree_read(offset, buf) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Stream the FINISHED `/` image the overlay would export, CONTAINER AND ALL.
+///
+/// # Why this exists, and what it deletes
+///
+/// The host used to build this image itself: take the frozen base the kernel
+/// booted from, clone it into a writable filesystem, replay the overlay's
+/// tree onto that clone -- deletions, copy-on-writes, runtime creates, owners,
+/// modes and times -- and serialise the result. That is
+/// `host/src/vfs/rootfs-overlay-export.ts`, and it is a second implementation
+/// of a reconciliation the kernel can do from the authoritative side, against
+/// a tree the host has to ask for in pieces.
+///
+/// `rootfs::export_container_read` already did the whole job; only a way to
+/// call it was missing. It is that function and NOT `export_image_read`,
+/// which yields the bare KIFS body: a body is not an image, it has no
+/// container header, and nothing can find the filesystem inside it. Wiring
+/// this to the body first produced exactly that -- `Bad VFS image magic:
+/// 0x5346494b (expected 0x56465349)`, KIFS where VFSI belonged. `build_export_image` walks the overlay itself, so the
+/// deletions-before-parents ordering, the metadata replay and the capacity
+/// arithmetic all live where the tree does.
+///
+/// # Shape
+///
+/// Offset-addressable and streamed, exactly like [`kernel_rootfs_export_tree`]
+/// above and for the same reason: `lamp.vfs` is 249 MiB and neither side can
+/// hold it whole. An `offset` of 0 BUILDS the image and starts the stream; a
+/// later offset serves from the plan that build produced. A returned 0 is the
+/// end of the image, not an error.
+///
+/// Base-file content comes through the same `ByteReq` pair every other rootfs
+/// entry point uses, so a deferred file's bytes are fetched by URI and an
+/// image-backed file's are read out of the loaded container.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_export_container_read(
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::export_container_read(offset, buf, &mut |req, b| match req {
+        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+    }) {
         Ok(read) => read as i32,
         Err(error) => -(error as i32),
     }

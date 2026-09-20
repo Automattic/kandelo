@@ -37,7 +37,7 @@ import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { DEFAULT_MOUNT_SPEC, type MountSpec } from "../src/vfs/default-mounts";
 // The in-kernel tmpfs owns its scratch prefixes unconditionally, so scratch
 // writes to `/tmp` etc. are served by the kernel. The session-seed case seeds a
@@ -88,9 +88,12 @@ describe("node session seed configuration", () => {
 
 describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () => {
   it("stores exact root-owned OpenSSL files in the canonical image", () => {
-    const fs = MemoryFileSystem.fromImage(
-      new Uint8Array(readFileSync(rootfsImage)),
-    );
+    // READ the shipped image with the module that writes it. The previous
+    // reader was the TypeScript filesystem, which cannot see an `SDEF` section
+    // — so a shipped image's own producer and its reader here disagreed about
+    // what the artifact says.
+    const fs = KandeloImageFs.create();
+    fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
     for (const [path, source] of [
       ["/etc/ssl/openssl.cnf", opensslConfigSource],
       ["/etc/ssl/cert.pem", caCertSource],
@@ -255,7 +258,7 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
   it.each(["/etc/ssl/openssl.cnf", "/etc/ssl/cert.pem"])(
     "does not fabricate caller-missing OpenSSL data at %s",
     async (path) => {
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+      const fs = KandeloImageFs.create();
       fs.mkdir("/etc", 0o755);
       const image = await fs.saveImage();
       const program = readFileSync(probeWasm);

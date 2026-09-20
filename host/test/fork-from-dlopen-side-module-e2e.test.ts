@@ -20,7 +20,7 @@ import {
   makeHostScratchTempRoot,
   runCentralizedProgram,
 } from "./centralized-test-helper";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -271,7 +271,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     const fixture = buildVforkSideModuleFixture();
     try {
       const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
-      const imageOwner = SffsImageFs.create();
+      const imageOwner = KandeloImageFs.create();
       imageOwner.mkdir("/lib", 0o755);
       imageOwner.createFileWithOwner(
         "/lib/libvforkinside.so",
@@ -304,7 +304,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     const fixture = buildVforkSideModuleFixture();
     try {
       const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
-      const imageOwner = SffsImageFs.create();
+      const imageOwner = KandeloImageFs.create();
       imageOwner.mkdir("/lib", 0o755);
       imageOwner.createFileWithOwner(
         "/lib/libvforkinside.so",

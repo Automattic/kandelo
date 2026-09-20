@@ -2632,19 +2632,23 @@ const DYLINK_MODULE_NODE_NAME: &str = "dylink-module";
 /// `crates/wasm-artifact-module` carries no `build.toml`.
 const WASM_ARTIFACT_MODULE_NODE_NAME: &str = "wasm-artifact-module";
 
+/// The name every image-writer projection node carries. Same rule again:
+/// `crates/kandelo-image-module` carries no `build.toml`.
+const KANDELO_IMAGE_MODULE_NODE_NAME: &str = "kandelo-image-module";
+
 /// A wasm module the local-build engine builds and projects, but the package
 /// resolver does not model.
 ///
-/// There are four: `crates/fork-module` (fork capture/replay),
+/// There are five: `crates/fork-module` (fork capture/replay),
 /// `crates/wasi-module` (WASI Preview 1), `crates/dylink-module` (the
-/// dynamic-linking planner), and `crates/wasm-artifact-module` (the
-/// WebAssembly artifact reader). What they share is the pipeline, not the
-/// shape —
+/// dynamic-linking planner), `crates/wasm-artifact-module` (the WebAssembly
+/// artifact reader), and `crates/kandelo-image-module` (the VFS image
+/// writer). What they share is the pipeline, not the shape —
 /// each is built out-of-band by its own `build-wasm.sh`, each stages a
 /// closure-derived build-key stamp next to its artifact, and each must reach
 /// the SourceOnly projection as an owned root-level member or the browser's
 /// pinned-projection resolver refuses to serve it. Describing them rather than
-/// duplicating the machinery means a fourth module is one entry here.
+/// duplicating the machinery means another module is one entry here.
 ///
 /// **They are not all co-resident, despite the name.** The first two are PIC
 /// (`--pie`) SIDE modules placed inside the guest's linear memory. The planner
@@ -2655,7 +2659,7 @@ const WASM_ARTIFACT_MODULE_NODE_NAME: &str = "wasm-artifact-module";
 pub(crate) struct CoresidentSideModule {
     /// Projection node name; also the identity the consumer's root-level
     /// member rule admits.
-    node_name: &'static str,
+    pub(crate) node_name: &'static str,
     /// Build script, repo-relative. Owns the build and the freshness stamp.
     pub(crate) script: &'static str,
     /// Crates whose contents define this artifact's closure digest. Derived
@@ -2665,7 +2669,7 @@ pub(crate) struct CoresidentSideModule {
     /// `(file name, target arch, required)`. A non-required artifact mirrors a
     /// best-effort tier-3 target: absent is not an error, but a present one is
     /// still freshness-checked.
-    artifacts: &'static [(&'static str, &'static str, bool)],
+    pub(crate) artifacts: &'static [(&'static str, &'static str, bool)],
     /// The crate list named in a staleness message, for a reader who has to
     /// act on it.
     closure_description: &'static str,
@@ -2716,6 +2720,19 @@ pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[
         artifacts: &[("wasm_artifact_module32.wasm", "wasm32", true)],
         closure_description: "crates/wasm-artifact-module, crates/wasm-artifact, \
                               crates/fork-codec, crates/shared",
+    },
+    CoresidentSideModule {
+        node_name: KANDELO_IMAGE_MODULE_NODE_NAME,
+        script: "crates/kandelo-image-module/build-wasm.sh",
+        closure_crates: &["kandelo-image-module", "runtime-core"],
+        // The image writer is not compiled per pointer width. It BUILDS an
+        // image rather than sharing a guest's address space -- it imports
+        // nothing, not even `env.memory`, and owns its own linear memory -- so
+        // one wasm32 module writes images consumed by wasm32 and wasm64 guests
+        // alike.
+        artifacts: &[("kandelo_image_module32.wasm", "wasm32", true)],
+        closure_description: "crates/kandelo-image-module, crates/runtime-core, \
+                              crates/shared",
     },
 ];
 

@@ -1,0 +1,27 @@
+{
+  "file": "images/vfs/lib/kandelo-image-fs.ts",
+  "verify": "cd host && npx vitest run test/kandelo-image-fs.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a set-ID file with deferred bytes and no digest is registered anyway",
+      "scope": "  registerArchiveMember(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    if ((args.mode & SET_ID_BITS) !== 0 && archiveDigest.byteLength === 0) {",
+      "replace": "    if (false) {"
+    },
+    {
+      "name": "only set-user-ID is guarded, so set-group-ID passes without a digest",
+      "scope": "  registerArchiveMember(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    const SET_ID_BITS = 0o6000;",
+      "replace": "    const SET_ID_BITS = 0o4000;"
+    },
+    {
+      "name": "a digest of the wrong length counts as one, so a truncated hash satisfies the check",
+      "scope": "  registerArchiveMember(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    if (archiveDigest.byteLength !== 0 && archiveDigest.byteLength !== 32) {",
+      "replace": "    if (false) {"
+    }
+  ]
+}

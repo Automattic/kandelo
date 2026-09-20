@@ -23,7 +23,7 @@ path = "src/main.rs"
 
 [dependencies]
 wasm-posix-shared = { path = "../../crates/shared" }
-# The SFFS reader the kernel itself uses. `vfs-image describe` decodes an
+# The KIFS reader the kernel itself uses. `vfs-image describe` decodes an
 # image through it rather than reimplementing the format a third time --
 # which is the defect lane V is closing.
 runtime-core = { path = "../../crates/runtime-core" }

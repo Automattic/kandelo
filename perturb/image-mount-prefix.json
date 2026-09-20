@@ -1,0 +1,27 @@
+{
+  "file": "images/vfs/lib/kandelo-image-fs.ts",
+  "verify": "cd host && npx vitest run test/kandelo-image-fs.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the descriptor records the prefix as given, so a trailing slash survives",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "      mountPrefix: normalizeLazyArchiveMountPrefix(args.mountPrefix),",
+      "replace": "      mountPrefix: args.mountPrefix,"
+    },
+    {
+      "name": "the descriptor records a prefix the members were not placed under",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "      mountPrefix: normalizeLazyArchiveMountPrefix(args.mountPrefix),",
+      "replace": "      mountPrefix: `${args.mountPrefix}x`,"
+    },
+    {
+      "name": "a root mount is recorded as the empty string rather than a slash",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "      mountPrefix: normalizeLazyArchiveMountPrefix(args.mountPrefix),",
+      "replace": "      mountPrefix: normalizeLazyArchiveMountPrefix(args.mountPrefix).replace(/^\\/$/, \"\"),"
+    }
+  ]
+}

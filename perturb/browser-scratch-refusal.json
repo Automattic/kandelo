@@ -1,0 +1,28 @@
+{
+ "file": "host/src/vfs/default-mounts.ts",
+ "verify": "cd host && npx vitest run test/vfs/default-mounts.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a browser scratch mount the kernel does not serve is silently ignored",
+   "scope": "  const effective = filterMountSpecForKernelTmpfs(spec);\n  for (const m of effective) {\n    if (m.source === \"image\") continue;",
+   "scope_end": "\n  return [];",
+   "find": "    throw new Error(",
+   "replace": "    if (false) throw new Error("
+  },
+  {
+   "name": "an IMAGE mount is refused too, so no boot resolves its spec",
+   "scope": "  const effective = filterMountSpecForKernelTmpfs(spec);",
+   "scope_end": "\n  return [];",
+   "find": "    if (m.source === \"image\") continue;",
+   "replace": "    if (false) continue;"
+  },
+  {
+   "name": "the tmpfs filter stops running, so the kernel's own prefixes are refused",
+   "scope": "async function resolveValidatedForBrowser(",
+   "scope_end": "\n  return [];",
+   "find": "  const effective = filterMountSpecForKernelTmpfs(spec);",
+   "replace": "  const effective = spec;"
+  }
+ ],
+ "_comment": "The browser host has no filesystem to mount. `/` is the kernel's since the Phase 5 cutover, the eight prefixes the in-kernel tmpfs owns are filtered out before this looks, and what is left is a scratch mount at a path nothing can back -- so it is refused rather than dropped. Silently dropping it is the failure that matters: the caller believes it declared a mount, the kernel never sees one, and the divergence surfaces later as a missing directory rather than as a rejected spec. The third trial guards the other direction, because a filter that stopped running would refuse the very prefixes the kernel serves and break every boot. Node is deliberately NOT symmetric here: it backs such a mount with a HostFileSystem over a real session directory, because session seed trees must land below a surviving scratch mount and `/run/kandelo-run` is the kernel's own canonical example of a foreign mount."
+}

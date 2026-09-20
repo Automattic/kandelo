@@ -9,7 +9,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   exactVfsImageMetadata,
   ensureDir,
@@ -89,7 +89,7 @@ export async function buildErlangVfsImage(
   // image silently stopped being sufficient once the VFS began consuming the
   // publisher-safe archive instead of only selected ebin directories.
   const bytes = stagedByteLength(installDirectory);
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   // The declared capacity the product's publication gate checks the artifact
   // against. The SharedArrayBuffer it used to come from was never anything but
   // the old constructor's first argument.

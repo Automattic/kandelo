@@ -1,0 +1,42 @@
+{
+  "file": "crates/runtime-core/src/kandelo_image_fs.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "growth ceiling drops the clamp to body length",
+      "scope": "pub fn growth_ceiling_bytes",
+      "scope_end": "\n    }\n",
+      "find": "Ok(configured.max(self.source.len()))",
+      "replace": "Ok(configured)"
+    },
+    {
+      "name": "growth ceiling forgets the block-size multiply",
+      "scope": "pub fn growth_ceiling_bytes",
+      "scope_end": "\n    }\n",
+      "find": "let configured = (max_blocks as u64).saturating_mul(BLOCK_SIZE as u64);",
+      "replace": "let configured = max_blocks as u64;"
+    },
+    {
+      "name": "metadata walk forgets the conditional archive section",
+      "scope": "pub fn metadata_span",
+      "scope_end": "\n}\n",
+      "find": "    if flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0 {\n        skip_section(&mut offset)?;\n    }",
+      "replace": ""
+    },
+    {
+      "name": "metadata walk forgets the unconditional lazy section",
+      "scope": "pub fn metadata_span",
+      "scope_end": "\n}\n",
+      "find": "    skip_section(&mut offset)?;\n    if flags &",
+      "replace": "    if flags &"
+    },
+    {
+      "name": "metadata reported even when the flag is clear",
+      "scope": "pub fn metadata_span",
+      "scope_end": "\n}\n",
+      "find": "    if flags & VFS_IMAGE_FLAG_HAS_METADATA == 0 {\n        return Ok(None);\n    }",
+      "replace": ""
+    }
+  ],
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
+}

@@ -3,8 +3,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zipSync, type Zippable } from "fflate";
+import { createHash } from "node:crypto";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { parseZipCentralDirectory } from "../src/vfs/zip";
 import { findRepoRoot } from "../src/binary-resolver";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
   addDinitBaseSystemFiles,
   addDinitInit,
@@ -14,16 +16,10 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "../src/vfs/image-helpers";
-import {
-  derivePackageDeferredZipTree,
-  registerPackageDeferredZipTree,
-  type PackageDeferredZipTreeSpec,
-} from "../src/vfs/package-deferred-tree";
 import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/package-shell-vfs-build";
 import { ABI_VERSION } from "../src/generated/abi";
 import { EXPERIMENTAL_TERMINAL_SESSION_PATH } from "../../web-libs/kandelo-session/src/experimental-terminal-session";
 
-const O_RDONLY = 0;
 const encoder = new TextEncoder();
 const DINIT_DEMO_CONFIG = '{"version":1,"profiles":{"dinit-fixture":{}}}\n';
 
@@ -44,61 +40,50 @@ vi.mock("../src/binary-resolver", async (importOriginal) => {
   };
 });
 
-function readGuestBytes(fs: MemoryFileSystem, path: string): Uint8Array {
-  const size = fs.stat(path).size;
-  const fd = fs.open(path, O_RDONLY, 0);
-  try {
-    const bytes = new Uint8Array(size);
-    const count = fs.read(fd, bytes, null, bytes.byteLength);
-    return bytes.subarray(0, count);
-  } finally {
-    fs.close(fd);
-  }
+function readGuestBytes(fs: KandeloImageFs, path: string): Uint8Array {
+  return fs.readFile(path);
 }
 
-function readGuestFile(fs: MemoryFileSystem, path: string): string {
+function readGuestFile(fs: KandeloImageFs, path: string): string {
   return new TextDecoder().decode(readGuestBytes(fs, path));
 }
 
-function createFs(): MemoryFileSystem {
-  return MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+// The fixture is the producer that ships: `loadShellBaseFileSystemFromImage`
+// already RETURNS a `KandeloImageFs`, so the shell image this suite composes
+// from was the only thing still built by the filesystem being deleted — and a
+// derived composition that worked only over the legacy writer's output would
+// have passed here and failed in every builder.
+function createFs(): KandeloImageFs {
+  return KandeloImageFs.create();
 }
 
-function deferredDinitTree(
-  mountPrefix: string,
-  id: string,
-): ReturnType<typeof derivePackageDeferredZipTree> {
+/**
+ * Make `<mountPrefix>/dinitctl` DEFERRED, which is the whole of what this
+ * fixture owes.
+ *
+ * It used to go through `derivePackageDeferredZipTree` +
+ * `registerPackageDeferredZipTree`, carrying a spec with an activation mode,
+ * capabilities and roots. None of that reached the assertion: `addDinitInit`
+ * asks `getLazyEntry(path) !== null || isPathDeferred(path)` and refuses, and
+ * a deferred archive member answers that question by itself. The spec was
+ * scaffolding around a one-bit fact.
+ */
+function registerDeferredDinit(fs: KandeloImageFs, mountPrefix: string): void {
   const archive = zipSync({
     dinitctl: [
       encoder.encode("deferred dinitctl"),
       { os: 3, attrs: (0o100755 << 16) >>> 0 },
     ],
   } satisfies Zippable);
-  const spec = {
-    schema: 1,
-    kind: "kandelo-package-deferred-zip-tree",
-    id,
-    content_role: "runtime-tree",
-    package: {
-      name: "dinit-fixture",
-      output: "dinit-fixture.zip",
+  fs.registerLazyArchive({
+    url: "dinit-fixture.zip",
+    entries: parseZipCentralDirectory(archive),
+    mountPrefix,
+    integrity: {
+      sha256: createHash("sha256").update(archive).digest("hex"),
+      bytes: archive.byteLength,
     },
-    archive: {
-      url: "dinit-fixture.zip",
-      mode_policy: "portable-posix-v1",
-    },
-    mount_prefix: mountPrefix,
-    owner: {
-      uid: 0,
-      gid: 0,
-    },
-    activation: {
-      mode: "first-use",
-      capabilities: ["service-supervisor:dinit"],
-      roots: [`${mountPrefix}/dinitctl`],
-    },
-  } as const satisfies PackageDeferredZipTreeSpec;
-  return derivePackageDeferredZipTree(spec, archive);
+  });
 }
 
 describe("dinit-derived image system databases", () => {
@@ -199,6 +184,13 @@ describe("dinit-derived image binary ownership", () => {
 
   it("rejects lazy Dinit executables because service boot always needs them", () => {
     const fs = createFs();
+    // The parent first: `registerLazyFile` on the module does NOT create one,
+    // where the filesystem it replaces did. That leniency difference is the
+    // documented seam between the two producers, and it is the fixture's to
+    // pay rather than the module's to adopt — a producer that invents
+    // directories is a producer that can put a file somewhere nobody asked
+    // for.
+    ensureDirRecursive(fs, "/sbin");
     fs.registerLazyFile("/sbin/dinit", "https://example.test/dinit", 100);
     fs.registerLazyFile("/sbin/dinitctl", "https://example.test/dinitctl", 100);
 
@@ -245,11 +237,13 @@ describe("dinit-derived image binary ownership", () => {
   });
 
   it("rejects a typed deferred Dinit tree", () => {
-    const fs = createFs();
-    registerPackageDeferredZipTree(
-      fs,
-      deferredDinitTree("/sbin", "test/deferred-dinit"),
-    );
+    // Built by `KandeloImageFs` rather than `createFs()`: this is the one case
+    // in the file that needs a DEFERRED path, and the deferred registration
+    // that survives `memory-fs.ts` is the bridge's. What is under test --
+    // `addDinitInit` refusing a deferred dinitctl -- is unchanged, and it takes
+    // `VfsImageFilesystem`, which both producers satisfy.
+    const fs = KandeloImageFs.create();
+    registerDeferredDinit(fs, "/sbin");
     writeVfsBinary(fs, "/sbin/dinit", encoder.encode("resident dinit"));
 
     expect(() => addDinitInit(fs, [])).toThrow(
@@ -302,7 +296,12 @@ describe("dinit-derived image binary ownership", () => {
       kernelAbi: ABI_VERSION,
       createdBy: "dinit-image-helpers.test/shell-fixture",
       capacity: {
-        maxByteLength: shell.statfs("/").blocks * shell.statfs("/").bsize,
+        // ASKED OF THE PRODUCER, not computed from block arithmetic. This
+        // multiplied `statfs` blocks by a block size, which is how capacity
+        // was derived while it was an ALLOCATION over a `SharedArrayBuffer`.
+        // It is a declared ceiling now, and the module is the thing that
+        // declares it into the image this fixture is about to export.
+        maxByteLength: shell.exportCapacityBytes(),
       },
       baseImage: {
         sha256: "a".repeat(64),
@@ -316,7 +315,7 @@ describe("dinit-derived image binary ownership", () => {
     });
     const shellImage = await shell.saveImage();
     const shellCapacity =
-      MemoryFileSystem.readImageCapacity(shellImage).maxByteLength;
+      KandeloImageFs.readImageCapacity(shellImage).maxByteLength;
     const derived = await loadShellBaseFileSystemFromImage(
       shellImage,
       shellCapacity,
@@ -346,7 +345,7 @@ describe("dinit-derived image binary ownership", () => {
     await expect(
       loadShellBaseFileSystemFromImage(
         shellImage,
-        MemoryFileSystem.readImageCapacity(shellImage).maxByteLength,
+        KandeloImageFs.readImageCapacity(shellImage).maxByteLength,
       ),
     ).rejects.toThrow("package shell base image has invalid metadata");
   });

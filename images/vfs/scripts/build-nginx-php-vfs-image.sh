@@ -3,10 +3,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
-if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
-  exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$SCRIPT_DIR/staged-product-inputs.ts" browser-nginx-php "$@"
-fi
 echo "==> Building nginx + PHP-FPM VFS image..."
 VFS_DIR="$REPO_ROOT/apps/browser-demos/public"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then

@@ -1,33 +1,18 @@
+// WHAT THIS BARREL NO LONGER RE-EXPORTS, 2026-09-17: `MemoryFileSystem`,
+// `resolveMountSetIdCapability`, the materialization-plan verbs and eleven
+// types, all from the filesystem this lane deleted. Nothing outside this file
+// imported any of them — checked before removing — so the barrel was
+// advertising a class no consumer named.
 export { readPreparedPlatformFile, VirtualPlatformIO } from "./vfs";
 export type { HostFileOffset } from "../types";
 export type { PreparedPlatformFile } from "./vfs";
 export { HostFileSystem } from "./host-fs";
-export {
-  MemoryFileSystem,
-  resolveMountSetIdCapability,
-} from "./memory-fs";
 export {
   assertVfsDeferredTreeCollectionUsage,
   VFS_DEFERRED_TREE_COLLECTION_LIMITS,
   VFS_DEFERRED_TREE_LIMITS,
 } from "./deferred-tree-limits";
 export type { VfsDeferredTreeUsage } from "./deferred-tree-limits";
-export {
-  applyLazyTreeByteTransformRecipe,
-  decodeMaterializationBytes,
-  encodeMaterializationBytes,
-  validateLazyTreeMaterializationPlan,
-} from "./materialization-plan";
-export type {
-  LazyTreeByteIdentity,
-  LazyTreeByteReplacement,
-  LazyTreeByteTransform,
-  LazyTreeByteTransformRecipe,
-  LazyTreeMaterializationPlan,
-  LazyTreeMaterializationSourceEntry,
-  LazyTreeMaterializationSourceInventory,
-  LazyTreeSourceAssertion,
-} from "./materialization-plan";
 export {
   createClosedLazyAssetFetcher,
   loadClosedLazyAssetSources,
@@ -39,32 +24,6 @@ export type {
   ClosedLazyAsset,
   ClosedLazyAssetSource,
 } from "./closed-lazy-assets";
-export type {
-  LazyDownloadEvent,
-  LazyDownloadKind,
-  LazyDownloadListener,
-  LazyDownloadStatus,
-  LazyAtomicGroupMembership,
-  LazyFileEntry,
-  LazyFetcherOptions,
-  LazyTreeActivation,
-  LazyTreeContent,
-  LazyTreeDecoder,
-  LazyTreeGroup,
-  LazyTreeRegistrationEntry,
-  LazyTreeSourceEntry,
-  LazyTreeSourceInventory,
-  SerializedLazyTree,
-  VfsImageCapacity,
-  VfsImageMetadata,
-  VfsImageOptions,
-  VfsImageRestoreOptions,
-} from "./memory-fs";
-export {
-  loadVfsImage,
-  restoreVerifiedVfsImage,
-  restoreVerifiedVfsImagePreservingCapacity,
-} from "./load-image";
 export {
   DEFAULT_TAR_GZIP_LIMITS,
   TarParseError,
@@ -95,6 +54,5 @@ export { backendPathconf } from "../pathconf";
 export type { PathconfProfile } from "../pathconf";
 export type { PathconfValue } from "../types";
 export { DEFAULT_MOUNT_SPEC, resolveForBrowser } from "./default-mounts";
-export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
+export type { MountSpec } from "./default-mounts";
 export { resolveForNode } from "./default-mounts-node";
-export { overlayEtcFromRootfs } from "./rootfs-overlay";

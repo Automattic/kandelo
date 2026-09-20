@@ -16,10 +16,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import type { VfsImageMetadata } from "../../host/src/vfs/vfs-image-filesystem";
 import { ABI_VERSION } from "../../host/src/generated/abi";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -101,7 +99,10 @@ async function vfsImage(
   metadata: VfsImageMetadata | null | undefined,
   compressed: boolean,
 ): Promise<Uint8Array> {
-  const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  // Written by the producer that writes every shipped image: these cases are
+  // about what the RESOLVER does with an image's declared metadata, so the
+  // fixture must be the kind of image a resolver will meet.
+  const mfs = KandeloImageFs.create();
   const image = await mfs.saveImage(
     metadata === undefined ? undefined : { metadata },
   );

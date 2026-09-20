@@ -10,13 +10,7 @@ import { zipSync, type Zippable } from "fflate";
 
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import {
-  derivePackageDeferredZipTree,
-  materializePackageDeferredZipTree,
-  registerPackageDeferredZipTree,
-  type PackageDeferredZipTreeSpec,
-} from "../../../host/src/vfs/package-deferred-tree";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 
 interface LazyAcceptanceResult {
@@ -83,75 +77,23 @@ async function lazyImage(groups: Array<{
   url: string;
   archive: Uint8Array;
 }>): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+  // Built by `KandeloImageFs`, the producer that ships. The call is the same
+  // one argument for argument -- `registerLazyArchiveFromEntries(url, entries,
+  // prefix, symlinks, integrity)` is `registerLazyArchive({ ... })` -- which is
+  // why this fixture cost a swap rather than a rewrite. What the five tests
+  // below assert is unchanged: they are about the BROWSER, and the image is
+  // their input.
+  const fs = KandeloImageFs.create();
   fs.setImageMetadata({ version: 1, kernelAbi: ABI_VERSION });
   for (const group of groups) {
-    fs.registerLazyArchiveFromEntries(
-      group.url,
-      parseZipCentralDirectory(group.archive),
-      "/",
-      undefined,
-      identity(group.archive),
-    );
+    fs.registerLazyArchive({
+      url: group.url,
+      entries: parseZipCentralDirectory(group.archive),
+      mountPrefix: "/",
+      integrity: identity(group.archive),
+    });
   }
   return fs.saveImage();
-}
-
-async function packageTreeImages(
-  archive: Uint8Array,
-): Promise<{ lazy: Uint8Array; eager: Uint8Array }> {
-  const spec = {
-    schema: 1,
-    kind: "kandelo-package-deferred-zip-tree",
-    id: "browser/package-runtime",
-    content_role: "runtime-tree",
-    package: {
-      name: "package-runtime",
-      output: "package-runtime.zip",
-    },
-    archive: {
-      url: "package-runtime.zip",
-      mode_policy: "portable-posix-v1",
-    },
-    mount_prefix: "/opt/package-runtime",
-    owner: {
-      uid: 1000,
-      gid: 1000,
-    },
-    activation: {
-      mode: "first-use",
-      capabilities: ["package:runtime"],
-      roots: ["/opt/package-runtime/bin/environment-lifecycle"],
-    },
-  } as const satisfies PackageDeferredZipTreeSpec;
-  const derived = derivePackageDeferredZipTree(spec, archive);
-  const createFs = () => {
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(1024 * 1024),
-    );
-    fs.setImageMetadata({ version: 1, kernelAbi: ABI_VERSION });
-    // The environment lifecycle fixture re-execs itself through this stable
-    // path. Keep the package-owned executable under its mount prefix while
-    // exercising normal VFS symlink resolution for the fixture's re-exec.
-    fs.mkdir("/bin", 0o755);
-    fs.symlink(
-      "/opt/package-runtime/bin/environment-lifecycle",
-      "/bin/environment-lifecycle",
-    );
-    return fs;
-  };
-
-  const lazyFs = createFs();
-  registerPackageDeferredZipTree(lazyFs, derived);
-
-  const eagerFs = createFs();
-  const registered = registerPackageDeferredZipTree(eagerFs, derived);
-  await materializePackageDeferredZipTree(eagerFs, registered, archive);
-
-  return {
-    lazy: await lazyFs.saveImage(),
-    eager: await eagerFs.saveImage(),
-  };
 }
 
 async function routeBytes(
@@ -432,85 +374,13 @@ test("Chromium reports digest failure without mutation and retries cleanly", asy
   expect(fetches).toBe(2);
 });
 
-test("Chromium consumes lazy and eager package trees derived from one exact ZIP", async ({
-  page,
-  baseURL,
-}) => {
-  test.setTimeout(180_000);
-  if (!baseURL) throw new Error("Playwright baseURL is required");
-  const executable = new Uint8Array(readFileSync(environmentProgram));
-  const archive = zipSync({
-    "bin/": unixZipEntry(new Uint8Array(), 0o040700),
-    "bin/environment-lifecycle": unixZipEntry(executable, 0o100711),
-    "share/": unixZipEntry(new Uint8Array(), 0o040777),
-    "share/package-runtime.txt": unixZipEntry(
-      new TextEncoder().encode("same package tree\n"),
-      0o100600,
-    ),
-  } satisfies Zippable);
-  const images = await packageTreeImages(archive);
-  const lazyImageUrl = sameOriginFixtureUrl(baseURL, "package-lazy.vfs");
-  const eagerImageUrl = sameOriginFixtureUrl(baseURL, "package-eager.vfs");
-  const archiveUrl = new URL("package-runtime.zip", baseURL).href;
-  let archiveFetches = 0;
-  await routeBytes(page, lazyImageUrl, images.lazy, "application/octet-stream");
-  await routeBytes(page, eagerImageUrl, images.eager, "application/octet-stream");
-  await page.route(archiveUrl, async (route) => {
-    archiveFetches++;
-    await route.fulfill({
-      status: 200,
-      body: Buffer.from(archive),
-      headers: {
-        "content-length": String(archive.byteLength),
-        "content-type": "application/zip",
-      },
-    });
-  });
-
-  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
-  await expect.poll(
-    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
-    { timeout: 120_000 },
-  ).toBe(true);
-  const request = {
-    readPath: "/opt/package-runtime/share/package-runtime.txt",
-    executable: "/opt/package-runtime/bin/environment-lifecycle",
-    argv: ["/opt/package-runtime/bin/environment-lifecycle"],
-    env: ["INITIAL=parent", "REMOVE=before-fork"],
-    timeoutMs: 90_000,
-  };
-  const lazy = await page.evaluate(
-    ({ url, acceptance }) => window.__runLazyVfsAcceptance({
-      vfsUrl: url,
-      ...acceptance,
-    }),
-    { url: lazyImageUrl, acceptance: request },
-  );
-  expect(lazy).toMatchObject({
-    readText: "same package tree\n",
-    exitCode: 0,
-    stderr: "",
-  });
-  expect(lazy.stdout).toContain("EXEC_ENV_PASS");
-  expect(lazy.stdout).toContain("EMPTY_ENV_PASS");
-  expect(archiveFetches).toBe(1);
-
-  const eager = await page.evaluate(
-    ({ url, acceptance }) => window.__runLazyVfsAcceptance({
-      vfsUrl: url,
-      ...acceptance,
-    }),
-    { url: eagerImageUrl, acceptance: request },
-  );
-  expect(eager).toMatchObject({
-    readText: "same package tree\n",
-    exitCode: 0,
-    stderr: "",
-  });
-  expect(eager.stdout).toContain("EXEC_ENV_PASS");
-  expect(eager.stdout).toContain("EMPTY_ENV_PASS");
-  expect(archiveFetches).toBe(1);
-});
+// The fifth test lived here: "Chromium consumes lazy and eager package trees
+// derived from one exact ZIP". It went with `package-deferred-tree.ts`, whose
+// `derive`/`register`/`materialize` trio built its lazy and eager pair and
+// which had no production caller. The four tests above stay deliberately even
+// though this file cannot run -- `/pages/lazy-archive-vfs-test/` went with the
+// Homebrew fixtures in #1307 -- because they are the written specification of
+// what a rebuilt acceptance harness must prove.
 
 function unixZipEntry(bytes: Uint8Array, mode: number): Zippable[string] {
   return [bytes, { os: 3, attrs: ((mode << 16) >>> 0) }];

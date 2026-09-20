@@ -29,7 +29,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::sffs::{file_type, BlockSource, Sffs, ROOT_INO};
+use crate::kandelo_image_fs::{file_type, BlockSource, KandeloImageFs, ROOT_INO};
 
 /// What a product image must still have free when it ships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +78,9 @@ pub enum PolicyViolation {
     /// profile is as wrong as one built smaller, because the profile is what
     /// the product was sized and tested against.
     Capacity { actual_bytes: u64, expected_bytes: u64 },
+    /// The image states in its own metadata that it was built for a different
+    /// kernel ABI than the one about to mount it.
+    DeclaredAbi { declared: u32, expected: u32 },
 }
 
 impl PolicyViolation {
@@ -101,6 +104,7 @@ impl PolicyViolation {
             }
             PolicyViolation::Capacity { .. } => out.push("growth ceiling"),
             PolicyViolation::StaleWasmArtifacts { .. } => out.push("wasm artifacts"),
+            PolicyViolation::DeclaredAbi { .. } => out.push("declared kernel ABI"),
         }
         out
     }
@@ -114,13 +118,13 @@ impl PolicyViolation {
 /// rebuild, then telling it "you are also short on inodes" wastes the slowest
 /// loop in the project.
 pub fn check_headroom<S: BlockSource>(
-    fs: &Sffs<S>,
+    fs: &KandeloImageFs<S>,
     headroom: &Headroom,
 ) -> Result<(), PolicyViolation> {
     let st = fs.statfs().map_err(|_| PolicyViolation::Headroom {
         // A statfs that cannot be read is not "zero free": it is an image whose
         // own superblock is unreadable, and reporting it as a headroom breach
-        // is the truthful outcome for a publication gate. `Sffs::statfs`
+        // is the truthful outcome for a publication gate. `KandeloImageFs::statfs`
         // already refuses a superblock claiming more free than total, so this
         // arm cannot be reached by a merely-full image.
         free_bytes: 0,
@@ -148,7 +152,7 @@ pub fn check_headroom<S: BlockSource>(
 /// as wrong as one built smaller: the profile is the size the product was
 /// tested against, and a quietly roomier image is a difference nobody reviewed.
 pub fn check_capacity<S: BlockSource>(
-    fs: &Sffs<S>,
+    fs: &KandeloImageFs<S>,
     expected_bytes: u64,
 ) -> Result<(), PolicyViolation> {
     let actual_bytes = fs
@@ -186,12 +190,12 @@ const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 /// would either fail or, worse, inspect a zero-length stub and pronounce it
 /// fine. The TypeScript original skips them for the same reason.
 ///
-/// Deferral is read from the in-body SDEF section, which is what `SffsWriter`
+/// Deferral is read from the in-body SDEF section, which is what `KandeloImageWriter`
 /// produces. An image whose deferred files are recorded only in the trailing
 /// KLZY JSON is a TypeScript-written image, and this path does not produce
 /// one.
 pub fn check_wasm_artifacts<S: BlockSource>(
-    fs: &Sffs<S>,
+    fs: &KandeloImageFs<S>,
     kernel_abi: u32,
     declarations: &[WasmArtifactDeclaration<'_>],
 ) -> Result<(), PolicyViolation> {
@@ -317,15 +321,159 @@ pub fn check_wasm_artifacts<S: BlockSource>(
     }
 }
 
+/// The kernel ABI an image DECLARES about itself, or `None` when it declares
+/// none.
+///
+/// # Why this scans instead of parsing
+///
+/// `kandelo_image_fs::metadata_span` hands back the metadata section as opaque
+/// bytes, and says why: the section is JSON with a deliberately OPEN shape, so
+/// a reader that parsed it into a struct and re-serialized would silently drop
+/// every field it did not know about. That argument is about a PARSER. It is
+/// not an argument against reading one number.
+///
+/// The same comment's second reason — "teaching the kernel crate to parse JSON
+/// to read three fields it does not act on would buy a parser's attack surface
+/// for nothing" — turns on *does not act on*, and that is what changes here.
+/// The kernel now acts on exactly one of those fields, so it reads exactly one
+/// of them, with a bounded scan that allocates nothing, recurses nowhere, and
+/// cannot consume more than the section it was handed.
+///
+/// # What it deliberately does NOT do
+///
+/// It does not validate that the section is well-formed JSON, and it does not
+/// care what else the section contains. A malformed section simply declares no
+/// ABI, and "declares no ABI" is already a state the caller must handle,
+/// because images predating the field exist. Refusing to load an image because
+/// its metadata had a stray comma would fail the machine for something no part
+/// of the system reads.
+///
+/// # Why it tracks depth, which a substring search would not
+///
+/// A shipped image's metadata carries the field TWICE. `lamp.vfs.zst` and its
+/// siblings are:
+///
+/// ```json
+/// {"version":1,"kernelAbi":44,"createdBy":"…","baseImage":{…,"kernelAbi":44}}
+/// ```
+///
+/// The second one is the BASE image this product was derived from, and it is
+/// not the claim this check is about. A first-match substring scan reads the
+/// right one today only because the writer happens to emit the top-level key
+/// first — so a refactor that reordered an object literal would silently point
+/// the kernel's ABI gate at a different image's declaration, and nothing would
+/// look wrong. That is the same failure shape as every other defect this lane
+/// has found: a plausible wrong answer.
+///
+/// So this knows enough structure to tell depth 1 from deeper: it tracks
+/// braces, and it tracks strings and their escapes, because a `}` inside
+/// `"createdBy"` is not a closing brace. **It still is not a parser.** It
+/// validates nothing, allocates nothing, recurses nowhere, interprets no other
+/// value, and a section it cannot follow simply declares no ABI.
+pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {
+    const KEY: &[u8] = b"\"kernelAbi\"";
+    let mut at = 0usize;
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while at < metadata.len() {
+        let byte = metadata[at];
+        // Inside a string nothing is structural. The `continue` matters: an
+        // earlier version fell through after clearing the flag, so every
+        // CLOSING quote was immediately read as an opening one and the whole
+        // scan ran inverted. Two tests caught it; reading the code did not.
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            at += 1;
+            continue;
+        }
+        match byte {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth -= 1,
+            b'"' => {
+                if depth == 1 && metadata[at..].starts_with(KEY) {
+                    if let Some(value) = read_number_after_key(metadata, at + KEY.len()) {
+                        return Some(value);
+                    }
+                }
+                in_string = true;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    None
+}
+
+/// The integer a `"key":` is followed by, or `None` when it is followed by
+/// anything else — a string, a null, an object, or nothing at all.
+fn read_number_after_key(metadata: &[u8], from: usize) -> Option<u32> {
+    let skip_space = |cursor: &mut usize| {
+        while matches!(metadata.get(*cursor), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            *cursor += 1;
+        }
+    };
+    let mut cursor = from;
+    skip_space(&mut cursor);
+    if metadata.get(cursor) != Some(&b':') {
+        return None;
+    }
+    cursor += 1;
+    skip_space(&mut cursor);
+    let start = cursor;
+    let mut value: u32 = 0;
+    while let Some(&byte) = metadata.get(cursor) {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        // A version that does not fit a u32 is not a version this kernel could
+        // ever match, and saturating would turn it into one.
+        value = value.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;
+        cursor += 1;
+    }
+    if cursor == start {
+        return None;
+    }
+    Some(value)
+}
+
+/// Refuse an image that states it was built for a different kernel ABI.
+///
+/// An image is a product artifact with a long life: it is built once, written
+/// to `local-binaries/`, and survives every `ABI_VERSION` bump after it. So
+/// "the image and the kernel disagree" is not a transport or a packaging
+/// accident, it is the ordinary consequence of not rebuilding, and the ABI
+/// contract says it must fail loudly rather than boot.
+///
+/// An image that declares NOTHING is accepted. That is not a hole: declaring
+/// an ABI is what a builder does to make this check possible, and an image
+/// predating the field makes no claim this could contradict. Refusing it would
+/// be refusing the absence of evidence.
+pub fn check_declared_abi(metadata: Option<&[u8]>, expected: u32) -> Result<(), PolicyViolation> {
+    let Some(declared) = metadata.and_then(declared_kernel_abi) else {
+        return Ok(());
+    };
+    if declared == expected {
+        return Ok(());
+    }
+    Err(PolicyViolation::DeclaredAbi { declared, expected })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sffs::unwrap_vfsi;
+    use crate::kandelo_image_fs::unwrap_vfsi;
 
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
 
-    fn mount() -> Sffs<Vec<u8>> {
-        Sffs::mount(unwrap_vfsi(TINY_VFS).expect("unwrap").to_vec()).expect("mount")
+    fn mount() -> KandeloImageFs<Vec<u8>> {
+        KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).expect("unwrap").to_vec()).expect("mount")
     }
 
     #[test]
@@ -414,15 +562,15 @@ mod tests {
         }
     }
 
-    // The ceiling's own VALUE is pinned in `sffs.rs` against literals, not
+    // The ceiling's own VALUE is pinned in `image.rs` against literals, not
     // here: a test in this module that derives its expectation from
     // `growth_ceiling_bytes` can only show the function equals itself, which
     // is exactly how two mutants of it survived the first time round.
 
     /// Build a small image containing the given (path, bytes) regular files.
-    fn image_with(files: &[(&[u8], &[u8])]) -> Sffs<Vec<u8>> {
-        use crate::sffs_write::{Content, NoContent, SffsConfig, SffsWriter};
-        let mut w = SffsWriter::mkfs(SffsConfig {
+    fn image_with(files: &[(&[u8], &[u8])]) -> KandeloImageFs<Vec<u8>> {
+        use crate::kandelo_image_write::{Content, NoContent, KandeloImageConfig, KandeloImageWriter};
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 256 * 1024,
             max_size_bytes: None,
             growable_to_bytes: 256 * 1024,
@@ -435,7 +583,7 @@ mod tests {
             w.create_file(root, leaf, 0o644, Content::Bytes(bytes)).expect("create");
         }
         let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
-        Sffs::mount(body).expect("mount")
+        KandeloImageFs::mount(body).expect("mount")
     }
 
     fn failures_of(err: &PolicyViolation) -> &[String] {
@@ -509,8 +657,8 @@ mod tests {
     /// is on its full path.
     #[test]
     fn a_stale_artifact_in_a_subdirectory_is_found() {
-        use crate::sffs_write::{Content, NoContent, SffsConfig, SffsWriter};
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        use crate::kandelo_image_write::{Content, NoContent, KandeloImageConfig, KandeloImageWriter};
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 256 * 1024,
             max_size_bytes: None,
             growable_to_bytes: 256 * 1024,
@@ -523,7 +671,7 @@ mod tests {
         w.create_file(bin, b"prog.wasm", 0o755, Content::Bytes(b"\0asm\x01\x00\x00\x00garbage"))
             .expect("create");
         let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
-        let fs = Sffs::mount(body).expect("mount");
+        let fs = KandeloImageFs::mount(body).expect("mount");
 
         let err = check_wasm_artifacts(&fs, 44, &[]).expect_err("a stale nested artifact must fail");
         assert!(
@@ -564,5 +712,107 @@ mod tests {
         )
         .expect_err("inode shortfall must fail");
         assert_eq!(err.breached(), alloc::vec!["free inodes"]);
+    }
+    #[test]
+    fn reads_the_abi_an_image_declares() {
+        assert_eq!(
+            declared_kernel_abi(br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#),
+            Some(44)
+        );
+    }
+
+    #[test]
+    fn tolerates_the_whitespace_a_pretty_printer_leaves() {
+        assert_eq!(
+            declared_kernel_abi(b"{\n  \"kernelAbi\" :  44 ,\n  \"version\": 1\n}"),
+            Some(44)
+        );
+    }
+
+    #[test]
+    fn an_image_that_declares_nothing_declares_nothing() {
+        assert_eq!(declared_kernel_abi(br#"{"version":1}"#), None);
+        assert_eq!(declared_kernel_abi(b""), None);
+        // The key present with a non-numeric value is the same answer: this
+        // reads a number or it reads nothing, and it never guesses one.
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbi":"44"}"#), None);
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbi":null}"#), None);
+    }
+
+    #[test]
+    fn a_derived_product_declares_the_field_twice_and_only_one_is_its_own() {
+        // The real shape of lamp/wordpress/nginx: the image's own claim, and
+        // the base image it was derived from. Nine shipped images carry this.
+        let real = br#"{"version":1,"kernelAbi":44,"createdBy":"x","baseImage":{"sha256":"ab","bytes":7,"kernelAbi":43}}"#;
+        assert_eq!(declared_kernel_abi(real), Some(44));
+    }
+
+    #[test]
+    fn the_nested_declaration_does_not_win_by_coming_first() {
+        // THE REASON THIS SCANS WITH DEPTH. A first-match substring search
+        // reads the right key in the shape above only because the writer emits
+        // it first. Reorder the object literal -- a refactor, not a format
+        // change -- and the gate would silently compare the kernel against a
+        // DIFFERENT image's declaration, with nothing looking wrong.
+        let reordered = br#"{"baseImage":{"sha256":"ab","kernelAbi":43},"version":1,"kernelAbi":44}"#;
+        assert_eq!(declared_kernel_abi(reordered), Some(44));
+    }
+
+    #[test]
+    fn a_brace_inside_a_string_is_not_a_brace() {
+        // `createdBy` is free text written by a build script. Counting depth
+        // without knowing where strings are would put this key at depth 2.
+        let braced = br#"{"createdBy":"images/vfs/scripts/{save}","kernelAbi":44}"#;
+        assert_eq!(declared_kernel_abi(braced), Some(44));
+        // And the same with an escaped quote, so the string does not "end"
+        // early and unbalance everything after it.
+        let escaped = br#"{"createdBy":"a\"}b","kernelAbi":44}"#;
+        assert_eq!(declared_kernel_abi(escaped), Some(44));
+    }
+
+    #[test]
+    fn an_image_that_only_names_its_bases_abi_declares_none_of_its_own() {
+        // Not the same as declaring 43. The image makes no claim about itself,
+        // and inheriting its base's would be inventing one.
+        let nested_only = br#"{"version":1,"baseImage":{"kernelAbi":43}}"#;
+        assert_eq!(declared_kernel_abi(nested_only), None);
+        assert_eq!(check_declared_abi(Some(nested_only), 44), Ok(()));
+    }
+
+    #[test]
+    fn a_similarly_named_key_is_not_this_key() {
+        // Scanning for a substring would match `notKernelAbi` and
+        // `kernelAbiExpected`; the quotes are what make the key a key.
+        assert_eq!(declared_kernel_abi(br#"{"notkernelAbi":9}"#), None);
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbiExpected":9}"#), None);
+    }
+
+    #[test]
+    fn a_version_too_large_for_a_u32_is_not_silently_clamped() {
+        // Saturating would turn an impossible declaration into u32::MAX, which
+        // is a number a kernel could in principle equal.
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbi":99999999999}"#), None);
+    }
+
+    #[test]
+    fn an_agreeing_declaration_passes_and_a_disagreeing_one_does_not() {
+        assert_eq!(check_declared_abi(Some(br#"{"kernelAbi":44}"#), 44), Ok(()));
+        assert_eq!(
+            check_declared_abi(Some(br#"{"kernelAbi":43}"#), 44),
+            Err(PolicyViolation::DeclaredAbi { declared: 43, expected: 44 })
+        );
+    }
+
+    #[test]
+    fn absence_of_a_declaration_is_not_a_violation() {
+        // An image predating the field makes no claim this can contradict.
+        assert_eq!(check_declared_abi(None, 44), Ok(()));
+        assert_eq!(check_declared_abi(Some(br#"{"version":1}"#), 44), Ok(()));
+    }
+
+    #[test]
+    fn the_violation_names_the_limit_it_breached() {
+        let err = check_declared_abi(Some(br#"{"kernelAbi":1}"#), 44).expect_err("mismatch");
+        assert_eq!(err.breached(), alloc::vec!["declared kernel ABI"]);
     }
 }

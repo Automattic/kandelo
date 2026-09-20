@@ -25,6 +25,7 @@ import {
   browserKernelModuleSpecifier,
   browserRepositoryAliases,
   browserRootfsModuleSpecifier,
+  browserImageModule32ModuleSpecifier,
   browserWasiModule32ModuleSpecifier,
   browserWasmArtifactModule32ModuleSpecifier,
 } from "./browser-module-contract.mjs";
@@ -341,6 +342,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const ROOTFS = browserRootfsModuleSpecifier;
   const FORK_MODULE32 = browserForkModule32ModuleSpecifier;
   const WASI_MODULE32 = browserWasiModule32ModuleSpecifier;
+  const IMAGE_MODULE32 = browserImageModule32ModuleSpecifier;
   const DYLINK_MODULE32 = browserDylinkModule32ModuleSpecifier;
   const WASM_ARTIFACT_MODULE32 = browserWasmArtifactModule32ModuleSpecifier;
   return {
@@ -382,6 +384,24 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
         this.error(
           "fork_module32.wasm not found. Run " +
             "`scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh`.\n" +
+            `  Looked at: ${local}\n  Looked at: ${hosted}`,
+        );
+      }
+      if (pathPart === IMAGE_MODULE32) {
+        // The wasm32 image-writer module. The browser BUILDS its boot image
+        // with this — `KandeloImageFs` instantiates it — so a missing artifact is
+        // a loud error pointing at the build script rather than a silent
+        // fallback to a reader that cannot see an `SDEF` section (B45).
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("kandelo_image_module32.wasm");
+        }
+        const resolved = tryResolveBinary("kandelo_image_module32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        const local = path.resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
+        const hosted = path.resolve(repoRoot, "host/wasm/kandelo_image_module32.wasm");
+        this.error(
+          "kandelo_image_module32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.\n" +
             `  Looked at: ${local}\n  Looked at: ${hosted}`,
         );
       }

@@ -673,7 +673,7 @@ writer. The relay re-applies onto whichever answer comes back.
 hunks — two of them textual accidents where git spliced the relay's rewrite of
 `host_fetch_deferred` into the `host_image_read` block that had replaced it.)*
 
-## B50 — after the lane F merge, no process that forks can start
+## B50 — a stale host bundle broke every fork — RESOLVED 2026-09-17
 
 OPEN and **urgent**, found 2026-09-16 validating the lane F merge `3ea310260`.
 
@@ -682,7 +682,39 @@ OPEN and **urgent**, found 2026-09-16 validating the lane F merge `3ea310260`.
       at instantiateForkModule (host/src/fork-module-instance.ts:600)
       at centralizedWorkerMain (host/src/worker-main.ts:3643)
 
-**The module is internally inconsistent.** `wasm-objdump` on the freshly built
+**RESOLVED 2026-09-17. The cause was a stale `host/dist`, and every other
+theory in this entry was wrong.**
+
+`host/dist/` was dated Sep 15 20:13 while `host/src/fork-module-instance.ts`
+was Sep 16 18:43. Package-build workers run the COMPILED bundle, not
+`host/src`, so they executed the old table logic against the new fork module.
+`cd host && npm run build` (tsup) cleared 400 LinkErrors to 0, and
+`./run.sh setup` then reached real exit code 0 with `"outcome":"succeeded"`.
+
+**Three diagnoses in this entry were wrong, and each was stated with more
+confidence than its evidence carried:**
+
+1. "The module is internally inconsistent." It is not. `wasm-tools dump` shows
+   `table_size: 2`, matching the import's `initial=2`, and running the host's
+   own parser against the same artifact also yields 2.
+2. "Lane F's injector writes the wrong table size." A brief was handed to that
+   agent naming three lines of `fork-module-inject/src/main.rs` on the
+   strength of that guess. **Lane F's code was never at fault**, and that
+   brief should be withdrawn.
+3. "It is a stale fork module." Plausible, and tested: `build-wasm.sh
+   --verify-fresh` reported exit 0 with the module current, and the failure
+   persisted. The stale artifact was one layer up.
+
+**What would have found it in seconds:** comparing `host/dist`'s timestamp to
+`host/src`. No check in the tree does that. `cargo xtask verify-fresh` covers
+Rust artifacts and `build-wasm.sh --verify-fresh` covers the modules; nothing
+covers the compiled host bundle that every package-build worker actually runs.
+**That is the defect worth fixing**, and it is filed as B51.
+
+**Superseded below**, kept because how three wrong diagnoses were reached is
+worth more than the right one:
+
+**The module was thought internally inconsistent.** `wasm-objdump` on the freshly built
 `host/wasm/fork_module32.wasm` shows its own import requiring
 `env.__indirect_function_table` with **initial=2**, while the `dylink` section
 the host parses for the same value (`fork-module-instance.ts:166`,
@@ -713,6 +745,294 @@ this is lane F's defect or something only the merge produces.
 **This is a maintainer decision:** have lane F fix the dylink/table
 disagreement, or revert `3ea310260` until it is fixed. The merge is already
 pushed to `brandonpayton/epoll-kernel-route`.
+
+## B51 — nothing checks that `host/dist` is fresh
+
+OPEN, filed 2026-09-17 out of B50, which cost most of a day.
+
+Package-build workers do not run `host/src`. They run the compiled bundle in
+`host/dist`, built by `tsup`. Nothing in the tree checks that bundle against
+its sources: `cargo xtask verify-fresh` covers Rust artifacts,
+`crates/fork-module/build-wasm.sh --verify-fresh` covers the wasm modules, and
+`./run.sh setup` rebuilds the bundle only as a side effect of other work.
+
+When it goes stale the symptom is a runtime error deep inside a package build
+— in B50's case a `LinkError` about a table import — which reads as a defect
+in whatever code the bundle interacts with. It sent this session to the wrong
+layer three times and produced a brief blaming another lane's injector.
+
+**What is wanted:** a freshness check on `host/dist` in the same shape as the
+existing two, failing loudly and naming the bundle, so the next occurrence is
+one line of output instead of a day.
+
+## B52 — one confirmed fork regression (filed as three)
+
+OPEN, found 2026-09-17 on the first browser run after the lane Y/V merge.
+
+**SCOPE: read the corrections below before the entry.** This was filed as
+three regressions. It is one. `process-memory-retirement` is confirmed in
+both artifact-resolution modes and is lane F's. `ruby-posix-spawn` cannot
+currently be confirmed — it SKIPS under the source-only policy, because
+its `exec-child.wasm` fixture is not projected (B54). The Node.js demo was
+never fork and never a regression from this merge (B54). The heading and
+the body below are kept as filed, because what the filing got wrong is
+the instructive part; the corrections carry the current state.
+
+The brief is `docs/plans/lane-briefs/b52-fork-vfork-regressions.md`, which
+leads with the same narrowing so a lane cannot pick up the Ruby item by
+mistake.
+
+| spec | what it asserts |
+|---|---|
+| `ruby-posix-spawn.spec.ts` | Ruby execs through vfork and root retains ordinary fork — `childEvents` and `forkCounts` both wrong |
+| `process-memory-retirement.spec.ts` | the browser retires exact-fenced process memory |
+| `kandelo-merge-gate.spec.ts` | the Node.js demo evaluates JavaScript in the terminal |
+
+Two of the three are fork/vfork semantics, which is lane F's area, and lane F's
+own closure describes a vfork fix in exactly this region: "a borrowed child
+must not publish identities, because writing into the parked parent's memory
+breaks the exact-teardown fence."
+
+Context for whoever takes it: the same run shows **four** previously-failing
+specs now PASSING — Chromium GC reconstruction, browser profiles, the shell
+demo (bash, vim, NetHack) and WordPress SQLite reaching the installer. The
+browser total is 160 passed / 14 failed, against 164/14 before this merge. The
+demo-visible surface improved; process semantics regressed.
+
+**This is what stands between the branch and merging PR #1350.** The campaign
+migrated fork; shipping it with two reproducible fork regressions would ship
+the one thing it was for. The brief for lane F is
+`docs/plans/lane-briefs/b52-fork-vfork-regressions.md`.
+
+### Correction, 2026-09-17: the three are not one defect
+
+The entry above was filed from a run whose per-spec detail had not been read.
+Re-extracted, the three failures are three different things, and only two of
+them are process semantics:
+
+| spec | the assertion that fails | what it says |
+|---|---|---|
+| `ruby-posix-spawn.spec.ts:299` | `rootResult.diagnostics` is not `[]` | two `fork aborted with errno=12: the kernel refused to create the child process` (pid 100, source `fork`). ENOMEM. The assertions BEFORE it pass: exit code 0, empty stderr, the marker in stdout. So root's fork produces the right result after aborting twice. |
+| `process-memory-retirement.spec.ts:132` | `stdout.match(/child exited with 42/g)` is `null` | **zero** occurrences, where 100 are expected. Line 129 passes: all 100 churn iterations exit 0. So the fork and exec succeed and the child's output never arrives. This is missing child output, not memory exhaustion. |
+| `kandelo-merge-gate.spec.ts:331` | page text never contains `Ready` | the page reports `node-vfs.vfs.zst is not built. Run: ./run.sh fetch`. That is artifact resolution, not fork — and it is present in the browser run taken BEFORE this merge, so it is not a regression from it. Filed separately as B54. |
+
+The first two share a setting rather than a symptom: both fence process memory
+exactly — Ruby at `initialAddressSpaceBytes(rubyBinaryPath)`, the churn test at
+64 MiB — which is the region lane F's own closure describes.
+
+The original entry said "`childEvents` and `forkCounts` both wrong" for the
+Ruby spec. That was wrong: the run never reaches those assertions, because
+`diagnostics` fails first. Nothing is known about `childEvents` or
+`forkCounts`, and a brief that claims otherwise sends its reader to the wrong
+place.
+
+## B54 — the browser E2E suite has no defined artifact-resolution mode
+
+OPEN, filed 2026-09-17. **Filed twice with the wrong mechanism first. The
+correction is the entry; read it before the history.**
+
+**DECIDED by the maintainer, 2026-09-17: the suite runs source-only,
+matching the dev server.** The ambient mode is not to be made explicit and
+kept; it is to be replaced. The expected consequence is accepted up front
+— moving to source-only will surface real failures that ambient mode was
+hiding behind stale artifacts, and those are findings to file, not reasons
+to reverse the decision. Dispatched as a lane brief at
+`docs/plans/lane-briefs/b54-browser-suite-resolution-mode.md`.
+
+### What is established
+
+The browser E2E suite resolves artifacts differently depending on how it
+is invoked, and nothing in the repository pins which is correct:
+
+* `./run.sh browser` (the interactive dev server) runs
+  `cmd_prepare_browser`, which exports `WASM_POSIX_RESOLUTION_POLICY=source-only-v1`
+  and `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`.
+* `./run.sh test browser` runs `npx playwright test --grep-invert "@slow"`
+  from the repo root and exports **neither**.
+* `playwrightWebServerEnvironment` copies the parent environment, so the
+  dev server Playwright starts inherits whatever the caller had.
+* CI (`.github/workflows/browser-demos-ci.yml`) runs five smoke specs, not
+  the suite, and sets neither variable.
+
+Under the source-only policy a built package is written into
+`local-binaries/source-only-v1/`, not into the ambient
+`local-binaries/programs/wasm32/`. The demo VFS images are reached through
+`import.meta.glob` over the AMBIENT roots, in both
+`optional-demo-vfs.ts` (node-vfs, wordpress, lamp) and `live-setup.ts`
+(nginx-vfs, nginx-php-vfs). So in ambient mode those globs match whatever
+stale ambient copies happen to remain on disk, and report
+`<name> is not built` for artifacts that are present and correct in the
+projection.
+
+That is why the nginx demo passed before this work and fails after it.
+Nothing about nginx changed: `./run.sh setup` republished the VFS-image
+packages once the image writer entered their identity (B53), a republish
+under source-only lands in the projection, and the ambient copy that the
+ambient-mode suite had been resolving stopped being there. It was passing
+on a leftover artifact.
+
+**With the source-only environment set, the Node.js demo boots.** It
+reaches line 393 — past "Ready", past evaluating JavaScript in the
+terminal — and fails only on a narrow assertion:
+
+```
+expect(standaloneShellRuntimeFetches.filter(({name}) => name === "coreutils"))
+  .toHaveLength(expectSourceRootfsShell ? 1 : 0)
+
+Expected length: 0   Received length: 1
+```
+
+`expectSourceRootfsShell` is `KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL === "1"`,
+and **nothing in the repository ever sets that variable** — not `run.sh`,
+not a script, not a workflow. So the spec encodes two modes and the tree
+supplies no way to select the one the source-only composition actually
+produces.
+
+### Why this is one defect and not a test-harness annoyance
+
+A suite whose artifact provenance depends on the caller's environment
+cannot support the claim the validation contract asks of it. In ambient
+mode it reads whatever the last build happened to leave behind; a green
+run says the stale copies were adequate, not that the tree is correct.
+This is the same failure shape as B53 — a resolution path that is silent
+rather than loud about not finding what it needs — and the same shape as
+the two-list disagreement B53's guards now close.
+
+### The first filing was wrong, and how
+
+This was first filed as "the SourceOnly rewrite does not claim these
+globs", with the transformed module as evidence: all six
+`import.meta.glob` calls served as `Object.assign({ })`, Vite's own
+expansion rather than the rewrite's output.
+
+**That evidence was gathered from a dev server started by hand with
+`npm exec vite`, which sets neither source-only variable, so the
+SourceOnly plugin was not in the config at all.** The observation was real
+and the inference from it was worthless.
+
+Instrumenting the plugin's `transform` hook and starting the server with
+both variables set shows the opposite:
+
+```
+PROBE optional-demo-vfs.ts hasGlobText=true hasObjectAssign=false
+```
+
+The hook runs before Vite's glob expansion, exactly as designed, and emits
+correct projection-backed importers:
+
+```
+"../../../../../local-binaries/programs/wasm32/node-vfs.vfs.zst":
+  () => import("/@id/__x00__kandelo-source-only-asset:programs%2Fwasm32%2Fnode-vfs.vfs.zst?import")
+```
+
+`tests/package-system/source-only-vite-assets.test.ts` already covered the
+unit ("rewrites an exact mirror glob when only SourceOnly owns the
+artifact"), which should have been read before concluding the unit was
+broken.
+
+### Test fixtures are ambient-only, so source-only mode SKIPS coverage
+
+The browser test fixtures are not projected. `exec-child.wasm` is on disk
+at `local-binaries/programs/wasm32/exec-child.wasm` and appears in the
+projection manifest **zero** times.
+
+`ruby-posix-spawn.spec.ts` resolves its inputs through the resolver:
+
+```ts
+const rubyBinaryPath = tryResolveBinary("programs/ruby/ruby.wasm");
+const execChildBinaryPath = tryResolveBinary("programs/exec-child.wasm");
+const artifactsAvailable = rubyBinaryPath !== null && execChildBinaryPath !== null;
+```
+
+Ruby itself IS projected. `exec-child.wasm` is not, so `artifactsAvailable`
+is false and **both Ruby tests skip silently** under source-only:
+
+```
+-  1 Ruby uid 1000 selects upstream vfork in every browser engine
+-  2 Ruby execs through vfork and root retains ordinary fork
+2 skipped
+```
+
+`process-memory-retirement.spec.ts` survives only because it reads its
+fixtures with `readFileSync` on ambient paths rather than resolving them,
+which is a bypass rather than a fix.
+
+So the sanctioned source-only composition silently drops the browser
+coverage of Ruby's fork and vfork paths — the campaign's own subject. A
+skip is worse than a failure here: the suite reports green for a
+contract it did not exercise, which is the exact shape of
+[Expected-failures can hide a dead suite].
+
+### Where that leaves B52
+
+Re-run under source-only:
+
+* `process-memory-retirement` **fails identically** — same assertion at
+  line 132, `null` where 100 are expected, with line 129 (all 100
+  iterations exit 0) still passing. Confirmed in both modes; this one is
+  real and is lane F's.
+* `ruby-posix-spawn` **cannot currently be confirmed**: it does not run.
+  The ENOMEM diagnostics finding stands only as an ambient-mode
+  observation, and lane F should not be held to it until a fixture-
+  provisioning fix lets the spec run under the sanctioned mode.
+
+**Consequence for every browser number reported this session.** They were
+all taken in ambient mode: the 160/14 baseline, the 159/20 run after B53,
+and every isolated re-run. They describe a resolution mode nobody chose.
+The two B52 fork regressions were confirmed under those conditions and
+their assertions are about process semantics rather than artifact
+provenance, but they have not been re-confirmed under source-only, and
+should be before lane F is held to them.
+
+## B53 — the image-writer module reached no build and no projection
+
+RESOLVED 2026-09-17, found by the maintainer hitting it in the browser.
+
+`./run.sh browser` died at import with
+
+```
+[plugin:vite:import-analysis] Browser binary kandelo_image_module32.wasm
+is not owned by the pinned SourceOnly projection
+```
+
+from `apps/browser-demos/source-only-vite-assets.ts:302`, which refuses any
+binary that is not an owned member of the pinned projection. The module was not
+a member: the projection index at
+`local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json`
+named `kernel.wasm`, `fork_module32`, `wasi_module32`, `dylink_module32` and
+`wasm_artifact_module32`, and mentioned `kandelo_image_module` zero times.
+
+**The cause is one missing table entry.** `CORESIDENT_SIDE_MODULES` in
+`tools/xtask/src/local_build.rs` is the declarative table for a wasm module the
+local-build engine builds and projects but the package resolver does not model.
+One entry buys three things: the build (`ensure_coresident_side_modules_built`
+runs the script), the freshness gate, and projection as a root-level owned
+member. `crates/kandelo-image-module/build-wasm.sh` was written to that exact
+contract — closure crates, a `--recipe` key through the shared implementation,
+a `.build-key` stamp beside the artifact — and was never added to the table.
+
+So nothing in the pipeline built the image writer, and nothing projected it.
+`local-binaries/kandelo_image_module32.wasm` existed on this machine only
+because it had been built by hand while chasing B50. Any fresh worktree had no
+copy at all, and a module-on browser build could not start.
+
+**Nothing failed while this was broken.** `./run.sh setup` completed green
+throughout, because the missing module was missing from the only list that
+would have asked for it. That is the property worth noticing: the freshness
+machinery is thorough about the modules the table names, and silent about a
+module the table does not name.
+
+### The guard
+
+There are exactly five `crates/*/build-wasm.sh` scripts and, until this fix,
+four table entries, with nothing tying the two together. A digest- or
+freshness-level test cannot catch that: those check what the table declares,
+and the defect is something the table does not declare.
+
+`every_side_module_build_script_is_in_the_coresident_table` reads `crates/`
+and asserts the scripts on disk are exactly the scripts the table names, so a
+sixth module cannot repeat this. The filesystem is the authority it compares
+against, which is the only authority that cannot drift with the table.
 
 ## B49 — the host's lazy table is empty for an SDEF image — CLOSED 2026-09-15
 
@@ -6436,6 +6756,255 @@ the hard part and should not hold nineteen verified commits hostage.
 Rust export writes is now one the kernel can load back, which is what the lane
 existed to make possible. V6, V7, V8 done and V-D1 closed. Remaining: V5's
 producer side, then V9 (after lane Y) and V10. The 12,000-line finding below is NOT yet
+
+### THE URI IS THE ADDRESS — maintainer's correction, and an error of mine it
+### exposes, 2026-09-15
+
+**Their words:** *"The URI should be the only way any lazy reference is
+addressed, whether a lazy file or archive."*
+
+**This lane argued the opposite an hour earlier** — that relaying "the URI"
+would force the kernel to parse the archive's JSON descriptor, so the kernel
+should relay the blob opaquely instead. **That accepted the JSON as a
+constraint when it is the defect.**
+
+**What the formats actually carry, measured:**
+
+| record | fields |
+|---|---|
+| `KernelLazyArchive` (KLZY) | `archive_id`, `archive_bytes`, `mount_prefix` |
+| `DeferredArchive` (SDEF) | `archive_id`, `bytes` |
+| `KernelLazyFile` | `ino`, `size`, `archive_id`, `source_path` |
+
+**Not one of them carries a URI.** The formats record the STRUCTURE — ids,
+sizes, member paths, the mount prefix — and the ADDRESS exists only inside an
+opaque blob. So the fix is a URI field on the lazy records, uniform for files
+and archives, with the kernel relaying it. **No JSON in the addressing path at
+all**, and no kernel-side parsing to argue about.
+
+### THE ERROR THIS EXPOSES, COMMITTED HOURS EARLIER
+
+To let the host reconstruct archive records from module metadata, this lane
+**added `mountPrefix` and `bytes` to the archive descriptor** — a JSON blob —
+**while `KernelLazyArchive` already carries `mount_prefix` and `archive_bytes`
+as fields.** The commit message even argued the prefix "cannot be inferred from
+member paths", which is true and beside the point: it did not need inferring,
+because the format already had it.
+
+**It is the same defect the maintainer is naming, committed by this lane a few
+hours before being told about it.** The reconstruction could not read those
+fields because the HOST does not parse KLZY — so the fix for that was never a
+richer descriptor; it was the URI change.
+
+### WHAT STILL NEEDS A DECISION
+
+`sha256` is in **neither** struct. It lives only in the descriptor, so if the
+URI becomes the sole addressing, the integrity digest needs a home: its own
+field on the lazy record, or folded into the URI itself. **That is a format
+decision with a security property attached and is recorded as the maintainer's,
+not taken here.**
+
+### THE CENSUS, WALKED — which leads paid and which did not, 2026-09-15
+
+The per-file census (`pub fn` with no call in its own `#[cfg(test)]` module)
+produced 28 leads. **Three were real gaps; the rest are covered from another
+file.** Recorded so the next person does not re-walk them.
+
+**Paid out — a real hole, now closed and perturbed:**
+
+| function | what was missing |
+|---|---|
+| `fchown` | **no caller anywhere in the tree.** The path `sys_fchown` takes for a rootfs file. |
+| `is_nosuid` | exactly ONE reader — `statfs`'s `f_flags` — and no assertion. A mount could misreport `ST_NOSUID` and nothing would notice. |
+| `container_flags` | ONE caller, the refusal for an image declaring lazy archives it does not carry. **Zero references to the function or the flag in the test module.** |
+
+**Did not pay — covered from another file, which is the census
+under-reporting by construction:**
+
+* `check_export_headroom`, `export_capacity_bytes` — reached through
+  `sm_check_headroom`, which `sffs-module`'s own tests exercise;
+* `fchmod` — four callers, `syscalls.rs` has `test_fchmod`;
+* `statfs` (rootfs and tmpfs) — seven callers, and now directly asserted by the
+  nosuid test above;
+* `file_type`, `sffs_span`, `metadata_span` — many callers through the load
+  path, exercised by every `load_image` test.
+
+**Still open, and small:** `lazy_info` backs the module's deferred reporting in
+`lstat` and is exercised only from a TYPESCRIPT test
+(`sffs-image-fs.test.ts`'s `isPathDeferred`). That is the same shape
+`sm_image_read` had before it got a Rust test — coverage that disappears with
+the language this lane is deleting. Worth a Rust test; not urgent, because
+`isPathDeferred` itself is asserted.
+
+### WHAT MAKES THE CENSUS WORTH REPEATING
+
+**A line-coverage number would have called all three of the paid leads
+covered.** `is_nosuid` RUNS on every `statfs`; `container_flags` RUNS on every
+image load; `fchown` compiles and ships. What none of them did was **matter to
+an assertion**, and no green suite, coverage percentage or review of a passing
+diff can see that difference.
+
+The cost is one command and a few minutes of reading. **Three for twenty-eight
+is a good rate** for finding guards that exist and have never been run.
+
+### HANDOFF — `mount(2)` GOES TO A KERNEL LANE
+
+**Assigned by the maintainer 2026-09-15**, choosing *"implement it"* over
+documenting a boundary or keeping `memory-fs.ts` alive for four tests.
+
+### WHAT IS ACTUALLY BLOCKED, AND IT IS NOT WHAT WAS RECORDED
+
+The plan carried this as a step-5 concern. **Measured, it gates step 4 too.**
+Four tests hand the filesystem to the kernel as a **live mount backend**, not as
+a fixture, and every one fails the same way when repointed:
+
+```
+TypeError: backend.statfs is not a function
+```
+
+```
+host/test/nosuid-exec.test.ts                 host/test/login.test.ts
+host/test/sudo-lite.test.ts                   host/test/reusable-kernel-export-stack.test.ts
+```
+
+**They are invisible to a census that asks "does this test assert on the
+filesystem?"**, because a mount backend is never asserted on — the kernel
+consumes it. That is why six sizings put them with the fixtures.
+
+### WHAT THEY NEED, IN ONE LINE EACH
+
+`nosuid-exec` is the clearest statement of the requirement:
+
+```ts
+[{ mountPoint: "/normal",  backend },
+ { mountPoint: "/scratch", backend, nosuid: true }]
+```
+
+**Two mounts of an in-memory filesystem at caller-chosen prefixes, one of them
+`nosuid`.** The kernel HAS an in-memory filesystem — `tmpfs.rs` — and cannot be
+asked to place it at `/normal`. The mount table is the compile-time
+`SCRATCH_MOUNTS` constant plus whatever the host supplies at boot.
+
+### THE DECISION THIS RESOLVES
+
+`docs/posix-status.md` discusses resolution across mounts, `nosuid` on mounts,
+and mount flags through `statfs(2)` at length, and **there is no `SYS_MOUNT` in
+the syscall set and no handler in `syscalls.rs`** — so the gap is undocumented
+as well as unimplemented. The host-side `MemoryFileSystem` is not meeting a need
+the kernel cannot meet; **it is compensating for an unimplemented syscall**,
+which the platform-values contract names exactly: a workaround must document
+the boundary it belongs to and must not hide a platform defect.
+
+### WHAT LANE V HAS ALREADY DONE TOWARDS IT
+
+**`ST_NOSUID` is now asserted in the kernel** (`statfs_reports_nosuid_exactly_when_the_mount_is_nosuid`,
+perturbed both directions). `is_nosuid()` had exactly one reader in the tree and
+no assertion at all — so the mount-level nosuid property these four tests cover
+host-side **now has a kernel-side guard that does not depend on them surviving.**
+
+That is the piece worth knowing before starting: whoever implements `mount(2)`
+inherits a tested `ST_NOSUID` report rather than an unasserted one.
+
+### THE HOST INTERFACE SHOULD RELAY A URI — maintainer's refinement, 2026-09-15
+
+**Their words:** *"we need to adjust the host interface to relay the address of
+the reference to the host. It could be as simple as a URI since URIs are by
+definition designed to be reusable."*
+
+**This is better than relaying the descriptor, and the reason is not brevity.**
+This lane's proposal was to pass the opaque KLZY payload the kernel already
+holds. That payload is a JSON object with a schema — so the host would have to
+PARSE a format the kernel handed it, and the two would then have to agree about
+that format forever. **A URI has no such requirement**: its meaning is defined
+outside this system, and relaying one is not interpreting it.
+
+So the courier contract is not merely preserved, it is strengthened. The kernel
+carries a string it does not read. The host still decides whether the URI may
+be fetched and still validates the digest. **Nothing new has to be agreed
+between them**, which is the property the byte-layout decision was chosen for
+elsewhere in this plan.
+
+```
+host_fetch_deferred(kind, idLo, idHi, uriPtr, uriLen,
+                    bufPtr, bufLen, offsetLo, offsetHi) -> i32
+```
+
+### WHAT IT DELETES
+
+**The host's entire lazy metadata table and everything built to produce it:**
+
+* `RootfsOverlayBaseImage.exportLazyEntries` / `exportLazyArchiveEntries` — the
+  last two methods on an interface that started at six;
+* `createBaseImageFromContainer`'s metadata half, its module-sourced fallback,
+  and the archive reconstruction added tonight;
+* **the seal-envelope unwrap**, ~40 lines that exist ONLY because the host has
+  to dig a URL out of a payload it should never have been holding;
+* the producer-divergence problem itself — a memfs-built image records the URL
+  in host JSON, a module-built one in KLZY, and **neither writes both**. If the
+  kernel relays the URI, the host never asks where it came from.
+
+**The overlay would need nothing from a filesystem at all**, which is the end
+state lane V has been approaching from the consumer side all along.
+
+### WHY IT IS NOT LANE V'S TO MAKE
+
+A host-import signature is ABI: it needs an `ABI_VERSION` bump and a
+regenerated `abi/snapshot.json`, both forbidden to this lane by name. **Lanes F
+and L own the kernel-host import surface.**
+
+Checked and rejected: carrying the URI without a signature change. The host can
+read kernel memory only at a pointer it was handed, and `host_fetch_deferred`
+is a direct import call rather than a syscall through the channel, so no
+scratch region reaches it.
+
+### THE MEASUREMENTS THAT MAKE THIS SAFE TO PICK UP
+
+* the kernel already asks by `kind` + `id` and accepts `EAGAIN` while a fetch
+  is in flight — **the retry loop exists and needs no change**;
+* the kernel already holds every descriptor, with accessors
+  (`rootfs::archive_payloads`, `rootfs::archive_payload`), and `sffs-module`
+  calls them today;
+* the URI is already inside those descriptors, so **no new data has to be
+  produced by any builder** — only relayed.
+
+### H-24 COMPLETED ITSELF — I finished another agent's merge, 2026-09-15
+
+**What happened.** The parent-branch agent had the lane merge STAGED and
+uncommitted in `/Users/brandon/kandelo-abi44-reconcile`. I ran
+`git add docs/plans/… && git commit` to record a handoff, and **`git commit`
+commits everything staged** — so it finalised their merge under my docs commit
+message.
+
+**The merge itself is correct**: `5aef74226` is now an ancestor of the parent,
+34 files, +877/−241, both parents right, and no perturb mutant captured
+(`process-lifecycle.ts` was unstaged and is not in the commit). **Only the
+message is wrong**, and it describes one docs file rather than a merge.
+
+**Two failures, and the first is the embarrassing one.**
+
+1. **The mitigation already existed and I did not use it.** The recorded
+   guidance is *"stage and commit in a single path-limited command
+   (`git commit -- <paths>`)"*. I used `git add X && git commit`, which is
+   exactly the form the guidance names as unsafe. **Knowing the rule and
+   applying it are different acts**, which is the same gap that produced the
+   H-23 stale-kernel browser run an hour earlier.
+2. **`git status --porcelain | head -3` hid the evidence.** The staged merge
+   files were below the cut. A truncated status is worse than none: it looks
+   like a check.
+
+**What was NOT done, deliberately.** The commit is untouched. That worktree is
+running a perturb trial right now — `.perturb-in-progress` is present and
+`process-lifecycle.ts` holds a live mutation — and amending would change a SHA
+under an agent mid-run. A bad message is cheaper than that.
+
+**The corrected practice**, which belongs with the H-24 entry rather than in a
+session log: before writing in a shared worktree, read the FULL `git status`,
+check for `.git/MERGE_HEAD`, `.git/rebase-merge` and `.perturb-in-progress`,
+and commit with `git commit -- <paths>`. The path-limited form makes this
+failure unrepresentable rather than merely unlikely.
+
+**Status: partly characterized. V1–V3 landed; V4 blocked on a decision made;
+V5 designed and building. The 12,000-line finding below is NOT yet
 characterized and must not be dispatched until it is.**
 
 ## End state
@@ -8597,6 +9166,31 @@ job — fork, exec, clone, the blocking-retry pump — in **13,577 lines**, agai
 It also validates the target: 12,000 was guessed as "roughly a third", and the
 native host independently lands at 13,577. **This is the only lane whose
 provisional target survived its census.**
+
+### The ratio has drifted — re-derive before quoting it (2026-09-17)
+
+`guest.rs` is **14,814 lines**, not the 13,577 the census measured on
+2026-09-11. The Rust host is growing too, so the gap that is this lane's
+whole argument has narrowed from **2.21x to about 2.02x** (29,987 whole
+lines in `CentralizedKernelWorker` against 14,814).
+
+The argument survives; the number does not. `kernelWorkerTypeScript`'s
+target of 6,359 code lines is a conversion of the census ratio, so it is
+drifting out of date and should be re-derived before anyone is held to
+it. The ceiling is untouched — this note records a moving comparison, it
+does not relax a gate.
+
+Nothing else about the lane moved in the week since the census. The
+budget's own bounds put the file at 26,280-26,490 code lines and the
+class at 512-522 methods. An independent check for dead weight found
+**zero** of 336 method names referenced only at their own definition, so
+there is no unreferenced code to delete either.
+
+One thing the census named is worth surfacing as a decision rather than
+leaving in a list: `createTestAuthority` is ~1,458 lines and it **ships
+in the browser bundle** — `host/dist/browser.js` contains it, and
+`replaceTcpScratchForScratchBoundaryTest` too. Test scaffolding reaching
+users' browsers is the K3 trade, and it is the maintainer's to make.
 
 ## Increments
 

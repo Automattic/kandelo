@@ -53,6 +53,58 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
     it("rejects lazy files combined with src=", () => {
       expect(() => parseManifest("/usr/bin/find  f  0755  0  0  src=find.wasm  lazy_url=binaries/find.wasm  lazy_size=12345\n")).toThrow(/cannot combine/);
     });
+
+    // The manifest is the earliest place "set-ID, and the bytes come from
+    // somewhere else" is expressible, so it is where that combination is
+    // refused. The kernel demotes rather than refuses, because by then the
+    // image already exists and may not be ours; here it does not exist yet.
+    it("rejects a set-user-ID lazy file that declares no digest", () => {
+      expect(() =>
+        parseManifest("/usr/bin/sudo  f  4755  0  0  lazy_url=binaries/sudo.wasm  lazy_size=12345\n")
+      ).toThrow(/no lazy_sha256=/);
+    });
+
+    it("rejects a set-group-ID lazy file that declares no digest", () => {
+      expect(() =>
+        parseManifest("/usr/bin/wall  f  2755  0  0  lazy_url=binaries/wall.wasm  lazy_size=99\n")
+      ).toThrow(/no lazy_sha256=/);
+    });
+
+    // Refused rather than ignored, and until now untested. A malformed digest
+    // silently becoming "no digest" would turn a typo into an unverified
+    // binary, and the whole value of the field is that its ABSENCE is
+    // deliberate. Uppercase hex is the case worth naming: it looks correct to
+    // a reader and is not the value the kernel will compare against.
+    it("refuses a lazy_sha256= that is not 64 lowercase hex characters", () => {
+      const line = (digest: string) =>
+        `/usr/bin/find  f  0755  0  0  lazy_url=binaries/find.wasm  lazy_size=12345  lazy_sha256=${digest}\n`;
+      for (const bad of [
+        "abc",
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(64),
+        "g".repeat(64),
+      ]) {
+        expect(() => parseManifest(line(bad)), `"${bad.slice(0, 8)}…" must be refused`)
+          .toThrow(/64 lowercase hex/);
+      }
+    });
+
+    it("accepts a set-user-ID lazy file once it declares one", () => {
+      const [node] = parseManifest(
+        "/usr/bin/sudo  f  4755  0  0  lazy_url=binaries/sudo.wasm  lazy_size=12345  lazy_sha256="
+          + "b".repeat(64) + "\n",
+      );
+      expect(node).toMatchObject({ path: "/usr/bin/sudo", mode: 0o4755, lazyDigest: "b".repeat(64) });
+    });
+
+    // The refusal is about DEFERRED bytes, not about set-ID. A resident setuid
+    // binary is in the image, so the image vouches for it by carrying it, and
+    // demanding a digest there would be asking a file to hash itself.
+    it("leaves a resident set-user-ID file alone", () => {
+      const [node] = parseManifest("/usr/bin/sudo  f  4755  0  0  src=sudo.wasm\n");
+      expect(node).toMatchObject({ path: "/usr/bin/sudo", mode: 0o4755 });
+    });
   });
 
   describe("symlinks", () => {

@@ -1,98 +1,70 @@
 {
- "_comment": "The overlay's base image, read out of the container. Trials 1-2 were rewritten when createModuleBaseImage became createBaseImageFromContainer and the module stopped being the shape the function was built around; 4-6 cover the deployment-base rebase, which is the behaviour that moved out of MemoryFileSystem.rewriteLazy*Urls.",
- "file": "host/src/vfs/module-base-image.ts",
- "verify": "cd host && npx vitest run test/module-base-image.test.ts >/dev/null 2>&1",
- "trials": [
-  {
-   "name": "the window subtracts the header, as a body-holding backend would",
-   "scope": "  return { baseImage, imageRead };",
-   "scope_end": "\n}\n",
-   "find": "  return { baseImage, imageRead };",
-   "replace": "  return { baseImage, imageRead: (at, dest) => imageRead(at - 16, dest) };"
-  },
-  {
-   "name": "the lazy entries come back empty instead of from the container",
-   "scope": "    exportLazyEntries: () => {",
-   "scope_end": "\n    },\n",
-   "find": "      return (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>",
-   "replace": "      return ([] as LazyFileEntry[]).map((entry) =>"
-  },
-  {
-   "name": "the lazy half is read from the archive section",
-   "scope": "  const lazy = decodeSection(",
-   "scope_end": "\n  );\n",
-   "find": "    lazySectionBytes(parsed, sections),",
-   "replace": "    archiveSectionBytes(parsed, sections),"
-  },
-  {
-   "name": "the deployment base is never applied, so a relative URL stays relative",
-   "scope": "  const rebaseUrl = (url: string): string =>",
-   "scope_end": ";\n",
-   "find": "    lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);",
-   "replace": "    url;"
-  },
-  {
-   "name": "the base is prepended to absolute and rooted URLs too",
-   "scope": "  const rebaseUrl = (url: string): string =>",
-   "scope_end": ";\n",
-   "find": "    lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);",
-   "replace": "    lazyUrlBase === undefined ? url : lazyUrlBase + url;"
-  },
-  {
-   "name": "an archive rebases its transports but keeps its stale url",
-   "scope": "  const rebaseArchive = (",
-   "scope_end": "\n  };\n",
-   "find": "      url: transports[0] ?? entry.url,",
-   "replace": "      url: entry.url,"
-  },
-  {
-   "name": "a module-built image's deferred files are reported as none",
-   "scope": "    exportLazyEntries: () => {",
-   "scope_end": "\n    },\n",
-   "find": "          .filter((file) => file.archiveId === 0)",
-   "replace": "          .filter(() => false)"
-  },
-  {
-   "name": "an archive member is mistaken for a standalone deferred file",
-   "scope": "    exportLazyEntries: () => {",
-   "scope_end": "\n    },\n",
-   "find": "          .filter((file) => file.archiveId === 0)",
-   "replace": "          .filter(() => true)"
-  },
-  {
-   "name": "the module is consulted even when the sections carry the answer",
-   "scope": "  const fromModule = lazy === null && archives === null",
-   "scope_end": ";\n",
-   "find": "  const fromModule = lazy === null && archives === null && moduleLazyEntries !== undefined",
-   "replace": "  const fromModule = moduleLazyEntries !== undefined"
-  },
-  {
-   "name": "the mount prefix is dropped, so the kernel manifest names the wrong tree",
-   "scope": "          return rebaseArchive({",
-   "scope_end": "\n        });\n",
-   "find": "            mountPrefix: described.mountPrefix,",
-   "replace": "            mountPrefix: \"/\","
-  },
-  {
-   "name": "an archive with no declared mount prefix is accepted anyway",
-   "scope": "          if (typeof described.url !== \"string\"",
-   "scope_end": "\n          }\n",
-   "find": "          if (typeof described.url !== \"string\" || typeof described.mountPrefix !== \"string\") {",
-   "replace": "          if (false) {"
-  },
-  {
-   "name": "every member is filed under the first archive",
-   "scope": "        for (const file of fromModule.files) {",
-   "scope_end": "\n        }\n",
-   "find": "          membersByArchive.set(file.archiveId, list);",
-   "replace": "          membersByArchive.set(1, list);"
-  },
-  {
-   "name": "the seal envelope is read as if it were the descriptor itself",
-   "scope": "function unwrapSealPayload(",
-   "scope_end": "\n}\n",
-   "find": "  return payload.subarray(8, 8 + length);",
-   "replace": "  return payload;"
-  }
- ]
+  "_comment": "The module-backed base image, and the `DeferredBody` record it answers in. FOUR TRIALS RETIRED 2026-09-17 with the code they mutated: the mount prefix dropped, an archive with no declared mount prefix accepted, every member filed under the first archive, and the seal envelope read as the descriptor itself. All four described a reconstruction this reader no longer performs -- it opened an archive's descriptor to recover a mount prefix, and grouped members to fill a list, for a record that was immediately reduced back to an address, its mirrors and a length. Nothing downstream read either field. A trial for deleted code cannot fail, and keeping it as an always-ROTTED spec teaches people to ignore `--validate`. SIX MORE RETIRED 2026-09-17 with the section-reading branch itself: the lazy half read from the wrong section, the section entries coming back empty, an archive's mirrors rebased while its address kept the stale spelling, an archive reporting no mirrors, the declared length and digest dropped on the section path, and the module consulted even when the sections carried the answer. The branch had no producer -- every builder writes `SDEF` -- so it answered \"no deferred files\" for every shipped image, and a trial for a branch nothing reaches proves nothing. MOVED 2026-09-17 with the reader itself: it followed its last caller (the Pages asset closure) out of `host/src/vfs` into `images/vfs/lib`, so the spec's `file` moved with it. A spec naming a path that no longer exists is reported ROTTED on every `--validate`, which is how this was caught.",
+  "file": "images/vfs/lib/module-base-image.ts",
+  "verify": "cd host && npx vitest run test/module-base-image.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the window subtracts the header, as a body-holding backend would",
+      "scope": "  return { baseImage, imageRead };",
+      "scope_end": "\n}\n",
+      "find": "  return { baseImage, imageRead };",
+      "replace": "  return { baseImage, imageRead: (at, dest) => imageRead(at - 16, dest) };"
+    },
+    {
+      "name": "the deployment base is never applied, so a relative URL stays relative",
+      "scope": "  const rebaseUrl = (url: string): string =>",
+      "scope_end": ";\n",
+      "find": "    lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);",
+      "replace": "    url;"
+    },
+    {
+      "name": "the base is prepended to absolute and rooted URLs too",
+      "scope": "  const rebaseUrl = (url: string): string =>",
+      "scope_end": ";\n",
+      "find": "    lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);",
+      "replace": "    lazyUrlBase === undefined ? url : lazyUrlBase + url;"
+    },
+    {
+      "name": "a module-built image's deferred files are reported as none",
+      "scope": "    deferredFiles: () => {",
+      "scope_end": "\n    },\n",
+      "find": "          .filter((file) => file.archiveId === 0)",
+      "replace": "          .filter(() => false)"
+    },
+    {
+      "name": "an archive member is mistaken for a standalone deferred file",
+      "scope": "    deferredFiles: () => {",
+      "scope_end": "\n    },\n",
+      "find": "          .filter((file) => file.archiveId === 0)",
+      "replace": "          .filter(() => true)"
+    },
+    {
+      "name": "an archive with no address is accepted, and mounts something that never activates",
+      "scope": "        return fromModule.archives.map((archive) => {",
+      "scope_end": "\n        });\n",
+      "find": "          if (archive.uri === \"\") {",
+      "replace": "          if (false) {"
+    },
+    {
+      "name": "a module-built archive's digest is dropped on the way back out",
+      "scope": "        return fromModule.archives.map((archive) => {",
+      "scope_end": "\n        });\n",
+      "find": "            sha256: declared ? bytesToSha256Hex(archive.digest) : undefined,",
+      "replace": "            sha256: undefined,"
+    },
+    {
+      "name": "a module-built archive's declared length is dropped",
+      "scope": "        return fromModule.archives.map((archive) => {",
+      "scope_end": "\n        });\n",
+      "find": "            bytes: declared ? archive.bytes : undefined,",
+      "replace": "            bytes: undefined,"
+    },
+    {
+      "name": "a standalone file's address comes back empty",
+      "scope": "    deferredFiles: () => {",
+      "scope_end": "\n    },\n",
+      "find": "            address: rebaseUrl(file.uri),",
+      "replace": "            address: rebaseUrl(\"\"),"
+    }
+  ]
 }

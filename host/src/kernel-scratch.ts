@@ -166,7 +166,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pty_master_write",
   "kernel_read_proc_maps",
   "kernel_recv",
-  "kernel_rootfs_export_tree",
+  "kernel_rootfs_export_container_read",
   "kernel_rootfs_mkdir_parents",
   "kernel_rootfs_set_foreign_mount_roots",
   "kernel_rootfs_read_file",
@@ -278,7 +278,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_pipe_read":
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
-    case "kernel_rootfs_export_tree":
+    case "kernel_rootfs_export_container_read":
     case "kernel_shared_mapping_fd_facts":
     case "kernel_spawn_exec_target_prepare":
     case "kernel_spawn_process":
@@ -372,7 +372,7 @@ function isKernelScratchExportName(
     case "kernel_pty_master_write":
     case "kernel_read_proc_maps":
     case "kernel_recv":
-    case "kernel_rootfs_export_tree":
+    case "kernel_rootfs_export_container_read":
     case "kernel_rootfs_mkdir_parents":
     case "kernel_rootfs_read_file":
     case "kernel_rootfs_set_foreign_mount_roots":

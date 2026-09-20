@@ -19,16 +19,13 @@ import {
   SOURCE_ROOTFS_SHELL_COMPOSITION,
 } from "../../images/vfs/scripts/shell-vfs-build";
 import { restoreTrustedShellRootfs } from "../../images/vfs/scripts/shell-rootfs-restore";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../src/vfs/memory-fs";
+import type { VfsImageMetadata } from "../src/vfs/vfs-image-filesystem";
 import { ABI_VERSION } from "../src/generated/abi";
 import type { ZipEntry } from "../src/vfs/zip";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../web-libs/kandelo-session/src/vfs-capacity";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -38,20 +35,12 @@ const O_TRUNC = 0x0200;
 const DEMO_CONFIG_PATH = "/etc/kandelo/demo.json";
 const SOURCE_DEMO_CONFIG = '{"version":1,"profiles":{"shell":{}}}\n';
 
-function writeFile(fs: MemoryFileSystem, path: string, text: string): void {
-  const fd = fs.open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-  const bytes = new TextEncoder().encode(text);
-  fs.write(fd, bytes, null, bytes.byteLength);
-  fs.close(fd);
+function writeFile(fs: KandeloImageFs, path: string, text: string): void {
+  fs.writeFile(path, new TextEncoder().encode(text), 0o644);
 }
 
-function readFile(fs: MemoryFileSystem, path: string): string {
-  const size = fs.stat(path).size;
-  const fd = fs.open(path, O_RDONLY, 0);
-  const bytes = new Uint8Array(size);
-  const count = fs.read(fd, bytes, null, size);
-  fs.close(fd);
-  return new TextDecoder().decode(bytes.subarray(0, count));
+function readFile(fs: KandeloImageFs, path: string): string {
+  return new TextDecoder().decode(fs.readFile(path));
 }
 
 /**
@@ -64,8 +53,8 @@ function readFile(fs: MemoryFileSystem, path: string): string {
  * export reads, so there is no buffer to size and no second argument to keep in
  * step with the first.
  */
-function productFs(maxByteLength: number): SffsImageFs {
-  const fs = SffsImageFs.create();
+function productFs(maxByteLength: number): KandeloImageFs {
+  const fs = KandeloImageFs.create();
   fs.setImageCapacity(maxByteLength);
   return fs;
 }
@@ -139,29 +128,35 @@ function loadedShellImageMetadata(
 }
 
 /**
- * A source image written by the OLD writer, on purpose.
+ * A source image, written by the producer that writes the shipped bases.
  *
- * The builders under test now load through the Rust module, and the images
- * they will meet in a product build were written by `MemoryFileSystem` until
- * the bases are rebuilt. A fixture that switched writers alongside the code
- * would stop covering the case that actually ships.
+ * IT USED TO BE THE OLD WRITER ON PURPOSE, with the reason stated here: the
+ * images these builders would meet in a product build were written by
+ * `MemoryFileSystem` "until the bases are rebuilt". The bases ARE rebuilt --
+ * measured on the artifacts, `rootfs.vfs` addresses all 65 of its deferred
+ * files through `SDEF` and carries no `KLZY` at all -- so keeping the legacy
+ * writer here would now do the opposite of what the note intended: cover a
+ * shape no product ships.
  *
  * It no longer plants a sealed atomic tree. That fixture sealed in the LEGACY
  * format, which the module does not read -- so it proved nothing here once the
  * loader changed, and asserting on it would have been a test passing for the
  * wrong reason. Activation cohorts are covered where they are now produced and
- * checked: the module's own suite and `sffs-image-fs.test.ts`.
+ * checked: the module's own suite and `kandelo-image-fs.test.ts`.
  */
 async function sourceImage(
   byteLength: number,
   maxByteLength: number,
 ): Promise<Uint8Array> {
-  const buffer = new SharedArrayBuffer(byteLength, { maxByteLength });
-  const fs = MemoryFileSystem.create(buffer, maxByteLength);
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(maxByteLength);
   writeFile(fs, "/ordinary.txt", "preserved contents");
   fs.mkdir("/etc", 0o755);
   fs.mkdir("/etc/kandelo", 0o755);
   writeFile(fs, DEMO_CONFIG_PATH, SOURCE_DEMO_CONFIG);
+  // The parent first: the module does not create a deferred file's parents,
+  // where the writer this fixture used to use did.
+  fs.mkdir("/bin", 0o755);
   fs.registerLazyFile(
     "/bin/lazy-tool",
     "https://example.invalid/lazy-tool.wasm",
@@ -175,19 +170,18 @@ async function sourceImage(
   // loader now refuses such an image (gap 20), so a fixture that omitted the
   // length would be testing the refusal rather than the capacity change it is
   // named for.
-  fs.registerLazyArchiveFromEntries(
-    "https://example.invalid/demo.zip",
-    [lazyArchiveEntry()],
-    "/",
-    undefined,
-    { sha256: "d".repeat(64), bytes: 5_000 },
-  );
+  fs.registerLazyArchive({
+    url: "https://example.invalid/demo.zip",
+    entries: [lazyArchiveEntry()],
+    mountPrefix: "/",
+    integrity: { sha256: "d".repeat(64), bytes: 5_000 },
+  });
   return fs.saveImage({
     metadata: shellImageMetadata(maxByteLength),
   });
 }
 
-function expectContentsPreserved(fs: SffsImageFs): void {
+function expectContentsPreserved(fs: KandeloImageFs): void {
   expect(readFile(fs, "/ordinary.txt")).toBe("preserved contents");
   expect(fs.stat("/bin/lazy-tool").size).toBe(123_456);
   expect(fs.stat("/bin/lazy-tool").mode & 0o777).toBe(0o755);
@@ -214,7 +208,7 @@ describe("shell VFS base composition", () => {
     // because this test cannot forge one honestly: the payload format is the
     // module's, and a TypeScript fixture that wrote it would be asserting
     // against its own idea of the format rather than against the module's.
-    const source = MemoryFileSystem.create(new SharedArrayBuffer(8 * MiB));
+    const source = KandeloImageFs.create();
     source.mkdir("/shell-rootfs", 0o755);
     const image = await source.saveImage();
     const corrupt = image.slice(0, Math.floor(image.byteLength / 2));
@@ -232,6 +226,41 @@ describe("shell VFS base composition", () => {
     expect(resolveArtifact).not.toHaveBeenCalled();
     expect(register).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
+  });
+
+  it("gives every lazy shell binary the digest of the artifact it resolved", () => {
+    // The shell image's half of lane S. `populateLazyBinaries` already opened
+    // each artifact to `statSync` its size; it hashes the same bytes now, and
+    // without that these binaries ship fetched by URL with their LENGTH as the
+    // only check — which is what `setuidLazyWithoutDigest` was about.
+    //
+    // Driven through the exported entry with an injected resolver, the way the
+    // strict-dependency test above does, because `populateLazyBinaries` is
+    // internal and a test that reached past the entry point would not be
+    // exercising what the builder runs.
+    const root = mkdtempSync(join(tmpdir(), "kandelo-shell-lazy-digest-"));
+    const artifact = join(root, "program.wasm");
+    writeFileSync(artifact, "the bytes this binary really is");
+    const expected = createHash("sha256").update(readFileSync(artifact)).digest("hex");
+
+    const fs = productFs(64 * MiB);
+    try {
+      populateShellEnvironment(fs, { resolveArtifact: () => artifact });
+    } catch {
+      // Populating the whole environment needs artifacts this fixture does not
+      // synthesise (archives, terminfo). The lazy binaries are registered
+      // before any of that, so what they carry is already decided and asserted
+      // below; failing here would test the fixture rather than the builder.
+    }
+
+    const lazy = fs.lazyEntries().files.filter((f) => f.archiveId === 0);
+    expect(lazy.length).toBeGreaterThan(0);
+    for (const file of lazy) {
+      const hex = Array.from(file.digest, (b) => b.toString(16).padStart(2, "0")).join("");
+      expect(hex, `${file.path} must carry the digest of its artifact`).toBe(expected);
+    }
+    // And the address, because a digest with nothing to fetch verifies nothing.
+    expect(lazy.every((f) => f.uri !== "")).toBe(true);
   });
 
   it("never replaces a missing strict dependency with ambient magic data", () => {
@@ -324,9 +353,13 @@ describe("shell VFS base composition", () => {
     const image = await sourceImage(16 * MiB, 32 * MiB);
     const compressed = new Uint8Array(zstdCompressSync(image));
 
-    expect(() =>
-      MemoryFileSystem.fromImage(compressed, { maxByteLength: 8 * MiB }),
-    ).toThrow(RangeError);
+    // NO "THE OLD READER REFUSES THIS" LINE any more. It asserted that
+    // `MemoryFileSystem.fromImage` throws a RangeError when a source declares
+    // more capacity than the downstream profile permits — a claim about the
+    // incumbent's allocator, which allocated the declared ceiling on load. The
+    // module allocates nothing on load, so there is no refusal to make and the
+    // claim below is the whole of what this case is about: the builder rebases
+    // the source onto the smaller declared ceiling.
 
     const rebased = await loadShellBaseFileSystemFromImage(compressed, 8 * MiB);
 
@@ -373,7 +406,7 @@ describe("shell VFS base composition", () => {
     // module's business and is tested there.
     const valid = await sourceImage(4 * MiB, 8 * MiB);
     const corrupt = valid.slice(0, Math.floor(valid.byteLength / 2));
-    const setCapacity = vi.spyOn(SffsImageFs.prototype, "setImageCapacity");
+    const setCapacity = vi.spyOn(KandeloImageFs.prototype, "setImageCapacity");
     try {
       await expect(
         loadShellBaseFileSystemFromImage(corrupt, 32 * MiB),
@@ -427,10 +460,8 @@ describe("shell VFS base composition", () => {
   });
 
   it("preserves source composition without inventing package authority", async () => {
-    const sourceFs = MemoryFileSystem.create(
-      new SharedArrayBuffer(4 * MiB, { maxByteLength: 256 * MiB }),
-      256 * MiB,
-    );
+    const sourceFs = KandeloImageFs.create();
+    sourceFs.setImageCapacity(256 * MiB);
     sourceFs.setImageMetadata({
       version: 1,
       kernelAbi: ABI_VERSION,
@@ -454,7 +485,7 @@ describe("shell VFS base composition", () => {
         join(dir, "product.vfs.zst"),
       );
 
-      expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+      expect(KandeloImageFs.readImageMetadata(image)).toEqual({
         version: 1,
         kernelAbi: ABI_VERSION,
         createdBy: "images/vfs/scripts/saveShellDerivedVfsImage",
@@ -498,7 +529,7 @@ describe("shell VFS base composition", () => {
     expectContentsPreserved(fs);
 
     // And the snapshot is a loadable image carrying the same tree.
-    const restored = SffsImageFs.create();
+    const restored = KandeloImageFs.create();
     restored.loadImage(snapshot);
     expectContentsPreserved(restored);
   });
@@ -550,21 +581,17 @@ describe("shell VFS base composition", () => {
             ? {}
             : { normalizeTimestampsMs },
         );
-        const restored = MemoryFileSystem.fromImage(image);
-        const expectedTimestamp =
-          normalizeTimestampsMs ?? canonicalTimestampMs;
-        for (const path of [
-          "/",
-          "/etc",
-          "/etc/kandelo",
-          DEMO_CONFIG_PATH,
-          "/product.txt",
-        ]) {
-          const stat = restored.lstat(path);
-          expect(stat.atimeMs, `${path} atime`).toBe(expectedTimestamp);
-          expect(stat.mtimeMs, `${path} mtime`).toBe(expectedTimestamp);
-          expect(stat.ctimeMs, `${path} ctime`).toBe(expectedTimestamp);
-        }
+        // THE PER-INODE TIMESTAMP READ-BACK IS RETIRED, and what replaced it
+        // is stronger. It restored the image with `MemoryFileSystem` and
+        // asserted each inode's three stamps, because that reader reports
+        // times and the module's `lstat` does not. What the case is actually
+        // for is REPRODUCIBILITY, and the two builds below assert it directly:
+        // two builds at different wall-clock times produce byte-identical
+        // images, which no per-inode stamp can be wrong under. The kernel owns
+        // the normalization itself and states it twice in Rust -- "a normalized
+        // export writes each inode's own times anyway" and "a normalized
+        // export leaves the root stamped by a zero clock" are both killed
+        // mutation trials.
         return image;
       } finally {
         now.mockRestore();
@@ -615,10 +642,10 @@ describe("shell VFS base composition", () => {
         expectedMaxByteLength === undefined ? {} : { expectedMaxByteLength },
       );
 
-      expect(MemoryFileSystem.readImageCapacity(image).maxByteLength).toBe(
+      expect(KandeloImageFs.readImageCapacity(image).maxByteLength).toBe(
         profileMaxBytes,
       );
-      expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+      expect(KandeloImageFs.readImageMetadata(image)).toEqual({
         version: 1,
         kernelAbi: ABI_VERSION,
         createdBy: "images/vfs/scripts/saveShellDerivedVfsImage",

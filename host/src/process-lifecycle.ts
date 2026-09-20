@@ -135,10 +135,8 @@ import type {
 } from "./exec-target";
 import {
   buildRootfsLazyWiring,
-  createDeferredUrlReader,
   type DeferredProgress,
 } from "./vfs/rootfs-lazy-archives";
-import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
 import {
@@ -163,8 +161,7 @@ import {
 } from "./thread-worker-disposition";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
-import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
-import type { MemoryFileSystem } from "./vfs";
+import type { LazyFetch } from "./vfs/lazy-download-event";
 
 /** The backing a single execution image owns. A PID persists across exec. */
 export interface ProcessGenerationOwnership {
@@ -424,10 +421,16 @@ export interface ProcessLifecycleHost<W extends LifecycleWorkerHandle> {
   isInitReady(): boolean;
 
   /**
-   * The frozen base rootfs image this kernel booted from, if it booted from
-   * one. Null means the kernel has no overlay to write into or export.
+   * Whether this kernel booted from a `/` image, and so has an overlay to
+   * write into or export.
+   *
+   * It used to hand back the base image itself, because the host's rootfs
+   * export cloned that image and replayed the overlay onto the clone. The
+   * kernel exports its own image now, and both remaining callers only ever
+   * asked whether the answer was null — so what the host owes here is the
+   * fact, not a filesystem.
    */
-  rootfsBaseImage(): MemoryFileSystem | null | undefined;
+  hasRootfsImage(): boolean;
 
   /** This kernel's process memory allocator. */
   processMemoryAllocator(): ProcessMemoryAllocator;
@@ -1853,7 +1856,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     data: Uint8Array;
     mode: number;
   }): void {
-    if (!host.rootfsBaseImage()) {
+    if (!host.hasRootfsImage()) {
       respondError(msg.requestId, "VFS is not initialized");
       return;
     }
@@ -1884,8 +1887,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   async function handleExportRootfsImage(msg: {
     requestId: number;
   }): Promise<void> {
-    const baseImage = host.rootfsBaseImage();
-    if (!baseImage) {
+    if (!host.hasRootfsImage()) {
       respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
       return;
     }
@@ -1904,17 +1906,23 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             "rootfs export requires a quiescent kernel with no live or tearing-down processes",
           );
         }
-        // The kernel overlay owns `/`; the base image is only the frozen tree
-        // the kernel booted from. Rebuild a faithful image by reconciling that
-        // base with the overlay's authoritative tree (copy-on-writes, runtime
-        // creates and deletes, metadata) rather than serializing the stale
-        // base directly.
-        const { image: overlayImage } = await exportRootfsImageFromOverlay({
-          baseImage: await baseImage.saveImage(),
-          overlayTree: host.kernel().rootfsExportTree(),
-          readCowBytes: (path) => host.kernel().rootfsReadFile(path),
-        });
-        return overlayImage;
+        // ASK THE KERNEL FOR THE IMAGE rather than rebuilding one here.
+        //
+        // The host used to clone the frozen base into a writable filesystem and
+        // replay the overlay's tree onto it -- deletions, copy-on-writes,
+        // runtime creates, owners, modes and times -- which was a second
+        // implementation of a reconciliation the kernel performs from the side
+        // that owns the tree. `rootfs::export_image_read` already did all of
+        // it; only a way to call it was missing, and that is now
+        // `kernel_rootfs_export_container_read`.
+        //
+        // It is also the better-tested half: `runtime-core` carries twenty-one
+        // export tests -- set-ID survival, deferred files re-exporting as
+        // deferred, addresses and digests surviving a load and re-export,
+        // normalized timestamps, a reset discarding an in-progress export --
+        // plus `export_is_chunk_independent` for the streaming contract this
+        // reads through.
+        return host.kernel().rootfsExportContainerRead();
       });
       respondTransferredBytes(msg.requestId, image);
     } catch (error) {
@@ -4407,20 +4415,22 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    * a path-keyed byte store can still be asked about.
    *
    * The last argument is the image-body window. The kernel reads an
-   * image-backed file's CONTENT out of the `/` image, through its own SFFS
+   * image-backed file's CONTENT out of the `/` image, through its own KIFS
    * reader, for the whole session — so the window cannot be closed at the end
-   * of boot. It is handed the SFFS body `baseImage` already holds rather than
+   * of boot. It is handed the KIFS body `baseImage` already holds rather than
    * a second retained copy of the container, which keeps one copy of a
    * 16-256 MiB body in the worker instead of two. Both hosts get this, because
    * both reach the overlay through here.
    */
   function configureRootfsOverlayFromImage(options: {
-    baseImage: RootfsOverlayBaseImage;
     /**
-     * Read the image at a CONTAINER offset. Supplied by the caller rather than
-     * taken from `baseImage`, because whether a backend's bytes are a bare
-     * body or a whole container is a fact about that backend, and only the
-     * caller knows which it has.
+     * Read the image at a CONTAINER offset.
+     *
+     * NO `baseImage` BESIDE IT ANY MORE. This took one, and the only thing it
+     * asked of it was the archive list the transport table was built from —
+     * so when the table went, the object went with it. What the overlay needs
+     * from an image is its BYTES, and whether a backend holds a bare body or a
+     * whole container is a fact about that backend that only the caller knows.
      */
     imageRead: (at: number, dest: Uint8Array) => number;
     imageBytes: Uint8Array;
@@ -4428,7 +4438,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     onLazyProgress?: DeferredProgress;
     foreignPrefixes: string[];
     nosuid: boolean;
-    lazyFetcher?: Parameters<MemoryFileSystem["setLazyFetcher"]>[0];
+    lazyFetcher?: LazyFetch;
   }): void {
     const installedLazyFetcher = options.lazyFetcher;
     const onProgress = options.onLazyProgress;
@@ -4439,56 +4449,29 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         : async () => {
           throw new Error("no lazy transport configured");
         };
-    // ARCHIVES report their transfer too. They did not before: this fetcher
-    // was the only archive path after the host `/` mount was dropped, and it
-    // emitted nothing — so the largest downloads a user waits on, the
-    // interpreter bundles, were silent while individual lazy files still
-    // reported. Same pipe, same events, one vocabulary.
-    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
-      async (url) => {
-        const base = { id: `archive:${url}`, kind: "archive" as const, url };
-        if (onProgress !== undefined) {
-          onProgress({ ...base, status: "started", loadedBytes: 0, t: Date.now() });
-        }
-        try {
-          const bytes = await fetchUrlBytes(url);
-          if (onProgress !== undefined) {
-            onProgress({
-              ...base,
-              status: "complete",
-              loadedBytes: bytes.byteLength,
-              totalBytes: bytes.byteLength,
-              t: Date.now(),
-            });
-          }
-          return bytes;
-        } catch (error) {
-          if (onProgress !== undefined) {
-            onProgress({
-              ...base,
-              status: "error",
-              loadedBytes: 0,
-              error: error instanceof Error ? error.message : String(error),
-              t: Date.now(),
-            });
-          }
-          throw error;
-        }
-      };
-    const { deferredProvider } = buildRootfsLazyWiring(
-      options.baseImage.exportLazyArchiveEntries(),
-      lazyArchiveFetcher,
-      // THE PIPE. Was `createDeferredFileReader(options.baseImage, ...)`, which
-      // read through a MemoryFileSystem whose `open` kicked an async
-      // materialization and threw EAGAIN until it landed — putting
-      // materialization STATUS in the host. The kernel owns that status; the
-      // host answers "bytes for this inode?" and reports the transfer.
-      createDeferredUrlReader(
-        options.baseImage.exportLazyEntries(),
-        fetchUrlBytes,
-        onProgress,
-      ),
-    );
+    // NO archive-specific fetcher wrapper. There used to be one here that
+    // reported an archive's transfer, because the deferred provider reported
+    // only files. The provider now answers for both kinds behind one address,
+    // and reports both, so a wrapper reporting again would emit every event
+    // twice — and worse, would stamp `kind: "archive"` on a lazy FILE's
+    // transfer, since one fetcher now serves both. One pipe, one vocabulary,
+    // one place that speaks.
+    // NO LAZY-FILE LIST. That call produced the host's inode -> URL
+    // table, and handing it over made this host a second author for where a
+    // deferred file's bytes live — with the image, which already recorded an
+    // address, as the first. The kernel now reads that address itself and names
+    // it in the fetch, so there is nothing for a table to hold. An SDEF image,
+    // whose table was EMPTY, stops loading as an image with no deferred files
+    // (defect B43) for the same reason.
+    //
+    // AND NO ARCHIVE LIST EITHER, since 2026-09-17. The wiring used to take one
+    // and build transport policy from it: which alternate URLs may stand in for
+    // an address, and what length to believe. Neither half had a producer — an
+    // image records one uri per archive, and the bytes are checked against the
+    // image's digest by the kernel on materialization, which is the check that
+    // decides. What is left is a pipe: the kernel names an address, the host
+    // fetches it.
+    const { deferredProvider } = buildRootfsLazyWiring(fetchUrlBytes, onProgress);
     host.kernel().configureRootfsOverlay(
       deferredProvider,
       options.foreignPrefixes,

@@ -29,6 +29,9 @@ export const browserForkModule32ModuleSpecifier = "@fork-module32-wasm";
 // demo opt-in: it IS the browser's WASI Preview 1 support, so a browser build
 // that cannot supply it cannot run a WASI guest at all.
 export const browserWasiModule32ModuleSpecifier = "@wasi-module32-wasm";
+
+/** The wasm32 image-writer module the VFS image bridge instantiates. */
+export const browserImageModule32ModuleSpecifier = "@kandelo-image-module32-wasm";
 // The standalone dynamic-linking planner (`crates/dylink-module`), supplied as
 // URL bytes so the kernel host can ship it to every process worker. wasm32 only:
 // the planner is not compiled per pointer width, it carries the process's width

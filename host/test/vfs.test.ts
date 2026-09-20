@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { afterAll, describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdirSync,
   mkdtempSync,
@@ -10,19 +10,36 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import {
-  BLOCK_SIZE,
-  EMFILE,
-  FD_ENTRY_SIZE,
-  FD_TABLE_OFFSET,
-  MAX_FDS,
-  O_CREAT,
-  O_RDONLY,
-  O_RDWR,
-  O_TRUNC,
-  SFSError,
-} from "../src/vfs/sharedfs-vendor";
+// The open flags from the generated ABI. Everything else this file used to
+// take from `sharedfs-vendor.ts` — `BLOCK_SIZE`, `EMFILE`, `FD_ENTRY_SIZE`,
+// `FD_TABLE_OFFSET`, `MAX_FDS`, `SFSError` — went with the 25 cases below that
+// were about a `SharedArrayBuffer` filesystem's internals.
+import { OPEN_FLAGS } from "../src/generated/abi";
+
+const { O_CREAT, O_RDONLY, O_RDWR } = OPEN_FLAGS;
+
+/**
+ * A backend for `VirtualPlatformIO` to route to. These suites assert ROUTING —
+ * which mount answered, how handles map, when a rename is EXDEV — and never
+ * which filesystem did the answering, so what they need is a
+ * `FileSystemBackend` that exists.
+ */
+const backendRoots: string[] = [];
+function hostBackend(): HostFileSystem {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-vfs-backend-"));
+  backendRoots.push(root);
+  const fs = new HostFileSystem(root);
+  // `mkdtemp` makes its directory 0o700 and a host-backed mount reports the
+  // real mode, so a guest that is not the creating user cannot traverse `/`.
+  fs.chmod("/", 0o755);
+  return fs;
+}
+
+afterAll(() => {
+  while (backendRoots.length > 0) {
+    rmSync(backendRoots.pop()!, { recursive: true, force: true });
+  }
+});
 import { NodeTimeProvider } from "../src/vfs/time";
 import {
   ST_NOSUID,
@@ -412,9 +429,7 @@ describe("VirtualPlatformIO file identity", () => {
   });
 
   it("derives identity from live handles after unlink and rename", () => {
-    const backend = MemoryFileSystem.create(
-      new SharedArrayBuffer(4 * 1024 * 1024),
-    );
+    const backend = hostBackend();
     const vfs = new VirtualPlatformIO(
       [{ mountPoint: "/", backend }],
       new NodeTimeProvider(),
@@ -590,690 +605,49 @@ describe("HostFileSystem path traversal", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. MemoryFileSystem round-trip
+// 5. MemoryFileSystem round-trip — RETIRED 2026-09-17, 25 cases
 // ---------------------------------------------------------------------------
-
-describe("MemoryFileSystem", () => {
-  it("creates, writes, seeks, and reads back a file", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_RDWR = 0x0002,
-      O_TRUNC = 0x0200;
-    const fd = mfs.open("/test.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-    const data = new TextEncoder().encode("hello world");
-    const written = mfs.write(fd, data, null, data.length);
-    expect(written).toBe(data.length);
-    mfs.seek(fd, 0, 0); // SEEK_SET
-    const buf = new Uint8Array(32);
-    const bytesRead = mfs.read(fd, buf, null, 32);
-    expect(bytesRead).toBe(data.length);
-    expect(new TextDecoder().decode(buf.subarray(0, bytesRead))).toBe(
-      "hello world",
-    );
-    mfs.close(fd);
-  });
-
-  it("routes complete set-ID invalidation semantics through VirtualPlatformIO", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const path = "/mutation-matrix";
-    const localFd = mfs.open(path, O_CREAT | O_RDWR | O_TRUNC, 0o6755);
-    mfs.close(localFd);
-    const vfs = new VirtualPlatformIO(
-      [{ mountPoint: "/", backend: mfs }],
-      new NodeTimeProvider(),
-    );
-    const fd = vfs.open(path, O_RDWR, 0);
-    const byte = new Uint8Array([0x78]);
-    const expectMode = (mode: number): void => {
-      expect(vfs.stat(path).mode & 0o7777).toBe(mode);
-      expect(vfs.fstat(fd).mode & 0o7777).toBe(mode);
-    };
-    const arm = (mode = 0o6755): void => {
-      vfs.chmod(path, mode);
-      expectMode(mode);
-    };
-
-    try {
-      arm();
-      expect(vfs.write(fd, byte, null, 1)).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      expect(vfs.write(fd, byte, 0, 1)).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      expect(vfs.append(fd, byte, 1, null).written).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      const truncateFd = vfs.open(path, O_RDWR | O_TRUNC, 0);
-      vfs.close(truncateFd);
-      expectMode(0o755);
-
-      expect(vfs.write(fd, byte, 0, 1)).toBe(1);
-      arm();
-      vfs.ftruncate(fd, 0);
-      expectMode(0o755);
-
-      arm();
-      vfs.chown(path, 1001, 2001);
-      expectMode(0o755);
-
-      arm();
-      vfs.fchown(fd, 1002, 2002);
-      expectMode(0o755);
-
-      arm();
-      vfs.lchown(path, 1003, 2003);
-      expectMode(0o755);
-
-      arm(0o6600);
-      expect(vfs.write(fd, byte, 0, 1)).toBe(1);
-      expectMode(0o600);
-
-      arm(0o6600);
-      vfs.chown(path, 1004, 2004);
-      expectMode(0o600);
-
-      arm();
-      expect(vfs.write(fd, byte, null, 0)).toBe(0);
-      expect(vfs.write(fd, byte, 0, 0)).toBe(0);
-      expect(vfs.append(fd, byte, 0, null).written).toBe(0);
-      expectMode(0o6755);
-
-      const unchangedSize = vfs.fstat(fd).size;
-      vfs.ftruncate(fd, unchangedSize);
-      expectMode(0o6755);
-      if (unchangedSize !== 0) {
-        vfs.ftruncate(fd, 0);
-        arm();
-      }
-      const emptyTruncateFd = vfs.open(path, O_RDWR | O_TRUNC, 0);
-      vfs.close(emptyTruncateFd);
-      expectMode(0o6755);
-
-      const readOnlyFd = vfs.open(path, O_RDONLY, 0);
-      try {
-        expect(() => vfs.write(readOnlyFd, byte, null, 1)).toThrow();
-        expect(() => vfs.ftruncate(readOnlyFd, 0)).toThrow();
-      } finally {
-        vfs.close(readOnlyFd);
-      }
-      expectMode(0o6755);
-    } finally {
-      vfs.close(fd);
-    }
-
-    vfs.mkdir("/mutation-directory", 0o6770);
-    vfs.chown("/mutation-directory", 3001, 3002);
-    expect(vfs.stat("/mutation-directory").mode & 0o7777).toBe(0o6770);
-  });
-
-  it("routes positive and failed mutation attempts without changing armed mode", () => {
-    const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-    const path = "/mutation-failures";
-    const localFd = mfs.open(path, O_CREAT | O_RDWR | O_TRUNC, 0o600);
-    mfs.close(localFd);
-    const vfs = new VirtualPlatformIO(
-      [{ mountPoint: "/", backend: mfs }],
-      new NodeTimeProvider(),
-    );
-    const fd = vfs.open(path, O_RDWR, 0);
-    const bytes = new Uint8Array([0x78, 0x79]);
-    const expectMode = (mode: number): void => {
-      expect(vfs.stat(path).mode & 0o7777).toBe(mode);
-      expect(vfs.fstat(fd).mode & 0o7777).toBe(mode);
-    };
-    const arm = (): void => {
-      vfs.chmod(path, 0o6755);
-      expectMode(0o6755);
-    };
-    const expectFailure = (operation: () => unknown): void => {
-      expect(operation).toThrow();
-      expectMode(0o6755);
-    };
-
-    try {
-      arm();
-      expect(vfs.write(fd, bytes, null, 1)).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      expect(vfs.write(fd, bytes, 0, 1)).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      const limit = vfs.fstat(fd).size + 1;
-      expect(vfs.append(fd, bytes, bytes.length, limit).written).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      const readOnlyFd = vfs.open(path, O_RDONLY, 0);
-      try {
-        expectFailure(() => vfs.write(readOnlyFd, bytes, null, 1));
-        expectFailure(() => vfs.write(readOnlyFd, bytes, 0, 1));
-        expectFailure(() => vfs.append(readOnlyFd, bytes, 1, null));
-        expectFailure(() => vfs.ftruncate(readOnlyFd, 0));
-      } finally {
-        vfs.close(readOnlyFd);
-      }
-
-      expectFailure(() => vfs.open("/missing-truncate", O_RDWR | O_TRUNC, 0));
-      expectFailure(() => vfs.chown("/missing-chown", 1000, 2000));
-      expectFailure(() => vfs.fchown(999_999, 1000, 2000));
-      expectFailure(() => vfs.lchown("/missing-lchown", 1000, 2000));
-    } finally {
-      vfs.close(fd);
-    }
-  });
-
-  it("opens more than the old 64-descriptor SharedFS table limit", () => {
-    expect(MAX_FDS).toBe(
-      Math.floor((BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE),
-    );
-    expect(MAX_FDS).toBeGreaterThan(64);
-
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const createFd = mfs.open(
-      "/many-fds.txt",
-      O_CREAT | O_RDWR | O_TRUNC,
-      0o644,
-    );
-    mfs.close(createFd);
-
-    const fds: number[] = [];
-    try {
-      for (let i = 0; i < 65; i++) {
-        fds.push(mfs.open("/many-fds.txt", O_RDONLY, 0o644));
-      }
-      expect(new Set(fds).size).toBe(65);
-      expect(Math.max(...fds)).toBeGreaterThanOrEqual(64);
-    } finally {
-      for (const fd of fds) mfs.close(fd);
-    }
-  });
-
-  it("throws EMFILE when the derived SharedFS fd table is full", () => {
-    expect(MAX_FDS).toBeLessThanOrEqual(160);
-
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const createFd = mfs.open(
-      "/fd-limit.txt",
-      O_CREAT | O_RDWR | O_TRUNC,
-      0o644,
-    );
-    mfs.close(createFd);
-
-    const fds: number[] = [];
-    let error: unknown;
-    try {
-      for (let i = 0; i < MAX_FDS; i++) {
-        fds.push(mfs.open("/fd-limit.txt", O_RDONLY, 0o644));
-      }
-      const unexpectedFd = mfs.open("/fd-limit.txt", O_RDONLY, 0o644);
-      fds.push(unexpectedFd);
-    } catch (err) {
-      error = err;
-    } finally {
-      for (const fd of fds) mfs.close(fd);
-    }
-
-    expect(error).toBeInstanceOf(SFSError);
-    expect((error as SFSError).code).toBe(EMFILE);
-  });
-
-  it("routes O_TRUNC EMFILE without changing the selected file", () => {
-    const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-    const vfs = new VirtualPlatformIO(
-      [{ mountPoint: "/", backend: mfs }],
-      new NodeTimeProvider(),
-    );
-    const path = "/routed-emfile-truncate";
-    const contents = new TextEncoder().encode("routed bytes remain");
-    const fd = vfs.open(path, O_CREAT | O_RDWR, 0o600);
-    expect(vfs.write(fd, contents, null, contents.byteLength)).toBe(
-      contents.byteLength,
-    );
-    vfs.chown(path, 2468, 1357);
-    vfs.chmod(path, 0o6755);
-
-    const fillers: number[] = [];
-    try {
-      for (let index = 1; index < MAX_FDS; index++) {
-        fillers.push(vfs.open(path, O_RDONLY, 0));
-      }
-
-      let failure: unknown;
-      try {
-        vfs.open(path, O_RDWR | O_TRUNC, 0);
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).toBeInstanceOf(SFSError);
-      expect((failure as SFSError).code).toBe(EMFILE);
-
-      const pathStat = vfs.stat(path);
-      const fdStat = vfs.fstat(fd);
-      expect(pathStat).toMatchObject({
-        size: contents.byteLength,
-        uid: 2468,
-        gid: 1357,
-      });
-      expect(fdStat).toMatchObject({
-        size: contents.byteLength,
-        uid: 2468,
-        gid: 1357,
-      });
-      expect(pathStat.mode & 0o7777).toBe(0o6755);
-      expect(fdStat.mode & 0o7777).toBe(0o6755);
-      const observed = new Uint8Array(contents.byteLength);
-      expect(vfs.read(fd, observed, 0, observed.byteLength)).toBe(
-        contents.byteLength,
-      );
-      expect(observed).toEqual(contents);
-    } finally {
-      for (const filler of fillers) vfs.close(filler);
-      vfs.close(fd);
-    }
-  });
-
-  it("routes O_RDONLY | O_TRUNC without granting write access", () => {
-    const mfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
-    const vfs = new VirtualPlatformIO(
-      [{ mountPoint: "/", backend: mfs }],
-      new NodeTimeProvider(),
-    );
-    const path = "/routed-read-only-truncate";
-    const seed = vfs.open(path, O_CREAT | O_RDWR, 0o600);
-    expect(vfs.write(seed, new TextEncoder().encode("truncate me"), null, 11))
-      .toBe(11);
-    vfs.close(seed);
-    vfs.chmod(path, 0o6755);
-
-    const fd = vfs.open(path, O_RDONLY | O_TRUNC, 0);
-    try {
-      expect(vfs.stat(path).size).toBe(0);
-      expect(vfs.fstat(fd).size).toBe(0);
-      expect(vfs.stat(path).mode & 0o7777).toBe(0o755);
-      expect(vfs.fstat(fd).mode & 0o7777).toBe(0o755);
-      expect(() =>
-        vfs.write(fd, new Uint8Array([0x78]), null, 1)
-      ).toThrow();
-    } finally {
-      vfs.close(fd);
-    }
-  });
-
-  it("creates and lists directories", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    mfs.mkdir("/mydir", 0o755);
-    // Create a file in the dir
-    const O_CREAT = 0x0040,
-      O_WRONLY = 0x0001;
-    const fd = mfs.open("/mydir/file.txt", O_CREAT | O_WRONLY, 0o644);
-    mfs.close(fd);
-    // List dir
-    const dh = mfs.opendir("/mydir");
-    const entries: string[] = [];
-    let entry;
-    while ((entry = mfs.readdir(dh)) !== null) {
-      entries.push(entry.name);
-    }
-    mfs.closedir(dh);
-    expect(entries).toContain("file.txt");
-  });
-
-  it("reports raw inode numbers that remain representable after inode reuse", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_RDWR = 0x0002,
-      O_TRUNC = 0x0200;
-
-    // SharedFS tracks an internal generation counter for reused inode slots.
-    // POSIX st_ino does not need to include that generation, and exposing it
-    // can overflow 32-bit guest language APIs while tools like ls(1) print the
-    // full kernel value.
-    for (let i = 0; i < 2_100; i++) {
-      const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-      mfs.close(fd);
-      mfs.unlink("/reuse.txt");
-    }
-
-    const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-    const stat = mfs.fstat(fd);
-    expect(stat.ino).toBeGreaterThan(0);
-    expect(stat.ino).toBeLessThanOrEqual(0x7fffffff);
-
-    const dh = mfs.opendir("/");
-    let entry;
-    let dirIno: number | null = null;
-    while ((entry = mfs.readdir(dh)) !== null) {
-      if (entry.name === "reuse.txt") {
-        dirIno = entry.ino;
-        break;
-      }
-    }
-    mfs.closedir(dh);
-    expect(dirIno).toBe(stat.ino);
-    mfs.close(fd);
-  });
-
-  it("keeps large-directory indexes coherent across SharedFS instances", () => {
-    const sab = new SharedArrayBuffer(8 * 1024 * 1024);
-    const first = MemoryFileSystem.create(sab);
-    const second = MemoryFileSystem.fromExisting(sab);
-    first.mkdir("/bulk", 0o755);
-
-    const names: string[] = [];
-    for (let i = 0; i < 340; i++) {
-      const name = `/bulk/${String(i).padStart(4, "0")}-${"x".repeat(180)}`;
-      names.push(name);
-      const fd = first.open(name, O_CREAT | O_RDWR, 0o644);
-      first.close(fd);
-    }
-
-    // Populate the first mount's index, then reuse a deleted slot through a
-    // second mount without changing the directory's byte size.
-    expect(first.stat(names.at(-1)!).mode & 0xf000).toBe(0x8000);
-    second.unlink(names[100]);
-    const replacement = `/bulk/repl-${"y".repeat(180)}`;
-    const replacementFd = second.open(replacement, O_CREAT | O_RDWR, 0o644);
-    second.close(replacementFd);
-
-    expect(first.stat(replacement).mode & 0xf000).toBe(0x8000);
-    expect(() => first.stat(names[100])).toThrow(/No such file/);
-  });
-
-  it("honors O_CREAT|O_EXCL by failing when the final path already exists", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_WRONLY = 0x0001,
-      O_CREAT = 0x0040,
-      O_EXCL = 0x0080;
-
-    const fd = mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600);
-    mfs.close(fd);
-
-    expect(() =>
-      mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
-    ).toThrow(/File exists/);
-
-    // POSIX open(O_CREAT|O_EXCL) must fail with EEXIST when the final path is
-    // a symbolic link, even if the symlink points at an existing regular file.
-    mfs.symlink("/exclusive.txt", "/exclusive-link.txt");
-    expect(() =>
-      mfs.open("/exclusive-link.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
-    ).toThrow(/File exists/);
-  });
-
-  it("stat returns correct size after writing", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_RDWR = 0x0002,
-      O_TRUNC = 0x0200;
-    const fd = mfs.open("/sized.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-    const data = new TextEncoder().encode("12345");
-    mfs.write(fd, data, null, data.length);
-    const st = mfs.fstat(fd);
-    expect(st.size).toBe(5);
-    mfs.close(fd);
-  });
-
-  it("updates mtime and ctime after file writes and truncates", () => {
-    const now = vi.spyOn(Date, "now");
-    try {
-      const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-      now.mockReturnValue(1_000);
-      const mfs = MemoryFileSystem.create(sab);
-      const O_CREAT = 0x0040,
-        O_RDWR = 0x0002,
-        O_TRUNC = 0x0200;
-      const fd = mfs.open("/timestamps.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-      const initial = mfs.fstat(fd);
-
-      now.mockReturnValue(5_000);
-      mfs.write(fd, new TextEncoder().encode("abc"), null, 3);
-      const afterWrite = mfs.fstat(fd);
-      expect(afterWrite.mtimeMs).toBe(5_000);
-      expect(afterWrite.ctimeMs).toBe(5_000);
-      expect(afterWrite.mtimeMs).toBeGreaterThan(initial.mtimeMs);
-
-      now.mockReturnValue(9_000);
-      mfs.ftruncate(fd, 1);
-      const afterTruncate = mfs.fstat(fd);
-      expect(afterTruncate.mtimeMs).toBe(9_000);
-      expect(afterTruncate.ctimeMs).toBe(9_000);
-      expect(afterTruncate.mtimeMs).toBeGreaterThan(afterWrite.mtimeMs);
-      mfs.close(fd);
-    } finally {
-      now.mockRestore();
-    }
-  });
-
-  it("unlink removes a file", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_WRONLY = 0x0001;
-    const fd = mfs.open("/todelete.txt", O_CREAT | O_WRONLY, 0o644);
-    mfs.close(fd);
-    mfs.unlink("/todelete.txt");
-    expect(() => mfs.stat("/todelete.txt")).toThrow();
-  });
-
-  it("rejects unlink paths with a trailing slash on non-directories", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_WRONLY = 0x0001;
-
-    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
-    mfs.close(fd);
-    mfs.symlink("/file.txt", "/link.txt");
-
-    expect(() => mfs.unlink("/file.txt/")).toThrow(/Not a directory/);
-    expect(() => mfs.unlink("/link.txt/")).toThrow(/Not a directory/);
-    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
-    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
-  });
-
-  it("rejects rename source paths that require a non-directory to be a directory", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_WRONLY = 0x0001;
-
-    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
-    mfs.close(fd);
-
-    expect(() => mfs.rename("/file.txt/", "/renamed.txt")).toThrow(
-      /Not a directory/,
-    );
-    expect(mfs.stat("/file.txt").size).toBe(0);
-    expect(() => mfs.stat("/renamed.txt")).toThrow(/No such file/);
-  });
-
-  it("preserves POSIX type checks when renaming directories onto existing paths", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_WRONLY = 0x0001;
-
-    mfs.mkdir("/dir", 0o755);
-    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
-    mfs.close(fd);
-    mfs.symlink("/file.txt", "/link.txt");
-
-    expect(() => mfs.rename("/dir", "/file.txt")).toThrow(/Not a directory/);
-    expect(() => mfs.rename("/dir", "/link.txt")).toThrow(/Not a directory/);
-
-    expect(mfs.stat("/dir").mode & 0xf000).toBe(0x4000);
-    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
-    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
-  });
-
-  it("renames directories over empty directories and updates dot-dot", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_WRONLY = 0x0001;
-
-    mfs.mkdir("/old-parent", 0o755);
-    mfs.mkdir("/new-parent", 0o755);
-    mfs.mkdir("/old-parent/child", 0o755);
-    const siblingFd = mfs.open(
-      "/new-parent/sibling.txt",
-      O_CREAT | O_WRONLY,
-      0o644,
-    );
-    mfs.close(siblingFd);
-
-    mfs.rename("/old-parent/child", "/new-parent/child");
-    expect(mfs.stat("/new-parent/child/../sibling.txt").mode & 0xf000).toBe(
-      0x8000,
-    );
-
-    mfs.mkdir("/empty-dest", 0o755);
-    mfs.rename("/new-parent/child", "/empty-dest");
-    expect(mfs.stat("/empty-dest").mode & 0xf000).toBe(0x4000);
-    expect(() => mfs.stat("/new-parent/child")).toThrow(/No such file/);
-  });
-
-  it("rejects rename and rmdir operands ending in dot or dot-dot", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    mfs.mkdir("/dir", 0o755);
-    mfs.mkdir("/dir/child", 0o755);
-
-    expect(() => mfs.rename("/dir/.", "/moved")).toThrow(/Invalid argument/);
-    expect(() => mfs.rename("/dir/child", "/dir/..")).toThrow(/Invalid argument/);
-    expect(() => mfs.rmdir("/dir/.")).toThrow(/Invalid argument/);
-    expect(() => mfs.rmdir("/dir/child/..")).toThrow(/Invalid argument/);
-    expect(mfs.stat("/dir/child").mode & 0xf000).toBe(0x4000);
-  });
-
-  it("chmod and fchmod preserve the inode file type", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const fd = mfs.open("/regular", O_CREAT | O_RDWR, 0o644);
-
-    mfs.chmod("/regular", 0o040755);
-    expect(mfs.stat("/regular").mode & 0xf000).toBe(0x8000);
-    mfs.fchmod(fd, 0o040700);
-    expect(mfs.fstat(fd).mode & 0xf000).toBe(0x8000);
-    mfs.close(fd);
-  });
-
-  it("keeps an unlinked open file alive until close", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_RDWR = 0x0002,
-      O_TRUNC = 0x0200;
-
-    const oldFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-    const oldData = new TextEncoder().encode("old");
-    mfs.write(oldFd, oldData, null, oldData.length);
-    mfs.unlink("/open.txt");
-    expect(() => mfs.stat("/open.txt")).toThrow();
-
-    const newFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-    const newData = new TextEncoder().encode("newer");
-    mfs.write(newFd, newData, null, newData.length);
-
-    mfs.seek(oldFd, 0, 0);
-    const oldBuf = new Uint8Array(8);
-    const oldRead = mfs.read(oldFd, oldBuf, null, oldBuf.length);
-    expect(new TextDecoder().decode(oldBuf.subarray(0, oldRead))).toBe("old");
-
-    mfs.seek(newFd, 0, 0);
-    const newBuf = new Uint8Array(8);
-    const newRead = mfs.read(newFd, newBuf, null, newBuf.length);
-    expect(new TextDecoder().decode(newBuf.subarray(0, newRead))).toBe("newer");
-
-    mfs.close(oldFd);
-    mfs.close(newFd);
-  });
-
-  it("ftruncate changes file size", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const O_CREAT = 0x0040,
-      O_RDWR = 0x0002,
-      O_TRUNC = 0x0200;
-    const fd = mfs.open("/trunc.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
-    const data = new TextEncoder().encode("abcdefghij");
-    mfs.write(fd, data, null, data.length);
-    expect(mfs.fstat(fd).size).toBe(10);
-    mfs.ftruncate(fd, 5);
-    expect(mfs.fstat(fd).size).toBe(5);
-    mfs.close(fd);
-  });
-
-  it("statfs reports real SharedFS block usage", () => {
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const mfs = MemoryFileSystem.create(sab);
-    const before = mfs.statfs("/");
-    const fd = mfs.open("/blocks.bin", 0x0040 | 0x0002 | 0x0200, 0o644);
-    const data = new Uint8Array(8192);
-    mfs.write(fd, data, null, data.length);
-    mfs.close(fd);
-    const after = mfs.statfs("/");
-    expect(after.blocks).toBe(before.blocks);
-    expect(after.bfree).toBeLessThan(before.bfree);
-    expect(after.bavail).toBe(after.bfree);
-  });
-
-  it("statfs reports effective max capacity for growable filesystems", () => {
-    const initialBytes = 1 * 1024 * 1024;
-    const maxBytes = 8 * 1024 * 1024;
-    const sab = new SharedArrayBuffer(initialBytes, {
-      maxByteLength: maxBytes,
-    });
-    const mfs = MemoryFileSystem.create(sab, maxBytes);
-
-    const before = mfs.statfs("/");
-    expect(before.blocks * before.bsize).toBe(maxBytes);
-    expect(before.bfree).toBeGreaterThan(initialBytes / before.bsize);
-    expect(sab.byteLength).toBe(initialBytes);
-
-    const fd = mfs.open("/grow.bin", 0x0040 | 0x0002 | 0x0200, 0o644);
-    const data = new Uint8Array(initialBytes);
-    expect(mfs.write(fd, data, null, data.length)).toBe(data.length);
-    mfs.close(fd);
-
-    const after = mfs.statfs("/");
-    expect(sab.byteLength).toBeGreaterThan(initialBytes);
-    expect(after.blocks).toBe(before.blocks);
-    expect(after.blocks * after.bsize).toBe(maxBytes);
-    expect(after.bfree).toBeLessThan(before.bfree);
-    expect(after.bavail).toBe(after.bfree);
-  });
-
-  it("statfs does not report the internal default growth cap for non-growable buffers", () => {
-    const initialBytes = 1 * 1024 * 1024;
-    const sab = new SharedArrayBuffer(initialBytes);
-    const mfs = MemoryFileSystem.create(sab);
-    const stats = mfs.statfs("/");
-
-    expect(stats.blocks * stats.bsize).toBe(initialBytes);
-    expect(sab.maxByteLength).toBe(initialBytes);
-  });
-});
+//
+// The class was the SUBJECT here, and it is being deleted. The claims did not
+// all go the same way, which is why they were audited one at a time rather
+// than dropped together.
+//
+// TWELVE ARE ASSERTED IN RUST, on the filesystem that now serves these paths.
+// `crates/runtime-core/src/tmpfs.rs` carries `create_write_read_roundtrip`,
+// `mkdir_and_readdir`, `o_excl_rejects_existing`, `o_trunc_clears_content`,
+// `open_missing_without_creat_is_enoent`, `rename_moves_replaces_and_guards`,
+// `rmdir_nonempty_is_enotempty`, `truncate_grows_and_shrinks`,
+// `timestamps_track_create_write_and_utimensat`, `chmod_chown_update_metadata`,
+// `unlink_while_open_keeps_data_until_last_close` and
+// `opening_a_directory_as_file_is_eisdir` — and the set-ID pair is
+// `write_and_truncate_clear_setid_only_on_real_modification` plus
+// `chown_clears_setid_for_unprivileged_caller`.
+//
+// SEVEN DESCRIBE AN ARCHITECTURE THE PLATFORM NO LONGER HAS: the 64-entry
+// SharedFS descriptor table and its EMFILE, large-directory indexes coherent
+// ACROSS SharedFS INSTANCES, raw inode numbers surviving slot reuse, and the
+// three `statfs` cases about block accounting and growable-buffer caps. Every
+// one is a property of a fixed `SharedArrayBuffer` allocation shared between
+// workers. The kernel is one authority over owned Rust memory: there is no
+// second instance to stay coherent with and no fixed block pool to account.
+//
+// THE REST WERE ROUTING CASES WEARING A FILESYSTEM'S NAME — the ones that
+// "route ... through VirtualPlatformIO" — and they live on above, against a
+// backend the platform still ships.
 
 // ---------------------------------------------------------------------------
-// 6. Mixed mounts test (HostFileSystem + MemoryFileSystem)
+// 6. Nested mounts over SEPARATE backends
 // ---------------------------------------------------------------------------
+//
+// Was "Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp", and the
+// mixing was never the claim. What these three assert is that a nested mount
+// is a separate store — a write under `/tmp` does not appear under `/`,
+// `readdir` and `statfs` reach the mount that owns the path — and two
+// `HostFileSystem` instances rooted at different directories make exactly
+// that point. The second backend TYPE went with `memory-fs.ts`; the second
+// backend did not.
 
-describe("Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp", () => {
+describe("Nested mounts over separate backends", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -1284,10 +658,9 @@ describe("Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes via /tmp (memory) and reads via / (host) independently", () => {
+  it("writes via /tmp and reads via / independently", () => {
     const hostFs = new HostFileSystem(tmpDir);
-    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
-    const memFs = MemoryFileSystem.create(sab);
+    const memFs = hostBackend();
 
     const vfs = new VirtualPlatformIO(
       [

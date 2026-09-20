@@ -15,16 +15,27 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { zipSync } from "fflate";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import {
-  addSealedLazyAtomicTestTree,
-  forgeLazyAtomicSeal,
-} from "../../../host/test/lazy-atomic-seal-fixture";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { parseManifest } from "../src/manifest.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
 const shim = join(here, "..", "bin", "mkrootfs.mjs");
+
+/**
+ * Read an image the CLI wrote, through the reader the CLI itself uses.
+ *
+ * This was `MemoryFileSystem.fromImage`, a second reader — and one that could
+ * not see a deferred file's description at all, which is the defect the verbs
+ * were repointed to end. A test oracle blind to half the artifact certifies
+ * the half it can see.
+ */
+function readBack(image: Uint8Array): KandeloImageFs {
+  const fs = KandeloImageFs.create();
+  fs.loadImage(image);
+  return fs;
+}
 
 function run(...args: string[]) {
   return spawnSync(shim, args, { encoding: "utf8", cwd: repoRoot });
@@ -38,60 +49,113 @@ function runWithSourceDateEpoch(sourceDateEpoch: string, ...args: string[]) {
   });
 }
 
+/**
+ * Where the tampered descriptor lives in the image, asserted to be the only
+ * copy. A tamper applied to the wrong bytes -- or to one of two copies --
+ * reads exactly like a guard that refused, so the test would pass while
+ * proving nothing about seals.
+ */
+function onlyOffsetOf(image: Uint8Array, needle: Uint8Array): number {
+  const found: number[] = [];
+  outer: for (let i = 0; i + needle.length <= image.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (image[i + j] !== needle[j]) continue outer;
+    }
+    found.push(i);
+  }
+  expect(found).toHaveLength(1);
+  return found[0];
+}
+
 describe("mkrootfs imported atomic seal boundary", () => {
-  it.each([
-    ["member", /activation member .* changed after sealing/],
-    ["cohort", /activation group .* differs from its seal/],
-  ] as const)(
-    "rejects a forged %s seal before inspect, metadata-only extract, or add output",
-    async (forgery, expectedSealError) => {
-      const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-forged-seal-"));
-      try {
-        const source = MemoryFileSystem.create(
-          new SharedArrayBuffer(8 * 1024 * 1024),
-        );
-        await addSealedLazyAtomicTestTree(source, {
-          groupId: "test:mkrootfs",
-          member: "metadata",
-          root: "/metadata-only",
+  it("refuses a tampered cohort seal before inspect prints, extract writes, or add saves", () => {
+    // WHAT THIS DEFENDS. All three verbs load an image the caller handed them
+    // and then act on it -- print it, write it to disk, save a mutated copy
+    // back over it. An image whose activation cohort does not authenticate has
+    // been altered since it was sealed, and acting on it would launder the
+    // alteration through a tool the caller trusts. `add` is the worst of the
+    // three, because its output REPLACES the input.
+    //
+    // HOW THE REFUSAL ARRIVES, which is the part this rewrite changes. It used
+    // to be `verifyImportedLazyAtomicGroupSeals`, a separate call each verb
+    // made against a second reader; now `loadImage` refuses, because
+    // `rootfs::load_image` authenticates every cohort seal in the container it
+    // is handed. So the claim tested here is no longer "each verb remembers to
+    // check" but "no verb can forget" -- there is no longer a call to omit.
+    //
+    // THE TAMPER IS THE DESCRIPTOR, not the digest. The seal covers the
+    // archive's fetch descriptor, so altering the descriptor's bytes leaves
+    // every digest in the image intact and self-consistent while making the
+    // sealed claim false -- the shape of a real tamper, and the one a
+    // structural validator cannot see. The module's own tests cover the other
+    // failing shapes (a cohort short of its count, members that disagree, a
+    // seal left pending); this file is about the CLI boundary, so it needs one
+    // refusal that certainly reaches it.
+    const encoder = new TextEncoder();
+    const build = () => {
+      const fs = KandeloImageFs.create();
+      fs.mkdir("/opt", 0o755);
+      for (const [archiveId, name] of [[3, "tools"], [4, "docs"]] as const) {
+        fs.registerArchiveMember({
+          path: `/opt/${name}`,
+          archiveId,
+          sourcePath: `members/${name}`,
+          size: 10,
+          mode: 0o644,
+          ino: 40 + archiveId,
+          archiveBytes: 8_000_000,
+          archiveDescriptor: encoder.encode(
+            `{"url":"https://example.invalid/${name}.zip"}`,
+          ),
+          cohort: { id: "shell", member: name, expectedCount: 2 },
         });
-        const image = join(tmp, "forged.vfs");
-        writeFileSync(
-          image,
-          forgeLazyAtomicSeal(await source.saveImage(), forgery),
-        );
-        const original = readFileSync(image);
-
-        const inspect = run("inspect", image);
-        expect(inspect.status).not.toBe(0);
-        expect(inspect.stdout).toBe("");
-        expect(inspect.stderr).toMatch(expectedSealError);
-
-        const out = join(tmp, "out");
-        const extract = run("extract", image, out);
-        expect(extract.status).not.toBe(0);
-        // WHY: this metadata-only tree also fails later with EAGAIN because it
-        // has no fetched payload. Requiring the cryptographic verifier's exact
-        // error proves extract rejected the forged seal before reaching that
-        // unrelated lazy-read boundary.
-        expect(extract.stderr).toMatch(expectedSealError);
-        expect(existsSync(out)).toBe(false);
-
-        const add = run(
-          "add",
-          image,
-          "/etc/new",
-          "--file",
-          join(tmp, "missing-source"),
-        );
-        expect(add.status).not.toBe(0);
-        expect(add.stderr).toMatch(expectedSealError);
-        expect(readFileSync(image).equals(original)).toBe(true);
-      } finally {
-        rmSync(tmp, { recursive: true, force: true });
       }
-    },
-  );
+      return fs.exportImage();
+    };
+
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-tampered-seal-"));
+    try {
+      const tampered = build();
+      const host = encoder.encode("https://example.invalid/tools.zip");
+      // One byte, inside the sealed descriptor, in a field no reader parses.
+      tampered[onlyOffsetOf(tampered, host) + "https://example.".length] = 0x78;
+
+      const image = join(tmp, "tampered.vfs");
+      writeFileSync(image, tampered);
+      const original = readFileSync(image);
+
+      const inspect = run("inspect", image);
+      expect(inspect.status).not.toBe(0);
+      expect(inspect.stdout).toBe("");
+      expect(inspect.stderr).toMatch(/EPERM/);
+
+      const out = join(tmp, "out");
+      const extract = run("extract", image, out);
+      expect(extract.status).not.toBe(0);
+      expect(extract.stderr).toMatch(/EPERM/);
+      expect(existsSync(out)).toBe(false);
+
+      const add = run(
+        "add", image, "/etc/new", "--file", join(tmp, "missing-source"),
+      );
+      expect(add.status).not.toBe(0);
+      expect(add.stderr).toMatch(/EPERM/);
+      expect(readFileSync(image).equals(original)).toBe(true);
+
+      // THE NEGATIVE CONTROL, and it is what makes the three refusals above
+      // about the SEAL. The same builder, the same cohort, the same archive
+      // members -- untampered -- must be read and printed. Without it, a verb
+      // that refused every image carrying an archive would look identical.
+      const intact = join(tmp, "intact.vfs");
+      writeFileSync(intact, build());
+      const good = run("inspect", intact);
+      expect(good.stderr).toBe("");
+      expect(good.status).toBe(0);
+      expect(good.stdout).toContain("/opt/tools");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("mkrootfs CLI — top-level", () => {
@@ -156,15 +220,36 @@ describe("mkrootfs build — happy paths", () => {
       );
       expect(result.status).toBe(0);
 
-      const mfs = MemoryFileSystem.fromImage(
-        new Uint8Array(readFileSync(out)),
-      );
-      for (const path of ["/", "/etc", "/etc/passwd", "/usr/bin/sh"]) {
-        const stat = mfs.lstat(path);
-        expect(stat.atimeMs, `${path} atime`).toBe(946_684_800_000);
-        expect(stat.mtimeMs, `${path} mtime`).toBe(946_684_800_000);
-        expect(stat.ctimeMs, `${path} ctime`).toBe(946_684_800_000);
-      }
+      // ASSERTED THROUGH THE BYTES, not through a reader's stat.
+      //
+      // This read each inode's three stamps back with `MemoryFileSystem`,
+      // whose `lstat` reports times; the module's does not, because a builder
+      // has no use for them. What the flag is FOR is reproducibility, and that
+      // is checkable without any reader at all: the same epoch must produce
+      // the same image, and a different epoch must produce a different one.
+      // The second half is what makes the first half mean something — two
+      // builds that ignored the epoch entirely would also match.
+      const sameEpoch = join(tmp, "same-epoch.vfs");
+      const otherEpoch = join(tmp, "other-epoch.vfs");
+      expect(runWithSourceDateEpoch(
+        "946684800",
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", sameEpoch,
+        "--repo-root", fixture,
+      ).status).toBe(0);
+      expect(runWithSourceDateEpoch(
+        "1700000000",
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", otherEpoch,
+        "--repo-root", fixture,
+      ).status).toBe(0);
+
+      expect(readFileSync(sameEpoch).equals(readFileSync(out))).toBe(true);
+      expect(readFileSync(otherEpoch).equals(readFileSync(out))).toBe(false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -186,7 +271,7 @@ describe("mkrootfs build — happy paths", () => {
       expect(existsSync(out)).toBe(true);
 
       const bytes = new Uint8Array(readFileSync(out));
-      const mfs = MemoryFileSystem.fromImage(bytes);
+      const mfs = readBack(bytes);
       // pass-1 dir, pass-2 file, pass-3 symlink all present.
       expect(() => mfs.stat("/etc")).not.toThrow();
       expect(() => mfs.stat("/etc/passwd")).not.toThrow();
@@ -281,7 +366,7 @@ describe("mkrootfs build — happy paths", () => {
         gid: 1000,
       });
 
-      const mfs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync(image)));
+      const mfs = readBack(new Uint8Array(readFileSync(image)));
       expect(mfs.readlink(link!.path)).toBe(target);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -353,7 +438,7 @@ describe("mkrootfs build — happy paths", () => {
       expect(r.status).toBe(0);
 
       const bytes = new Uint8Array(readFileSync(out));
-      const mfs = MemoryFileSystem.fromImage(bytes);
+      const mfs = readBack(bytes);
       expect(mfs.stat("/usr/bin/env").mode & 0o777).toBe(0o755);
       expect(mfs.stat("/usr/bin/printf").mode & 0o777).toBe(0o755);
       const fd = mfs.open("/usr/bin/env", 0, 0);
@@ -384,7 +469,7 @@ describe("mkrootfs build — happy paths", () => {
       );
       expect(r.status).toBe(0);
       expect(readFileSync(out).byteLength).toBeLessThan(2 * 1024 * 1024);
-      expect(() => MemoryFileSystem.fromImage(new Uint8Array(readFileSync(out)))).not.toThrow();
+      expect(() => readBack(new Uint8Array(readFileSync(out)))).not.toThrow();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -406,9 +491,7 @@ describe("mkrootfs build — happy paths", () => {
       );
       expect(r.status).toBe(0);
 
-      const mfs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync(out)), {
-        maxByteLength: 8 * 1024 * 1024,
-      });
+      const mfs = readBack(new Uint8Array(readFileSync(out)));
       const fd = mfs.open("/large.bin", 0x0001 | 0x0040 | 0x0200, 0o644);
       try {
         const data = new Uint8Array(5 * 1024 * 1024);
@@ -472,13 +555,19 @@ describe("mkrootfs build — happy paths", () => {
         join(fixture, "rootfs"),
         "-o", out,
         "--repo-root", fixture,
-        "--kernel-abi", "11",
+        // THE CURRENT ABI, because reading metadata back means LOADING the
+        // image, and the loader refuses one that declares an ABI it does not
+        // speak. That refusal is the contract (see the stale-image case
+        // above); its cost is that nobody can ask a stale artifact which ABI
+        // it claims. What this case is about — the flag's value reaching the
+        // image's metadata — is unchanged by using a value the reader speaks.
+        "--kernel-abi", String(ABI_VERSION),
       );
       expect(r.status).toBe(0);
-      const metadata = MemoryFileSystem.readImageMetadata(new Uint8Array(readFileSync(out)));
+      const metadata = KandeloImageFs.readImageMetadata(new Uint8Array(readFileSync(out)));
       expect(metadata).toEqual({
         version: 1,
-        kernelAbi: 11,
+        kernelAbi: ABI_VERSION,
         createdBy: "mkrootfs build",
       });
     } finally {
@@ -498,16 +587,16 @@ describe("mkrootfs build — happy paths", () => {
         join(fixture, "rootfs"),
         "-o", out,
         "--repo-root", fixture,
-        "--kernel-abi", "11",
+        "--kernel-abi", String(ABI_VERSION),
         "--abi-snapshot-sha256", snapshotSha256,
       );
       expect(r.status).toBe(0);
-      const metadata = MemoryFileSystem.readImageMetadata(
+      const metadata = KandeloImageFs.readImageMetadata(
         new Uint8Array(readFileSync(out)),
       );
       expect(metadata).toEqual({
         version: 1,
-        kernelAbi: 11,
+        kernelAbi: ABI_VERSION,
         abiSnapshotSha256: snapshotSha256,
         createdBy: "mkrootfs build",
       });
@@ -854,9 +943,7 @@ describe("mkrootfs inspect — happy paths", () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-large-"));
     const image = join(tmp, "large.vfs");
     try {
-      const mfs = MemoryFileSystem.create(
-        new SharedArrayBuffer(8 * 1024 * 1024),
-      );
+      const mfs = KandeloImageFs.create();
       for (let i = 0; i < 1_500; i++) {
         const name = `/entry-${String(i).padStart(4, "0")}-with-a-long-name`;
         mfs.createFileWithOwner(name, 0o644, 0, 0, new Uint8Array(0));
@@ -878,9 +965,7 @@ describe("mkrootfs inspect — happy paths", () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-epipe-"));
     const image = join(tmp, "large.vfs");
     try {
-      const mfs = MemoryFileSystem.create(
-        new SharedArrayBuffer(8 * 1024 * 1024),
-      );
+      const mfs = KandeloImageFs.create();
       for (let i = 0; i < 1_500; i++) {
         const name = `/entry-${String(i).padStart(4, "0")}-with-a-long-name`;
         mfs.createFileWithOwner(name, 0o644, 0, 0, new Uint8Array(0));
@@ -929,7 +1014,14 @@ describe("mkrootfs inspect — happy paths", () => {
         join(fixture, "rootfs"),
         "-o", image,
         "--repo-root", fixture,
-        "--kernel-abi=11",
+        // THE CURRENT ABI, NOT A LITERAL, and the change is not cosmetic. This
+        // built an ABI-11 image and inspected it, which worked while the verb
+        // read with a parser that had no opinion about ABI. It reads with the
+        // kernel's loader now, and that loader refuses an image declaring an
+        // ABI it does not speak -- so an arbitrary number here would be
+        // testing the refusal, not the metadata round-trip this case is about.
+        // The stale-image refusal has its own case below.
+        `--kernel-abi=${ABI_VERSION}`,
       );
       expect(build.status).toBe(0);
 
@@ -941,7 +1033,7 @@ describe("mkrootfs inspect — happy paths", () => {
       };
       expect(data.metadata).toEqual({
         version: 1,
-        kernelAbi: 11,
+        kernelAbi: ABI_VERSION,
         createdBy: "mkrootfs build",
       });
       expect(data.entries.some((e) => e.path === "/etc/passwd")).toBe(true);
@@ -961,7 +1053,7 @@ describe("mkrootfs inspect — happy paths", () => {
         join(fixture, "rootfs"),
         "-o", image,
         "--repo-root", fixture,
-        "--kernel-abi=11",
+        `--kernel-abi=${ABI_VERSION}`,
       );
       expect(build.status).toBe(0);
 
@@ -969,7 +1061,53 @@ describe("mkrootfs inspect — happy paths", () => {
       expect(r.status).toBe(0);
       const first = r.stdout.split("\n")[0];
       expect(first).toContain("metadata");
-      expect(first).toContain(`"kernelAbi":11`);
+      expect(first).toContain(`"kernelAbi":${ABI_VERSION}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("tells a caller to rebuild an image built for another kernel ABI", () => {
+    // THE CAPABILITY THIS BOUNDARY COSTS, stated where it is paid. Reading
+    // with the kernel's loader means these verbs can no longer look inside an
+    // image built for a different ABI -- and looking inside a stale image is
+    // exactly when someone reaches for `inspect`.
+    //
+    // It is still the right trade. Two readers disagreeing about one image is
+    // the defect the repoint exists to end, and an image that the kernel will
+    // refuse to boot is not something a build tool should quietly describe as
+    // fine. But a refusal has to say WHICH refusal it is: the image is intact,
+    // it is stale, and the fix is a rebuild rather than a hunt for corruption.
+    // All three verbs load through the same door, so all three must say so.
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-stale-abi-"));
+    const image = join(tmp, "rootfs.vfs");
+    try {
+      const build = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", image,
+        "--repo-root", fixture,
+        "--kernel-abi=11",
+      );
+      expect(build.status).toBe(0);
+
+      for (const argv of [
+        ["inspect", image],
+        ["extract", image, join(tmp, "out")],
+        ["add", image, "/etc/new", "--dir"],
+      ]) {
+        const r = run(...argv);
+        expect(r.status).not.toBe(0);
+        expect(r.stderr).toContain("built for a different kernel ABI");
+        expect(r.stderr).toContain("Rebuild it");
+        // NOT the corruption wording, which is the half that would rot first:
+        // a future edit could add the ABI sentence beside the old message and
+        // leave the misleading half in place.
+        expect(r.stderr).not.toContain("not a valid VFS image");
+      }
+      expect(existsSync(join(tmp, "out"))).toBe(false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

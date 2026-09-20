@@ -1,0 +1,1277 @@
+import { zstdCompressSync } from "node:zlib";
+import { describe, expect, it } from "vitest";
+
+import { KandeloImageFs, KandeloImageError } from "../../images/vfs/lib/kandelo-image-fs";
+import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
+import { OPEN_FLAGS } from "../src/generated/abi";
+import type { ZipEntry } from "../src/vfs/zip";
+
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+
+/** A zip central-directory entry with only the fields the bridge reads. */
+function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
+  return {
+    fileNameBytes: new TextEncoder().encode(over.fileName),
+    compressedSize: 0,
+    uncompressedSize: 0,
+    compressionMethod: 0,
+    localHeaderOffset: 0,
+    mode: 0o644,
+    isDirectory: false,
+    isSymlink: false,
+    externalAttrs: 0,
+    creatorOS: 3,
+    ...over,
+  } as ZipEntry;
+}
+
+/**
+ * The bridge driven the way a builder drives it.
+ *
+ * These tests matter beyond coverage: the module's own tests run NATIVELY, so
+ * they exercise the ABI's shape but not its wasm calling convention or the
+ * marshalling across the boundary. An earlier ABI bug — pointers typed `u32`,
+ * which truncate on a 64-bit native test — was only visible because the Rust
+ * tests ran off-target. This is the other half of that check: the same entry
+ * points, reached through real wasm, from the language that will call them.
+ */
+describe("KandeloImageFs", () => {
+  it("builds a tree and reads it back", () => {
+    const fs = KandeloImageFs.create();
+
+    fs.mkdir("/etc", 0o755);
+    fs.writeFile("/etc/passwd", new TextEncoder().encode("root:x:0:0::/root:/bin/sh\n"), 0o644);
+    fs.symlink("passwd", "/etc/pw-link");
+    // PARENTS, not the leaf: /usr and /usr/local are created, /usr/local/bin
+    // is left to the caller's own mkdir. The Rust doc says "every missing
+    // parent of `path`"; this expectation was 3 until the test disagreed.
+    expect(fs.ensureDirRecursive("/usr/local/bin", 0o755)).toBe(2);
+
+    const st = fs.lstat("/etc/passwd");
+    expect(st.mode & 0o7777).toBe(0o644);
+    expect(st.size).toBe(26);
+
+    expect(new TextDecoder().decode(fs.readFile("/etc/passwd"))).toBe(
+      "root:x:0:0::/root:/bin/sh\n",
+    );
+    expect(fs.readlink("/etc/pw-link")).toBe("passwd");
+    expect(fs.readDirNames("/etc").sort()).toEqual(["passwd", "pw-link"]);
+  });
+
+  it("reports metadata changes through chmod and chown", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/opt", 0o700, 1, 2);
+    fs.chmod("/opt", 0o751);
+    fs.chown("/opt", 5, -1);
+
+    const st = fs.lstat("/opt");
+    expect(st.mode & 0o7777).toBe(0o751);
+    expect(st.uid).toBe(5);
+    expect(st.gid).toBe(2);
+  });
+
+  it("clears setuid on chown when asked, and not otherwise", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/keep", 0o755);
+    fs.chmod("/keep", 0o4755);
+    fs.chown("/keep", 1, 1);
+    expect(fs.lstat("/keep").mode & 0o7777).toBe(0o4755);
+
+    fs.mkdir("/drop", 0o755);
+    fs.chmod("/drop", 0o4755);
+    fs.chown("/drop", 1, 1, true);
+    expect(fs.lstat("/drop").mode & 0o7777).toBe(0o0755);
+  });
+
+  it("throws a named errno rather than a number", () => {
+    const fs = KandeloImageFs.create();
+    let caught: unknown;
+    try {
+      fs.lstat("/absent");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(KandeloImageError);
+    // The name comes from the GENERATED errno table, not a hand-written map.
+    expect((caught as Error).message).toContain("ENOENT");
+    expect((caught as Error).message).toContain("/absent");
+  });
+
+  it("reads through POSIX-shaped handles, as the helpers do", () => {
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/data", new TextEncoder().encode("hello world"), 0o644);
+
+    // The read loop `vfs-image-helpers.ts` actually uses: open, read with a
+    // null position so the cursor advances, close.
+    // Read in SMALL CHUNKS on purpose. A single read of the whole file never
+    // reuses the cursor, so a version that failed to advance it passed — a
+    // mutant that survived until this loop chunked.
+    const fd = fs.open("/data", 0, 0);
+    const buf = new Uint8Array(11);
+    let offset = 0;
+    let reads = 0;
+    while (offset < buf.length) {
+      const n = fs.read(fd, buf.subarray(offset), null, Math.min(4, buf.length - offset));
+      expect(n).toBeGreaterThan(0);
+      offset += n;
+      reads += 1;
+    }
+    fs.close(fd);
+    expect(reads).toBeGreaterThan(1, "the point of this test is multiple reads");
+    expect(new TextDecoder().decode(buf)).toBe("hello world");
+
+    // An explicit position does NOT advance the cursor.
+    const fd2 = fs.open("/data");
+    const two = new Uint8Array(2);
+    expect(fs.read(fd2, two, 6, 2)).toBe(2);
+    expect(new TextDecoder().decode(two)).toBe("wo");
+    expect(fs.read(fd2, two, null, 2)).toBe(2);
+    expect(new TextDecoder().decode(two)).toBe("he");
+    fs.close(fd2);
+  });
+
+  it("iterates directories through opendir/readdir/closedir", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/d", 0o755);
+    for (const name of ["a", "b", "c"]) {
+      fs.writeFile(`/d/${name}`, new Uint8Array(0), 0o644);
+    }
+    const dh = fs.opendir("/d");
+    const seen: string[] = [];
+    for (;;) {
+      const entry = fs.readdir(dh);
+      if (!entry) break;
+      seen.push(entry.name);
+    }
+    fs.closedir(dh);
+    expect(seen.sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("rejects a handle it did not issue", () => {
+    const fs = KandeloImageFs.create();
+    expect(() => fs.close(999)).toThrow(/bad file handle/);
+    expect(() => fs.readdir(999)).toThrow(/bad directory handle/);
+  });
+
+  it("registers a lazy file whose metadata is readable before any fetch", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.registerArchiveMember({
+      path: "/usr/big",
+      archiveId: 3,
+      sourcePath: "members/big.bin",
+      size: 99_999,
+      mode: 0o755,
+      ino: 40,
+      archiveBytes: 8_000_000,
+    });
+    const st = fs.lstat("/usr/big");
+    expect(st.size).toBe(99_999);
+    expect(st.mode & 0o7777).toBe(0o755);
+  });
+
+  it("exports a whole container the kernel format readers accept", () => {
+    // The bridge's half of the builder-facing save: drive the tree through the
+    // ABI, then drain the finished image. What comes out must be a CONTAINER,
+    // because a bare KIFS body is not an image -- nothing can find the
+    // filesystem inside it or the sections beside it.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.writeFile("/usr/hello", new TextEncoder().encode("hi"), 0o644);
+
+    const image = fs.exportImage();
+    // The magic is written as a little-endian u32, so "VFSI" lands on disk
+    // byte-reversed. Asserted as the reversal rather than as the literal
+    // "ISFV", so the test says which property it is checking -- and spelled out
+    // because this constant does NOT reach TypeScript through a generator, the
+    // same hand-carried-ABI shape as L-D2, W-D1 and V-D1.
+    expect(new TextDecoder().decode(image.subarray(0, 4))).toBe(
+      [..."VFSI"].reverse().join(""),
+    );
+    // The header records the BODY's length, not the whole image's. That is what
+    // makes these bytes a container rather than a bare filesystem: there are
+    // sections after the body that the body knows nothing about.
+    const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+    const bodyLen = view.getUint32(12, true);
+    expect(bodyLen).toBeGreaterThan(0);
+    expect(bodyLen).toBeLessThan(image.byteLength);
+  });
+
+  it("carries image metadata through the export without parsing it", () => {
+    const fs = KandeloImageFs.create();
+    const metadata = { version: 1, kernelAbi: 44, createdBy: "a test" };
+    fs.setImageMetadata(metadata);
+    const image = fs.exportImage();
+    // The metadata rides in the container as the bytes we handed over. Found by
+    // searching rather than by offset, because the section's position depends
+    // on which other sections the image declares -- and asserting the offset
+    // would be asserting the container layout, which is not this test's claim.
+    const needle = new TextEncoder().encode(JSON.stringify(metadata));
+    const haystack = new TextDecoder().decode(image);
+    expect(haystack).toContain(new TextDecoder().decode(needle));
+  });
+
+  it("streams the export in chunks smaller than the image", () => {
+    // The export is offset-addressable so a 249 MiB image never has to live in
+    // the module's linear memory. A one-chunk read would pass even if it were
+    // not, so this forces many chunks and checks the result is identical.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/d", 0o755);
+    fs.writeFile("/d/big", new Uint8Array(300_000).fill(0x41), 0o644);
+
+    const whole = fs.exportImage(1 << 20);
+    const chunked = fs.exportImage(4096);
+    expect(chunked.byteLength).toBe(whole.byteLength);
+    expect(Array.from(chunked.subarray(0, 64))).toEqual(
+      Array.from(whole.subarray(0, 64)),
+    );
+    expect(Array.from(chunked.subarray(-64))).toEqual(
+      Array.from(whole.subarray(-64)),
+    );
+  });
+
+  it("reads the loaded image at any offset, in any order, while the tree mutates", () => {
+    // The window the in-kernel overlay reads base-file content through for a
+    // whole session. `exportImage` cannot serve it: that builds from the
+    // current tree and streams in order, and seals cohorts at offset 0 — so
+    // using it here would rebuild the image per read AND let a read mutate the
+    // tree it is reading.
+    const source = KandeloImageFs.create();
+    source.mkdir("/d", 0o755);
+    source.writeFile("/d/f", new Uint8Array(9000).fill(0x5a), 0o644);
+    const image = source.exportImage();
+
+    const fs = KandeloImageFs.create();
+    fs.loadImage(image);
+
+    // Any offset, and deliberately out of order.
+    const mid = new Uint8Array(64);
+    expect(fs.imageRead(4096n, mid)).toBe(64);
+    expect(Array.from(mid)).toEqual(Array.from(image.subarray(4096, 4160)));
+
+    const head = new Uint8Array(64);
+    expect(fs.imageRead(0n, head)).toBe(64);
+    expect(Array.from(head)).toEqual(Array.from(image.subarray(0, 64)));
+
+    // A short read at the end, then zero past it — the contract the kernel's
+    // provider relies on to stop, rather than an error it would report as a
+    // corrupt image.
+    const tail = new Uint8Array(128);
+    const n = fs.imageRead(BigInt(image.byteLength - 32), tail);
+    expect(n).toBe(32);
+    expect(fs.imageRead(BigInt(image.byteLength), tail)).toBe(0);
+    expect(fs.imageRead(BigInt(image.byteLength + 4096), tail)).toBe(0);
+
+    // Mutating the live tree does not disturb the window: it reads the image
+    // that was LOADED, not one rebuilt from the tree.
+    fs.mkdir("/after", 0o755);
+    const again = new Uint8Array(64);
+    expect(fs.imageRead(0n, again)).toBe(64);
+    expect(Array.from(again)).toEqual(Array.from(head));
+
+    // A negative offset is EINVAL, and the ERRNO is the assertion rather than
+    // the throw. Without the explicit refusal the cast lands on a huge u64 and
+    // the read fails as EIO instead — still an error, so `toThrow()` alone
+    // would pass against a module that had lost the check. A perturb trial
+    // that deleted it survived this test until this case existed.
+    let caught: unknown;
+    try {
+      fs.imageRead(-1n, again);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(KandeloImageError);
+    expect((caught as Error).message).toContain("EINVAL");
+  });
+
+  it("answers whether a path's bytes are in the image", () => {
+    // The question builder recipes ask: "is this resident?" They asked it of
+    // the TypeScript filesystem, which is the only reason they needed the
+    // implementation rather than an interface.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.writeFile("/usr/here", new TextEncoder().encode("bytes"), 0o644);
+    fs.registerArchiveMember({
+      path: "/usr/there",
+      archiveId: 3,
+      sourcePath: "members/big.bin",
+      size: 99_999,
+      mode: 0o755,
+      ino: 40,
+      archiveBytes: 8_000_000,
+    });
+
+    const here = fs.lstat("/usr/here");
+    expect(here.deferred).toBe(false);
+    expect(here.size).toBe(5);
+    expect(fs.isPathDeferred("/usr/here")).toBe(false);
+
+    const there = fs.lstat("/usr/there");
+    expect(there.deferred).toBe(true);
+    expect(there.ino).toBe(40);
+    // The REAL size, not the zero-length stub in the body. A recipe asking how
+    // big a deferred file is must not have to fetch it first.
+    expect(there.size).toBe(99_999);
+    expect(there.archiveId).toBe(3);
+    expect(fs.isPathDeferred("/usr/there")).toBe(true);
+
+    // A path that is not there is not a DEFERRED file. This asserted a throw
+    // until a real caller disagreed: `residentDinitBinaryState` treats
+    // "missing" as one of its own outcomes, so throwing here made that branch
+    // unreachable. The filesystem this replaces answers `false` too.
+    expect(fs.isPathDeferred("/nope")).toBe(false);
+  });
+
+  it("registers a file fetched standalone, with no archive behind it", () => {
+    // 79 files in the shipped shell image have this shape, and it is the shape
+    // lane S's setuid defect is about. The bridge could not express it until
+    // the archive declaration stopped being unconditional.
+    const fs = KandeloImageFs.create();
+    const url = new TextEncoder().encode("https://example.invalid/sudo#sha256:feed");
+    fs.registerArchiveMember({
+      path: "/sudo",
+      archiveId: 0,
+      sourcePath: "",
+      size: 99_999,
+      mode: 0o4755,
+      ino: 40,
+      archiveBytes: 0,
+      archiveDescriptor: url,
+      // The digest is not decoration here. This registration is set-user-ID
+      // with its bytes deferred, which the builder now refuses outright — see
+      // "set-ID on deferred bytes is refused by the producer" below. Writing
+      // the test without one was writing down the defect lane S filed.
+      archiveUri: "https://example.invalid/sudo",
+      archiveDigest: new Uint8Array(32).fill(0xab),
+    });
+    const st = fs.lstat("/sudo");
+    expect(st.deferred).toBe(true);
+    expect(st.size).toBe(99_999);
+    expect(st.archiveId).toBe(0);
+    expect(st.mode & 0o7777).toBe(0o4755);
+  });
+
+  it("judges headroom and reports the numbers either way", () => {
+    // The assertion builders make — "this image must ship with room to write" —
+    // now comes back as a verdict computed in Rust rather than a statfs the
+    // caller has to turn into one.
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/f", new TextEncoder().encode("hello"), 0o644);
+
+    const ok = fs.checkHeadroom(0, 0);
+    expect(ok.met).toBe(true);
+    expect(ok.freeBytes).toBeGreaterThan(0);
+    expect(ok.freeInodes).toBeGreaterThan(0);
+
+    // Unmeetable: still returns the measurement, because a caller that only
+    // learns "no" cannot say by how much.
+    const no = fs.checkHeadroom(Number.MAX_SAFE_INTEGER, 0);
+    expect(no.met).toBe(false);
+    expect(no.requiredBytes).toBe(Number.MAX_SAFE_INTEGER);
+    expect(no.freeBytes).toBe(ok.freeBytes);
+  });
+
+  it("refuses one archive declared with two different lengths", () => {
+    // The member's size and the ARCHIVE's size are different numbers, and the
+    // second is what bounds the fetch. Two lengths for one archive would make
+    // that bound depend on registration order, so it is refused rather than
+    // resolved.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    const member = (ino: number, archiveBytes: number) => ({
+      path: `/usr/m${ino}`,
+      archiveId: 3,
+      sourcePath: `members/m${ino}`,
+      size: 10,
+      mode: 0o644,
+      ino,
+      archiveBytes,
+    });
+    fs.registerArchiveMember(member(40, 8_000_000));
+    // The same length again is a no-op, so a builder may register many members
+    // of one archive without tracking whether it has declared it.
+    expect(() => fs.registerArchiveMember(member(41, 8_000_000))).not.toThrow();
+    expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
+  });
+
+  it("answers deferredness about the file a symlink names, not the link", () => {
+    // A symlink is never itself deferred, so asking `lstat` answers "no" for
+    // every ALIAS of a lazy binary. The shell composer skips a binary that is
+    // already lazy, and with `lstat` it re-registered `/bin/coreutils` and
+    // failed the build on an undeclared dependency — in a product build, which
+    // is where this was found. The filesystem this replaces resolves the path.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.mkdir("/bin", 0o755);
+    fs.registerLazyFile("/usr/bin/tool", "https://example.invalid/tool.wasm", 4242, 0o755);
+    fs.symlink("/usr/bin/tool", "/bin/tool");
+
+    // Directly, and through the alias: both must say the same thing.
+    expect(fs.isPathDeferred("/usr/bin/tool")).toBe(true);
+    expect(fs.isPathDeferred("/bin/tool")).toBe(true);
+    expect(fs.getLazyEntry("/bin/tool")).not.toBeNull();
+    expect(fs.getLazyEntry("/bin/tool")?.size).toBe(4242);
+
+    // And the alias is still a symlink — resolving the QUESTION does not
+    // resolve the tree.
+    expect(fs.lstat("/bin/tool").deferred).toBe(false);
+  });
+
+  it("keeps a loaded image's declared capacity when metadata is written after", () => {
+    // GAP 24, and gap 17's defect on the other field the one entry point
+    // carries. `sm_set_image_options` sends capacity AND metadata together, so
+    // each must survive a load the KERNEL authored — and only the metadata was
+    // refreshed, so the bridge went on remembering a capacity of 0 and the next
+    // metadata write cleared what the image declared.
+    //
+    // This is the shell composer's exact sequence: load a base that declares a
+    // large capacity, write files, then save with metadata. The image came out
+    // sized to its own tree and failed its product profile at the publication
+    // gate — in a product build, which is where it was found.
+    const base = KandeloImageFs.create();
+    base.mkdir("/etc", 0o755);
+    base.setImageCapacity(64 * 1024 * 1024);
+    const image = base.exportImage();
+
+    const derived = KandeloImageFs.create();
+    derived.loadImage(image);
+    expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
+
+    // The write that used to clear it.
+    derived.setImageMetadata({ version: 1, createdBy: "gap-24" });
+    expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
+
+    // And it reaches the artifact, not just the live tree.
+    expect(KandeloImageFs.readImageCapacity(derived.exportImage()).maxByteLength)
+      .toBe(64 * 1024 * 1024);
+  });
+
+  it("enumerates every deferred file and archive with its identity", () => {
+    // What replaces `exportLazyEntries` and `exportLazyArchiveEntries`: the
+    // builders' "this step disturbed nothing" check, asked of the module that
+    // owns the tree rather than of a second filesystem that mirrored it.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    fs.registerLazyFile("/opt/solo", "https://example.invalid/solo.wasm", 4242, 0o755);
+    fs.registerArchiveMember({
+      path: "/opt/member",
+      archiveId: 3,
+      sourcePath: "members/member",
+      size: 99,
+      mode: 0o644,
+      ino: 71,
+      archiveBytes: 8_000_000,
+      archiveDescriptor: new TextEncoder().encode('{"url":"https://x/a.zip"}'),
+    });
+    fs.writeFile("/opt/plain", new TextEncoder().encode("resident"), 0o644);
+
+    const { files, archives } = fs.lazyEntries();
+    expect(files.map((f) => f.path)).toEqual(["/opt/member", "/opt/solo"]);
+    // A resident file is not deferred, which is the distinction that would be
+    // easiest to get wrong: both are regular files.
+    expect(files.some((f) => f.path === "/opt/plain")).toBe(false);
+
+    const member = files.find((f) => f.path === "/opt/member")!;
+    expect(member.size).toBe(99);
+    expect(member.archiveId).toBe(3);
+    expect(member.sourcePath).toBe("members/member");
+
+    const solo = files.find((f) => f.path === "/opt/solo")!;
+    expect(solo.size).toBe(4242);
+    expect(solo.archiveId).toBe(0);
+    // The standalone file's description IS its identity: without it nothing
+    // says where its bytes come from.
+    expect(solo.descriptor.byteLength).toBeGreaterThan(0);
+
+    expect(archives).toHaveLength(1);
+    expect(archives[0]!.archiveId).toBe(3);
+    expect(archives[0]!.bytes).toBe(8_000_000);
+  });
+
+  it("loads a zstd-compressed image without the caller unwrapping it", () => {
+    // Shipped images are `.vfs.zst`. The module reads IMAGES, not archives, so
+    // a compressed one reaches it as EINVAL -- a truthful refusal of the wrong
+    // question, and a confusing one to meet from a builder that was handed the
+    // bytes of a shipped artifact. Decompression is transport and happens in
+    // the bridge, exactly where the filesystem this replaces put it.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/etc", 0o755);
+    fs.writeFile("/etc/hello", new TextEncoder().encode("hi"), 0o644);
+    const image = fs.exportImage();
+    const compressed = new Uint8Array(zstdCompressSync(image));
+    expect(compressed).not.toEqual(image);
+
+    const back = KandeloImageFs.create();
+    back.loadImage(compressed);
+    expect(new TextDecoder().decode(back.readFile("/etc/hello"))).toBe("hi");
+  });
+
+  it("seals a declared activation cohort when the image is exported", () => {
+    // The builder DECLARES membership and computes nothing. It cannot: the
+    // cohort's digest covers every member, and the last member is not known
+    // while the first is being registered. The module completes the seal at
+    // the export door, and loading the image back is what proves it did --
+    // load refuses a cohort that does not authenticate.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    const encoder = new TextEncoder();
+    for (const [id, name] of [[3, "tools"], [4, "docs"]] as const) {
+      fs.registerArchiveMember({
+        path: `/opt/${name}`,
+        archiveId: id,
+        sourcePath: `members/${name}`,
+        size: 10,
+        mode: 0o644,
+        ino: 40 + id,
+        archiveBytes: 8_000_000,
+        archiveDescriptor: encoder.encode(`{"url":"https://x/${name}.zip"}`),
+        cohort: { id: "shell", member: name, expectedCount: 2 },
+      });
+    }
+    const image = fs.exportImage();
+
+    const back = KandeloImageFs.create();
+    expect(() => back.loadImage(image)).not.toThrow();
+  });
+
+  it("refuses to export a cohort short of the count it declared", () => {
+    // The declared count is the defence against a forgotten member. Counting
+    // the members that WERE registered cannot notice the one that was not, so
+    // the producer would seal a cohort of one that was meant to be two, every
+    // digest would agree, and the image would activate partially -- which is
+    // the thing atomic activation exists to prevent.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    fs.registerArchiveMember({
+      path: "/opt/tools",
+      archiveId: 3,
+      sourcePath: "members/tools",
+      size: 10,
+      mode: 0o644,
+      ino: 43,
+      archiveBytes: 8_000_000,
+      archiveDescriptor: new TextEncoder().encode('{"url":"https://x/tools.zip"}'),
+      cohort: { id: "shell", member: "tools", expectedCount: 2 },
+    });
+    expect(() => fs.exportImage()).toThrow(/EINVAL/);
+  });
+
+  it("survives an allocation large enough to grow the module's memory", () => {
+    // The bridge takes a FRESH memory view on every access because sm_alloc can
+    // grow linear memory and detach older views. A cached view is the classic
+    // wasm bridge bug: correct until the first growing allocation.
+    const fs = KandeloImageFs.create();
+    const big = new Uint8Array(4 * 1024 * 1024).fill(0x41);
+    fs.writeFile("/big", big, 0o644);
+    const back = fs.readFile("/big");
+    expect(back.byteLength).toBe(big.byteLength);
+    expect(back[0]).toBe(0x41);
+    expect(back[back.byteLength - 1]).toBe(0x41);
+  });
+
+  it("writes a binary through the same helper path a recipe uses", () => {
+    // `writeVfsBinary` is how every recipe puts a program into an image: open
+    // with O_WRONLY|O_CREAT|O_TRUNC, write the whole buffer, close. Typechecking
+    // the bridge against the interface proves the methods EXIST; this proves
+    // they work, which is the part the repoint actually depends on.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    writeVfsBinary(fs, "/usr/bin/prog", new Uint8Array([1, 2, 3, 4, 5]), 0o755);
+    expect(fs.readFile("/usr/bin/prog")).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    expect(fs.lstat("/usr/bin/prog").mode & 0o7777).toBe(0o755);
+  });
+
+  it("truncates on O_TRUNC instead of splicing into the old bytes", () => {
+    // The bridge ignored its open flags until `write` existed, and ignoring
+    // them would not have been harmless: a second build writing a SHORTER file
+    // over a longer one would have kept the old file's tail. The image would
+    // build, mount and boot, containing bytes nobody wrote.
+    const fs = KandeloImageFs.create();
+    writeVfsBinary(fs, "/f", new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]), 0o644);
+    writeVfsBinary(fs, "/f", new Uint8Array([1, 2, 3]), 0o644);
+    expect(fs.readFile("/f")).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("writes at a position past the end by zero-filling the gap", () => {
+    const fs = KandeloImageFs.create();
+    const fd = fs.open("/sparse", O_WRONLY_CREAT_TRUNC, 0o644);
+    fs.write(fd, new Uint8Array([7, 7]), 4, 2);
+    fs.close(fd);
+    // Length must agree with where the bytes are; dropping the gap would
+    // produce a two-byte file whose content sat at offset four.
+    expect(fs.readFile("/sparse")).toEqual(new Uint8Array([0, 0, 0, 0, 7, 7]));
+  });
+
+  it("keeps the tail when writing into the middle of a longer file", () => {
+    // The zero-fill test above cannot see a `end = at + length` mutation,
+    // because its file is empty and both spellings give the same answer. Only
+    // an EXISTING file longer than the write can tell them apart: the mutant
+    // truncates everything past the patch.
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/patch", new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 0o644);
+    const fd = fs.open("/patch", OPEN_FLAGS.O_WRONLY, 0o644);
+    fs.write(fd, new Uint8Array([9, 9]), 2, 2);
+    fs.close(fd);
+    expect(fs.readFile("/patch")).toEqual(
+      new Uint8Array([1, 2, 9, 9, 5, 6, 7, 8]),
+    );
+  });
+
+  it("writes only the length it was asked for, not the whole buffer", () => {
+    // A caller handing over a larger buffer and a smaller length is how a
+    // partial write is expressed. Taking the whole buffer would write bytes
+    // the caller did not offer, and report a count it did not ask for.
+    const fs = KandeloImageFs.create();
+    const fd = fs.open("/partial", O_WRONLY_CREAT_TRUNC, 0o644);
+    const took = fs.write(fd, new Uint8Array([1, 2, 3, 4, 5]), 0, 2);
+    fs.close(fd);
+    expect(took).toBe(2);
+    expect(fs.readFile("/partial")).toEqual(new Uint8Array([1, 2]));
+  });
+
+  it("opens a missing path only when asked to create it", () => {
+    const fs = KandeloImageFs.create();
+    expect(() => fs.open("/absent", OPEN_FLAGS.O_RDONLY, 0o644)).toThrow();
+    // And the failed open must not have left the file behind.
+    expect(() => fs.lstat("/absent")).toThrow();
+  });
+
+  it("advances its own cursor when no position is given", () => {
+    const fs = KandeloImageFs.create();
+    const fd = fs.open("/seq", O_WRONLY_CREAT_TRUNC, 0o644);
+    fs.write(fd, new Uint8Array([1, 2]), null, 2);
+    fs.write(fd, new Uint8Array([3, 4]), null, 2);
+    fs.close(fd);
+    expect(fs.readFile("/seq")).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it("follows symlinks for stat and stops at the link for lstat", () => {
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/target", new Uint8Array([1, 2, 3]), 0o644);
+    fs.symlink("/target", "/link", 0, 0);
+    expect(fs.stat("/link").size).toBe(3);
+    expect(fs.stat("/link").mode & 0o170000).toBe(0o100000);
+    expect(fs.lstat("/link").mode & 0o170000).toBe(0o120000);
+  });
+
+  it("resolves a relative symlink against the link's own directory", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/d", 0o755);
+    fs.writeFile("/d/target", new Uint8Array([1, 2, 3, 4]), 0o644);
+    fs.symlink("target", "/d/link", 0, 0);
+    expect(fs.stat("/d/link").size).toBe(4);
+  });
+
+  it("refuses a symlink cycle rather than following it forever", () => {
+    const fs = KandeloImageFs.create();
+    fs.symlink("/b", "/a", 0, 0);
+    fs.symlink("/a", "/b", 0, 0);
+    expect(() => fs.stat("/a")).toThrow();
+  });
+
+  it("bounds the chain it will follow, and the bound is the one it states", () => {
+    // A cycle alone cannot pin the LIMIT: raise it from forty to four million
+    // and the cycle test still passes, just slowly — H-11's mutant detectable
+    // only by hanging. A chain measures the bound directly and in bounded time:
+    // thirty-nine links resolve, forty-one do not.
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/end", new Uint8Array([1]), 0o644);
+    fs.symlink("/end", "/hop0", 0, 0);
+    for (let i = 1; i < 60; i += 1) {
+      fs.symlink(`/hop${i - 1}`, `/hop${i}`, 0, 0);
+    }
+    expect(fs.stat("/hop37").size).toBe(1);
+    expect(() => fs.stat("/hop50")).toThrow();
+  });
+
+  it("reads back the metadata an image declared, not what this bridge set", () => {
+    const source = KandeloImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    // A different instance, which declared nothing.
+    const derived = KandeloImageFs.create();
+    expect(derived.getImageMetadata()).toBeNull();
+    derived.loadImage(image);
+    expect(derived.getImageMetadata()).toEqual({
+      version: 1,
+      kernelAbi: 44,
+      createdBy: "the test",
+    });
+  });
+
+  it("keeps a loaded image's metadata when the derived build sets a capacity", () => {
+    // GAP 17, and the sequence is the one the shell and php-test builders
+    // perform: load a base, then size the derived image. `setImageCapacity`
+    // re-sends the metadata because one module call carries both settings, so
+    // before the fix it re-sent the bridge's own null and cleared the base's
+    // declared ABI — losing, in the same session, the declaration the load had
+    // just restored.
+    const source = KandeloImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44 });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    const derived = KandeloImageFs.create();
+    derived.loadImage(image);
+    derived.setImageCapacity(64 * 1024 * 1024);
+
+    expect(derived.getImageMetadata()).toEqual({ version: 1, kernelAbi: 44 });
+    // And the capacity took effect, so this is not passing by ignoring the call.
+    expect(derived.exportCapacityBytes()).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+  });
+
+  it("registers a whole archive under its mount prefix", () => {
+    const fs = KandeloImageFs.create();
+    const id = fs.registerLazyArchive({
+      url: "https://example.invalid/tools.zip",
+      mountPrefix: "/opt/tools",
+      entries: [
+        zipEntry({ fileName: "bin/", isDirectory: true, mode: 0o755 }),
+        zipEntry({ fileName: "bin/tool", uncompressedSize: 1234, mode: 0o755 }),
+      ],
+      integrity: { sha256: "a".repeat(64), bytes: 4096 },
+    });
+    expect(id).toBe(1);
+    // The member is deferred, carries its REAL size, and is linked to the
+    // archive rather than fetched standalone.
+    const st = fs.lstat("/opt/tools/bin/tool");
+    expect(st.size).toBe(1234);
+    expect(st.deferred).toBe(true);
+    expect(st.archiveId).toBe(id);
+    // A second archive does not silently reuse the first one's id.
+    expect(fs.registerLazyArchive({
+      url: "https://example.invalid/more.zip",
+      mountPrefix: "/opt/more",
+      entries: [zipEntry({ fileName: "f", uncompressedSize: 1 })],
+    })).toBe(2);
+  });
+
+  it("refuses a member that would escape its mount prefix", () => {
+    // The reason the validator is shared rather than reimplemented: a path is
+    // resolved AFTER it is joined to the prefix, so this member would land in
+    // /etc rather than under /opt/tools.
+    const fs = KandeloImageFs.create();
+    expect(() => fs.registerLazyArchive({
+      url: "https://example.invalid/evil.zip",
+      mountPrefix: "/opt/tools",
+      entries: [zipEntry({ fileName: "../../etc/passwd", uncompressedSize: 1 })],
+    })).toThrow();
+    expect(() => fs.lstat("/etc/passwd")).toThrow();
+  });
+
+  it("creates nothing when any member of an archive is rejected", () => {
+    // Planned before created: a member rejected halfway must not leave a
+    // partial tree. A half-registered archive is worse than a refused one,
+    // because the image builds and is missing exactly what nobody checked for.
+    const fs = KandeloImageFs.create();
+    expect(() => fs.registerLazyArchive({
+      url: "https://example.invalid/partial.zip",
+      mountPrefix: "/opt/partial",
+      entries: [
+        zipEntry({ fileName: "good", uncompressedSize: 1 }),
+        zipEntry({ fileName: "bad\u0000name", uncompressedSize: 1 }),
+      ],
+    })).toThrow();
+    expect(() => fs.lstat("/opt/partial/good")).toThrow();
+  });
+
+  it("carries a standalone lazy file's digest through to the image", () => {
+    // The producer half of the kernel's verification, at the layer where the
+    // hex the builders speak becomes the value the format stores. Covered here
+    // and not only through `tools/mkrootfs`, because a bridge tested solely by
+    // its callers is a bridge whose own failures look like theirs.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    const digest = "a1".repeat(32);
+    fs.registerLazyFile("/usr/bin/sudo", "https://example.invalid/sudo.wasm", 4242, 0o4755, digest);
+
+    const { files } = fs.lazyEntries();
+    const sudo = files.find((f) => f.path === "/usr/bin/sudo");
+    expect(sudo).toBeDefined();
+    expect(sudo?.uri).toBe("https://example.invalid/sudo.wasm");
+    expect(Array.from(sudo!.digest, (b) => b.toString(16).padStart(2, "0")).join(""))
+      .toBe(digest);
+
+    // Omitting it is a real state — every image built before the format
+    // carried a digest has none — and it reaches the record as "declared
+    // none" rather than as some invented value.
+    fs.registerLazyFile("/usr/bin/other", "https://example.invalid/other.wasm", 7, 0o755);
+    const other = fs.lazyEntries().files.find((f) => f.path === "/usr/bin/other");
+    expect(other?.digest.every((b) => b === 0)).toBe(true);
+  });
+
+  it("refuses a digest that is not a SHA-256, with the value in the message", () => {
+    // A malformed digest silently becoming "no digest" would turn a typo into
+    // an unverified setuid binary — and the whole value of the field is that
+    // its absence is deliberate. The message carries the string because the
+    // caller that wrote it is the one that has to find it.
+    const fs = KandeloImageFs.create();
+    const register = (digest: string) =>
+      fs.registerLazyFile("/x", "https://example.invalid/x", 1, 0o755, digest);
+
+    expect(() => register("abc")).toThrow(/64 hex characters/);
+    expect(() => register("abc")).toThrow(/"abc"/);
+    // 64 characters, but not hex — a length check alone would let this past.
+    expect(() => register("z".repeat(64))).toThrow(/64 hex characters/);
+    // 63 and 65: the off-by-ones a `>=` would accept.
+    expect(() => register("a".repeat(63))).toThrow(/64 hex characters/);
+    expect(() => register("a".repeat(65))).toThrow(/64 hex characters/);
+  });
+
+  it("tells a URL-backed single apart from an archive member", () => {
+    // The two halves of "are these bytes here?". Recipes ask
+    // `getLazyEntry(p) !== null` for a URL-backed SINGLE and `isPathDeferred(p)`
+    // for an archive or tree backing, and re-join them by hand. A
+    // `getLazyEntry` that always answered null would collapse the pair into
+    // the second half alone and drop exactly the URL-backed case — which is
+    // the case the setuid-binary assertions are about.
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/eager", new Uint8Array([1, 2, 3]), 0o755);
+    fs.registerLazyFile("/lazy-single", "https://example.invalid/x.bin", 4096, 0o755);
+    fs.registerLazyArchive({
+      url: "https://example.invalid/tools.zip",
+      mountPrefix: "/opt/tools",
+      entries: [zipEntry({ fileName: "tool", uncompressedSize: 99 })],
+    });
+
+    // A URL-backed single: both halves say yes.
+    expect(fs.getLazyEntry("/lazy-single")).not.toBeNull();
+    expect(fs.isPathDeferred("/lazy-single")).toBe(true);
+
+    // An archive member: deferred, but NOT a per-inode registration. This is
+    // the distinction a stub returning null could never express, because it
+    // gave the same answer here as for the single above.
+    expect(fs.getLazyEntry("/opt/tools/tool")).toBeNull();
+    expect(fs.isPathDeferred("/opt/tools/tool")).toBe(true);
+
+    // A resident file is neither.
+    expect(fs.getLazyEntry("/eager")).toBeNull();
+    expect(fs.isPathDeferred("/eager")).toBe(false);
+
+    // A missing path is not a lazy registration, and asking is not an error —
+    // recipes ask about paths that may not exist yet.
+    expect(fs.getLazyEntry("/absent")).toBeNull();
+  });
+
+  it("reads an image's metadata from bytes alone", () => {
+    // The static form, for callers that hold bytes and want to know what they
+    // declare — a publication gate checking an artifact's ABI, say — rather
+    // than callers building a tree.
+    const source = KandeloImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    expect(KandeloImageFs.readImageMetadata(image)).toEqual({
+      version: 1,
+      kernelAbi: 44,
+      createdBy: "the test",
+    });
+
+    // An image declaring none says so, rather than throwing.
+    const bare = KandeloImageFs.create();
+    bare.writeFile("/f", new Uint8Array([1]), 0o644);
+    expect(KandeloImageFs.readImageMetadata(bare.exportImage())).toBeNull();
+  });
+
+  it("gives each instance an independent tree", () => {
+    const a = KandeloImageFs.create();
+    a.mkdir("/only-in-a", 0o755);
+    const b = KandeloImageFs.create();
+    expect(() => b.lstat("/only-in-a")).toThrow();
+    expect(a.lstat("/only-in-a").mode & 0o7777).toBe(0o755);
+  });
+});
+
+describe("registering an archive into a loaded image", () => {
+  it("does not mint an id the loaded image is already using", () => {
+    // GAP 25. Archive ids are assigned by the bridge, counting up from zero,
+    // and a load fills the tree with archives it never assigned. The next
+    // registration minted id 1 again, collided with the loaded image's archive
+    // 1, and failed EINVAL from the module's "one id, two archives" refusal.
+    //
+    // REACHABLE IN PRODUCTION, not only in a fixture: the shell composer loads
+    // a source rootfs and registers the shell's lazy archives into it. It has
+    // not fired only because today's source rootfs carries no archive — so the
+    // first base image that ships with one would have broken the build that
+    // composes from it.
+    const first = KandeloImageFs.create();
+    first.mkdir("/opt", 0o755);
+    first.registerLazyArchive({
+      url: "https://example.invalid/one.zip",
+      entries: [zipEntry({ fileName: "opt/one" })],
+      mountPrefix: "/",
+      integrity: { sha256: "1".repeat(64), bytes: 10 },
+    });
+    const image = first.exportImage();
+
+    const second = KandeloImageFs.create();
+    second.loadImage(image);
+    expect(second.lazyEntries().archives).toHaveLength(1);
+
+    second.registerLazyArchive({
+      url: "https://example.invalid/two.zip",
+      entries: [zipEntry({ fileName: "opt/two" })],
+      mountPrefix: "/",
+      integrity: { sha256: "2".repeat(64), bytes: 20 },
+    });
+
+    const { archives } = second.lazyEntries();
+    expect(archives).toHaveLength(2);
+    // DISTINCT IDS, which is the whole of it: two archives sharing one id is
+    // the state the module refuses, and the ids are what a member points at.
+    expect(new Set(archives.map((archive) => archive.archiveId)).size).toBe(2);
+    expect(archives.map((archive) => archive.uri).sort()).toEqual([
+      "https://example.invalid/one.zip",
+      "https://example.invalid/two.zip",
+    ]);
+  });
+});
+
+describe("reading through a symlink", () => {
+  it("returns the whole file, not the first bytes of it", () => {
+    // A SILENT TRUNCATION, found by a builder test in `tools/mkrootfs`.
+    //
+    // `readFile` sized its buffer with `lstat`, which answers about the LINK —
+    // and a link's size is the length of its target string. The read itself
+    // follows the link. So reading a file through an alias returned as many
+    // bytes as the target's NAME is long, with no error anywhere: a builder
+    // copying a file through a symlink would have written a truncated one into
+    // an image, and the image would have looked fine.
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    const body = new TextEncoder().encode(
+      "#!/bin/sh\nexec /usr/bin/curl \"$@\"\n",
+    );
+    fs.writeFile("/usr/bin/curl-real", body, 0o755);
+    fs.symlink("/usr/bin/curl-real", "/usr/bin/curl");
+
+    // The link's own size is shorter than the file's, which is what makes the
+    // truncation possible in the first place.
+    expect(fs.lstat("/usr/bin/curl").size).toBeLessThan(body.byteLength);
+    expect(fs.readFile("/usr/bin/curl")).toEqual(body);
+  });
+
+  it("follows a relative target that climbs out of its own directory", () => {
+    // `../../shared/curl` is the ordinary way an archive spells a sibling, and
+    // joining it onto the link's directory leaves `..` in the middle of the
+    // path. The module takes CANONICAL paths — the kernel's walk looks up
+    // every component as a name — so an unnormalized join arrives as ENOENT
+    // for a link that resolves perfectly well.
+    const fs = KandeloImageFs.create();
+    for (const dir of ["/opt", "/opt/shared", "/opt/shims", "/opt/shims/deep"]) {
+      fs.mkdir(dir, 0o755);
+    }
+    const body = new TextEncoder().encode("shared payload\n");
+    fs.writeFile("/opt/shared/curl", body, 0o755);
+    fs.symlink("../../shared/curl", "/opt/shims/deep/curl");
+
+    expect(fs.stat("/opt/shims/deep/curl").size).toBe(body.byteLength);
+    expect(fs.readFile("/opt/shims/deep/curl")).toEqual(body);
+  });
+});
+
+describe("owner-carrying creation", () => {
+  // THE COMPARISON WENT, THE LITERALS STAYED, 2026-09-17. Both cases built the
+  // same tree twice — once with the incumbent, once with the bridge — and
+  // asserted the two agreed, then asserted the literal that made the agreement
+  // meaningful ("guards the guard: both agreeing on a cleared bit would
+  // satisfy toEqual"). The literal was doing the work either way, and there is
+  // no second producer left to agree with.
+
+  it("keeps a setuid bit that chown would otherwise clear", () => {
+    // 0o4755: setuid. This is the mode `sudo` ships with, and the reason
+    // owner-carrying creation exists at all — a create-then-chown sequence
+    // clears it, so the mode and the owner must arrive together.
+    const bridge = KandeloImageFs.create();
+    bridge.mkdirWithOwner("/usr", 0o755, 0, 0);
+    bridge.createFileWithOwner(
+      "/usr/sudo", 0o4755, 0, 0, new TextEncoder().encode("x"),
+    );
+
+    const st = bridge.lstat("/usr/sudo");
+    expect(st.mode & 0o7777).toBe(0o4755);
+    expect({ uid: st.uid, gid: st.gid }).toEqual({ uid: 0, gid: 0 });
+  });
+
+  it("carries a non-root owner onto both a file and a directory", () => {
+    const bridge = KandeloImageFs.create();
+    bridge.mkdirWithOwner("/home", 0o755, 0, 0);
+    bridge.mkdirWithOwner("/home/maker", 0o750, 1000, 1001);
+    bridge.createFileWithOwner(
+      "/home/maker/.profile", 0o640, 1000, 1001, new TextEncoder().encode("hi"),
+    );
+
+    const shape = (st: { mode: number; uid: number; gid: number }) =>
+      ({ mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
+    expect(shape(bridge.lstat("/home/maker")))
+      .toEqual({ mode: 0o750, uid: 1000, gid: 1001 });
+    expect(shape(bridge.lstat("/home/maker/.profile")))
+      .toEqual({ mode: 0o640, uid: 1000, gid: 1001 });
+  });
+});
+
+describe("set-ID on deferred bytes is refused by the producer", () => {
+  // The kernel already answers this combination by DEMOTING the bits
+  // (`demote_unverifiable_setid`), because by the time it sees an image the
+  // image exists and may have come from a shared link — refusing it there would
+  // let one bad inode deny a whole boot. This is the other half: in a builder,
+  // the image does not exist yet, nothing is denied by refusing, and the person
+  // who can fix it is the one running the build.
+  const digest = "c".repeat(64);
+
+  it("refuses a set-user-ID lazy file with no digest", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    expect(() => fs.registerLazyFile("/usr/bin/sudo", "bin/sudo.wasm", 120, 0o4755))
+      .toThrow(/no digest was declared/);
+  });
+
+  it("refuses a set-group-ID lazy file with no digest", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    expect(() => fs.registerLazyFile("/usr/bin/wall", "bin/wall.wasm", 40, 0o2755))
+      .toThrow(/set-group-ID/);
+  });
+
+  it("names both bits when both are set, so the message matches the file", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    expect(() => fs.registerLazyFile("/usr/bin/both", "bin/both.wasm", 40, 0o6755))
+      .toThrow(/set-user-ID and set-group-ID/);
+  });
+
+  // The length check, which had no test. Its whole purpose is that a hash
+  // which is nearly right cannot read as absent: `sha256HexToBytes` produces
+  // 32 bytes, so anything else reached this call another way, and accepting it
+  // would mean the kernel later compares against a truncated expectation.
+  // Registered WITHOUT set-ID bits, so the refusal under test is the length
+  // one and not the set-ID one that follows it.
+  it("refuses a digest that is not exactly 32 bytes, rather than treating it as none", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    for (const length of [16, 31, 33, 64]) {
+      expect(() =>
+        fs.registerArchiveMember({
+          path: `/usr/bin/tool${length}`,
+          archiveId: 0,
+          sourcePath: "",
+          size: 10,
+          mode: 0o755,
+          ino: 5000 + length,
+          archiveBytes: 0,
+          archiveUri: "https://example.invalid/tool.wasm",
+          archiveDigest: new Uint8Array(length).fill(0xcd),
+        }), `a ${length}-byte digest must be refused`).toThrow(/32 bytes/);
+    }
+  });
+
+  it("accepts the same registration once a digest is declared", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.registerLazyFile("/usr/bin/sudo", "bin/sudo.wasm", 120, 0o4755, digest);
+    expect(fs.lstat("/usr/bin/sudo").mode & 0o7777).toBe(0o4755);
+  });
+
+  // The refusal is about bytes arriving from elsewhere, not about set-ID. A
+  // resident setuid binary is carried BY the image, so the image vouches for it
+  // by containing it, and asking for a digest would be asking a file to hash
+  // itself.
+  it("leaves a resident set-user-ID file alone", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.writeFile("/usr/bin/sudo", new TextEncoder().encode("resident"), 0o4755);
+    expect(fs.lstat("/usr/bin/sudo").mode & 0o7777).toBe(0o4755);
+  });
+
+  // An archive MEMBER is defended by its ARCHIVE's digest: the member is
+  // extracted from bytes that were verified whole, so the check belongs on the
+  // archive and one rule covers both shapes.
+  it("refuses a set-user-ID archive member whose archive declares no digest", () => {
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    expect(() =>
+      fs.registerArchiveMember({
+        path: "/opt/sudo",
+        archiveId: 1,
+        sourcePath: "bin/sudo",
+        size: 120,
+        mode: 0o4755,
+        ino: 4242,
+        archiveBytes: 5000,
+        archiveUri: "archives/tools.zip",
+      })
+    ).toThrow(/no digest was declared/);
+  });
+});
+
+describe("open's mode is spent on creation only", () => {
+  // POSIX gives `open` a mode so it can CREATE a file. An existing file keeps
+  // the permissions it has, through a truncation and through every write.
+  //
+  // The bridge did not, because the module's `sm_write_file` is the host's
+  // "replace this whole file" verb and SETS the mode it is handed, so every
+  // rewrite carried the opening caller's default. `writeVfsBinary` defaults to
+  // `0o755` and `writeVfsText` to `0o644`, which meant rewriting `/etc/shadow`
+  // through the second helper relabelled a 0640 file world-readable. Nothing
+  // reported it: the file was correct, its permissions were not, and the only
+  // symptom downstream was a configuration predicate answering "not
+  // configured" for an image that was.
+  //
+  // `MemoryFileSystem` has always behaved this way -- its vendor names the
+  // parameter `createMode` and writes it into the inode only on the creation
+  // branch -- so this is the bridge being brought to the incumbent, not a new
+  // rule for both.
+  it("keeps an existing file's mode through a truncating rewrite", () => {
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/shadow", 0o640, 0, 0, new Uint8Array([1]));
+
+    writeVfsBinary(fs, "/etc/shadow", new TextEncoder().encode("rewritten"), 0o644);
+
+    expect(fs.stat("/etc/shadow").mode & 0o7777).toBe(0o640);
+  });
+
+  it("keeps the owner too, so a rewrite is not a chown either", () => {
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/shadow", 0o640, 0, 42, new Uint8Array([1]));
+
+    writeVfsBinary(fs, "/etc/shadow", new TextEncoder().encode("rewritten"), 0o644);
+
+    expect(fs.stat("/etc/shadow")).toMatchObject({ uid: 0, gid: 42 });
+  });
+
+  it("still spends the mode when the file is being created", () => {
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/usr/bin");
+    writeVfsBinary(fs, "/usr/bin/tool", new Uint8Array([1]), 0o4755);
+    expect(fs.stat("/usr/bin/tool").mode & 0o7777).toBe(0o4755);
+  });
+
+  it("a chmod between opening and writing is what the write respects", () => {
+    // The handle remembers the mode it opened with; the FILE is the authority.
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/sudoers", 0o644, 0, 0, new Uint8Array([1]));
+
+    const fd = fs.open("/etc/sudoers", O_WRONLY_CREAT_TRUNC, 0o644);
+    try {
+      fs.chmod("/etc/sudoers", 0o440);
+      const bytes = new TextEncoder().encode("%wheel ALL=(ALL:ALL) ALL\n");
+      fs.write(fd, bytes, 0, bytes.length);
+    } finally {
+      fs.close(fd);
+    }
+
+    expect(fs.stat("/etc/sudoers").mode & 0o7777).toBe(0o440);
+  });
+
+  it("resolves a symlink before deciding the mode, because the write follows one", () => {
+    // `lstat` would report the LINK's mode and stamp it onto the target. The
+    // bytes land in the target, so the mode question is about the target too.
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/shadow", 0o640, 0, 0, new Uint8Array([1]));
+    fs.symlink("/etc/shadow", "/etc/shadow-link");
+
+    writeVfsBinary(fs, "/etc/shadow-link", new TextEncoder().encode("x"), 0o666);
+
+    expect(fs.stat("/etc/shadow").mode & 0o7777).toBe(0o640);
+  });
+});
+
+describe("the two producers record one mount prefix", () => {
+  // A cross-producer test, which is the only kind that can catch this class.
+  // Each producer read alone looks right: `KandeloImageFs` stored the prefix it
+  // was handed, `MemoryFileSystem` stored the normalized one, and neither is
+  // wrong about itself. What is wrong is that they disagree about one fact,
+  // and the consumer -- `module-base-image.ts`, live in BOTH worker entries --
+  // reads whichever the image it was given happens to carry.
+  //
+  // Every shell lazy-archive spec declares `mountPrefix: "/usr/"`. Nine of
+  // them. So this is not a hypothetical spelling.
+  const archiveEntries = () => [
+    zipEntry({ fileName: "bin/tool", mode: 0o100755, uncompressedSize: 4 }),
+  ];
+
+  /**
+   * The descriptor half of an archive's seal payload.
+   *
+   * The module wraps every payload as
+   * `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]`
+   * (`seal::encode` in `crates/kandelo-image-module/src/seal.rs`), and
+   * `module-base-image.ts` unwraps exactly this way before parsing. Reading it
+   * the same way here is the point: a guard that parsed the raw payload would
+   * be asserting against something no consumer sees.
+   */
+  const describedBy = (payload: Uint8Array): { mountPrefix?: unknown } => {
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    expect(view.getUint32(0, true)).toBe(1);
+    const length = view.getUint32(4, true);
+    return JSON.parse(new TextDecoder().decode(payload.subarray(8, 8 + length)));
+  };
+
+  it("normalizes a trailing slash, the way the legacy writer already did", async () => {
+    const bridge = KandeloImageFs.create();
+    bridge.registerLazyArchive({
+      url: "https://example.invalid/tool.zip",
+      entries: archiveEntries(),
+      mountPrefix: "/usr/",
+      integrity: { sha256: "0".repeat(64), bytes: 128 },
+    });
+    const { archives } = bridge.lazyEntries();
+    expect(archives).toHaveLength(1);
+    const described = describedBy(archives[0].descriptor);
+
+    // THE OTHER PRODUCER'S SPELLING, asserted as a literal rather than by
+    // building an image with it. The equality here was the point while two
+    // producers wrote images that had to describe themselves the same way: a
+    // trailing slash kept by one and normalized away by the other is a
+    // difference nothing reads until something does. One producer writes every
+    // image now, so what is left to hold is the spelling itself — and it is
+    // the normalized one, which is what the legacy writer recorded too.
+    expect(described.mountPrefix).toBe("/usr");
+  });
+
+  it("leaves a prefix that needs no normalizing exactly as it is", () => {
+    const bridge = KandeloImageFs.create();
+    bridge.registerLazyArchive({
+      url: "https://example.invalid/tool.zip",
+      entries: archiveEntries(),
+      mountPrefix: "/opt/tool",
+      integrity: { sha256: "0".repeat(64), bytes: 128 },
+    });
+    const { archives } = bridge.lazyEntries();
+    const described = describedBy(archives[0].descriptor);
+    expect(described.mountPrefix).toBe("/opt/tool");
+  });
+
+  it("records `/` for a root-mounted archive rather than the empty string", () => {
+    // `normalizeLazyArchiveMountPrefix` maps a bare "/" to "/" and not to "",
+    // and a consumer that joined an empty prefix would build a relative path.
+    const bridge = KandeloImageFs.create();
+    bridge.registerLazyArchive({
+      url: "https://example.invalid/root.zip",
+      entries: archiveEntries(),
+      mountPrefix: "/",
+      integrity: { sha256: "0".repeat(64), bytes: 128 },
+    });
+    const { archives } = bridge.lazyEntries();
+    const described = describedBy(archives[0].descriptor);
+    expect(described.mountPrefix).toBe("/");
+  });
+});

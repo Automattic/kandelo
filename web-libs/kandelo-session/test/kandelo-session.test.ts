@@ -1765,9 +1765,11 @@ describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
 
 describe("Kandelo demo config", () => {
   it("provides generic presentation defaults for web-backed profiles", () => {
+    // Syslog before terminal: the order the image builders have always
+    // written, and now the only one. See the comment on the `web` case.
     expect(genericDemoPresentation("web")).toMatchObject({
       bootPrimary: "syslog",
-      runningPrimary: ["web", "terminal", "syslog"],
+      runningPrimary: ["web", "syslog", "terminal"],
       terminalAccess: "drawer",
     });
   });
@@ -1973,7 +1975,7 @@ describe("Kandelo demo config", () => {
       runningPrimary: ["terminal", "syslog"],
     });
     expect(builtinDemoPresentation("wordpress-mariadb")).toMatchObject({
-      runningPrimary: ["web", "terminal", "syslog"],
+      runningPrimary: ["web", "syslog", "terminal"],
     });
     expect(builtinDemoPresentation("doom")).toMatchObject({
       runningPrimary: ["framebuffer", "terminal", "syslog"],

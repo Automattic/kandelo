@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { ST_NOSUID } from "../src/vfs/types";
-import { O_CREAT, O_RDWR } from "../src/vfs/sharedfs-vendor";
+// The flag numbers from the generated ABI rather than from the vendored
+// filesystem: `sharedfs-vendor.ts` goes with `memory-fs.ts`, and these are
+// POSIX constants the ABI already publishes.
+import { OPEN_FLAGS } from "../src/generated/abi";
+
+const { O_CREAT, O_RDWR } = OPEN_FLAGS;
 
 const roots: string[] = [];
 
@@ -18,13 +22,26 @@ afterEach(() => {
   }
 });
 
-function memoryFileSystem(): MemoryFileSystem {
-  return MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+/**
+ * A backend for `VirtualPlatformIO` to ROUTE to, which is this file's whole
+ * subject: it spies on `statfs` to see which mount the router consulted, and
+ * never cares which filesystem answered.
+ *
+ * `HostFileSystem` rather than `MemoryFileSystem` — and this file already used
+ * one, three cases below, over the same `roots` scaffolding. Both implement
+ * `FileSystemBackend`; this is the one the platform still ships and Node still
+ * mounts for scratch, rather than the filesystem lane V deletes. Nothing here
+ * ever needed a `SharedArrayBuffer`. It needed an object with mounts.
+ */
+function backendFileSystem(): HostFileSystem {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-create-route-"));
+  roots.push(root);
+  return new HostFileSystem(root);
 }
 
 describe("VirtualPlatformIO create-route metadata", () => {
   it("creates a missing final path from its existing parent route", () => {
-    const backend = memoryFileSystem();
+    const backend = backendFileSystem();
     const statfs = vi.spyOn(backend, "statfs");
     const io = new VirtualPlatformIO(
       [{ mountPoint: "/", backend }],
@@ -42,8 +59,8 @@ describe("VirtualPlatformIO create-route metadata", () => {
   });
 
   it("uses the selected nested mount's parent without consulting root", () => {
-    const root = memoryFileSystem();
-    const nested = memoryFileSystem();
+    const root = backendFileSystem();
+    const nested = backendFileSystem();
     const rootStatfs = vi.spyOn(root, "statfs");
     const nestedStatfs = vi.spyOn(nested, "statfs");
     const io = new VirtualPlatformIO(
@@ -64,14 +81,19 @@ describe("VirtualPlatformIO create-route metadata", () => {
   });
 
   it("retains target ENOENT when O_CREAT is absent", () => {
-    const backend = memoryFileSystem();
+    const backend = backendFileSystem();
     const statfs = vi.spyOn(backend, "statfs");
     const io = new VirtualPlatformIO(
       [{ mountPoint: "/", backend }],
       new NodeTimeProvider(),
     );
 
-    expect(() => io.open("/missing", O_RDWR, 0)).toThrow(/No such file/);
+    // ENOENT, however the backend spells it. `MemoryFileSystem` said "No such
+    // file"; a host-backed mount reports node's own "ENOENT: no such file or
+    // directory, stat …". The claim is that the target's absence is what
+    // propagates when `O_CREAT` is missing — not that a particular filesystem
+    // phrased it a particular way.
+    expect(() => io.open("/missing", O_RDWR, 0)).toThrow(/ENOENT|No such file/i);
     expect(statfs).toHaveBeenCalledWith("/missing");
     expect(() => backend.stat("/missing")).toThrow();
   });

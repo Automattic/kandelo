@@ -939,6 +939,7 @@ dependencies = [
  "cap-std",
  "fork-codec",
  "libc",
+ "runtime-core",
  "rustix",
  "sha2",
  "wasm-artifact",
@@ -1167,6 +1168,16 @@ dependencies = [
  "runtime-core",
  "spin",
  "wasm-artifact",
+ "wasm-posix-shared",
+]
+
+[[package]]
+name = "kandelo-image-module"
+version = "0.1.0"
+dependencies = [
+ "dlmalloc",
+ "runtime-core",
+ "sha2",
  "wasm-posix-shared",
 ]
 
@@ -1517,6 +1528,7 @@ name = "runtime-core"
 version = "0.1.0"
 dependencies = [
  "miniz_oxide",
+ "sha2",
  "spin",
  "wasm-artifact",
  "wasm-posix-shared",
@@ -1667,16 +1679,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "sffs-module"
-version = "0.1.0"
-dependencies = [
- "dlmalloc",
- "runtime-core",
- "sha2",
- "wasm-posix-shared",
 ]
 
 [[package]]

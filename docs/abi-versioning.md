@@ -1450,7 +1450,7 @@ inode-to-path map survives in `host/src/vfs/rootfs-blob-store.ts`. It is
 still needed because the byte store is addressed by path and a lazy
 leaf's materialization is keyed by path (`open` starts the fetch and
 throws `EAGAIN` until it lands). Retiring the import needs the kernel to
-serve an image-backed file's bytes from the image through the SFFS reader
+serve an image-backed file's bytes from the image through the KIFS reader
 `load_image` already mounts; that is the work item that collects it.
 The count is 83 today (K3's increment 0b removed two dead imports).
 
@@ -1458,11 +1458,11 @@ The count is 83 today (K3's increment 0b removed two dead imports).
 import — with one correction to the shape the paragraph above predicted.
 
 The kernel now reads an image-backed file's bytes out of the `/` image,
-through the SFFS reader `load_image` already mounts: a base regular file
+through the KIFS reader `load_image` already mounts: a base regular file
 records whether its bytes are in the image (`BaseSource::Image`, read
 in-kernel) or in a host byte store (`BaseSource::Host`). The host's image
 window therefore stays open past boot instead of being replaced by an
-`ENOSYS` stub, but it is re-pointed at the SFFS body the restored
+`ENOSYS` stub, but it is re-pointed at the KIFS body the restored
 `MemoryFileSystem` already holds, so no second copy of a 16-256 MiB body
 is pinned.
 
