@@ -77,7 +77,31 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-# -O2 is the only compile choice this recipe still makes for itself.
+# -O2 is the only compile choice this recipe still makes for itself. In
+# particular there is no thread-slot declaration, so the SDK INFERS one:
+# inferThreadSlotDeclaration (sdk/src/lib/flags.ts) scans the source for
+# pthread_create/thrd_create/clone(/dlopen and finds none in examples/lsof.c,
+# so it emits -DWASM_POSIX_THREAD_SLOT_DECL=0.
+#
+# THAT CHANGES WHAT THE SHIPPED ARTIFACT DECLARES ABOUT ITSELF. The old
+# hand-rolled recipe passed no declaration at all, so lsof.wasm exported
+# `__wasm_posix_thread_slots() == -1`, the host default
+# (WASM_POSIX_THREAD_SLOT_DECL_DEFAULT, libc/glue/abi_constants.h:19); it now
+# exports 0. Verified by disassembling both: `i32.const 4294967295` before,
+# `i32.const 0` after.
+#
+# That is correct rather than merely tolerable. lsof creates no threads, 0 is
+# the truthful declaration for it, and it is already what
+# scripts/build-programs.sh produces from this same examples/lsof.c. The
+# recipe and the normal platform path now agree. Do NOT "restore" -1 by
+# declaring --kandelo-thread-slots here: that would be reinstating a stale
+# value, not preserving a requirement.
+#
+# Contrast crates/host-native/fixtures/build-fixtures.sh, which DOES declare
+# -1. Its fixtures are one-line `#include`s of a shared source, and the
+# inference is textual and does not follow #include, so it declared 0 for
+# fixtures that genuinely do create threads. There is no such indirection
+# here: examples/lsof.c is the whole translation unit.
 #
 # Run in a subshell pinned to $REPO_ROOT: the SDK resolves the sysroot and
 # glue dir by walking up from process.cwd() (findSysroot/findGlueDir via
