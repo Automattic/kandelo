@@ -616,6 +616,46 @@ Every other trap kind — memory, table/array bounds, stack overflow, integer
 division and conversion faults, null and mistyped indirect calls — is
 classified and reported.
 
+### The `__heap_base` truthful-failure guard holds on the TypeScript host only
+
+`host/src/process-memory.ts`'s `computeProcessMemoryLayout` now refuses a
+caller that supplies a program and an explicit `heapBase: null` — the shape
+`process-lifecycle.ts`'s `extractHeapBase` produces for a binary with no
+`__heap_base` export — instead of silently substituting the 16 MiB
+`PROCESS_MEMORY_FALLBACK_BRK_BASE`. This closes the fallback for the
+Node/browser host.
+
+`crates/host-native` was not changed and still takes the fallback path:
+`crates/host-native/src/guest.rs:202` passes `heap_base:
+read_heap_base(...)` straight through with no null check, and
+`crates/shared/src/lib.rs:2375-2378` substitutes `FALLBACK_BRK_BASE` for a
+`None` heap base exactly as before. `crates/host-native/src/guest.rs:2704`
+is a green test that asserts this substitution happens — the fallback is not
+just untouched, it is pinned by a passing test.
+
+This is a platform-observable difference between hosts: a program with no
+`__heap_base` fails loudly on Node/browser and succeeds silently (with the
+same heap/shadow-stack overlap risk `crates/runtime-core/src/memory.rs:
+384-392` describes) on native. `CLAUDE.md`'s host-parity contract requires
+that an observable difference between hosts be justified by a real platform
+boundary or removed; this one is neither — it has not been examined at all,
+it is simply what was already there when the TypeScript side changed.
+
+Closing this is a deliberate act, not a cleanup: it means deciding whether
+native should also refuse (and updating or retiring the passing test at
+`crates/host-native/src/guest.rs:2704` that currently depends on the
+fallback), or documenting why native's silent fallback is an intentional,
+scoped exception to host parity. Either answer is a maintainer decision, not
+something to default into.
+
+**Files:** `crates/host-native/src/guest.rs` (`spawn_guest_thread`'s
+`heap_base` plumbing and the `guest.rs:2704` fallback test),
+`crates/shared/src/lib.rs:2375-2378` (`FALLBACK_BRK_BASE` substitution),
+`host/src/process-memory.ts` (the TypeScript-side guard this diverges from).
+
+**Related:** `CLAUDE.md` § *Host Runtime Contract* (Node.js and browser hosts
+are peers; this note extends the same question to the native host).
+
 ### WASI modules that define their own memory cannot be run (proven boundary)
 
 `host/src/worker-main.ts:3292` refuses any WASI module that defines and
@@ -884,6 +924,51 @@ End state: a regression that shows up only on the browser host (signal delivery 
 **Files:** `host/vitest.config.ts`, `host/test/centralized-test-helper.ts`, `host/test/*.test.ts` (per-test audit), `host/src/worker-adapter-browser.ts`, `.github/workflows/prepare-merge.yml`, `.github/workflows/staging-build.yml`.
 
 **Related:** `CLAUDE.md` § *Two hosts: Browser AND Node.js — DUAL-HOST PARITY IS LOAD-BEARING*; PR #388 (brk-base) and PR #410 (a_crash trap) as the failure-mode precedents this would close.
+
+### Committed WebAssembly modules wearing a TypeScript costume
+
+This repository's rule is that wasm artifacts are never committed — they are
+built at test time, and `git ls-files '*.wasm'` returns zero. But four
+complete WebAssembly modules are checked in anyway, as hex strings inside
+`.ts` files, which the rule as stated does not catch:
+
+- `host/test/fixtures/gc-reference-cycle-fresh-worker-bytes.ts`
+- `host/test/fixtures/gc-reference-state-fresh-worker-bytes.ts`
+- `host/test/fixtures/static-root-bare-local-fork-fresh-worker-bytes.ts`
+- `host/test/fixtures/static-root-local-fork-fresh-worker-bytes.ts`
+
+Each test reads only the exported hex constant, e.g. `Buffer.from(RAW_
+..._HEX, "hex")` in `host/test/gc-reference-state-fresh-worker.test.ts:36`.
+Each has a sibling `.wat` source, but the `.wat` is documentation only —
+nothing recompiles it and compares it against the checked-in hex, so nothing
+enforces that the two agree.
+
+Editing the `.wat` sources requires hand-regenerating all four hex blobs by
+running the compiler once and pasting the output back in; a review then has
+to decode the hex at section granularity to confirm the paste matches the
+edited source. Hand-regeneration is not a mechanism — this was exactly the
+hazard that made verifying a `.wat` edit slow and manual (see
+`.superpowers/sdd/2026-09-18-fork-storage-phase0-and-build-path/
+task-10-report.md`), and nothing prevents a future edit to one of the four
+`.wat` files from silently leaving its `-bytes.ts` twin stale.
+
+This is pre-existing; it was not introduced by that work, only exposed by it.
+
+Two candidate fixes:
+
+- Add a test that recompiles each `.wat` with the Rust `wat` crate (already a
+  build dependency for `crates/fork-instrument`'s fixture generators) and
+  asserts byte equality against the checked-in hex, so drift fails loudly
+  instead of shipping silently.
+- Move assembly of these four into `host/test/global-setup.ts` behind the
+  `wat` crate, alongside the existing `.wat` fixtures already built at test
+  time (see `WAT_FIXTURES` near `global-setup.ts:162`), so the hex is never
+  checked in at all and the `.wasm` these four represent joins the rest under
+  the "never committed" rule as written.
+
+**Files:** `host/test/fixtures/{gc-reference-cycle,gc-reference-state,
+static-root-bare-local-fork,static-root-local-fork}-fresh-worker-bytes.ts`
+and their sibling `.wat` files; `host/test/global-setup.ts`.
 
 ### Fork-instrument callback discovery broadening
 PR #307's C3/C4 fixtures pass through the existing direct + table/`call_indirect`
