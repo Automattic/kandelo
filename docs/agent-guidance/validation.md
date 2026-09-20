@@ -247,6 +247,37 @@ after editing `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, run
 `scripts/build-musl.sh` first. (`bash build.sh` still works as a deprecated
 delegator to `./run.sh setup`.)
 
+### Do not modify any package build input while a `local-build` closure runs
+
+While `xtask local-build` is building — including the `local-build` inside
+`./run.sh setup` — do not edit anything the package graph hashes: files under
+`packages/registry/`, `package.toml`, `build.toml`, build scripts, patches, or
+the SDK flags a build script consumes. This holds even for a comment-only edit
+to a package whose build already finished, and it holds across worktrees when
+they share a cache root.
+
+The mechanism is cache keys. A package's key is derived from the closure of its
+build inputs, so changing any of those bytes changes the key. The scheduler
+computes keys and then looks for the output stored under them; a key that moved
+mid-run no longer matches the output the run just produced, so the engine
+refuses its own successfully-built artifact and rebuilds — or fails, because
+the plan it is executing describes a tree that no longer exists.
+
+Vitest widens the window. `host/test/global-setup.ts:306-311` regenerates
+`packages/registry/program-packages.json` by running
+`xtask build-deps program-index` on **every** vitest run, so starting a test
+suite is itself a write into `packages/registry/`. Do not start one against a
+worktree whose closure is building.
+
+This rule was written after a mid-closure edit cost one session two hours of
+rebuild. The cheap discipline is to check first:
+
+```bash
+pgrep -fl 'xtask local-build' || echo "no closure running"
+```
+
+Read that output before you edit, not after.
+
 The table names primary evidence, not a universal checklist. Choose the suites
 that support the claim you will make, broaden coverage when a change crosses
 contract boundaries, and report anything relevant that was not run.
