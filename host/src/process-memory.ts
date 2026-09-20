@@ -102,20 +102,34 @@ export interface ProcessMemoryLayoutOptions {
 export function computeProcessMemoryLayout(
   options: ProcessMemoryLayoutOptions,
 ): ProcessMemoryLayout {
-  // TRUTHFUL FAILURE over a convenient illusion. A named program whose
-  // `__heap_base` could not be read used to get a silent 16 MiB brk fallback
-  // (`PROCESS_MEMORY_FALLBACK_BRK_BASE`), plus the heap/shadow-stack overlap
+  // TRUTHFUL FAILURE over a convenient illusion. This refuses a caller that
+  // supplies a program AND explicitly passes `heapBase: null` — the shape
+  // `process-lifecycle.ts`'s `extractHeapBase` produces for a binary with no
+  // `__heap_base` export, since that helper always returns `bigint | null`,
+  // never `undefined`. Refusing here means: no production caller reaches
+  // `PROCESS_MEMORY_FALLBACK_BRK_BASE` (or the heap/shadow-stack overlap
   // `crates/runtime-core/src/memory.rs:384-392` describes for programs with a
-  // large data section. A binary arriving without the export is a build that
-  // went wrong, not a legacy artifact: there is no backwards compatibility
-  // here, and instrumentation ships with the fork support that consumes it.
+  // large data section) with a real program today.
+  //
+  // The guard does NOT reach every path to that fallback. A caller that
+  // supplies `programBytes` but OMITS `heapBase` altogether still falls
+  // through to the reader and, from there, to
+  // `crates/shared/src/lib.rs:2375-2378`'s silent `FALLBACK_BRK_BASE` — that
+  // omission is a documented, supported path (see the function doc comment
+  // above). No caller in this tree omits the field today, so widening the
+  // guard to cover it would be speculative; a future caller that omits
+  // `heapBase` for a real program walks into exactly the silent fallback this
+  // comment used to claim was closed.
   //
   // Absence of a PROGRAM is different and stays supported: `EMPTY_PROGRAM`
   // below is the documented answer for a caller that names none.
   if (options.programBytes !== undefined && options.heapBase === null) {
+    const byteLength = options.programBytes.byteLength;
     throw new Error(
-      "process memory layout: the program exports no __heap_base, so its " +
-        "initial program break cannot be derived. Rebuild it through the SDK " +
+      `process memory layout: the program (${byteLength} bytes) exports no ` +
+        "__heap_base, so its initial program break cannot be derived. " +
+        "Hand-written WAT: export the global yourself (see test/fixtures/" +
+        "*.wat). Real program: rebuild it through the SDK " +
         "(sdk/bin/wasm32posix-cc); see docs/sdk-guide.md.",
     );
   }
