@@ -72,8 +72,6 @@ export interface ProcessMemoryLayoutOptions {
   defaultThreadSlots?: number;
   /** Explicit exact pthread slot count; bypasses the process-wasm declaration. */
   threadSlots?: number;
-  /** @deprecated brk and mmap are coordinated by the kernel allocator. */
-  brkReservePages?: number;
 }
 
 /**
