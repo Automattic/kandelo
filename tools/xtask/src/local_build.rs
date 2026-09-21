@@ -1435,12 +1435,19 @@ fn generate_program_package_index(repo: &Path) -> Result<(), String> {
 }
 
 /// Whether the on-disk source-only program projection authority already records
-/// the given graph authority. When every node is unchanged and this holds, a
-/// no-op can leave the published projection in place instead of re-deriving and
-/// re-publishing an identical one.
+/// the given graph authority AND exactly this run's member-materializing package
+/// nodes, each with the cache key and cache receipt this run holds for it. When every node
+/// is unchanged and this holds, a no-op can leave the published projection in
+/// place instead of re-deriving and re-publishing an identical one.
+///
+/// The graph authority alone is not enough: it hashes the whole planned graph,
+/// so a narrower run (`bootstrap kernel`, `./run.sh build <pkg>`) publishes a
+/// projection that records the same authority but owns only its own closure. A
+/// later full run must replace that projection, not keep it.
 fn source_only_program_projection_is_current(
     output_root: &Path,
     expected_graph_authority_sha256: &str,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
 ) -> bool {
     let path = output_root
         .join(".kandelo")
@@ -1451,11 +1458,51 @@ fn source_only_program_projection_is_current(
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return false;
     };
-    value
-        .get("graphAuthoritySha256")
-        .and_then(|recorded| recorded.as_str())
-        .map(|recorded| recorded == expected_graph_authority_sha256)
-        .unwrap_or(false)
+    if value.get("graphAuthoritySha256").and_then(|recorded| recorded.as_str())
+        != Some(expected_graph_authority_sha256)
+    {
+        return false;
+    }
+    let Some(recorded_nodes) = value.get("nodes").and_then(|nodes| nodes.as_array()) else {
+        return false;
+    };
+    let field = |entry: &serde_json::Value, pointer: &str| {
+        entry.pointer(pointer).and_then(|v| v.as_str()).map(str::to_owned)
+    };
+    let mut recorded = BTreeSet::new();
+    for entry in recorded_nodes {
+        if field(entry, "/node/kind").as_deref() != Some("package") {
+            return false;
+        }
+        let (Some(name), Some(arch), Some(key), Some(receipt)) = (
+            field(entry, "/node/name"),
+            field(entry, "/node/targetArch"),
+            field(entry, "/cacheKeySha256"),
+            field(entry, "/cacheReceiptSha256"),
+        ) else {
+            return false;
+        };
+        if !recorded.insert((name, arch, key, receipt)) {
+            return false;
+        }
+    }
+    // The projection records the nodes that materialize members (programs and
+    // the root-mirrored kernel); libraries carry receipts but mirror nothing.
+    // Misclassifying here only fails safe: the finalizer re-derives and runs.
+    let expected = receipts
+        .iter()
+        .filter(|(_, receipt)| !receipt.materialized_members.is_empty())
+        .filter_map(|(node, receipt)| match node {
+            PlanNodeV1::Package { name, target_arch } => Some((
+                name.clone(),
+                target_arch.clone(),
+                receipt.cache_key_sha256.clone(),
+                receipt.cache_receipt_sha256.clone(),
+            )),
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    recorded == expected
 }
 
 /// Identify compiled package nodes whose content-addressed cache entry, receipt
@@ -1473,6 +1520,163 @@ fn parse_node_target_arch(target_arch: &str) -> Option<TargetArch> {
     }
 }
 
+/// What the projection finalizer publishes: this run's selection plus any
+/// packages carried forward from the previously published projection.
+struct ProjectionPublication {
+    carried: BTreeSet<PlanNodeV1>,
+    selected: BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: BTreeSet<PlanNodeV1>,
+    receipts: BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+}
+
+/// The package nodes the published projection at `output_root` records, or an
+/// empty set when there is no readable projection.
+fn recorded_projection_package_nodes(output_root: &Path) -> BTreeSet<PlanNodeV1> {
+    let path = output_root
+        .join(".kandelo")
+        .join("source-only-program-projection-v1.json");
+    let Ok(bytes) = fs::read(&path) else {
+        return BTreeSet::new();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return BTreeSet::new();
+    };
+    value
+        .get("nodes")
+        .and_then(|nodes| nodes.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.pointer("/node/kind").and_then(|v| v.as_str()) == Some("package"))
+        .filter_map(|entry| {
+            let name = entry.pointer("/node/name")?.as_str()?;
+            let arch = entry.pointer("/node/targetArch")?.as_str()?;
+            Some(PlanNodeV1::package(name, arch))
+        })
+        .collect()
+}
+
+/// Extend a narrow run's publication with the packages the published projection
+/// already records, so `./run.sh build <pkg>` (or any other partial selection)
+/// adds to the projection instead of replacing it with its own closure.
+///
+/// A recorded package is carried forward only when every compiled package in
+/// its dependency closure that this run did not select still has a clean
+/// receipt under the current cache keys, with hash-verified projected members.
+/// Anything else is dropped, so the projection never names a mirror that is
+/// not current. A complete selection carries nothing.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn carry_forward_published_nodes(
+    registry: &Registry,
+    graph: &PlannedGraphV1,
+    product_filters: &[String],
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+) -> Result<ProjectionPublication, String> {
+    let mut publication = ProjectionPublication {
+        carried: BTreeSet::new(),
+        selected: selected.clone(),
+        expected_receipt_nodes: expected_receipt_nodes.clone(),
+        receipts: receipts.clone(),
+    };
+    if selected.len() == graph.dependencies.len() {
+        return Ok(publication);
+    }
+    let mut memo = BTreeMap::new();
+    let mut clean = BTreeMap::<PlanNodeV1, Option<PackageNodeReceiptV1>>::new();
+    let mut dropped = Vec::new();
+    for node in recorded_projection_package_nodes(output_root) {
+        if publication.selected.contains_key(&node) {
+            continue;
+        }
+        if !graph.dependencies.contains_key(&node) {
+            dropped.push(node);
+            continue;
+        }
+        let closure = close_graph_selection(graph, vec![node.clone()])?;
+        let mut additions = BTreeMap::new();
+        let mut current = true;
+        for member in closure.keys() {
+            let PlanNodeV1::Package { name, target_arch } = member else {
+                continue;
+            };
+            if publication.selected.contains_key(member) {
+                continue;
+            }
+            let manifest = registry.load(name)?;
+            if manifest.kind == ManifestKind::Source {
+                continue;
+            }
+            let receipt = clean
+                .entry(member.clone())
+                .or_insert_with(|| {
+                    parse_node_target_arch(target_arch).and_then(|arch| {
+                        source_only_skip_receipt_if_clean(
+                            &manifest,
+                            registry,
+                            arch,
+                            wasm_posix_shared::ABI_VERSION,
+                            cache_roots,
+                            output_root,
+                            &mut memo,
+                        )
+                    })
+                })
+                .clone();
+            let Some(receipt) = receipt else {
+                current = false;
+                break;
+            };
+            additions.insert(member.clone(), receipt);
+        }
+        if !current {
+            dropped.push(node);
+            continue;
+        }
+        for (member, receipt) in additions {
+            publication.expected_receipt_nodes.insert(member.clone());
+            publication.receipts.insert(member, receipt);
+        }
+        publication.selected.extend(closure);
+        publication.carried.insert(node);
+    }
+    for node in &dropped {
+        eprintln!(
+            "local-build: dropping {} from the published projection: its output is no longer current",
+            node_label(node)
+        );
+    }
+    if !publication.carried.is_empty() {
+        // Re-derive through the same selection the finalizer re-plans with.
+        publication.selected =
+            select_graph_dependencies_with(graph, product_filters, &publication.carried)?;
+    }
+    Ok(publication)
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::too_many_arguments)]
+fn carry_forward_published_nodes(
+    _registry: &Registry,
+    _graph: &PlannedGraphV1,
+    _product_filters: &[String],
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    _cache_roots: &SourceOnlyCacheRoots,
+    _output_root: &Path,
+) -> Result<ProjectionPublication, String> {
+    Ok(ProjectionPublication {
+        carried: BTreeSet::new(),
+        selected: selected.clone(),
+        expected_receipt_nodes: expected_receipt_nodes.clone(),
+        receipts: receipts.clone(),
+    })
+}
+
 /// The value stored per skippable node: `Some(receipt)` for a compiled package
 /// (which the projection finalizer needs a receipt for), `None` for a product
 /// (which only validates its mapped package and carries no receipt).
@@ -1484,69 +1688,104 @@ fn compute_skip_receipts(
     cache_roots: &SourceOnlyCacheRoots,
     output_root: &Path,
 ) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
-    let mut memo = BTreeMap::new();
-    let mut skip = BTreeMap::new();
-    for node in selected.keys() {
-        match node {
-            PlanNodeV1::Package { name, target_arch } => {
-                let Some(arch) = parse_node_target_arch(target_arch) else {
-                    continue;
-                };
-                let Ok(manifest) = registry.load(name) else {
-                    continue;
-                };
-                if manifest.kind == ManifestKind::Source
-                    || !manifest.target_arches.contains(&arch)
-                {
-                    continue;
-                }
-                if let Some(receipt) = source_only_skip_receipt_if_clean(
-                    &manifest,
-                    registry,
-                    arch,
-                    wasm_posix_shared::ABI_VERSION,
-                    cache_roots,
-                    output_root,
-                    &mut memo,
-                ) {
-                    skip.insert(node.clone(), Some(receipt));
-                }
+    // Each check hashes the node's projected members, so spread the nodes over
+    // worker threads. Every worker keeps its own cache-key memo; recomputing a
+    // shared dependency's key per worker is far cheaper than serial hashing.
+    let nodes = selected.keys().collect::<Vec<_>>();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .min(nodes.len().max(1));
+    std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut memo = BTreeMap::new();
+                    let mut skip = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(node) = nodes.get(index) else {
+                            break;
+                        };
+                        if let Some(entry) = skip_entry_for_node(
+                            registry,
+                            graph,
+                            node,
+                            cache_roots,
+                            output_root,
+                            &mut memo,
+                        ) {
+                            skip.push(((*node).clone(), entry));
+                        }
+                    }
+                    skip
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
+/// The skip entry for one node: `Some(Some(receipt))` for an unchanged compiled
+/// package, `Some(None)` for a product whose mapped package is unchanged, and
+/// `None` when the node must run its child.
+#[cfg(unix)]
+fn skip_entry_for_node(
+    registry: &Registry,
+    graph: &PlannedGraphV1,
+    node: &PlanNodeV1,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+) -> Option<Option<PackageNodeReceiptV1>> {
+    match node {
+        PlanNodeV1::Package { name, target_arch } => {
+            let arch = parse_node_target_arch(target_arch)?;
+            let manifest = registry.load(name).ok()?;
+            if manifest.kind == ManifestKind::Source || !manifest.target_arches.contains(&arch) {
+                return None;
             }
-            PlanNodeV1::Product { id } => {
-                // A product's child only resolves and validates its mapped
-                // package (it builds no image), so an unchanged mapped package
-                // makes the product a no-op. Products carry no receipt.
-                let Some(retained) = graph.product_execution.get(id) else {
-                    continue;
-                };
-                let Some(arch) = parse_node_target_arch(&retained.binding.target_arch) else {
-                    continue;
-                };
-                let Ok(manifest) = registry.load(&retained.binding.mapped_package) else {
-                    continue;
-                };
-                if manifest.kind != ManifestKind::Program
-                    || !manifest.target_arches.contains(&arch)
-                {
-                    continue;
-                }
-                if source_only_skip_receipt_if_clean(
-                    &manifest,
-                    registry,
-                    arch,
-                    wasm_posix_shared::ABI_VERSION,
-                    cache_roots,
-                    output_root,
-                    &mut memo,
-                )
-                .is_some()
-                {
-                    skip.insert(node.clone(), None);
-                }
+            source_only_skip_receipt_if_clean(
+                &manifest,
+                registry,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                cache_roots,
+                output_root,
+                memo,
+            )
+            .map(Some)
+        }
+        PlanNodeV1::Product { id } => {
+            // A product's child only resolves and validates its mapped
+            // package (it builds no image), so an unchanged mapped package
+            // makes the product a no-op. Products carry no receipt.
+            let retained = graph.product_execution.get(id)?;
+            let arch = parse_node_target_arch(&retained.binding.target_arch)?;
+            let manifest = registry.load(&retained.binding.mapped_package).ok()?;
+            if manifest.kind != ManifestKind::Program || !manifest.target_arches.contains(&arch) {
+                return None;
             }
+            source_only_skip_receipt_if_clean(
+                &manifest,
+                registry,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                cache_roots,
+                output_root,
+                memo,
+            )
+            .map(|_| None)
         }
     }
-    skip
 }
 
 #[cfg(not(unix))]
@@ -1760,34 +1999,58 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // authority, the finalizer would reproduce precisely what is already on
     // disk. Leave it in place instead of re-deriving and re-publishing it.
     // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
-    let projection_up_to_date = package_projection_is_eligible(&selected, &results)
-        && expected_receipt_nodes
-            .iter()
-            .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
-        && selected
-            .keys()
-            .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
-            .all(|node| skip_receipts.contains_key(node))
-        && source_only_program_projection_is_current(&output_root, &graph.authority_sha256);
-    let projection_finalization_error = if projection_up_to_date {
-        None
-    } else if package_projection_is_eligible(&selected, &results) {
-        finalize_source_only_program_projection(
-            &repo,
-            &set,
+    let eligible = package_projection_is_eligible(&selected, &results);
+    let publication = if eligible {
+        carry_forward_published_nodes(
             &registry,
+            &graph,
             &args.products,
             &selected,
-            &graph.authority_sha256,
-            &cache_roots,
-            &output_root,
             &expected_receipt_nodes,
             &retained_receipts,
-            args.verify_cache,
+            &cache_roots,
+            &output_root,
         )
-        .err()
+        .map(Some)
     } else {
-        None
+        Ok(None)
+    };
+    let projection_finalization_error = match publication {
+        Err(error) => Some(error),
+        Ok(None) => None,
+        Ok(Some(publication)) => {
+            let projection_up_to_date = expected_receipt_nodes
+                .iter()
+                .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
+                && selected
+                    .keys()
+                    .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
+                    .all(|node| skip_receipts.contains_key(node))
+                && source_only_program_projection_is_current(
+                    &output_root,
+                    &graph.authority_sha256,
+                    &publication.receipts,
+                );
+            if projection_up_to_date {
+                None
+            } else {
+                finalize_source_only_program_projection(
+                    &repo,
+                    &set,
+                    &registry,
+                    &args.products,
+                    &publication.carried,
+                    &publication.selected,
+                    &graph.authority_sha256,
+                    &cache_roots,
+                    &output_root,
+                    &publication.expected_receipt_nodes,
+                    &publication.receipts,
+                    args.verify_cache,
+                )
+                .err()
+            }
+        }
     };
     if let Some(error) = &projection_finalization_error {
         if !aggregate_failed {
@@ -2092,13 +2355,14 @@ fn refreshed_source_only_program_projection(
     set: &Path,
     registry: &Registry,
     product_filters: &[String],
+    carried: &BTreeSet<PlanNodeV1>,
     expected_selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     expected_graph_authority_sha256: &str,
     receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
 ) -> Result<Vec<u8>, String> {
     let graph = load_and_plan(repo, set, registry)?;
     require_expected_graph_authority(&graph, expected_graph_authority_sha256)?;
-    let selected = select_graph_dependencies(&graph, product_filters)?;
+    let selected = select_graph_dependencies_with(&graph, product_filters, carried)?;
     if &selected != expected_selected {
         return Err(
             "selected local-build closure changed during program-authority finalization"
@@ -2141,6 +2405,7 @@ fn finalize_source_only_program_projection(
     set: &Path,
     registry: &Registry,
     product_filters: &[String],
+    carried: &BTreeSet<PlanNodeV1>,
     selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     graph_authority_sha256: &str,
     cache_roots: &SourceOnlyCacheRoots,
@@ -2161,6 +2426,7 @@ fn finalize_source_only_program_projection(
         set,
         registry,
         product_filters,
+        carried,
         selected,
         graph_authority_sha256,
         receipts,
@@ -2207,6 +2473,7 @@ fn finalize_source_only_program_projection(
                 set,
                 registry,
                 product_filters,
+                carried,
                 selected,
                 graph_authority_sha256,
                 receipts,
@@ -3922,6 +4189,17 @@ fn select_graph_dependencies(
     graph: &PlannedGraphV1,
     product_filters: &[String],
 ) -> Result<BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>, String> {
+    select_graph_dependencies_with(graph, product_filters, &BTreeSet::new())
+}
+
+/// Select the closure of `product_filters` plus the explicit `extra_seeds`
+/// (package nodes a narrow run carries forward from the published projection).
+/// A complete selection (no filters, or `all`) already contains every node.
+fn select_graph_dependencies_with(
+    graph: &PlannedGraphV1,
+    product_filters: &[String],
+    extra_seeds: &BTreeSet<PlanNodeV1>,
+) -> Result<BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>, String> {
     let mut unique = BTreeSet::new();
     for product in product_filters {
         if !unique.insert(product.as_str()) {
@@ -3966,7 +4244,6 @@ fn select_graph_dependencies(
         })
         .collect::<BTreeSet<_>>();
 
-    let mut selected = BTreeSet::new();
     let mut pending = Vec::new();
     for filter in product_filters {
         if active_products.contains(filter.as_str()) {
@@ -3996,6 +4273,16 @@ fn select_graph_dependencies(
         }
         return Err(format!("unknown product or package {filter:?}"));
     }
+    pending.extend(extra_seeds.iter().cloned());
+    close_graph_selection(graph, pending)
+}
+
+/// The dependency closure of `seeds`, as the selected subgraph.
+fn close_graph_selection(
+    graph: &PlannedGraphV1,
+    mut pending: Vec<PlanNodeV1>,
+) -> Result<BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>, String> {
+    let mut selected = BTreeSet::new();
     while let Some(node) = pending.pop() {
         if !selected.insert(node.clone()) {
             continue;
@@ -4709,31 +4996,74 @@ mod tests {
     }
 
     #[test]
-    fn source_only_program_projection_is_current_matches_recorded_graph_authority() {
+    fn source_only_program_projection_is_current_requires_the_exact_node_set() {
         let temp = tempfile::TempDir::new().unwrap();
         let output = temp.path();
         let authority = "a".repeat(64);
+        let member = MaterializedProgramMemberV1 {
+            source_artifact: "a.wasm".to_string(),
+            mirror_path: "a.wasm".to_string(),
+            mode: 0o644,
+            size: 1,
+            sha256: "0".repeat(64),
+        };
+        let receipt = |key: char, members: Vec<MaterializedProgramMemberV1>| PackageNodeReceiptV1 {
+            manifest_sha256: "1".repeat(64),
+            cache_key_sha256: key.to_string().repeat(64),
+            cache_receipt_sha256: "c".repeat(64),
+            materialized_members: members,
+        };
+        // A library carries a receipt but mirrors nothing, so the projection
+        // never records it and it must not make the projection look stale.
+        let receipts = BTreeMap::from([
+            (PlanNodeV1::package("kernel", "wasm32"), receipt('d', vec![member.clone()])),
+            (PlanNodeV1::package("shell", "wasm32"), receipt('e', vec![member.clone()])),
+            (PlanNodeV1::package("zlib", "wasm32"), receipt('9', Vec::new())),
+        ]);
+        let node = |name: &str, key: char| {
+            format!(
+                r#"{{"node":{{"kind":"package","name":"{name}","targetArch":"wasm32"}},"cacheKeySha256":"{}","cacheReceiptSha256":"{}","members":[]}}"#,
+                key.to_string().repeat(64),
+                "c".repeat(64),
+            )
+        };
+        let projection = |authority: &str, nodes: &[String]| {
+            format!(
+                r#"{{"graphAuthoritySha256":"{authority}","nodes":[{}]}}"#,
+                nodes.join(",")
+            )
+        };
 
         assert!(
-            !source_only_program_projection_is_current(output, &authority),
+            !source_only_program_projection_is_current(output, &authority, &receipts),
             "an absent projection authority is never current"
         );
 
         let path = output
             .join(".kandelo")
             .join("source-only-program-projection-v1.json");
-        write(
-            &path,
-            &format!(r#"{{"graphAuthoritySha256":"{authority}","nodes":[]}}"#),
+        write(&path, &projection(&authority, &[node("kernel", 'd'), node("shell", 'e')]));
+        assert!(
+            source_only_program_projection_is_current(output, &authority, &receipts),
+            "a projection recording this graph authority and exactly these receipts is current"
+        );
+        assert!(
+            !source_only_program_projection_is_current(output, &"b".repeat(64), &receipts),
+            "a projection recording a different graph authority is stale"
         );
 
+        // A narrower run (`bootstrap kernel`) records the same graph authority
+        // but only its own closure; a full run must replace it.
+        write(&path, &projection(&authority, &[node("kernel", 'd')]));
         assert!(
-            source_only_program_projection_is_current(output, &authority),
-            "a projection recording the same graph authority is current"
+            !source_only_program_projection_is_current(output, &authority, &receipts),
+            "a same-authority projection of a narrower selection is stale"
         );
+
+        write(&path, &projection(&authority, &[node("kernel", 'd'), node("shell", 'f')]));
         assert!(
-            !source_only_program_projection_is_current(output, &"b".repeat(64)),
-            "a projection recording a different graph authority is stale"
+            !source_only_program_projection_is_current(output, &authority, &receipts),
+            "a projection recording another cache key for a node is stale"
         );
     }
 
@@ -5604,6 +5934,93 @@ materialization = "lazy"
             let error = select_graph_dependencies(&graph, &filters).unwrap_err();
             assert!(error.contains(expected), "{filters:?}: {error}");
         }
+    }
+
+    #[test]
+    fn local_rebuild_graph_selection_adds_extra_seeds_and_carries_only_current_nodes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        package(root, "base-b", &[], &[]);
+        let first = product(root, "first", &[]);
+        let second = product(root, "second", &["first"]);
+        let set = authority(
+            root,
+            &[("base-a", "platform"), ("base-b", "platform")],
+            &[
+                ("first", "base-a", first.as_path()),
+                ("second", "base-b", second.as_path()),
+            ],
+            &[],
+            &[],
+        );
+        let registry = registry(root);
+        let graph = load_and_plan(root, &set, &registry).unwrap();
+        let base_b = PlanNodeV1::package("base-b", "wasm32");
+        let filters = ["first".to_string()];
+
+        assert_eq!(
+            select_graph_dependencies_with(&graph, &filters, &BTreeSet::from([base_b.clone()]))
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                PlanNodeV1::package("base-a", "wasm32"),
+                base_b.clone(),
+                PlanNodeV1::product("first"),
+            ]),
+        );
+
+        // The published projection records base-b plus a package the graph no
+        // longer has. Neither has a clean cache receipt, so a narrow run must
+        // drop both rather than publish mirrors it cannot vouch for.
+        let output = temp.path().join("output");
+        write(
+            &output.join(".kandelo/source-only-program-projection-v1.json"),
+            r#"{"nodes":[
+                {"node":{"kind":"package","name":"base-b","targetArch":"wasm32"}},
+                {"node":{"kind":"package","name":"retired","targetArch":"wasm32"}}
+            ]}"#,
+        );
+        assert_eq!(
+            recorded_projection_package_nodes(&output),
+            BTreeSet::from([base_b, PlanNodeV1::package("retired", "wasm32")]),
+        );
+        let cache_roots = SourceOnlyCacheRoots {
+            base: temp.path().join("cache"),
+            compiled: temp.path().join("cache/compiled"),
+        };
+        let narrow = select_graph_dependencies(&graph, &filters).unwrap();
+        let publication = carry_forward_published_nodes(
+            &registry,
+            &graph,
+            &filters,
+            &narrow,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &cache_roots,
+            &output,
+        )
+        .unwrap();
+        assert!(publication.carried.is_empty());
+        assert_eq!(publication.selected, narrow);
+
+        // A complete selection publishes exactly itself.
+        let complete = select_graph_dependencies(&graph, &[]).unwrap();
+        let publication = carry_forward_published_nodes(
+            &registry,
+            &graph,
+            &[],
+            &complete,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &cache_roots,
+            &output,
+        )
+        .unwrap();
+        assert!(publication.carried.is_empty());
+        assert_eq!(publication.selected, complete);
     }
 
     #[test]
