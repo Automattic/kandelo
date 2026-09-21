@@ -497,17 +497,39 @@ mod wasm {
     // -- Per-activation resume catalogs (Phase 6 D7a.1a — ADDITIVE) ----------
     //
     // A `dlopen` multi-activation fork loads N modules, and EACH module ships
-    // its OWN fork-instrumented function catalog (its own imported
-    // `__wpk_fork_resume_table`). The single process-wide `RESUME_CATALOG` above
-    // cannot number every activation's slots by construction: activation 0's
-    // table and activation 1's table are distinct JS `WebAssembly.Table`s with
-    // independent slot spaces. So the host seeds a SEPARATE resume catalog PER
-    // ACTIVATION via `fm_set_activation_resume_catalog(act, ptr, count)`, and the
-    // module registers each activation's `ResumeSlotTable` entry from ITS OWN
-    // catalog (see `register_activation_slots`). The resume-slot PARITY contract
-    // is unchanged (D5 §"Other couplings" 1): both the JS table and the module
-    // sort the identical per-activation ordinal set and assign slots the same
-    // way, so `call_indirect` never targets the wrong thunk.
+    // its OWN fork-instrumented function catalog -- its own
+    // `kandelo.wpk_fork.resume_catalog` section, numbered from zero. So ordinal
+    // 0 exists in every activation and names a DIFFERENT function in each, and
+    // that is what the single process-wide `RESUME_CATALOG` above cannot
+    // express: it is one flat ordinal list with nothing in it to tell
+    // activation 0's ordinal 0 from activation 1's. So the host seeds a
+    // SEPARATE resume catalog PER ACTIVATION via
+    // `fm_set_activation_resume_catalog(act, ptr, count)`, and the module
+    // registers each activation's `ResumeSlotTable` entry from ITS OWN catalog
+    // (see `register_activation_slots`).
+    //
+    // WHAT IS NOT PER-ACTIVATION IS THE SLOT SPACE, and this comment used to
+    // say the opposite -- that "activation 0's table and activation 1's table
+    // are distinct JS `WebAssembly.Table`s with independent slot spaces".
+    // Neither half of that was true, and the second half is the dangerous one:
+    // anyone building on it would structure a per-activation numbering the
+    // system does not have. There is ONE resume table per WORKER. The fork
+    // module defines and exports `__wpk_fork_resume_table`
+    // (`crates/fork-module-inject/src/main.rs`) and every guest in the worker
+    // imports that same object, so `resume_allocate_slot` below is the single
+    // allocator over a single continuous range, and an activation's slots
+    // continue where the previous activation's left off.
+    //
+    // MEASURED, not reasoned: `host/test/fixtures/fork-resume-placement-
+    // baseline.json` records the dlopen side-module fixture placing activation
+    // 0's ordinals 0..85 at slots 1..86 and then activation 1's ordinal 0 at
+    // slot 87 -- the same numbering continuing, not restarting at 1. Slot 0 is
+    // absent from both because it is the reserved `resume_peek` sentinel.
+    //
+    // The resume-slot PARITY contract is unchanged (D5 §"Other couplings" 1),
+    // and it is now kept by there being nothing to keep in parity: the host
+    // asks this allocator for every slot rather than assigning one, so
+    // `call_indirect` never targets the wrong thunk.
     //
     // Like the global catalog, these live in a fixed BSS region so they survive
     // the per-fork bump-heap reset (`fm_begin_unwind` / `fm_begin_child_replay`
@@ -788,6 +810,194 @@ mod wasm {
             }
         }
         if out.is_empty() { None } else { Some(out) }
+    }
+
+    // -- The PUBLISHED assignment: the buffer the guest's shim reads ---------
+    //
+    // `__wpk_fork_place_resume_thunks(ptr, count)` is the export
+    // `crates/fork-instrument/src/instrument.rs` emits into every
+    // fork-instrumented guest. It copies each of the guest's OWN catalog thunks
+    // into the process-owned resume table, growing that table as it goes. It
+    // decides nothing: the records at `ptr` ARE this module's decision, and the
+    // shim only applies them. This is where those records are written.
+    //
+    // No copy crosses a host boundary. The module and its guests are co-
+    // resident in one `WebAssembly.Memory`, so an address written here is
+    // directly readable there -- which is why the host's part of placement
+    // shrinks to passing two numbers along rather than performing 19,025
+    // `table.get`/`table.set` pairs per process start.
+    //
+    // # THE RECORD FORMAT IS A SEAM, so it is spelled out rather than implied
+    //
+    // Two independent implementations have to agree on it: this writer, which
+    // is Rust, and the reader, which is wasm emitted instruction by instruction
+    // in `emit_resume_placement_shim`. A disagreement about stride, field order
+    // or width fails no compiler and trips no trap -- it places real thunks at
+    // plausible WRONG slots, which is exactly the silent corruption
+    // `host/src/fork-resume-table.ts` documents at census 194. So the reader's
+    // numbers are restated here as named constants, and a test drives the real
+    // emitted shim over a buffer this module really wrote rather than checking
+    // either side against its own constants.
+    //
+    //   offset 0   u32   ordinal   index into the guest's own catalog table
+    //   offset 4   u32   slot      index into the process-owned resume table
+    //   stride     8
+    //
+    // Little-endian on both sides because wasm is: the shim reads each field
+    // with `i32.load` and this writes it with a native `u32` store into the
+    // same linear memory, so there is no byte-order conversion to get wrong.
+    // Slot 0 never appears, and the shim TRAPS if it does -- it is the reserved
+    // `resume_peek` "run the lexical callee" sentinel, and `resume_allocate_
+    // slot` starts at 1 so the two rules are the same rule.
+
+    /// Byte stride of one published `(ordinal, slot)` record, as the emitted
+    /// shim computes it (`record = pairs + index * 8`).
+    const RESUME_ASSIGNMENT_RECORD_BYTES: usize = 8;
+    /// Field index of `ordinal` within a record (shim load offset 0).
+    const RESUME_ASSIGNMENT_FIELD_ORDINAL: usize = 0;
+    /// Field index of `slot` within a record (shim load offset 4).
+    const RESUME_ASSIGNMENT_FIELD_SLOT: usize = 1;
+    const _: () = assert!(
+        RESUME_ASSIGNMENT_RECORD_BYTES == core::mem::size_of::<[u32; 2]>(),
+        "the published record stride must match the array the writer uses",
+    );
+
+    /// Records the published buffer holds before it spills. A FLOOR, not a cap,
+    /// for the reason `ACTIVATION_CATALOG_ORD_FLOOR` gives: 64 KiB of BSS is
+    /// reserved whether a program forks or not, and reserving the worst case
+    /// (`RESUME_SLOT_CAP` records, 512 KiB) would take that much out of every
+    /// guest's mmap window to serve the one program that needs it.
+    ///
+    /// Every activation in the tree's fixtures fits: the dlopen side-module
+    /// baseline's largest is 86 records. php's ~47,757 does not, which is what
+    /// the spill below is for.
+    const RESUME_ASSIGNMENT_FLOOR_RECORDS: usize = 8_192;
+
+    #[repr(C, align(8))]
+    struct ResumeAssignment(UnsafeCell<[[u32; 2]; RESUME_ASSIGNMENT_FLOOR_RECORDS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ResumeAssignment {}
+    /// Fixed BSS, for the same reason the catalogs above are: `reset_bump_heap`
+    /// runs at four points during a single fork, so a buffer on the bump heap
+    /// could be handed to the host and freed under it before the guest read it.
+    /// This one is part of the module's static image and survives every reset,
+    /// every fork and every child attach.
+    static RESUME_ASSIGNMENT: ResumeAssignment =
+        ResumeAssignment(UnsafeCell::new([[0u32; 2]; RESUME_ASSIGNMENT_FLOOR_RECORDS]));
+
+    /// The retained spill mapping: its guest address, and how many records it
+    /// has room for. Zero means none.
+    ///
+    /// RETAINED rather than mapped per publish, because a worker publishes an
+    /// oversized activation once per registration and then again after each
+    /// fork, and a mapping per call would leak a page run each time. Also fixed
+    /// BSS: an `mmap`'d region is not on the bump heap either, so the same
+    /// survival argument covers both halves.
+    static RESUME_ASSIGNMENT_SPILL_ADDR: AtomicU64 = AtomicU64::new(0);
+    static RESUME_ASSIGNMENT_SPILL_RECORDS: AtomicU32 = AtomicU32::new(0);
+
+    /// A writable record view of `count` records at `base`.
+    ///
+    /// # Safety
+    ///
+    /// `base` must be 8-aligned, must address at least `count` records of live
+    /// memory, and nothing else may hold a view of that range for the borrow.
+    unsafe fn resume_assignment_records(
+        base: *mut [u32; 2],
+        count: usize,
+    ) -> &'static mut [[u32; 2]] {
+        unsafe { core::slice::from_raw_parts_mut(base, count) }
+    }
+
+    /// Where `count` records will fit: the static floor, or a spill mapping.
+    ///
+    /// Returns a guest address. The two are deliberately indistinguishable to
+    /// the caller, the way `activation_catalog` makes a floor-resident catalog
+    /// and a spilled one read alike.
+    fn resume_assignment_buffer(count: usize) -> Result<*mut [u32; 2], Errno> {
+        if count <= RESUME_ASSIGNMENT_FLOOR_RECORDS {
+            return Ok(RESUME_ASSIGNMENT.0.get() as *mut [u32; 2]);
+        }
+        let have = RESUME_ASSIGNMENT_SPILL_RECORDS.load(Ordering::Relaxed) as usize;
+        let addr = RESUME_ASSIGNMENT_SPILL_ADDR.load(Ordering::Relaxed);
+        if addr != 0 && have >= count {
+            // Through `black_box` for the reason `mem_mut` records: a guest
+            // address is an ordinary integer here, and the optimiser must not
+            // treat it as a pointer whose provenance it can reason about.
+            return Ok(core::hint::black_box(addr as usize) as *mut [u32; 2]);
+        }
+        let base = channel_base()?;
+        // Released BEFORE the replacement is mapped, not after. A published
+        // buffer is consumed by the `__wpk_fork_place_resume_thunks` call that
+        // follows it, so no earlier buffer is live at this point, and freeing
+        // first keeps a worker from holding two oversized mappings at once.
+        // Zeroing the counters first means a failure between the two leaves no
+        // address anyone can hand out; the next publish maps afresh.
+        if addr != 0 && have > 0 {
+            RESUME_ASSIGNMENT_SPILL_ADDR.store(0, Ordering::Relaxed);
+            RESUME_ASSIGNMENT_SPILL_RECORDS.store(0, Ordering::Relaxed);
+            let held = page_round_up((have * RESUME_ASSIGNMENT_RECORD_BYTES) as u64);
+            channel_munmap(base, addr, held)?;
+        }
+        let want = page_round_up((count * RESUME_ASSIGNMENT_RECORD_BYTES) as u64);
+        // NOTE: this GROWS the shared memory, so every bound below is checked
+        // against a re-read `mem_len_bytes()` rather than one taken earlier.
+        let at = channel_mmap(base, want)?;
+        let end = at.checked_add(want).ok_or(Errno::EOVERFLOW)?;
+        if at == 0 || end > mem_len_bytes() as u64 {
+            return Err(Errno::ENOMEM);
+        }
+        RESUME_ASSIGNMENT_SPILL_ADDR.store(at, Ordering::Relaxed);
+        RESUME_ASSIGNMENT_SPILL_RECORDS.store(
+            (want / RESUME_ASSIGNMENT_RECORD_BYTES as u64) as u32,
+            Ordering::Relaxed,
+        );
+        Ok(core::hint::black_box(at as usize) as *mut [u32; 2])
+    }
+
+    /// Write `activation_id`'s assignment into the published buffer.
+    ///
+    /// Returns `(guest address, record count)`.
+    fn publish_resume_assignment_impl(activation_id: u32) -> Result<(u32, u32), Errno> {
+        // ONE walk of the slot index, the one `register_activation_slots`
+        // already adopts from. A second walk here would be a second answer to
+        // "which slots does this activation hold", and two answers to that
+        // question is the divergence the single allocator above was built to
+        // end. The scratch vector is bump-heap and lives only for this call;
+        // the PUBLISHED buffer, which outlives it, is the static below.
+        let Some(mut assignment) = resume_assignment_of(activation_id) else {
+            // ZERO RECORDS IS A SUCCESS, for the reason `resume_unregister_impl`
+            // spells out: a side module with no fork-instrumented function seeds
+            // an EMPTY resume catalog and therefore holds no slots, and whether
+            // an activation was ever registered is a question the HOST already
+            // answers. `(0, 0)` is also exactly what the shim accepts as "place
+            // nothing" -- its loop guard is signed and a count of zero exits
+            // immediately -- so the caller needs no special case either.
+            return Ok((0, 0));
+        };
+        // ASCENDING BY ORDINAL. Not because the shim cares -- it applies records
+        // in whatever order it is handed -- but because `resume_unregister_impl`
+        // compacts `RESUME_SLOT_INDEX` by moving the LAST live entry into the
+        // hole it makes, so after any `dlclose` an activation's entries are no
+        // longer in the order they were assigned. A published order that
+        // depended on a worker's dlclose history would make the recorded
+        // placement baseline irreproducible for a reason that has nothing to do
+        // with where thunks land.
+        assignment.sort_unstable();
+
+        let count = assignment.len();
+        let base = resume_assignment_buffer(count)?;
+        // SAFETY: `resume_assignment_buffer` returns either the 8-aligned static
+        // floor or an 8-aligned mapping with room for at least `count` records,
+        // bounds-checked against the live memory there. Single-threaded per
+        // worker, and no other view of either range is live across this write.
+        let records = unsafe { resume_assignment_records(base, count) };
+        for (record, (ordinal, slot)) in records.iter_mut().zip(assignment.iter()) {
+            record[RESUME_ASSIGNMENT_FIELD_ORDINAL] = *ordinal;
+            record[RESUME_ASSIGNMENT_FIELD_SLOT] = *slot;
+        }
+        let ptr = u32::try_from(base as usize).map_err(|_| Errno::EOVERFLOW)?;
+        Ok((ptr, count as u32))
     }
 
     fn set_activation_resume_catalog_impl(
@@ -11017,6 +11227,57 @@ mod wasm {
             },
             _ => {
                 set_err(Errno::EINVAL);
+                -1
+            }
+        }
+    }
+
+    /// Publish `activation`'s resume-slot assignment where the guest's
+    /// `__wpk_fork_place_resume_thunks(ptr, count)` shim can read it.
+    ///
+    /// Returns `(count << 32) | ptr`, or `-1` with the reason in
+    /// `fm_last_errno`. An activation that holds no slots is a SUCCESS
+    /// returning `(0, 0)`, not an error -- see `publish_resume_assignment_impl`.
+    ///
+    /// # What this replaces
+    ///
+    /// The host used to read one slot per thunk (`fm_resume_slots` op 0), then
+    /// `table.get` the thunk out of the guest's catalog and `table.set` it into
+    /// the resume table, from JavaScript, once per fork-instrumented function
+    /// -- 19,025 crossings per process start in the measured case. The decision
+    /// was always this module's; only the WRITE had to be somewhere that can
+    /// hold a funcref. The guest can hold one, and it already owns both tables,
+    /// so the write went there (Task 2) and this is the decision it applies.
+    ///
+    /// # Why `count` is the HIGH half, and `ptr` the low one
+    ///
+    /// The obvious packing -- pointer high, count low -- breaks twice on a
+    /// wasm32 memory grown past 2 GiB. A pointer of `0x8000_0000` or more sets
+    /// bit 63, so a perfectly good buffer comes back as a NEGATIVE `i64` and
+    /// every caller that reads "< 0" as failure rejects it; and `-1` would stop
+    /// being a sentinel no real answer can produce. Putting the count high
+    /// fixes both, because the count is BOUNDED where an address is not: an
+    /// activation holds at most `RESUME_SLOT_CAP` (65,536) slots, so the result
+    /// never exceeds 2^49, is never negative, and `-1` is unambiguous. The
+    /// plan's interface line says "a packed `(ptr, count)`"; this is that pair,
+    /// with the field order chosen so the error signal keeps working.
+    ///
+    /// # The buffer stays live
+    ///
+    /// It is the module's fixed BSS (or, for an activation larger than the
+    /// floor, a retained mapping), so `reset_bump_heap` -- which runs at four
+    /// points during a single fork -- cannot free it under the caller. Calling
+    /// this again after a fork rewrites the same buffer and returns a live
+    /// address, rather than an address that was valid when it was handed out.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_publish_resume_assignment(activation: u32) -> i64 {
+        match publish_resume_assignment_impl(activation) {
+            Ok((ptr, count)) => {
+                set_ok();
+                ((count as i64) << 32) | (ptr as i64)
+            }
+            Err(errno) => {
+                set_err(errno);
                 -1
             }
         }
