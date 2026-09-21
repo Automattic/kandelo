@@ -336,7 +336,19 @@ PY
 # [[runtime_files]] entries; the installer re-checks artifact policy.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary espeak-ng "$INSTALL_DIR/bin/espeak-ng.wasm"
-install_local_runtime_file espeak-ng "$DATA_ZIP"
+# The resolver's validate_outputs checks $OUT_DIR/<artifact> at the root,
+# but the data zip is built under share/, and install_local_runtime_file
+# only publishes to the local-binaries mirror (not the OUT_DIR root) in the
+# default mirror mode — so the resolver would report it "not produced".
+# Publish it at the OUT_DIR root as resolver scratch, exactly as cpython
+# does for python-runtime.zip; fall back to the mirror when OUT_DIR is unset
+# (a direct, non-resolver invocation).
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$DATA_ZIP" "$WASM_POSIX_DEP_OUT_DIR/espeak-ng-data.zip"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/espeak-ng-data.zip (resolver scratch)"
+else
+    install_local_runtime_file espeak-ng "$DATA_ZIP"
+fi
 
 echo "==> Done. Outputs:"
 echo "    $INSTALL_DIR/bin/espeak-ng.wasm"
