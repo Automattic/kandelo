@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 
@@ -40,7 +41,7 @@ def ensure_schema():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with open(os.path.join(_HERE, "schema.sql"), encoding="utf-8") as fh:
         schema_sql = fh.read()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         conn.executescript(schema_sql)
         (count,) = conn.execute("SELECT COUNT(*) FROM notes").fetchone()
         if count == 0:
@@ -87,7 +88,7 @@ def app(environ, start_response):
 
         if path == "/api/notes":
             if method == "GET":
-                with _connect() as conn:
+                with closing(_connect()) as conn, conn:
                     rows = conn.execute(
                         "SELECT id, title, body, created_at FROM notes ORDER BY id"
                     ).fetchall()
@@ -99,7 +100,7 @@ def app(environ, start_response):
                     return _json(start_response, "400 Bad Request",
                                  {"error": "title is required"})
                 body = data.get("body") or ""
-                with _connect() as conn:
+                with closing(_connect()) as conn, conn:
                     cur = conn.execute(
                         "INSERT INTO notes (title, body) VALUES (?, ?)",
                         (title, body),
@@ -116,7 +117,7 @@ def app(environ, start_response):
         if match:
             note_id = int(match.group(1))
             if method == "GET":
-                with _connect() as conn:
+                with closing(_connect()) as conn, conn:
                     row = conn.execute(
                         "SELECT id, title, body, created_at FROM notes WHERE id = ?",
                         (note_id,),
@@ -132,7 +133,7 @@ def app(environ, start_response):
                     return _json(start_response, "400 Bad Request",
                                  {"error": "title is required"})
                 body = data.get("body") or ""
-                with _connect() as conn:
+                with closing(_connect()) as conn, conn:
                     cur = conn.execute(
                         "UPDATE notes SET title = ?, body = ? WHERE id = ?",
                         (title, body, note_id),
@@ -146,7 +147,7 @@ def app(environ, start_response):
                     ).fetchone()
                 return _json(start_response, "200 OK", _note(row))
             if method == "DELETE":
-                with _connect() as conn:
+                with closing(_connect()) as conn, conn:
                     cur = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
                 if cur.rowcount == 0:
                     return _json(start_response, "404 Not Found",

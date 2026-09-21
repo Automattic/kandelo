@@ -2,7 +2,6 @@
 
 Run from the app/ directory: python3 -m unittest test_app -v
 """
-import importlib
 import json
 import os
 import tempfile
