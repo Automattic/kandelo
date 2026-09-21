@@ -81,8 +81,12 @@ proper HTTP status codes with JSON bodies.
 
 A note row: `{id, title, body, created_at}`.
 
-The database is seeded at build time with a couple of sample notes via
-`schema.sql`.
+The database is created and seeded with a couple of sample notes on
+first boot: the app runs `schema.sql` (idempotent table DDL) and, when
+the table is empty, `seed.sql`. Seeding on first boot rather than at
+build keeps the whole app in Python — the TypeScript image builder never
+has to write a binary SQLite file — and avoids committing an opaque
+database blob to the repo.
 
 A static `/` page (`index.html`) documents the endpoints and performs a
 live `fetch` against the API so the browser demo shows real,
@@ -156,7 +160,7 @@ builder copies `app/` into the image at `/srv/notes/`.
 | `/usr/lib/python3.13`     | Python stdlib                         |
 | `/srv/notes/app.py`       | WSGI application                      |
 | `/srv/notes/static/`      | `index.html` and any static assets    |
-| `/var/lib/notes/notes.db` | SQLite database (seeded at build)     |
+| `/var/lib/notes/notes.db` | SQLite database (created + seeded on first boot) |
 | `/etc/nginx/nginx.conf`   | nginx config                          |
 | `/etc/kandelo/demo.json`  | demo presentation metadata            |
 | dinit service dir         | `notes-app` and `nginx` services      |
@@ -184,7 +188,8 @@ Mirror every layer the nginx-php demo uses:
 
 ## Persistence honesty
 
-The SQLite database is seeded at build and lives on a writable path.
+The SQLite database is created and seeded on first boot and lives on a
+writable path.
 Writes persist within a running session but reset when the image
 reloads. The demo presents this truthfully as an ephemeral in-image
 database, not a durable or private store (Browser And User contract).
