@@ -1550,6 +1550,42 @@ kernel rebuilt through `./run.sh rebuild kernel` with `xtask verify-fresh`
 green. A realm that cannot read artifacts should say *that*, not accuse the
 artifact.
 
+### The process worker runs `host/dist` with no freshness check, so e2e evidence can describe a bundle nobody edited
+
+Measured 2026-09-21. `NodeWorkerAdapter.resolveCompiledEntry()`
+(`host/src/worker-adapter.ts:199-225`) spawns every PROCESS worker from
+`host/dist/worker-entry.js` **if that file merely exists**. It compares no
+timestamps and no fingerprints. The KERNEL worker's spawn path
+(`host/src/node-kernel-host.ts:1352`) calls `compiledWorkerEntryIsCurrent`,
+which hashes every file under `host/src` plus the four declared build inputs
+and falls back to the `tsx` loader when the bundle does not match. The process
+worker has no equivalent, so in a source checkout whose `host/dist` predates
+the working tree, the two workers run DIFFERENT versions of the host.
+
+This is worse than producing a wrong artifact: it silently invalidates
+evidence. A host-source change that the process worker is supposed to execute
+can be absent from every end-to-end run while the suite reports green, and
+nothing in the output says which copy ran.
+
+It was found by proving a branch reachable rather than by noticing a wrong
+answer. `fm_publish_resume_assignment` was made to return `ENOMEM`
+unconditionally and the fork module rebuilt (build key changed, so the
+mutation reached the artifact); `host/test/fork-module-worker-instantiation.test.ts`
+— a real kernel worker driving a real fork — **still passed**, while the unit
+test loading the same `fork_module32.wasm` directly failed six of seven cases.
+`host/dist/worker-entry.js` was 7 hours old and contained none of the host
+source under test. After `npm run build` in `host/`, the same file surfaced
+four genuine failures.
+
+The fix is to give the process-worker spawn the gate the kernel-worker spawn
+already has: call `compiledWorkerEntryIsCurrent` before using `dist/`, and fall
+back to the loader otherwise. A stale bundle should cost startup time, not
+truth. Until then, no end-to-end claim from a source checkout is meaningful
+without a `host/` build first, and that requirement is stated nowhere.
+
+**Files:** `host/src/worker-adapter.ts`, `host/src/compiled-worker-entry.ts`,
+`docs/agent-guidance/validation.md`.
+
 ### `KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache
 
 Measured 2026-09-10 while a machine filled its disk: with the flag set, the
