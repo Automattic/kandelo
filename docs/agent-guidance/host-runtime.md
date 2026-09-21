@@ -132,22 +132,21 @@ Add an entry here or nowhere.
 - anyref-transit `Table.grow` sizing (host must grow STORE #2 before drive),
 - PIC placement globals (`__memory_base`/`__stack_pointer`/`__table_base`/
   `__indirect_function_table`) chosen at instantiation,
-- the per-thunk `Table.set` into the resume table — and ONLY that. This entry
-  used to read "the resume `WebAssembly.Table` (host-built import of guest
-  funcref thunks)", and that is no longer true at HEAD: the table is created
-  and exported by the fork module
-  (`crates/fork-module-inject/src/main.rs:1042-1044`), the guest IMPORTS it
-  (`crates/fork-instrument/src/runtime.rs:469-475`), and the host reads it
-  back off the module's exports
-  (`host/src/worker-main.ts:3788`, `:6496`). Slot allocation moved into the
-  module too; the host asks via `fm_resume_slots`. Spec decision 12 and its
-  2026-09-20 amendment
-  (`docs/superpowers/specs/2026-09-18-fork-dynamic-storage-design.md`) propose
-  moving the remaining `Table.set`. Treat even this residue as contested:
-  `host/src/fork-resume-table.ts:4-8` still argues the table object "cannot
-  move into the fork module", which its own callers above have already
-  overtaken. This entry is exactly the "X cannot do Y, therefore Z must be
-  host" shape, and probing it is what shrank it,
+- NOTHING about the resume table. This entry has shrunk three times and is now
+  empty, which is worth reading as a warning rather than as a closed item. It
+  began as "the resume `WebAssembly.Table` (host-built import of guest funcref
+  thunks)"; the table turned out to be declarable by the injector, so the
+  module owns and exports it and the guest imports it. It then became "the
+  per-thunk `Table.set`"; the guest's own emitted
+  `__wpk_fork_place_resume_thunks` does that copying now. It then became "the
+  `Table.set` that nulls a freed slot on `dlclose`", justified by "Rust cannot
+  hold a funcref, therefore the host must clear the table" — the premise is
+  true and the inference is false, because clearing writes `ref.null func`,
+  and an injected `table.set $resume (ref.null func)` inside
+  `resume_unregister_impl` took it (2026-09-21). Every one of those three was
+  the "X cannot do Y, therefore Z must be host" shape, stated with confidence,
+  and every one was wrong. `host/src/fork-resume-table.ts` is now a membership
+  `Set` and two guards,
 - the guest run-loop + the fork-unwind exception catch (a JS-level throw a Wasm
   module cannot `try/catch`), and
 - the Node/browser worker-message bridges.

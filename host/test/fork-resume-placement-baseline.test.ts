@@ -214,13 +214,9 @@ function harness(): Harness {
           `no assignment for activation ${activationId} (errno ${errno()})`,
         );
       }
-      const ptr = Number(packed & 0xffff_ffffn);
-      const count = Number(packed >> 32n);
-      const records = new Uint32Array(memory.buffer, ptr, count * 2);
       return {
-        ptr,
-        count,
-        slots: Array.from({ length: count }, (_, i) => records[i * 2 + 1]!),
+        ptr: Number(packed & 0xffff_ffffn),
+        count: Number(packed >> 32n),
       };
     },
     releaseResumeSlots: (activationId) => {

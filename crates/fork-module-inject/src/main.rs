@@ -153,6 +153,10 @@ const EXTERNREF_HANDLE_THUNK_IMPORT: &str = "__wpk_fork_externref_handle";
 const HOST_EXTERNREF_HANDLE_IMPORT: &str = "__wpk_fork_host_externref_handle";
 /// The placeholder the module declares for the emitted `fm_transit_grow`.
 const TRANSIT_GROW_THUNK_IMPORT: &str = "__wpk_fork_transit_grow";
+/// The placeholder the module declares for clearing one resume-table slot.
+/// Rewritten below into a local `table.set $resume (ref.null func)`; see
+/// `inject_resume_null_thunk`.
+const RESUME_NULL_THUNK_IMPORT: &str = "__wpk_fork_resume_null";
 
 /// The host's funcref identity oracle: a stable integer per distinct function.
 ///
@@ -1497,6 +1501,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_transit_grow into a thunk")?;
     inject_table_apply_thunk(&mut module)
         .context("rewriting __wpk_fork_table_apply into a thunk")?;
+    inject_resume_null_thunk(&mut module)
+        .context("rewriting __wpk_fork_resume_null into a thunk")?;
     inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;
     inject_activation_trampolines(&mut module)
         .context("emitting the per-activation frame trampolines")?;
@@ -2162,6 +2168,57 @@ fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
                 .table_set(indirect);
         })
         .with_context(|| format!("rewriting {TABLE_APPLY_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
+/// Rewrite the resume-table null placeholder into a local
+/// `table.set $resume (ref.null func)`.
+///
+/// # Why the module clears its own table
+///
+/// The host used to null each freed slot itself, and the argument that kept it
+/// there was "Rust cannot hold a funcref, therefore the host has to clear the
+/// table". The premise is true and the inference does not follow: CLEARING
+/// writes `ref.null func`, which is not holding a funcref. `inject_table_apply_
+/// thunk` right above has been writing exactly that value into the guest's
+/// indirect function table on its `clear` arm since it was added, and the
+/// resume table is the module's OWN (`inject_drive_execute` defines and exports
+/// it), so clearing it is its own business rather than a favour a host does for
+/// it. Rust still cannot emit `table.set`, which is why this is a placeholder
+/// import and not a Rust function.
+///
+/// # No range check, deliberately
+///
+/// An out-of-range slot TRAPS on the table's own bounds, which is exactly what
+/// the JavaScript `Table.prototype.set` this replaces did by throwing a
+/// `RangeError`. A hand-rolled guard would turn "this activation holds a slot
+/// the table was never grown to hold" into a silent no-op, and that condition
+/// means the guest's placement shim did not run -- worth failing on, not worth
+/// absorbing. The caller nulls every slot BEFORE it frees any, so a trap here
+/// leaves the module's own state untouched rather than half-released.
+///
+/// # Width
+///
+/// The resume table is declared 32-bit on every build
+/// (`tables.add_local(false, ..)`), so the slot index is `i32` regardless of
+/// the module's memory width and none of the `i64` widening `table_apply` needs
+/// applies. Asserted below rather than assumed.
+fn inject_resume_null_thunk(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, RESUME_NULL_THUNK_IMPORT) else {
+        // A build that does not declare the placeholder needs no thunk.
+        return Ok(());
+    };
+    let resume = exported_table(module, RESUME_TABLE_EXPORT)?;
+    if module.tables.get(resume).table64 {
+        bail!("{RESUME_TABLE_EXPORT} is a 64-bit table; the resume-null thunk indexes it with i32");
+    }
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            body.local_get(args[0])
+                .ref_null(RefType::FUNCREF)
+                .table_set(resume);
+        })
+        .with_context(|| format!("rewriting {RESUME_NULL_THUNK_IMPORT} import into a thunk"))?;
     Ok(())
 }
 

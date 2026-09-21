@@ -235,6 +235,13 @@ mod wasm {
         /// `fm_transit_grow`, because `table.grow` on an anyref table needs a
         /// `ref.null any` Rust has no type for.
         fn __wpk_fork_transit_grow(needed: u32) -> i32;
+        /// Clear one process-owned resume-table slot:
+        /// `table.set $resume (ref.null func)`. Injector-rewritten into a
+        /// local thunk, for the same reason `__wpk_fork_table_apply`'s clear
+        /// arm is: Rust cannot emit `table.set`, but writing a NULL is not
+        /// holding a funcref -- so this does not need a host and no longer
+        /// has one.
+        fn __wpk_fork_resume_null(slot: u32);
 
         /// `memory.atomic.wait32(addr, expected, timeout_ns) -> i32`.
         /// Returns 0 "ok", 1 "not-equal", 2 "timed-out". `-1` timeout waits
@@ -332,6 +339,15 @@ mod wasm {
             return -1;
         }
         recipe
+    }
+
+    /// Safe wrapper over the injector-wired resume-null placeholder.
+    fn resume_null_via_injector(slot: u32) {
+        // SAFETY: after injection this is a local thunk performing one
+        // `table.set` of `ref.null func` on the module's OWN resume table.
+        // The index is bounds-checked by wasm itself: an out-of-range slot
+        // traps rather than writing anywhere else.
+        unsafe { __wpk_fork_resume_null(slot) }
     }
 
     /// Safe wrapper over the injector-wired transit-grow placeholder.
@@ -739,7 +755,7 @@ mod wasm {
         resume_register_impl(activation_id).map(|_| ())
     }
 
-    /// Free an activation's slots for reuse, keeping the free list sorted.
+    /// Null an activation's table entries, then free its slots for reuse.
     ///
     /// ZERO SLOTS IS A SUCCESS, not "never registered", and the distinction cost
     /// a real fork. A side module with no fork-instrumented function seeds an
@@ -754,8 +770,40 @@ mod wasm {
     /// placed thunks for, by name. Answering it a second time here was the same
     /// duplication this lane has been removing everywhere else, and this one
     /// had a wrong answer in it.
+    ///
+    /// # Why the nulling is here, and why it is a separate pass
+    ///
+    /// A stale thunk at a freed slot is worse than an empty one: this allocator
+    /// may hand that slot to another activation before anything places over it,
+    /// and a resume through it lands in a real function of the right type, so
+    /// nothing traps. The host used to do the nulling, on the argument that
+    /// "Rust cannot hold a funcref, therefore the host has to clear the table".
+    /// Clearing writes `ref.null func`, which is not holding a funcref, and the
+    /// table is this module's own -- so it clears it, through the injected
+    /// `__wpk_fork_resume_null` thunk.
+    ///
+    /// EVERY SLOT IS NULLED BEFORE ANY IS FREED. The `table.set` traps if the
+    /// guest's placement shim never grew the table that far, and a trap in the
+    /// middle of a single pass would leave this activation half-released: some
+    /// slots back in the free bitmap, the index partly compacted, and a live
+    /// thunk still sitting at a slot the allocator now believes it owns. Two
+    /// passes make a trap leave the module exactly as it found it -- which is
+    /// the property the host's old "null first, THEN call release" ordering
+    /// had, preserved rather than dropped on the way in.
     fn resume_unregister_impl(activation_id: u32) -> Result<u32, Errno> {
         let mut count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        {
+            // PASS 1: null, mutating nothing. SAFETY: single-threaded;
+            // `count <= RESUME_SLOT_CAP`; the borrow ends with this block,
+            // before pass 2 takes a mutable one.
+            let index = unsafe { &*RESUME_SLOT_INDEX.0.get() };
+            for entry in index[..count].iter() {
+                if entry[0] == activation_id {
+                    resume_null_via_injector(entry[2]);
+                }
+            }
+        }
+        // PASS 2: free and compact.
         // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
         let index = unsafe { &mut *RESUME_SLOT_INDEX.0.get() };
         let mut freed = 0u32;

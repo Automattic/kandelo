@@ -76,6 +76,8 @@ interface Harness {
   readonly resumeTable: WebAssembly.Table;
   /** The memory the module publishes its record buffer into. */
   readonly memory: WebAssembly.Memory;
+  /** The module's own exports, for reading its slot record back. */
+  readonly exports: Record<string, unknown>;
 }
 
 function harness(): Harness {
@@ -111,13 +113,9 @@ function harness(): Harness {
           `no assignment for activation ${activationId} (errno ${errno()})`,
         );
       }
-      const ptr = Number(packed & 0xffff_ffffn);
-      const count = Number(packed >> 32n);
-      const records = new Uint32Array(memory.buffer, ptr, count * 2);
       return {
-        ptr,
-        count,
-        slots: Array.from({ length: count }, (_, i) => records[i * 2 + 1]!),
+        ptr: Number(packed & 0xffff_ffffn),
+        count: Number(packed >> 32n),
       };
     },
     releaseResumeSlots: (activationId) => {
@@ -154,7 +152,37 @@ function harness(): Harness {
     expect(errno(), `seeding activation ${activationId}`).toBe(0);
   };
 
-  return { table, seed, errno, resumeTable, memory };
+  return { table, seed, errno, resumeTable, memory, exports: x };
+}
+
+/**
+ * The slots one activation holds, READ BACK FROM THE MODULE.
+ *
+ * This used to be `ForkResumeTable.slotsOf`, a copy the host kept so it could
+ * null those entries on `dlclose`. The module nulls them itself now, so the
+ * host keeps no copy and there is nothing on that side to ask. Asking the
+ * module directly is the stronger question anyway: every case below then
+ * checks the allocator's own record rather than a transcription of it.
+ *
+ * An activation that holds nothing publishes `(0, 0)`, which decodes to the
+ * empty list -- the same answer `slotsOf` gave for an activation with an empty
+ * catalog, and for one that has been released.
+ */
+function slotsOf(h: Harness, activationId: number): number[] {
+  const packed = (
+    h.exports.fm_publish_resume_assignment as (a: number) => bigint
+  )(activationId);
+  if (packed === -1n) {
+    throw new Error(
+      `publishing activation ${activationId} failed with errno ${h.errno()}`,
+    );
+  }
+  const ptr = Number(packed & 0xffff_ffffn);
+  const count = Number(packed >> 32n);
+  if (count === 0) return [];
+  // `(ordinal: u32, slot: u32)`, stride 8, so slot `i` is word `i * 2 + 1`.
+  const records = new Uint32Array(h.memory.buffer, ptr, count * 2);
+  return Array.from({ length: count }, (_, i) => records[i * 2 + 1]!);
 }
 
 /** A fresh, distinct Wasm function. The numbering does not read the thunk. */
@@ -204,7 +232,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     // nothing to resume, so no thunk may ever live there.
     const h = harness();
     register(h, 0, [0, 1]);
-    expect(h.table.slotsOf(0)).toEqual([1, 2]);
+    expect(slotsOf(h, 0)).toEqual([1, 2]);
     expect(h.table.resumeTable.get(0)).toBeNull();
   });
 
@@ -226,15 +254,15 @@ describe("ForkResumeTable, numbered by the module", () => {
     const h = harness();
     h.seed(0, [2, 0, 1]);
     h.table.registerActivation(0, guest(h, [2, 0, 1]));
-    expect(h.table.slotsOf(0)).toEqual([1, 2, 3]);
+    expect(slotsOf(h, 0)).toEqual([1, 2, 3]);
   });
 
   it("continues numbering across activations", () => {
     const h = harness();
     register(h, 0, [0, 1]);
     register(h, 1, [0, 1]);
-    expect(h.table.slotsOf(0)).toEqual([1, 2]);
-    expect(h.table.slotsOf(1)).toEqual([3, 4]);
+    expect(slotsOf(h, 0)).toEqual([1, 2]);
+    expect(slotsOf(h, 1)).toEqual([3, 4]);
   });
 
   it("reuses freed slots smallest-first before growing", () => {
@@ -243,13 +271,23 @@ describe("ForkResumeTable, numbered by the module", () => {
     register(h, 1, [0, 1]);
     h.table.unregisterActivation(0);
     register(h, 2, [0, 1]);
-    expect(h.table.slotsOf(2)).toEqual([1, 2]);
-    expect(h.table.slotsOf(1)).toEqual([3, 4]);
+    expect(slotsOf(h, 2)).toEqual([1, 2]);
+    expect(slotsOf(h, 1)).toEqual([3, 4]);
   });
 
-  it("nulls an unregistered activation's entries", () => {
-    // A stale thunk at a freed slot is worse than an empty one: the module may
-    // hand that slot to another activation before this side places over it.
+  it("nulls an unregistered activation's entries, in the module", () => {
+    // A stale thunk at a freed slot is worse than an empty one: the allocator
+    // may hand that slot to another activation before anything places over it,
+    // and a resume through it lands in a real function of the right type, so
+    // nothing traps.
+    //
+    // THE NULLING IS THE MODULE'S NOW, and this is the case that says so. The
+    // host performed it until this change, on the argument that "Rust cannot
+    // hold a funcref, therefore the host has to clear the table" -- true
+    // premise, false inference, because clearing writes `ref.null func`. There
+    // is no `Table.set` left anywhere in `host/src`, so the only thing that
+    // can be producing these nulls is the emitted
+    // `table.set $resume (ref.null func)` the release drives.
     const h = harness();
     register(h, 0, [0, 1]);
     expect(h.table.resumeTable.get(1)).not.toBeNull();
@@ -337,10 +375,25 @@ describe("ForkResumeTable, numbered by the module", () => {
       h.resumeTable.length,
       "the host grew or wrote the resume table during registration",
     ).toBe(1);
-    // The slot record is still kept, because release needs it -- and release
-    // is where an inert shim surfaces, by nulling a slot the table was never
-    // grown to hold.
-    expect(h.table.slotsOf(0)).toEqual([1, 2]);
+    // The module still holds the assignment, because nothing about placement
+    // failing changes what was assigned.
+    expect(slotsOf(h, 0)).toEqual([1, 2]);
+
+    // AND RELEASE IS WHERE THE INERT SHIM SURFACES. The module nulls each slot
+    // it is about to free, and slot 1 is past the end of a table the shim
+    // never grew, so its `table.set` traps on the table's own bounds. That is
+    // deliberate: a range guard there would turn "the guest never placed
+    // anything" into a silent no-op. The trap arrives as an exception at the
+    // release call, exactly as the host's own `Table.set` threw a `RangeError`
+    // before this moved.
+    expect(() => h.table.unregisterActivation(0)).toThrow();
+    // NOTHING WAS HALF-RELEASED. The module nulls every slot before it frees
+    // any, so a trap in the nulling pass leaves the assignment intact -- and
+    // this side drops its membership record only after the module returns, so
+    // both still agree the activation is live and a retry is possible rather
+    // than an unrecoverable "not registered".
+    expect(slotsOf(h, 0)).toEqual([1, 2]);
+    expect(() => h.table.unregisterActivation(0)).toThrow();
   });
 
   it("registers and releases an activation with NO resume targets", () => {
@@ -359,7 +412,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     const h = harness();
     register(h, 0, [0, 1]);
     register(h, 1, []); // seeds an empty catalog, publishes (0, 0)
-    expect(h.table.slotsOf(1)).toEqual([]);
+    expect(slotsOf(h, 1)).toEqual([]);
     expect(() => h.table.unregisterActivation(1)).not.toThrow();
     // And the host still refuses one it never registered, which is where that
     // question belongs.
@@ -367,7 +420,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     // The numbering is undisturbed: an activation holding nothing frees
     // nothing, so the next one does not silently move up.
     register(h, 2, [0]);
-    expect(h.table.slotsOf(2)).toEqual([3]);
+    expect(slotsOf(h, 2)).toEqual([3]);
   });
 
   it("keeps ONE numbering across a dlclose that frees a low slot", () => {
@@ -392,11 +445,11 @@ describe("ForkResumeTable, numbered by the module", () => {
     h.table.unregisterActivation(1); // dlclose A, freeing 3
     register(h, 3, [0, 1]); // dlopen C:     slot 3 (reused), then 6
 
-    expect(h.table.slotsOf(0)).toEqual([1, 2]);
-    expect(h.table.slotsOf(2), "B must keep the slots it was placed at").toEqual([
+    expect(slotsOf(h, 0)).toEqual([1, 2]);
+    expect(slotsOf(h, 2), "B must keep the slots it was placed at").toEqual([
       4, 5,
     ]);
-    expect(h.table.slotsOf(3), "C takes the freed slot first").toEqual([3, 6]);
+    expect(slotsOf(h, 3), "C takes the freed slot first").toEqual([3, 6]);
 
     // And every placement is where the module says, which is the property that
     // makes divergence unrepresentable rather than merely absent here.
@@ -405,7 +458,7 @@ describe("ForkResumeTable, numbered by the module", () => {
       [2, [0, 1]],
       [3, [0, 1]],
     ] as const) {
-      const placed = h.table.slotsOf(activation);
+      const placed = slotsOf(h, activation);
       ordinals.forEach((ordinal, index) => {
         expect(
           h.table.resumeTable.get(placed[index]!),

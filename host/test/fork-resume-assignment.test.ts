@@ -225,6 +225,14 @@ describe("fm_publish_resume_assignment", () => {
     // made would answer 1..2 for activation 0 here.
     h.seed(9, [0, 1, 2, 3, 4]);
     h.seed(0, [0, 1]);
+    // PLACEMENT NORMALLY GROWS THIS. Releasing an activation nulls each entry
+    // it held, inside the module, and `table.set` traps on a slot the table
+    // does not have. This case exercises the ALLOCATOR with no guest at all --
+    // it seeds catalogs and never places a thunk -- so the table is grown here
+    // to the size the guest's shim would have grown it to. Growing is not
+    // writing: no thunk goes in, and the assertions below are about which
+    // slots the allocator hands out, not about what is in them.
+    h.resumeTable.grow(7 - h.resumeTable.length + 1);
     expect(h.release(9)).toBe(5);
     h.seed(1, [0, 1]);
 

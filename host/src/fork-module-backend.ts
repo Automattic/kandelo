@@ -845,11 +845,14 @@ export class ForkModuleContinuationBackend {
    * crossings per php process start, the figure `docs/surface-budget.json`
    * records -- with one call.
    *
-   * `slots` is COPIED rather than returned as a view: there is one published
-   * buffer per worker and the next publish overwrites it, so a view would
-   * decay into a description of some later activation. It is the only thing
-   * the host still keeps, and only so `unregisterActivation` can null what
-   * `dlclose` releases.
+   * NOTHING IS DECODED HERE. This used to walk the buffer and copy out each
+   * record's slot, because `ForkResumeTable` had to null exactly those entries
+   * when `dlclose` released them. The module nulls them itself now, so the
+   * pair of numbers passes straight through and the host never learns which
+   * slots an activation got -- which is also why there is no stale-view
+   * hazard left to warn about: there is one published buffer per worker and
+   * the next publish overwrites it, and nothing on this side holds a view of
+   * it past the call.
    */
   publishResumeAssignment(activationId: number): ForkResumeAssignment {
     // `call()` cannot carry this one: it is typed `number` and this export
@@ -862,13 +865,7 @@ export class ForkModuleContinuationBackend {
     // COUNT HIGH, POINTER LOW, as the export's own doc comment gives it: a
     // pointer in the high half would make any buffer above 2 GiB decode as a
     // negative i64, which is this call's failure signal.
-    const ptr = Number(packed & 0xffff_ffffn);
-    const count = Number(packed >> 32n);
-    // Records are `(ordinal: u32, slot: u32)`, stride 8, so slot `i` is word
-    // `i * 2 + 1`. The buffer is 8-byte aligned by the module (`repr(C,
-    // align(8))`), or page-aligned when it spills to a `channel_mmap` mapping.
-    const records = new Uint32Array(this.options.memory.buffer, ptr, count * 2);
-    return { ptr, count, slots: Array.from({ length: count }, (_, i) => records[i * 2 + 1]!) };
+    return { ptr: Number(packed & 0xffff_ffffn), count: Number(packed >> 32n) };
   }
 
   /** Release an activation's resume slots for reuse. Returns how many. */
