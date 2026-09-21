@@ -1,7 +1,8 @@
 //! Event producer for `/dev/input/event{0,1}`. Mirrors Linux
-//! `drivers/input/evdev.c::evdev_pass_values`: a full ring discards
-//! the incoming record and latches `dropped`; the next read prepends
-//! a synthetic `SYN_DROPPED` so userspace can resync via `EVIOCG*`.
+//! `drivers/input/evdev.c::evdev_pass_values`: a full ring drops the
+//! oldest record to make room for the newest and latches `dropped`; the
+//! next read prepends a synthetic `SYN_DROPPED` so userspace can resync
+//! via `EVIOCG*`.
 
 use alloc::collections::VecDeque;
 
@@ -57,8 +58,16 @@ pub fn push_event(
                 seen.push(ring_id);
                 let mut ring = input.ring.borrow_mut();
                 if ring.event_ring.len() + RECORD_SIZE > INPUT_RING_MAX_BYTES {
+                    // Ring full: drop the OLDEST record to make room for the
+                    // newest and latch `dropped`, mirroring Linux
+                    // drivers/input/evdev.c::evdev_pass_values (which advances
+                    // the tail). Keeping the newest guarantees a key release is
+                    // never the record dropped; the SYN_DROPPED synthesised on
+                    // the next read tells userspace to resync.
+                    for _ in 0..RECORD_SIZE {
+                        ring.event_ring.pop_front();
+                    }
                     ring.dropped = true;
-                    continue;
                 }
                 push_record(&mut ring.event_ring, &ev);
                 delivered += 1;
@@ -131,6 +140,29 @@ mod tests {
         proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().ring.borrow().dropped
     }
 
+    // `value` (the `i32` tail of `WpkInputEvent`) is the last 4 bytes of each
+    // 24-byte record; return it for the oldest / newest buffered record.
+    fn record_value_at(proc: &Process, ofd_idx: usize, record_start: usize) -> i32 {
+        let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+        let ring = ofd.input().unwrap().ring.borrow();
+        let o = record_start + 20;
+        i32::from_le_bytes([
+            ring.event_ring[o],
+            ring.event_ring[o + 1],
+            ring.event_ring[o + 2],
+            ring.event_ring[o + 3],
+        ])
+    }
+
+    fn oldest_value(proc: &Process, ofd_idx: usize) -> i32 {
+        record_value_at(proc, ofd_idx, 0)
+    }
+
+    fn newest_value(proc: &Process, ofd_idx: usize) -> i32 {
+        let bytes = ring_records(proc, ofd_idx) * RECORD_SIZE;
+        record_value_at(proc, ofd_idx, bytes - RECORD_SIZE)
+    }
+
     #[test]
     fn push_event_with_unknown_device_is_a_noop() {
         let _ = install_process(7001);
@@ -174,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn ring_overflow_sets_dropped_and_discards_new_records() {
+    fn ring_overflow_drops_oldest_and_keeps_newest() {
         let proc = install_process(7004);
         let ofd_idx = install_input_ofd(proc, 0);
         for i in 0..INPUT_RING_MAX_RECORDS {
@@ -182,15 +214,21 @@ mod tests {
         }
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
         assert!(!ring_dropped(proc, ofd_idx));
+        assert_eq!(oldest_value(proc, ofd_idx), 0);
 
-        // Linux semantics: ring stays at max, `dropped` latches on,
-        // the incoming record is the one discarded.
+        // Linux semantics: ring stays at max, `dropped` latches, and the
+        // OLDEST record is the one dropped so the newest always survives
+        // (a key release is never the record lost).
         push_event(0, EV_KEY, KEY_A, 0xdead, 0, 0);
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
         assert!(ring_dropped(proc, ofd_idx), "dropped flag must latch on overflow");
+        assert_eq!(newest_value(proc, ofd_idx), 0xdead, "newest record must survive");
+        assert_eq!(oldest_value(proc, ofd_idx), 1, "value 0 (oldest) is the record dropped");
 
         push_event(0, EV_KEY, KEY_A, 0xbeef, 0, 0);
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
+        assert_eq!(newest_value(proc, ofd_idx), 0xbeef);
+        assert_eq!(oldest_value(proc, ofd_idx), 2);
     }
 
     #[test]

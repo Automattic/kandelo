@@ -703,10 +703,18 @@ export class NodeKernelHost {
    * (no-op) so the init path is symmetric with the browser; tests
    * call `injectInputEvent` directly afterwards.
    */
+  private attachedInputSource: InputSource | null = null;
+
   attachInputSource(
     source: InputSource,
     dims: { width: number; height: number },
   ): void {
+    // Stop and replace any previously attached source (dual-host parity with
+    // BrowserKernel); NodeInputSource.stop() is a no-op today, but keeping
+    // the lifecycle symmetric avoids a divergence when a real Node source
+    // (e.g. a TTY capture) is added.
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = source;
     this.setInputCanvasDims(dims.width, dims.height);
     source.start((ev) =>
       this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
@@ -983,6 +991,8 @@ export class NodeKernelHost {
 
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = null;
     if (!this.workerStarted) return;
     let gracefulDetachFailure: string | undefined;
     this.kernelWorkerExitExpected = true;

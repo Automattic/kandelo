@@ -4494,6 +4494,13 @@ pub fn sys_read(
     let file_type = ofd.file_type;
     let status_flags = ofd.status_flags();
     match file_type {
+        // /dev/dsp is playback-only. It accepts the standard OSS O_RDWR open,
+        // but has no capture source, so a read can never yield audio. Return
+        // ENXIO rather than fall through to the host with the negative PCM
+        // stream handle, and never park (no capture would wake a blocking
+        // reader). pcaudiolib/espeak only ever write, so this is a guard for
+        // the general OSS-full-duplex case.
+        FileType::PcmPlayback => Err(Errno::ENXIO),
         FileType::Pipe => {
             if host_handle >= 0 {
                 // Host-delegated pipe (cross-process): use host_read
@@ -4708,9 +4715,14 @@ pub fn sys_read(
                             }
                             let input = input_state(proc, ofd_idx)?;
                             let mut ring = input.ring.borrow_mut();
-                            // Blocking read returns Ok(0) (not park)
-                            // so the host can retry on a poll timer
-                            // — matches DriCard0.
+                            // Empty ring: O_NONBLOCK gets EAGAIN; a blocking
+                            // read returns Ok(0) (not a kernel park) so the
+                            // host retries on its poll timer — matches DriCard0
+                            // and is what the read-until-empty drain loop and
+                            // the host's retry path depend on. (Returning
+                            // EAGAIN for the blocking case instead parks the
+                            // read until the next injected event, which hangs a
+                            // drain that has already consumed the whole ring.)
                             if ring.event_ring.is_empty() && !ring.dropped {
                                 if status_flags & O_NONBLOCK != 0 {
                                     return Err(Errno::EAGAIN);
@@ -40737,6 +40749,22 @@ mod tests {
     }
 
     #[test]
+    fn read_on_rdwr_dsp_returns_enxio_not_a_stray_host_read() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut proc = Process::new(3);
+        let mut host = MockHostIO::new();
+        // O_RDWR is accepted for playback; a capture read has no source, so it
+        // must fail with ENXIO rather than fall through to the host with the
+        // negative PCM stream handle.
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 64];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENXIO);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
     fn inherited_dsp_descriptor_shares_ownership_and_nonblock_state() {
         use crate::process_table::ProcessTable;
 
@@ -45373,6 +45401,8 @@ mod tests {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
         let mut buf = [0u8; 24];
+        // Blocking read of an empty ring returns Ok(0) (the host retries on its
+        // poll timer); the read-until-empty drain loop relies on this.
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
         assert_eq!(n, 0);
     }

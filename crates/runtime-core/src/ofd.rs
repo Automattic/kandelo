@@ -289,11 +289,13 @@ pub const INPUT_RING_MAX_BYTES: usize = INPUT_RING_MAX_RECORDS * 24;
 /// Linux semantics replicated:
 /// * The ring is per-OFD, not per-process. `dup` / fork-inherit share
 ///   one ring; a fresh `open()` gets a new one.
-/// * On overflow, the **new** event is discarded and `dropped` is set
-///   (mirrors `drivers/input/evdev.c::evdev_pass_values`). The next
-///   `read()` synthesises a `SYN_DROPPED` record at the head of the
-///   returned buffer and clears `dropped`; userspace is expected to
-///   resynchronise by re-querying state via `EVIOCG*`.
+/// * On overflow, the **oldest** record is discarded to make room for the
+///   newest and `dropped` is set (mirrors
+///   `drivers/input/evdev.c::evdev_pass_values`, which advances the tail).
+///   Keeping the newest guarantees a key release is never the record
+///   dropped. The next `read()` synthesises a `SYN_DROPPED` record at the
+///   head of the returned buffer and clears `dropped`; userspace is
+///   expected to resynchronise by re-querying state via `EVIOCG*`.
 /// * `EVIOCGRAB` (exclusive grab) is not supported — the ioctl returns
 ///   `ENOTTY`. v1 fans every record out to all readers, so there is no
 ///   exclusivity state to keep here; real grab is deferred to a later

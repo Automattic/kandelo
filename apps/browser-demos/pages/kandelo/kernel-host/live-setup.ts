@@ -1545,10 +1545,22 @@ async function bootProfile(
       void (async () => {
         try {
           tick("attaching input source...");
-          kernelForEvdev.attachInputSource(new BrowserInputSource(window), {
-            width: window.innerWidth,
-            height: window.innerHeight,
-          });
+          kernelForEvdev.attachInputSource(
+            // Re-publish canvas dims on resize so EVIOCGABS maxima track the
+            // viewport (injected clientX/clientY grow with the window). The
+            // resize listener lives inside BrowserInputSource, so it is
+            // removed when the host stops the source on teardown/reboot.
+            new BrowserInputSource(window, () =>
+              kernelForEvdev.setInputCanvasDims(
+                window.innerWidth,
+                window.innerHeight,
+              ),
+            ),
+            {
+              width: window.innerWidth,
+              height: window.innerHeight,
+            },
+          );
           tick("running evdev_demo...");
           // evdev_demo runs forever; runShellCommand resolves when the
           // bash prompt reappears (it never will) or rejects after its

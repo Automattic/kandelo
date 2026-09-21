@@ -1041,10 +1041,17 @@ export class BrowserKernel {
    * `NodeKernelHost.attachInputSource` — dual-host parity per
    * CLAUDE.md §"Two hosts".
    */
+  private attachedInputSource: InputSource | null = null;
+
   attachInputSource(
     source: InputSource,
     dims: { width: number; height: number },
   ): void {
+    // Stop and replace any previously attached source so re-attach (demo
+    // reboot / image switch) does not leak its DOM listeners and keep
+    // injecting into a torn-down worker.
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = source;
     this.setInputCanvasDims(dims.width, dims.height);
     source.start((ev) =>
       this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
@@ -1295,6 +1302,9 @@ export class BrowserKernel {
 
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
+    // Remove input-source DOM listeners regardless of worker state.
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = null;
     if (!this.workerStarted) return;
     let gracefulDetachFailure: string | undefined;
     if (this.initialized && this.kernelFatalError === null) {

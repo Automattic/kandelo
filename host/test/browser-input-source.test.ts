@@ -187,15 +187,17 @@ describe("BrowserInputSource", () => {
     ]);
   });
 
-  it("wheel deltaMode=LINE with -3 lines normalises to +3 ticks", () => {
+  it("wheel deltaMode=LINE with -3 lines (one Firefox notch) normalises to +1 tick", () => {
     target.fire("wheel", {
       deltaMode: 1,
       deltaX: 0,
       deltaY: -3,
       preventDefault() {},
     });
+    // One physical notch is ±3 lines in LINE mode, so it must yield a single
+    // REL_WHEEL detent — the same as one ±120px notch in PIXEL mode — not 3.
     expect(recorded).toEqual([
-      { device: 1, ev_type: 0x02, code: 0x08, value: 3 },
+      { device: 1, ev_type: 0x02, code: 0x08, value: 1 },
       { device: 1, ev_type: 0x00, code: 0, value: 0 },
     ]);
   });

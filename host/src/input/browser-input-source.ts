@@ -44,7 +44,13 @@ export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
   private bindings: Array<[EventTarget, string, EventListener]> = [];
 
-  constructor(private target: EventTarget = window) {}
+  // `onResize` (optional) is invoked on window resize so the caller can
+  // re-publish the canvas dims to the kernel (EVIOCGABS maxima). It rides the
+  // same `bindings` list, so stop() removes it — no leaked resize listener.
+  constructor(
+    private target: EventTarget = window,
+    private onResize?: () => void,
+  ) {}
 
   start(dispatch: (ev: InputEvent) => void): void {
     this.dispatch = dispatch;
@@ -53,7 +59,11 @@ export class BrowserInputSource implements InputSource {
     this.bind("pointermove", this.onPointerMove);
     this.bind("pointerdown", this.onPointerDown);
     this.bind("pointerup", this.onPointerUp);
-    this.bind("wheel", this.onWheel);
+    if (this.onResize) this.bind("resize", this.onWindowResize);
+    // `wheel` listeners default to passive on window/document, which makes
+    // onWheel's e.preventDefault() a silent no-op (the page scrolls while we
+    // also inject REL_WHEEL). Register it non-passive so preventDefault works.
+    this.bind("wheel", this.onWheel, { passive: false });
     // `pointerlockchange` only fires on document, never on window — so
     // it can't go through this.bind which is parametric over `target`.
     // Tracked in `bindings` for symmetric removal in stop().
@@ -68,9 +78,13 @@ export class BrowserInputSource implements InputSource {
     this.dispatch = null;
   }
 
-  private bind(name: string, handler: (e: any) => void) {
+  private bind(
+    name: string,
+    handler: (e: any) => void,
+    options?: AddEventListenerOptions,
+  ) {
     const wrapped = handler.bind(this);
-    this.target.addEventListener(name, wrapped as EventListener);
+    this.target.addEventListener(name, wrapped as EventListener, options);
     this.bindings.push([this.target, name, wrapped as EventListener]);
   }
 
@@ -93,6 +107,10 @@ export class BrowserInputSource implements InputSource {
 
   private onPointerLockChange(): void {
     this.frame(1);
+  }
+
+  private onWindowResize(): void {
+    this.onResize?.();
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -144,16 +162,17 @@ export class BrowserInputSource implements InputSource {
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
-    // Browser deltaMode quanta: 0 = PIXEL (Safari ±1–10, Chromium
-    // ±100/±120 per notch), 1 = LINE (Firefox, ±3 per notch). Divide
-    // by the mode-specific scale, then clamp small-but-nonzero deltas
-    // to ±1 so a continuous-trackpad scroll still emits at least one
-    // tick (otherwise Math.trunc(0.3 / 120) = 0 and the entire scroll
-    // event disappears).
-    const scaleY = e.deltaMode === 1 ? 1 : 120;
-    const scaleX = e.deltaMode === 1 ? 1 : 120;
-    let ticks_y = Math.trunc(e.deltaY / -scaleY);
-    let ticks_x = Math.trunc(e.deltaX / scaleX);
+    // Browser deltaMode quanta, normalised to ~1 detent per physical notch:
+    //   0 = PIXEL (Chromium ±100/±120, Safari ±1–10 per notch) → ÷120
+    //   1 = LINE  (Firefox, ±3 lines per notch)                → ÷3
+    //   2 = PAGE  (±1 page per notch)                          → ÷120 = 0,
+    //             rescued by the ±1 clamp below.
+    // Then clamp small-but-nonzero deltas to ±1 so a continuous-trackpad
+    // scroll still emits at least one tick (otherwise Math.trunc(0.3/120)=0
+    // and the entire scroll event disappears).
+    const scale = e.deltaMode === 1 ? 3 : 120;
+    let ticks_y = Math.trunc(e.deltaY / -scale);
+    let ticks_x = Math.trunc(e.deltaX / scale);
     if (ticks_y === 0 && e.deltaY !== 0) ticks_y = e.deltaY < 0 ? 1 : -1;
     if (ticks_x === 0 && e.deltaX !== 0) ticks_x = e.deltaX > 0 ? 1 : -1;
     if (ticks_y !== 0) this.emit(1, EV_REL, REL_WHEEL, ticks_y);
