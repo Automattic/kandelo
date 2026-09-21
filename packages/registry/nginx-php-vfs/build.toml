@@ -8,6 +8,7 @@ inputs = [
   "images/vfs/scripts/opcache-prewarm.ts",
   "images/vfs/scripts/package-shell-vfs-build.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
+  "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
@@ -23,4 +24,4 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 8
+revision = 9

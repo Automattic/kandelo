@@ -16,6 +16,7 @@ import {
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
+import { ensureFile } from "./source-extract-helper";
 import {
   addDinitInit,
   type DinitBinaryInputs,
@@ -83,7 +84,10 @@ http {
             fastcgi_index fpm-router.php;
             include /etc/nginx/fastcgi_params;
             fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
-            fastcgi_param SCRIPT_NAME /fpm-router.php;
+            # Report the requested path (not the router) as SCRIPT_NAME so
+            # front controllers like Adminer build self-links against the
+            # real URL (/, /info.php) instead of /fpm-router.php.
+            fastcgi_param SCRIPT_NAME $document_uri;
         }
     }
 }
@@ -183,7 +187,132 @@ chdir($docRoot);
 include $docRoot . '/index.php';
 `;
 
-const INDEX_PHP = `<?php
+// Runtime location of the demo SQLite database. PHP-FPM (running as `nobody`)
+// creates and seeds it on the first request, so /var/www/data must be
+// world-writable. The path is shared by the Adminer landing page and any
+// terminal/PHP inspection.
+const DEMO_DB_PATH = "/var/www/data/demo.db";
+
+// Sample database seeded on first request. A small bookstore schema gives
+// Adminer real tables, rows, and a foreign key to browse and edit.
+const SEED_SQL = `PRAGMA foreign_keys = ON;
+
+CREATE TABLE authors (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT NOT NULL,
+    country TEXT
+);
+
+CREATE TABLE books (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    title     TEXT NOT NULL,
+    author_id INTEGER REFERENCES authors(id),
+    year      INTEGER,
+    price     REAL
+);
+
+INSERT INTO authors (name, country) VALUES
+    ('Ursula K. Le Guin', 'USA'),
+    ('Jorge Luis Borges', 'Argentina'),
+    ('Italo Calvino', 'Italy'),
+    ('Octavia E. Butler', 'USA');
+
+INSERT INTO books (title, author_id, year, price) VALUES
+    ('A Wizard of Earthsea', 1, 1968, 12.99),
+    ('The Left Hand of Darkness', 1, 1969, 14.50),
+    ('Ficciones', 2, 1944, 11.00),
+    ('Labyrinths', 2, 1962, 13.25),
+    ('Invisible Cities', 3, 1972, 10.75),
+    ('If on a winter''s night a traveler', 3, 1979, 15.00),
+    ('Kindred', 4, 1979, 13.99),
+    ('Parable of the Sower', 4, 1993, 14.99);
+`;
+
+// Landing page: Adminer, auto-connected to the pre-seeded SQLite database.
+//
+// The database is created by PHP-FPM itself on the first request using the
+// runtime pdo_sqlite driver (statically linked into php-fpm.wasm) rather than
+// baked in from the Node builder, so the demo shows genuine system state. On
+// the bare landing request (empty query string) we inject a one-shot SQLite
+// login; Adminer then redirects to its normal ?sqlite=... URLs, so the
+// injection never re-fires and cannot loop.
+const ADMINER_INDEX_PHP = `<?php
+$dbPath = '${DEMO_DB_PATH}';
+$dataDir = dirname($dbPath);
+
+// Seed the demo database lazily. Workers are race-safe: build into a
+// per-process temp file, then atomically rename into place. Every worker
+// produces identical content, so last-writer-wins is harmless.
+if (!file_exists($dbPath)) {
+    if (!is_dir($dataDir)) {
+        @mkdir($dataDir, 0777, true);
+    }
+    $tmp = $dbPath . '.' . getmypid() . '.tmp';
+    @unlink($tmp);
+    try {
+        $pdo = new PDO('sqlite:' . $tmp);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec(file_get_contents(__DIR__ . '/seed.sql'));
+        $pdo = null;
+        @chmod($tmp, 0666);
+        if (!file_exists($dbPath)) {
+            rename($tmp, $dbPath);
+        } else {
+            @unlink($tmp);
+        }
+    } catch (Throwable $e) {
+        $pdo = null;
+        @unlink($tmp);
+    }
+}
+
+// One-shot auto-login to the SQLite file on the bare landing request.
+if (empty($_GET)) {
+    $_POST['auth'] = [
+        'driver'   => 'sqlite',
+        'server'   => '',
+        'username' => '',
+        'password' => '',
+        'db'       => $dbPath,
+    ];
+}
+
+function adminer_object() {
+    class KandeloAdminer extends Adminer {
+        function name() {
+            return 'Kandelo SQLite demo';
+        }
+        function login($login, $password) {
+            return true; // single local SQLite file; no credentials needed
+        }
+        function csp() {
+            // Adminer hard-codes 'X-Frame-Options: deny', which blocks the
+            // demo from embedding it in the web-preview iframe. Its default
+            // CSP has no frame-ancestors directive; adding one makes browsers
+            // ignore X-Frame-Options (CSP frame-ancestors takes precedence).
+            // The demo shell and the /app iframe are same-origin, so 'self'
+            // is sufficient.
+            $policies = parent::csp();
+            foreach ($policies as $i => $policy) {
+                $policies[$i]['frame-ancestors'] = "'self'";
+            }
+            return $policies;
+        }
+    }
+    return new KandeloAdminer;
+}
+
+// Adminer 4.8.1 predates PHP 8 and emits benign warnings (e.g. "array offset
+// on null"). Keep them out of the rendered page but still logged to
+// php-fpm.log so the compatibility gap stays visible in the real record.
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+error_reporting(E_ALL & ~E_DEPRECATED);
+include __DIR__ . '/adminer.php';
+`;
+
+// Secondary page kept at /info.php: the original PHP-FPM status view.
+const INFO_PHP = `<?php
 $mem = memory_get_usage(true);
 $extensions = get_loaded_extensions();
 sort($extensions);
@@ -200,6 +329,7 @@ sort($extensions);
     table { border-collapse: collapse; width: 100%; }
     td, th { padding: 0.4rem; text-align: left; border-bottom: 1px solid #ddd; }
     th { background: #f5f5f5; }
+    a { color: #6b63a6; }
   </style>
 </head>
 <body>
@@ -209,6 +339,7 @@ sort($extensions);
     proxied via FastCGI from <strong>nginx</strong>, both running inside
     the same POSIX kernel. dinit, the first user process, brought them up in dependency
     order: php-fpm first, then nginx.</p>
+    <p><a href="/">&larr; Back to Adminer</a> &mdash; browse the demo SQLite database.</p>
   </div>
   <table>
     <tr><th>PHP version</th><td><?= PHP_VERSION ?></td></tr>
@@ -225,6 +356,8 @@ export interface NginxPhpVfsImageBuildInputs {
   nginx: Uint8Array;
   phpFpm: Uint8Array;
   opcache: Uint8Array;
+  /** Adminer's single-file PHP release, served as the demo landing page. */
+  adminer: Uint8Array;
   dinit?: DinitBinaryInputs;
   buildPrograms?: {
     php: Uint8Array;
@@ -267,15 +400,31 @@ export async function buildNginxPhpVfsImage(
   writeVfsFile(fs, "/etc/php-fpm.conf", PHP_FPM_CONF);
   writeVfsFile(fs, "/etc/php.ini", PHP_INI);
   writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
-  writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
+  writeVfsFile(fs, "/var/www/html/index.php", ADMINER_INDEX_PHP);
+  writeVfsBinary(fs, "/var/www/html/adminer.php", inputs.adminer, 0o644);
+  writeVfsFile(fs, "/var/www/html/seed.sql", SEED_SQL);
+  writeVfsFile(fs, "/var/www/html/info.php", INFO_PHP);
   fs.chown("/var/www", DEMO_UID, DEMO_GID);
   fs.chown("/var/www/html", DEMO_UID, DEMO_GID);
   fs.chown("/var/www/fpm-router.php", DEMO_UID, DEMO_GID);
   fs.chown("/var/www/html/index.php", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html/adminer.php", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html/seed.sql", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html/info.php", DEMO_UID, DEMO_GID);
   fs.chmod("/var/www", 0o755);
   fs.chmod("/var/www/html", 0o755);
   fs.chmod("/var/www/fpm-router.php", 0o644);
   fs.chmod("/var/www/html/index.php", 0o644);
+  fs.chmod("/var/www/html/adminer.php", 0o644);
+  fs.chmod("/var/www/html/seed.sql", 0o644);
+  fs.chmod("/var/www/html/info.php", 0o644);
+
+  // Writable data dir for the SQLite database PHP-FPM seeds on first request.
+  // php-fpm runs as `nobody`, so this must be world-writable (mirrors the
+  // /tmp 1777 precedent above).
+  ensureDirRecursive(fs, "/var/www/data");
+  fs.chown("/var/www/data", DEMO_UID, DEMO_GID);
+  fs.chmod("/var/www/data", 0o777);
 
   // Prewarm opcache: compile the demo's router and document-root PHP
   // files into the file cache so the first request doesn't pay the parse
@@ -318,6 +467,33 @@ export async function buildNginxPhpVfsImage(
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
 }
 
+// Adminer ships as one self-contained PHP file with no archive, so it does not
+// fit the package resolver's archive/repository source schema. It is fetched
+// and sha256-verified directly here instead. These constants also appear as
+// provenance in images/vfs/products/browser-nginx-php.toml; bumping them
+// invalidates the image cache because this file is a declared build input.
+const ADMINER_URL =
+  "https://github.com/vrana/adminer/releases/download/v4.8.1/adminer-4.8.1-en.php";
+const ADMINER_SHA256 =
+  "4ec36be619bb571e2b5a5d4051bfe06f3fcadb3004969b993f2535f6ce28116b";
+
+/**
+ * Resolve Adminer's single-file PHP release. A hermetic build can pre-stage
+ * the directory containing it via WASM_POSIX_DEP_ADMINER_DIR; otherwise the
+ * pinned file is fetched and sha256-verified from its upstream release.
+ */
+function resolveAdminerSource(): string {
+  const alias = process.env.WASM_POSIX_DEP_ADMINER_DIR;
+  if (alias !== undefined) {
+    return join(alias, "adminer.php");
+  }
+  return ensureFile({
+    url: ADMINER_URL,
+    sha256: ADMINER_SHA256,
+    cacheKey: "adminer",
+  });
+}
+
 async function main(): Promise<void> {
   const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
   const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
@@ -328,6 +504,7 @@ async function main(): Promise<void> {
     shellImage: shellRoot === undefined
       ? undefined
       : new Uint8Array(readFileSync(join(shellRoot, "shell.vfs.zst"))),
+    adminer: new Uint8Array(readFileSync(resolveAdminerSource())),
     nginx: new Uint8Array(readFileSync(nginxRoot === undefined
       ? resolveBinary("programs/nginx.wasm")
       : join(nginxRoot, "nginx.wasm"))),
