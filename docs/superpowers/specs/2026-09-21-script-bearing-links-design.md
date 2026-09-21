@@ -115,12 +115,10 @@ highest-precedence *shell-command* branch (above
 surface test and keeps its position):
 
 1. Before the ladder runs:
-   `host.writeFile("/tmp/kandelo-link.sh", bytes, 0o444)` — `/tmp` is
+   `host.writeFile("/tmp/kandelo-link.sh", bytes, 0o755)` — `/tmp` is
    the always-present ephemeral scratch mount, so no mkdir is needed.
-   The file is written read-only: it is link-provided input the
-   visitor should be able to inspect but not mistake for an editable
-   local file, and `bash <file>`/`sh <file>` does not need the execute
-   bit.
+   The file is left in place writable so the visitor can inspect,
+   edit, and re-run it after boot.
 2. Resolve the invoking shell: the image's configured default shell
    (`/etc/kandelo/shell.json` via the host's shell config, the same
    source `startShellCommand` uses for prompt detection), falling back

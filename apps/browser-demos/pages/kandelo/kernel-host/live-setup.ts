@@ -1134,10 +1134,9 @@ async function runLinkScript(
   text: string,
   tick: (msg: string) => void,
 ): Promise<void> {
-  // Read-only (0444): the script is link-provided input the user should be
-  // able to inspect (`cat`) but not mistake for an editable local file.
-  // `bash <file>` does not need the execute bit.
-  await host.writeFile(LINK_SCRIPT_PATH, new TextEncoder().encode(text), 0o444);
+  // Left writable and executable (0755): the visitor can edit and re-run
+  // the script after boot to experiment with it.
+  await host.writeFile(LINK_SCRIPT_PATH, new TextEncoder().encode(text), 0o755);
   // "Default shell" for the invocation: the PTY session program is login,
   // not a shell, so probe the image for bash and fall back to sh. Authors
   // needing another interpreter can exec it from the script body.
