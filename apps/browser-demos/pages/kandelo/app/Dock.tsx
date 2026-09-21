@@ -45,7 +45,7 @@ const INTERNALS_ITEM: DockItem<"internals"> = {
 
 const GUIDE_ITEM: DockItem<"guide"> = {
   id: "guide",
-  label: "Guide",
+  label: "Demo",
   title: "Demo guide",
   icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M4 2.5h6.5L13 5v8.5H4z" /><path d="M10.5 2.5V5H13" /><path d="M6 7h5M6 9.5h5M6 12h3" /></svg>,
 };
@@ -508,6 +508,20 @@ export const Dock: React.FC<{
                   <span className="kdock-label">{SHARE_ITEM.label}</span>
                 </button>
                 <button
+                  ref={guideButtonRef}
+                  type="button"
+                  className="kdock-item"
+                  aria-pressed={guideOpen}
+                  aria-expanded={guideOpen}
+                  title={GUIDE_ITEM.title}
+                  aria-label={GUIDE_ITEM.title}
+                  disabled={!guideAvailable}
+                  onClick={onToggleGuide}
+                >
+                  <span className="kdock-icon">{GUIDE_ITEM.icon}</span>
+                  <span className="kdock-label">{GUIDE_ITEM.label}</span>
+                </button>
+                <button
                   ref={internalsButtonRef}
                   type="button"
                   className="kdock-item"
@@ -531,19 +545,6 @@ export const Dock: React.FC<{
                 >
                   <span className="kdock-icon">{THEME_ITEM.icon}</span>
                   <span className="kdock-label">{THEME_ITEM.label}</span>
-                </button>
-                <button
-                  ref={guideButtonRef}
-                  type="button"
-                  className="kdock-item"
-                  aria-pressed={guideOpen}
-                  aria-expanded={guideOpen}
-                  title={GUIDE_ITEM.title}
-                  disabled={!guideAvailable}
-                  onClick={onToggleGuide}
-                >
-                  <span className="kdock-icon">{GUIDE_ITEM.icon}</span>
-                  <span className="kdock-label">{GUIDE_ITEM.label}</span>
                 </button>
               </div>
             </div>

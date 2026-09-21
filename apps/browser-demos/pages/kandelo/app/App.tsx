@@ -65,7 +65,9 @@ export const App: React.FC = () => {
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
   const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: true });
-  const [demoGuideOpen, setDemoGuideOpen] = React.useState(demoGuide !== null);
+  // The demo guide never auto-opens; the dock's Demo button is the only way
+  // in. Machines with a guide simply have that button enabled.
+  const [demoGuideOpen, setDemoGuideOpen] = React.useState(false);
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
@@ -139,7 +141,8 @@ export const App: React.FC = () => {
     const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
     if (autoOpenedDemoGuideKey.current === key) return;
     autoOpenedDemoGuideKey.current = key;
-    setDemoGuideOpen(dockPane === null && demoGuide !== null);
+    // Close a guide left open by the previous machine; never auto-open.
+    setDemoGuideOpen(false);
   }, [demoGuide?.title, desc.id, dockPane]);
 
   React.useEffect(() => {
