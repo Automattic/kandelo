@@ -1,7 +1,15 @@
 script_path = "packages/registry/msmtpd/build-msmtpd.sh"
+# `crates/fork-instrument` added 2026-09-21. The wrapper script was listed and
+# the INSTRUMENTER ITSELF was not, so a change to the tool that rewrites this
+# guest did not move msmtpd's cache key. Combined with a reuse guard in
+# build-msmtpd.sh (since removed), that shipped an msmtpd missing
+# `__wpk_fork_place_resume_thunks`, which the host requires at process start --
+# so the binary died before `_start` and the build that produced it was green.
+# Same shape as the kernel build.toml omitting crates/runtime-core.
 inputs = [
   "scripts/run-wasm-fork-instrument.sh",
+  "crates/fork-instrument",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 2
+revision    = 3

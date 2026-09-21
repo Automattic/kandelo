@@ -15,12 +15,26 @@ SRC_DIR="$SCRIPT_DIR/msmtp-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 OUT="$BIN_DIR/msmtpd.wasm"
 
-if [ -f "$OUT" ]; then
-    echo "==> Reusing existing msmtpd artifact in $BIN_DIR (skip rebuild)."
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
-    install_local_binary msmtpd "$OUT"
-    exit 0
-fi
+# There used to be a reuse guard here: `if [ -f "$OUT" ]` then install the
+# existing artifact and `exit 0`. It was the only one of its kind in the
+# registry, it carried no stated reason, and it shipped a broken msmtpd.
+#
+# What it actually did was skip the compile AND the fork instrumentation. So
+# when the fork instrumenter gained `__wpk_fork_place_resume_thunks` and the
+# host began requiring it at process start, a full `./run.sh local-build`
+# rebuilt msmtpd as a graph node, reported success, and published a September
+# artifact byte-for-byte unchanged. The resulting binary died before `_start`
+# with "activation 0 exports no __wpk_fork_place_resume_thunks", and the build
+# that produced it was green.
+#
+# `packages/registry/*/bin/` is gitignored, so a fresh clone never had the
+# stale input and instrumented normally. That is what made this invisible: it
+# only reproduced in a worktree that had built msmtpd before, which is every
+# long-lived development checkout and no CI job.
+#
+# Caching belongs to the resolver and the source-only cache, which key on the
+# build closure. A package script deciding for itself that its own output is
+# still good cannot see that a tool upstream of it changed.
 
 if ! command -v wasm32posix-cc >/dev/null 2>&1; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
