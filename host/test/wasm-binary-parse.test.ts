@@ -576,6 +576,15 @@ function completeForkWasm(options: {
   includeNativeStart?: boolean;
   abiVersion?: number;
   includeAbiMarker?: boolean;
+  /**
+   * Required fork exports to leave OUT of the export section.
+   *
+   * Models the one artifact shape that matters here: a guest an older
+   * instrumenter produced, complete in every other respect, that simply does
+   * not export one of the names this ABI requires. The function is still
+   * defined so every other index stays where it was; only the export is gone.
+   */
+  omitExports?: readonly string[];
 } = {}): ArrayBuffer {
   const pointerWidth = options.pointerWidth ?? 4;
   const exportPointerWidth = options.exportPointerWidth ?? pointerWidth;
@@ -729,7 +738,7 @@ function completeForkWasm(options: {
         name: requirement.name,
         kind: 0 as const,
         index: firstDefinedFunction + index,
-      })),
+      })).filter(({ name }) => !(options.omitExports ?? []).includes(name)),
       ...(options.includeAbiMarker === false ? [] : [{
         name: "__abi_version",
         kind: 0 as const,
@@ -1029,6 +1038,7 @@ describe("wasm artifact policy helpers", () => {
     expect(failures.some((failure) =>
       failure.startsWith("incomplete wasm-fork-instrument exports; missing ")
       && failure.includes("__wpk_fork_ref_decode_exnref")
+      && failure.includes("__wpk_fork_place_resume_thunks")
       && failure.includes("wpk_fork_unwind_end")
     )).toBe(true);
     expect(failures).toContain(
@@ -1046,6 +1056,26 @@ describe("wasm artifact policy helpers", () => {
       const wasm = completeForkWasm({ pointerWidth });
       expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(true);
       expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: ABI_VERSION })).toEqual([]);
+    }
+  });
+
+  // The host calls `__wpk_fork_place_resume_thunks` while it registers an
+  // activation, and a guest that cannot answer dies there -- after `_start`
+  // has already been reached, with a message that names no export. The whole
+  // point of listing the export is that publication refuses such an artifact
+  // first, by name, so "rebuild it" is the obvious next step rather than a
+  // debugging session. This asserts that refusal, because a required-export
+  // entry nothing enforces reads as protection while providing none.
+  it("refuses an otherwise-complete artifact that omits the resume-thunk placement export", () => {
+    for (const pointerWidth of [4, 8] as const) {
+      const wasm = completeForkWasm({
+        pointerWidth,
+        omitExports: ["__wpk_fork_place_resume_thunks"],
+      });
+      expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
+      expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: ABI_VERSION })).toContain(
+        "incomplete wasm-fork-instrument exports; missing __wpk_fork_place_resume_thunks",
+      );
     }
   });
 

@@ -2907,6 +2907,23 @@ pub mod abi {
     pub const WPK_FORK_RESUME_IMPORT_PEEK: &str = "__wpk_fork_resume_peek";
     pub const WPK_FORK_RESUME_IMPORT_TABLE: &str = "__wpk_fork_resume_table";
 
+    /// Applies one activation's resume-thunk placement inside the guest.
+    ///
+    /// `(ptr, count) -> placed` over packed `(ordinal: u32, slot: u32)` pairs
+    /// the fork module writes into shared linear memory. The guest owns its
+    /// resume catalog and imports the process-owned resume table named by
+    /// `WPK_FORK_RESUME_IMPORT_TABLE` just above, so the copy between them is
+    /// a `table.get` and a `table.set` it can perform itself.
+    ///
+    /// WHY this is ABI and not a private instrumenter/host spelling: the host
+    /// looks this export up at process start and refuses the process without
+    /// it, so a guest built by an older instrumenter cannot run. That is the
+    /// same publication-time contract every other entry in
+    /// `WPK_FORK_REQUIRED_EXPORTS` carries, and leaving it out of the table
+    /// let a stale artifact publish and then die at `registerActivation` with
+    /// an anonymous message instead of being rejected by name.
+    pub const WPK_FORK_RESUME_EXPORT_PLACE_THUNKS: &str = "__wpk_fork_place_resume_thunks";
+
     pub const WPK_FORK_MODULE_STATE_IMPORT_MODULE: &str = "env";
     pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT: &str =
         "__wpk_fork_module_state_record_commit";
@@ -3346,6 +3363,11 @@ pub mod abi {
             name: WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
             params: &[I32],
             results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_RESUME_EXPORT_PLACE_THUNKS,
+            params: &[Pointer, I32],
+            results: &[I32],
         },
         ProgramArtifactExport {
             name: WPK_FORK_EXCEPTION_EXPORT_DECODE,
@@ -4457,7 +4479,7 @@ pub mod abi {
                 );
                 previous_table_import = current;
             }
-            assert_eq!(WPK_FORK_REQUIRED_EXPORTS.len(), 28);
+            assert_eq!(WPK_FORK_REQUIRED_EXPORTS.len(), 29);
             let mut previous_export = "";
             for requirement in WPK_FORK_REQUIRED_EXPORTS {
                 assert!(

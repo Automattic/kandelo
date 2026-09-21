@@ -415,6 +415,7 @@ export const WPK_FORK_REQUIRED_TABLE_IMPORTS = [
 ] as const;
 export const WPK_FORK_REQUIRED_EXPORTS = [
   { name: "__wpk_fork_exception_materialize", params: ["i32"], results: [] },
+  { name: "__wpk_fork_place_resume_thunks", params: ["ptr", "i32"], results: ["i32"] },
   { name: "__wpk_fork_ref_decode_exnref", params: ["i32"], results: ["exnref"] },
   { name: "__wpk_fork_ref_encode_exnref", params: ["exnref"], results: ["i32"] },
   { name: "__wpk_fork_ref_exn_abort", params: [], results: [] },

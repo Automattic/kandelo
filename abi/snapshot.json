@@ -6032,6 +6032,17 @@
         },
         {
           "kind": "func",
+          "name": "__wpk_fork_place_resume_thunks",
+          "params": [
+            "ptr",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
           "name": "__wpk_fork_ref_decode_exnref",
           "params": [
             "i32"
