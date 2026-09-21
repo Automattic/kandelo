@@ -56,6 +56,16 @@ kernel = "required"
 host = "required"
 
 [[registrations]]
+product = "browser-nginx-python"
+node = ["nginx-python-vfs-node-startup"]
+browser = ["nginx-python-vfs-browser-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
 product = "browser-wordpress"
 node = ["wordpress-sqlite-node-startup"]
 browser = ["wordpress-sqlite-browser-e2e"]
