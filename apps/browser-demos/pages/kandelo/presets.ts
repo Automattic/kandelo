@@ -60,7 +60,7 @@ export const PRESET_LIBRARY: Preset[] = [
   {
     id: "nginx-php",
     title: "nginx + PHP",
-    summary: "nginx forwarding through FastCGI to PHP-FPM.",
+    summary: "Adminer database manager: nginx → FastCGI → PHP-FPM, backed by SQLite.",
     base: SHELL_BASE,
     packages: ["dinit@local", "nginx@local", "php-fpm@local", "bash@local", "coreutils@local"],
     accent: "#6b63a6",
