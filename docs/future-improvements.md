@@ -1740,46 +1740,54 @@ pattern in `build_deps.rs`. The same shape has now been found four times --
 the kernel `build.toml` omitting `crates/runtime-core`, the `has_programs()`
 hand-list, `newest_input()` omitting the instrumenter, and this.
 
-### There is a fourth freshness list, and it is the ABI contract itself
+### The fourth freshness list was the ABI contract itself, and it is closed
 
-The three lists above are build-side. A fourth lives in the ABI contract:
+The three lists above are build-side. A fourth lived in the ABI contract:
 `crates/shared/src/lib.rs`'s `WPK_FORK_REQUIRED_EXPORTS`, a hand-written
-table of 28 `wpk_fork_*` guest exports. It is the authoritative one, and it
-does not list `__wpk_fork_place_resume_thunks` either.
+table of the `wpk_fork_*` guest exports an instrumented artifact must carry.
+It did not list `__wpk_fork_place_resume_thunks`, so the export the host
+calls before a forked child can resume was not one the platform required.
 
 `docs/agent-guidance/abi.md:13-28` names "`wasm-fork-instrument`'s
-`wpk_fork_*` exports" as ABI surface, so the new export is ABI surface by the
-enumeration. Three separate mechanisms read the list and therefore cannot see
-it:
+`wpk_fork_*` exports" as ABI surface, so the export was ABI surface by that
+enumeration. It is now listed, under ABI 44 and with no version bump: 44 is
+unreleased and this lane defines its contents, so the entry is additive
+within the epoch. `abi/snapshot.json` records the list at
+`/program_artifact/fork_instrumentation/required_exports` and was
+regenerated in the same change.
 
-1. **Publication.** `tools/xtask/src/build_deps.rs:15119-15127` rejects an
-   artifact with fork surface that is missing any listed export
-   ("has incomplete ABI 43 wasm-fork-instrument exports; missing ..."). A
-   guest instrumented by a pre-2026-09-20 toolchain passes.
-2. **Process admission.** `host/src/worker-main.ts:3154-3166` refuses a guest
-   carrying some but not all of them ("incomplete wasm-fork-instrument
-   exports; ... Rebuild the package for the current ABI"). The same stale
-   guest passes here too, and dies later and differently, from
-   `ForkResumeTable.registerActivation`
-   (`host/src/fork-resume-table.ts:189-198`).
-3. **`dlsym` visibility.** `host/src/dylink-artifact.ts:44-59` derives
-   `isForkRuntimeExport` from the same list so activation-control machinery
-   is not handed out as an application symbol. `dlsym` on a side module can
-   currently return the placement shim.
+Two mechanisms gained a check they did not have:
 
-`abi/snapshot.json` records the list at
-`/program_artifact/fork_instrumentation/required_exports`, so the snapshot is
-missing the entry for the same reason. Regenerating it is a no-op until the
-list is corrected: the snapshot is generated from `wasm_posix_shared` plus the
-kernel wasm, and neither the fork module's own imports
-(`__wpk_fork_resume_null`) nor its own exports
-(`fm_publish_resume_assignment`) are in either source. Adding the entry is
-additive and belongs under ABI 44, which is unreleased.
+1. **Publication.** `tools/xtask/src/build_deps.rs` rejects an artifact with
+   fork surface that is missing any listed export ("has incomplete ABI 43
+   wasm-fork-instrument exports; missing ..."). A guest instrumented by a
+   pre-2026-09-20 toolchain used to pass; it is now named and refused.
+2. **Process admission.** `host/src/worker-main.ts` refuses a guest carrying
+   some but not all of them, before `_start`. The same stale guest used to
+   reach `ForkResumeTable.registerActivation` and fail there instead --
+   which does name the export, so the gain is not a better message but an
+   earlier and cheaper one: refused at publication and at process start
+   rather than at the first `fork()`.
 
-Doing so is deliberately left for the maintainer, because it converts latent
-staleness into a loud refusal for at least one package that ships today (see
-below) -- which is the behaviour `docs/agent-guidance/abi.md` asks for, but
-not a gate to introduce without a rebuild plan.
+A third mechanism was expected to change and did not. `dlsym` visibility
+(`host/src/dylink-artifact.ts`, `crates/dylink/src/scope.rs`) derives
+`is_fork_runtime_export` from the same list, and the concern was that
+`dlsym` on a side module could hand the placement shim out as an application
+symbol. It could not. Every path that publishes a symbol into a scope --
+`publish_main_image`, `rebuild_global_symbols`,
+`publish_global_library_symbols`, `scoped_symbol` and the collection in
+`plan.rs` -- filters with `is_public_dylink_export`, which rejects any
+`__`-prefixed name before the fork-export test is reached. The TypeScript
+`isForkRuntimeExport` has no in-tree caller at all. Listing the export
+tightens that predicate; it did not fix a reachable defect.
+
+What remains open is item 2 above, and it is now the only way a stale guest
+is still certified complete: `wasm_has_complete_fork_instrumentation`
+(`scripts/wasm-artifact-guards.sh`) reads a fixed-arity inventory from
+`crates/fork-instrument/src/contract_inventory.rs`, whose fields are
+hand-enumerated and independent of `WPK_FORK_REQUIRED_EXPORTS`. A package
+that ships a prebuilt `bin/` can still be told it needs no re-instrumenting
+by a predicate that has never heard of the export the ABI now requires.
 
 ### `dash` ships a stale fork-instrumented guest, and six packages could
 
@@ -1809,6 +1817,29 @@ did not, and nothing in its cache key could have noticed.
 
 `packages/registry/*/bin/` is gitignored, so this reproduces only in a
 checkout that has built before -- the same invisibility described above.
+
+Re-measured on 2026-09-21 after the ABI table was corrected and the whole
+artifact tier was rebuilt through `./run.sh setup`. Three things held and one
+did not:
+
+- The artifact anything actually resolves is now correct.
+  `local-binaries/source-only-v1/programs/wasm32/dash.wasm` was rebuilt from
+  source and carries the export. That tier is the highest-priority one for
+  Node, Vitest and the browser alike, so the shell a test or a demo gets is
+  the fresh one.
+- `packages/registry/dash/bin/dash.wasm` is still the Sep 20 13:28 prebuilt,
+  untouched by the rebuild, and so is the default-policy symlink
+  `local-binaries/programs/wasm32/dash.wasm` that points into
+  `.kandelo-local-generations/`. Both are now refused by name rather than
+  accepted, which is the intended behaviour -- but a full setup did not
+  replace either, so "rebuild it" is not yet a command a reader can run.
+- A `dash` cache generation built at 16:04, DURING that same setup and after
+  the ABI table already required the export, does not carry it. It is not
+  referenced by the projection, so nothing resolves it, and its 615,845 bytes
+  match neither the stale prebuilt (628,476) nor the fresh build (628,745) --
+  a third shape, from some dependency context that was not identified. Worth
+  identifying before trusting that publication validation runs on every node
+  that stages a guest.
 
 ### `tsc` does not typecheck `host/test`
 
