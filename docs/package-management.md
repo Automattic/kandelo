@@ -94,6 +94,23 @@ those products and their transitive package dependencies. `--jobs` bounds
 concurrently running nodes; ready nodes start as soon as their own dependencies
 finish.
 
+A narrower selection, including the kernel-only build that `./run.sh build
+<pkg>` performs first, adds to the published projection instead of replacing
+it. Packages the projection already records stay published when every compiled
+package in their dependency closure still matches its cache receipt under the
+current cache keys. Packages that no longer match are dropped with a
+`dropping <pkg> from the published projection` message, so the projection never
+names an output that is not current. A later full `./run.sh local-build`
+restores them.
+
+A node is reported cached without launching its build child only when its cache
+entry and receipt are present and every output it projects into
+`local-binaries/source-only-v1` hashes to the receipt's SHA-256. Size alone is
+not enough: artifacts embed their fixed-length cache key, so an output left by
+an earlier cache key usually has the same size. The finalizer then leaves the
+published projection untouched only when it already records this run's exact
+package set, cache keys, and receipts.
+
 The machine-readable result contains every selected node and whether it was
 newly published or reused from cache. If a node fails, independent work drains
 and the command exits nonzero after printing failed and blocked counts. Fix the

@@ -9137,9 +9137,11 @@ pub(crate) fn read_source_only_cache_receipt(
 /// qualifies only when its entry is present and passes the trusted validation
 /// (declared-output shape + wasm/fork/ABI policy + provenance, no whole-tree
 /// re-hash), its receipt sidecar is present, and every projected member the
-/// receipt claims is present in `output_root`. Any uncertainty — a missing
-/// entry, absent or unreadable sidecar, corrupt provenance, or a missing
-/// projected file — returns `None` so the authoritative child path runs. It
+/// receipt claims is present in `output_root` with its recorded size, mode,
+/// and SHA-256.
+/// Any uncertainty — a missing entry, absent or unreadable sidecar, corrupt
+/// provenance, or a missing or mismatched projected file — returns `None` so
+/// the authoritative child path runs. It
 /// therefore never reports a node cached that a build would have changed.
 #[cfg(unix)]
 pub(crate) fn source_only_skip_receipt_if_clean(
@@ -9183,16 +9185,44 @@ pub(crate) fn source_only_skip_receipt_if_clean(
     let receipt = read_source_only_cache_receipt(&canonical, &cache_key_sha256)
         .ok()
         .flatten()?;
+    // Each projected member must be the exact bytes this receipt materialized,
+    // not just a file at its path. Size and mode are not enough: artifacts embed
+    // their fixed-length cache key, so a mirror left by an earlier cache key is
+    // usually the same size with different bytes. Reporting it Cached would
+    // leave the stale mirror in place for every later trusted run.
     for member in &receipt.materialized_members {
         let projected = output_root.join(&member.mirror_path);
-        let present = std::fs::symlink_metadata(&projected)
-            .map(|meta| meta.is_file())
-            .unwrap_or(false);
-        if !present {
+        if !projected_member_matches(&projected, member) {
             return None;
         }
     }
     Some(receipt)
+}
+
+/// Whether `path` is a regular (non-symlink) file with the member's recorded
+/// size, mode, and SHA-256.
+#[cfg(unix)]
+fn projected_member_matches(path: &Path, member: &MaterializedProgramMemberV1) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() != member.size || meta.mode() & 0o7777 != member.mode {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        match std::io::Read::read(&mut file, &mut buffer) {
+            Ok(0) => break,
+            Ok(count) => hasher.update(&buffer[..count]),
+            Err(_) => return false,
+        }
+    }
+    hex(&hasher.finalize()) == member.sha256
 }
 
 /// Resolve exactly one scheduler-selected node under SourceOnlyV1. Compiled
@@ -36924,7 +36954,24 @@ commit = "1111111111111111111111111111111111111111"
             "a clean built node must be skippable with its persisted receipt"
         );
 
+        // A mirror left by an earlier cache key sits at the same path with
+        // different bytes; reporting it Cached would leave it stale forever.
         let projected = output.join(&receipt.materialized_members[0].mirror_path);
+        // Artifacts embed their fixed-length cache key, so the stale mirror is
+        // typically the same size: flip one byte in place.
+        let original = fs::read(&projected).unwrap();
+        let mut stale = original.clone();
+        *stale.last_mut().unwrap() ^= 0xff;
+        fs::write(&projected, &stale).unwrap();
+        let mut memo_stale = BTreeMap::new();
+        assert_eq!(
+            source_only_skip_receipt_if_clean(
+                &target, &registry, TEST_ARCH, TEST_ABI, &roots, &output, &mut memo_stale,
+            ),
+            None,
+            "a same-size projected output with different bytes must fall back to a child build"
+        );
+
         fs::remove_file(&projected).unwrap();
         let mut memo2 = BTreeMap::new();
         assert_eq!(
