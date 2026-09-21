@@ -47,8 +47,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wasmtime::{
-    AnyRef, Caller, Engine, ExternRef, ExternType, Global, GlobalType, Linker, MemoryType, Module,
-    Mutability, Ref, SharedMemory, Store, Table, Val, ValType,
+    AnyRef, Caller, Engine, ExternRef, ExternType, Global, GlobalType, Instance, Linker,
+    MemoryType, Module, Mutability, Ref, SharedMemory, Store, Table, Val, ValType,
 };
 
 // The handle-only host filesystem contract (K9). `cap_std::fs::Dir` IS the
@@ -5671,13 +5671,17 @@ fn read_linked_frame_fixed_prefix_size(wasm_bytes: &[u8]) -> anyhow::Result<Opti
 
 /// One decoded `kandelo.wpk_fork.resume_catalog` (KFRC) record: the
 /// deterministic `function_ordinal` `fm_set_resume_catalog` numbers the
-/// module's OWN resume slots from, and the `local_catalog_slot` that names
-/// this record's THUNK in the guest's own EXPORTED `__wpk_fork_resume_
-/// catalog` table (mirrors the TS `ForkResumeCatalogRecord`).
+/// module's OWN resume slots from (mirrors the TS `ForkResumeCatalogRecord`).
+///
+/// The record's second column, `local_catalog_slot`, is NOT carried: it is
+/// checked and dropped by [`read_fork_resume_catalog_records`], because the
+/// emitted placement shim uses the ORDINAL as its index into the guest's
+/// catalog table, so a record where the two differ describes a guest the shim
+/// cannot place. This host used to keep the column to run its own placement
+/// loop; the guest runs that loop now.
 #[derive(Debug, Clone, Copy)]
 struct ForkResumeCatalogRecord {
     function_ordinal: u32,
-    local_catalog_slot: u32,
 }
 
 /// Read the guest's `kandelo.wpk_fork.resume_catalog` (KFRC) custom section —
@@ -5726,7 +5730,21 @@ fn read_fork_resume_catalog_records(wasm_bytes: &[u8]) -> anyhow::Result<Vec<For
             );
         }
         previous = Some(function_ordinal);
-        records.push(ForkResumeCatalogRecord { function_ordinal, local_catalog_slot });
+        // THE SHIM'S OWN ASSUMPTION, checked rather than carried. The emitted
+        // `__wpk_fork_place_resume_thunks` reads a published record's ORDINAL
+        // and uses it directly as the index into the guest's
+        // `__wpk_fork_resume_catalog` table, so the two columns must be the
+        // same number. `emit_resume_catalog` asserts exactly that when it
+        // writes the section (`debug_assert_eq!(thunk.func_ordinal, slot)`); a
+        // `debug_assert` in the producer is not a check in the consumer, and
+        // this host reads artifacts it did not build.
+        anyhow::ensure!(
+            local_catalog_slot == function_ordinal,
+            "resume catalog record {i} names ordinal {function_ordinal} at local catalog slot \
+             {local_catalog_slot}; the placement shim indexes the catalog BY ORDINAL, so the two \
+             must agree"
+        );
+        records.push(ForkResumeCatalogRecord { function_ordinal });
     }
     Ok(records)
 }
@@ -5743,17 +5761,6 @@ fn read_fork_resume_catalog_records(wasm_bytes: &[u8]) -> anyhow::Result<Vec<For
 pub(crate) struct GuestForkFormat {
     pub fixed_prefix_size: u32,
     pub catalog_ordinals: Vec<u32>,
-    /// The SAME KFRC records' `local_catalog_slot` column, in the SAME
-    /// (file/ordinal) order as `catalog_ordinals` — needed to populate the
-    /// REAL `env.__wpk_fork_resume_table` import (see `wire_resume_table`):
-    /// entry `i` of that table must hold the guest's own `__wpk_fork_resume_
-    /// catalog[local_catalog_slots[i]]` thunk. Mirrors `host/src/fork-resume-
-    /// catalog.ts`'s `forkResumeTargetsFromInstance` (`table.get(localCatalog
-    /// Slot)`) and `host/src/fork-replay-events.ts`'s `ForkResumeTable::
-    /// registerActivation` (which allocates slot `i`, in `functionOrdinal`
-    /// order, for the `i`-th target — the KFRC section's own file order,
-    /// since it is already validated strictly increasing by ordinal).
-    pub catalog_local_slots: Vec<u32>,
     /// This guest's fork TEMPLATE ID: a plain SHA-256 over its module bytes.
     ///
     /// The module writes a `Module` record per activation when a capture
@@ -6299,7 +6306,6 @@ pub(crate) fn compute_guest_fork_format(wasm_bytes: &[u8]) -> anyhow::Result<Opt
         FORK_MODULE_RESUME_CATALOG_CAP
     );
     let catalog_ordinals = records.iter().map(|r| r.function_ordinal).collect();
-    let catalog_local_slots = records.iter().map(|r| r.local_catalog_slot).collect();
     let gc_codec_descriptor = read_gc_codec_descriptor_section(wasm_bytes)?;
     let template_id: [u8; 32] = {
         use sha2::{Digest, Sha256};
@@ -6310,7 +6316,6 @@ pub(crate) fn compute_guest_fork_format(wasm_bytes: &[u8]) -> anyhow::Result<Opt
     Ok(Some(GuestForkFormat {
         fixed_prefix_size,
         catalog_ordinals,
-        catalog_local_slots,
         gc_codec_descriptor,
         template_id,
     }))
@@ -6508,6 +6513,13 @@ pub struct ForkModule {
     pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
     pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
     pub fm_set_resume_catalog: wasmtime::TypedFunc<(u32, u32), ()>,
+    /// `fm_publish_resume_assignment(activation) -> (count << 32) | ptr`, or
+    /// `-1` with the reason in `fm_last_errno`.
+    ///
+    /// One activation's WHOLE `(ordinal, slot)` decision, written into the
+    /// memory the co-resident module and guest share, for the guest's own
+    /// placement shim to apply. See [`place_resume_thunks`].
+    pub fm_publish_resume_assignment: wasmtime::TypedFunc<u32, i64>,
     pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
     pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
     /// Proof-of-use statistics: the single folded counter accessor
@@ -6652,6 +6664,17 @@ pub struct ForkModule {
     /// (`env.__wpk_fork_static_root_catalog`) the static-root binder
     /// `table.get`s; populated with a guest's harvested static-root values.
     pub static_root_catalog_table: Table,
+    /// The module's own module-defined, module-EXPORTED `funcref` resume
+    /// table — the cross-activation dispatch table `wpk_fork_resume_start`
+    /// `call_indirect`s during every replay.
+    ///
+    /// Bound into a fork-instrumented guest's `env.__wpk_fork_resume_table`
+    /// import and FILLED by that guest's own emitted
+    /// `__wpk_fork_place_resume_thunks`, from the assignment
+    /// `fm_publish_resume_assignment` publishes. This host chooses no slot and
+    /// writes no thunk; see [`place_resume_thunks`] for why it used to do both
+    /// and what that cost.
+    pub resume_table: Table,
 }
 
 /// Instantiate the co-resident fork-module (`crate::fork_module_path()`)
@@ -7048,6 +7071,20 @@ pub(crate) fn instantiate_fork_module(
         .get_table(&mut *store, "__wpk_fork_ref_gc_transit")
         .ok_or_else(|| anyhow::anyhow!("fork-module missing export __wpk_fork_ref_gc_transit"))?;
 
+    // The module's own funcref resume table, exported for the same reason the
+    // transit table above is and resolved the same way: one object, so the
+    // guest's import, the module's slot numbering and whatever places the
+    // thunks cannot be three different tables. A missing export is an ABI
+    // mismatch, not a "this guest does not fork" case.
+    let resume_table = instance
+        .get_table(&mut *store, wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "fork-module missing export {}",
+                wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
+            )
+        })?;
+
     let fm = ForkModule {
         instance,
         memory_base,
@@ -7056,6 +7093,7 @@ pub(crate) fn instantiate_fork_module(
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32, u32) => ()),
         fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
         fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
+        fm_publish_resume_assignment: fm_func!("fm_publish_resume_assignment": u32 => i64),
         fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
@@ -7092,6 +7130,7 @@ pub(crate) fn instantiate_fork_module(
         function_catalog_table,
         drive_table,
         static_root_catalog_table,
+        resume_table,
         empty_module_state_root: reference_scratch_base,
         capture_scratch_base,
         gc_codec_scratch_base,
@@ -7112,6 +7151,98 @@ pub(crate) fn instantiate_fork_module(
     // `fm_set_format` first; `worker-main.ts` then calls `setActivationGcCodec`).
 
     Ok(fm)
+}
+
+/// Have one freshly instantiated guest place its OWN resume thunks, at the
+/// slots the fork module chose.
+///
+/// Mirrors `ForkResumeTable.registerActivation` (`host/src/fork-resume-
+/// table.ts`) exactly: ask the module for the whole activation's decision, and
+/// hand the guest its own `(ptr, count)`. The module decided every slot when
+/// `fm_set_resume_catalog` seeded this guest's ordinals and writes that
+/// decision into the memory it and the guest SHARE; the guest's emitted
+/// `__wpk_fork_place_resume_thunks` copies each thunk out of its own
+/// `__wpk_fork_resume_catalog` table into the module's resume table. Two calls,
+/// whatever the activation's size, and not one funcref passes through this
+/// host.
+///
+/// # What this replaces, and why a second numbering was not safe to keep
+///
+/// This host used to mint its own `wasmtime::Table`, size it to
+/// `catalog_ordinals.len() + 1`, and write record `i` to slot `i + 1` — its
+/// own numbering, never asking the module that owns the assignment. The
+/// JavaScript host had the identical second allocator and the two agreed only
+/// while nothing was ever released: `dlclose` of a library while a
+/// later-loaded one is still open makes them differ on three coordinates, and
+/// the guest then resumes into ANOTHER activation's thunk — a real function of
+/// the right type, so nothing traps (census 194). That is why the numbering
+/// moved into the module, and why a host that keeps its own copy of it
+/// quietly re-opens the hole for its own hosts.
+///
+/// The slots this produces for a single-activation native guest are the same
+/// `i + 1` the old loop produced, because the module sorts a dense 0..n-1
+/// catalog and allocates from 1. That is a coincidence of this host's one
+/// supported shape, not the contract: the contract is that there is ONE
+/// allocator and it is the module's.
+///
+/// # The same-artifact guard, which this host did not have
+///
+/// `registerActivation` compares the module's assigned count against the
+/// guest's own catalog table length, because the shim uses a record's ordinal
+/// as an INDEX into that catalog. A guest instantiated from a different
+/// artifact than the one whose ordinals were seeded places a prefix and leaves
+/// the rest at no slot at all, silently. The check is O(1) and it is made here
+/// too, by name, so the native host fails the same way the JavaScript one
+/// does instead of resuming into whatever the prefix left behind.
+fn place_resume_thunks(
+    store: &mut Store<()>,
+    fm: &ForkModule,
+    instance: &Instance,
+    activation: u32,
+) -> anyhow::Result<()> {
+    let packed = fm.fm_publish_resume_assignment.call(&mut *store, activation)?;
+    if packed < 0 {
+        let errno = fm.fm_last_errno.call(&mut *store, ())?;
+        anyhow::bail!("fm_publish_resume_assignment({activation}) failed: errno {errno}");
+    }
+    // COUNT HIGH, POINTER LOW, as the export's own doc comment gives it: a
+    // pointer in the high half would make any buffer above 2 GiB decode as a
+    // negative i64, which is this call's failure signal.
+    let ptr = (packed & 0xffff_ffff) as u32;
+    let count = (packed >> 32) as u32;
+
+    // An activation that holds no slots is a SUCCESS publishing `(0, 0)` — a
+    // side module with no fork-instrumented function seeds an EMPTY resume
+    // catalog, and reading that as an error once cost a real fork.
+    if count == 0 {
+        return Ok(());
+    }
+
+    let catalog = instance
+        .get_table(&mut *store, "__wpk_fork_resume_catalog")
+        .ok_or_else(|| anyhow::anyhow!("guest missing __wpk_fork_resume_catalog export"))?;
+    let catalog_len = catalog.size(&mut *store);
+    anyhow::ensure!(
+        catalog_len == u64::from(count),
+        "activation {activation} instantiated with {catalog_len} resume thunks, but the module \
+         assigned {count} slots from the catalog it was seeded with. The seeded module and the \
+         instantiated one are not the same artifact."
+    );
+
+    let place = instance
+        .get_typed_func::<(u32, u32), u32>(&mut *store, "__wpk_fork_place_resume_thunks")
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "guest exports no __wpk_fork_place_resume_thunks, so it cannot place its own \
+                 resume thunks. A fork-instrumented artifact always carries it; this one was \
+                 instrumented by an older toolchain or not at all: {e}"
+            )
+        })?;
+    // The return is `max(count, 0)` — what was ASKED for, not what succeeded.
+    // Every failure mode inside the shim traps, so there is nothing to check
+    // here that would not be a check against itself.
+    place.call(store, (ptr, count))?;
+    Ok(())
 }
 
 /// Launch one guest process instance and return the [`GuestProcess`] the pump
@@ -8104,76 +8235,43 @@ fn spawn_guest_thread(
                 )
                 .unwrap();
         }
-        // N1-I4 Task 3 (bootstrap-fix follow-up): `env.__wpk_fork_resume_
-        // table` is NOT a fork-module-owned table like the 5 frame imports
-        // above — it is the REAL cross-activation dispatch table `wpk_fork_
-        // resume_start`'s `call_indirect`s target during replay, and it must
-        // hold ACTUAL funcrefs to the guest's own resume targets (mirrors
-        // `host/src/fork-replay-events.ts`'s `ForkResumeTable`: a real,
-        // host-owned `WebAssembly.Table`, grown and `table.set` one slot per
-        // catalog record — never a JS/module default). A table left at its
-        // bare declared minimum (as `define_unknown_imports_as_default_
-        // values` below would otherwise give it) traps
-        // `undefined element: out of bounds table access` the first time
-        // replay dispatches to any slot beyond that minimum. Create it here,
-        // sized to the FULL catalog PLUS ONE (`fmt.catalog_ordinals.len() +
-        // 1`), from the GUEST's own declared import type (reference element
-        // type + any declared `max`), so a real `catalog_ordinals.len() > 1`
-        // case still round-trips the import-matching check (a supplied
-        // table's `min` may exceed the import's declared `min`; only `max`
-        // is a hard ceiling). The `+ 1` mirrors `ForkResumeTable`'s own
-        // `initial: 1` + `allocateSlot()` contract EXACTLY: that class starts
-        // its table at length 1 and `allocateSlot()` returns `table.length`
-        // BEFORE growing — so slot `0` is NEVER allocated to a real target
-        // (it stays the implicit "no event" sentinel `ForkResumeTable.
-        // slotFor` reads back for a null/absent replay event) and the first
-        // REAL record lands at slot `1`, the second at `2`, and so on. The
-        // table is POPULATED below, after `linker.instantiate` creates the
-        // guest `Instance` whose OWN exported `__wpk_fork_resume_catalog`
-        // table is this table's data source — see the `resume_table`
-        // population block after `instantiate`, which writes record `i`
-        // (0-based, file/ordinal order) to slot `i + 1` for the exact same
-        // reason.
+        // `env.__wpk_fork_resume_table` is the REAL cross-activation dispatch
+        // table `wpk_fork_resume_start`'s `call_indirect`s target during
+        // replay, and it must hold ACTUAL funcrefs to the guest's own resume
+        // targets. A table left at its bare declared minimum (as
+        // `define_unknown_imports_as_default_values` below would otherwise
+        // give it) traps `undefined element: out of bounds table access` the
+        // first time replay dispatches to any slot beyond that minimum.
+        //
+        // THE MODULE'S OWN TABLE, not one this host mints. It is module-
+        // defined and module-EXPORTED (`crates/fork-module-inject/src/
+        // main.rs`), declared `initial = 1` with no maximum — exactly the
+        // guest's own declared import type — and the guest's placement shim
+        // grows it as it writes. The host used to create a `wasmtime::Table`
+        // here, size it to `catalog_ordinals.len() + 1`, and fill it with its
+        // OWN `i + 1` numbering after instantiation; see
+        // [`place_resume_thunks`] for what that second numbering cost.
+        //
+        // Gated on the fork MODULE, not just the fork format: without a module
+        // there is no allocator, nothing to publish an assignment, and no fork
+        // to replay — so a guest that declares the import in that case gets the
+        // blanket default-value table below, which is honest about there being
+        // no placement authority rather than a filled table nothing will drive.
         let mut resume_table: Option<wasmtime::Table> = None;
-        if let Some(fmt) = fork_format.as_ref() {
-            if let Some(import) = module.imports().find(|i| {
+        if let Some(fm) = fork_module.as_ref() {
+            if module.imports().any(|i| {
                 i.module() == "env" && i.name() == wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
             }) {
-                let declared = match import.ty() {
-                    ExternType::Table(t) => t,
-                    other => {
-                        eprintln!(
-                            "guest env.{} is a {other:?}, not a table",
-                            wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
-                        );
-                        return;
-                    }
-                };
-                let needed = fmt.catalog_ordinals.len() as u64 + 1;
-                let min = needed.max(declared.minimum());
-                let Ok(min) = u32::try_from(min) else {
-                    eprintln!("resume table minimum {min} does not fit in a wasm32 table size");
-                    return;
-                };
-                let max = declared.maximum().map(|m| u32::try_from(m).unwrap_or(u32::MAX));
-                let table_ty = wasmtime::TableType::new(declared.element().clone(), min, max);
-                let table = match Table::new(&mut store, table_ty, Ref::Func(None)) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("creating env.__wpk_fork_resume_table failed: {e:#}");
-                        return;
-                    }
-                };
                 if let Err(e) = linker.define(
                     &mut store,
                     "env",
                     wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
-                    table,
+                    fm.resume_table,
                 ) {
                     eprintln!("wiring env.__wpk_fork_resume_table failed: {e:#}");
                     return;
                 }
-                resume_table = Some(table);
+                resume_table = Some(fm.resume_table);
             }
         }
 
@@ -9414,50 +9512,21 @@ fn spawn_guest_thread(
             }
         };
 
-        // N1-I4 Task 3 (bootstrap-fix follow-up): populate `env.__wpk_fork_
-        // resume_table` from the GUEST's own newly-created `Instance` — the
-        // data source (`__wpk_fork_resume_catalog`, the guest's OWN exported
-        // table) does not exist until instantiation completes, so this MUST
-        // run after `linker.instantiate` and BEFORE `run_fork_capable_entry`
-        // ever calls the bootstrap/`_start`/`wpk_fork_resume_start` exports
-        // that `call_indirect` against it. Mirrors `host/src/fork-resume-
-        // catalog.ts`'s `forkResumeTargetsFromInstance` (`table.get(local
-        // CatalogSlot)`) feeding `host/src/fork-replay-events.ts`'s
-        // `ForkResumeTable::registerActivation` (`table.set(slot, thunk)`,
-        // slot `i` for the `i`-th record in file/ordinal order — the KFRC
-        // section's own order, already validated strictly increasing).
-        if let (Some(fmt), Some(dest)) = (fork_format.as_ref(), resume_table.as_ref()) {
-            if !fmt.catalog_ordinals.is_empty() {
-                let Some(catalog) = instance.get_table(&mut store, "__wpk_fork_resume_catalog") else {
-                    eprintln!("guest missing __wpk_fork_resume_catalog export");
-                    return;
-                };
-                for (i, &local_slot) in fmt.catalog_local_slots.iter().enumerate() {
-                    let thunk = match catalog.get(&mut store, u64::from(local_slot)) {
-                        Some(Ref::Func(Some(f))) => Ref::Func(Some(f)),
-                        Some(other) => {
-                            eprintln!(
-                                "__wpk_fork_resume_catalog[{local_slot}] is {other:?}, not a function"
-                            );
-                            return;
-                        }
-                        None => {
-                            eprintln!(
-                                "__wpk_fork_resume_catalog[{local_slot}] is out of bounds \
-                                 (catalog size {})",
-                                catalog.size(&mut store)
-                            );
-                            return;
-                        }
-                    };
-                    // Slot `i + 1`, not `i` — slot `0` is the reserved "no
-                    // resume event" sentinel; see this block's doc comment.
-                    let slot = i as u64 + 1;
-                    if let Err(e) = dest.set(&mut store, slot, thunk) {
-                        eprintln!("populating __wpk_fork_resume_table[{slot}] failed: {e:#}");
-                        return;
-                    }
-                }
+        // Have the GUEST place its own resume thunks, at the slots the module
+        // assigned. The guest's own `__wpk_fork_resume_catalog` table is the
+        // data source and it does not exist until instantiation completes, so
+        // this MUST run after `linker.instantiate` and BEFORE
+        // `run_fork_capable_entry` ever calls the bootstrap/`_start`/
+        // `wpk_fork_resume_start` exports that `call_indirect` against it.
+        //
+        // What used to be here was a host-side loop: `table.get` the thunk out
+        // of the guest's catalog and `table.set` it into the host's own table
+        // at slot `i + 1` — a numbering this host invented. See
+        // [`place_resume_thunks`].
+        if let (Some(fm), Some(_dest)) = (fork_module.as_ref(), resume_table.as_ref()) {
+            if let Err(e) = place_resume_thunks(&mut store, fm, &instance, 0) {
+                eprintln!("placing resume thunks failed: {e:#}");
+                return;
             }
         }
 
@@ -11254,27 +11323,25 @@ fn run_worker_thread(
     // exists (must run BEFORE `linker.instantiate`, same as the frame
     // imports/unwind tag above — an import must be defined before
     // instantiation resolves it).
+    //
+    // THE MODULE'S OWN TABLE, exactly as in `spawn_guest_thread`. This site
+    // minted a SECOND one: the same `catalog_ordinals.len() + 1` sizing and the
+    // same `i + 1` numbering, written out again in a function nobody reads
+    // beside the first. Two implementations of one numbering rule, which must
+    // agree and had no mechanism forcing them to — so the rule lives in the
+    // module and both sites now ask.
     let mut resume_table: Option<wasmtime::Table> = None;
-    if let Some(fmt) = fork_format.as_ref() {
-        if let Some(import) = module.imports().find(|i| {
+    if let Some(fm) = fork_module.as_ref() {
+        if module.imports().any(|i| {
             i.module() == "env" && i.name() == wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
         }) {
-            let declared = match import.ty() {
-                ExternType::Table(t) => t,
-                other => anyhow::bail!(
-                    "guest env.{} is a {other:?}, not a table",
-                    wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
-                ),
-            };
-            let needed = fmt.catalog_ordinals.len() as u64 + 1;
-            let min = needed.max(declared.minimum());
-            let min = u32::try_from(min)
-                .map_err(|_| anyhow::anyhow!("resume table minimum {min} does not fit in a wasm32 table size"))?;
-            let max = declared.maximum().map(|m| u32::try_from(m).unwrap_or(u32::MAX));
-            let table_ty = wasmtime::TableType::new(declared.element().clone(), min, max);
-            let table = Table::new(&mut store, table_ty, Ref::Func(None))?;
-            linker.define(&mut store, "env", wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE, table)?;
-            resume_table = Some(table);
+            linker.define(
+                &mut store,
+                "env",
+                wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
+                fm.resume_table,
+            )?;
+            resume_table = Some(fm.resume_table);
         }
     }
 
@@ -11443,36 +11510,15 @@ fn run_worker_thread(
 
     let instance = linker.instantiate(&mut store, module)?;
 
-    // N1 residual #4a: populate `env.__wpk_fork_resume_table` from THIS
-    // thread's own newly-created `Instance` — mirrors `spawn_guest_thread`'s
-    // identical post-instantiate population (see its doc comment); the data
-    // source (`__wpk_fork_resume_catalog`, the guest's own exported table)
-    // does not exist until instantiation completes, so this must run after
-    // `linker.instantiate` and before this thread ever calls into a resume
-    // path that `call_indirect`s against it.
-    if let (Some(fmt), Some(dest)) = (fork_format.as_ref(), resume_table.as_ref()) {
-        if !fmt.catalog_ordinals.is_empty() {
-            let catalog = instance
-                .get_table(&mut store, "__wpk_fork_resume_catalog")
-                .ok_or_else(|| anyhow::anyhow!("guest missing __wpk_fork_resume_catalog export"))?;
-            for (i, &local_slot) in fmt.catalog_local_slots.iter().enumerate() {
-                let thunk = match catalog.get(&mut store, u64::from(local_slot)) {
-                    Some(Ref::Func(Some(f))) => Ref::Func(Some(f)),
-                    Some(other) => {
-                        anyhow::bail!("__wpk_fork_resume_catalog[{local_slot}] is {other:?}, not a function")
-                    }
-                    None => anyhow::bail!(
-                        "__wpk_fork_resume_catalog[{local_slot}] is out of bounds (catalog size {})",
-                        catalog.size(&mut store)
-                    ),
-                };
-                // Slot `i + 1`, not `i` — slot `0` is the reserved "no resume
-                // event" sentinel, exactly like `spawn_guest_thread`'s
-                // identical population.
-                let slot = i as u64 + 1;
-                dest.set(&mut store, slot, thunk)?;
-            }
-        }
+    // Have THIS thread's guest place its own resume thunks — mirrors
+    // `spawn_guest_thread`'s identical call; the guest's own
+    // `__wpk_fork_resume_catalog` table does not exist until instantiation
+    // completes, so this must run after `linker.instantiate` and before this
+    // thread ever calls into a resume path that `call_indirect`s against the
+    // resume table. See [`place_resume_thunks`] for the host-side loop this
+    // replaces, and for the second numbering it carried.
+    if let (Some(fm), Some(_dest)) = (fork_module.as_ref(), resume_table.as_ref()) {
+        place_resume_thunks(&mut store, fm, &instance, 0)?;
     }
 
     // N1 residual #4a: bind this thread's guest fork phase-flip exports into
@@ -14771,7 +14817,6 @@ mod fork_module_tests {
         let format = GuestForkFormat {
             fixed_prefix_size: 0,
             catalog_ordinals: Vec::new(),
-            catalog_local_slots: Vec::new(),
             gc_codec_descriptor: Some(GC_CODEC_FIXTURE.to_vec()),
             // Not under test here; this unit exercises the GC-provenance
             // registry, which never reads the template id.
