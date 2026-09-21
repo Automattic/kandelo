@@ -601,6 +601,64 @@ const memfs = await restoreVerifiedVfsImage(
 const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 ```
 
+### Script-carrying share links
+
+The Share button in the dock produces links of the form
+`…/?demo=<id>#k1=<payload>`. The fragment is a versioned, gzip-compressed
+boot descriptor (`web-libs/kandelo-session/src/boot-descriptor.ts`) that may
+carry optional `inputs` and `parameters` fields. The payload is validated
+with hard caps and loud `BootDescriptorError` failures. A malformed or
+oversized fragment rejects the boot with a visible error; it never falls
+back to booting as if the fragment were absent.
+
+Boot inputs carry named, sha256-verified files materialized into the kernel
+VFS before the initial shell. The library in
+`web-libs/kandelo-session/src/boot-inputs.ts` validates every input's
+compressed bytes, decompresses (gzip-transported payloads are supported),
+and verifies the final sha256+byteLength before writing to the VFS. Inputs
+are all-or-nothing: if any input fails verification, no changes occur.
+Resolver-kind inputs fail materialization loudly when no resolver is
+registered (the production registry is empty; inline sources only today).
+
+Opening a script link boots the machine selected by the query parameters
+(the fragment cannot select an image the query parameters could not) and
+materializes the boot inputs. A script travels as input id `"script"`
+→ `/run/kandelo/inputs/script/kandelo-link.sh` (mode 0o755). An input
+manifest at `/run/kandelo/boot-input.json` (mode 0o644) records the
+materialized result: the manifest's own `version: 1`, the descriptor's
+`parameters`, and one entry per successfully materialized input (id,
+filename, guest `path`, byteLength, sha256) — not the raw descriptor
+`boot.inputs`/`boot.parameters` fields verbatim. When `boot.parameters.runScript`
+names the "script" input, that input is printed to the terminal with `cat`
+before execution, and then run from the initial interactive shell — `bash`
+when the image ships it, `sh` otherwise. The file is left writable so the
+visitor can experiment: edit it and re-run it after boot. The script's
+source, the invocation, and the script's output are all visible in the
+terminal, and the script takes the image `autoCommand`'s place in the
+launch sequence. Navigating to a different machine from the gallery drops
+the fragment.
+
+Links built before boot inputs were folded in could carry a top-level
+`script: { text }` field on the descriptor (superseded by `boot.inputs` +
+`boot.parameters.runScript`). The decoder tolerates that unknown field
+rather than rejecting the link, so such a link still boots — but the script
+field is ignored: no script is materialized or run. The machine log carries
+a visible warning so this isn't silent: a warn-level dmesg line at the start
+of boot, from `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
+names the ignored field.
+
+Caps enforce untrusted-input boundaries: maxBootInputs, 32 KiB carried per
+inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
+parameters JSON. Zero-byte inputs are accepted; the dialog simply skips
+empty scripts during authoring.
+
+Scripts currently run without a confirmation step because every machine the
+browser app boots is ephemeral. This is a load-bearing boundary: before any
+persistent or restored-machine feature ships, script links must gain an
+explicit show-the-script consent step (see the warning at the execution
+site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
+`docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
+
 ### Kandelo demo metadata
 
 VFS images can also carry UI presentation metadata at `/etc/kandelo/demo.json`.
