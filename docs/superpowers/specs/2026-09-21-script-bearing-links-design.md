@@ -119,10 +119,12 @@ surface test and keeps its position):
    the always-present ephemeral scratch mount, so no mkdir is needed.
    The file is left in place writable so the visitor can inspect,
    edit, and re-run it after boot.
-2. Resolve the invoking shell: the image's configured default shell
-   (`/etc/kandelo/shell.json` via the host's shell config, the same
-   source `startShellCommand` uses for prompt detection), falling back
-   to `sh` when the image declares none.
+2. Resolve the invoking shell: the PTY session program is `login`, not
+   a shell, so there is no `startShellCommand`-style config to read.
+   Instead, probe the image directly — `host.stat("/bin/bash")` — and
+   invoke with `bash` when it exists, falling back to `sh` when it
+   doesn't. Authors needing another interpreter can `exec` it from the
+   script body.
 3. The new branch first runs
    `host.runShellCommand("cat /tmp/kandelo-link.sh")` so the full
    script contents are displayed in the terminal, then runs
