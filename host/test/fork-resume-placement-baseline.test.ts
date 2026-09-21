@@ -58,13 +58,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = process.env.KANDELO_TEST_SYSROOT ?? join(REPO_ROOT, "sysroot");
 
-const BASELINE_DIR = join(
-  REPO_ROOT,
-  ".superpowers",
-  "sdd",
-  "2026-09-20-fork-resume-thunk-placement",
-);
-const BASELINE_PATH = join(BASELINE_DIR, "placement-baseline.json");
+/**
+ * The recorded answer, as an ordinary tracked test fixture.
+ *
+ * It lived under `.superpowers/sdd/<plan>/` while this plan was being
+ * written, which was wrong twice over. That tree is gitignored, so a
+ * `git clean -xd` or a fresh worktree erased it; and it is defined as scratch
+ * for ONE plan, deleted when the plan closes. Either way the file vanishes,
+ * and the next run re-records from whatever the tree does at that moment --
+ * silently enshrining the new mapping as "the baseline" and making this whole
+ * comparison vacuous. A plan-completion cleanup quietly re-baselining a test
+ * is the same failure as the `git clean`, just later and harder to connect to
+ * its cause.
+ *
+ * It is a test fixture, so it lives with the test. Nothing about where it
+ * sits is an exception anyone has to know about any more.
+ */
+const BASELINE_DIR = join(__dirname, "fixtures");
+const BASELINE_PATH = join(BASELINE_DIR, "fork-resume-placement-baseline.json");
 
 /**
  * Recording is OPT-IN, and that is the point.
@@ -74,13 +85,10 @@ const BASELINE_PATH = join(BASELINE_DIR, "placement-baseline.json");
  * after the placement migration would quietly enshrine the NEW mapping as
  * "the baseline" and make the comparison this file exists for vacuous.
  *
- * The artifact is TRACKED, although it sits under a gitignored directory: it
- * was force-added, and `.gitignore` explains the exception where the rule is.
- * It used to be untracked, which made the opt-in above the only thing
- * standing between a `git clean -xd` and a baseline that quietly re-derived
- * itself. The fixture fingerprint below is what makes tracking safe -- a
- * rebuilt guest now fires a named failure rather than passing against a stale
- * reference.
+ * Tracking the file does not make this opt-in redundant. It removes the ways
+ * the file could DISAPPEAR; the fixture fingerprint below covers the other
+ * direction, where the file survives but the guests it describes were
+ * rebuilt.
  */
 const RECORD = process.env.KANDELO_RECORD_PLACEMENT_BASELINE === "1";
 
@@ -366,9 +374,11 @@ describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
       if (RECORD || !existsSync(BASELINE_PATH)) {
         if (!RECORD) {
           throw new Error(
-            `no recorded placement baseline at ${BASELINE_PATH}. It is ` +
-              "gitignored, so a fresh worktree has none. Re-record it against " +
-              "UNMODIFIED placement with " +
+            `no recorded placement baseline at ${BASELINE_PATH}. It is a ` +
+              "tracked fixture, so a checkout has it and its absence means it " +
+              "was deleted rather than never recorded. Restore it from git " +
+              "if you can. Otherwise re-record it against UNMODIFIED " +
+              "placement with " +
               "KANDELO_RECORD_PLACEMENT_BASELINE=1 npx vitest run " +
               "test/fork-resume-placement-baseline.test.ts -- recording it " +
               "against changed placement would make the comparison vacuous.",

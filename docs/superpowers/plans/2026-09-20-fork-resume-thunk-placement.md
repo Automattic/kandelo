@@ -196,10 +196,13 @@ knowing Task 0's answer to the table-identity question.
 
 **Interfaces:**
 - Produces: a JSON baseline artifact at
-  `.superpowers/sdd/2026-09-20-fork-resume-thunk-placement/placement-baseline.json`
+  `host/test/fixtures/fork-resume-placement-baseline.json`
   mapping `activation id -> [{ordinal, slot}]`, consumed by **Task 4's**
   verification. (Corrected 2026-09-20: this said Task 7, which settles the ABI
-  snapshot and never reads the baseline.)
+  snapshot and never reads the baseline. Corrected again 2026-09-21: it was
+  recorded under `.superpowers/sdd/<plan>/`, which is gitignored AND deleted
+  when the plan closes -- either of which erases the recorded answer and lets
+  the next run silently re-baseline. It is a tracked test fixture now.)
 
 - [ ] **Step 1: Find a fixture that produces more than one activation**
 

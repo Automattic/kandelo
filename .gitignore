@@ -169,18 +169,6 @@ packages/registry/*/package.pr.toml
 # prevents background GC from evicting build tools mid-build.
 /.nix-dev-shell/
 # Subagent-driven-development scratch (ledger, briefs, review packages)
-#
-# ONE FILE UNDER HERE IS TRACKED ANYWAY, on purpose:
-# .superpowers/sdd/2026-09-20-fork-resume-thunk-placement/placement-baseline.json
-# is the recorded answer that host/test/fork-resume-placement-baseline.test.ts
-# compares against, and a characterization baseline that `git clean -xd` can
-# erase is one that silently re-records itself from whatever the tree does
-# next -- the exact failure it exists to prevent. It was force-added, so this
-# rule no longer applies to it; git tracks it like any other file.
-#
-# This line was NOT deleted to achieve that. Deleting it would track every
-# lane's briefs, reviews and ledgers, and would let a `git add -A` sweep the
-# whole scratch directory into a commit.
 /.superpowers/
 
 # Transaction temp dirs the program-package index writes while staging. They are
