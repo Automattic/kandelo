@@ -822,28 +822,12 @@ export class ForkModuleContinuationBackend {
   // is the same arena by construction. Its last caller went with the broker
   // (census 192), and a method the host keeps for nobody is host surface.
 
-  /**
-   * The slot the module assigned `(activation, ordinal)`, decided when the
-   * catalog was seeded.
-   *
-   * The host does NOT compute this. It used to: `ForkResumeTable` ran the same
-   * four rules the module runs, and the two only agreed while no activation had
-   * ever been unregistered. See the worker-lifetime allocator in
-   * `crates/fork-module/src/lib.rs` for the `dlclose` sequence that made them
-   * disagree, and census 194.
-   *
-   * NO PRODUCTION CALLER as of the placement cutover: placement asks for a
-   * whole activation at once through `publishResumeAssignment` below, so
-   * nothing queries one coordinate any more. Kept because Task 6 of
-   * `docs/superpowers/plans/2026-09-20-fork-resume-thunk-placement.md` owns
-   * deleting the `fm_resume_slots` op-0 arm it wraps, together with the native
-   * host's copy of it; removing the wrapper here without that would leave the
-   * arm reachable from Rust and unreachable from TypeScript, which is a worse
-   * place to stop than either end.
-   */
-  resumeSlot(activationId: number, functionOrdinal: number): number {
-    return this.call("fm_resume_slots", 0, activationId, functionOrdinal);
-  }
+  // WHAT USED TO BE HERE: `resumeSlot(activation, ordinal)`, wrapping
+  // `fm_resume_slots` op 0. It answered "which slot did this ONE coordinate
+  // get", because the host placed each thunk itself. Placement asks for a
+  // whole activation at once now, so it had no production caller, and the
+  // module arm behind it is deleted in the same change -- a wrapper kept past
+  // the entry it wraps is how a host surface outlives its reason.
 
   /**
    * Publish one activation's WHOLE `(ordinal, slot)` assignment, for the guest

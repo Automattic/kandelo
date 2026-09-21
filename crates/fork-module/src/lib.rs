@@ -596,9 +596,11 @@ mod wasm {
     //
     // So the numbering moves here and happens ONCE, at the moment the host
     // seeds an activation's catalog -- which is before any fork, and is the
-    // same moment the host has the thunks to place. The host asks for each
-    // slot (`fm_resume_slots` op 0) instead of computing one. There is one
-    // allocator, so there is nothing left to diverge.
+    // same moment the thunks are available to place. The whole activation's
+    // decision is then published for the guest's own shim to apply
+    // (`fm_publish_resume_assignment`); no host asks for a slot, and no host
+    // computes one. There is one allocator, so there is nothing left to
+    // diverge.
     //
     // Fixed BSS like the catalogs above, for the same reason: it must survive
     // the per-fork bump-heap reset.
@@ -786,16 +788,16 @@ mod wasm {
         Ok(freed)
     }
 
-    /// The slot assigned to `(activation_id, ordinal)`, or `None`.
-    fn resume_slot_of(activation_id: u32, ordinal: u32) -> Option<u32> {
-        let count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
-        let index = unsafe { &*RESUME_SLOT_INDEX.0.get() };
-        index[..count]
-            .iter()
-            .find(|entry| entry[0] == activation_id && entry[1] == ordinal)
-            .map(|entry| entry[2])
-    }
+    // WHAT USED TO BE HERE: `resume_slot_of(activation_id, ordinal)`, a linear
+    // scan of `RESUME_SLOT_INDEX` answering "which slot did this ONE
+    // coordinate get". It existed only to serve `fm_resume_slots` op 0, which
+    // the host called once per fork-instrumented function while it placed the
+    // thunks itself -- so the cost was quadratic in the activation's size:
+    // ~3.8x10^3 comparisons for the 87-thunk dlopen fixture, and ~10^8 per php
+    // process start at 19,025 thunks. Placement asks for the WHOLE activation
+    // at once now (`fm_publish_resume_assignment`, one walk), so nothing needs
+    // `(activation, ordinal)` as a lookup key and this index has no random
+    // reader left at all.
 
     /// Every `(ordinal, slot)` this activation holds, for the per-fork table to
     /// adopt rather than re-derive.
@@ -7351,8 +7353,8 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_resume_catalog(ptr: usize, count: usize) {
         // Seeding IS registering. The catalog is the ordinal set, and the slot
-        // for each ordinal is decided here, once, so the host can ask for it
-        // (`fm_resume_slots` op 0) rather than compute a second answer.
+        // for each ordinal is decided here, once, so nothing downstream --
+        // neither host nor guest -- computes a second answer.
         match set_resume_catalog_impl(ptr as u64, count as u64)
             .and_then(|()| resume_reseed(0))
         {
@@ -11206,34 +11208,31 @@ mod wasm {
         }
     }
 
-    /// The worker-lifetime resume-slot assignment, read and released.
+    /// Release one activation's worker-lifetime resume slots.
     ///
-    /// ONE entry with an `op` rather than two, following `fm_module_state_arena`:
-    /// both operations are the host's view of the same small table, and a lane
-    /// whose target is five entries should not spend two on it.
-    ///
-    ///   * op 0 -- the slot assigned to `(activation, ordinal)`, or -1 with
-    ///     `EINVAL` when that coordinate has none. This is what the host places
-    ///     its thunk at; it does NOT compute an answer of its own any more.
     ///   * op 1 -- release `activation`'s slots for reuse (`ordinal` ignored),
     ///     returning how many were freed. The host calls this on `dlclose`.
     ///
     /// Slots are assigned when the host SEEDS the catalog
     /// (`fm_set_resume_catalog` / `fm_set_activation_resume_catalog`), which is
-    /// before any fork and is the same moment the host has thunks to place.
+    /// before any fork, and the whole assignment is handed to the guest's own
+    /// placement shim by `fm_publish_resume_assignment`.
+    ///
+    /// # OP 0 IS GONE, and the `op` parameter is not
+    ///
+    /// Op 0 answered "which slot did `(activation, ordinal)` get", one
+    /// coordinate per call, because the host placed each thunk itself. Nothing
+    /// asks that question any more. The `op` argument stays because this is
+    /// still the `dlclose` entry point the storage-conversion plan is written
+    /// against by that name and shape
+    /// (`docs/superpowers/plans/2026-09-21-fork-storage-conversion.md`), and
+    /// because a release variant is the kind of thing that lands in an op
+    /// space. It is now a constant every caller passes, which is surface worth
+    /// noticing rather than surface worth keeping quiet about.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_resume_slots(op: u32, activation: u32, ordinal: u32) -> i32 {
+        let _ = ordinal;
         match op {
-            0 => match resume_slot_of(activation, ordinal) {
-                Some(slot) => {
-                    set_ok();
-                    slot as i32
-                }
-                None => {
-                    set_err(Errno::EINVAL);
-                    -1
-                }
-            },
             1 => match resume_unregister_impl(activation) {
                 Ok(freed) => {
                     // The same dlclose that retires this activation's resume
@@ -11265,9 +11264,9 @@ mod wasm {
     ///
     /// # What this replaces
     ///
-    /// The host used to read one slot per thunk (`fm_resume_slots` op 0), then
-    /// `table.get` the thunk out of the guest's catalog and `table.set` it into
-    /// the resume table, from JavaScript, once per fork-instrumented function
+    /// The host used to read one slot per thunk (`fm_resume_slots` op 0, now
+    /// deleted), then `table.get` the thunk out of the guest's catalog and
+    /// `table.set` it into the resume table, once per fork-instrumented function
     /// -- 19,025 crossings per process start in the measured case. The decision
     /// was always this module's; only the WRITE had to be somewhere that can
     /// hold a funcref. The guest can hold one, and it already owns both tables,

@@ -79,7 +79,6 @@ interface Harness {
   /** Seed an activation's catalog, which is what assigns its slots. */
   readonly seed: (activationId: number, ordinals: readonly number[]) => void;
   readonly release: (activationId: number) => number;
-  readonly slotOf: (activationId: number, ordinal: number) => number;
   readonly publish: (activationId: number) => Published;
   readonly errno: () => number;
 }
@@ -148,7 +147,6 @@ function harness(): Harness {
     resumeTable: x.__wpk_fork_resume_table as unknown as WebAssembly.Table,
     seed,
     release: (activationId) => resumeSlots(1, activationId, 0),
-    slotOf: (activationId, ordinal) => resumeSlots(0, activationId, ordinal),
     publish,
     errno,
   };
@@ -186,13 +184,16 @@ describe("fm_publish_resume_assignment", () => {
 
     const records = readRecords(h.memory, published);
     expect(records.map((r) => r.ordinal)).toEqual([1, 4, 7]);
-    // Against the module's own answer for the same coordinate, not against a
-    // number this file predicted.
-    for (const { ordinal, slot } of records) {
-      expect(slot, `slot published for ordinal ${ordinal}`).toBe(
-        h.slotOf(0, ordinal),
-      );
-    }
+    // The slots the allocator hands out, first come first served from 1. This
+    // used to be checked against `fm_resume_slots` op 0 -- the module's own
+    // answer for the same coordinate -- which was the better assertion while
+    // that arm existed, because it could not agree with the publisher by
+    // accident. Op 0 is deleted: it existed only to serve the per-thunk host
+    // placement loop this plan removed, and keeping an entry alive so a test
+    // could cross-check against it would be the test defining the surface.
+    // "Reuse, not a fresh ascending numbering" below is now the case that
+    // separates a publisher reading the allocator from one re-deriving it.
+    expect(records.map((r) => r.slot)).toEqual([1, 2, 3]);
     // Slot 0 is the reserved `resume_peek` sentinel, and the shim TRAPS on a
     // record naming it. A publisher that emitted one would turn every
     // "run the lexical callee" answer into a resumed thunk.
