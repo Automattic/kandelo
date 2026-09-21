@@ -7,25 +7,30 @@
  *
  * Coordinate convention:
  *   - Pointer-lock active   → REL_X / REL_Y deltas (from movementX/Y).
- *   - Pointer-lock inactive → ABS_X / ABS_Y absolute (from offsetX/Y).
- *   On a lock-state transition we emit a bare SYN_REPORT so libinput /
- *   SDL2 see a re-sync point and don't carry forward a stale axis
- *   value.
+ *   - Pointer-lock inactive → REL_X / REL_Y deltas derived from the
+ *     change in absolute window position (offsetX/Y minus the previous
+ *     offset).
+ *   Both branches emit *relative* motion because `/dev/input/event1`
+ *   advertises REL_X/REL_Y: SDL2's evdev backend classifies it as a
+ *   relative mouse and ignores EV_ABS entirely (see the PEG note in
+ *   web-libs/kandelo-session kernel-host.ts). Emitting EV_ABS here would
+ *   silently produce no motion.
+ *   The absolute→delta baseline is cleared on a pointer-lock transition
+ *   and when the pointer leaves the target, so re-entry never reports a
+ *   phantom jump. On a lock transition we also emit a bare SYN_REPORT so
+ *   SDL2 sees a re-sync point and doesn't carry a stale axis value.
  */
 import type { InputSource, InputEvent } from "./input-source.js";
 import { codeToKey } from "./key-code-table.js";
 
 const EV_SYN = 0x00,
   EV_KEY = 0x01,
-  EV_REL = 0x02,
-  EV_ABS = 0x03;
+  EV_REL = 0x02;
 const SYN_REPORT = 0x00;
 const REL_X = 0x00,
   REL_Y = 0x01,
   REL_WHEEL = 0x08,
   REL_HWHEEL = 0x06;
-const ABS_X = 0x00,
-  ABS_Y = 0x01;
 const BTN_LEFT = 0x110,
   BTN_RIGHT = 0x111,
   BTN_MIDDLE = 0x112;
@@ -33,6 +38,11 @@ const BTN_LEFT = 0x110,
 export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
   private bindings: Array<[EventTarget, string, EventListener]> = [];
+  // Previous absolute pointer position (rounded), used to derive REL
+  // deltas outside pointer lock. `null` means "no baseline yet" — the
+  // next non-lock move only re-establishes it and emits no motion.
+  private lastAbsX: number | null = null;
+  private lastAbsY: number | null = null;
 
   /**
    * @param target  Event source to bind to (defaults to `window`).
@@ -60,6 +70,7 @@ export class BrowserInputSource implements InputSource {
       this.bind("pointermove", this.onPointerMove);
       this.bind("pointerdown", this.onPointerDown);
       this.bind("pointerup", this.onPointerUp);
+      this.bind("pointerleave", this.onPointerLeave);
     }
     if (this.opts.wheel ?? this.opts.pointer !== false) {
       this.bind("wheel", this.onWheel);
@@ -98,7 +109,19 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onPointerLockChange(): void {
+    // The absolute→delta baseline is meaningless across a lock
+    // transition (offset vs movement coordinate spaces differ), so drop
+    // it; the next non-lock move re-establishes it.
+    this.lastAbsX = null;
+    this.lastAbsY = null;
     this.frame(1);
+  }
+
+  private onPointerLeave(): void {
+    // Forget the baseline so a re-entry elsewhere in the window doesn't
+    // report the gap as one large motion delta.
+    this.lastAbsX = null;
+    this.lastAbsY = null;
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -122,8 +145,18 @@ export class BrowserInputSource implements InputSource {
       if (e.movementX !== 0) this.emit(1, EV_REL, REL_X, e.movementX);
       if (e.movementY !== 0) this.emit(1, EV_REL, REL_Y, e.movementY);
     } else {
-      this.emit(1, EV_ABS, ABS_X, Math.round(e.offsetX));
-      this.emit(1, EV_ABS, ABS_Y, Math.round(e.offsetY));
+      // event1 is a relative device to SDL, so convert the absolute
+      // window position into a delta from the last position.
+      const x = Math.round(e.offsetX);
+      const y = Math.round(e.offsetY);
+      if (this.lastAbsX !== null && this.lastAbsY !== null) {
+        const dx = x - this.lastAbsX;
+        const dy = y - this.lastAbsY;
+        if (dx !== 0) this.emit(1, EV_REL, REL_X, dx);
+        if (dy !== 0) this.emit(1, EV_REL, REL_Y, dy);
+      }
+      this.lastAbsX = x;
+      this.lastAbsY = y;
     }
     this.frame(1);
   }
