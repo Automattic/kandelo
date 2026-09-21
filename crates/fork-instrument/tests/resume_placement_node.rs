@@ -291,6 +291,45 @@ function expectTrap(what, run) {
   }
 }
 
+// --- A ZEROED buffer traps: slot 0 is the reserved sentinel ------------------
+{
+  const { instance, resumeTable, place } = instantiate();
+  // Nothing is written to memory at all. A fresh page decodes to
+  // (ordinal 0, slot 0), and BOTH are in range -- ordinal 0 is a real catalog
+  // entry and slot 0 is a real table entry. Only the reservation makes this
+  // wrong, and the reservation is not something the tables can express, so
+  // this is the case a range-checks-only shim gets wrong while looking right:
+  // it reported success and left ordinal 0's thunk at slot 0, after which
+  // every "run the lexical callee" answer from resume_peek resumes a thunk.
+  const zeroed = 0x30000;
+  // Stated, not assumed: if a data segment ever reached this address the case
+  // would stop being the one it claims to be, and would say so here rather
+  // than passing for another reason.
+  const view = new DataView(instance.exports.memory.buffer);
+  if (view.getUint32(zeroed, true) !== 0 || view.getUint32(zeroed + 4, true) !== 0) {
+    throw new Error(`the buffer at ${zeroed.toString(16)} is not zeroed`);
+  }
+  expectTrap("a zeroed placement buffer", () => place(zeroed, 1));
+  if (resumeTable.get(0) !== null) {
+    throw new Error("the reserved resume_peek sentinel at slot 0 was overwritten");
+  }
+  if (resumeTable.length !== 1) {
+    throw new Error("a refused placement still grew the resume table");
+  }
+}
+
+// --- An explicit slot 0 traps too, with a live ordinal -----------------------
+{
+  const { instance, resumeTable, place } = instantiate();
+  // The same rule stated without relying on zeroed memory: ordinal 2 is a
+  // perfectly good thunk and slot 0 is still refused.
+  writePairs(instance, [[2, 0]]);
+  expectTrap("an explicit slot 0", () => place(PAIRS, 1));
+  if (resumeTable.get(0) !== null) {
+    throw new Error("slot 0 accepted a thunk when named explicitly");
+  }
+}
+
 // --- An out-of-range SLOT traps rather than writing elsewhere ----------------
 {
   const { instance, resumeTable, catalog, place } = instantiate();

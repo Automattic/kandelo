@@ -69,11 +69,18 @@ const BASELINE_PATH = join(BASELINE_DIR, "placement-baseline.json");
 /**
  * Recording is OPT-IN, and that is the point.
  *
- * `.superpowers/` is gitignored, so this artifact does not travel with the
- * commit. If it goes missing, the honest outcome is a loud failure naming the
- * command that re-records it -- not a silent re-record, which after the
- * placement migration would quietly enshrine the NEW mapping as "the
- * baseline" and make the comparison this file exists for vacuous.
+ * If the recorded file goes missing, the honest outcome is a loud failure
+ * naming the command that re-records it -- not a silent re-record, which
+ * after the placement migration would quietly enshrine the NEW mapping as
+ * "the baseline" and make the comparison this file exists for vacuous.
+ *
+ * The artifact is TRACKED, although it sits under a gitignored directory: it
+ * was force-added, and `.gitignore` explains the exception where the rule is.
+ * It used to be untracked, which made the opt-in above the only thing
+ * standing between a `git clean -xd` and a baseline that quietly re-derived
+ * itself. The fixture fingerprint below is what makes tracking safe -- a
+ * rebuilt guest now fires a named failure rather than passing against a stale
+ * reference.
  */
 const RECORD = process.env.KANDELO_RECORD_PLACEMENT_BASELINE === "1";
 

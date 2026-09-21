@@ -4517,19 +4517,40 @@ fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) -> TableId {
 /// very first activation, so the growth has to come with the write -- the same
 /// shape, for the same reason, as `inject_transit_grow`.
 ///
-/// A failed grow is deliberately not reported as a distinct status: the
-/// following `table.set` then traps on its own bounds, which is the loud
-/// failure a slot the table cannot address deserves. `WebAssembly.Table.grow`
-/// threw on the host path too.
+/// `table.grow`'s `-1` is dropped rather than reported, because it is not
+/// observable: a refused grow leaves the table too small for the slot that
+/// asked for it, so the very next `table.set` traps on its own bounds. There
+/// is no path where the grow fails and the write then succeeds.
+/// `WebAssembly.Table.grow` threw on the host path too, so this is the same
+/// loudness, not less.
 ///
-/// # Bounds
+/// # Bounds, and the one rule wasm does not already enforce
 ///
-/// There is no range check here, for the reason `table_apply` gives: an
+/// There is no RANGE check here, for the reason `table_apply` gives: an
 /// out-of-range ordinal or slot must TRAP rather than write somewhere else. A
 /// hand-rolled check would turn that trap into a quiet return, and a thunk
 /// silently not placed is how a guest later resumes into the wrong function.
 /// The catalog read is emitted BEFORE the grow so a bad ordinal traps without
 /// having resized anything.
+///
+/// Slot 0 is different, and it is checked, because wasm cannot know about it.
+/// It is the reserved `resume_peek` sentinel -- "the lexical callee must run"
+/// (`runtime.rs`, `resume_peek`) -- so it must stay null for the lifetime of
+/// the process. Both range bounds live in the table and the reservation does
+/// not, so without this the emitted code is correct about everything it can
+/// see and still overwrites the sentinel. A zeroed or stale `ptr` decodes to
+/// `(ordinal 0, slot 0)`, which passes both range checks; before this guard,
+/// `place(<zeroed page>, 1)` returned 1 and left ordinal 0's thunk sitting at
+/// slot 0, after which every "run the lexical callee" answer resumes a thunk
+/// instead.
+///
+/// It TRAPS rather than stopping the loop and returning a short count. Two
+/// reasons. A slot the module must never assign is the same class of error as
+/// a slot the table does not have, and that one traps; giving the two
+/// different outcomes would mean the caller has to handle a coordinate bug two
+/// ways. And the return value is a count of REQUESTED placements, not of
+/// successful ones (see below), so a short return has no meaning a caller
+/// could act on -- it would be a new signal shape invented for one case.
 ///
 /// # Widths
 ///
@@ -4600,6 +4621,20 @@ fn emit_resume_placement_shim(module: &mut Module, runtime: &Runtime, catalog: T
                     )
                     .local_set(slot);
 
+                // THE ONE RULE THE TABLE CANNOT ENFORCE. Slot 0 is the
+                // reserved `resume_peek` sentinel and must stay null; a zeroed
+                // or stale `ptr` decodes to `(0, 0)`, which is in range for
+                // both tables and would overwrite it. Trapping matches what an
+                // out-of-range coordinate does, so a bad record has one
+                // outcome rather than two.
+                again.local_get(slot).unop(UnaryOp::I32Eqz).if_else(
+                    None,
+                    |reserved| {
+                        reserved.unreachable();
+                    },
+                    |_assignable| {},
+                );
+
                 // The thunk first: a bad ordinal traps here, before the table
                 // has been resized. It stays on the stack across the grow.
                 again.local_get(slot).local_get(record).load(
@@ -4642,8 +4677,14 @@ fn emit_resume_placement_shim(module: &mut Module, runtime: &Runtime, catalog: T
                     .br(again_id);
             });
         });
-        // Every record before a trap was applied, so the count is the loop
-        // cursor rather than the caller's `count`.
+        // THE RETURN IS `max(count, 0)`, NOT A SUCCESS TALLY. Every failure
+        // mode above traps, so a run that returns at all applied every record
+        // it was given, and a partial count cannot occur. The loop cursor is
+        // used only because it is already the right number: it says how many
+        // records were REQUESTED, clamped at zero for a negative count. A
+        // caller must not read it as "how many worked" -- the only fact it
+        // carries that the caller did not already know is that `count` was
+        // negative.
         body.local_get(index);
     }
 

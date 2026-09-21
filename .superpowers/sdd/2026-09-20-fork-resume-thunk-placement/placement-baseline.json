@@ -1,0 +1,361 @@
+{
+  "fixture": "vfork-side-module (main program + dlopen'd side module)",
+  "fixtureFingerprint": {
+    "program": "d6ebcd9a893052e645e1cd1aa37e96b1426d684ebd941452b26d64f30bdfc485",
+    "library": "27826231916123119d5046d59ff1c6fc0bc2a50c3358461cd56149b7292e7dc2"
+  },
+  "activations": {
+    "0": [
+      {
+        "ordinal": 0,
+        "slot": 1
+      },
+      {
+        "ordinal": 1,
+        "slot": 2
+      },
+      {
+        "ordinal": 2,
+        "slot": 3
+      },
+      {
+        "ordinal": 3,
+        "slot": 4
+      },
+      {
+        "ordinal": 4,
+        "slot": 5
+      },
+      {
+        "ordinal": 5,
+        "slot": 6
+      },
+      {
+        "ordinal": 6,
+        "slot": 7
+      },
+      {
+        "ordinal": 7,
+        "slot": 8
+      },
+      {
+        "ordinal": 8,
+        "slot": 9
+      },
+      {
+        "ordinal": 9,
+        "slot": 10
+      },
+      {
+        "ordinal": 10,
+        "slot": 11
+      },
+      {
+        "ordinal": 11,
+        "slot": 12
+      },
+      {
+        "ordinal": 12,
+        "slot": 13
+      },
+      {
+        "ordinal": 13,
+        "slot": 14
+      },
+      {
+        "ordinal": 14,
+        "slot": 15
+      },
+      {
+        "ordinal": 15,
+        "slot": 16
+      },
+      {
+        "ordinal": 16,
+        "slot": 17
+      },
+      {
+        "ordinal": 17,
+        "slot": 18
+      },
+      {
+        "ordinal": 18,
+        "slot": 19
+      },
+      {
+        "ordinal": 19,
+        "slot": 20
+      },
+      {
+        "ordinal": 20,
+        "slot": 21
+      },
+      {
+        "ordinal": 21,
+        "slot": 22
+      },
+      {
+        "ordinal": 22,
+        "slot": 23
+      },
+      {
+        "ordinal": 23,
+        "slot": 24
+      },
+      {
+        "ordinal": 24,
+        "slot": 25
+      },
+      {
+        "ordinal": 25,
+        "slot": 26
+      },
+      {
+        "ordinal": 26,
+        "slot": 27
+      },
+      {
+        "ordinal": 27,
+        "slot": 28
+      },
+      {
+        "ordinal": 28,
+        "slot": 29
+      },
+      {
+        "ordinal": 29,
+        "slot": 30
+      },
+      {
+        "ordinal": 30,
+        "slot": 31
+      },
+      {
+        "ordinal": 31,
+        "slot": 32
+      },
+      {
+        "ordinal": 32,
+        "slot": 33
+      },
+      {
+        "ordinal": 33,
+        "slot": 34
+      },
+      {
+        "ordinal": 34,
+        "slot": 35
+      },
+      {
+        "ordinal": 35,
+        "slot": 36
+      },
+      {
+        "ordinal": 36,
+        "slot": 37
+      },
+      {
+        "ordinal": 37,
+        "slot": 38
+      },
+      {
+        "ordinal": 38,
+        "slot": 39
+      },
+      {
+        "ordinal": 39,
+        "slot": 40
+      },
+      {
+        "ordinal": 40,
+        "slot": 41
+      },
+      {
+        "ordinal": 41,
+        "slot": 42
+      },
+      {
+        "ordinal": 42,
+        "slot": 43
+      },
+      {
+        "ordinal": 43,
+        "slot": 44
+      },
+      {
+        "ordinal": 44,
+        "slot": 45
+      },
+      {
+        "ordinal": 45,
+        "slot": 46
+      },
+      {
+        "ordinal": 46,
+        "slot": 47
+      },
+      {
+        "ordinal": 47,
+        "slot": 48
+      },
+      {
+        "ordinal": 48,
+        "slot": 49
+      },
+      {
+        "ordinal": 49,
+        "slot": 50
+      },
+      {
+        "ordinal": 50,
+        "slot": 51
+      },
+      {
+        "ordinal": 51,
+        "slot": 52
+      },
+      {
+        "ordinal": 52,
+        "slot": 53
+      },
+      {
+        "ordinal": 53,
+        "slot": 54
+      },
+      {
+        "ordinal": 54,
+        "slot": 55
+      },
+      {
+        "ordinal": 55,
+        "slot": 56
+      },
+      {
+        "ordinal": 56,
+        "slot": 57
+      },
+      {
+        "ordinal": 57,
+        "slot": 58
+      },
+      {
+        "ordinal": 58,
+        "slot": 59
+      },
+      {
+        "ordinal": 59,
+        "slot": 60
+      },
+      {
+        "ordinal": 60,
+        "slot": 61
+      },
+      {
+        "ordinal": 61,
+        "slot": 62
+      },
+      {
+        "ordinal": 62,
+        "slot": 63
+      },
+      {
+        "ordinal": 63,
+        "slot": 64
+      },
+      {
+        "ordinal": 64,
+        "slot": 65
+      },
+      {
+        "ordinal": 65,
+        "slot": 66
+      },
+      {
+        "ordinal": 66,
+        "slot": 67
+      },
+      {
+        "ordinal": 67,
+        "slot": 68
+      },
+      {
+        "ordinal": 68,
+        "slot": 69
+      },
+      {
+        "ordinal": 69,
+        "slot": 70
+      },
+      {
+        "ordinal": 70,
+        "slot": 71
+      },
+      {
+        "ordinal": 71,
+        "slot": 72
+      },
+      {
+        "ordinal": 72,
+        "slot": 73
+      },
+      {
+        "ordinal": 73,
+        "slot": 74
+      },
+      {
+        "ordinal": 74,
+        "slot": 75
+      },
+      {
+        "ordinal": 75,
+        "slot": 76
+      },
+      {
+        "ordinal": 76,
+        "slot": 77
+      },
+      {
+        "ordinal": 77,
+        "slot": 78
+      },
+      {
+        "ordinal": 78,
+        "slot": 79
+      },
+      {
+        "ordinal": 79,
+        "slot": 80
+      },
+      {
+        "ordinal": 80,
+        "slot": 81
+      },
+      {
+        "ordinal": 81,
+        "slot": 82
+      },
+      {
+        "ordinal": 82,
+        "slot": 83
+      },
+      {
+        "ordinal": 83,
+        "slot": 84
+      },
+      {
+        "ordinal": 84,
+        "slot": 85
+      },
+      {
+        "ordinal": 85,
+        "slot": 86
+      }
+    ],
+    "1": [
+      {
+        "ordinal": 0,
+        "slot": 87
+      }
+    ]
+  }
+}
