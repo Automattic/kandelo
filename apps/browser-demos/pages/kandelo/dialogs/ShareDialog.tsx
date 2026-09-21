@@ -10,7 +10,10 @@ import { useKernelHost } from "../kernel-host/react";
 import {
   classifyTier, encodeBootDescriptor, HARD_CAPS,
 } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
-import { createInlineBootInput } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
+import {
+  createInlineBootInput,
+  decodeInlineBootInputText,
+} from "../../../../../web-libs/kandelo-session/src/boot-inputs";
 import type {
   BootDescriptor,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
@@ -63,6 +66,28 @@ export const SharePanel: React.FC<SharePanelProps> = ({
     () => new TextEncoder().encode(script).byteLength,
     [script],
   );
+
+  // When this machine was booted from a script-carrying link, pre-fill the
+  // editor with that script so it can be tweaked and re-shared. Only an
+  // untouched (empty) editor is filled — never clobber the user's typing.
+  React.useEffect(() => {
+    const runScript = baseDescriptor.boot.parameters?.runScript;
+    const input = typeof runScript === "string"
+      ? baseDescriptor.boot.inputs?.find((entry) => entry.id === runScript)
+      : undefined;
+    if (!input) return;
+    let cancelled = false;
+    void decodeInlineBootInputText(input)
+      .then((text) => {
+        if (cancelled || text === null) return;
+        setScript((current) => (current === "" ? text : current));
+      })
+      .catch(() => {
+        // A malformed inherited input just leaves the editor empty; the
+        // link that carried it already failed loudly at boot if it was bad.
+      });
+    return () => { cancelled = true; };
+  }, [baseDescriptor]);
 
   React.useEffect(() => {
     let cancelled = false;

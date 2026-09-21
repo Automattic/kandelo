@@ -7,6 +7,7 @@ import {
 } from "../src/boot-descriptor";
 import {
   createInlineBootInput,
+  decodeInlineBootInputText,
   KANDELO_BOOT_INPUT_DIR,
   KANDELO_BOOT_INPUT_MANIFEST_PATH,
   materializeBootInputs,
@@ -358,5 +359,33 @@ describe("materializeBootInputs", () => {
     expect(mkdir).toHaveBeenCalledWith(KANDELO_BOOT_INPUT_DIR, 0o755);
     const manifest = JSON.parse(new TextDecoder().decode(writes.get(KANDELO_BOOT_INPUT_MANIFEST_PATH)!));
     expect(manifest).toEqual(result);
+  });
+});
+
+describe("decodeInlineBootInputText", () => {
+  it("round-trips gzip inline text and returns null for resolver sources", async () => {
+    const inline = await createInlineBootInput({
+      id: "script",
+      filename: "kandelo-link.sh",
+      bytes: new TextEncoder().encode("echo prefill\n"),
+      compression: "gzip",
+    });
+    expect(await decodeInlineBootInputText(inline)).toBe("echo prefill\n");
+
+    const plain = await createInlineBootInput({
+      id: "script",
+      filename: "kandelo-link.sh",
+      bytes: new TextEncoder().encode("echo plain\n"),
+    });
+    expect(await decodeInlineBootInputText(plain)).toBe("echo plain\n");
+
+    const resolver: BootInput = {
+      id: "rom",
+      filename: "rom.bin",
+      byteLength: HELLO_BYTES.byteLength,
+      sha256: HELLO_SHA256,
+      source: { kind: "resolver", resolver: "example", locator: null },
+    };
+    expect(await decodeInlineBootInputText(resolver)).toBeNull();
   });
 });

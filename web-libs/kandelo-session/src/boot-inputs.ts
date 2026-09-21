@@ -273,6 +273,19 @@ async function materializeInlineBytes(
   return gzipDecompress(carried, input.byteLength, input.id, signal);
 }
 
+/**
+ * Decode an inline input's final bytes as UTF-8 text without touching any
+ * filesystem. Authoring UI uses this to pre-fill an editor from a link the
+ * machine was booted with. Returns null for resolver-backed sources, whose
+ * bytes are not carried by the descriptor.
+ */
+export async function decodeInlineBootInputText(
+  input: BootInput,
+): Promise<string | null> {
+  if (input.source.kind !== "inline") return null;
+  return new TextDecoder().decode(await materializeInlineBytes(input, undefined));
+}
+
 function decodeCanonicalBase64Url(value: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) {
     throw new BootDescriptorError("E_INLINE_ENCODING", "inline input is not unpadded base64url");
