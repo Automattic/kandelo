@@ -3190,7 +3190,12 @@ pub fn sys_open(
         }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
-            if status_flags & O_ACCMODE != O_WRONLY {
+            // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
+            // sox, mpg123, …) uses O_RDWR — an app that only writes still opens
+            // read-write, exactly as on a real OSS card. Accept O_WRONLY and
+            // O_RDWR (both can write PCM); reject O_RDONLY, since kandelo has no
+            // capture source. Reads on the resulting descriptor are unsupported.
+            if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
             let pcm_handle = crate::audio::open_stream()?;
@@ -14158,7 +14163,12 @@ pub fn sys_openat(
         }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
-            if status_flags & O_ACCMODE != O_WRONLY {
+            // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
+            // sox, mpg123, …) uses O_RDWR — an app that only writes still opens
+            // read-write, exactly as on a real OSS card. Accept O_WRONLY and
+            // O_RDWR (both can write PCM); reject O_RDONLY, since kandelo has no
+            // capture source. Reads on the resulting descriptor are unsupported.
+            if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
             let pcm_handle = crate::audio::open_stream()?;
@@ -40690,7 +40700,7 @@ mod tests {
     }
 
     #[test]
-    fn open_dsp_is_exclusive_per_open_description_and_rejects_capture() {
+    fn open_dsp_accepts_playback_modes_rejects_capture_and_is_exclusive() {
         let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::audio::reset_for_test();
 
@@ -40698,22 +40708,32 @@ mod tests {
         let mut proc2 = Process::new(2);
         let mut host = MockHostIO::new();
 
-        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
-        let err = sys_open(&mut proc2, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap_err();
-        assert_eq!(err, Errno::EBUSY);
-        assert_eq!(
-            sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0),
-            Err(Errno::EBUSY)
-        );
+        // O_RDONLY is a pure-capture open; kandelo has no capture source.
         assert_eq!(
             sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDONLY, 0),
             Err(Errno::EOPNOTSUPP)
         );
+
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+
+        // Exclusive per open description: while held, any second open — even a
+        // valid playback mode — is EBUSY (the access-mode check passes for
+        // O_RDWR, so exclusivity is what rejects it here).
+        assert_eq!(
+            sys_open(&mut proc2, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
         assert_eq!(
             sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDWR, 0),
-            Err(Errno::EOPNOTSUPP)
+            Err(Errno::EBUSY)
         );
+
         sys_close(&mut proc1, &mut host, fd1).unwrap();
+
+        // Once free, the standard OSS O_RDWR open (what pcaudiolib/espeak use)
+        // succeeds — it opens read-write but only writes PCM.
+        let fd2 = sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDWR, 0).unwrap();
+        sys_close(&mut proc2, &mut host, fd2).unwrap();
     }
 
     #[test]
