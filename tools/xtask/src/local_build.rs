@@ -1801,6 +1801,9 @@ fn compute_skip_receipts(
 
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
+    // Sealed package builds run tools from the root node_modules but never
+    // install them; provision the locked tree here, before any node runs.
+    crate::root_js_deps::ensure_root_js_dependencies(&repo)?;
     generate_vfs_product_catalog(&repo)?;
     generate_program_package_index(&repo)?;
     let set = resolve_repo_file(&repo, &args.set, "supported set")?;
