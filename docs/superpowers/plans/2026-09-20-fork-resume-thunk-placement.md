@@ -82,6 +82,19 @@ the amendment argues against it.
 - **Run host tests from `host/`, never the repo root.** There is no root
   vitest config; a repo-root run silently drops `testTimeout: 30_000`, the
   `forks` pool, and `globalSetup`.
+- **vitest positional arguments are SUBSTRING FILTERS, not path globs**, and
+  this has already cost a sweep. `npx vitest run "test/fork-*.test.ts"` quoted
+  matches nothing, runs **zero files**, and exits **1** — which reads exactly
+  like an ordinary test failure, so the operator has a wrong explanation ready.
+  Unquoted it appears to work, via shell expansion, but silently misses the
+  `vfork-*` family. The correct form is two substrings:
+
+  ```bash
+  cd host && npx vitest run test/fork- test/vfork-
+  ```
+
+  Whatever you run, **check the file count against what you expected** — a
+  sweep that reports a number you did not predict is a sweep you have not read.
 - **Never run vitest while a build is running**, and never edit a file under
   `packages/registry/` while `xtask local-build` is live. This is a WORKAROUND
   for a defect, not a property to design around: `host/test/global-setup.ts:306-311`
@@ -513,7 +526,7 @@ and do not delete it in Task 5.
 - [ ] **Step 5: Run the fork surface**
 
 ```bash
-cd host && npx vitest run test/fork-*.test.ts
+cd host && npx vitest run test/fork- test/vfork-
 ```
 
 Compare against the last recorded baseline for that suite. Any new failure
@@ -544,13 +557,35 @@ slot WRITER either. What remains is release.
 - Modify: `host/src/fork-resume-table.ts`
 - Modify: `host/test/fork-resume-table.test.ts`
 
-- [ ] **Step 1: Delete the placement path and its `Table.set`**
+- [ ] **Step 1: RE-SCOPED 2026-09-21 — the deletion already landed; verify it
+      and bank what it left unbanked**
 
-Remove the per-thunk write loop and the op-0 query that fed it. Keep
-`unregisterActivation` / `releaseResumeSlots` — the dlclose path
-(`__wasm_dlclose` → `lk.dlclose` → `unregisterActivation` →
-`prepared.unregister()` → `resumeTable.unregisterActivation` →
-`releaseResumeSlots`) is unchanged by this plan.
+Task 4 deleted the per-thunk write loop and its `Table.set` in `bafe065a2`,
+rather than leaving them unreachable, because host-invoked placement makes
+"no host write" and "keep the write" contradictory and keeping both would
+have masked a broken shim. That was the right call and it spent this step.
+
+So this step is now verification plus the banking Task 4 did not do:
+
+1. Confirm no host writer of the resume table survives anywhere — not just in
+   this file. `grep -rn "\.set(" host/src/fork-resume-table.ts` and a repo-wide
+   sweep for writes to that table object.
+2. Confirm `unregisterActivation` / `releaseResumeSlots` still work: the
+   dlclose path (`__wasm_dlclose` → `lk.dlclose` → `unregisterActivation` →
+   `prepared.unregister()` → `resumeTable.unregisterActivation` →
+   `releaseResumeSlots`) is unchanged by this plan.
+3. **Bank every reduction now available.** Task 4's review measured the
+   cutover at net **+2 host code lines** with **+14 banked ceiling growth and
+   zero banked reduction** — which by this campaign's own "a wrapper is not a
+   port" standard is a trade, not a migration. Task 4 left 12 bankable lines
+   on `workerMainForkTypeScript` unbanked, citing "ceiling equals target";
+   that reason is true of `workerMainTypeScript` (5356/5356) and **false** of
+   `workerMainForkTypeScript`, whose target is 1200 against a ceiling of 3152.
+   Lower every ceiling this plan's deletions have earned, in this task's
+   commit, each with its reason in `docs/surface-budget.json`'s `why`.
+
+   This is the task where the campaign's ledger goes net-negative or does not.
+   Report the cumulative figure across Tasks 1-5, not just this commit's.
 
 - [ ] **Step 2: Rewrite the file header to match what it now does**
 
@@ -618,6 +653,89 @@ git push origin brandonpayton/lane-f-fork-inversion
 
 ## Task 6: Delete op 0 and `resume_slot_of`, and convert the native host
 
+> **MANDATORY ADDITIONS, 2026-09-21, from Task 5's audit and review.** These
+> are not optional extras; they are why Task 6 exists.
+>
+> **M1. Move the slot-nulling rule into the module.** `unregisterActivation`
+> still nulls freed slots, justified by "Rust cannot hold a funcref, therefore
+> the host must clear the table". The premise is true and the inference fails:
+> clearing writes `ref.null func`, not a funcref value. The injector already
+> emits table primitives into this module (`fm_transit_grow`,
+> `fork-module-inject/src/main.rs:510-521,1569`) and OWNS the resume table
+> (`:1042-1044`). An emitted `table.set $resume (ref.null func)` driven from
+> `fm_resume_slots` op 1 deletes the null loop, the per-activation slot list
+> (verified to duplicate `RESUME_SLOT_INDEX`, which already stores
+> `[activation, ordinal, slot]`), `ForkResumeAssignment.slots`, its decode
+> loop in `fork-module-backend.ts`, and `slotsOf` (verified: zero production
+> callers, eleven test sites).
+>
+> Note this is the SAME premise-true/inference-false shape already corrected
+> once on this exact table (census 198). A floor claim that has been wrong
+> here before is not evidence the second time.
+>
+> **M2. `host-native` mints its OWN table — convert it BEFORE or WITH M1.**
+> `crates/host-native/src/guest.rs:8155-8176`, and a second copy at `:11257`,
+> create their own `wasmtime::Table` instead of using the module's exported
+> one, and number slots `i+1` without consulting the module. If M1 lands
+> first, module-side nulling writes a table nothing reads there — silently
+> re-opening census 194's non-trapping wrong-resume, which is the failure mode
+> where a guest resumes into the wrong thunk and nothing traps. Sequence this
+> deliberately and say in the report which order you used and why.
+>
+> **M3. Rule 2 (the double-registration refusal) needs NEW module state.** An
+> empty catalog leaves no `RESUME_SLOT_INDEX` entry, so the existing
+> double-register refusal cannot carry it, and `resume_reseed` must survive.
+> Do not assume the existing state is sufficient.
+>
+> **M4. Rule 3 (the catalog-length guard) trades a named diagnostic for a bare
+> wasm trap.** The emitted shim already holds the catalog `TableId` and the
+> count (`instrument.rs:4563`), so `table.size` vs `count` is the same O(1)
+> check one layer down, unskippable and free for `host-native`. But the host
+> version produces a message and the wasm version produces `unreachable`.
+> Decide explicitly and record the decision; do not let the diagnostic vanish
+> unremarked.
+>
+> **M5. `clear()`'s highest-id-first ordering has no downstream consumer.**
+> Document it, do not delete it — an ordering with no consumer is a fact worth
+> recording, and removing it is a behaviour change nobody asked for.
+
+> **MEASUREMENT CORRECTION, 2026-09-21 — read before banking anything here.**
+>
+> Task 4's review reported that `forkResumeTargetsFromInstance` lives in
+> `host/src/fork-resume-catalog.ts`, which "no surface measures", and warned
+> that deleting it would bank nothing. **That is wrong, and I checked rather
+> than inheriting it.**
+>
+> `forkRestoredHostFloor` (`host/test/surface-budget.test.ts:354-372`) is a
+> glob over `host/src/fork-*.ts` and `host/src/vfork-*.ts` MINUS a list of
+> fifteen named files. `fork-resume-catalog.ts` is not in the subtraction, so
+> its 146 lines ARE counted — by that surface, and only by it.
+>
+> The real problem is which surface. `forkRestoredHostFloor` is defined as
+> "everything the `fork-*.ts` sweep took by FILENAME that turned out to be
+> process lifecycle, cross-worker transport or memory placement rather than
+> fork capture/replay logic" — the irreducible host floor. Reading a guest's
+> resume catalog and pairing ordinals to table slots is capture/replay logic.
+> It sits in the floor bucket by OMISSION: nobody named it, so the subtraction
+> missed it, so it defaulted into the surface that means "this is allowed to
+> exist".
+>
+> Two consequences for this task:
+>
+> 1. **The floor is overstated** by however much of that file is not floor.
+>    A surface whose membership is "everything nobody classified" cannot be
+>    read as a floor measurement, which is the same population-mixing defect
+>    that got `forkModuleEntryPoints` split three ways.
+> 2. **Deleting this file banks against `forkRestoredHostFloor`**, not against
+>    a capture/replay surface — so the ledger will show the FLOOR shrinking,
+>    which is the opposite of what the deletion means. Say so in the commit
+>    rather than letting the number tell the wrong story.
+>
+> Do not "fix" the classification by moving the file into
+> `forkPlatformTypeScript`'s named list as a drive-by. That is a real decision
+> about what the floor is, it changes two banked numbers, and it belongs to
+> the maintainer. Report it.
+
 **Files:**
 - Modify: `crates/fork-module/src/lib.rs` (delete the op-0 arm and
   `resume_slot_of`)
@@ -660,7 +778,7 @@ placement, that path imports a table nobody fills. Make it use the module's
 table and placement entry. This was not named in the spec and is in scope.
 
 ```bash
-cargo test -p wasm-posix-host-native
+cargo test -p host-native --target "$(rustc -vV | awk '/^host:/{print $2}')"
 ```
 
 - [ ] **Step 4: Move the host-obligation pin**
@@ -674,8 +792,8 @@ say in the commit what moved and why.
 ```bash
 bash crates/fork-module/build-wasm.sh
 bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
-cd host && npx vitest run test/fork-*.test.ts
-cd .. && cargo test -p wasm-posix-host-native
+cd host && npx vitest run test/fork- test/vfork-
+cd .. && cargo test -p host-native --target "$(rustc -vV | awk '/^host:/{print $2}')"
 ```
 
 - [ ] **Step 6: Budget, then commit**
