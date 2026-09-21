@@ -1134,12 +1134,19 @@ async function runLinkScript(
   text: string,
   tick: (msg: string) => void,
 ): Promise<void> {
-  await host.writeFile(LINK_SCRIPT_PATH, new TextEncoder().encode(text), 0o755);
+  // Read-only (0444): the script is link-provided input the user should be
+  // able to inspect (`cat`) but not mistake for an editable local file.
+  // `bash <file>` does not need the execute bit.
+  await host.writeFile(LINK_SCRIPT_PATH, new TextEncoder().encode(text), 0o444);
   // "Default shell" for the invocation: the PTY session program is login,
   // not a shell, so probe the image for bash and fall back to sh. Authors
   // needing another interpreter can exec it from the script body.
   const bash = await host.stat("/bin/bash").catch(() => null);
   const interpreter = bash ? "bash" : "sh";
+  tick("showing boot-link script in the terminal...");
+  // Show the actual script contents in the terminal before running them —
+  // the visitor sees exactly what the link asked their machine to execute.
+  await host.runShellCommand(`cat ${LINK_SCRIPT_PATH}`);
   tick(`running boot-link script with ${interpreter}...`);
   await host.runShellCommand(`${interpreter} ${LINK_SCRIPT_PATH}`);
 }

@@ -614,11 +614,13 @@ the fragment were absent.
 
 Opening a script link boots the machine selected by the query parameters
 (the fragment cannot select an image the query parameters could not), writes
-the script to `/tmp/kandelo-link.sh`, and runs it from the initial
-interactive shell — `bash` when the image ships it, `sh` otherwise. The
-invocation and the script's output are visible in the terminal, and the
-script takes the image `autoCommand`'s place in the launch sequence.
-Navigating to a different machine from the gallery drops the fragment.
+the script read-only (mode 0444) to `/tmp/kandelo-link.sh`, prints its full
+contents in the terminal with `cat` before execution, and then runs it from
+the initial interactive shell — `bash` when the image ships it, `sh`
+otherwise. The script's source, the invocation, and the script's output are
+all visible in the terminal, and the script takes the image `autoCommand`'s
+place in the launch sequence. Navigating to a different machine from the
+gallery drops the fragment.
 
 Scripts currently run without a confirmation step because every machine the
 browser app boots is ephemeral. This is a load-bearing boundary: before any

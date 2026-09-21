@@ -47,6 +47,7 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
   });
   const text = expect.poll(() => terminalText(page), { timeout: 120_000 });
   await text.toContain("/tmp/kandelo-link.sh"); // visible invocation
+  await text.toContain('echo "link-script:$((6 * 7))"'); // script contents shown via cat
   await text.toContain("link-script:42");       // script output
 });
 
@@ -77,7 +78,7 @@ test("gallery navigation drops a boot-link fragment", async ({ page }) => {
   expect(new URL(next).searchParams.get("demo")).toBe("node");
 });
 
-test("share dialog authors a script link that runs on open @slow", async ({ page }) => {
+test("share dialog authors a script link that runs on open @slow", async ({ page, context }) => {
   test.setTimeout(300_000);
   await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
@@ -100,11 +101,12 @@ test("share dialog authors a script link that runs on open @slow", async ({ page
     .getAttribute("data-share-url");
   if (!sharedUrl) throw new Error("share dialog produced no URL");
 
-  await page.goto(sharedUrl, { waitUntil: "domcontentloaded" });
-  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+  const opened = await context.newPage();
+  await opened.goto(sharedUrl, { waitUntil: "domcontentloaded" });
+  await expect(opened.locator(".xterm-rows").first()).toBeVisible({
     timeout: 180_000,
   });
   await expect
-    .poll(() => terminalText(page), { timeout: 120_000 })
+    .poll(() => terminalText(opened), { timeout: 120_000 })
     .toContain("shared-script:42");
 });
