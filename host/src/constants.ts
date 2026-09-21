@@ -2371,6 +2371,58 @@ export function readWasmCustomSectionNames(programBytes: ArrayBuffer): string[] 
   return names;
 }
 
+/**
+ * Custom-section name carrying the 32-byte ABI-contract digest
+ * (`hash(abi/snapshot.json + ABI_VERSION)`) a wasm artifact was built against.
+ * Stamped by the local-build engine (`tools/xtask/src/build_stamp.rs`,
+ * `ABI_CONTRACT_SECTION`) onto every program — kernel, userspace, and every
+ * guest. The host reads the kernel's own stamp at init and compares each
+ * guest's stamp against it at exec, so a structural ABI change can't let a
+ * stale guest run against a mismatched kernel even when the ABI version
+ * numbers coincide.
+ */
+export const ABI_CONTRACT_SECTION = "kandelo.abi.contract";
+
+/**
+ * Return the payload bytes (after the section name) of the first custom
+ * section named `name`, or `null` if the module carries no such section.
+ * Mirrors {@link readWasmCustomSectionNames}' walker but exposes the payload.
+ */
+export function readWasmCustomSectionPayload(
+  programBytes: ArrayBuffer,
+  name: string,
+): Uint8Array | null {
+  const src = new Uint8Array(programBytes);
+  if (!hasWasmMagic(src)) return null;
+
+  let offset = 8;
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+    const sectionEnd = contentOffset + sectionSize;
+
+    if (sectionId === 0) {
+      const [sectionName, afterName] = readName(src, contentOffset);
+      if (sectionName === name) {
+        return src.subarray(afterName, sectionEnd);
+      }
+    }
+
+    offset = sectionEnd;
+  }
+  return null;
+}
+
+/** Constant-shape 32-byte compare of two ABI-contract digests. */
+function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
   return containsAscii(new Uint8Array(programBytes), "asyncify_");
 }
@@ -2400,10 +2452,17 @@ export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
     customSections.some((name) => name.startsWith("reloc."));
 }
 
+/**
+ * Warn once per worker process when a guest lacks the ABI-contract stamp,
+ * not once per program load (mirrors `abiMissingWarned` in worker-main.ts).
+ */
+let abiContractMissingWarned = false;
+
 export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
   options: {
     expectedAbi?: number | null;
+    expectedAbiContractDigest?: Uint8Array | null;
     requiredExports?: readonly string[];
     forbiddenExports?: readonly string[];
     requireForkInstrumentation?: boolean;
@@ -2420,6 +2479,35 @@ export function describeWasmArtifactPolicyFailures(
     declaredAbi = extractAbiVersion(programBytes);
     if (declaredAbi !== null && declaredAbi !== options.expectedAbi) {
       failures.push(`ABI ${declaredAbi}, expected ${options.expectedAbi}`);
+    }
+  }
+
+  // ABI-contract digest gate (Stage 3): the ABI version NUMBER can coincide
+  // across a structural ABI change that regenerated abi/snapshot.json. The
+  // 32-byte contract digest binds hash(abi/snapshot.json + ABI_VERSION), so a
+  // guest built against a different snapshot is caught even when the numbers
+  // match. Warn-then-enforce during rollout: an UNSTAMPED (legacy) guest warns
+  // once and passes; a STAMPED-but-mismatched guest fails hard.
+  if (
+    options.expectedAbiContractDigest !== undefined &&
+    options.expectedAbiContractDigest !== null
+  ) {
+    const guestDigest = readWasmCustomSectionPayload(programBytes, ABI_CONTRACT_SECTION);
+    if (guestDigest === null) {
+      if (!abiContractMissingWarned) {
+        abiContractMissingWarned = true;
+        console.warn(
+          "[worker] user program lacks a kandelo.abi.contract stamp — " +
+            "legacy binary predates the ABI-contract-digest rollout. Rebuild " +
+            "it through the local-build engine to pick up the check. " +
+            "See docs/abi-versioning.md.",
+        );
+      }
+    } else if (!abiContractDigestsEqual(guestDigest, options.expectedAbiContractDigest)) {
+      failures.push(
+        "ABI contract digest mismatch — guest built against a different ABI " +
+          "snapshot than the running kernel; rebuild the guest",
+      );
     }
   }
 

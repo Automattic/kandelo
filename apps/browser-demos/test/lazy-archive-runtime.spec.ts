@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { gzipSync, zipSync, type Zippable } from "fflate";
 
+import { resolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import {
   MemoryFileSystem,
@@ -55,8 +56,15 @@ const environmentProgram = join(
   here,
   "../../../examples/environment_lifecycle_test.wasm",
 );
-const kernel = join(here, "../../../host/wasm/kandelo-kernel.wasm");
-const available = existsSync(environmentProgram) && existsSync(kernel);
+function tryResolveKernelWasm(): string | null {
+  try {
+    return resolveBinary("kernel.wasm");
+  } catch {
+    return null;
+  }
+}
+const kernel = tryResolveKernelWasm();
+const available = existsSync(environmentProgram) && kernel !== null;
 const TAR_BLOCK = 512;
 
 // The production preview itself supplies the cross-origin isolation headers.

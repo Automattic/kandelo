@@ -21,6 +21,16 @@
 #   --pr-staging                  Use the current PR's staging binary index for
 #                                  fetch/package commands. Browser rejects it.
 #
+# Environment:
+#   KANDELO_SOURCE_CACHE_ROOT     Absolute path to this worktree's own
+#                                 SourceOnly build cache. Unset (default) shares
+#                                 the machine-wide cache at
+#                                 $HOME/.cache/kandelo/source-only, so identical
+#                                 inputs build once and are reused across
+#                                 worktrees. Set it to isolate a worktree whose
+#                                 in-progress change alters cached artifact
+#                                 bytes. See docs/package-management.md.
+#
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -1958,8 +1968,6 @@ clean_target() {
             # cargo `target/` directories below are the underlying build's
             # own scratch space, which the engine's cache does not track.
             xtask_clean_target kernel
-            rm -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" \
-                  "$REPO_ROOT/host/wasm/wasm_posix_userspace.wasm"
             rm -rf "$REPO_ROOT/target/wasm64-unknown-unknown/" "$REPO_ROOT/target/wasm32-unknown-unknown/"
             warn "Cleaned kernel" ;;
         sysroot)
@@ -1981,12 +1989,6 @@ clean_target() {
         programs)
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
-            # Keep kernel wasm files
-            if [ -f "$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm" ]; then
-                mkdir -p "$REPO_ROOT/host/wasm"
-                cp "$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm" \
-                    "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"
-            fi
             warn "Cleaned programs" ;;
         dash)
             xtask_clean_target dash
@@ -2753,7 +2755,7 @@ cmd_list() {
     # now, and this display is only ever a "does something exist on disk
     # yet" hint, not a build gate — see docs/agent-guidance/
     # packages-and-builds.md.
-    echo "  kernel      Rust kernel + userspace Wasm         $( { has_resolvable kernel.wasm || has_valid_kernel_file "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"; } && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  kernel      Rust kernel + userspace Wasm         $(has_resolvable kernel.wasm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sysroot     musl libc sysroot (wasm32)           $([ -f "$REPO_ROOT/sysroot/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sysroot64   musl libc sysroot (wasm64)           $([ -f "$REPO_ROOT/sysroot64/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sdk         SDK cross-compilation tools           $(command -v wasm32posix-cc &>/dev/null && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

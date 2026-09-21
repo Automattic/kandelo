@@ -3493,6 +3493,158 @@ pub(crate) fn materialize_source_only_program_target(
     Err("source-only program materialization requires Unix no-follow filesystem semantics".to_string())
 }
 
+/// Materialized-member descriptors for a SourceOnlyV1 program cache entry,
+/// computed purely from the canonical entry + manifest + arch -- WITHOUT the
+/// staging/publish side effect `prepare_program_projection` performs.
+///
+/// This is the declaration/hash loop of `prepare_program_projection` with the
+/// output-root mirror transaction removed: for each declared program output
+/// and runtime file it opens the artifact under the canonical entry, reads its
+/// mode, streams the same bytes to compute size + sha256, and records the same
+/// `mirror_path` the projection would (via the pure `output_dest_rel_for` /
+/// `runtime_file_dest_rel_for` + `program_projection_destination_relative` +
+/// `portable_projection_path` helpers), then applies the identical
+/// `(mirror_path, source_artifact)` sort. Because every field is a function of
+/// the immutable content-addressed entry rather than the mirror, the members it
+/// returns are byte-identical to the ones `materialize_source_only_program_target_with_cache_root`
+/// records in the projection-hooks receipt for the same node. Non-`Program`
+/// kinds have no program closure and return an empty `Vec`, matching
+/// `materialize_source_only_program_target_with_cache_root`.
+#[cfg(unix)]
+fn canonical_program_members(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+) -> Result<Vec<MaterializedProgramMemberV1>, String> {
+    if manifest.kind != ManifestKind::Program {
+        return Ok(Vec::new());
+    }
+    let mut declarations = Vec::<(String, PathBuf, Option<u32>)>::new();
+    for output in &manifest.program_outputs {
+        declarations.push((
+            output.wasm.clone(),
+            manifest.output_dest_rel_for(output),
+            None,
+        ));
+    }
+    declarations.extend(manifest.runtime_files.iter().map(|runtime_file| {
+        (
+            runtime_file.artifact.clone(),
+            manifest.runtime_file_dest_rel_for(runtime_file),
+            Some(runtime_file.mode),
+        )
+    }));
+    if declarations.is_empty() {
+        return Err(format!(
+            "{}: program has no declared output/runtime closure to materialize",
+            manifest.spec()
+        ));
+    }
+
+    let mut members = Vec::new();
+    for (source_artifact, mirror_relative, declared_mode) in declarations {
+        let mut source = StableProjectionSource::open(canonical, &source_artifact)
+            .map_err(|error| format!("{}: {error}", manifest.spec()))?;
+        let mode = declared_mode.unwrap_or(source.file_snapshot.mode);
+        let destination_relative =
+            program_projection_destination_relative(manifest, arch, &mirror_relative);
+        let mut hash = Sha256::new();
+        let mut size = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = std::io::Read::read(&mut source.file, &mut buffer).map_err(|error| {
+                format!("read program member {}: {error}", source.path.display())
+            })?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&buffer[..count]);
+            size += count as u64;
+        }
+        source.validate()?;
+        let digest: [u8; 32] = hash.finalize().into();
+        members.push(MaterializedProgramMemberV1 {
+            source_artifact,
+            mirror_path: portable_projection_path(
+                manifest,
+                &destination_relative,
+                "source-only output-root mirror path",
+            )?,
+            mode,
+            size,
+            sha256: hex(&digest),
+        });
+    }
+    members.sort_by(|left, right| {
+        (&left.mirror_path, &left.source_artifact)
+            .cmp(&(&right.mirror_path, &right.source_artifact))
+    });
+    Ok(members)
+}
+
+/// Persist the SourceOnlyV1 package receipt sidecar for a freshly built
+/// canonical cache entry from `ensure_built_inner`'s own store path -- the
+/// path `xtask build-deps resolve` uses (run.sh's node.wasm bootstrap, package
+/// build-script dependency resolution), which stamps the wasm but historically
+/// wrote no receipt, leaving the Task-7 build-key belt check a permanent no-op
+/// for those entries.
+///
+/// The receipt is assembled from the same primitives the projection-hooks path
+/// (`resolve_local_build_package_node_with_projection_hooks` via
+/// `capture_source_only_package_authority`) uses, so it is byte-identical to
+/// the sidecar that path writes for the same `(canonical, cache_key)`. That
+/// identity is required, not merely nice: the trusted fast path reads this
+/// sidecar's `cache_receipt_sha256` and finalization compares against it, so a
+/// diverging value would spuriously fail the graph path. Every field is
+/// derivable from the canonical dir + manifest + arch, with no `output_root`:
+/// `manifest_sha256` from the manifest file, `cache_key_sha256` from the
+/// in-scope key, `cache_receipt_sha256` from the same cache-entry snapshot, and
+/// the members from `canonical_program_members`.
+#[cfg(unix)]
+fn write_canonical_receipt(
+    manifest: &DepsManifest,
+    cache_root: &Path,
+    canonical: &Path,
+    cache_key_sha: &str,
+    arch: TargetArch,
+    abi_version: u32,
+) -> Result<(), String> {
+    let manifest_sha256 = stable_package_manifest_sha256(&manifest.dir.join("package.toml"))?;
+    let guard = SourceOnlyCacheParentGuard::prepare(cache_root, canonical)?;
+    let snapshot = capture_source_only_cache_entry_snapshot(
+        manifest,
+        &guard,
+        canonical,
+        arch,
+        abi_version,
+        cache_key_sha,
+    )?;
+    let cache_receipt_sha256 = cache_receipt_sha256(&snapshot.receipt)?;
+    let materialized_members = canonical_program_members(manifest, canonical, arch)?;
+    let receipt = PackageNodeReceiptV1 {
+        manifest_sha256,
+        cache_key_sha256: cache_key_sha.to_string(),
+        cache_receipt_sha256,
+        materialized_members,
+    };
+    write_source_only_cache_receipt(canonical, &receipt)
+}
+
+/// Non-Unix stub: source-only receipts require Unix no-follow filesystem
+/// semantics (the snapshot/receipt primitives are `#[cfg(unix)]`), and
+/// `ensure_built_uncached` is not itself cfg-gated, so it needs a no-op here.
+#[cfg(not(unix))]
+fn write_canonical_receipt(
+    _manifest: &DepsManifest,
+    _cache_root: &Path,
+    _canonical: &Path,
+    _cache_key_sha: &str,
+    _arch: TargetArch,
+    _abi_version: u32,
+) -> Result<(), String> {
+    Ok(())
+}
+
 fn program_projection_destination_relative(
     manifest: &DepsManifest,
     arch: TargetArch,
@@ -5347,10 +5499,10 @@ fn program_package_index_for_root_once(
         if !matches!(manifest.kind, ManifestKind::Program) {
             continue;
         }
-        // The kernel and userspace adapter are published as root boot
-        // artifacts (`binaries/kernel.wasm` and `binaries/userspace.wasm`),
-        // not as architecture-scoped guest programs. They therefore do not
-        // belong in the program-mirror projection.
+        // The kernel is published as a root boot artifact
+        // (`binaries/kernel.wasm`), not as an architecture-scoped guest
+        // program. It therefore does not belong in the program-mirror
+        // projection.
         if manifest.uses_root_binary_mirror() {
             continue;
         }
@@ -6916,14 +7068,30 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "sdk/src",
 ];
 
-const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
-    "Cargo.toml",
-    "crates/fork-instrument/Cargo.toml",
-    "crates/fork-instrument/src",
-    "scripts/build-fork-instrument-tool.sh",
-    "scripts/fork-instrument-tool-input-hash.sh",
-    "scripts/run-wasm-fork-instrument.sh",
-];
+/// The full input closure of the wasm-fork-instrument tool: the crate's
+/// cargo-derived workspace source closure (crates/fork-instrument, its
+/// workspace path-deps, and .cargo/config.toml) plus the explicit non-crate
+/// tail. Single source of truth shared by the cache-key digest and the
+/// drift-guard test that keeps scripts/fork-instrument-tool-input-hash.sh
+/// from silently diverging. The tail is genuinely non-crate (lockfile/manifest/
+/// toolchain + the build/run/hash harness scripts) and cannot be derived from
+/// cargo.
+fn fork_instrument_tool_input_paths(root: &Path) -> Result<Vec<String>, String> {
+    let mut paths = crate::cargo_closure::cargo_closure_paths(root, "fork-instrument")?;
+    for tail in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "scripts/build-fork-instrument-tool.sh",
+        "scripts/run-wasm-fork-instrument.sh",
+        "scripts/fork-instrument-tool-input-hash.sh",
+    ] {
+        paths.push(tail.to_string());
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
 
 type RootDigestCache = OnceLock<Mutex<BTreeMap<PathBuf, Result<Vec<BuildInputDigest>, String>>>>;
 
@@ -6968,8 +7136,9 @@ fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
 fn fork_instrument_tool_digests() -> Result<Vec<BuildInputDigest>, String> {
     let root = repo_root();
     root_scoped_build_input_digests(&FORK_INSTRUMENT_TOOL_DIGESTS, &root, |root| {
-        let mut digests =
-            global_package_build_input_digests_for(root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+        let paths = fork_instrument_tool_input_paths(root)?;
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let mut digests = global_package_build_input_digests_for(root, &refs)?;
         digests.push(BuildInputDigest {
             label: "cargo-metadata:fork-instrument-build-deps".to_string(),
             digest: fork_instrument_cargo_dependency_digest(root)?,
@@ -7472,6 +7641,30 @@ fn build_input_digests_from_repo(
                     target.spec()
                 ));
             }
+        }
+        if let Some(crate_name) = input.strip_prefix(crate::cargo_closure::CARGO_INPUT_PREFIX) {
+            let crate_name = crate_name.trim();
+            if crate_name.is_empty() {
+                return Err(format!(
+                    "{}: build.toml input `{input}` has an empty crate name",
+                    target.spec()
+                ));
+            }
+            for rel in crate::cargo_closure::cargo_closure_paths(main_repo_root, crate_name)? {
+                let path = resolve_build_input_path_from_repo(target, registry, &rel, main_repo_root)?;
+                let digest = if validate_declared_source_inputs {
+                    let authority_root =
+                        repository_source_authority_root(&path, registry, main_repo_root)?;
+                    strict_source_build_input_digest(&authority_root, &path)?
+                } else {
+                    hash_build_input(&path)?
+                };
+                out.push(BuildInputDigest {
+                    label: format!("{input}::{rel}"),
+                    digest,
+                });
+            }
+            continue;
         }
         let path = resolve_build_input_path_from_repo(target, registry, input, main_repo_root)?;
         let digest = if validate_declared_source_inputs {
@@ -8479,7 +8672,7 @@ pub fn canonical_path(
     cache_root.join(kind_subdir).join(basename)
 }
 
-use crate::util::hex;
+use crate::util::{hex, hex_to_32};
 
 // ---------------------------------------------------------------------
 // Build + cache-install
@@ -8944,9 +9137,11 @@ pub(crate) fn read_source_only_cache_receipt(
 /// qualifies only when its entry is present and passes the trusted validation
 /// (declared-output shape + wasm/fork/ABI policy + provenance, no whole-tree
 /// re-hash), its receipt sidecar is present, and every projected member the
-/// receipt claims is present in `output_root`. Any uncertainty — a missing
-/// entry, absent or unreadable sidecar, corrupt provenance, or a missing
-/// projected file — returns `None` so the authoritative child path runs. It
+/// receipt claims is present in `output_root` with its recorded size, mode,
+/// and SHA-256.
+/// Any uncertainty — a missing entry, absent or unreadable sidecar, corrupt
+/// provenance, or a missing or mismatched projected file — returns `None` so
+/// the authoritative child path runs. It
 /// therefore never reports a node cached that a build would have changed.
 #[cfg(unix)]
 pub(crate) fn source_only_skip_receipt_if_clean(
@@ -8990,16 +9185,44 @@ pub(crate) fn source_only_skip_receipt_if_clean(
     let receipt = read_source_only_cache_receipt(&canonical, &cache_key_sha256)
         .ok()
         .flatten()?;
+    // Each projected member must be the exact bytes this receipt materialized,
+    // not just a file at its path. Size and mode are not enough: artifacts embed
+    // their fixed-length cache key, so a mirror left by an earlier cache key is
+    // usually the same size with different bytes. Reporting it Cached would
+    // leave the stale mirror in place for every later trusted run.
     for member in &receipt.materialized_members {
         let projected = output_root.join(&member.mirror_path);
-        let present = std::fs::symlink_metadata(&projected)
-            .map(|meta| meta.is_file())
-            .unwrap_or(false);
-        if !present {
+        if !projected_member_matches(&projected, member) {
             return None;
         }
     }
     Some(receipt)
+}
+
+/// Whether `path` is a regular (non-symlink) file with the member's recorded
+/// size, mode, and SHA-256.
+#[cfg(unix)]
+fn projected_member_matches(path: &Path, member: &MaterializedProgramMemberV1) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() != member.size || meta.mode() & 0o7777 != member.mode {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        match std::io::Read::read(&mut file, &mut buffer) {
+            Ok(0) => break,
+            Ok(count) => hasher.update(&buffer[..count]),
+            Err(_) => return false,
+        }
+    }
+    hex(&hasher.finalize()) == member.sha256
 }
 
 /// Resolve exactly one scheduler-selected node under SourceOnlyV1. Compiled
@@ -10289,6 +10512,29 @@ fn ensure_built_uncached(
                 opts.policy,
                 force_rebuild,
             )?;
+            // Persist the SourceOnlyV1 package receipt sidecar for the entry we
+            // just stored. This is the `xtask build-deps resolve` path (run.sh's
+            // node.wasm bootstrap, package build-script dependency resolution);
+            // without this write the Task-7 build-key belt check has no receipt
+            // to read and stays a permanent no-op for these entries. The receipt
+            // is byte-identical to the projection-hooks path's for the same
+            // node. Best-effort, matching that path's convention: a failure here
+            // only forces the next run to recompute, never a wrong result.
+            if opts.policy == ResolvePolicy::SourceOnlyV1 {
+                if let Err(error) = write_canonical_receipt(
+                    target,
+                    opts.cache_root,
+                    &canonical,
+                    &cache_key_sha_hex,
+                    arch,
+                    abi_version,
+                ) {
+                    eprintln!(
+                        "{}: warning: persist source-only cache receipt: {error}",
+                        target.spec()
+                    );
+                }
+            }
             Ok(ResolvedNode::compiled_with_disposition(
                 canonical,
                 transitive,
@@ -13483,6 +13729,142 @@ fn build_into_cache(
         work.cleanup_source_only().map_err(|error| {
             format!("{}: clean package work scratch before publication: {error}", target.spec())
         })?;
+        // Stamp every declared wasm output with the cache key it was just
+        // built under, at cache-store time -- before `complete_cache_receipt_v1`
+        // below hashes `tmp`'s tree, so the staging receipt (and every later
+        // receipt/snapshot re-hash of this exact entry) describes the
+        // stamped bytes that actually get published to `canonical`, never
+        // the pre-stamp ones. `crate::build_stamp::stamp_build_key` refuses
+        // to double-stamp, and this runs exactly once per fresh build (cache
+        // hits short-circuit before ever calling `build_into_cache`), so a
+        // second stamp attempt here would itself be a bug, not a benign
+        // no-op. Because `materialize_source_only_program_target*` copies
+        // these exact bytes verbatim into the `source-only-v1` mirror, the
+        // mirror carries the identical stamp with no separate stamping step.
+        if target.kind == ManifestKind::Program {
+            let stamp_key = hex_to_32(cache_key_sha).map_err(|error| {
+                format!(
+                    "{}: cache_key_sha is not a valid sha256 hex digest: {error}",
+                    target.spec()
+                )
+            })?;
+            // Sibling of the build key: the ABI-contract digest
+            // (hash(abi/snapshot.json + ABI_VERSION)) this artifact was built
+            // against. Stamped on EVERY program (kernel, userspace, and every
+            // guest) so the host can compare a guest's stamp against the
+            // running kernel's own kandelo.abi.contract stamp at exec and
+            // refuse a stale guest even when the ABI version numbers coincide.
+            // This is the same digest folded into the SourceOnlyV1 cache key,
+            // so it is reliable, not best-effort: propagate errors like the
+            // build-key stamp.
+            let abi_contract_digest =
+                crate::local_abi_identity::local_abi_contract_digest(repo_root, abi_version)
+                    .map_err(|error| {
+                        format!(
+                            "{}: compute ABI contract digest for stamp: {error}",
+                            target.spec()
+                        )
+                    })?;
+            for output in &target.program_outputs {
+                let member = tmp.join(&output.wasm);
+                let bytes = std::fs::read(&member).map_err(|error| {
+                    format!(
+                        "{}: read built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                // Both the build-key and abi-contract stamps are wasm custom
+                // sections: they only apply to a loadable wasm module. Some
+                // `program` packages declare non-wasm outputs (e.g. a lazy VFS
+                // archive `*.zip`/`*.zst` or a data blob) whose bytes have no
+                // wasm magic; there is nothing to stamp on them, and feeding
+                // them to the wasm stamper would fail on a bad magic header.
+                // Skip those members -- they carry no ABI/build identity and
+                // are never loaded as a module (verify-fresh and the belt
+                // check only ever read `.wasm` members).
+                if !bytes.starts_with(b"\0asm") {
+                    continue;
+                }
+                let stamped = crate::build_stamp::stamp_build_key(&bytes, &stamp_key).map_err(|error| {
+                    format!(
+                        "{}: stamp built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                let stamped = crate::build_stamp::stamp_named_section(
+                    &stamped,
+                    crate::build_stamp::ABI_CONTRACT_SECTION,
+                    &abi_contract_digest,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: stamp ABI contract digest on wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                // The built member may be read-only: a `make install` binary
+                // is commonly mode 0555, the fork-instrument step deliberately
+                // preserves that mode, and the resolver-scratch copy inherits
+                // it. This stamp is the authoritative writer of the final bytes
+                // into the pre-publication build stage, so overwrite in place
+                // (preserving the inode, which some packages hard-link, e.g.
+                // mandoc's `man` -> `mandoc`): temporarily restore owner-write,
+                // then re-apply the original mode so the published artifact
+                // keeps its executable/read-only bits.
+                #[cfg(unix)]
+                let restore_mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(&member)
+                        .map_err(|error| {
+                            format!(
+                                "{}: stat stamped wasm output {}: {error}",
+                                target.spec(),
+                                member.display()
+                            )
+                        })?
+                        .permissions()
+                        .mode();
+                    if mode & 0o200 == 0 {
+                        std::fs::set_permissions(
+                            &member,
+                            std::fs::Permissions::from_mode(mode | 0o200),
+                        )
+                        .map_err(|error| {
+                            format!(
+                                "{}: make stamped wasm output writable {}: {error}",
+                                target.spec(),
+                                member.display()
+                            )
+                        })?;
+                        Some(mode)
+                    } else {
+                        None
+                    }
+                };
+                std::fs::write(&member, stamped).map_err(|error| {
+                    format!(
+                        "{}: write stamped wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                #[cfg(unix)]
+                if let Some(mode) = restore_mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(mode))
+                        .map_err(|error| {
+                            format!(
+                                "{}: restore stamped wasm output mode {}: {error}",
+                                target.spec(),
+                                member.display()
+                            )
+                        })?;
+                }
+            }
+        }
     }
 
     if policy == ResolvePolicy::Default {
@@ -14681,7 +15063,7 @@ fn required_exports_for_program_output(
 ) -> &'static [&'static str] {
     if target.name == "kernel" && out.name == "kernel" {
         wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS
-    } else if out.wasm.ends_with(".wasm") && target.name != "userspace" {
+    } else if out.wasm.ends_with(".wasm") {
         &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS
     } else {
         &[]
@@ -15543,7 +15925,125 @@ fn validate_cache_entry(
     cache_key_sha: &str,
 ) -> Result<(), String> {
     validate_cache_artifacts(target, dir)?;
-    validate_cache_provenance(target, dir, arch, abi_version, cache_key_sha)
+    validate_cache_provenance(target, dir, arch, abi_version, cache_key_sha)?;
+    validate_cache_entry_build_key_stamps(dir, cache_key_sha)
+}
+
+/// Belt-and-suspenders check for the trusted (no-rehash) cache-hit path:
+/// read every materialized wasm member's `kandelo.build.key` stamp (Task 5
+/// writes it at cache-store time, into both the canonical entry and its
+/// mirror -- see the `stamp_build_key` call in `build_into_cache`) and
+/// confirm it equals the key this canonical entry is stored under. The
+/// content-addressed directory name already binds every declared input, but
+/// it is only the *name*; this confirms the *bytes* underneath actually
+/// belong to that name, catching a corrupted or misfiled cache entry (wrong
+/// bytes at the right key) that `validate_cache_artifacts` and
+/// `validate_cache_provenance` cannot detect because neither inspects wasm
+/// content. Reads the small receipt sidecar plus a bounded whole-file read
+/// of each named wasm member (`read_build_key` then parses the trailing
+/// custom section out of that buffer; this is not a targeted section seek)
+/// -- never the whole entry tree -- so the trusted fast path stays cheap
+/// relative to a full re-hash, even though it is not a zero-byte check.
+///
+/// A member with NO stamp at all is tolerated, not rejected: it predates
+/// Task 5's stamping and cannot be shown to be either fresh or corrupt, so
+/// failing it would wall existing cache users off entries that were
+/// trustworthy under the pre-stamp contract. It self-migrates the next time
+/// it is rebuilt and re-stamped. Only a *mismatched* stamp -- a present
+/// stamp for a different key -- is treated as corruption evidence, because
+/// that is a positive signal of wrong bytes at the right key, not merely an
+/// absence of evidence.
+///
+/// Coverage boundary: this only checks entries whose canonical directory has
+/// a persisted receipt sidecar (see `materialized_wasm_members` below for
+/// which production path writes one and which does not). An entry stamped
+/// by `build_into_cache` but never given a receipt sidecar silently has
+/// nothing to check here and is *not* protected by this belt check -- for
+/// the kernel specifically, Task 6's `verify_fresh_report` build-key check
+/// is the primary staleness gate regardless of receipt coverage, and this
+/// check is additional, not a replacement.
+fn validate_cache_entry_build_key_stamps(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
+    let expected_key = hex_to_32(cache_key_sha).map_err(|error| {
+        format!(
+            "cached entry {}: cache_key_sha is not a valid sha256 hex digest: {error}",
+            canonical.display()
+        )
+    })?;
+    for member in materialized_wasm_members(canonical, cache_key_sha)? {
+        let bytes = std::fs::read(&member)
+            .map_err(|e| format!("read cached member {}: {e}", member.display()))?;
+        match crate::build_stamp::read_build_key(&bytes)? {
+            Some(stamp) if stamp == expected_key => {}
+            Some(stamp) => {
+                return Err(format!(
+                    "cached entry {} is corrupt: member {} carries build key {} but the \
+                     entry is keyed {cache_key_sha}. Rebuild with `--rebuild`.",
+                    canonical.display(),
+                    member.display(),
+                    hex(&stamp),
+                ));
+            }
+            None => {
+                // Legacy pre-stamp entry: tolerated, not rejected. This
+                // member predates Task 5's stamping and cannot be proven
+                // fresh or corrupt either way, so it self-migrates on its
+                // next rebuild instead of walling existing cache users off
+                // an entry that was trustworthy under the pre-stamp
+                // contract. Only a MISMATCHED stamp (above) is corruption
+                // evidence worth failing loudly for.
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Canonical paths of the wasm members a SourceOnlyV1 cache entry's
+/// persisted receipt sidecar (Task 5) records, for the belt-and-suspenders
+/// build-key stamp check above. Reads only the small receipt sidecar --
+/// never lists or hashes the entry tree -- so this stays a cheap addition to
+/// the trusted fast path.
+///
+/// Not every stamped cache entry has a receipt sidecar, and this returns an
+/// empty list -- silently skipping the belt check above, not failing -- for
+/// any entry that lacks one. Both production paths that store a SourceOnlyV1
+/// entry now write the sidecar: `resolve_local_build_package_node_with_projection_hooks`
+/// (the `local-build`/graph-node path, which materializes the kernel) AND
+/// `ensure_built_inner`'s own `Library | Program` store arm, gated on
+/// `ResolvePolicy::SourceOnlyV1` (Stage 2b). The latter is the path
+/// `xtask build-deps resolve <name>` uses -- `run.sh`'s node.wasm bootstrap and
+/// most `packages/registry/*/build-*.sh` dependency resolution -- so those
+/// entries now carry a receipt and this belt check fires for them too, instead
+/// of being the permanent no-op it was when only the projection path wrote the
+/// sidecar. Both paths assemble the receipt from the same canonical-only
+/// primitives, so the sidecar is byte-identical whichever path materialized the
+/// entry. An entry with no persisted receipt for any other reason (built before
+/// the sidecar existed, or a manifest kind that never gets one, e.g. a library
+/// -- whose receipt records no `.wasm` member) is handled the same way, an
+/// empty member list. `validate_cache_artifacts` already enforces
+/// declared-output shape independent of this check, for every entry regardless
+/// of receipt coverage.
+#[cfg(unix)]
+fn materialized_wasm_members(canonical: &Path, cache_key_sha: &str) -> Result<Vec<PathBuf>, String> {
+    let receipt = match read_source_only_cache_receipt(canonical, cache_key_sha)? {
+        Some(receipt) => receipt,
+        None => return Ok(Vec::new()),
+    };
+    Ok(receipt
+        .materialized_members
+        .into_iter()
+        .filter(|member| member.mirror_path.ends_with(".wasm"))
+        .map(|member| canonical.join(&member.source_artifact))
+        .collect())
+}
+
+/// Source-only caching (and its receipt sidecar) requires Unix no-follow
+/// filesystem semantics; there is nothing to check on other platforms.
+#[cfg(not(unix))]
+fn materialized_wasm_members(
+    _canonical: &Path,
+    _cache_key_sha: &str,
+) -> Result<Vec<PathBuf>, String> {
+    Ok(Vec::new())
 }
 
 fn remove_cache_entry(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
@@ -16831,6 +17331,28 @@ fn manifest_cache_key_sha_for_policy(
     .map(|sha| hex(&sha))
 }
 
+/// The SourceOnlyV1 cache key `build_into_cache` stamps onto every published
+/// wasm output (see the `stamp_build_key` call in `build_into_cache`),
+/// recomputed for `manifest`. `verify-fresh` reuses THIS exact function so a
+/// staged artifact's stamp is compared against the same key the build engine
+/// would produce -- never the Default-policy key, which omits the abi-contract
+/// fold and uses non-strict source digests, so it would never match a
+/// SourceOnlyV1 stamp on a real build.
+pub(crate) fn source_only_cache_key_sha(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+) -> Result<String, String> {
+    manifest_cache_key_sha_for_policy(
+        manifest,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+    )
+}
+
 #[derive(Clone, Debug)]
 struct DeclaredLocalArtifact {
     source_suffix: PathBuf,
@@ -17058,12 +17580,12 @@ fn install_local_artifact(
                 generation_member.display(),
             )
         })?;
-        // WHY: kernel and userspace are package-owned boot artifacts even
-        // though their historical public mirrors live at the binary root.
-        // Publishing their direct builds below programs/<arch>/ would leave
-        // an identityless root file in place and let later dependency
-        // materialization either substitute different bytes or fail on the
-        // ownership collision.
+        // WHY: kernel is a package-owned boot artifact even though its
+        // historical public mirror lives at the binary root. Publishing its
+        // direct build below programs/<arch>/ would leave an identityless
+        // root file in place and let later dependency materialization
+        // either substitute different bytes or fail on the ownership
+        // collision.
         let destination = if manifest.uses_root_binary_mirror() {
             binaries_dir.join(&declared.mirror_relative)
         } else {
@@ -17724,7 +18246,7 @@ fn lexically_normalize_absolute_path(path: &Path) -> Option<PathBuf> {
 /// walk may still materialize the corresponding released package, but it must
 /// not replace a validated local generation with those lower-priority bytes.
 /// This applies equally to ordinary one-member program mirrors and the
-/// root-level kernel/userspace boot mirrors.
+/// root-level kernel boot mirror.
 fn scalar_mirror_selects_local_generation(
     manifest: &DepsManifest,
     output: &crate::pkg_manifest::ProgramOutput,
@@ -19306,7 +19828,7 @@ fn cleanup_reserved_local_stage(
 ///     `<binaries_dir>/programs/<arch>/<output.name>.wasm`.
 ///   * ≥2 total members:
 ///     `<binaries_dir>/programs/<arch>/<program.name>/<output.name>.wasm`.
-///   * first-party kernel/userspace: `<binaries_dir>/<output.name>.wasm`.
+///   * first-party kernel: `<binaries_dir>/<output.name>.wasm`.
 ///
 /// This is the single source of truth for the symlink layout. Browser
 /// demos hardcode these paths (see `apps/browser-demos/vite.config.ts`
@@ -20637,6 +21159,38 @@ revision = {revision}
         fs::canonicalize(p).unwrap()
     }
 
+    /// Recursively copy `src` into `dst`, skipping `target/`, `.git/`, and
+    /// `local-binaries/` at any depth. Those directories can be enormous
+    /// (build output, submodule history, fetched binaries) and are never
+    /// read by `cargo metadata` or by build-input hashing, so copying them
+    /// would make repo-cloning tests pathologically slow for no benefit.
+    /// Symlinks are skipped rather than followed: nothing this helper's
+    /// callers hash needs to resolve through one, and following symlinks
+    /// blindly risks escaping the copy or looping.
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let name = entry.file_name();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if matches!(
+                    name.to_str(),
+                    Some("target") | Some(".git") | Some("local-binaries")
+                ) {
+                    continue;
+                }
+                copy_dir_recursive(&entry.path(), &dst.join(&name))?;
+            } else {
+                fs::copy(entry.path(), dst.join(&name))?;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn relative_registry_roots_anchor_at_the_kandelo_repository() {
         let repo = Path::new("/kandelo/source");
@@ -20673,14 +21227,6 @@ revision = {revision}
             &[],
             ":",
             &[("kernel", "kandelo-kernel.wasm")],
-        );
-        write_program(
-            &registry_root,
-            "userspace",
-            "1.0.0",
-            &[],
-            ":",
-            &[("userspace", "wasm_posix_userspace.wasm")],
         );
         write_program(
             &registry_root,
@@ -22657,10 +23203,104 @@ allow_uninitialized_gitlinks = true
     }
 
     #[test]
-    fn fork_instrument_tool_inputs_hash_dependency_closure_instead_of_whole_lockfile() {
+    fn fork_instrument_tool_input_paths_include_cargo_config_and_both_crate_dirs() {
+        // This is the exact omission Stage 2 fixes: the old hand-maintained
+        // input list omitted crates/shared AND .cargo/config.toml, so edits
+        // to either could leave a stale cached fork-instrument tool
+        // undetected.
+        let root = repo_root();
+        let paths = fork_instrument_tool_input_paths(&root).expect("closure");
         assert!(
-            !FORK_INSTRUMENT_TOOL_INPUTS.contains(&"Cargo.lock"),
-            "raw Cargo.lock changes are too broad for program package cache keys"
+            paths.iter().any(|p| p == "crates/fork-instrument"),
+            "fork-instrument dir missing: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == "crates/shared"),
+            "shared dir missing: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == ".cargo/config.toml"),
+            "cargo config missing: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == "Cargo.lock"),
+            "Cargo.lock missing: {paths:?}"
+        );
+        let mut sorted = paths.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(paths, sorted, "must be sorted and deduped");
+    }
+
+    /// Extracts the whitespace-separated root arguments of the script's
+    /// `find <roots...> -type f -print` invocation.
+    fn fork_instrument_hash_script_find_roots(script: &str) -> BTreeSet<String> {
+        let find_idx = script
+            .find("find ")
+            .expect("scripts/fork-instrument-tool-input-hash.sh must invoke `find`");
+        let rest = &script[find_idx + "find ".len()..];
+        let end = rest.find(" -").unwrap_or(rest.len());
+        rest[..end].split_whitespace().map(str::to_string).collect()
+    }
+
+    /// True if `token` appears in `script` as a standalone path-like word
+    /// (not as a substring of a longer path or filename). Robust to the
+    /// shell script's line-continuation backslashes, trailing `;`, and
+    /// arbitrary whitespace/formatting.
+    fn fork_instrument_hash_script_mentions_path(script: &str, token: &str) -> bool {
+        let is_path_char =
+            |c: char| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_');
+        let bytes = script.as_bytes();
+        let mut search_from = 0usize;
+        while let Some(rel) = script[search_from..].find(token) {
+            let start = search_from + rel;
+            let end = start + token.len();
+            let before_ok = start == 0 || !is_path_char(bytes[start - 1] as char);
+            let after_ok = end >= bytes.len() || !is_path_char(bytes[end] as char);
+            if before_ok && after_ok {
+                return true;
+            }
+            search_from = start + 1;
+        }
+        false
+    }
+
+    #[test]
+    fn fork_instrument_tool_input_hash_shell_script_matches_cargo_closure() {
+        // Drift guard: scripts/fork-instrument-tool-input-hash.sh hand-lists
+        // its inputs in pure shell (deliberately, so the per-build staleness
+        // check never shells out to `cargo`). This test is the only thing
+        // keeping that hand list in sync with the cargo-derived closure that
+        // feeds consuming packages' cache keys.
+        let root = repo_root();
+        let paths = fork_instrument_tool_input_paths(&root).expect("closure");
+        let script_path = root.join("scripts/fork-instrument-tool-input-hash.sh");
+        let script = fs::read_to_string(&script_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", script_path.display()));
+
+        let crate_dirs: BTreeSet<String> = paths
+            .iter()
+            .filter(|p| p.starts_with("crates/"))
+            .cloned()
+            .collect();
+        let other_paths: Vec<&String> =
+            paths.iter().filter(|p| !p.starts_with("crates/")).collect();
+
+        for path in other_paths {
+            assert!(
+                fork_instrument_hash_script_mentions_path(&script, path),
+                "scripts/fork-instrument-tool-input-hash.sh is missing input {path:?} that \
+                 fork_instrument_tool_input_paths now covers; add it to the hand-listed \
+                 `for relative_path in ...` loop so the installed-tool staleness hash covers \
+                 the same inputs as the package cache key",
+            );
+        }
+
+        let script_crate_roots = fork_instrument_hash_script_find_roots(&script);
+        assert_eq!(
+            script_crate_roots, crate_dirs,
+            "fork-instrument's workspace deps changed; update the shell script's `find` \
+             roots and re-check the cache-key coverage.",
         );
     }
 
@@ -26287,12 +26927,6 @@ wasm = "single-local.wasm"
         for (package, output, artifact, root_mirror) in [
             ("single-local", "single-local", "single-local.wasm", false),
             ("kernel", "kernel", "kandelo-kernel.wasm", true),
-            (
-                "userspace",
-                "userspace",
-                "wasm_posix_userspace.wasm",
-                true,
-            ),
         ] {
             let manifest = DepsManifest::parse(
                 &format!(
@@ -30587,6 +31221,93 @@ libs = ["lib/libF3b.a"]
         assert!(symlink_input.contains("symlink"), "{symlink_input}");
     }
 
+    #[test]
+    fn cargo_input_tag_expands_and_includes_cargo_config() {
+        // A synthetic fixture package (unrelated to the kernel) declares
+        // `inputs = ["cargo:kandelo"]`. `kandelo` (crates/kernel) is a real
+        // workspace crate, so `cargo_closure_paths` resolves it against the
+        // real repo regardless of which package declares the tag. This
+        // keeps Task 2 independently testable ahead of Task 3, which
+        // migrates the kernel's own build.toml to this same tag.
+        let repo_root = crate::repo_root();
+        let fixture_root = std::fs::canonicalize(tempdir("cargo-input-tag-fixture")).unwrap();
+        write(&fixture_root, "cargoInputFixture", "1.0.0", &[]);
+        std::fs::write(
+            fixture_root.join("cargoInputFixture/build.toml"),
+            "script_path = \"build.sh\"\ninputs = [\"cargo:kandelo\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
+        )
+        .unwrap();
+        let registry = Registry {
+            roots: vec![fixture_root.clone()],
+        };
+        let manifest = registry.load("cargoInputFixture").unwrap();
+        let digests = build_input_digests_from_repo(
+            &manifest,
+            &registry,
+            &repo_root,
+            ResolvePolicy::SourceOnlyV1,
+        )
+        .expect("input digests");
+        let labels: Vec<&str> = digests.iter().map(|d| d.label.as_str()).collect();
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("cargo:kandelo::") && l.ends_with(".cargo/config.toml")),
+            "expected an expanded .cargo/config.toml input, got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| *l == "cargo:kandelo::crates/runtime-core"),
+            "expected runtime-core input, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn kernel_key_changes_when_cargo_config_changes() {
+        // Regression test for the reported bug: the kernel's cache key did
+        // not fold `.cargo/config.toml`, so editing kernel codegen/link
+        // flags there (e.g. rustflags) left a stale kernel cached under an
+        // unchanged key. Copy the real repo into a temp dir, compute the
+        // kernel's cache key, mutate `.cargo/config.toml`, recompute, and
+        // assert the key moved. All build-input resolution (including
+        // `cargo:<crate>` expansion) is anchored at the process-wide
+        // `repo_root()`, not at the manifest's own directory, so the repo
+        // root override is installed to point at the temp copy for the
+        // duration of both computations.
+        let src = crate::repo_root();
+        let tmp = tempdir("kernel-cargo-config");
+        copy_dir_recursive(&src, &tmp).expect("copy repo");
+        let _repo_root = crate::install_repo_root_override(tmp.clone()).unwrap();
+
+        let reg = Registry {
+            roots: vec![tmp.join("packages/registry")],
+        };
+        let kernel = reg.load("kernel").expect("kernel");
+
+        let before = compute_cache_key_sha_for_package(
+            &kernel.dir,
+            &reg,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+        )
+        .expect("key before");
+
+        // Append a harmless comment to .cargo/config.toml (codegen input).
+        let cfg = tmp.join(".cargo/config.toml");
+        let mut contents = std::fs::read_to_string(&cfg).unwrap();
+        contents.push_str("\n# staleness-regression-probe\n");
+        std::fs::write(&cfg, contents).unwrap();
+
+        let after = compute_cache_key_sha_for_package(
+            &kernel.dir,
+            &reg,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+        )
+        .expect("key after");
+
+        assert_ne!(before, after, ".cargo/config.toml must be a kernel cache input");
+    }
+
     #[cfg(unix)]
     #[test]
     fn source_only_provider_dev_shell_identity_is_bounded_and_binds_every_input() {
@@ -31568,9 +32289,40 @@ revision = 1
         );
         let published = binaries.join("programs/wasm32/localtool.wasm");
         assert!(published.symlink_metadata().unwrap().file_type().is_symlink());
+        let published_bytes = std::fs::read(&published).unwrap();
+        // The local-build engine stamps every published `.wasm` with its
+        // cache key (Task 5 of the kernel-staleness Stage 1 fix), appended
+        // as a trailing custom section, so the published bytes are the raw
+        // build output plus that stamp -- not byte-identical to it.
+        assert!(
+            published_bytes.starts_with(&minimal_executable_wasm()),
+            "published wasm must retain its original bytes ahead of the build-key stamp"
+        );
+        assert!(
+            crate::build_stamp::read_build_key(&published_bytes)
+                .unwrap()
+                .is_some(),
+            "published wasm must carry a kandelo.build.key stamp"
+        );
+        // Every published program also carries the sibling ABI-contract stamp,
+        // equal to hash(abi/snapshot.json + ABI_VERSION) for the repo it was
+        // built against. This resolve runs under `crate::repo_root()` and the
+        // current ABI version, so the stamped digest must equal the same
+        // `local_abi_contract_digest` the host reads from the kernel at exec.
+        let stamped_contract = crate::build_stamp::read_named_section(
+            &published_bytes,
+            crate::build_stamp::ABI_CONTRACT_SECTION,
+        )
+        .unwrap()
+        .expect("published wasm must carry a kandelo.abi.contract stamp");
+        let expected_contract = crate::local_abi_identity::local_abi_contract_digest(
+            &crate::repo_root(),
+            current_abi_version(),
+        )
+        .unwrap();
         assert_eq!(
-            std::fs::read(&published).unwrap(),
-            minimal_executable_wasm()
+            stamped_contract, expected_contract,
+            "stamped ABI-contract digest must equal local_abi_contract_digest(repo, ABI_VERSION)"
         );
         assert!(
             std::fs::canonicalize(&published)
@@ -31868,42 +32620,40 @@ printf 'CLEAN-ENV\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
 
     #[cfg(unix)]
     #[test]
-    fn source_only_kernel_and_userspace_recipes_write_cargo_outputs_below_work() {
+    fn source_only_kernel_recipe_writes_cargo_outputs_below_work() {
         use std::os::unix::fs::PermissionsExt;
 
-        for (package, artifact) in [
-            ("kernel", "kandelo-kernel.wasm"),
-            ("userspace", "wasm_posix_userspace.wasm"),
-        ] {
-            let fixture = tempdir(&format!("source-only-{package}-cargo-target"));
-            let package_dir = fixture.join(format!("packages/registry/{package}"));
-            let scripts_dir = fixture.join("scripts");
-            let tool_bin = fixture.join("tools/bin");
-            let work = fixture.join("resolver-work");
-            let output = fixture.join("resolver-output");
-            fs::create_dir_all(&package_dir).unwrap();
-            fs::create_dir_all(&scripts_dir).unwrap();
-            fs::create_dir_all(&tool_bin).unwrap();
-            fs::create_dir_all(&work).unwrap();
-            fs::create_dir_all(&output).unwrap();
-            let script_name = format!("build-{package}.sh");
-            fs::copy(
-                crate::repo_root()
-                    .join("packages/registry")
-                    .join(package)
-                    .join(&script_name),
-                package_dir.join(&script_name),
-            )
-            .unwrap();
-            fs::write(
-                scripts_dir.join("wasm-artifact-guards.sh"),
-                "wasm_require_exports() { :; }\nwasm_require_target_aware_exec_authority() { :; }\n",
-            )
-            .unwrap();
-            let fake_cargo = tool_bin.join("cargo");
-            fs::write(
-                &fake_cargo,
-                r#"#!/usr/bin/env bash
+        let package = "kernel";
+        let artifact = "kandelo-kernel.wasm";
+        let fixture = tempdir(&format!("source-only-{package}-cargo-target"));
+        let package_dir = fixture.join(format!("packages/registry/{package}"));
+        let scripts_dir = fixture.join("scripts");
+        let tool_bin = fixture.join("tools/bin");
+        let work = fixture.join("resolver-work");
+        let output = fixture.join("resolver-output");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::create_dir_all(&tool_bin).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        let script_name = format!("build-{package}.sh");
+        fs::copy(
+            crate::repo_root()
+                .join("packages/registry")
+                .join(package)
+                .join(&script_name),
+            package_dir.join(&script_name),
+        )
+        .unwrap();
+        fs::write(
+            scripts_dir.join("wasm-artifact-guards.sh"),
+            "wasm_require_exports() { :; }\nwasm_require_target_aware_exec_authority() { :; }\n",
+        )
+        .unwrap();
+        let fake_cargo = tool_bin.join("cargo");
+        fs::write(
+            &fake_cargo,
+            r#"#!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "-V" ]; then
   echo 'cargo 1.97.0-nightly fixture'
@@ -31911,43 +32661,41 @@ if [ "${1:-}" = "-V" ]; then
 fi
 case " $* " in
   *" -p kandelo "*) artifact=kandelo_kernel.wasm ;;
-  *" -p wasm-posix-userspace "*) artifact=wasm_posix_userspace.wasm ;;
   *) exit 91 ;;
 esac
 mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"
 printf '\0asm\1\0\0\0fixture' > "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/$artifact"
 "#,
-            )
-            .unwrap();
-            fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
-            let mut path = std::ffi::OsString::from(&tool_bin);
-            path.push(":");
-            path.push(std::env::var_os("PATH").unwrap_or_default());
+        )
+        .unwrap();
+        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut path = std::ffi::OsString::from(&tool_bin);
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
 
-            let command_output = Command::new("bash")
-                .arg(package_dir.join(&script_name))
-                .env("PATH", path)
-                .env("WASM_POSIX_DEP_WORK_DIR", &work)
-                .env("WASM_POSIX_DEP_OUT_DIR", &output)
-                .env("CARGO_TARGET_DIR", work.join("cargo-target"))
-                .output()
-                .unwrap();
-            assert!(
-                command_output.status.success(),
-                "{package} resolver recipe failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&command_output.stdout),
-                String::from_utf8_lossy(&command_output.stderr),
-            );
-            assert!(output.join(artifact).is_file());
-            assert!(
-                !fixture.join("target").exists(),
-                "{package} wrote Cargo output into the checkout",
-            );
-            assert!(
-                !fixture.join("local-binaries").exists() && !fixture.join("host/wasm").exists(),
-                "{package} resolver recipe installed checkout mirrors",
-            );
-        }
+        let command_output = Command::new("bash")
+            .arg(package_dir.join(&script_name))
+            .env("PATH", path)
+            .env("WASM_POSIX_DEP_WORK_DIR", &work)
+            .env("WASM_POSIX_DEP_OUT_DIR", &output)
+            .env("CARGO_TARGET_DIR", work.join("cargo-target"))
+            .output()
+            .unwrap();
+        assert!(
+            command_output.status.success(),
+            "{package} resolver recipe failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&command_output.stdout),
+            String::from_utf8_lossy(&command_output.stderr),
+        );
+        assert!(output.join(artifact).is_file());
+        assert!(
+            !fixture.join("target").exists(),
+            "{package} wrote Cargo output into the checkout",
+        );
+        assert!(
+            !fixture.join("local-binaries").exists() && !fixture.join("host/wasm").exists(),
+            "{package} resolver recipe installed checkout mirrors",
+        );
     }
 
     #[test]
@@ -33776,9 +34524,9 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
 
     #[test]
     fn cmd_resolve_with_binaries_dir_places_kernel_at_root() {
-        // First-party kernel/userspace artifacts are consumed as
-        // binaries/kernel.wasm and binaries/userspace.wasm, not as
-        // regular programs under binaries/programs/<arch>/.
+        // The first-party kernel artifact is consumed as
+        // binaries/kernel.wasm, not as a regular program under
+        // binaries/programs/<arch>/.
         let root = tempdir("resolve-bdir-kernel-reg");
         let cache = tempdir("resolve-bdir-kernel-cache");
         let bin_dir = tempdir("resolve-bdir-kernel-bin");
@@ -35169,6 +35917,668 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         assert!(error.contains("materialized") || error.contains("member"), "{error}");
     }
 
+    /// Task 5 of the kernel-staleness Stage 1 fix: a wasm output published by
+    /// the local-build engine must carry a `kandelo.build.key` custom section
+    /// (Task 4's `build_stamp` module) equal to its own `cache_key_sha256`, so
+    /// a later reader can detect a stale mirror by comparing the stamp
+    /// against a freshly recomputed key. This exercises the real production
+    /// path end to end: build a small program package whose build script
+    /// emits a real (policy-valid) wasm module, resolve+materialize it, and
+    /// read the stamp back out of the published `source-only-v1` mirror.
+    #[test]
+    fn materialized_kernel_carries_build_key_stamp() {
+        let repo = tempdir("stamp-mirror-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "kstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("kstamp.wasm", &minimal_executable_wasm()),
+            &[("kstamp", "kstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "kstamp");
+        let manifest_path = repo.join("kstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"kstamp.wasm\"",
+                "wasm = \"kstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("kstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("stamp-mirror-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("stamp-mirror-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+
+        let mirror = output.join("programs/wasm32/kstamp.wasm");
+        let bytes = fs::read(&mirror).unwrap();
+        let stamp = crate::build_stamp::read_build_key(&bytes)
+            .unwrap()
+            .expect("mirror must carry a kandelo.build.key stamp");
+        let expected = hex_to_32(&receipt.cache_key_sha256).unwrap();
+        assert_eq!(stamp, expected, "mirror must be stamped with its own cache key");
+
+        // The stamp is written at cache-store time (inside `build_into_cache`,
+        // before the staging receipt is hashed), then the mirror above is a
+        // verbatim copy -- so the canonical `source-only-v1/compiled` cache
+        // entry Task 7 later reads from must independently carry the exact
+        // same stamp, not just the mirror.
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+        let canonical_bytes = fs::read(canonical.join("kstamp.wasm")).unwrap();
+        let canonical_stamp = crate::build_stamp::read_build_key(&canonical_bytes)
+            .unwrap()
+            .expect("canonical cache entry must carry a kandelo.build.key stamp");
+        assert_eq!(
+            canonical_stamp, expected,
+            "canonical cache entry must be stamped with its own cache key"
+        );
+
+        // Stamping runs exactly once, at cache-store time. A repeat resolve
+        // against the same unchanged package is a cache hit that never
+        // re-enters `build_into_cache`, so it must not attempt to
+        // double-stamp (which `stamp_build_key` rejects) and the mirror must
+        // still read back the identical stamp afterward.
+        let second = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        assert_eq!(second.disposition, LocalBuildDisposition::Cached);
+        let mirror_bytes_after_hit = fs::read(&mirror).unwrap();
+        let stamp_after_hit = crate::build_stamp::read_build_key(&mirror_bytes_after_hit)
+            .unwrap()
+            .expect("mirror must still carry its stamp after a cache-hit resolve");
+        assert_eq!(stamp_after_hit, expected);
+    }
+
+    /// A `program` package may declare a NON-wasm output (e.g. a lazy VFS
+    /// archive `*.zip`/`*.zst` shipped as a man-page or bundle, like the
+    /// real `lsof-docs.zip`). Those members have no wasm magic, so both the
+    /// `kandelo.build.key` and the sibling `kandelo.abi.contract` stamps --
+    /// which are wasm custom sections -- must SKIP them rather than fail on a
+    /// bad magic header (a cold rebuild otherwise aborts the whole build). A
+    /// real `.wasm` sibling in the same package must still be stamped with
+    /// BOTH sections.
+    #[test]
+    fn non_wasm_program_output_is_left_unstamped() {
+        let repo = tempdir("nonwasm-stamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let wasm_bytes = minimal_executable_wasm();
+        // Deliberately NOT a wasm module: no `\0asm` magic.
+        let archive_bytes: Vec<u8> = b"PK\x03\x04 lazy-archive, not a wasm module".to_vec();
+        let escape = |bytes: &[u8]| -> String {
+            bytes.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+        };
+        let build_script = format!(
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && printf '{}' > "$WASM_POSIX_DEP_OUT_DIR/realprog.wasm" && printf '{}' > "$WASM_POSIX_DEP_OUT_DIR/archive.zip""#,
+            escape(&wasm_bytes),
+            escape(&archive_bytes),
+        );
+        write_program(
+            &repo,
+            "mixedout",
+            "1.0.0",
+            &[],
+            &build_script,
+            &[("realprog", "realprog.wasm"), ("archive", "archive.zip")],
+        );
+        write_source_only_repository_inputs(&repo, "mixedout");
+        // Both outputs opt out of fork instrumentation: the wasm fixture has no
+        // fork surface, and the archive is not a module at all (mirrors how
+        // `lsof-docs.zip` declares `fork_instrumentation = "disabled"`).
+        let manifest_path = repo.join("mixedout/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path)
+                .unwrap()
+                .replace(
+                    "wasm = \"realprog.wasm\"",
+                    "wasm = \"realprog.wasm\"\nfork_instrumentation = \"disabled\"",
+                )
+                .replace(
+                    "wasm = \"archive.zip\"",
+                    "wasm = \"archive.zip\"\nfork_instrumentation = \"disabled\"",
+                ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("mixedout").unwrap();
+        let (base, compiled) = source_only_test_roots("nonwasm-stamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("nonwasm-stamp-output");
+
+        // The build must materialize WITHOUT error even though one declared
+        // output is not a wasm module.
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // The real wasm sibling still carries BOTH stamps.
+        let wasm_member = fs::read(canonical.join("realprog.wasm")).unwrap();
+        assert!(
+            crate::build_stamp::read_build_key(&wasm_member)
+                .unwrap()
+                .is_some(),
+            "the wasm output must carry a kandelo.build.key stamp"
+        );
+        assert!(
+            crate::build_stamp::read_named_section(
+                &wasm_member,
+                crate::build_stamp::ABI_CONTRACT_SECTION,
+            )
+            .unwrap()
+            .is_some(),
+            "the wasm output must carry a kandelo.abi.contract stamp"
+        );
+
+        // The non-wasm archive is copied through verbatim and left unstamped:
+        // its bytes are exactly what the build wrote (no trailing custom
+        // section), and it still has no wasm magic.
+        let archive_member = fs::read(canonical.join("archive.zip")).unwrap();
+        assert_eq!(
+            archive_member, archive_bytes,
+            "the non-wasm output must be left byte-for-byte unstamped"
+        );
+        assert!(
+            !archive_member.starts_with(b"\0asm"),
+            "the non-wasm output must remain a non-wasm artifact"
+        );
+    }
+
+    /// Task 7 belt-and-suspenders check: the trusted (no-rehash) cache-hit
+    /// path must reject a canonical entry whose wasm member carries a
+    /// `kandelo.build.key` stamp for a DIFFERENT key than the entry is
+    /// keyed under -- the "wrong bytes at the right key name" corruption a
+    /// misfiled or overwritten cache entry produces. Fabricates a real
+    /// materialized program node (so the canonical entry, its receipt
+    /// sidecar, and the correctly-stamped wasm member all exist exactly as
+    /// production leaves them), then overwrites just the canonical wasm
+    /// member with a module stamped for an unrelated key and asserts
+    /// `validate_cache_entry` -- the function `source_only_cache_entry_is_trusted`
+    /// calls on every trusted hit -- rejects it loudly instead of trusting
+    /// the directory name.
+    #[test]
+    fn trusted_entry_rejected_when_stamp_mismatches_key() {
+        let repo = tempdir("trusted-stamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "tstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("tstamp.wasm", &minimal_executable_wasm()),
+            &[("tstamp", "tstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "tstamp");
+        let manifest_path = repo.join("tstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"tstamp.wasm\"",
+                "wasm = \"tstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("tstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("trusted-stamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("trusted-stamp-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // Sanity: the real build engine stamped the canonical member with
+        // the entry's own key (Task 5), so the pre-tamper entry validates.
+        validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .expect("a freshly built, correctly stamped entry must validate");
+
+        // Overwrite the canonical wasm member with a policy-valid module
+        // stamped for an unrelated key -- a fresh, never-stamped module, so
+        // this doesn't hit `stamp_build_key`'s double-stamp guard.
+        let member = canonical.join("tstamp.wasm");
+        assert!(member.exists(), "fabricated entry must materialize the declared wasm output");
+        let tampered =
+            crate::build_stamp::stamp_build_key(&minimal_executable_wasm(), &[0x99; 32]).unwrap();
+        fs::write(&member, tampered).unwrap();
+
+        let err = validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("build key") || err.contains("stamp"),
+            "must name the stamp/build-key mismatch: {err}"
+        );
+    }
+
+    /// Task 7 belt-and-suspenders check, `None` branch: a receipt-bearing
+    /// canonical entry whose wasm member carries NO `kandelo.build.key`
+    /// stamp at all predates Task 5's stamping and cannot be proven fresh
+    /// OR corrupt, so the trusted cache-hit path must tolerate it -- unlike
+    /// a present-but-wrong-key stamp (positive corruption evidence, still
+    /// rejected above), an absent stamp is only a lack of evidence, and
+    /// rejecting it would wall existing legacy cache entries off instead of
+    /// letting them self-migrate on their next rebuild.
+    #[test]
+    fn trusted_entry_tolerates_a_missing_stamp() {
+        let repo = tempdir("trusted-nostamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "nstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("nstamp.wasm", &minimal_executable_wasm()),
+            &[("nstamp", "nstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "nstamp");
+        let manifest_path = repo.join("nstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"nstamp.wasm\"",
+                "wasm = \"nstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("nstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("trusted-nostamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("trusted-nostamp-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // Overwrite the canonical wasm member with a policy-valid module
+        // that was never stamped at all (unlike the mismatch test, no
+        // `stamp_build_key` call here).
+        let member = canonical.join("nstamp.wasm");
+        assert!(member.exists(), "fabricated entry must materialize the declared wasm output");
+        fs::write(&member, minimal_executable_wasm()).unwrap();
+
+        validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .expect("an absent build-key stamp must be tolerated, not rejected, as a legacy entry");
+    }
+
+    /// Stage 2b crux: an entry stored through `ensure_built` (the public
+    /// resolver whose `ensure_built_inner` store arm the `xtask build-deps
+    /// resolve` / node.wasm-bootstrap path uses) under SourceOnlyV1 now writes a
+    /// receipt sidecar, and its bytes are byte-identical to the sidecar the
+    /// projection-hooks (local-build graph) path writes for the same node.
+    /// Byte-identity is required because the trusted fast path reads the
+    /// sidecar's `cache_receipt_sha256` and finalization compares against it, so
+    /// a single differing byte on the store-arm path would spuriously fail the
+    /// graph path.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_built_store_path_receipt_is_byte_identical_to_the_projection_path() {
+        let repo = tempdir("stage2b-byte-identity-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "b2ident",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("b2ident.wasm", &minimal_executable_wasm()),
+            &[("b2ident", "b2ident.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "b2ident");
+        let manifest_path = repo.join("b2ident/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"b2ident.wasm\"",
+                "wasm = \"b2ident.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("b2ident").unwrap();
+
+        // Way A: build through the public resolver. No projection runs, so the
+        // only sidecar in this cache root is the one the store arm writes.
+        let (base_a, compiled_a) = source_only_test_roots("stage2b-byte-identity-cache-a");
+        let opts_a = source_only_test_opts(&base_a, &compiled_a);
+        let canonical_a = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &opts_a).unwrap();
+
+        // Way B: build the same node through the projection-hooks path into an
+        // independent cache root.
+        let (base_b, compiled_b) = source_only_test_roots("stage2b-byte-identity-cache-b");
+        let roots_b = SourceOnlyCacheRoots {
+            base: base_b,
+            compiled: compiled_b,
+        };
+        let output_b = tempdir("stage2b-byte-identity-output-b");
+        let built_b =
+            run_local_rebuild_fixture(&target, &registry, &roots_b, &repo, &output_b, false)
+                .unwrap();
+        let receipt_b = built_b
+            .package_receipt
+            .expect("projection path publishes a receipt");
+        let canonical_b = built_b
+            .canonical
+            .expect("projection path has a canonical entry");
+        let key = receipt_b.cache_key_sha256.clone();
+
+        let sidecar_a = source_only_cache_receipt_path(&canonical_a, &key).unwrap();
+        let sidecar_b = source_only_cache_receipt_path(&canonical_b, &key).unwrap();
+        assert!(
+            sidecar_a.exists(),
+            "the ensure_built store arm must persist a receipt sidecar for a SourceOnlyV1 entry"
+        );
+        assert!(sidecar_b.exists(), "the projection path writes a sidecar");
+
+        let bytes_a = fs::read(&sidecar_a).unwrap();
+        let bytes_b = fs::read(&sidecar_b).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "store-arm and projection-path receipts must be byte-identical"
+        );
+
+        // The store-arm receipt records the wasm member, so the belt check has
+        // something to check, and its cache_key matches the entry.
+        let stored = read_source_only_cache_receipt(&canonical_a, &key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.cache_key_sha256, key);
+        assert!(
+            stored
+                .materialized_members
+                .iter()
+                .any(|member| member.mirror_path.ends_with(".wasm")),
+            "a program entry's receipt must record its wasm member"
+        );
+    }
+
+    /// Stage 2b belt-check coverage: with the store-arm sidecar in place, the
+    /// Task-7 build-key belt check (`validate_cache_entry` ->
+    /// `validate_cache_entry_build_key_stamps`) now FIRES for an entry reached
+    /// only through `ensure_built` -- rejecting a build-key-mismatched wasm
+    /// member that was previously a permanent no-op because no sidecar existed.
+    /// A MISSING stamp stays tolerated (the Stage-1 legacy softening).
+    #[cfg(unix)]
+    #[test]
+    fn ensure_built_store_path_receipt_arms_the_build_key_belt_check() {
+        let repo = tempdir("stage2b-belt-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "b2belt",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("b2belt.wasm", &minimal_executable_wasm()),
+            &[("b2belt", "b2belt.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "b2belt");
+        let manifest_path = repo.join("b2belt/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"b2belt.wasm\"",
+                "wasm = \"b2belt.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("b2belt").unwrap();
+
+        let (base, compiled) = source_only_test_roots("stage2b-belt-cache");
+        let opts = source_only_test_opts(&base, &compiled);
+        // Build ONLY through the public resolver -- no projection -- so the
+        // sidecar under test is exclusively the store arm's.
+        let canonical = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        let key = manifest_cache_key_sha_for_policy(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::SourceOnlyV1,
+        )
+        .unwrap();
+
+        assert!(
+            source_only_cache_receipt_path(&canonical, &key)
+                .unwrap()
+                .exists(),
+            "store arm must have written a sidecar"
+        );
+        validate_cache_entry(&target, &canonical, TEST_ARCH, TEST_ABI, &key)
+            .expect("a freshly built, correctly stamped entry must validate");
+
+        // Corruption: overwrite the canonical wasm with a policy-valid module
+        // stamped for an unrelated key. Previously (no sidecar) the belt check
+        // found no members and this passed; now it must reject.
+        let member = canonical.join("b2belt.wasm");
+        assert!(member.exists(), "the declared wasm output must materialize");
+        let tampered =
+            crate::build_stamp::stamp_build_key(&minimal_executable_wasm(), &[0x99; 32]).unwrap();
+        fs::write(&member, tampered).unwrap();
+        let err = validate_cache_entry(&target, &canonical, TEST_ARCH, TEST_ABI, &key).unwrap_err();
+        assert!(
+            err.contains("build key") || err.contains("stamp"),
+            "the belt check must now reject a build-key-mismatched member: {err}"
+        );
+
+        // A MISSING stamp is still tolerated (Stage-1 softening intact).
+        fs::write(&member, minimal_executable_wasm()).unwrap();
+        validate_cache_entry(&target, &canonical, TEST_ARCH, TEST_ABI, &key)
+            .expect("an absent stamp must remain tolerated as a legacy entry");
+    }
+
+    /// Full SourceOnlyV1 kernel fixture for the verify-fresh build-key tests
+    /// (Task 6). Builds a `kernel` program package through the REAL materialize
+    /// path so `build_into_cache` stamps the published wasm with its own
+    /// SourceOnlyV1 cache key, exactly as production does, then copies the
+    /// stamped mirror to the `source-only-v1/kernel.wasm` location
+    /// `verify_fresh_report` reads.
+    ///
+    /// Layout: the kernel package lives under `<repo>/packages/registry/kernel`
+    /// and the repo-root override points at `<repo>/packages/registry`, so the
+    /// build-time key and the key `expected_source_only_cache_key(<repo>, ...)`
+    /// recomputes (its registry root is `<repo>/packages/registry`) resolve the
+    /// SAME manifest, declared inputs, and global toolchain surface. The abi
+    /// snapshot is pinned to the production `ABI_VERSION` so both the folded
+    /// abi-contract digest and `verify_fresh_report`'s `__abi_version` check
+    /// agree.
+    ///
+    /// Returns the verify-fresh repo root, the live repo-root override guard
+    /// (the caller keeps it alive so `expected_source_only_cache_key` resolves
+    /// against the same override the build used), and the staged `kernel.wasm`
+    /// path.
+    #[cfg(unix)]
+    fn materialize_kernel_for_verify_fresh(
+        label: &str,
+    ) -> (PathBuf, crate::RepoRootOverrideGuard, PathBuf) {
+        let repo = tempdir(label);
+        // Task 8's `snapshot_drift_check` gate reads `<repo>/abi/snapshot.json`
+        // directly (distinct from the `build_root` snapshot below, which
+        // feeds the build-key resolution path). Without this file the
+        // gate's "missing snapshot" conservative default would force
+        // `verify_fresh_report` to shell out to the real, kernel-building
+        // `check-abi-version.sh` against this synthetic, non-git repo.
+        // Neither `crates/shared` nor `crates/kernel` exist under `repo`
+        // either, so the gate has nothing newer to compare against and
+        // stays closed regardless of this file's mtime.
+        fs::create_dir_all(repo.join("abi")).unwrap();
+        fs::write(
+            repo.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{}}}", wasm_posix_shared::ABI_VERSION),
+        )
+        .unwrap();
+        let build_root = repo.join("packages/registry");
+        fs::create_dir_all(&build_root).unwrap();
+        prepare_local_rebuild_fixture_repo(&build_root);
+        // `prepare_local_rebuild_fixture_repo` writes TEST_ABI; the build-key
+        // path runs under the real `ABI_VERSION`, and `local_abi_contract_digest`
+        // rejects a snapshot whose `abi_version` differs from the requested one,
+        // so pin the snapshot to `ABI_VERSION`.
+        fs::write(
+            build_root.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{}}}", wasm_posix_shared::ABI_VERSION),
+        )
+        .unwrap();
+        // A `kernel`/`kernel` output is validated against the full kernel
+        // export set (`required_exports_for_program_output`), so the fixture
+        // must emit a module exporting `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`
+        // (which includes `__abi_version` at the current ABI), not the bare
+        // program entrypoint set.
+        write_program(
+            &build_root,
+            "kernel",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script(
+                "kernel.wasm",
+                &wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS),
+            ),
+            &[("kernel", "kernel.wasm")],
+        );
+        write_source_only_repository_inputs(&build_root, "kernel");
+        let manifest_path = build_root.join("kernel/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"kernel.wasm\"",
+                "wasm = \"kernel.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+
+        let registry = Registry {
+            roots: vec![build_root.clone()],
+        };
+        let guard = crate::install_repo_root_override(build_root.clone()).unwrap();
+        let target = registry.load("kernel").unwrap();
+        let (base, compiled) = source_only_test_roots(&format!("{label}-cache"));
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir(&format!("{label}-output"));
+        let node = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+            &roots,
+            &build_root,
+            &output,
+            false,
+            &mut || Ok(()),
+        )
+        .unwrap();
+
+        // The published mirror and the canonical cache entry carry identical
+        // stamped bytes (Task 5); copy from the canonical entry, whose layout
+        // (`<canonical>/kernel.wasm`) is stable regardless of where a `kernel`
+        // program's mirror is projected.
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+        let staged = repo.join("local-binaries/source-only-v1/kernel.wasm");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        fs::copy(canonical.join("kernel.wasm"), &staged).unwrap();
+        (repo, guard, staged)
+    }
+
+    /// Happy-path proof (CRITICAL, non-tautological): a kernel published by the
+    /// REAL build engine carries a stamp equal to the key
+    /// `expected_source_only_cache_key` recomputes, so `verify_fresh_report`
+    /// passes. The stamp is written by production `build_into_cache` code and
+    /// the expected key is computed by verify-fresh's own path; their agreement
+    /// proves both derive the SAME SourceOnlyV1 key -- a Default-policy expected
+    /// key would fail here.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_passes_for_a_real_materialized_kernel_stamp() {
+        let (repo, _guard, _staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-real-kernel");
+        crate::local_build::verify_fresh_report(&repo)
+            .expect("a freshly materialized kernel must verify fresh");
+    }
+
+    /// A staged kernel whose stamp does not match the freshly-resolved key is
+    /// stale and must fail loud -- the same-ABI staleness the ABI-only check
+    /// misses.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_fails_on_build_key_mismatch() {
+        let (repo, _guard, staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-key-mismatch");
+        // Replace the staged kernel with a valid ABI_VERSION module stamped
+        // with a WRONG key. (A fresh, unstamped module -- `stamp_build_key`
+        // refuses to double-stamp the already-stamped mirror.)
+        let wrong =
+            crate::build_stamp::stamp_build_key(&minimal_executable_wasm(), &[0xAB; 32]).unwrap();
+        fs::write(&staged, wrong).unwrap();
+        let err = crate::local_build::verify_fresh_report(&repo).unwrap_err();
+        assert!(err.contains("stale"), "expected stale error, got: {err}");
+        assert!(
+            err.contains("built for key") || err.contains("build key"),
+            "must name the key mismatch: {err}"
+        );
+    }
+
+    /// A staged kernel that carries NO build-key stamp cannot be proven fresh,
+    /// so verify-fresh fails loud rather than trusting an unstamped artifact.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_fails_when_kernel_has_no_build_key_stamp() {
+        let (repo, _guard, staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-no-stamp");
+        // An unstamped module that still declares the current ABI, so the ABI
+        // check passes and control reaches the build-key branch.
+        fs::write(&staged, minimal_executable_wasm()).unwrap();
+        let err = crate::local_build::verify_fresh_report(&repo).unwrap_err();
+        assert!(
+            err.contains("no build key stamp"),
+            "must report the missing stamp: {err}"
+        );
+    }
+
     #[test]
     fn local_rebuild_receipt_failed_or_different_force_preserves_canonical_evidence() {
         let repo = tempdir("local-rebuild-preserve-repo");
@@ -35544,7 +36954,24 @@ commit = "1111111111111111111111111111111111111111"
             "a clean built node must be skippable with its persisted receipt"
         );
 
+        // A mirror left by an earlier cache key sits at the same path with
+        // different bytes; reporting it Cached would leave it stale forever.
         let projected = output.join(&receipt.materialized_members[0].mirror_path);
+        // Artifacts embed their fixed-length cache key, so the stale mirror is
+        // typically the same size: flip one byte in place.
+        let original = fs::read(&projected).unwrap();
+        let mut stale = original.clone();
+        *stale.last_mut().unwrap() ^= 0xff;
+        fs::write(&projected, &stale).unwrap();
+        let mut memo_stale = BTreeMap::new();
+        assert_eq!(
+            source_only_skip_receipt_if_clean(
+                &target, &registry, TEST_ARCH, TEST_ABI, &roots, &output, &mut memo_stale,
+            ),
+            None,
+            "a same-size projected output with different bytes must fall back to a child build"
+        );
+
         fs::remove_file(&projected).unwrap();
         let mut memo2 = BTreeMap::new();
         assert_eq!(
