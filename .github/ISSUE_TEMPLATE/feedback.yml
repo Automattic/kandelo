@@ -1,5 +1,5 @@
 name: 💬 Feedback
-description: Tell us what you're using Kandelo for, what drew you to it, and what got in your way.
+description: Tell us what you're trying to do with Kandelo and how it's going.
 title: "Feedback: "
 labels: ["feedback"]
 body:
@@ -7,78 +7,35 @@ body:
     attributes:
       value: >
         Thanks for sharing your experience with Kandelo. Rough notes are fine —
-        you don't need to have it all figured out.
-
-        If you have a specific bug or feature request, a blank issue might fit
-        better, but if you're unsure, just start here.
+        you don't need to have it all figured out. If you have a specific bug or
+        feature request, a blank issue might fit better, but if you're unsure,
+        just start here.
 
   - type: textarea
-    id: use-case
+    id: goal
     attributes:
-      label: What are you using (or hoping to use) Kandelo for?
+      label: What are you trying to do with Kandelo, and what drew you to it?
       description: >
-        Tell us what you're running, where, and who it's for. The more
-        specific, the better.
+        Tell us what you're building (or hoping to build), who it's for, and
+        what made Kandelo appealing for it. The more specific, the better.
       placeholder: >
-        e.g. "A no-install Python playground for my students," or "A sandbox
-        for running untrusted C programs in the browser."
+        e.g. "A no-install Python playground for my students — I didn't want to
+        run a server just for a sandbox," or "Running untrusted C programs in
+        the browser, because I needed real fork/exec that nothing else offered."
     validations:
       required: true
 
   - type: textarea
-    id: motivation
+    id: experience
     attributes:
-      label: What drew you to Kandelo?
+      label: How's it going — what worked well, and what got in your way?
       description: >
-        What were you trying to do, and what made a POSIX kernel in the browser
-        appealing for it? If you tried something else first, we'd like to know.
+        The rough edges are the most useful part: where things were confusing,
+        slow, missing, or frustrating. And tell us what worked well too, so we
+        know what not to break.
       placeholder: >
-        e.g. "I didn't want to run a server just for a sandbox," or "I needed
-        real fork/exec in the browser."
+        e.g. "Booting in the browser just worked, but getting my package to
+        build took a lot of trial and error," or "I couldn't tell if a syscall
+        was unsupported or I was using it wrong."
     validations:
       required: true
-
-  - type: textarea
-    id: friction
-    attributes:
-      label: What got in your way?
-      description: >
-        Where things were confusing, slow, missing, or frustrating. This is the
-        most useful part — a package that wouldn't build, a syscall that behaved
-        unexpectedly, a docs gap, a slow boot. All of it helps.
-      placeholder: >
-        e.g. "Getting my package to build took a lot of trial and error," or
-        "Cold boot felt slow," or "I couldn't tell if a syscall was unsupported
-        or I was using it wrong."
-    validations:
-      required: true
-
-  - type: textarea
-    id: what-worked
-    attributes:
-      label: What worked well? (optional)
-      description: >
-        Anything that surprised you or that we should be careful not to break.
-    validations:
-      required: false
-
-  - type: textarea
-    id: environment
-    attributes:
-      label: Where were you running it? (optional)
-      description: >
-        If it's handy — browser + version or Node version, your OS, and how you
-        ran Kandelo (a demo, a local build, embedded in your own app).
-      placeholder: >
-        e.g. "Chrome 141 on macOS 27, running ./run.sh browser from a local
-        checkout."
-    validations:
-      required: false
-
-  - type: textarea
-    id: anything-else
-    attributes:
-      label: Anything else? (optional)
-      description: Links, screenshots, or anything else you'd like to add.
-    validations:
-      required: false
