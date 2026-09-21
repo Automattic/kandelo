@@ -14695,6 +14695,134 @@ mod fork_module_tests {
         Ok(())
     }
 
+    /// A guest instance shaped like the two exports `place_resume_thunks`
+    /// reads, and nothing else.
+    ///
+    /// Deliberately NOT an SDK-built guest. What is under test is the HOST's
+    /// guard, which reads exactly two things off the instance: the LENGTH of
+    /// `__wpk_fork_resume_catalog`, and whether
+    /// `__wpk_fork_place_resume_thunks` is there. A real fork-instrumented
+    /// artifact would pin those to whatever its own instrumentation produced,
+    /// which is the opposite of what a guard test needs -- it needs to state
+    /// the mismatch.
+    fn stand_in_guest(
+        engine: &Engine,
+        store: &mut Store<()>,
+        catalog_len: u32,
+        with_shim: bool,
+    ) -> anyhow::Result<Instance> {
+        let shim = if with_shim {
+            r#"(func (export "__wpk_fork_place_resume_thunks")
+                 (param i32 i32) (result i32) (local.get 1))"#
+        } else {
+            ""
+        };
+        let wat = format!(
+            r#"(module
+                 (table (export "__wpk_fork_resume_catalog") {catalog_len} funcref)
+                 {shim})"#
+        );
+        let module = Module::new(engine, &wat)?;
+        Ok(Linker::new(engine).instantiate(store, &module)?)
+    }
+
+    /// Stand up a fork module over a real guest layout, seeded with a format
+    /// and NO resume catalog -- so activation 0 holds no slots and
+    /// `fm_publish_resume_assignment` answers `(0, 0)`.
+    fn fork_module_with_no_resume_catalog(
+        engine: &Engine,
+        store: &mut Store<()>,
+    ) -> anyhow::Result<ForkModule> {
+        let guest_wasm = crate::fixtures::fixture("native_hello.wasm");
+        let guest_module = Module::new(engine, guest_wasm)?;
+        let (guest_mem, layout) = compute_guest_memory(engine, &guest_module, guest_wasm)?;
+        let fm = instantiate_fork_module(
+            engine,
+            store,
+            &guest_mem,
+            &layout,
+            Arc::new(Mutex::new(ExternrefRegistry::new())),
+            true,
+            None,
+        )?;
+        fm.fm_set_format.call(&mut *store, (4, 0, 0, 0, 0))?;
+        let errno = fm.fm_last_errno.call(&mut *store, ())?;
+        anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
+        Ok(fm)
+    }
+
+    /// THE COUNT-ZERO DIRECTION of the same-artifact guard, on the host that
+    /// used to skip it.
+    ///
+    /// A resume slot is an index into the table a forked guest
+    /// `call_indirect`s through, and the emitted placement shim uses a
+    /// published record's ORDINAL as an index into the guest's own catalog
+    /// table. So a module seeded from one artifact and a guest instantiated
+    /// from another has to be caught, and both hosts catch it by comparing
+    /// the module's assigned count against the guest's catalog length.
+    ///
+    /// `place_resume_thunks` used to return early when that count was ZERO,
+    /// ahead of the comparison. "The module assigned nothing" and "this guest
+    /// has nothing to place" are different facts: an empty seeded ordinal set
+    /// against an instance exporting two thunks is a MISMATCH, not an empty
+    /// activation. With the early return, this host accepted it silently and
+    /// left a bare `undefined element` trap to surface inside a fork child
+    /// later, while the JavaScript host named it
+    /// (`host/test/fork-resume-table.test.ts`, "refuses a guest with thunks
+    /// the module was seeded with NONE of").
+    ///
+    /// The three cases below are the whole of the guard: a mismatch is
+    /// refused by name, a genuine empty activation is accepted, and the
+    /// shim-export check is reached at count zero too.
+    #[test]
+    fn place_resume_thunks_checks_the_artifact_even_when_nothing_was_assigned(
+    ) -> anyhow::Result<()> {
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let engine = crate::kernel_engine()?;
+        let mut store = Store::new(&engine, ());
+        let fm = fork_module_with_no_resume_catalog(&engine, &mut store)?;
+
+        // 1. TWO thunks against an assignment of none: refused, by name.
+        let mismatched = stand_in_guest(&engine, &mut store, 2, true)?;
+        let err = place_resume_thunks(&mut store, &fm, &mismatched, 0)
+            .expect_err("a guest with 2 thunks and a module seeded with none must be refused");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("not the same artifact"),
+            "the refusal must name the cause, got: {text}"
+        );
+        assert!(
+            text.contains("instantiated with 2 resume thunks"),
+            "the refusal must carry both counts, got: {text}"
+        );
+
+        // 2. A GENUINE empty activation is still a success. A side module
+        //    with no fork-instrumented function seeds an empty resume catalog
+        //    and holds no slots -- `libneeded-provider.so` in
+        //    `fork-from-dlopen-side-module-e2e` is exactly that, and reading
+        //    it as an error once cost a real fork. So the guard must refuse
+        //    the mismatch above WITHOUT refusing this.
+        let empty = stand_in_guest(&engine, &mut store, 0, true)?;
+        place_resume_thunks(&mut store, &fm, &empty, 0)
+            .expect("an activation that holds no slots is a success, not an error");
+
+        // 3. The placement-shim check is reached at count zero as well. Both
+        //    of this function's named diagnostics are unconditional, the way
+        //    `ForkResumeTable.registerActivation` has always applied them; an
+        //    early return would have skipped this one too.
+        let without_shim = stand_in_guest(&engine, &mut store, 0, false)?;
+        let err = place_resume_thunks(&mut store, &fm, &without_shim, 0)
+            .expect_err("a guest with no placement shim cannot place its own thunks");
+        assert!(
+            format!("{err:#}").contains("exports no __wpk_fork_place_resume_thunks"),
+            "the refusal must name the missing export, got: {err:#}"
+        );
+
+        Ok(())
+    }
+
     /// N1-I5 Task 2: `env.resolve_externref` is now a real `Func` (no fork-
     /// module artifact needed to exercise it — it is a plain host import
     /// binding, so this defines it into a bare `Linker` the same way
