@@ -181,6 +181,20 @@ const OPTIONAL_BINARY_URLS = {
       import: "default",
     },
   ),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/evdev_demo.wasm", {
     query: "?url", import: "default",
   }),
@@ -242,7 +256,7 @@ class BootSuperseded extends Error {
 }
 
 type LiveVfsImage =
-  "shell" | "node" | "nginx" | "nginx-php" | "wordpress" | "lamp";
+  "shell" | "node" | "nginx" | "nginx-php" | "nginx-python" | "wordpress" | "lamp";
 
 type PagesVfsProductId =
   | "platform-rootfs"
@@ -250,6 +264,7 @@ type PagesVfsProductId =
   | "browser-node"
   | "browser-nginx"
   | "browser-nginx-php"
+  | "browser-nginx-python"
   | "browser-wordpress"
   | "browser-lamp";
 
@@ -313,6 +328,15 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
       "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
     ],
   },
+  "nginx-python": {
+    kind: "optional-binary",
+    label: "nginx-python-vfs.vfs.zst",
+    productId: "browser-nginx-python",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    ],
+  },
   wordpress: {
     kind: "optional-demo",
     image: "wordpress",
@@ -334,6 +358,7 @@ const LIVE_DEMO_IDS = [
   "node",
   "nginx",
   "nginx-php",
+  "nginx-python",
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
@@ -390,6 +415,21 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       web: {
         requiredPorts: [HTTP_PORT],
         requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-php"]],
+      },
+    },
+  },
+  "nginx-python": {
+    image: "nginx-python",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    network: true,
+    init: {
+      argv: DINIT_NGINX_ARGV,
+      env: "service",
+      programUrl: dinitWasmUrl,
+      maxWorkers: 12,
+      web: {
+        requiredPorts: [HTTP_PORT],
+        requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-python"]],
       },
     },
   },
@@ -451,6 +491,7 @@ const DEFAULT_DEMO_FOR_VFS_IMAGE: Record<LiveVfsImage, LiveDemoId> = {
   node: "node",
   nginx: "nginx",
   "nginx-php": "nginx-php",
+  "nginx-python": "nginx-python",
   wordpress: "wordpress-sqlite",
   lamp: "wordpress-mariadb",
 };
@@ -465,6 +506,7 @@ const DEMO_ALIASES: Record<string, LiveDemoId> = {
 const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
   "nginx",
   "nginx-php",
+  "nginx-python",
   "wordpress-sqlite",
   "wordpress-mariadb",
 ]);
@@ -2250,6 +2292,7 @@ function descriptorBootIdentity(
   const serviceIds = new Set([
     "nginx",
     "nginx-php",
+    "nginx-python",
     "wordpress-sqlite",
     "wordpress-mariadb",
   ]);

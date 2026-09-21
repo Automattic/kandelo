@@ -69,6 +69,17 @@ export const PRESET_LIBRARY: Preset[] = [
     estimatedUrlBytes: 944,
   },
   {
+    id: "nginx-python",
+    title: "nginx + Python",
+    summary: "nginx reverse-proxying to a Python (wsgiref) JSON API over SQLite.",
+    base: SHELL_BASE,
+    packages: ["dinit@local", "nginx@local", "cpython@local", "bash@local", "coreutils@local"],
+    accent: "#4b8bbe",
+    glyph: "python",
+    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
+    estimatedUrlBytes: 944,
+  },
+  {
     id: "wordpress-sqlite",
     title: "WordPress SQLite",
     summary: "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
