@@ -209,6 +209,12 @@ if grep -qE '^extern (int|char)[[:space:]]+\**[[:space:]]*(tgetent|tgetnum|tgetf
 fi
 
 echo "==> Building vim..."
+# Drop the link target so `make` always relinks. The glue
+# (channel_syscall.c, which carries __abi_version) is compiled by
+# wasm32posix-cc at link time and is not a make dependency, so an ABI
+# bump leaves an up-to-date src/vim holding the previous ABI marker.
+# Matches build-netcat.sh:171.
+rm -f "$SRC_DIR/src/vim"
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
 
 echo "==> Collecting binary..."

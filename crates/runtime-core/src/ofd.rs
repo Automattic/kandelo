@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::{Cell, RefCell, UnsafeCell};
 use core::sync::atomic::{AtomicU64, Ordering};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::{O_ACCMODE, O_APPEND, O_NONBLOCK, O_PATH};
@@ -274,6 +274,114 @@ pub enum DriOfdState {
     Card { dri: DriFdState, kms: KmsFdState },
 }
 
+/// Per-OFD ring cap: 1024 `struct input_event` records (24 KiB).
+pub const INPUT_RING_MAX_RECORDS: usize = 1024;
+/// Per-OFD ring cap in bytes — `INPUT_RING_MAX_RECORDS * size_of::<WpkInputEvent>()`.
+pub const INPUT_RING_MAX_BYTES: usize = INPUT_RING_MAX_RECORDS * 24;
+
+/// Per-fd state for `/dev/input/event{0,1}` opens.
+///
+/// Disjoint from [`DriOfdState`] — input fds carry no DRI bo state.
+/// We keep `input_state` as a separate `Option<Box<…>>` field on the
+/// OFD rather than folding it into `DriOfdState` because the two
+/// state machines have no shared invariants.
+///
+/// Linux semantics replicated:
+/// * The ring is per-OFD, not per-process. `dup` / fork-inherit share
+///   one ring; a fresh `open()` gets a new one.
+/// * On overflow, the **oldest** record is discarded to make room for the
+///   newest and `dropped` is set (mirrors
+///   `drivers/input/evdev.c::evdev_pass_values`, which advances the tail).
+///   Keeping the newest guarantees a key release is never the record
+///   dropped. The next `read()` synthesises a `SYN_DROPPED` record at the
+///   head of the returned buffer and clears `dropped`; userspace is
+///   expected to resynchronise by re-querying state via `EVIOCG*`.
+/// * `EVIOCGRAB` (exclusive grab) is not supported — the ioctl returns
+///   `ENOTTY`. v1 fans every record out to all readers, so there is no
+///   exclusivity state to keep here; real grab is deferred to a later
+///   change that routes records only to the grabbing OFD.
+///
+/// The mutable ring state lives behind [`SharedInputRing`] rather than
+/// inline so that `dup`, `fork`, and `exec` observe **one** ring for a
+/// given OFD identity. Linux backs a shared `struct file` with a single
+/// `struct evdev_client`, so a buffered event is delivered once and
+/// consumed by whichever sharer reads first; two independent `open()`s
+/// each get their own ring and see the stream independently. Only
+/// `device` is per-descriptor immutable state safe to copy.
+#[derive(Default, Clone, Debug)]
+pub struct InputFdState {
+    /// Which device this fd is bound to (0 = kbd, 1 = ptr). Cached
+    /// to avoid a second `VirtualDevice` lookup on read / poll.
+    pub device: u8,
+
+    /// Mutable ring shared by every descriptor naming this OFD; see
+    /// [`SharedInputRing`].
+    pub ring: SharedInputRing,
+}
+
+/// Mutable evdev ring state for one OFD identity.
+///
+/// Held behind [`SharedInputRing`]'s `Rc<RefCell<…>>`; do not copy this
+/// struct across a descriptor boundary — clone the `SharedInputRing`
+/// handle so the ring stays shared.
+#[derive(Default, Clone, Debug)]
+pub struct InputRing {
+    /// Ring of 24-byte `WpkInputEvent` records. Bounded at
+    /// [`INPUT_RING_MAX_BYTES`].
+    pub event_ring: VecDeque<u8>,
+
+    /// Set when an event push found the ring full; cleared on the
+    /// next `read()` *after* a `SYN_DROPPED` synthetic record is
+    /// delivered at the head of that read's output.
+    pub dropped: bool,
+}
+
+/// Exact-ownership, interior-mutable handle to one OFD's evdev ring.
+///
+/// Mirrors [`SharedOfdState`]: `dup`, `fork` (via
+/// [`OfdTable::link_shared_states_from`]), and any `OpenFileDesc` clone
+/// keep one `Rc`, so all descriptors of an OFD identity share a single
+/// ring. This is kernel-internal and does not change the guest/host ABI.
+#[derive(Clone, Debug)]
+pub struct SharedInputRing(Rc<RefCell<InputRing>>);
+
+impl Default for SharedInputRing {
+    fn default() -> Self {
+        Self(Rc::new(RefCell::new(InputRing::default())))
+    }
+}
+
+impl SharedInputRing {
+    /// Wrap an already-populated ring (used by fork deserialization,
+    /// which reconstructs the point-in-time ring contents before the
+    /// relink step re-shares the parent's live handle).
+    pub fn from_ring(ring: InputRing) -> Self {
+        Self(Rc::new(RefCell::new(ring)))
+    }
+
+    /// Shared read borrow of the ring.
+    pub fn borrow(&self) -> core::cell::Ref<'_, InputRing> {
+        self.0.borrow()
+    }
+
+    /// Exclusive borrow of the ring for push / drain / flag updates.
+    pub fn borrow_mut(&self) -> core::cell::RefMut<'_, InputRing> {
+        self.0.borrow_mut()
+    }
+
+    /// Stable identity of the underlying ring, used to deliver a fanned-
+    /// out event exactly once per shared ring (parent and child that
+    /// share an OFD must not each receive their own copy).
+    pub fn identity(&self) -> usize {
+        Rc::as_ptr(&self.0) as *const () as usize
+    }
+
+    #[cfg(test)]
+    pub fn ref_count(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenFileDesc {
     /// Machine-wide identity of this open file description. Independent
@@ -312,6 +420,10 @@ pub struct OpenFileDesc {
     /// DRI sidecar; see [`DriOfdState`]. Boxed so non-DRI OFDs pay
     /// only one pointer slot.
     pub dri_state: Option<Box<DriOfdState>>,
+    /// evdev sidecar for `/dev/input/event{0,1}` OFDs; see
+    /// [`InputFdState`]. Boxed so non-evdev OFDs pay only one pointer
+    /// slot. Parallel to [`Self::dri_state`] (disjoint state machines).
+    pub input_state: Option<Box<InputFdState>>,
 }
 
 struct SharedOfdStateInner {
@@ -536,6 +648,17 @@ impl OpenFileDesc {
             _ => None,
         }
     }
+
+    /// Borrow the `InputFdState` for `/dev/input/event{0,1}` OFDs.
+    /// Returns `None` for any other OFD.
+    pub fn input(&self) -> Option<&InputFdState> {
+        self.input_state.as_deref()
+    }
+
+    pub fn input_mut(&mut self) -> Option<&mut InputFdState> {
+        self.input_state.as_deref_mut()
+    }
+
 }
 
 #[derive(Clone)]
@@ -573,6 +696,7 @@ impl OfdTable {
             dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state: None,
+            input_state: None,
         };
 
         self.insert(ofd)
@@ -612,6 +736,7 @@ impl OfdTable {
             dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state: None,
+            input_state: None,
         };
         ofd.reset_directory_iterator_for_reopen();
         self.insert(ofd)
@@ -767,6 +892,17 @@ impl OfdTable {
                 return Err(Errno::EINVAL);
             }
             ofd.link_shared_state(source_ofd.shared_state());
+            // The evdev ring rides the same OFD identity as the offset:
+            // re-share the parent's live ring so a buffered event is
+            // delivered once across parent and child (Linux shares the
+            // `struct evdev_client` behind a forked `struct file`). The
+            // point-in-time ring rebuilt by fork deserialization is
+            // discarded here, exactly as the offset scalar is.
+            if let (Some(child_input), Some(source_input)) =
+                (ofd.input_state.as_deref_mut(), source_ofd.input_state.as_deref())
+            {
+                child_input.ring = source_input.ring.clone();
+            }
         }
         Ok(())
     }
@@ -962,6 +1098,7 @@ mod tests {
                 dir_position_generation: 0,
                 dir_pending_entry: None,
                 dri_state: None,
+                input_state: None,
             });
         }
 
@@ -1162,6 +1299,47 @@ mod tests {
         assert!(table.get_mut(render).unwrap().take_prime_bo().is_none());
         // dri_state must NOT have been cleared.
         assert!(table.get(render).unwrap().dri_state.is_some());
+    }
+
+    #[test]
+    fn ofd_default_has_no_input_state() {
+        let mut table = OfdTable::new();
+        let idx = table.create(FileType::CharDevice, O_RDONLY, -10, b"/dev/input/event0".to_vec());
+        let ofd = table.get(idx).unwrap();
+        assert!(ofd.input_state.is_none());
+        assert!(ofd.input().is_none());
+    }
+
+    #[test]
+    fn input_accessors_route_to_attached_state() {
+        let mut table = OfdTable::new();
+        let idx = table.create(FileType::CharDevice, O_RDONLY, -10, b"/dev/input/event0".to_vec());
+        table.get_mut(idx).unwrap().input_state = Some(Box::new(InputFdState {
+            device: 0,
+            ..Default::default()
+        }));
+
+        let st = table.get(idx).unwrap().input().unwrap();
+        assert_eq!(st.device, 0);
+        {
+            let ring = st.ring.borrow();
+            assert!(!ring.dropped);
+            assert!(ring.event_ring.is_empty());
+        }
+
+        let st = table.get_mut(idx).unwrap().input_mut().unwrap();
+        st.ring.borrow_mut().event_ring.push_back(0xab);
+        assert_eq!(
+            table.get(idx).unwrap().input().unwrap().ring.borrow().event_ring.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn input_ring_cap_bytes_is_24_kib() {
+        // Lock the per-fd memory budget so it cannot drift silently.
+        assert_eq!(INPUT_RING_MAX_RECORDS, 1024);
+        assert_eq!(INPUT_RING_MAX_BYTES, 24 * 1024);
     }
 
     #[test]

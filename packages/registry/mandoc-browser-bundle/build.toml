@@ -1,0 +1,9 @@
+script_path = "packages/registry/mandoc-browser-bundle/build-mandoc-browser-bundle.sh"
+inputs = [
+  "packages/registry/mandoc-browser-bundle/build-mandoc-browser-bundle.sh",
+  "images/vfs/scripts/build-man-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

@@ -60,6 +60,8 @@ async function gotoOrSkip(page: Page, path: string) {
 }
 
 async function waitForReady(page: Page, timeout = 180_000) {
+  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
+  await ensureGuideOpen(page);
   await expect
     .poll(() => page.evaluate(() => document.body.innerText), { timeout })
     .toContain("Ready");
@@ -82,12 +84,20 @@ async function waitForTerminalContent(
   }
 }
 
+async function ensureGuideOpen(page: Page) {
+  // The demo guide no longer auto-opens; open it from the dock on first use.
+  if (await page.locator("aside.kdemo").count()) return;
+  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
+  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
+}
+
 async function runGuideScript(
   page: Page,
   script: string,
   expected: string | RegExp,
   timeout = 120_000,
 ) {
+  await ensureGuideOpen(page);
   const runButton = page.locator(".kdemo-run").first();
   await page.locator(".kdemo textarea").first().fill(script);
   await runButton.click();

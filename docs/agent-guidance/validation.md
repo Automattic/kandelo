@@ -20,7 +20,7 @@ Core validation surface:
 
 | Suite | Command | Primary evidence for |
 |---|---|---|
-| Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, userspace, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
+| Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
 | Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
@@ -61,9 +61,13 @@ rustc -vV | awk '/^host/ {print $2}'
 
 The Vitest, browser, libc, posix, and sortix suites need built artifacts and
 submodules that a fresh checkout — and every new `git worktree` — does **not**
-inherit. Missing artifacts surface as `Binary not found: …/kernel.wasm` (or a
-program `.wasm`), `sysroot not found`, or `libc/musl/src: No such file`. These
-are not "cannot validate" conditions. Build or fetch what is missing:
+inherit. This project builds everything locally; no CI status check
+pre-materializes these artifacts for you. Missing artifacts surface as `Binary
+not found: …/kernel.wasm` (or a program `.wasm`), `sysroot not found`, or
+`libc/musl/src: No such file`. These are not "cannot validate" conditions, and
+they are not a reason to stop short of a goal (running a suite, reproducing a
+failure, or validating a branch before a merge). Building what a task needs is
+part of the task. Build or fetch what is missing:
 
 1. **Submodules** (musl, libc-test, os-test) — worktrees do not check them out:
    ```bash
@@ -88,7 +92,11 @@ are not "cannot validate" conditions. Build or fetch what is missing:
    scripts/dev-shell.sh bash scripts/build-musl.sh
    ```
 3. **Node dependencies** — `node_modules` are per-checkout, and both the repo
-   root (the conformance runners load `tsx` from root) and `host/` are needed:
+   root (the conformance runners load `tsx` from root) and `host/` are needed.
+   `./run.sh setup` and `./run.sh local-build` already run the root `npm ci`
+   when root `node_modules/` is missing or out of sync with
+   `package-lock.json` (sealed package builds such as rootfs and shell run
+   `node_modules/tsx` but never install it themselves); `host/` is separate:
    ```bash
    npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
    (cd host && npm ci)
@@ -98,17 +106,24 @@ are not "cannot validate" conditions. Build or fetch what is missing:
    ```bash
    scripts/dev-shell.sh bash scripts/fetch-binaries.sh
    ```
-5. **`hello64.wasm`** (only for the `wasm64` Vitest cases, which need this
-   LP64 program that `fetch-binaries.sh` does not carry). `./run.sh setup`
-   already builds the wasm64 sysroot (its bootstrap step plan runs
-   `sysroot64` unconditionally, alongside the wasm32 `sysroot`), so you
-   only need to build the program itself:
+5. **Program and test-fixture binaries** under `local-binaries/programs/` and
+   `local-binaries/test-fixtures/` — `scripts/build-programs.sh` emits these,
+   and several Vitest cases load them directly. The `exact-abi-source` suite,
+   for one, reads these program fixtures:
+   `local-binaries/programs/wasm32/{exec-child,vfork-lifecycle}.wasm` and
+   `local-binaries/test-fixtures/wasm32/login.wasm`. Without them
+   `exec-state-tracking`, `spawn-*`, `vfork-production-mechanism`, and
+   `demo-login-image` fail with `ENOENT`/`existsSync === false` that has nothing
+   to do with your change. The same script builds `hello64.wasm`, the LP64
+   program the `wasm64` cases need and that `fetch-binaries.sh` does not carry:
    ```bash
    scripts/dev-shell.sh bash scripts/build-programs.sh
    ```
-   If the wasm64 sysroot is missing (e.g. a partial checkout) or you just
-   edited `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, rebuild
-   it explicitly first:
+   `./run.sh setup` already builds the wasm64 sysroot (its bootstrap step plan
+   runs `sysroot64` unconditionally, alongside the wasm32 `sysroot`). If the
+   wasm64 sysroot is missing (e.g. a partial checkout) or you just edited
+   `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, rebuild it explicitly
+   first:
    ```bash
    scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
    ```

@@ -14,7 +14,7 @@ import {
 import * as privilegedProjectionModule from
   "../src/vfs/privileged-projection";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { MemoryFileSystem, resolveMountSetIdCapability } from "../src/vfs/memory-fs";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { NodeTimeProvider } from "../src/vfs/time";
 
@@ -208,10 +208,7 @@ describe("privileged product publication", () => {
         sources: source.sources,
         writableBottleFileSystems: [sharedAlias],
       });
-      grantedCapability = new VirtualPlatformIO(
-        [product.mount],
-        new NodeTimeProvider(),
-      ).getMountSetIdCapability("/usr/bin/login").kind;
+      grantedCapability = resolveMountSetIdCapability(product.mount).kind;
     }
 
     expect(grantedCapability).not.toBe("trusted-root-product");
@@ -221,8 +218,7 @@ describe("privileged product publication", () => {
       sources: source.sources,
       writableBottleFileSystems: [sharedAlias],
     })).resolves.toBeUndefined();
-    expect(() => new VirtualPlatformIO([{
-      mountPoint: "/",
+    expect(() => resolveMountSetIdCapability({
       backend: candidate,
       readonly: true,
       setIdCapability: {
@@ -230,7 +226,7 @@ describe("privileged product publication", () => {
         guestWritable: false,
         stableExecutableIdentity: true,
       },
-    }], new NodeTimeProvider())).toThrow(/immutable product backend/i);
+    })).toThrow(/immutable product backend/i);
     expect(Reflect.has(
       privilegedProjectionModule,
       "admitPrivilegedProgramProductCandidate",
@@ -273,7 +269,7 @@ describe("privileged product publication", () => {
     expect(productIdentities.size).toBe(3);
     expect(product.evidence.every((entry) => entry.collidesWithWritableBottle === false))
       .toBe(true);
-    expect(io.getMountSetIdCapability("/usr/bin/login")).toEqual({
+    expect(resolveMountSetIdCapability(product.mount)).toEqual({
       kind: "trusted-root-product",
       guestWritable: false,
       stableExecutableIdentity: true,
@@ -494,8 +490,7 @@ describe("privileged product publication", () => {
     })).rejects.toThrow(/parent.*writable/i);
 
     candidate.chmod("/usr/bin", 0o755);
-    expect(() => new VirtualPlatformIO([{
-      mountPoint: "/",
+    expect(() => resolveMountSetIdCapability({
       backend: candidate,
       readonly: true,
       setIdCapability: {
@@ -503,7 +498,7 @@ describe("privileged product publication", () => {
         guestWritable: false,
         stableExecutableIdentity: true,
       },
-    }], new NodeTimeProvider())).toThrow(/immutable product backend/i);
+    })).toThrow(/immutable product backend/i);
   });
 
   it("rolls back the entire group when the final projection fails", async () => {

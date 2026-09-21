@@ -4,6 +4,9 @@ import rubyZipUrl from "@binaries/programs/ruby.zip?url";
 import pythonZipUrl from "@binaries/programs/python.zip?url";
 import nodeZipUrl from "@binaries/programs/node.zip?url";
 import perlZipUrl from "@binaries/programs/perl.zip?url";
+import manZipUrl from "@binaries/programs/man.zip?url";
+import coreutilsDocsZipUrl from "@binaries/programs/coreutils-docs.zip?url";
+import lsofDocsZipUrl from "@binaries/programs/lsof-docs.zip?url";
 
 const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "vim.zip": vimZipUrl,
@@ -12,6 +15,9 @@ const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "python.zip": pythonZipUrl,
   "node.zip": nodeZipUrl,
   "perl.zip": perlZipUrl,
+  "man.zip": manZipUrl,
+  "coreutils-docs.zip": coreutilsDocsZipUrl,
+  "lsof-docs.zip": lsofDocsZipUrl,
 };
 
 export function resolveShellLazyArchiveUrl(url: string): string {

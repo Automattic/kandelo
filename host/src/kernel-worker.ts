@@ -31,6 +31,7 @@ import {
   WasmPosixKernel,
   type KernelPointer,
 } from "./kernel";
+import { resolveIoctlContract } from "./ioctl-contract";
 import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
@@ -115,7 +116,6 @@ import {
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
   HOST_INTERCEPTED_SYSCALLS,
-  IOCTL_REQUESTS,
   OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
@@ -274,7 +274,11 @@ import {
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
-import { WASM_PAGE_SIZE } from "./constants";
+import {
+  ABI_CONTRACT_SECTION,
+  readWasmCustomSectionPayload,
+  WASM_PAGE_SIZE,
+} from "./constants";
 import {
   FORK_SAVE_BUFFER_SIZE,
   ProcessMemoryRetirementBacklogError,
@@ -2785,6 +2789,13 @@ export class CentralizedKernelWorker {
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
+  /**
+   * ABI-contract digest read from the kernel wasm's own
+   * `kandelo.abi.contract` custom section at startup, or null if the kernel
+   * build predates the stamp. Threaded to worker processes so a guest's stamp
+   * can be compared against the running kernel's at exec.
+   */
+  private kernelAbiContractDigest: Uint8Array | null = null;
   private processes = new Map<number, ProcessRegistration>();
   private activeChannels: ChannelInfo[] = [];
   /**
@@ -5018,6 +5029,21 @@ export class CentralizedKernelWorker {
     if (this.#kernelFatalError !== null) {
       throw new Error("cannot reinitialize a failed kernel worker");
     }
+    // Read the kernel's own ABI-contract stamp before init compiles the bytes.
+    // The same local-build engine that stamps every guest stamps the kernel,
+    // so this is the authoritative digest each guest's stamp is compared
+    // against at exec (threaded via CentralizedWorkerInitMessage). Null when
+    // the kernel build predates the stamp — the exec check then only warns.
+    const kernelWasmBuffer = ArrayBuffer.isView(kernelWasmBytes)
+      ? kernelWasmBytes.buffer.slice(
+          kernelWasmBytes.byteOffset,
+          kernelWasmBytes.byteOffset + kernelWasmBytes.byteLength,
+        )
+      : kernelWasmBytes.slice(0);
+    this.kernelAbiContractDigest = readWasmCustomSectionPayload(
+      kernelWasmBuffer,
+      ABI_CONTRACT_SECTION,
+    );
     await this.#kernel.init(kernelWasmBytes);
     // WHY: these capabilities belong only to the worker that owns the gate.
     // Public kernel accessors expose neither mutable Memory nor raw callables.
@@ -11904,7 +11930,7 @@ export class CentralizedKernelWorker {
     }
     if (syscallNr === SYS_IOCTL) {
       const request = Number(BigInt.asUintN(32, rawArgs[1]!));
-      const contract = IOCTL_REQUESTS[request];
+      const contract = resolveIoctlContract(request);
       adjustedArgs[1] = request;
       adjustedArgs[3] = 0;
       adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
@@ -30123,6 +30149,57 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Push one evdev record into `/dev/input/event{0,1}` and wake any
+   * process blocked on `sys_read` / `sys_poll` against the device.
+   * The per-OFD ring caps at 1024 records; overflow latches `dropped`
+   * and the next read returns `SYN_DROPPED` (kernel A4/A5). Wake
+   * routing reuses `scheduleWakeBlockedRetries` so the existing
+   * pending-readers tick services event ofds too — same shape as
+   * `injectMouseEvent` for `/dev/input/mice`.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.#runOrDeferKernelEntry(
+      "evdev input and wake",
+      (entry) => {
+        const inject = entry.instance.exports.kernel_input_event as
+          | ((
+              device: number,
+              ev_type: number,
+              code: number,
+              value: number,
+            ) => void)
+          | undefined;
+        if (!inject) return;
+        inject(device, ev_type, code, value);
+        this.scheduleWakeBlockedRetries(entry);
+      },
+    );
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
+   * `ABS_Y.maximum`. Idempotent; call again on canvas resize.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.#runOrDeferKernelEntry(
+      "evdev canvas dimensions",
+      (entry) => {
+        const set = entry.instance.exports.kernel_set_input_canvas_dims as
+          | ((width: number, height: number) => void)
+          | undefined;
+        if (!set) return;
+        set(width, height);
+      },
+    );
+  }
+
+  /**
    * Drain up to `out.byteLength` bytes of PCM audio buffered in
    * `/dev/dsp` into `out`. Returns the number of bytes copied, always
    * a multiple of the active frame size (2 bytes mono / 4 bytes
@@ -30456,6 +30533,17 @@ export class CentralizedKernelWorker {
    */
   getKernelAbiVersion(): number {
     return this.kernelAbiVersion;
+  }
+
+  /**
+   * ABI-contract digest the running kernel was built against, read from its
+   * own `kandelo.abi.contract` custom section at startup, or null if the
+   * kernel build predates the stamp. Worker processes compare each guest's
+   * stamp against this to refuse a stale guest even when the ABI version
+   * numbers coincide.
+   */
+  getKernelAbiContractDigest(): Uint8Array | null {
+    return this.kernelAbiContractDigest;
   }
 
   /**

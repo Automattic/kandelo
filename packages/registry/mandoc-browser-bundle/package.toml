@@ -1,0 +1,26 @@
+# Browser lazy-archive bundle for mandoc. Reshapes the mandoc package's
+# mandoc.wasm into a single root-relative zip (bin/mandoc + bin/man symlink +
+# etc/man.conf) that the shell overlay mounts at /usr/. The mandoc package
+# itself is untouched.
+kind = "program"
+name = "mandoc-browser-bundle"
+version = "1.14.6"
+kernel_abi = 7
+depends_on = ["mandoc@1.14.6"]
+
+[source]
+url = "https://github.com/brandonpayton/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "ISC"
+url = "https://mandoc.bsd.lv/"
+
+[build]
+script_path = "packages/registry/mandoc-browser-bundle/build-mandoc-browser-bundle.sh"
+
+[[outputs]]
+name = "man"
+wasm = "man.zip"
+fork_instrumentation = "disabled"

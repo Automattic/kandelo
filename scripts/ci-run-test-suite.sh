@@ -649,7 +649,7 @@ case "$suite" in
     cargo-workspace)
         # Host-run unit + integration tests for every workspace crate EXCEPT
         # xtask: kandelo (kernel), fork-instrument, wasm-posix-shared,
-        # wasm-posix-userspace, wasm-local-root-spill. `--workspace` is
+        # wasm-local-root-spill. `--workspace` is
         # closed-by-default: a new crate under crates/ is gated with no
         # allow-list edit, and each crate's integration tests run too (no
         # `--lib`, which would silently run 0 tests for a bin-only crate such

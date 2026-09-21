@@ -3191,6 +3191,7 @@ export async function centralizedWorkerMain(
     const ptrWidth = initData.ptrWidth ?? 4;
     const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: initData.kernelAbiVersion,
+      expectedAbiContractDigest: initData.kernelAbiContractDigest,
     });
     if (artifactFailures.length > 0) {
       throw new Error(

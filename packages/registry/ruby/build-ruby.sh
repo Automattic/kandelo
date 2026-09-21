@@ -1235,6 +1235,24 @@ for ext_lib_dir in "$SRC_DIR/ext/monitor/lib" "$SRC_DIR/ext/socket/lib"; do
         cp -R "$ext_lib_dir"/. "$RUBY_LIB_DIR"/
     fi
 done
+# Reproducibility: rbconfig.rb records the exact configure flags, which embed
+# absolute build-scratch dependency paths — e.g. `-L<cache-root>/source-only-v1/
+# compiled/libs/zlib-<key>/lib` in configure_args/CPPFLAGS/LDFLAGS/DLDFLAGS.
+# The <dep>-<key> tail is deterministic; only the build-scratch roots vary with
+# the build location, so canonicalize them to the same stable prefixes the SDK
+# cc wrapper uses for -ffile-prefix-map, keeping the generated config identical
+# across build locations. Rewrite the more-specific work dir first so its
+# occurrences are not partially rewritten by the broader cache-root rule.
+canonicalize_rbconfig_paths() {
+    local f="$1"
+    [ -f "$f" ] || return 0
+    perl -pi -e "s{\Q$WORK_DIR\E}{/usr/src/kandelo-build/ruby}g" "$f"
+    if [ -n "${WASM_POSIX_SOURCE_ONLY_CACHE_ROOT:-}" ]; then
+        perl -pi -e "s{\Q$WASM_POSIX_SOURCE_ONLY_CACHE_ROOT\E}{/usr/src/kandelo-build-deps}g" "$f"
+    fi
+}
+canonicalize_rbconfig_paths rbconfig.rb
+
 RUBY_ARCH_DIR="$RUBY_LIB_DIR/wasm32-none"
 mkdir -p "$RUBY_ARCH_DIR"
 cp rbconfig.rb "$RUBY_ARCH_DIR/rbconfig.rb"
@@ -1304,7 +1322,11 @@ mkdir -p "$RUNTIME_STAGE/usr/lib"
 # still retain the selected guest prefix.
 cp -R "$RUBY_INSTALL_ROOT/lib/ruby" "$RUNTIME_STAGE/usr/lib/ruby"
 cp -R "$RUBY_INSTALL_ROOT/bin" "$RUNTIME_STAGE/usr/bin"
-(cd "$RUNTIME_STAGE" && zip -r -q "$RUNTIME_ZIP" usr)
+# Produce a byte-reproducible archive: plain `zip -r` embeds each member's
+# wall-clock mtime, so two builds minutes apart differ even with identical
+# contents. The shared helper normalizes mtimes, entry order, and modes.
+bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
+    "$RUNTIME_STAGE" "$RUNTIME_ZIP"
 echo "==> Ruby runtime archive: $RUNTIME_ZIP"
 
 echo ""

@@ -7,8 +7,10 @@ import {
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
 import {
+  displacePosixUtilsLiteManApplet,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
+  registerManShellProfile,
   registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
@@ -51,6 +53,10 @@ export function populateSourceRootfsShellOverlay(
   );
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     if (!archiveUrls.has(spec.archiveUrl)) {
+      // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man
+      // on the imported rootfs; clear it first so mandoc's formatting `man`
+      // wins the path instead of colliding (EEXIST) with the archive symlink.
+      if (spec.id === "man") displacePosixUtilsLiteManApplet(fs);
       registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
     }
   }
@@ -67,9 +73,11 @@ export function populateSourceRootfsShellOverlay(
     ["/usr/bin/npm", "/bin/npm"],
     ["/usr/bin/npx", "/bin/npx"],
     ["/usr/bin/perl", "/bin/perl"],
+    ["/usr/bin/man", "/bin/man"],
   ] as const) {
     symlink(fs, target, alias);
   }
 
   registerPythonShellProfile(fs);
+  registerManShellProfile(fs);
 }
