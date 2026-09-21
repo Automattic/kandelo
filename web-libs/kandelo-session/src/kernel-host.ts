@@ -277,6 +277,18 @@ export interface BootDescriptor {
   mounts: DescriptorMount[];
   boot: BootCommand;
   caps?: Capabilities;
+  /** Optional script a share link asks the machine to run after boot. */
+  script?: BootScript;
+}
+
+export interface BootScript {
+  /**
+   * Script text run in the initial interactive shell after boot. Executed by
+   * the image's default shell (bash on stock images), so authors should
+   * target that shell; a shebang-selected interpreter can be exec'd from the
+   * script body.
+   */
+  text: string;
 }
 
 export interface RuntimeConfig {

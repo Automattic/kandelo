@@ -37,6 +37,8 @@ export const HARD_CAPS = {
   maxPackageLayerDescriptorBytes: 16 * 1024 * 1024,
   /** Max bytes for a single inline-overlay's `data` field. */
   maxInlineOverlayBytes: 32 * 1024,
+  /** Max UTF-8 bytes of a boot-link script (`descriptor.script.text`). */
+  maxScriptBytes: 32 * 1024,
   /** Allowed mount source kinds. */
   allowedMountSources: new Set<MountSource>([
     "image", "package-layer", "inline-overlay", "remote-overlay",
@@ -353,6 +355,36 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
       (!Number.isInteger(boot[field]) || (boot[field] as number) < 0 || (boot[field] as number) > 0xffff)
     ) {
       throw new BootDescriptorError("E_BOOT_USER", `boot.${field} must be an integer from 0 to 65535`);
+    }
+  }
+  if (d.script !== undefined) {
+    if (!d.script || typeof d.script !== "object" || Array.isArray(d.script)) {
+      throw new BootDescriptorError("E_SCRIPT_INVALID", "script must be an object");
+    }
+    const script = d.script as Record<string, unknown>;
+    if (JSON.stringify(Object.keys(script).sort()) !== JSON.stringify(["text"])) {
+      throw new BootDescriptorError(
+        "E_SCRIPT_INVALID",
+        "script must contain exactly a text field",
+      );
+    }
+    if (typeof script.text !== "string" || script.text.length === 0) {
+      throw new BootDescriptorError(
+        "E_SCRIPT_INVALID",
+        "script.text must be a non-empty string",
+      );
+    }
+    if (script.text.includes("\0")) {
+      throw new BootDescriptorError(
+        "E_SCRIPT_INVALID",
+        "script.text must not contain NUL bytes",
+      );
+    }
+    if (new TextEncoder().encode(script.text).byteLength > HARD_CAPS.maxScriptBytes) {
+      throw new BootDescriptorError(
+        "E_SCRIPT_TOO_LARGE",
+        `script.text exceeds cap of ${HARD_CAPS.maxScriptBytes} bytes`,
+      );
     }
   }
 }
