@@ -53,8 +53,10 @@
  * table, and the injector already emits table primitives into it for exactly
  * this reason, so an emitted `table.set $resume (ref.null func)` now runs from
  * inside `resume_unregister_impl` -- reached by the `fm_resume_slots` op-1
- * release this class was already issuing. The recorded slot list went with it,
- * along with the `slots` field of `ForkResumeAssignment` and `slotsOf()`.
+ * release this class was already issuing, and by nothing else, because the
+ * release is the only moment the nulling ever happened while it was here. The
+ * recorded slot list went with it, along with the `slots` field of
+ * `ForkResumeAssignment` and `slotsOf()`.
  *
  * This is the SECOND time that exact "cannot hold a funcref, therefore host"
  * argument has been wrong about this one table. The first was the table

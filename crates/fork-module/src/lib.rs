@@ -751,7 +751,19 @@ mod wasm {
     /// a host that seeds twice has changed its mind rather than made an error.
     /// A first seed has nothing to free, which is the ordinary case.
     fn resume_reseed(activation_id: u32) -> Result<(), Errno> {
-        let _ = resume_unregister_impl(activation_id);
+        // `clear_table: false`. A re-seed is not a `dlclose`: the activation is
+        // still loaded and its guest instance still exists, so this is a
+        // renumbering rather than a teardown, and the thunks stay where they
+        // are until the next placement writes over them. It is also the ONE
+        // path that can reach the free routine before anything has been
+        // placed -- seeding is what ASSIGNS slots, so at the moment of a
+        // re-seed the resume table may still be its bare initial length, and
+        // a `table.set` against a slot it does not have would trap
+        // (`fork-module-instance.test.ts` seeds a 20,000-ordinal catalog and
+        // then a 65,536-ordinal one over it, with no guest anywhere). Nulling
+        // belongs to the release the host issues on `dlclose`, which is where
+        // it lived before it moved in here.
+        let _ = resume_unregister_impl(activation_id, false);
         resume_register_impl(activation_id).map(|_| ())
     }
 
@@ -790,9 +802,13 @@ mod wasm {
     /// passes make a trap leave the module exactly as it found it -- which is
     /// the property the host's old "null first, THEN call release" ordering
     /// had, preserved rather than dropped on the way in.
-    fn resume_unregister_impl(activation_id: u32) -> Result<u32, Errno> {
+    ///
+    /// `clear_table` is FALSE for exactly one caller, `resume_reseed`, and the
+    /// reason is there. It is true for the `dlclose` release, which is the
+    /// only place the nulling ever happened while it was the host's.
+    fn resume_unregister_impl(activation_id: u32, clear_table: bool) -> Result<u32, Errno> {
         let mut count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
-        {
+        if clear_table {
             // PASS 1: null, mutating nothing. SAFETY: single-threaded;
             // `count <= RESUME_SLOT_CAP`; the borrow ends with this block,
             // before pass 2 takes a mutable one.
@@ -11281,7 +11297,7 @@ mod wasm {
     pub extern "C" fn fm_resume_slots(op: u32, activation: u32, ordinal: u32) -> i32 {
         let _ = ordinal;
         match op {
-            1 => match resume_unregister_impl(activation) {
+            1 => match resume_unregister_impl(activation, true) {
                 Ok(freed) => {
                     // The same dlclose that retires this activation's resume
                     // slots retires its identity entries: one signal, one
