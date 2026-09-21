@@ -168,8 +168,9 @@ knowing Task 0's answer to the table-identity question.
 **Interfaces:**
 - Produces: a JSON baseline artifact at
   `.superpowers/sdd/2026-09-20-fork-resume-thunk-placement/placement-baseline.json`
-  mapping `activation id -> [{ordinal, slot}]`, consumed by Task 7's
-  verification.
+  mapping `activation id -> [{ordinal, slot}]`, consumed by **Task 4's**
+  verification. (Corrected 2026-09-20: this said Task 7, which settles the ABI
+  snapshot and never reads the baseline.)
 
 - [ ] **Step 1: Find a fixture that produces more than one activation**
 
@@ -332,6 +333,26 @@ across a host boundary is required or wanted.
 
 **Files:**
 - Modify: `crates/fork-module/src/lib.rs`
+
+**BEFORE YOU DESIGN ANYTHING, CORRECT THE FALSE COMMENT AT
+`crates/fork-module/src/lib.rs:498-505`.** It states that "activation 0's table
+and activation 1's table are distinct JS `WebAssembly.Table`s with independent
+slot spaces". **That is not true**, and Task 1 measured it: the recorded
+baseline shows ONE contiguous slot space across both activations — activation 0
+takes ordinals 0..85 at slots 1..86, and activation 1's ordinal 0 takes slot
+**87**, continuing the same numbering rather than restarting. If the spaces
+were independent, activation 1 would have started at 1.
+
+This matters to you specifically because the comment reads as a justification
+for per-activation separation, and this task decides where a shared assignment
+buffer lives. Designing against "independent slot spaces" would produce a
+per-activation structure that the measured behaviour does not need.
+
+Task 1 confirmed the comment stale but deliberately did NOT edit it, because
+Task 1 touches no Rust and an edit there would have churned the fork-module
+build key for a comment. You are already editing this file, so the churn is
+free. Correct it to describe the single shared numbering the baseline shows,
+and say in your report what you changed it to.
 
 **Interfaces:**
 - Produces: `fm_publish_resume_assignment(activation: u32) -> i64`, returning
@@ -579,12 +600,20 @@ git push origin brandonpayton/lane-f-fork-inversion
 - [ ] **Step 1: Prove op 0 has no callers left**
 
 ```bash
-grep -rn "fm_resume_slots" host/src crates --include=*.ts --include=*.rs | grep -v node_modules
+grep -rn "fm_resume_slots" host/src host/test crates --include=*.ts --include=*.rs | grep -v node_modules
 ```
 
 Every remaining hit must be op 1 (release) or the entry's own definition. If
 any op-0 caller survives, it fails at INSTANTIATION rather than at use once
 the arm is gone — so this grep is the guard, not the test suite.
+
+**`host/test` is IN the search path, and was added there on 2026-09-20 after
+Task 1's review found a live op-0 caller the original guard could not see**
+(`host/test/fork-resume-placement-baseline.test.ts:135`). The guard searched
+`host/src crates` only. A guard whose whole job is "prove there are no callers
+left" must look everywhere a caller can live, and a test file is a caller: it
+instantiates the module, so a surviving op-0 reference there fails at
+INSTANTIATION exactly as a src one would. Do not narrow this path again.
 
 - [ ] **Step 2: Delete the arm and the linear scan**
 
