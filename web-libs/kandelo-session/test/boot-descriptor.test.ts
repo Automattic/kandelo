@@ -150,6 +150,29 @@ describe("boot inputs and parameters validation", () => {
     expect(() => validateBootDescriptor(withInputs(inputs))).not.toThrow();
   });
 
+  it("accepts bounded canonical inline data and rejects non-canonical padding bits", () => {
+    const valid = withInputs([{
+      id: "rom",
+      filename: "game.nes",
+      byteLength: 5,
+      sha256: HELLO_SHA256,
+      source: { kind: "inline", data: "aGVsbG8" },
+    }]);
+    expect(() => validateBootDescriptor(valid)).not.toThrow();
+
+    // "Zh" also decodes to one byte in permissive decoders, but its unused
+    // bits are non-zero. Descriptor validation performs the canonical-bit
+    // check rather than accepting any base64url-shaped string.
+    const nonCanonical = withInputs([{
+      id: "file",
+      filename: "file.bin",
+      byteLength: 1,
+      sha256: "0".repeat(64),
+      source: { kind: "inline", data: "Zh" },
+    }]);
+    expect(validationError(nonCanonical).code).toBe("E_INLINE_ENCODING");
+  });
+
   it("rejects inline input data over the carried-bytes cap", () => {
     // The base64url char cap (`Math.ceil(maxInlineInputBytes * 4 / 3)`) is
     // the first gate an oversized payload hits, so it fails as a plain
