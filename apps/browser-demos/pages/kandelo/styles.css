@@ -2471,7 +2471,7 @@
   resize: vertical;
   border: 1px solid var(--k-border);
   border-radius: 7px;
-  background: #15100c;
+  background: var(--k-shell-bg);
   color: var(--k-shell-text);
   padding: 9px;
   font-family: var(--k-font-mono);
