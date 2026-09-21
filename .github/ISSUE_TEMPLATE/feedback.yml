@@ -1,0 +1,94 @@
+name: 💬 Feedback
+description: Share how you use (or want to use) Kandelo, what motivated you, and where you hit friction.
+title: "Feedback: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for taking the time to tell us about your experience with Kandelo.
+
+        This template is for open-ended feedback — use cases, motivations, and
+        rough edges. If you have a specific reproducible bug or a concrete
+        feature request, a blank issue or a more specific template may fit
+        better, but don't worry about picking the "right" one. We'd rather hear
+        from you.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What are you using Kandelo for (or hoping to use it for)?
+      description: >
+        Describe the use case as concretely as you can — the software you want
+        to run, the workflow, the environment (browser, Node, embedded), and who
+        it's for.
+      placeholder: >
+        e.g. "I want to run a Python data-analysis notebook entirely in the
+        browser so students don't have to install anything," or "I'm evaluating
+        Kandelo as a sandbox for running untrusted user-submitted C programs."
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: What motivated you to try Kandelo?
+      description: >
+        What problem were you trying to solve, and what made an in-browser /
+        WebAssembly POSIX kernel appealing for it? What were you using before, if
+        anything?
+      placeholder: >
+        e.g. "We needed a POSIX-y sandbox with no server to operate," or "I
+        wanted real fork/exec semantics in the browser that other runtimes
+        don't offer."
+    validations:
+      required: true
+
+  - type: textarea
+    id: friction
+    attributes:
+      label: Where did you hit friction?
+      description: >
+        Anything that was confusing, slower than expected, missing, or that made
+        you want to give up. Rough notes are fine — this is the most useful part.
+        Missing POSIX behavior, a package that wouldn't build, docs gaps, browser
+        quirks, performance, setup — all welcome.
+      placeholder: >
+        e.g. "Getting my package to build against the SDK took a lot of
+        trial-and-error," or "Cold boot in the browser felt slow," or "I
+        couldn't tell whether a syscall was unsupported or I was holding it
+        wrong."
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-worked
+    attributes:
+      label: What worked well? (optional)
+      description: >
+        Anything that pleasantly surprised you or that we should be careful not
+        to break.
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (optional)
+      description: >
+        If relevant, tell us the host (browser + version, or Node version), OS,
+        and how you're running Kandelo (a demo, a local build, embedded in your
+        own app).
+      placeholder: >
+        e.g. "Chrome 141 on macOS 27, running ./run.sh browser from a local
+        checkout."
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else? (optional)
+      description: Links, screenshots, or anything else you'd like to add.
+    validations:
+      required: false
