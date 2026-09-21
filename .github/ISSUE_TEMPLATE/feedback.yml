@@ -1,70 +1,64 @@
 name: 💬 Feedback
-description: Tell us what you're building with Kandelo, what pulled you in, and what tripped you up.
+description: Tell us what you're using Kandelo for, what drew you to it, and what got in your way.
 title: "Feedback: "
 labels: ["feedback"]
 body:
   - type: markdown
     attributes:
       value: >
-        Hi! 👋 Thanks for stopping by to tell us about your time with Kandelo —
-        genuinely, it makes our day.
+        Thanks for sharing your experience with Kandelo. Rough notes are fine —
+        you don't need to have it all figured out.
 
-        There are no wrong answers here. Half-formed thoughts, wild ideas, and
-        grumpy rants are all welcome. If you've got a razor-specific bug or
-        feature ask, a blank issue might be comfier — but if you're not sure,
-        just start typing. We'd much rather hear from you than not.
+        If you have a specific bug or feature request, a blank issue might fit
+        better, but if you're unsure, just start here.
 
   - type: textarea
     id: use-case
     attributes:
-      label: What are you building (or dreaming of building) with Kandelo?
+      label: What are you using (or hoping to use) Kandelo for?
       description: >
-        Paint us a picture — what are you running, where, and who's it for?
-        The messier and more specific, the better.
+        Tell us what you're running, where, and who it's for. The more
+        specific, the better.
       placeholder: >
-        e.g. "A no-install Python playground so my students can just click and
-        code," or "A sandbox for running strangers' C programs without my
-        laptop catching fire."
+        e.g. "A no-install Python playground for my students," or "A sandbox
+        for running untrusted C programs in the browser."
     validations:
       required: true
 
   - type: textarea
     id: motivation
     attributes:
-      label: What pulled you toward Kandelo in the first place?
+      label: What drew you to Kandelo?
       description: >
-        What were you trying to pull off, and what made "a whole POSIX kernel in
-        the browser" sound like the answer? Bonus points if you tell us what you
-        tried before.
+        What were you trying to do, and what made a POSIX kernel in the browser
+        appealing for it? If you tried something else first, we'd like to know.
       placeholder: >
-        e.g. "I was tired of babysitting a server just to run a sandbox," or "I
-        needed real fork/exec in the browser and nothing else came close."
+        e.g. "I didn't want to run a server just for a sandbox," or "I needed
+        real fork/exec in the browser."
     validations:
       required: true
 
   - type: textarea
     id: friction
     attributes:
-      label: Where did it get annoying, confusing, or slow?
+      label: What got in your way?
       description: >
-        This is the good stuff — tell us where you groaned, got stuck, or nearly
-        rage-quit. A package that wouldn't build, a syscall that lied to you,
-        docs that hid the answer, a boot that dragged... all of it helps us make
-        Kandelo better.
+        Where things were confusing, slow, missing, or frustrating. This is the
+        most useful part — a package that wouldn't build, a syscall that behaved
+        unexpectedly, a docs gap, a slow boot. All of it helps.
       placeholder: >
-        e.g. "Getting my package to build was a guess-and-check nightmare," or
-        "Cold boot felt like waiting for coffee," or "I couldn't tell if a
-        syscall was missing or I was just holding it wrong."
+        e.g. "Getting my package to build took a lot of trial and error," or
+        "Cold boot felt slow," or "I couldn't tell if a syscall was unsupported
+        or I was using it wrong."
     validations:
       required: true
 
   - type: textarea
     id: what-worked
     attributes:
-      label: What made you smile? (optional)
+      label: What worked well? (optional)
       description: >
-        Anything that surprised you, delighted you, or that we'd better not
-        break — we love hearing this too.
+        Anything that surprised you or that we should be careful not to break.
     validations:
       required: false
 
@@ -73,8 +67,8 @@ body:
     attributes:
       label: Where were you running it? (optional)
       description: >
-        Only if it's handy — browser + version or Node version, your OS, and how
-        you fired Kandelo up (a demo, a local build, tucked into your own app).
+        If it's handy — browser + version or Node version, your OS, and how you
+        ran Kandelo (a demo, a local build, embedded in your own app).
       placeholder: >
         e.g. "Chrome 141 on macOS 27, running ./run.sh browser from a local
         checkout."
@@ -84,7 +78,7 @@ body:
   - type: textarea
     id: anything-else
     attributes:
-      label: Anything else on your mind? (optional)
-      description: Links, screenshots, hot takes, a haiku — the floor is yours.
+      label: Anything else? (optional)
+      description: Links, screenshots, or anything else you'd like to add.
     validations:
       required: false
