@@ -43,6 +43,26 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+The persistent SourceOnly build cache lives at
+`$HOME/.cache/kandelo/source-only` and is **shared across every worktree on
+the machine** by default. This is deliberate: the cache is content-addressed,
+so identical inputs are built once and reused everywhere, which is what keeps a
+fresh `git worktree` fast instead of a from-scratch rebuild. Set
+`KANDELO_SOURCE_CACHE_ROOT` to an absolute path to give a worktree its own
+isolated cache instead; leave it unset to share. Both build front doors honor
+it and must agree — the Rust default (`default_source_cache_root` in
+`tools/xtask/src/local_build.rs`) and the shell runner
+(`scripts/run-local-build.sh`). Reach for isolation only when an in-progress
+change alters the *bytes* a cache key maps to — e.g. a change to the
+build-stamp or artifact format — so that a worktree on the new format does not
+contend with worktrees on the old one at the same content-addressed key.
+Concurrency itself is already safe (the store stages into a per-pid temp
+directory and publishes with an atomic, non-replacing `rename(2)`), so the
+shared default never risks corruption; the override is about avoiding churn,
+not preventing races. Do not reach for it as a routine default — a
+per-worktree cache discards the cross-worktree reuse the shared cache exists
+to provide.
+
 ## Line editing for REPL CLIs
 
 A command-line program with an interactive REPL — a read-eval-print loop that

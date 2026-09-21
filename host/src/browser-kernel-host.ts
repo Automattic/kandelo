@@ -1047,17 +1047,23 @@ export class BrowserKernel {
   }
 
   /**
-   * Wire an `InputSource` into the kernel: sets canvas dims, then starts
-   * the source with a dispatch callback that groups each `SYN_REPORT`
-   * frame (`batchBySynReport`) and forwards it via
-   * `injectInputEventBatch`, so a frame crosses to the worker once.
-   * Mirrors `NodeKernelHost.attachInputSource` — dual-host parity per
+   * Wire an `InputSource` into the kernel: sets canvas dims, then
+   * starts the source with a dispatch callback that funnels each
+   * emitted record through `injectInputEvent`. Mirrors
+   * `NodeKernelHost.attachInputSource` — dual-host parity per
    * CLAUDE.md §"Two hosts".
    */
+  private attachedInputSource: InputSource | null = null;
+
   attachInputSource(
     source: InputSource,
     dims: { width: number; height: number },
   ): void {
+    // Stop and replace any previously attached source so re-attach (demo
+    // reboot / image switch) does not leak its DOM listeners and keep
+    // injecting into a torn-down worker.
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = source;
     this.setInputCanvasDims(dims.width, dims.height);
     source.start(
       batchBySynReport((records) => this.injectInputEventBatch(records)),
@@ -1308,6 +1314,9 @@ export class BrowserKernel {
 
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
+    // Remove input-source DOM listeners regardless of worker state.
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = null;
     if (!this.workerStarted) return;
     let gracefulDetachFailure: string | undefined;
     if (this.initialized && this.kernelFatalError === null) {

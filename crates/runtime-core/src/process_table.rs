@@ -1865,6 +1865,101 @@ mod wait_tests {
     }
 
     #[test]
+    fn fork_shares_one_evdev_ring_with_parent() {
+        // POSIX/Linux: a forked `struct file` carries one shared
+        // `struct evdev_client`, so parent and child observe a single
+        // ring. Fork here serializes a point-in-time snapshot;
+        // link_shared_states_from must re-share the parent's live ring
+        // rather than leave the child with an independent copy.
+        use crate::ofd::{FileType, InputFdState, SharedInputRing};
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+
+        let ofd_idx = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let idx = parent.ofd_table.create(
+                FileType::CharDevice,
+                wasm_posix_shared::flags::O_RDWR,
+                -10,
+                b"/dev/input/event0".to_vec(),
+            );
+            parent.ofd_table.get_mut(idx).unwrap().input_state =
+                Some(alloc::boxed::Box::new(InputFdState {
+                    device: 0,
+                    ring: SharedInputRing::default(),
+                }));
+            // Fork inherits open descriptions through the fd table, so the
+            // OFD needs a referencing fd to cross the fork boundary.
+            parent
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(idx), 0)
+                .unwrap();
+            idx
+        };
+
+        let fork_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
+
+        let parent_id = table
+            .get(parent_pid)
+            .unwrap()
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .identity();
+        let child_id = table
+            .get(fork_pid)
+            .unwrap()
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .identity();
+        assert_eq!(
+            parent_id, child_id,
+            "fork must re-share the parent's evdev ring, not copy it"
+        );
+
+        // A post-fork write into the parent's ring is visible through the
+        // child, proving one shared buffer rather than two.
+        table
+            .get(parent_pid)
+            .unwrap()
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .borrow_mut()
+            .event_ring
+            .push_back(0xab);
+        assert_eq!(
+            table
+                .get(fork_pid)
+                .unwrap()
+                .ofd_table
+                .get(ofd_idx)
+                .unwrap()
+                .input()
+                .unwrap()
+                .ring
+                .borrow()
+                .event_ring
+                .len(),
+            1,
+            "a record pushed on the parent must be observable in the child"
+        );
+    }
+
+    #[test]
     fn fork_and_spawn_inherit_the_kernel_validated_callers_signal_mask() {
         use crate::process::test_host::NoopHost;
         use crate::spawn::SpawnAttrs;

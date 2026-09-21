@@ -3,7 +3,6 @@ description = "Packages and images that CI should treat as first-class build cov
 
 packages = [
   "kernel",
-  "userspace",
   "shell",
   "nginx",
   "php",

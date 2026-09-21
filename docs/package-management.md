@@ -37,6 +37,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern.                                                                                                                          |
 | Override an artifact locally                   | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these over the cache.                                                                                                                                   |
 | Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — `revision` lives in the project-view file). Invalidates the local cache for that package. Only bump when output bytes legitimately change.                                                            |
+| Isolate a worktree's build cache              | Set `KANDELO_SOURCE_CACHE_ROOT=<absolute path>` before `./run.sh local-build` / `setup` / `bootstrap`. The SourceOnly cache is shared across every worktree on the machine by default (content-addressed, so identical inputs build once and are reused everywhere — this is what keeps a fresh worktree fast); the override gives this worktree its own cache. Useful when an in-progress change alters cached artifact bytes and you don't want it churning the shared cache. Leave unset to share.                     |
 | Publish package recipes from another repository | [docs/package-sources.md](package-sources.md) — package-source layout for source-built recipes consumed via `WASM_POSIX_DEPS_REGISTRY`.                                                                                                                          |
 | Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
 | See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
@@ -92,6 +93,23 @@ command directly. `--product all` selects every active product; omitting
 those products and their transitive package dependencies. `--jobs` bounds
 concurrently running nodes; ready nodes start as soon as their own dependencies
 finish.
+
+A narrower selection, including the kernel-only build that `./run.sh build
+<pkg>` performs first, adds to the published projection instead of replacing
+it. Packages the projection already records stay published when every compiled
+package in their dependency closure still matches its cache receipt under the
+current cache keys. Packages that no longer match are dropped with a
+`dropping <pkg> from the published projection` message, so the projection never
+names an output that is not current. A later full `./run.sh local-build`
+restores them.
+
+A node is reported cached without launching its build child only when its cache
+entry and receipt are present and every output it projects into
+`local-binaries/source-only-v1` hashes to the receipt's SHA-256. Size alone is
+not enough: artifacts embed their fixed-length cache key, so an output left by
+an earlier cache key usually has the same size. The finalizer then leaves the
+published projection untouched only when it already records this run's exact
+package set, cache keys, and receipts.
 
 The machine-readable result contains every selected node and whether it was
 newly published or reused from cache. If a node fails, independent work drains
@@ -414,12 +432,11 @@ The program map covers guest programs published under
 `binaries/programs/<arch>/`. A higher first-hit non-program package naturally
 removes a same-named lower program from that map, while the lower physical
 index retains a fail-closed claim against stale flat mirror fallback. The map
-deliberately excludes Kandelo's first-party `kernel` and `userspace` boot
-artifacts: their single outputs publish at `binaries/kernel.wasm` and
-`binaries/userspace.wasm`, and retain their existing root-artifact ABI and
-export validation instead of pretending to be guest program packages. Their
-package identities remain in the all-package identity map so
-dependency-context validation stays complete.
+deliberately excludes Kandelo's first-party `kernel` boot artifact: its
+single output publishes at `binaries/kernel.wasm`, and retains its existing
+root-artifact ABI and export validation instead of pretending to be a guest
+program package. Its package identity remains in the all-package identity map
+so dependency-context validation stays complete.
 
 Generate or verify an index with:
 
@@ -526,17 +543,16 @@ create-once regular files, validates the complete tree, creates a one-shot
 publication claim, and only then swaps the live package directory or scalar
 link. A claimed generation is never recreated after its root disappears.
 One-member packages retain their flat mirror name as a symlink to the
-immutable generation member. The kernel and userspace packages follow the same
-identity contract even though their compatibility mirrors live at
-`local-binaries/kernel.wasm` and `local-binaries/userspace.wasm` instead of
-below `programs/<arch>/`. A later release materialization preserves either a
-complete package-directory closure or a scalar mirror only when every link
-selects one claimed generation with the exact current contextual cache key.
-Identityless regular or non-generation kernel/userspace mirrors, mixed
-sessions, symlinked ownership ancestors, and stale manifest or dependency
-identities fail closed instead of silently replacing the exact local candidate
-with released bytes; rebuild the local package to establish a current
-generation.
+immutable generation member. The kernel package follows the same identity
+contract even though its compatibility mirror lives at
+`local-binaries/kernel.wasm` instead of below `programs/<arch>/`. A later
+release materialization preserves either a complete package-directory closure
+or a scalar mirror only when every link selects one claimed generation with
+the exact current contextual cache key. Identityless regular or
+non-generation kernel mirrors, mixed sessions, symlinked ownership ancestors,
+and stale manifest or dependency identities fail closed instead of silently
+replacing the exact local candidate with released bytes; rebuild the local
+package to establish a current generation.
 
 Scalar replacement and package-directory replacement reserve a unique private
 transaction parent (mode 0700 on Unix), validate filesystem identity and exact

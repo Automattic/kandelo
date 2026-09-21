@@ -252,11 +252,19 @@ for artifact in lib/libc++.a lib/libc++abi.a include/c++/v1; do
 done
 
 mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-ln -sf "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
-ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+# Copy libcxx into the sysroot rather than symlinking it. A symlink points
+# into the per-user source-only cache (~/.cache/kandelo/...), which pollutes
+# the shared sysroot and trips the kandelo-sdk seed integrity check
+# (scripts/package-build-roots.sh rejects symlinks in the SDK seed because a
+# machine-specific link is not reproducible). Copying real files keeps the
+# seed clean — the same approach build-kandelo-sdk.sh uses. Remove any
+# pre-existing dst first so a prior symlink can't be followed into the cache.
+rm -f "$SYSROOT/lib/libc++.a" "$SYSROOT/lib/libc++abi.a"
+cp "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
+cp "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
 rm -rf "$SYSROOT/include/c++/v1"
-ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
-echo "==> libcxx resolved at $LIBCXX_PREFIX (symlinked into $SYSROOT)"
+cp -RL "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
+echo "==> libcxx resolved at $LIBCXX_PREFIX (copied into $SYSROOT)"
 
 # --- Phase 3: cross build of espeak-ng ---------------------------------
 CROSS_BUILD_DIR="$HERE/espeak-ng-cross-build"
@@ -328,7 +336,19 @@ PY
 # [[runtime_files]] entries; the installer re-checks artifact policy.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary espeak-ng "$INSTALL_DIR/bin/espeak-ng.wasm"
-install_local_runtime_file espeak-ng "$DATA_ZIP"
+# The resolver's validate_outputs checks $OUT_DIR/<artifact> at the root,
+# but the data zip is built under share/, and install_local_runtime_file
+# only publishes to the local-binaries mirror (not the OUT_DIR root) in the
+# default mirror mode — so the resolver would report it "not produced".
+# Publish it at the OUT_DIR root as resolver scratch, exactly as cpython
+# does for python-runtime.zip; fall back to the mirror when OUT_DIR is unset
+# (a direct, non-resolver invocation).
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$DATA_ZIP" "$WASM_POSIX_DEP_OUT_DIR/espeak-ng-data.zip"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/espeak-ng-data.zip (resolver scratch)"
+else
+    install_local_runtime_file espeak-ng "$DATA_ZIP"
+fi
 
 echo "==> Done. Outputs:"
 echo "    $INSTALL_DIR/bin/espeak-ng.wasm"

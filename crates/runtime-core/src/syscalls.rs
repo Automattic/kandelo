@@ -1014,16 +1014,6 @@ fn input_state(
         .ok_or(Errno::EBADF)
 }
 
-fn input_state_mut(
-    proc: &mut Process,
-    ofd_idx: usize,
-) -> Result<&mut crate::ofd::InputFdState, Errno> {
-    proc.ofd_table
-        .get_mut(ofd_idx)
-        .and_then(|o| o.input_mut())
-        .ok_or(Errno::EBADF)
-}
-
 /// Release a per-fd handle (DESTROY_DUMB / GEM_CLOSE): drops the
 /// handle from the fd's namespace, decrefs the bo, and if the
 /// refcount hits zero asks the host to free the backing.
@@ -2022,14 +2012,13 @@ fn handle_input_ioctl(
             }
             Ok(())
         }
-        0x90 if dir == 1 => {
-            if buf.len() < 4 {
-                return Err(Errno::EINVAL);
-            }
-            let value = i32::from_le_bytes(buf[..4].try_into().unwrap());
-            input_state_mut(proc, ofd_idx)?.grabbed = value != 0;
-            Ok(())
-        }
+        // EVIOCGRAB (`_IOW('E', 0x90, int)`) is intentionally NOT supported.
+        // Exclusive grab means events must be routed to only the grabbing
+        // open file description; v1 fans out to every reader instead, so
+        // honoring the ioctl would report success while silently ignoring
+        // the exclusivity a caller asked for. We return ENOTTY (the honest
+        // "unsupported operation" for this device) rather than pretend —
+        // real grab is deferred to a later change. See docs/posix-status.md.
         _ => Err(Errno::ENOTTY),
     }
 }
@@ -3232,7 +3221,12 @@ pub fn sys_open(
         }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
-            if status_flags & O_ACCMODE != O_WRONLY {
+            // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
+            // sox, mpg123, …) uses O_RDWR — an app that only writes still opens
+            // read-write, exactly as on a real OSS card. Accept O_WRONLY and
+            // O_RDWR (both can write PCM); reject O_RDONLY, since kandelo has no
+            // capture source. Reads on the resulting descriptor are unsupported.
+            if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
             let pcm_handle = crate::audio::open_stream()?;
@@ -4531,6 +4525,13 @@ pub fn sys_read(
     let file_type = ofd.file_type;
     let status_flags = ofd.status_flags();
     match file_type {
+        // /dev/dsp is playback-only. It accepts the standard OSS O_RDWR open,
+        // but has no capture source, so a read can never yield audio. Return
+        // ENXIO rather than fall through to the host with the negative PCM
+        // stream handle, and never park (no capture would wake a blocking
+        // reader). pcaudiolib/espeak only ever write, so this is a guard for
+        // the general OSS-full-duplex case.
+        FileType::PcmPlayback => Err(Errno::ENXIO),
         FileType::Pipe => {
             if host_handle >= 0 {
                 // Host-delegated pipe (cross-process): use host_read
@@ -4743,11 +4744,17 @@ pub fn sys_read(
                             if usable == 0 {
                                 return Err(Errno::EINVAL);
                             }
-                            let input = input_state_mut(proc, ofd_idx)?;
-                            // Blocking read returns Ok(0) (not park)
-                            // so the host can retry on a poll timer
-                            // — matches DriCard0.
-                            if input.event_ring.is_empty() && !input.dropped {
+                            let input = input_state(proc, ofd_idx)?;
+                            let mut ring = input.ring.borrow_mut();
+                            // Empty ring: O_NONBLOCK gets EAGAIN; a blocking
+                            // read returns Ok(0) (not a kernel park) so the
+                            // host retries on its poll timer — matches DriCard0
+                            // and is what the read-until-empty drain loop and
+                            // the host's retry path depend on. (Returning
+                            // EAGAIN for the blocking case instead parks the
+                            // read until the next injected event, which hangs a
+                            // drain that has already consumed the whole ring.)
+                            if ring.event_ring.is_empty() && !ring.dropped {
                                 if status_flags & O_NONBLOCK != 0 {
                                     return Err(Errno::EAGAIN);
                                 }
@@ -4758,7 +4765,7 @@ pub fn sys_read(
                             // signal the gap before the next real record.
                             // The client then re-reads current state via
                             // EVIOCGKEY/GLED/GSW (handled below) to recover.
-                            if input.dropped {
+                            if ring.dropped {
                                 let (sec, nsec) = host
                                     .host_clock_gettime(CLOCK_MONOTONIC)
                                     .unwrap_or((0, 0));
@@ -4775,14 +4782,14 @@ pub fn sys_read(
                                 };
                                 buf[..24].copy_from_slice(&bytes);
                                 written = 24;
-                                input.dropped = false;
+                                ring.dropped = false;
                             }
                             while written + 24 <= usable
-                                && !input.event_ring.is_empty()
+                                && !ring.event_ring.is_empty()
                             {
                                 for i in 0..24 {
                                     buf[written + i] =
-                                        input.event_ring.pop_front().unwrap();
+                                        ring.event_ring.pop_front().unwrap();
                                 }
                                 written += 24;
                             }
@@ -13827,7 +13834,8 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     // ring (sys_read returns Ok(0), not a record).
                     if pollfd.events & POLLIN != 0 {
                         if let Some(input) = ofd.input() {
-                            if !input.event_ring.is_empty() || input.dropped {
+                            let ring = input.ring.borrow();
+                            if !ring.event_ring.is_empty() || ring.dropped {
                                 revents |= POLLIN;
                             }
                         }
@@ -14199,7 +14207,12 @@ pub fn sys_openat(
         }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
-            if status_flags & O_ACCMODE != O_WRONLY {
+            // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
+            // sox, mpg123, …) uses O_RDWR — an app that only writes still opens
+            // read-write, exactly as on a real OSS card. Accept O_WRONLY and
+            // O_RDWR (both can write PCM); reject O_RDONLY, since kandelo has no
+            // capture source. Reads on the resulting descriptor are unsupported.
+            if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
             let pcm_handle = crate::audio::open_stream()?;
@@ -40731,7 +40744,7 @@ mod tests {
     }
 
     #[test]
-    fn open_dsp_is_exclusive_per_open_description_and_rejects_capture() {
+    fn open_dsp_accepts_playback_modes_rejects_capture_and_is_exclusive() {
         let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::audio::reset_for_test();
 
@@ -40739,22 +40752,48 @@ mod tests {
         let mut proc2 = Process::new(2);
         let mut host = MockHostIO::new();
 
-        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
-        let err = sys_open(&mut proc2, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap_err();
-        assert_eq!(err, Errno::EBUSY);
-        assert_eq!(
-            sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0),
-            Err(Errno::EBUSY)
-        );
+        // O_RDONLY is a pure-capture open; kandelo has no capture source.
         assert_eq!(
             sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDONLY, 0),
             Err(Errno::EOPNOTSUPP)
         );
+
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
+
+        // Exclusive per open description: while held, any second open — even a
+        // valid playback mode — is EBUSY (the access-mode check passes for
+        // O_RDWR, so exclusivity is what rejects it here).
+        assert_eq!(
+            sys_open(&mut proc2, &mut host, b"/dev/dsp", O_WRONLY, 0),
+            Err(Errno::EBUSY)
+        );
         assert_eq!(
             sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDWR, 0),
-            Err(Errno::EOPNOTSUPP)
+            Err(Errno::EBUSY)
         );
+
         sys_close(&mut proc1, &mut host, fd1).unwrap();
+
+        // Once free, the standard OSS O_RDWR open (what pcaudiolib/espeak use)
+        // succeeds — it opens read-write but only writes PCM.
+        let fd2 = sys_open(&mut proc2, &mut host, b"/dev/dsp", O_RDWR, 0).unwrap();
+        sys_close(&mut proc2, &mut host, fd2).unwrap();
+    }
+
+    #[test]
+    fn read_on_rdwr_dsp_returns_enxio_not_a_stray_host_read() {
+        let _g = TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::reset_for_test();
+        let mut proc = Process::new(3);
+        let mut host = MockHostIO::new();
+        // O_RDWR is accepted for playback; a capture read has no source, so it
+        // must fail with ENXIO rather than fall through to the host with the
+        // negative PCM stream handle.
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 64];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENXIO);
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
@@ -45346,9 +45385,10 @@ mod tests {
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         let st = ofd.input().expect("input_state should be installed");
         assert_eq!(st.device, 0);
-        assert!(!st.grabbed);
-        assert!(!st.dropped);
-        assert!(st.event_ring.is_empty());
+        let ring = st.ring.borrow();
+        assert!(!ring.dropped);
+        assert!(ring.event_ring.is_empty());
+        drop(ring);
         // input + dri sidecars are disjoint state machines.
         assert!(ofd.dri_state.is_none());
     }
@@ -45393,6 +45433,8 @@ mod tests {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
         let mut buf = [0u8; 24];
+        // Blocking read of an empty ring returns Ok(0) (the host retries on its
+        // poll timer); the read-until-empty drain loop relies on this.
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
         assert_eq!(n, 0);
     }
@@ -45522,7 +45564,7 @@ mod tests {
         // so SDL2's probe keeps going. A too-small buffer must not turn that
         // into the fatal EINVAL.
         use wasm_posix_shared::input::{EVIOCGABS_NR_BASE, ABS_X};
-        let (mut proc, mut host, fd) = open_evdev(611, b"/dev/input/event0");
+        let (mut proc, mut host, fd) = open_evdev(621, b"/dev/input/event0");
         let mut buf = [0u8; 4];
         let req = evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, buf.len() as u32);
         let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
@@ -45535,7 +45577,7 @@ mod tests {
         // (only ABS_X/ABS_Y): unsupported → ENOTTY, never EINVAL, even
         // when the caller buffer is too small.
         use wasm_posix_shared::input::EVIOCGABS_NR_BASE;
-        let (mut proc, mut host, fd) = open_evdev(612, b"/dev/input/event1");
+        let (mut proc, mut host, fd) = open_evdev(622, b"/dev/input/event1");
         let mut buf = [0u8; 4];
         // Axis 5 is not ABS_X (0) or ABS_Y (1).
         let req = evioc(2, EVIOCGABS_NR_BASE + 5, buf.len() as u32);
@@ -45547,7 +45589,7 @@ mod tests {
     fn evioc_gkey_reports_currently_pressed_keys() {
         use wasm_posix_shared::input::{EVIOCGKEY_NR, EV_KEY, KEY_A, KEY_CNT};
         crate::input::reset_key_state();
-        let (mut proc, mut host, fd) = open_evdev(613, b"/dev/input/event0");
+        let (mut proc, mut host, fd) = open_evdev(623, b"/dev/input/event0");
         // Inject a key-down through the normal producer path.
         crate::input::dispatch::push_event(0, EV_KEY, KEY_A, 1, 0, 0);
         let mut buf = [0u8; (KEY_CNT as usize) / 8];
@@ -45563,7 +45605,7 @@ mod tests {
         // No LEDs / switches on the virtual devices: a zeroed bitmap is
         // the honest state and a valid resync reply (not ENOTTY).
         use wasm_posix_shared::input::{EVIOCGLED_NR, EVIOCGSW_NR};
-        let (mut proc, mut host, fd) = open_evdev(615, b"/dev/input/event0");
+        let (mut proc, mut host, fd) = open_evdev(625, b"/dev/input/event0");
         for nr in [EVIOCGLED_NR, EVIOCGSW_NR] {
             let mut buf = [0xffu8; 8];
             let req = evioc(2, nr, buf.len() as u32);
@@ -45594,44 +45636,30 @@ mod tests {
     }
 
     #[test]
-    fn evioc_grab_sets_flag_then_release_clears_it() {
+    fn evioc_grab_is_rejected_with_enotty() {
+        // EVIOCGRAB (exclusive grab) is intentionally unsupported: v1 fans
+        // every record out to all readers, so honoring it would report
+        // success while ignoring the exclusivity a caller asked for. It
+        // must fail honestly with ENOTTY (not succeed, not EINVAL) so a
+        // program that genuinely needs an exclusive grab fails loudly.
         use wasm_posix_shared::input::EVIOCGRAB;
-        let (mut proc, mut host, fd) = open_evdev(611, b"/dev/input/event0");
-        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        let mut on = 1i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on).unwrap();
-        assert!(proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().grabbed);
-        let mut off = 0i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
-        assert!(!proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().grabbed);
+        for path in [b"/dev/input/event0".as_slice(), b"/dev/input/event1"] {
+            let (mut proc, mut host, fd) = open_evdev(611, path);
+            let mut on = 1i32.to_le_bytes();
+            let err = sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on)
+                .unwrap_err();
+            assert_eq!(err, Errno::ENOTTY, "EVIOCGRAB must be rejected");
+            let mut off = 0i32.to_le_bytes();
+            let err = sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off)
+                .unwrap_err();
+            assert_eq!(err, Errno::ENOTTY, "EVIOCGRAB(0) must be rejected too");
+        }
     }
 
     #[test]
-    fn evioc_grab_twice_from_same_fd_is_idempotent() {
-        use wasm_posix_shared::input::EVIOCGRAB;
-        let (mut proc, mut host, fd) = open_evdev(612, b"/dev/input/event0");
-        let mut on = 1i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on).unwrap();
-        let mut on2 = 1i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on2).unwrap();
-    }
-
-    #[test]
-    fn evioc_grab_release_without_prior_grab_is_a_noop() {
-        use wasm_posix_shared::input::EVIOCGRAB;
-        let (mut proc, mut host, fd) = open_evdev(613, b"/dev/input/event0");
-        let mut off = 0i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
-    }
-
-    #[test]
-    fn close_releases_grab_so_next_open_can_grab() {
-        use wasm_posix_shared::input::EVIOCGRAB;
+    fn close_then_reopen_gives_a_fresh_ring() {
         let (mut proc, mut host, fd_a) = open_evdev(616, b"/dev/input/event0");
         let idx_a = proc.fd_table.get(fd_a).unwrap().ofd_ref.0;
-        let mut on = 1i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd_a, EVIOCGRAB, &mut on).unwrap();
-        assert!(proc.ofd_table.get(idx_a).unwrap().input().unwrap().grabbed);
 
         sys_close(&mut proc, &mut host, fd_a).unwrap();
         assert!(proc.ofd_table.get(idx_a).is_none());
@@ -45646,25 +45674,19 @@ mod tests {
         .unwrap();
         let idx_b = proc.fd_table.get(fd_b).unwrap().ofd_ref.0;
         let input = proc.ofd_table.get(idx_b).unwrap().input().unwrap();
-        assert!(input.event_ring.is_empty());
-        assert!(!input.dropped);
-        assert!(!input.grabbed);
-        let mut on2 = 1i32.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd_b, EVIOCGRAB, &mut on2).unwrap();
-        assert!(proc.ofd_table.get(idx_b).unwrap().input().unwrap().grabbed);
+        assert!(input.ring.borrow().event_ring.is_empty());
+        assert!(!input.ring.borrow().dropped);
     }
 
     #[test]
-    fn fork_then_close_in_child_keeps_grab_on_parent() {
-        use wasm_posix_shared::input::{
-            EVIOCGRAB, EV_KEY, EV_SYN, KEY_A, SYN_REPORT,
-        };
+    fn fork_snapshot_copies_the_child_ring_and_close_leaves_parent_intact() {
+        // The standalone serialize/deserialize path has no live parent to
+        // relink from, so the child gets a point-in-time copy of the ring;
+        // closing the child's fd must not disturb the parent's ring.
+        use wasm_posix_shared::input::{EV_KEY, EV_SYN, KEY_A, SYN_REPORT};
         let (mut parent, mut host, parent_fd) =
             open_evdev(617, b"/dev/input/event0");
         let ofd_idx = parent.fd_table.get(parent_fd).unwrap().ofd_ref.0;
-        let mut on = 1i32.to_le_bytes();
-        sys_ioctl(&mut parent, &mut host, parent_fd, EVIOCGRAB, &mut on)
-            .unwrap();
         push_event_into_ofd(&mut parent, ofd_idx, EV_KEY, KEY_A, 1);
         push_event_into_ofd(&mut parent, ofd_idx, EV_SYN, SYN_REPORT, 0);
 
@@ -45676,16 +45698,14 @@ mod tests {
 
         let child_input = child.ofd_table.get(ofd_idx).unwrap().input().unwrap();
         assert_eq!(child_input.device, 0);
-        assert!(child_input.grabbed);
-        assert_eq!(child_input.event_ring.len(), 48);
+        assert_eq!(child_input.ring.borrow().event_ring.len(), 48);
 
         sys_close(&mut child, &mut host, parent_fd).unwrap();
         assert!(child.ofd_table.get(ofd_idx).is_none());
 
         let parent_input =
             parent.ofd_table.get(ofd_idx).unwrap().input().unwrap();
-        assert!(parent_input.grabbed);
-        assert_eq!(parent_input.event_ring.len(), 48);
+        assert_eq!(parent_input.ring.borrow().event_ring.len(), 48);
     }
 
     #[test]
@@ -45735,8 +45755,9 @@ mod tests {
             value,
         };
         let bytes: [u8; 24] = unsafe { core::mem::transmute(ev) };
+        let mut ring = input.ring.borrow_mut();
         for b in bytes {
-            input.event_ring.push_back(b);
+            ring.event_ring.push_back(b);
         }
     }
 
@@ -45779,7 +45800,7 @@ mod tests {
         assert_eq!((r1.ev_type, r1.code, r1.value), (EV_SYN, SYN_REPORT, 0));
         assert_eq!((r2.ev_type, r2.code, r2.value), (EV_KEY, KEY_A, 0));
         let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
-        assert!(input.event_ring.is_empty());
+        assert!(input.ring.borrow().event_ring.is_empty());
     }
 
     #[test]
@@ -45799,7 +45820,7 @@ mod tests {
         assert_eq!(r0.value, 0);
         assert_eq!(r1.value, 1);
         let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
-        assert_eq!(input.event_ring.len(), 24);
+        assert_eq!(input.ring.borrow().event_ring.len(), 24);
         let mut buf2 = [0u8; 24];
         let n2 = sys_read(&mut proc, &mut host, fd, &mut buf2).unwrap();
         assert_eq!(n2, 24);
@@ -45814,8 +45835,10 @@ mod tests {
         proc.ofd_table
             .get_mut(ofd_idx)
             .unwrap()
-            .input_mut()
+            .input()
             .unwrap()
+            .ring
+            .borrow_mut()
             .dropped = true;
         let mut buf = [0u8; 24];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
@@ -45825,7 +45848,7 @@ mod tests {
         assert_eq!(synth.code, SYN_DROPPED);
         assert_eq!(synth.value, 0);
         let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
-        assert!(!input.dropped, "dropped flag must clear after SYN_DROPPED emit");
+        assert!(!input.ring.borrow().dropped, "dropped flag must clear after SYN_DROPPED emit");
     }
 
     #[test]
@@ -45840,8 +45863,10 @@ mod tests {
         proc.ofd_table
             .get_mut(ofd_idx)
             .unwrap()
-            .input_mut()
+            .input()
             .unwrap()
+            .ring
+            .borrow_mut()
             .dropped = true;
         let mut buf = [0u8; 72];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
@@ -45853,8 +45878,8 @@ mod tests {
         assert_eq!((r1.ev_type, r1.code, r1.value), (EV_KEY, KEY_A, 100));
         assert_eq!((r2.ev_type, r2.code, r2.value), (EV_KEY, KEY_A, 101));
         let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
-        assert!(!input.dropped);
-        assert!(input.event_ring.is_empty());
+        assert!(!input.ring.borrow().dropped);
+        assert!(input.ring.borrow().event_ring.is_empty());
     }
 
     #[test]
@@ -45903,8 +45928,10 @@ mod tests {
         proc.ofd_table
             .get_mut(ofd_idx)
             .unwrap()
-            .input_mut()
+            .input()
             .unwrap()
+            .ring
+            .borrow_mut()
             .dropped = true;
         let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
         let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();

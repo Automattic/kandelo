@@ -3,7 +3,7 @@
 //!   * `set_build_commit` stamps `[build].commit` with the SHA of the
 //!     building commit when a source build is published. If the
 //!     manifest has no `[build]` block (third-party packages, or
-//!     first-party packages without a build script — kernel, userspace,
+//!     first-party packages without a build script — kernel,
 //!     examples, node, sqlite-cli, pcre2-source), the writeback is a
 //!     silent no-op. We never *create* a `[build]` block; that would
 //!     change the manifest's shape and is a maintainer-only operation.

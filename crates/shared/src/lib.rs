@@ -110,7 +110,14 @@ pub mod process_layout;
 ///     completions consumed outside libc's post-syscall trampoline. OSS PCM
 ///     ioctl transfers use request-sized arguments, `/dev/dsp` descriptors
 ///     share a refcounted stream across fork and exec, and the host consumes a
-///     versioned bounded transport paced by the audio clock.
+///     versioned bounded transport paced by the audio clock. evdev
+///     `/dev/input/event{0,1}` join the kernel device surface additively: the
+///     kernel gains the `kernel_input_event` and `kernel_set_input_canvas_dims`
+///     exports and the `E`-magic `EVIOC*` ioctl family, and — like `/dev/dsp` —
+///     shares one refcounted event ring per open file description across `dup`,
+///     `fork`, and `exec` so a buffered record is delivered once rather than
+///     duplicated into each descendant. These are new surfaces, not changes to
+///     existing 43 contracts, so they ride ABI 43.
 pub const ABI_VERSION: u32 = 43;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -5219,6 +5226,201 @@ pub mod input {
     pub const ABS_X: u16 = 0x00;
     pub const ABS_Y: u16 = 0x01;
 
+    /// Canonical `(name, value)` index of every evdev event-type / SYN /
+    /// KEY / BTN / REL / ABS code above. The individual `pub const`s
+    /// remain the sole source of truth for the values; this table only
+    /// enumerates them so `cargo xtask dump-abi` can emit them into the
+    /// generated ABI (`host/src/generated/abi.ts` `INPUT_CODES`). The
+    /// browser input translator imports those codes instead of
+    /// hand-redeclaring them, so a code renumber here cannot silently
+    /// leave the host emitting a stale value. `code_table_matches_consts`
+    /// gates name/value coverage.
+    pub const CODE_TABLE: &[(&str, u16)] = &[
+        ("EV_SYN", EV_SYN),
+        ("EV_KEY", EV_KEY),
+        ("EV_REL", EV_REL),
+        ("EV_ABS", EV_ABS),
+        ("EV_MSC", EV_MSC),
+        ("SYN_REPORT", SYN_REPORT),
+        ("SYN_DROPPED", SYN_DROPPED),
+        ("KEY_RESERVED", KEY_RESERVED),
+        ("KEY_ESC", KEY_ESC),
+        ("KEY_1", KEY_1),
+        ("KEY_2", KEY_2),
+        ("KEY_3", KEY_3),
+        ("KEY_4", KEY_4),
+        ("KEY_5", KEY_5),
+        ("KEY_6", KEY_6),
+        ("KEY_7", KEY_7),
+        ("KEY_8", KEY_8),
+        ("KEY_9", KEY_9),
+        ("KEY_0", KEY_0),
+        ("KEY_MINUS", KEY_MINUS),
+        ("KEY_EQUAL", KEY_EQUAL),
+        ("KEY_BACKSPACE", KEY_BACKSPACE),
+        ("KEY_TAB", KEY_TAB),
+        ("KEY_Q", KEY_Q),
+        ("KEY_W", KEY_W),
+        ("KEY_E", KEY_E),
+        ("KEY_R", KEY_R),
+        ("KEY_T", KEY_T),
+        ("KEY_Y", KEY_Y),
+        ("KEY_U", KEY_U),
+        ("KEY_I", KEY_I),
+        ("KEY_O", KEY_O),
+        ("KEY_P", KEY_P),
+        ("KEY_LEFTBRACE", KEY_LEFTBRACE),
+        ("KEY_RIGHTBRACE", KEY_RIGHTBRACE),
+        ("KEY_ENTER", KEY_ENTER),
+        ("KEY_LEFTCTRL", KEY_LEFTCTRL),
+        ("KEY_A", KEY_A),
+        ("KEY_S", KEY_S),
+        ("KEY_D", KEY_D),
+        ("KEY_F", KEY_F),
+        ("KEY_G", KEY_G),
+        ("KEY_H", KEY_H),
+        ("KEY_J", KEY_J),
+        ("KEY_K", KEY_K),
+        ("KEY_L", KEY_L),
+        ("KEY_SEMICOLON", KEY_SEMICOLON),
+        ("KEY_APOSTROPHE", KEY_APOSTROPHE),
+        ("KEY_GRAVE", KEY_GRAVE),
+        ("KEY_LEFTSHIFT", KEY_LEFTSHIFT),
+        ("KEY_BACKSLASH", KEY_BACKSLASH),
+        ("KEY_Z", KEY_Z),
+        ("KEY_X", KEY_X),
+        ("KEY_C", KEY_C),
+        ("KEY_V", KEY_V),
+        ("KEY_B", KEY_B),
+        ("KEY_N", KEY_N),
+        ("KEY_M", KEY_M),
+        ("KEY_COMMA", KEY_COMMA),
+        ("KEY_DOT", KEY_DOT),
+        ("KEY_SLASH", KEY_SLASH),
+        ("KEY_RIGHTSHIFT", KEY_RIGHTSHIFT),
+        ("KEY_KPASTERISK", KEY_KPASTERISK),
+        ("KEY_LEFTALT", KEY_LEFTALT),
+        ("KEY_SPACE", KEY_SPACE),
+        ("KEY_CAPSLOCK", KEY_CAPSLOCK),
+        ("KEY_F1", KEY_F1),
+        ("KEY_F2", KEY_F2),
+        ("KEY_F3", KEY_F3),
+        ("KEY_F4", KEY_F4),
+        ("KEY_F5", KEY_F5),
+        ("KEY_F6", KEY_F6),
+        ("KEY_F7", KEY_F7),
+        ("KEY_F8", KEY_F8),
+        ("KEY_F9", KEY_F9),
+        ("KEY_F10", KEY_F10),
+        ("KEY_NUMLOCK", KEY_NUMLOCK),
+        ("KEY_SCROLLLOCK", KEY_SCROLLLOCK),
+        ("KEY_KP7", KEY_KP7),
+        ("KEY_KP8", KEY_KP8),
+        ("KEY_KP9", KEY_KP9),
+        ("KEY_KPMINUS", KEY_KPMINUS),
+        ("KEY_KP4", KEY_KP4),
+        ("KEY_KP5", KEY_KP5),
+        ("KEY_KP6", KEY_KP6),
+        ("KEY_KPPLUS", KEY_KPPLUS),
+        ("KEY_KP1", KEY_KP1),
+        ("KEY_KP2", KEY_KP2),
+        ("KEY_KP3", KEY_KP3),
+        ("KEY_KP0", KEY_KP0),
+        ("KEY_KPDOT", KEY_KPDOT),
+        ("KEY_ZENKAKUHANKAKU", KEY_ZENKAKUHANKAKU),
+        ("KEY_102ND", KEY_102ND),
+        ("KEY_F11", KEY_F11),
+        ("KEY_F12", KEY_F12),
+        ("KEY_RO", KEY_RO),
+        ("KEY_KATAKANA", KEY_KATAKANA),
+        ("KEY_HIRAGANA", KEY_HIRAGANA),
+        ("KEY_HENKAN", KEY_HENKAN),
+        ("KEY_KATAKANAHIRAGANA", KEY_KATAKANAHIRAGANA),
+        ("KEY_MUHENKAN", KEY_MUHENKAN),
+        ("KEY_KPJPCOMMA", KEY_KPJPCOMMA),
+        ("KEY_KPENTER", KEY_KPENTER),
+        ("KEY_RIGHTCTRL", KEY_RIGHTCTRL),
+        ("KEY_KPSLASH", KEY_KPSLASH),
+        ("KEY_SYSRQ", KEY_SYSRQ),
+        ("KEY_RIGHTALT", KEY_RIGHTALT),
+        ("KEY_LINEFEED", KEY_LINEFEED),
+        ("KEY_HOME", KEY_HOME),
+        ("KEY_UP", KEY_UP),
+        ("KEY_PAGEUP", KEY_PAGEUP),
+        ("KEY_LEFT", KEY_LEFT),
+        ("KEY_RIGHT", KEY_RIGHT),
+        ("KEY_END", KEY_END),
+        ("KEY_DOWN", KEY_DOWN),
+        ("KEY_PAGEDOWN", KEY_PAGEDOWN),
+        ("KEY_INSERT", KEY_INSERT),
+        ("KEY_DELETE", KEY_DELETE),
+        ("KEY_MACRO", KEY_MACRO),
+        ("KEY_MUTE", KEY_MUTE),
+        ("KEY_VOLUMEDOWN", KEY_VOLUMEDOWN),
+        ("KEY_VOLUMEUP", KEY_VOLUMEUP),
+        ("KEY_POWER", KEY_POWER),
+        ("KEY_KPEQUAL", KEY_KPEQUAL),
+        ("KEY_KPPLUSMINUS", KEY_KPPLUSMINUS),
+        ("KEY_PAUSE", KEY_PAUSE),
+        ("KEY_SCALE", KEY_SCALE),
+        ("KEY_KPCOMMA", KEY_KPCOMMA),
+        ("KEY_HANGEUL", KEY_HANGEUL),
+        ("KEY_HANJA", KEY_HANJA),
+        ("KEY_YEN", KEY_YEN),
+        ("KEY_LEFTMETA", KEY_LEFTMETA),
+        ("KEY_RIGHTMETA", KEY_RIGHTMETA),
+        ("KEY_COMPOSE", KEY_COMPOSE),
+        ("KEY_STOP", KEY_STOP),
+        ("KEY_AGAIN", KEY_AGAIN),
+        ("KEY_PROPS", KEY_PROPS),
+        ("KEY_UNDO", KEY_UNDO),
+        ("KEY_FRONT", KEY_FRONT),
+        ("KEY_COPY", KEY_COPY),
+        ("KEY_OPEN", KEY_OPEN),
+        ("KEY_PASTE", KEY_PASTE),
+        ("KEY_FIND", KEY_FIND),
+        ("KEY_CUT", KEY_CUT),
+        ("KEY_HELP", KEY_HELP),
+        ("KEY_MENU", KEY_MENU),
+        ("KEY_CALC", KEY_CALC),
+        ("KEY_SLEEP", KEY_SLEEP),
+        ("KEY_WAKEUP", KEY_WAKEUP),
+        ("KEY_PLAYPAUSE", KEY_PLAYPAUSE),
+        ("KEY_PREVIOUSSONG", KEY_PREVIOUSSONG),
+        ("KEY_STOPCD", KEY_STOPCD),
+        ("KEY_NEXTSONG", KEY_NEXTSONG),
+        ("KEY_EJECTCD", KEY_EJECTCD),
+        ("KEY_REFRESH", KEY_REFRESH),
+        ("KEY_F13", KEY_F13),
+        ("KEY_F14", KEY_F14),
+        ("KEY_F15", KEY_F15),
+        ("KEY_F16", KEY_F16),
+        ("KEY_F17", KEY_F17),
+        ("KEY_F18", KEY_F18),
+        ("KEY_F19", KEY_F19),
+        ("KEY_F20", KEY_F20),
+        ("KEY_F21", KEY_F21),
+        ("KEY_F22", KEY_F22),
+        ("KEY_F23", KEY_F23),
+        ("KEY_F24", KEY_F24),
+        ("KEY_PLAYCD", KEY_PLAYCD),
+        ("KEY_PAUSECD", KEY_PAUSECD),
+        ("KEY_BRIGHTNESSDOWN", KEY_BRIGHTNESSDOWN),
+        ("KEY_BRIGHTNESSUP", KEY_BRIGHTNESSUP),
+        ("KEY_MICMUTE", KEY_MICMUTE),
+        ("BTN_LEFT", BTN_LEFT),
+        ("BTN_RIGHT", BTN_RIGHT),
+        ("BTN_MIDDLE", BTN_MIDDLE),
+        ("BTN_SIDE", BTN_SIDE),
+        ("BTN_EXTRA", BTN_EXTRA),
+        ("REL_X", REL_X),
+        ("REL_Y", REL_Y),
+        ("REL_HWHEEL", REL_HWHEEL),
+        ("REL_WHEEL", REL_WHEEL),
+        ("ABS_X", ABS_X),
+        ("ABS_Y", ABS_Y),
+    ];
+
     // --- BUS_* constants (subset) ----------------------------------------
 
     /// `BUS_VIRTUAL` = 0x06 — closest match for a kernel-synthesised
@@ -5707,6 +5909,42 @@ mod input_tests {
         assert_eq!((&e.ev_type as *const _ as usize) - base, 16);
         assert_eq!((&e.code as *const _ as usize) - base, 18);
         assert_eq!((&e.value as *const _ as usize) - base, 20);
+    }
+
+    #[test]
+    fn code_table_matches_consts() {
+        // Every entry's value is its named const (referencing the const
+        // directly makes this trivially true, but it also proves the
+        // table compiles against the live const set — a renamed const
+        // breaks the build here, not silently in the browser).
+        for (name, value) in CODE_TABLE {
+            match *name {
+                "EV_KEY" => assert_eq!(*value, EV_KEY),
+                "KEY_A" => assert_eq!(*value, KEY_A),
+                "BTN_LEFT" => assert_eq!(*value, BTN_LEFT),
+                "REL_WHEEL" => assert_eq!(*value, REL_WHEEL),
+                "SYN_REPORT" => assert_eq!(*value, SYN_REPORT),
+                _ => {}
+            }
+        }
+        // No duplicate names (nested scan; the table is small).
+        for (i, (a, _)) in CODE_TABLE.iter().enumerate() {
+            for (b, _) in &CODE_TABLE[i + 1..] {
+                assert!(a != b, "duplicate CODE_TABLE entry: {a}");
+            }
+        }
+        // Anchors the browser input translator and key-code table depend
+        // on must all be present.
+        for required in [
+            "EV_SYN", "EV_KEY", "EV_REL", "EV_ABS", "SYN_REPORT", "REL_X", "REL_Y",
+            "REL_WHEEL", "REL_HWHEEL", "ABS_X", "ABS_Y", "BTN_LEFT", "BTN_RIGHT",
+            "BTN_MIDDLE", "KEY_A", "KEY_Z", "KEY_F1", "KEY_MICMUTE",
+        ] {
+            assert!(
+                CODE_TABLE.iter().any(|(n, _)| *n == required),
+                "CODE_TABLE missing {required}"
+            );
+        }
     }
 
     #[test]

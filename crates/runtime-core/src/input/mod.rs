@@ -235,17 +235,14 @@ mod tests {
     fn keystate_press_sets_bit_release_clears_it() {
         reset_key_state();
         let mut buf = [0u8; KEYSTATE_BYTES];
-        // Nothing pressed yet.
         copy_key_state(0, &mut buf);
         let a_byte = (KEY_A >> 3) as usize;
         let a_mask = 1u8 << (KEY_A & 7);
         assert_eq!(buf[a_byte] & a_mask, 0);
-        // Press → bit set.
         note_key_event(0, KEY_A, 1);
         buf = [0u8; KEYSTATE_BYTES];
         copy_key_state(0, &mut buf);
         assert_ne!(buf[a_byte] & a_mask, 0);
-        // Release → bit cleared.
         note_key_event(0, KEY_A, 0);
         buf = [0u8; KEYSTATE_BYTES];
         copy_key_state(0, &mut buf);
@@ -268,7 +265,6 @@ mod tests {
     #[test]
     fn keystate_is_per_device_keyboard_and_pointer_are_disjoint() {
         reset_key_state();
-        // A button press on the pointer must not show on the keyboard.
         note_key_event(1, BTN_LEFT, 1);
         let mut kbd = [0u8; KEYSTATE_BYTES];
         let mut ptr = [0u8; KEYSTATE_BYTES];

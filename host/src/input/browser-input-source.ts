@@ -8,58 +8,73 @@
  * Coordinate convention:
  *   - Pointer-lock active   → REL_X / REL_Y deltas (from movementX/Y).
  *   - Pointer-lock inactive → REL_X / REL_Y deltas derived from the
- *     change in absolute window position (offsetX/Y minus the previous
- *     offset).
+ *     change in absolute viewport position (clientX/Y minus the previous
+ *     clientX/Y).
  *   Both branches emit *relative* motion because `/dev/input/event1`
  *   advertises REL_X/REL_Y: SDL2's evdev backend classifies it as a
  *   relative mouse and ignores EV_ABS entirely (see the PEG note in
  *   web-libs/kandelo-session kernel-host.ts). Emitting EV_ABS here would
- *   silently produce no motion.
+ *   silently produce no motion. The device still advertises ABS_X/Y with
+ *   canvas maxima for callers that read EVIOCGABS bounds, which is why the
+ *   resize hook below keeps those maxima current.
  *   The absolute→delta baseline is cleared on a pointer-lock transition
  *   and when the pointer leaves the target, so re-entry never reports a
  *   phantom jump. On a lock transition we also emit a bare SYN_REPORT so
  *   SDL2 sees a re-sync point and doesn't carry a stale axis value.
+ *
+ * Event-type / SYN / REL / BTN codes come from the generated ABI
+ * (`INPUT_CODES`), sourced from `shared::input`, so a code renumber in
+ * the kernel cannot silently leave this translator emitting a stale
+ * value.
  */
 import type { InputSource, InputEvent } from "./input-source.js";
+import { INPUT_CODES } from "../generated/abi.js";
 import { codeToKey } from "./key-code-table.js";
 
-const EV_SYN = 0x00,
-  EV_KEY = 0x01,
-  EV_REL = 0x02;
-const SYN_REPORT = 0x00;
-const REL_X = 0x00,
-  REL_Y = 0x01,
-  REL_WHEEL = 0x08,
-  REL_HWHEEL = 0x06;
-const BTN_LEFT = 0x110,
-  BTN_RIGHT = 0x111,
-  BTN_MIDDLE = 0x112;
+const {
+  EV_SYN,
+  EV_KEY,
+  EV_REL,
+  SYN_REPORT,
+  REL_X,
+  REL_Y,
+  REL_WHEEL,
+  REL_HWHEEL,
+  BTN_LEFT,
+  BTN_RIGHT,
+  BTN_MIDDLE,
+} = INPUT_CODES;
 
 export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
   private bindings: Array<[EventTarget, string, EventListener]> = [];
-  // Previous absolute pointer position (rounded), used to derive REL
-  // deltas outside pointer lock. `null` means "no baseline yet" — the
+  // Previous absolute pointer position (rounded clientX/Y), used to derive
+  // REL deltas outside pointer lock. `null` means "no baseline yet" — the
   // next non-lock move only re-establishes it and emits no motion.
   private lastAbsX: number | null = null;
   private lastAbsY: number | null = null;
 
   /**
    * @param target  Event source to bind to (defaults to `window`).
-   * @param opts.pointer  When `false`, the pointer-motion/button handlers
+   * @param opts.pointer  When `false`, the pointer motion/button handlers
    *   are not bound. Used when another surface owns the pointer feed (e.g.
-   *   the kandelo Modeset pane injects framebuffer-absolute coordinates
-   *   into `/dev/input/event1` itself, and a second window-relative feed
-   *   here would fight it).
-   * @param opts.wheel  Overrides whether the wheel handler is bound.
-   *   Defaults to following `pointer`. Wheel events are `REL_WHEEL` and do
-   *   NOT carry absolute coordinates, so they don't conflict with a pane
-   *   that owns absolute positioning — `{ pointer: false, wheel: true }`
-   *   lets that pane keep the pointer while the wheel still scrolls.
+   *   the Modeset pane injects framebuffer-positioned pointer events into
+   *   `/dev/input/event1` itself, and a second window feed would fight it).
+   * @param opts.wheel  Overrides whether the wheel handler is bound;
+   *   defaults to following `pointer`. Wheel events are REL_WHEEL and carry
+   *   no absolute coordinates, so `{ pointer: false, wheel: true }` lets a
+   *   pane keep the pointer while the wheel still scrolls.
+   * @param opts.onResize  Invoked on window resize so the caller can
+   *   re-publish the canvas dims to the kernel (EVIOCGABS maxima). Rides the
+   *   `bindings` list, so stop() removes it — no leaked resize listener.
    */
   constructor(
     private target: EventTarget = window,
-    private opts: { pointer?: boolean; wheel?: boolean } = {},
+    private opts: {
+      pointer?: boolean;
+      wheel?: boolean;
+      onResize?: () => void;
+    } = {},
   ) {}
 
   start(dispatch: (ev: InputEvent) => void): void {
@@ -72,8 +87,12 @@ export class BrowserInputSource implements InputSource {
       this.bind("pointerup", this.onPointerUp);
       this.bind("pointerleave", this.onPointerLeave);
     }
+    if (this.opts.onResize) this.bind("resize", this.onWindowResize);
+    // `wheel` listeners default to passive on window/document, which makes
+    // onWheel's e.preventDefault() a silent no-op (the page scrolls while we
+    // also inject REL_WHEEL). Register it non-passive so preventDefault works.
     if (this.opts.wheel ?? this.opts.pointer !== false) {
-      this.bind("wheel", this.onWheel);
+      this.bind("wheel", this.onWheel, { passive: false });
     }
     // `pointerlockchange` only fires on document, never on window — so
     // it can't go through this.bind which is parametric over `target`.
@@ -89,9 +108,13 @@ export class BrowserInputSource implements InputSource {
     this.dispatch = null;
   }
 
-  private bind(name: string, handler: (e: any) => void) {
+  private bind(
+    name: string,
+    handler: (e: any) => void,
+    options?: AddEventListenerOptions,
+  ) {
     const wrapped = handler.bind(this);
-    this.target.addEventListener(name, wrapped as EventListener);
+    this.target.addEventListener(name, wrapped as EventListener, options);
     this.bindings.push([this.target, name, wrapped as EventListener]);
   }
 
@@ -101,7 +124,11 @@ export class BrowserInputSource implements InputSource {
     code: number,
     value: number,
   ): void {
-    this.dispatch!({ device, ev_type, code, value });
+    // A DOM event already queued when stop() runs can still fire its
+    // listener after dispatch was nulled and before removeEventListener
+    // unwinds; drop it rather than call null.
+    if (!this.dispatch) return;
+    this.dispatch({ device, ev_type, code, value });
   }
 
   private frame(device: 0 | 1): void {
@@ -109,19 +136,23 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onPointerLockChange(): void {
-    // The absolute→delta baseline is meaningless across a lock
-    // transition (offset vs movement coordinate spaces differ), so drop
-    // it; the next non-lock move re-establishes it.
+    // The absolute→delta baseline is meaningless across a lock transition
+    // (clientX/Y vs movementX/Y coordinate spaces differ), so drop it; the
+    // next non-lock move re-establishes it.
     this.lastAbsX = null;
     this.lastAbsY = null;
     this.frame(1);
   }
 
   private onPointerLeave(): void {
-    // Forget the baseline so a re-entry elsewhere in the window doesn't
+    // Forget the baseline so a re-entry elsewhere in the viewport doesn't
     // report the gap as one large motion delta.
     this.lastAbsX = null;
     this.lastAbsY = null;
+  }
+
+  private onWindowResize(): void {
+    this.opts.onResize?.();
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -146,9 +177,11 @@ export class BrowserInputSource implements InputSource {
       if (e.movementY !== 0) this.emit(1, EV_REL, REL_Y, e.movementY);
     } else {
       // event1 is a relative device to SDL, so convert the absolute
-      // window position into a delta from the last position.
-      const x = Math.round(e.offsetX);
-      const y = Math.round(e.offsetY);
+      // viewport position (clientX/Y — the same space as the EVIOCGABS
+      // maxima) into a delta from the last position. offsetX/offsetY would
+      // be element-relative and unrelated to that axis range.
+      const x = Math.round(e.clientX);
+      const y = Math.round(e.clientY);
       if (this.lastAbsX !== null && this.lastAbsY !== null) {
         const dx = x - this.lastAbsX;
         const dy = y - this.lastAbsY;
@@ -177,16 +210,17 @@ export class BrowserInputSource implements InputSource {
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
-    // Browser deltaMode quanta: 0 = PIXEL (Safari ±1–10, Chromium
-    // ±100/±120 per notch), 1 = LINE (Firefox, ±3 per notch). Divide
-    // by the mode-specific scale, then clamp small-but-nonzero deltas
-    // to ±1 so a continuous-trackpad scroll still emits at least one
-    // tick (otherwise Math.trunc(0.3 / 120) = 0 and the entire scroll
-    // event disappears).
-    const scaleY = e.deltaMode === 1 ? 1 : 120;
-    const scaleX = e.deltaMode === 1 ? 1 : 120;
-    let ticks_y = Math.trunc(e.deltaY / -scaleY);
-    let ticks_x = Math.trunc(e.deltaX / scaleX);
+    // Browser deltaMode quanta, normalised to ~1 detent per physical notch:
+    //   0 = PIXEL (Chromium ±100/±120, Safari ±1–10 per notch) → ÷120
+    //   1 = LINE  (Firefox, ±3 lines per notch)                → ÷3
+    //   2 = PAGE  (±1 page per notch)                          → ÷120 = 0,
+    //             rescued by the ±1 clamp below.
+    // Then clamp small-but-nonzero deltas to ±1 so a continuous-trackpad
+    // scroll still emits at least one tick (otherwise Math.trunc(0.3/120)=0
+    // and the entire scroll event disappears).
+    const scale = e.deltaMode === 1 ? 3 : 120;
+    let ticks_y = Math.trunc(e.deltaY / -scale);
+    let ticks_x = Math.trunc(e.deltaX / scale);
     if (ticks_y === 0 && e.deltaY !== 0) ticks_y = e.deltaY < 0 ? 1 : -1;
     if (ticks_x === 0 && e.deltaX !== 0) ticks_x = e.deltaX > 0 ? 1 : -1;
     if (ticks_y !== 0) this.emit(1, EV_REL, REL_WHEEL, ticks_y);

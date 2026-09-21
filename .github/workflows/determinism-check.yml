@@ -1,0 +1,68 @@
+name: Determinism check
+
+# Discover non-reproducible package builds by building the project twice with
+# the incidental environment varied (build path, wall clock, hostname) and
+# diffing the outputs. Detection only — it never fixes anything; a failing
+# run means a package bakes in a timestamp, an absolute path, or other
+# non-declared state, which is the #1339 class of intermittent build failure.
+#
+# The implementation is Rust (`xtask check-determinism`, run via
+# scripts/check-determinism.sh). This performs TWO full builds, so it is heavy
+# and runs on a daily schedule rather than per-PR. It is dormant until a
+# capable self-hosted/GitHub runner is available; enabling CI is enough to
+# activate it.
+
+on:
+  schedule:
+    # Daily at 06:17 UTC (off the top of the hour to avoid scheduler spikes).
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: determinism-check
+  cancel-in-progress: false
+
+jobs:
+  determinism:
+    name: Build twice and diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Warm Nix dev shell
+        run: bash scripts/dev-shell.sh true
+
+      - name: Provision toolchain and sysroots
+        run: bash scripts/dev-shell.sh bash -c './run.sh setup'
+
+      - name: Run determinism check
+        id: check
+        continue-on-error: true
+        run: bash scripts/check-determinism.sh --report determinism-report.txt
+
+      - name: Upload determinism report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: determinism-report
+          path: determinism-report.txt
+          if-no-files-found: warn
+
+      - name: Fail if non-reproducible builds were found
+        if: steps.check.outcome != 'success'
+        run: |
+          echo "::error::Non-reproducible package build(s) detected." \
+               "See the determinism-report artifact for the per-file diff."
+          exit 1

@@ -712,10 +712,15 @@ fn write_dri_state(
     }
 }
 
-/// Serialise the evdev sidecar across a fork/exec. The ring is copied
-/// byte-for-byte; the child inherits the parent's grab + dropped flag.
-/// `EVIOCGRAB` is per-OFD in Linux, so each side of the fork ends up
-/// with its own copy of the InputFdState.
+/// Serialise the evdev sidecar across a fork/exec. The ring contents and
+/// dropped latch are captured as a point-in-time snapshot so a standalone
+/// deserialize (no live parent to relink from) still reconstructs a usable
+/// ring. For a same-machine fork the child's ring is immediately re-shared
+/// with the parent's live handle by
+/// [`crate::ofd::OfdTable::link_shared_states_from`] — the snapshot is
+/// then discarded, exactly as the serialized file offset is. Linux backs
+/// a forked `struct file` with one shared `struct evdev_client`, so
+/// parent and child observe a single ring.
 fn write_input_state(
     w: &mut Writer<'_>,
     state: Option<&crate::ofd::InputFdState>,
@@ -723,12 +728,12 @@ fn write_input_state(
     let Some(input) = state else {
         return w.write_u8(INPUT_TAG_NONE);
     };
+    let ring = input.ring.borrow();
     w.write_u8(INPUT_TAG_SOME)?;
     w.write_u8(input.device)?;
-    w.write_u8(input.grabbed as u8)?;
-    w.write_u8(input.dropped as u8)?;
-    w.write_u32(input.event_ring.len() as u32)?;
-    for &b in input.event_ring.iter() {
+    w.write_u8(ring.dropped as u8)?;
+    w.write_u32(ring.event_ring.len() as u32)?;
+    for &b in ring.event_ring.iter() {
         w.write_u8(b)?;
     }
     Ok(())
@@ -825,7 +830,6 @@ fn read_input_state(
         INPUT_TAG_NONE => Ok(None),
         INPUT_TAG_SOME => {
             let device = r.read_u8()?;
-            let grabbed = r.read_u8()? != 0;
             let dropped = r.read_u8()? != 0;
             let ring_len = r.read_u32()? as usize;
             // The ring is always whole 24-byte records and bounded at
@@ -844,9 +848,10 @@ fn read_input_state(
             }
             Ok(Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
                 device,
-                event_ring,
-                grabbed,
-                dropped,
+                ring: crate::ofd::SharedInputRing::from_ring(crate::ofd::InputRing {
+                    event_ring,
+                    dropped,
+                }),
             })))
         }
         _ => Err(Errno::EINVAL),
@@ -993,7 +998,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // DRI sidecar — `preserve_master = false` because the master
         // lease must drop on fork (only one process may hold it).
         write_dri_state(&mut w, ofd.dri_state.as_deref(), false)?;
-        // evdev sidecar — child inherits the per-OFD ring + grab.
+        // evdev sidecar — child inherits the per-OFD ring.
         write_input_state(&mut w, ofd.input_state.as_deref())?;
         // ALSA sidecars — child inherits the PCM state machine snapshot
         // and the controlC0 card binding. The SAB registry is global by
@@ -1831,7 +1836,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // the same process identity and any inherited card0 OFD
         // legitimately retains its KMS lease across the image swap.
         write_dri_state(&mut w, ofd.dri_state.as_deref(), true)?;
-        // evdev sidecar — exec keeps the per-OFD ring + grab (the OFD
+        // evdev sidecar — exec keeps the per-OFD ring (the OFD
         // survives the image swap; CLOEXEC is handled by the fd table,
         // not the OFD).
         write_input_state(&mut w, ofd.input_state.as_deref())?;

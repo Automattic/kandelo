@@ -76,6 +76,10 @@ name = "espeak-ng"
 class = "user-software"
 
 [[packages]]
+name = "evdev-demo"
+class = "user-software"
+
+[[packages]]
 name = "fbdoom"
 class = "user-software"
 
@@ -342,10 +346,6 @@ class = "user-software"
 [[packages]]
 name = "unzip"
 class = "user-software"
-
-[[packages]]
-name = "userspace"
-class = "platform"
 
 [[packages]]
 name = "vim"
