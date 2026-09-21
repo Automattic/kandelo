@@ -634,6 +634,14 @@ export interface CreateLiveHostOptions {
   inputs?: BootInput[] | null;
   /** Boot parameters from a #k1= boot link (e.g. `{ runScript: "script" }`). */
   parameters?: BootParameters | null;
+  /**
+   * True when the decoded #k1= link carried the removed top-level `script`
+   * field from before boot inputs were folded in. The decoder tolerates
+   * unknown fields, so such a link still boots, but its script is silently
+   * unmaterialized — this flag drives a visible dmesg warning so that
+   * silence isn't mistaken for the script having run.
+   */
+  legacyScriptIgnored?: boolean;
 }
 
 export async function createLiveHost(
@@ -775,6 +783,7 @@ export async function createLiveHost(
       host,
       profileForDescriptor(initialDescriptor, opts.fb),
       initialDescriptor,
+      opts.legacyScriptIgnored ?? false,
     );
   } else if (candidateVfsPlacement!.pagesLoad === null) {
     void activateProtectedProfile();
@@ -791,6 +800,7 @@ export async function createLiveHost(
     h: LiveKernelHost,
     profile: LiveProfile,
     descriptor: BootDescriptor,
+    legacyScriptIgnored = false,
   ): Promise<void> {
     const seq = ++bootSeq;
     const previousKernel = currentKernel;
@@ -813,6 +823,7 @@ export async function createLiveHost(
         bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
+        legacyScriptIgnored,
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -1157,9 +1168,13 @@ async function runLinkScript(
   tick("showing boot-link script in the terminal...");
   // Show the actual script contents in the terminal before running them —
   // the visitor sees exactly what the link asked their machine to execute.
-  await host.runShellCommand(`cat ${path}`);
+  // `path` is derived from the URL-carried input id, so it is double-quoted
+  // here even though the descriptor validator already restricts input ids
+  // and filenames to a safe character set — defense in depth against a
+  // future relaxation of that validation.
+  await host.runShellCommand(`cat "${path}"`);
   tick(`running boot-link script with ${interpreter}...`);
-  await host.runShellCommand(`${interpreter} ${path}`);
+  await host.runShellCommand(`${interpreter} "${path}"`);
 }
 
 async function bootProfile(
@@ -1171,6 +1186,7 @@ async function bootProfile(
   requireServiceWorker: (
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
+  legacyScriptIgnored = false,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1213,6 +1229,21 @@ async function bootProfile(
       msg,
     });
   };
+  if (legacyScriptIgnored) {
+    // The decoded #k1= link carried the removed top-level `script` field
+    // from before boot inputs were folded in. The decoder tolerates unknown
+    // fields (so old links still boot), but that field's script is never
+    // materialized or run. Say so loudly rather than silently dropping it —
+    // see docs/browser-support.md's script-carrying share links section.
+    host.pushDmesg({
+      t: bootElapsedMs(bootStartedAt),
+      level: "warn",
+      facility: "kandelo",
+      msg:
+        "this link was built for an older Kandelo: its embedded script " +
+        "field is no longer supported and was ignored",
+    });
+  }
   const webReadiness: WebReadinessState = {
     ready: false,
     probing: false,

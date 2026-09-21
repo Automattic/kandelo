@@ -123,7 +123,7 @@ describe("compressed inline boot inputs", () => {
 
     expect(writes.get("/run/kandelo/inputs/state/save.state")).toEqual(finalBytes);
     expect(modes.get("/run/kandelo/inputs/state/save.state")).toBe(0o755);
-    expect(modes.get(KANDELO_BOOT_INPUT_MANIFEST_PATH)).toBe(0o755);
+    expect(modes.get(KANDELO_BOOT_INPUT_MANIFEST_PATH)).toBe(0o644);
     expect(manifest.inputs[0]).toMatchObject({
       id: "state",
       byteLength: finalBytes.byteLength,

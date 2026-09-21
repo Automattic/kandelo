@@ -44,6 +44,8 @@ export const KANDELO_BOOT_INPUT_MANIFEST_PATH = "/run/kandelo/boot-input.json";
 
 /** Materialized files are left writable for in-place experimentation. */
 const MATERIALIZED_FILE_MODE = 0o755;
+/** The manifest is JSON content, not an executable; it never needs 0o755. */
+const MANIFEST_FILE_MODE = 0o644;
 
 export interface BootInputResolverContext {
   input: BootInput;
@@ -207,7 +209,7 @@ export async function materializeBootInputs(
     await options.writeFile(entry.manifest.path, entry.bytes, MATERIALIZED_FILE_MODE);
   }
   throwIfAborted(options.signal);
-  await options.writeFile(KANDELO_BOOT_INPUT_MANIFEST_PATH, manifestBytes, MATERIALIZED_FILE_MODE);
+  await options.writeFile(KANDELO_BOOT_INPUT_MANIFEST_PATH, manifestBytes, MANIFEST_FILE_MODE);
   return manifest;
 }
 

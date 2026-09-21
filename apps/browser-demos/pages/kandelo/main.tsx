@@ -50,6 +50,16 @@ void (async () => {
         );
       },
     );
+    // A pre-fold-in `#k1=` link could carry a top-level `script: { text }`
+    // field (superseded by `boot.inputs` + `boot.parameters.runScript`).
+    // decodeBootDescriptor tolerates unknown fields, so such a link still
+    // decodes and boots, but that script is never materialized or run.
+    // Detect it here so live-setup can surface a visible boot-log notice
+    // instead of silently dropping it.
+    const legacyScriptIgnored =
+      linkDescriptor !== null &&
+      typeof (linkDescriptor as { script?: unknown }).script !== "undefined";
+
     // WHY: the restored image owns its shell and optional runtime entries.
     // Keeping every demo on one assembler prevents a demo-specific overlay
     // from replacing immutable bottle-backed lazy files before serialization.
@@ -60,6 +70,7 @@ void (async () => {
         fb: fbDemo === "test" ? "test" : "none",
         inputs: linkDescriptor?.boot.inputs ?? null,
         parameters: linkDescriptor?.boot.parameters ?? null,
+        legacyScriptIgnored,
       }));
     mount(host);
   } catch (err) {
