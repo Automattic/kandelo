@@ -20,6 +20,16 @@
 // at all: the mapping is recovered by scanning the table and matching funcref
 // IDENTITY, not by trusting what this file passed in.
 //
+// A stand-in, SINCE THE PLACEMENT CUTOVER: the guest's emitted placement shim.
+// `registerActivation` now publishes the module's decision and hands the
+// guest its own `(ptr, count)`; `standInGuest` applies the records the way the
+// emitted wasm does. Everything that decides WHERE a thunk goes is still the
+// real module -- the seed, the allocator, the published buffer -- and that is
+// what this file compares against the recorded artifact. Whether the real
+// emitted reader agrees with the real Rust writer is a separate question,
+// answered by `fork-resume-assignment.test.ts` against both real artifacts in
+// one shared memory.
+//
 // # Why two activations, and why THIS fixture
 //
 // `buildVforkSideModuleFixture()` is the dlopen side-module fixture
@@ -50,8 +60,13 @@ import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { readForkResumeCatalog } from "../src/fork-resume-catalog";
-import { ForkResumeTable, type ForkResumeSlots } from "../src/fork-resume-table";
+import {
+  ForkResumeTable,
+  type ForkResumeAssignment,
+  type ForkResumeSlots,
+} from "../src/fork-resume-table";
 import { artifactGate } from "./support/artifact-gate";
+import { standInGuest } from "./support/resume-placement-stand-in";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -150,6 +165,10 @@ interface Harness {
   readonly table: ForkResumeTable;
   readonly seed: (activationId: number, ordinals: readonly number[]) => void;
   readonly errno: () => number;
+  /** The memory the module publishes its record buffer into. */
+  readonly memory: WebAssembly.Memory;
+  /** The module's own resume table, which placement grows and fills. */
+  readonly resumeTable: WebAssembly.Table;
 }
 
 /** The real module, its real table, and the host class that places into it. */
@@ -174,31 +193,35 @@ function harness(): Harness {
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
 
   const errno = () => (x.fm_last_errno as () => number)();
-  // OP 0, AND THE SECOND OP-0 COUPLING IN THIS FILE. This one is load-bearing
-  // and cannot be removed: `ForkResumeTable.registerActivation` -- the
-  // production placement path being characterized -- asks a `ForkResumeSlots`
-  // for every slot it writes, and op 0 is that query today. The read-back
-  // below deliberately does NOT use it.
-  //
-  // Task 6 of this plan deletes the op-0 arm, which will break this harness.
-  // That is expected: this is the BEFORE recorder. Task 6's caller grep was
-  // blind to `host/test` and so could not see this hit; `a99a3a2d8` widened
-  // its search path to cover this directory.
+  // NO OP-0 COUPLING ANY MORE. The recorder used to ask `fm_resume_slots` op 0
+  // for every slot, because that was how the production placement path got
+  // one. It asks for a whole activation at once now, through the export the
+  // production path uses -- which is also what lets this file survive Task 6's
+  // deletion of the op-0 arm. The read-back below still deliberately uses
+  // neither: it scans the table.
   const resumeSlots = x.fm_resume_slots as (
     op: number,
     activation: number,
     ordinal: number,
   ) => number;
   const slots: ForkResumeSlots = {
-    resumeSlot: (activationId, functionOrdinal) => {
-      const slot = resumeSlots(0, activationId, functionOrdinal);
-      if (slot < 0) {
+    publishResumeAssignment: (activationId): ForkResumeAssignment => {
+      const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
+        activationId,
+      );
+      if (packed === -1n) {
         throw new Error(
-          `no slot for activation ${activationId} ordinal ${functionOrdinal} ` +
-            `(errno ${errno()})`,
+          `no assignment for activation ${activationId} (errno ${errno()})`,
         );
       }
-      return slot;
+      const ptr = Number(packed & 0xffff_ffffn);
+      const count = Number(packed >> 32n);
+      const records = new Uint32Array(memory.buffer, ptr, count * 2);
+      return {
+        ptr,
+        count,
+        slots: Array.from({ length: count }, (_, i) => records[i * 2 + 1]!),
+      };
     },
     releaseResumeSlots: (activationId) => {
       const freed = resumeSlots(1, activationId, 0);
@@ -214,7 +237,8 @@ function harness(): Harness {
   const table = new ForkResumeTable("resume placement baseline");
   // The MODULE's table, not one this test minted: it owns and exports it, so
   // binding anything else here would record a table nothing else can see.
-  table.bindSlots(slots, x.__wpk_fork_resume_table as unknown as WebAssembly.Table);
+  const resumeTable = x.__wpk_fork_resume_table as unknown as WebAssembly.Table;
+  table.bindSlots(slots, resumeTable);
 
   const seed = (activationId: number, ordinals: readonly number[]): void => {
     const bytes = new Uint8Array(ordinals.length * 4);
@@ -229,7 +253,7 @@ function harness(): Harness {
     expect(errno(), `seeding activation ${activationId}`).toBe(0);
   };
 
-  return { table, seed, errno };
+  return { table, seed, errno, memory, resumeTable };
 }
 
 /**
@@ -296,18 +320,26 @@ describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
       // the main program first, then each dlopen.
       for (const activationId of [MAIN_ACTIVATION, SIDE_ACTIVATION]) {
         const ordinals = catalogs.get(activationId)!;
+        // Minted BEFORE placement, because placement is what asks for them
+        // now. `placed` is still the only record of what went in, and it is
+        // still keyed by the thunk rather than by the slot.
+        const thunkByOrdinal = new Map<number, WebAssembly.ExportValue>();
+        for (const functionOrdinal of ordinals) {
+          const thunk = mintThunk();
+          thunkByOrdinal.set(functionOrdinal, thunk);
+          placed.set(thunk, { activationId, ordinal: functionOrdinal });
+        }
         h.seed(activationId, ordinals);
-        // THE PRODUCTION PLACEMENT PATH as of this commit, and the whole of
-        // what this file can characterize.
+        // THE PRODUCTION PLACEMENT PATH, before and after the cutover, and
+        // the whole of what this file can characterize.
         //
         // WHAT THIS FILE CANNOT DO, said plainly so nobody plans around it:
         // it never INSTANTIATES either guest. It reads their custom sections
         // and mints stand-in thunks. So the guest-side placement shim Task 2
         // adds -- `__wpk_fork_place_resume_thunks`, a guest EXPORT that reads
-        // the guest's own catalog table -- can never be driven from here.
-        // Swapping this one call for that export is not possible; it would
-        // need a live instance of an SDK-linked program, with the kandelo
-        // import object and a syscall channel, which is precisely the
+        // the guest's own catalog table -- can never be DRIVEN from here. It
+        // would need a live instance of an SDK-linked program, with the
+        // kandelo import object and a syscall channel, which is precisely the
         // in-process instantiation this file exists to avoid.
         //
         // CONTROLLER RULING: Task 4 produces the AFTER half by seeding these
@@ -317,12 +349,33 @@ describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
         // actually decides placement, and needs no guest instance. The
         // artifact's shape is therefore the stable contract between the two
         // halves -- not any line in this file.
+        //
+        // HOW TASK 4 TOOK THAT RULING. The call below is unchanged in the one
+        // way that matters: it is still `ForkResumeTable.registerActivation`,
+        // the single function behind all three worker sites. What changed is
+        // underneath it -- the host no longer queries a slot per thunk and
+        // writes it, it publishes the module's whole decision and hands the
+        // guest its own `(ptr, count)`. `standInGuest` stands in for the
+        // emitted reader ONLY; every number in the recorded artifact still
+        // comes from the real module. Keeping the read-back means this file
+        // can still say a thunk landed somewhere NOBODY asked for, which a
+        // direct diff of the published pairs could not.
         h.table.registerActivation(
           activationId,
-          ordinals.map((functionOrdinal) => {
-            const thunk = mintThunk();
-            placed.set(thunk, { activationId, ordinal: functionOrdinal });
-            return { functionOrdinal, thunk };
+          standInGuest({
+            memory: h.memory,
+            resumeTable: h.resumeTable,
+            ordinals,
+            thunkFor: (functionOrdinal) => {
+              const thunk = thunkByOrdinal.get(functionOrdinal);
+              if (thunk === undefined) {
+                throw new Error(
+                  `activation ${activationId} placed ordinal ` +
+                    `${functionOrdinal}, which it never declared`,
+                );
+              }
+              return thunk;
+            },
           }),
         );
       }

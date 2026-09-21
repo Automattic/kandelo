@@ -1,12 +1,6 @@
 /**
  * The guest's `__wpk_fork_resume_table`: a `WebAssembly.Table` of resume thunks.
  *
- * The table object itself is host floor and cannot move into the fork module:
- * Rust cannot hold a funcref, the guest imports the table by name, and the
- * module's `resume_peek` returns an index INTO it. So a real
- * `WebAssembly.Table` has to exist here, and something on this side has to
- * `table.set` the thunks.
- *
  * # What this is NOT any more, and why that matters
  *
  * It is not a slot ALLOCATOR. It used to be, and the duplication was the
@@ -29,24 +23,68 @@
  * rule-comparison guard cannot see this, because both sides follow the rules.
  *
  * The module now decides every slot once, when the host seeds that
- * activation's catalog, and this class ASKS (`fm_resume_slots`). There is one
- * allocator, so there is nothing left to diverge. Census 194.
+ * activation's catalog. There is one allocator, so there is nothing left to
+ * diverge. Census 194.
+ *
+ * # It is not a slot WRITER either, as of the placement cutover
+ *
+ * The header used to open by calling the table "host floor", on the argument
+ * that Rust cannot hold a funcref, so something on this side has to
+ * `table.set` the thunks. The premise is true and the conclusion does not
+ * follow -- the same shape of error `forkModuleInjectorHelpers` records for
+ * the table OBJECT, which the injector declares and the module exports. The
+ * copy is between two tables the GUEST holds: its own resume catalog, and the
+ * process resume table it imports. So the guest does it, in wasm the
+ * instrumenter emits (`__wpk_fork_place_resume_thunks`), over a decision the
+ * module publishes. No funcref crosses into JavaScript in either direction.
+ *
+ * What is left here is a lifetime record: which activations are registered,
+ * and which slots each holds, so `dlclose` can null exactly those entries.
+ * The `table.set` in `unregisterActivation` is the only one in this file.
  */
 
-/** One fork-instrumented function a guest can be resumed into. */
-export interface ForkResumeTarget {
-  readonly functionOrdinal: number;
-  readonly thunk: WebAssembly.ExportValue;
+/**
+ * One activation's published `(ordinal, slot)` decision.
+ *
+ * `ptr` and `count` are handed to the guest untouched -- they address the
+ * module's own buffer in the memory the guest shares. `slots` is the copy this
+ * class keeps, and the only reason it keeps one is `unregisterActivation`.
+ */
+export interface ForkResumeAssignment {
+  readonly ptr: number;
+  readonly count: number;
+  readonly slots: readonly number[];
 }
 
-/** What this needs from the co-resident module: the slot, and its release. */
+/** What this needs from the co-resident module: the assignment, and its release. */
 export interface ForkResumeSlots {
-  resumeSlot(activationId: number, functionOrdinal: number): number;
+  publishResumeAssignment(activationId: number): ForkResumeAssignment;
   releaseResumeSlots(activationId: number): number;
 }
 
+/**
+ * The guest export that performs the placement.
+ *
+ * Emitted into every fork-instrumented artifact by
+ * `crates/fork-instrument/src/instrument.rs` (`emit_resume_placement_shim`),
+ * whose name constant is `runtime::names::EXPORT_PLACE_RESUME_THUNKS`. It
+ * grows the resume table itself, traps on the reserved slot 0 and on an
+ * out-of-range ordinal or slot, and returns the count it was ASKED for -- not
+ * a success tally, because every failure mode in it traps.
+ */
+const PLACE_RESUME_THUNKS = "__wpk_fork_place_resume_thunks";
+
+/**
+ * The guest's own table of resume thunks, which the shim copies OUT of.
+ *
+ * Read here only for its length. It is `RESUME_CATALOG_EXPORT` in
+ * `crates/fork-instrument/src/instrument.rs`, sized to the thunk count with an
+ * ACTIVE element segment, so it is full the moment the instance exists.
+ */
+const RESUME_CATALOG = "__wpk_fork_resume_catalog";
+
 export class ForkResumeTable {
-  private readonly activationSlots = new Map<number, number[]>();
+  private readonly activationSlots = new Map<number, readonly number[]>();
   /**
    * The numbering and the table it indexes, as ONE thing.
    *
@@ -82,16 +120,43 @@ export class ForkResumeTable {
   }
 
   /**
-   * Place one activation's resume thunks at the slots the module assigned them.
+   * Have one activation place its own resume thunks.
    *
-   * The ORDER of `targets` no longer matters here, because this no longer
-   * decides anything: each thunk goes where `fm_resume_slots` says, and the
-   * module made that decision from the catalog the host seeded for this same
-   * activation.
+   * # What this stopped doing, and why it is the point of the change
+   *
+   * It used to loop: ask `fm_resume_slots` op 0 for a slot, grow the table,
+   * `table.set` the thunk, once per fork-instrumented function. The thunks
+   * themselves came from `forkResumeTargetsFromInstance`, which was another
+   * per-function loop reading the guest's catalog table with `table.get`. For
+   * php that is 19,025 of each per process start, and every one of them
+   * crossed the JS/wasm boundary to move a funcref between two tables the
+   * GUEST already holds.
+   *
+   * Now the module publishes the whole decision into memory the guest shares,
+   * and the guest's own emitted shim applies it. Two calls per activation,
+   * whatever its size, and no funcref crosses into JavaScript at all.
+   *
+   * # What the host still does here, and why each is not the guest's
+   *
+   * It refuses a double registration, because whether an activation is
+   * registered is a HOST lifetime question -- the module answers "holds no
+   * slots" for an activation that was never seeded AND for one whose catalog
+   * is legitimately empty, which is the `libneeded-provider.so` case that cost
+   * a real fork. And it keeps the published slot list, because
+   * `unregisterActivation` must null exactly those entries when `dlclose`
+   * releases them.
+   *
+   * `instance` is the guest being registered. It is available at all three
+   * call sites (`host/src/worker-main.ts:1034`, `:4662`, `:6971`), all of
+   * which already had it, and placement is safe there for the reason the plan
+   * turns on: the instance exists, so its catalog table is populated -- the
+   * instrumenter emits that table with an ACTIVE element segment added after
+   * `module_state::plan` has converted the guest's original ones, so the
+   * engine fills it at instantiation and no bootstrap has to run first.
    */
   registerActivation(
     activationId: number,
-    targets: readonly ForkResumeTarget[],
+    instance: WebAssembly.Instance,
   ): void {
     if (!Number.isInteger(activationId) || activationId < 0) {
       throw new RangeError(`${this.label}: invalid activation id ${activationId}`);
@@ -101,30 +166,46 @@ export class ForkResumeTable {
         `${this.label}: activation ${activationId} is already registered`,
       );
     }
-    const { slots } = this.require();
-    const placed: number[] = [];
-    for (const target of targets) {
-      if (!Number.isInteger(target.functionOrdinal) || target.functionOrdinal < 0) {
-        throw new RangeError(
-          `${this.label}: invalid resume function ordinal ${target.functionOrdinal}`,
-        );
-      }
-      if (typeof target.thunk !== "function") {
-        throw new TypeError(
-          `${this.label}: resume target ${target.functionOrdinal} is not a Wasm ` +
-            `function`,
-        );
-      }
-      // A coordinate the module did not assign is refused HERE, naming it.
-      // Reached when the catalog the host seeded and the exports it read
-      // disagree -- which is a real mismatch, not a numbering question, and one
-      // this class can no longer paper over by inventing a slot.
-      const slot = slots.resumeSlot(activationId, target.functionOrdinal);
-      this.grow(slot);
-      this.resumeTable.set(slot, target.thunk);
-      placed.push(slot);
+    const place = instance.exports[PLACE_RESUME_THUNKS] as
+      | ((pairs: number, count: number) => number)
+      | undefined;
+    if (typeof place !== "function") {
+      throw new Error(
+        `${this.label}: activation ${activationId} exports no ` +
+          `${PLACE_RESUME_THUNKS}, so it cannot place its own resume thunks. ` +
+          `A fork-instrumented artifact always carries it; this one was ` +
+          `instrumented by an older toolchain or not at all.`,
+      );
     }
-    this.activationSlots.set(activationId, placed);
+    const { ptr, count, slots } = this.require().slots.publishResumeAssignment(
+      activationId,
+    );
+    // THE ONE CHECK THAT SURVIVED THE PER-THUNK LOOP, and it is O(1) where the
+    // old one was O(n). `forkResumeTargetsFromInstance` used to read every
+    // catalog entry and refuse a slot the module had not assigned, which is
+    // how a guest seeded from one artifact and instantiated from another was
+    // caught. The shim traps on an out-of-range ordinal, so a guest with FEWER
+    // thunks than the module was seeded with still fails loudly -- but a guest
+    // with MORE would place a prefix and leave the rest at no slot at all,
+    // silently. Both ends are the same fact: the instrumenter numbers resume
+    // thunks 0..n-1 in catalog order, so a seeded catalog and its guest agree
+    // on the count or they are not the same artifact.
+    const catalog = instance.exports[RESUME_CATALOG] as
+      | WebAssembly.Table
+      | undefined;
+    if (catalog?.length !== count) {
+      throw new Error(
+        `${this.label}: activation ${activationId} instantiated with ` +
+          `${catalog?.length ?? "no"} resume thunks, but the module assigned ` +
+          `${count} slots from the catalog it was seeded with. The seeded ` +
+          `module and the instantiated one are not the same artifact.`,
+      );
+    }
+    // The return is `max(count, 0)` -- what was ASKED for, not what succeeded.
+    // Every failure mode inside the shim traps, so there is nothing here to
+    // check that would not be a check against itself.
+    place(ptr, count);
+    this.activationSlots.set(activationId, slots);
   }
 
   /** Release an activation's slots for reuse, and null its entries. */
@@ -166,18 +247,5 @@ export class ForkResumeTable {
       );
     }
     return this.bound;
-  }
-
-  /**
-   * Grow so `slot` is addressable. The module numbers; this only sizes.
-   *
-   * Growing the MODULE's exported table, which is allowed because the injector
-   * declares it with no maximum -- the host adds an activation's thunks as it
-   * loads, and how many there will be is not known at instantiation.
-   */
-  private grow(slot: number): void {
-    const table = this.resumeTable;
-    if (slot < table.length) return;
-    table.grow(slot - table.length + 1);
   }
 }

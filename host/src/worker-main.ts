@@ -113,10 +113,7 @@ import {
 } from "./fork-guest-sections";
 import { writeCapturedExternrefHandover } from "./fork-externref-process-owner";
 import { ForkChildReferences } from "./fork-child-references";
-import {
-  forkResumeTargetsFromInstance,
-  readForkResumeCatalog,
-} from "./fork-resume-catalog";
+import { readForkResumeCatalog } from "./fork-resume-catalog";
 import {
   ForkExternrefTokenCache,
 } from "./fork-reference-broker";
@@ -1031,10 +1028,7 @@ function createProcessDylinkActivationOwner(
               `${request.name}: child activation ${activationId} did not wrap its final imports`,
             );
           }
-          options.resumeTable.registerActivation(
-            activationId,
-            forkResumeTargetsFromInstance(request.module, instance),
-          );
+          options.resumeTable.registerActivation(activationId, instance);
           // Remembering it here also BINDS its drive slots, so the module can
           // `call_indirect` this guest's unwind/rewind/abort entry points. That
           // used to happen in one sweep over the registry during the child
@@ -4659,10 +4653,7 @@ export async function centralizedWorkerMain(
         templateId: mainTemplateId,
       });
       mainImportedStatePreparation?.complete(instance);
-      resumeTable.registerActivation(
-        0,
-        forkResumeTargetsFromInstance(module, instance),
-      );
+      resumeTable.registerActivation(0, instance);
       importedStatePlanner?.registerInstance(0, instance);
       if (!initData.isForkChild) {
         try {
@@ -6968,10 +6959,7 @@ export async function centralizedThreadWorkerMain(
           `pid=${pid} tid=${tid}: fork module is missing thread bootstrap`,
         );
       }
-      threadResumeTable.registerActivation(
-        0,
-        forkResumeTargetsFromInstance(module, instance),
-      );
+      threadResumeTable.registerActivation(0, instance);
       threadForkActivations?.register({
         activationId: 0,
         module,

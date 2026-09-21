@@ -19,6 +19,7 @@
 
 import type { ForkSideActivation } from "./fork-activations";
 import type { ForkModuleInstance } from "./fork-module-instance";
+import type { ForkResumeAssignment } from "./fork-resume-table";
 import {
   ContinuationAllocationError,
   type LinkedFrameFormatDescriptor,
@@ -830,9 +831,60 @@ export class ForkModuleContinuationBackend {
    * ever been unregistered. See the worker-lifetime allocator in
    * `crates/fork-module/src/lib.rs` for the `dlclose` sequence that made them
    * disagree, and census 194.
+   *
+   * NO PRODUCTION CALLER as of the placement cutover: placement asks for a
+   * whole activation at once through `publishResumeAssignment` below, so
+   * nothing queries one coordinate any more. Kept because Task 6 of
+   * `docs/superpowers/plans/2026-09-20-fork-resume-thunk-placement.md` owns
+   * deleting the `fm_resume_slots` op-0 arm it wraps, together with the native
+   * host's copy of it; removing the wrapper here without that would leave the
+   * arm reachable from Rust and unreachable from TypeScript, which is a worse
+   * place to stop than either end.
    */
   resumeSlot(activationId: number, functionOrdinal: number): number {
     return this.call("fm_resume_slots", 0, activationId, functionOrdinal);
+  }
+
+  /**
+   * Publish one activation's WHOLE `(ordinal, slot)` assignment, for the guest
+   * shim to apply.
+   *
+   * This is the host's entire remaining part in placement. The module decides
+   * every slot when the catalog is seeded and writes the decision into a
+   * buffer in the memory the co-resident guest shares; the guest's own
+   * `__wpk_fork_place_resume_thunks` then copies each thunk out of its catalog
+   * table into the process resume table. Neither the pointer nor a single
+   * thunk crosses into JavaScript.
+   *
+   * What it replaces is one `fm_resume_slots` op-0 call plus a
+   * `table.get`/`table.set` pair PER FORK-INSTRUMENTED FUNCTION -- 19,025
+   * crossings per php process start, the figure `docs/surface-budget.json`
+   * records -- with one call.
+   *
+   * `slots` is COPIED rather than returned as a view: there is one published
+   * buffer per worker and the next publish overwrites it, so a view would
+   * decay into a description of some later activation. It is the only thing
+   * the host still keeps, and only so `unregisterActivation` can null what
+   * `dlclose` releases.
+   */
+  publishResumeAssignment(activationId: number): ForkResumeAssignment {
+    // `call()` cannot carry this one: it is typed `number` and this export
+    // returns `i64`, which reaches JavaScript as a `bigint`. The errno check
+    // is therefore repeated here rather than shared. Written tight, and the
+    // throw as one expression, for the reason `call()` gives about itself:
+    // this surface's ceiling has no slack, so every line has to earn itself.
+    const packed = (this.exports.fm_publish_resume_assignment as (a: number) => bigint)(activationId);
+    if (packed === -1n) throw new Error(`${this.label}: fm_publish_resume_assignment failed for activation ${activationId} with errno ${this.lastErrno()}`);
+    // COUNT HIGH, POINTER LOW, as the export's own doc comment gives it: a
+    // pointer in the high half would make any buffer above 2 GiB decode as a
+    // negative i64, which is this call's failure signal.
+    const ptr = Number(packed & 0xffff_ffffn);
+    const count = Number(packed >> 32n);
+    // Records are `(ordinal: u32, slot: u32)`, stride 8, so slot `i` is word
+    // `i * 2 + 1`. The buffer is 8-byte aligned by the module (`repr(C,
+    // align(8))`), or page-aligned when it spills to a `channel_mmap` mapping.
+    const records = new Uint32Array(this.options.memory.buffer, ptr, count * 2);
+    return { ptr, count, slots: Array.from({ length: count }, (_, i) => records[i * 2 + 1]!) };
   }
 
   /** Release an activation's resume slots for reuse. Returns how many. */
