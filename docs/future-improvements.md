@@ -1692,3 +1692,50 @@ Worth pairing with the open question behind `testTimeout: 30_000` in
 routes to "why does a fixture that forks and prints cost 8.5s". A suite whose
 per-test margins are thinner than the variance of the machine it runs on will
 keep producing investigations like this one.
+
+### Fork instrumentation has three hand-maintained freshness lists
+
+A guest that Kandelo forks must carry the exports `crates/fork-instrument`
+injects. When that tool gains an export, every fork-using guest needs
+rebuilding. Three separate mechanisms decide whether that happens, and on
+2026-09-21 all three failed open at once for one package, shipping an msmtpd
+that died before `_start` from a build that reported success.
+
+**1. Per-package `inputs` lists the wrapper, not the tool.** Eight
+`packages/registry/*/build.toml` files declare
+`scripts/run-wasm-fork-instrument.sh` as an input. Seven of them do not
+declare `crates/fork-instrument`. The wrapper is a few lines that invoke the
+instrumenter; changing the instrumenter does not change the wrapper, so the
+cache key holds still across exactly the change that invalidates the output.
+msmtpd has since been corrected; `dinit`, `sdl2-mixer-playwave`,
+`sdl-dsp-test`, `spidermonkey`, `sqlite`, `sqlite-cli` and `sudo` still carry
+the narrow list. Those are latent rather than broken today — their build nodes
+run and re-instrument for other reasons — but the key cannot detect the one
+change that matters to them.
+
+**2. `wasm_has_complete_fork_instrumentation` checks nine hand-listed
+markers.** `scripts/wasm-artifact-guards.sh:1524-1548` certifies an artifact
+as completely instrumented by looking for nine known exports. It does not know
+about `__wpk_fork_place_resume_thunks`, so it certified a September binary as
+complete and skipped re-instrumenting it. Any package shipping a pre-built
+`bin/` inherits this on the next instrumenter change. A predicate that
+enumerates what it expects will always lag the thing it describes; deriving
+the expected set from the instrumenter would not.
+
+**3. A package script may skip instrumentation entirely.** `build-msmtpd.sh`
+carried an `exit 0` reuse guard above both its compile and its instrumentation
+call — the only one in the registry, removed in the same change as this entry.
+
+**Why it stayed invisible**, and this is the part worth generalising:
+`packages/registry/*/bin/` is gitignored. A fresh clone has no stale input, so
+the guard never fires and the package instruments normally. The failure
+reproduces only in a worktree that has built the package before — which is
+every long-lived development checkout and no CI job. A defect that CI cannot
+see and that every developer machine carries is the worst combination
+available.
+
+The durable fix is the one this repository already has for the kernel: derive
+cache keys from the real build closure rather than a hand-maintained list, the
+pattern in `build_deps.rs`. The same shape has now been found four times --
+the kernel `build.toml` omitting `crates/runtime-core`, the `has_programs()`
+hand-list, `newest_input()` omitting the instrumenter, and this.
