@@ -18,31 +18,25 @@ self.onmessage = (
     }
 
     const handle = fs.opendir(dir);
-    const names: string[] = [];
+    // Collect name and type together: readdir decodes the name from the shared
+    // channel and reads the trailing d_type byte at data[nameLen], so the test
+    // can assert both halves of that decode.
+    const entries: { name: string; type: number }[] = [];
     try {
       for (let entry = fs.readdir(handle); entry !== null; entry = fs.readdir(handle)) {
-        names.push(entry.name);
+        entries.push({ name: entry.name, type: entry.type });
       }
     } finally {
       fs.closedir(handle);
     }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
-    for (const file of files) fs.unlink(`${dir}/${file}`);
-    fs.rmdir(dir);
-    self.postMessage({ type: "result", names: names.sort() });
+    // Report the listing before cleanup: a transient unlink/rmdir fault
+    // must not mask a directory listing that already succeeded.
+    self.postMessage({ type: "result", entries });
+    cleanup(fs, dir, files);
   } catch (error) {
-    for (const file of files) {
-      try {
-        fs.unlink(`${dir}/${file}`);
-      } catch {
-        // Preserve the original failure.
-      }
-    }
-    try {
-      fs.rmdir(dir);
-    } catch {
-      // Preserve the original failure.
-    }
+    cleanup(fs, dir, files);
     self.postMessage({
       type: "error",
       error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -51,3 +45,20 @@ self.onmessage = (
     self.close();
   }
 };
+
+// Best-effort teardown. Each removal is guarded so one failure cannot
+// abort the rest or change the outcome already reported to the test.
+function cleanup(fs: OpfsFileSystem, dir: string, files: string[]): void {
+  for (const file of files) {
+    try {
+      fs.unlink(`${dir}/${file}`);
+    } catch {
+      // Best effort; the listing result stands.
+    }
+  }
+  try {
+    fs.rmdir(dir);
+  } catch {
+    // Best effort; the listing result stands.
+  }
+}
