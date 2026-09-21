@@ -1,46 +1,67 @@
 /**
- * The guest's `__wpk_fork_resume_table`: a `WebAssembly.Table` of resume thunks.
+ * The host's lifetime record for the guest's `__wpk_fork_resume_table`.
  *
- * # What this is NOT any more, and why that matters
+ * # What this class does, stated as what it is rather than what it was
  *
- * It is not a slot ALLOCATOR. It used to be, and the duplication was the
- * lane's most dangerous: this class and `fork_codec::ResumeSlotTable` each
- * implemented the same four rules -- slot 0 reserved, ordinals sorted
- * ascending, repeats rejected, freed slots reused smallest-first -- and the
- * guard in `host/test/fork-resume-table.test.ts` checked only that those rules
- * were still SPELLED the same in both places.
+ * It does not allocate slots. It does not write thunks. It does not ask for a
+ * slot one coordinate at a time. The module decides every slot once, when the
+ * host seeds that activation's catalog, and publishes the whole decision into
+ * memory the co-resident guest shares; the guest's own emitted
+ * `__wpk_fork_place_resume_thunks` then copies each thunk out of its catalog
+ * table into the process resume table. No funcref crosses into JavaScript in
+ * either direction.
  *
- * The rules were never the problem. WHEN each table was built was. This one is
- * built per WORKER and mutated as activations come and go; the module built a
- * fresh one per FORK, so it never had freed slots to reuse:
+ * Measured over the two-activation fixture the placement baseline records (86
+ * ordinals in the main program, 1 in the side module it dlopens): 87 calls
+ * into the module became 2, and 348 JS/wasm boundary crossings -- 87 op-0
+ * queries, 87 `table.get`, 87 `table.set`, 87 `table.grow` -- became 4. The
+ * ratio is per-thunk, so it scales: php's 19,025 resume thunks per process
+ * start, the figure `docs/surface-budget.json` quotes, is 76,100 crossings
+ * under the old path and 2 under this one.
  *
- *   dlopen A (1 target), dlopen B (2), dlclose A, dlopen C (2), then fork.
- *   host:   B at 4,5   C at 3,6      (3 was freed by A and reused first)
- *   module: B at 3,4   C at 5,6      (fresh table, ascending activation id)
+ * ONE ALLOCATOR, which is why there is nothing here to keep in step. This
+ * class used to run the module's four rules again -- slot 0 reserved, ordinals
+ * sorted ascending, repeats rejected, freed slots reused smallest-first -- and
+ * the guard that watched the pair only checked that both still SPELLED them
+ * the same. The rules were never the problem; WHEN each table was built was.
+ * This side's was per WORKER and mutated as activations came and went, the
+ * module's was fresh per FORK and so never had a freed slot to reuse, and
+ * `dlclose` of a library while a later-loaded one is still open makes them
+ * differ on three coordinates. The guest then resumes into another
+ * activation's thunk: a real function of the right type, so nothing traps.
+ * Census 194.
  *
- * Three coordinates disagree, so the guest resumes into another activation's
- * thunk -- a real function of the right type, so nothing traps. A
- * rule-comparison guard cannot see this, because both sides follow the rules.
+ * # What it still owns
  *
- * The module now decides every slot once, when the host seeds that
- * activation's catalog. There is one allocator, so there is nothing left to
- * diverge. Census 194.
+ * A lifetime record, and two guards that need it:
  *
- * # It is not a slot WRITER either, as of the placement cutover
+ *  - WHICH ACTIVATIONS ARE REGISTERED. A host question: the module answers
+ *    "holds no slots" both for an activation that was never seeded and for one
+ *    whose catalog is legitimately empty, and reading the second as the first
+ *    cost a real fork (`libneeded-provider.so`).
+ *  - WHICH SLOTS EACH HOLDS, so `dlclose` can null exactly those entries.
+ *  - THE MODULE AND ITS TABLE AS ONE FACT, because a slot is an index into
+ *    that table and the two are unusable apart.
  *
- * The header used to open by calling the table "host floor", on the argument
- * that Rust cannot hold a funcref, so something on this side has to
- * `table.set` the thunks. The premise is true and the conclusion does not
- * follow -- the same shape of error `forkModuleInjectorHelpers` records for
- * the table OBJECT, which the injector declares and the module exports. The
- * copy is between two tables the GUEST holds: its own resume catalog, and the
- * process resume table it imports. So the guest does it, in wasm the
- * instrumenter emits (`__wpk_fork_place_resume_thunks`), over a decision the
- * module publishes. No funcref crosses into JavaScript in either direction.
+ * # The one `Table.set` that is left, and why it is not a floor
  *
- * What is left here is a lifetime record: which activations are registered,
- * and which slots each holds, so `dlclose` can null exactly those entries.
- * The `table.set` in `unregisterActivation` is the only one in this file.
+ * `unregisterActivation` nulls the slots it releases. It is the only write to
+ * the resume table anywhere in `host/src`, and the argument that keeps it here
+ * -- "Rust cannot hold a funcref, therefore the host has to clear the table"
+ * -- does not follow. Clearing writes `ref.null func`, which is not holding a
+ * funcref, and the injector already emits table primitives into this module
+ * for precisely that reason: `fm_transit_grow` is `table.size` + `table.grow`
+ * on the anyref transit table, emitted by
+ * `crates/fork-module-inject/src/main.rs` and called from Rust through a
+ * rewritten placeholder import. The same shape -- an emitted
+ * `table.set $resume (ref.null func)`, called from the `fm_resume_slots` op-1
+ * release the host already issues -- would take the nulling with it, and the
+ * recorded slot list and the `slots` field of `ForkResumeAssignment` with
+ * that.
+ *
+ * Not done here: it adds an injected module export and changes two crates this
+ * change does not own. Recorded in the code rather than only in a report, so
+ * that it stays a decision someone took instead of a rule nobody noticed.
  */
 
 /**
@@ -99,8 +120,8 @@ export class ForkResumeTable {
   /**
    * Bind the module that owns the table and decides the numbering.
    *
-   * BOTH come from the module now, and they arrive together because they are
-   * the same fact: a slot is an index into that table. The host used to mint a
+   * BOTH come from the module, and they arrive together because they are the
+   * same fact: a slot is an index into that table. The host used to mint a
    * `WebAssembly.Table` here and hand it to the guest in `extras`, which made
    * "the guest's table" and "the table the module numbers" a per-caller
    * convention rather than one object.
@@ -122,21 +143,11 @@ export class ForkResumeTable {
   /**
    * Have one activation place its own resume thunks.
    *
-   * # What this stopped doing, and why it is the point of the change
+   * Two calls, whatever the activation's size: one to the module for the
+   * published `(ptr, count)`, one to the guest's own shim to apply it. The
+   * host reads no thunk, writes no thunk and chooses no slot.
    *
-   * It used to loop: ask `fm_resume_slots` op 0 for a slot, grow the table,
-   * `table.set` the thunk, once per fork-instrumented function. The thunks
-   * themselves came from `forkResumeTargetsFromInstance`, which was another
-   * per-function loop reading the guest's catalog table with `table.get`. For
-   * php that is 19,025 of each per process start, and every one of them
-   * crossed the JS/wasm boundary to move a funcref between two tables the
-   * GUEST already holds.
-   *
-   * Now the module publishes the whole decision into memory the guest shares,
-   * and the guest's own emitted shim applies it. Two calls per activation,
-   * whatever its size, and no funcref crosses into JavaScript at all.
-   *
-   * # What the host still does here, and why each is not the guest's
+   * # What the host does here, and why each is not the guest's
    *
    * It refuses a double registration, because whether an activation is
    * registered is a HOST lifetime question -- the module answers "holds no
@@ -147,7 +158,7 @@ export class ForkResumeTable {
    * releases them.
    *
    * `instance` is the guest being registered. It is available at all three
-   * call sites (`host/src/worker-main.ts:1034`, `:4662`, `:6971`), all of
+   * call sites (`host/src/worker-main.ts:1031`, `:4656`, `:6962`), all of
    * which already had it, and placement is safe there for the reason the plan
    * turns on: the instance exists, so its catalog table is populated -- the
    * instrumenter emits that table with an ACTIVE element segment added after
@@ -203,7 +214,9 @@ export class ForkResumeTable {
     }
     // The return is `max(count, 0)` -- what was ASKED for, not what succeeded.
     // Every failure mode inside the shim traps, so there is nothing here to
-    // check that would not be a check against itself.
+    // check that would not be a check against itself. Nothing compensates for
+    // a shim that does nothing, either: the table simply stays empty at those
+    // slots, which is the failure being visible rather than papered over.
     place(ptr, count);
     this.activationSlots.set(activationId, slots);
   }
@@ -224,7 +237,13 @@ export class ForkResumeTable {
     this.require().slots.releaseResumeSlots(activationId);
   }
 
-  /** Release every activation, highest id first. */
+  /**
+   * Release every activation, highest id first.
+   *
+   * The ORDER is this side's choice and nothing downstream reads it: the
+   * module frees into a bitmap, which is order-independent. It mirrors reverse
+   * load order, which is the order a process tears down its libraries in.
+   */
   clear(): void {
     for (const activationId of [...this.activationSlots.keys()].sort(
       (left, right) => right - left,

@@ -41,6 +41,13 @@ import { standInGuest } from "./support/resume-placement-stand-in";
  * which activations are registered, which slots each holds, and what
  * `dlclose` nulls.
  *
+ * That the host writes NOTHING is asserted directly, by "places NOTHING
+ * itself when the guest's shim does nothing". Every other case here would
+ * still pass if a host-side placement loop were restored beside the shim --
+ * because a second writer producing the same slots is invisible to an
+ * assertion about slots -- so the deletion needs a case that fails when the
+ * table is correct for the wrong reason.
+ *
  * The placement itself is applied by `standInGuest`, a JavaScript stand-in.
  * That is deliberate: these cases need arbitrary catalogs, and a real
  * instrumented guest's ordinals are whatever its own instrumentation
@@ -298,6 +305,42 @@ describe("ForkResumeTable, numbered by the module", () => {
     expect(() => h.table.registerActivation(0, guest(h, [0, 1]))).toThrow(
       /are not the same artifact/,
     );
+  });
+
+  it("places NOTHING itself when the guest's shim does nothing", () => {
+    // THE DELETION, ASSERTED. Placement used to be a host loop -- one
+    // `fm_resume_slots` op-0 query, one `table.get` and one `table.set` per
+    // fork-instrumented function -- and this change's whole purpose is that
+    // the host performs none of it. A guest whose shim reports the count it
+    // was asked for and writes nothing therefore leaves the resume table
+    // exactly as it found it: length 1, holding only the reserved sentinel.
+    //
+    // This is a guard against restoring the write, not against a broken
+    // guest. Every other case in this file would still pass with a host loop
+    // running beside the shim, because a second writer producing the same
+    // slots is invisible to an assertion about slots. A belt-and-braces
+    // placement can only be caught by a case that fails when the table is
+    // correct for the wrong reason.
+    const h = harness();
+    h.seed(0, [0, 1]);
+    const inert = {
+      exports: {
+        __wpk_fork_place_resume_thunks: (_pairs: number, count: number) => count,
+        __wpk_fork_resume_catalog: new WebAssembly.Table({
+          element: "anyfunc",
+          initial: 2,
+        }),
+      },
+    } as unknown as WebAssembly.Instance;
+    h.table.registerActivation(0, inert);
+    expect(
+      h.resumeTable.length,
+      "the host grew or wrote the resume table during registration",
+    ).toBe(1);
+    // The slot record is still kept, because release needs it -- and release
+    // is where an inert shim surfaces, by nulling a slot the table was never
+    // grown to hold.
+    expect(h.table.slotsOf(0)).toEqual([1, 2]);
   });
 
   it("registers and releases an activation with NO resume targets", () => {
