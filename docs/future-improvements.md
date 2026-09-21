@@ -1739,3 +1739,31 @@ cache keys from the real build closure rather than a hand-maintained list, the
 pattern in `build_deps.rs`. The same shape has now been found four times --
 the kernel `build.toml` omitting `crates/runtime-core`, the `has_programs()`
 hand-list, `newest_input()` omitting the instrumenter, and this.
+
+### `tsc` does not typecheck `host/test`
+
+`host/tsconfig.typecheck.json` sets `"include": ["src"]`, so
+`npx tsc -p tsconfig.typecheck.json` — the typecheck gate every task in this
+repository runs before committing — never looks at `host/test`.
+
+A dangling import in a test file therefore passes the gate and fails only when
+that file runs. Found 2026-09-21 while deleting a dead module: the deletion
+removed symbols a test imported, and `tsc` reported clean. What caught it was
+running the affected test files and sweeping for the symbols by name. Both of
+those are things a careful person does and neither is the gate.
+
+The risk is proportional to how much people trust the gate. "Typecheck passes"
+is quoted as evidence in task reports throughout this lane, and for test files
+it means nothing. That is worse than having no gate, because a check that
+covers less than its name suggests is read as covering everything.
+
+Two shapes of fix. A second config over `test` run alongside the first keeps
+the `src`-rooted path that the existing config's comment says it exists for.
+Widening `include` to both is simpler but changes what the existing invocation
+means, and the test tree may not be clean today — measure before assuming it
+is a one-line change.
+
+Worth pairing with the observation that this lane's own test files have grown
+substantially: `host/test` now holds the characterization baselines, the
+artifact gates and the seam tests that several plans depend on for evidence.
+Code that produces evidence deserves the same checking as code that ships.
