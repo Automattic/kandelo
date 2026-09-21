@@ -9054,6 +9054,24 @@ pub(crate) fn source_only_cache_receipt_path(
     Ok(parent.join(format!(".{basename}.kandelo-receipt.json")))
 }
 
+/// The last-used stamp sidecar of a SourceOnly generation: an empty file
+/// whose mtime `cache_gc` refreshes on every cache hit or store. It lives
+/// beside the receipt, never inside the generation, because the generation's
+/// own entries are covered by the receipt's metadata snapshot.
+#[cfg(unix)]
+pub(crate) fn source_only_cache_last_used_path(
+    canonical: &Path,
+    cache_key_sha: &str,
+) -> Result<PathBuf, String> {
+    let receipt = source_only_cache_receipt_path(canonical, cache_key_sha)?;
+    let name = receipt
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".kandelo-receipt.json"))
+        .ok_or_else(|| format!("unexpected receipt path {}", receipt.display()))?;
+    Ok(receipt.with_file_name(format!("{name}.kandelo-last-used")))
+}
+
 #[cfg(unix)]
 pub(crate) fn write_source_only_cache_receipt(
     canonical: &Path,
@@ -9196,6 +9214,8 @@ pub(crate) fn source_only_skip_receipt_if_clean(
             return None;
         }
     }
+    // A skipped node is still a cache hit: record the use for `cache_gc`.
+    crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
     Some(receipt)
 }
 
@@ -10088,6 +10108,19 @@ fn ensure_built_inner(
         build_permission,
         verify_cache,
     );
+    // Every SourceOnly resolution that yields a compiled generation -- a
+    // cache hit, a dependency admission, or a fresh store -- is a use that
+    // keeps the generation from being garbage-collected.
+    #[cfg(unix)]
+    if opts.policy == ResolvePolicy::SourceOnlyV1 {
+        if let Ok(ResolvedNode {
+            materialization: NodeMaterialization::CompiledDir(canonical),
+            ..
+        }) = &result
+        {
+            crate::cache_gc::touch_generation_last_used(canonical, &hex(&cache_identity));
+        }
+    }
 
     // Don't poison the cache with cycle errors — those reflect the
     // call stack at the moment of detection, not a stable property
@@ -17078,6 +17111,16 @@ fn cmd_resolve(
     } else {
         None
     };
+    // Hold the cache against `cache-gc` for the whole resolution. Nested
+    // resolvers inside a local-build node take this again under their
+    // parent's hold; shared holds never conflict with each other.
+    #[cfg(unix)]
+    let _cache_use = source_only_roots
+        .as_ref()
+        .map(|roots| {
+            crate::cache_gc::CacheUseLock::acquire_shared(&roots.base, "build-deps resolve")
+        })
+        .transpose()?;
     let cache_root = source_only_roots
         .as_ref()
         .map(|roots| roots.compiled.clone())
