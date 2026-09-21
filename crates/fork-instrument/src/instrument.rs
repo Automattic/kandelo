@@ -400,7 +400,8 @@ pub fn instrument_functions_with_targets_and_tail_sites(
         resume_thunks.push(thunk);
         instrumented.insert(*id);
     }
-    emit_resume_catalog(module, &resume_thunks);
+    let catalog = emit_resume_catalog(module, &resume_thunks);
+    emit_resume_placement_shim(module, runtime, catalog);
     emit_fixed_resume_boundaries(module, runtime);
     instrumented
 }
@@ -4453,7 +4454,7 @@ fn emit_resume_thunk(
     builder.finish(Vec::new(), &mut module.funcs)
 }
 
-fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) {
+fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) -> TableId {
     let size = thunks.len() as u64;
     let table = module
         .tables
@@ -4487,6 +4488,169 @@ fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) {
         name: RESUME_CATALOG_SECTION.into(),
         data,
     });
+    table
+}
+
+/// Emit `__wpk_fork_place_resume_thunks(ptr, count) -> placed`.
+///
+/// # Why the guest does this and the host no longer does
+///
+/// Placing a resume thunk is a copy between two tables the GUEST already
+/// holds: the catalog emitted just above, which it owns and exports, and the
+/// process-owned resume table it imports. The host used to perform that copy
+/// with `table.get` followed by `table.set` from JavaScript, which put two
+/// wasm instructions and a per-thunk JS call on a path that decides nothing.
+///
+/// This decides nothing either. The fork module still assigns every slot; the
+/// pairs at `ptr` ARE its decision, and this only applies them. That split is
+/// the same one `__wpk_fork_table_apply` makes on the module side
+/// (`crates/fork-module-inject/src/main.rs`): Rust keeps the logic, where it
+/// is testable, and only the write itself lives in emitted wasm, because Rust
+/// cannot emit `table.set` on an imported table and cannot hold a funcref at
+/// all.
+///
+/// # Why it grows
+///
+/// The resume table is declared `initial = 1, max = none`, because how many
+/// activations a process will load is not known when it is instantiated. The
+/// host grew it before each write. A shim that only wrote would trap on the
+/// very first activation, so the growth has to come with the write -- the same
+/// shape, for the same reason, as `inject_transit_grow`.
+///
+/// A failed grow is deliberately not reported as a distinct status: the
+/// following `table.set` then traps on its own bounds, which is the loud
+/// failure a slot the table cannot address deserves. `WebAssembly.Table.grow`
+/// threw on the host path too.
+///
+/// # Bounds
+///
+/// There is no range check here, for the reason `table_apply` gives: an
+/// out-of-range ordinal or slot must TRAP rather than write somewhere else. A
+/// hand-rolled check would turn that trap into a quiet return, and a thunk
+/// silently not placed is how a guest later resumes into the wrong function.
+/// The catalog read is emitted BEFORE the grow so a bad ordinal traps without
+/// having resized anything.
+///
+/// # Widths
+///
+/// Both tables are declared 32-bit (`table64 = false`) regardless of the
+/// module's memory width, so table indices are `i32` on every build and none
+/// of the `i64` widening `table_apply` needs applies to them. That is asserted
+/// below rather than assumed: flipping either declaration would otherwise emit
+/// a module that fails validation far from this code. The pair POINTER does
+/// follow the memory, because it is an address.
+fn emit_resume_placement_shim(module: &mut Module, runtime: &Runtime, catalog: TableId) {
+    // No process-owned resume table means nothing can be placed into one. The
+    // legacy, unlinked runtime has no replay router at all.
+    let Some(resume_table) = runtime.resume_table else {
+        return;
+    };
+    assert!(
+        !module.tables.get(catalog).table64 && !module.tables.get(resume_table).table64,
+        "resume placement assumes 32-bit catalog and resume tables"
+    );
+
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    let mut builder = FunctionBuilder::new(
+        &mut module.types,
+        &[ptr_ty, ValType::I32],
+        &[ValType::I32],
+    );
+    builder.name(runtime::names::EXPORT_PLACE_RESUME_THUNKS.into());
+
+    let pairs = module.locals.add(ptr_ty);
+    let count = module.locals.add(ValType::I32);
+    let index = module.locals.add(ValType::I32);
+    let record = module.locals.add(ptr_ty);
+    let slot = module.locals.add(ValType::I32);
+
+    {
+        let mut body = builder.func_body();
+        body.i32_const(0).local_set(index);
+        body.block(None, |done| {
+            let done_id = done.id();
+            done.loop_(None, |again| {
+                let again_id = again.id();
+                // Signed, so a negative count places nothing instead of
+                // reading four billion records.
+                again
+                    .local_get(index)
+                    .local_get(count)
+                    .binop(BinaryOp::I32GeS)
+                    .br_if(done_id);
+
+                // record = pairs + index * 8
+                again.local_get(pairs);
+                again.local_get(index).i32_const(8).binop(BinaryOp::I32Mul);
+                if ptr_ty == ValType::I64 {
+                    again.unop(UnaryOp::I64ExtendUI32);
+                }
+                again.binop(ptr_add(ptr_ty)).local_set(record);
+
+                again
+                    .local_get(record)
+                    .load(
+                        memory,
+                        LoadKind::I32 { atomic: false },
+                        MemArg {
+                            align: 4,
+                            offset: 4,
+                        },
+                    )
+                    .local_set(slot);
+
+                // The thunk first: a bad ordinal traps here, before the table
+                // has been resized. It stays on the stack across the grow.
+                again.local_get(slot).local_get(record).load(
+                    memory,
+                    LoadKind::I32 { atomic: false },
+                    MemArg {
+                        align: 4,
+                        offset: 0,
+                    },
+                );
+                again.table_get(catalog);
+
+                again
+                    .local_get(slot)
+                    .table_size(resume_table)
+                    .binop(BinaryOp::I32GeU)
+                    .if_else(
+                        None,
+                        |grow| {
+                            grow.ref_null(RefType::FUNCREF)
+                                .local_get(slot)
+                                .table_size(resume_table)
+                                .binop(BinaryOp::I32Sub)
+                                .i32_const(1)
+                                .binop(BinaryOp::I32Add)
+                                .table_grow(resume_table)
+                                // A refused grow leaves the write to trap on
+                                // the table's real bounds.
+                                .drop();
+                        },
+                        |_addressable| {},
+                    );
+                again.table_set(resume_table);
+
+                again
+                    .local_get(index)
+                    .i32_const(1)
+                    .binop(BinaryOp::I32Add)
+                    .local_set(index)
+                    .br(again_id);
+            });
+        });
+        // Every record before a trap was applied, so the count is the loop
+        // cursor rather than the caller's `count`.
+        body.local_get(index);
+    }
+
+    let shim = builder.finish(vec![pairs, count], &mut module.funcs);
+    module
+        .exports
+        .add(runtime::names::EXPORT_PLACE_RESUME_THUNKS, shim);
 }
 
 fn exported_function(module: &Module, name: &str) -> Option<FunctionId> {

@@ -85,6 +85,19 @@ pub mod names {
     pub const IMPORT_REFERENCE_VECTOR_GET: &str =
         wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET;
 
+    /// Applies one activation's resume-thunk placement inside the guest.
+    ///
+    /// `(ptr, count) -> placed` over packed `(ordinal: u32, slot: u32)` pairs
+    /// the fork module writes into shared linear memory. The guest already
+    /// holds both tables the copy needs -- it owns its resume catalog and
+    /// imports the process-owned resume table -- so the copy is a `table.get`
+    /// and a `table.set` here rather than a round trip through the host.
+    ///
+    /// Not in `wasm_posix_shared::abi` deliberately: like the catalog export
+    /// it sits beside, this is a name the instrumenter and the host runtime
+    /// agree on, not part of the kernel's structural ABI snapshot.
+    pub const EXPORT_PLACE_RESUME_THUNKS: &str = "__wpk_fork_place_resume_thunks";
+
     /// Process-owned zero-payload tag used only to transport the internal
     /// unwind across arbitrary Wasm result types.
     pub const IMPORT_UNWIND_TAG_MODULE: &str = "env";
