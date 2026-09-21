@@ -50,6 +50,35 @@ the amendment argues against it.
   `docs/surface-budget.json` in the same commit with a recorded reason — and
   this change should REDUCE `forkPlatformTypeScript`, which the budget test
   also flags.
+
+  **The `fm_*` ENTRY COUNTS, added 2026-09-20 because this plan moves them and
+  said nothing about it.** `forkModuleEntryPoints` counts
+  `^\s*pub (unsafe )?extern "C" fn fm_` in `crates/fork-module/src/lib.rs`
+  (`host/test/surface-budget.test.ts:879`). It measures **71** today, its
+  ceiling is 71, and **Task 3 adds `fm_publish_resume_assignment`**, so it goes
+  to 72 and `forkModuleHostEntries` 58 → 59. That growth is MANDATED BY THIS
+  PLAN, and under the maintainer's standing authorization of 2026-09-20 the
+  ceiling moves with it, in the same commit.
+
+  Record in `docs/surface-budget.json`'s `why` AND the commit message: the
+  entry added, that Task 3 mandated it, the before and after values, and the
+  standing authorization. **Flag it in your task report** — an authorized
+  raise is still a raise awaiting review, not a settled matter.
+
+  The test that separates the two cases: **"would this number still move if I
+  had implemented this task perfectly?"** If yes, the growth is mandated and
+  the CEILING is what has gone stale. If no, the growth IS the defect and the
+  ceiling is doing its job — stop and report. A raise must never be the thing
+  that makes an unrelated check go green, and "the gate is red and I need to
+  commit" is not a mandate. Every other task in this plan should move these
+  numbers DOWN or not at all; Task 6 deletes an entry, so 72 → 71 and 59 → 58.
+
+  **Measure, do not carry these numbers out of this document.** They were
+  taken at `57e05ef50` and Task 3 moves them:
+
+  ```bash
+  grep -cE '^\s*pub (unsafe )?extern "C" fn fm_' crates/fork-module/src/lib.rs
+  ```
 - **Run host tests from `host/`, never the repo root.** There is no root
   vitest config; a repo-root run silently drops `testTimeout: 30_000`, the
   `forks` pool, and `globalSetup`.
