@@ -13,7 +13,8 @@
  * - **Default:** still skip, so a partially provisioned tree stays usable for
  *   unrelated work — but print a line naming the artifact and the command that
  *   builds it, so the skip is visible in the log rather than inferred from a
- *   test count.
+ *   test count. The line goes to `process.stderr` directly; see the comment at
+ *   the write for why `console.error` silently did not work here.
  * - **`KANDELO_REQUIRE_E2E=1`:** the missing artifact is a failure. This is
  *   what a gate should set when a run's result is being used as evidence, and
  *   it is what makes "the suite passed" mean the suite ran.
@@ -45,9 +46,21 @@ export function artifactGate(
     );
   }
 
-  // Deliberately console.error: a skip that only shows up as a smaller test
-  // count is the defect this helper exists to close.
-  console.error(
+  // `process.stderr.write`, NOT `console.error`, and this is load-bearing.
+  //
+  // This announcement was written with `console.error` and NEVER REACHED THE
+  // OUTPUT, so from the day it was added until 2026-09-20 the default branch
+  // did neither of the two things this helper's own doc comment promises: it
+  // did not announce, and it did not fail. It skipped silently — the exact
+  // defect it exists to close — while reading as though it had been fixed.
+  //
+  // Measured under `host/vitest.config.ts` with a throwaway probe file: a
+  // module-scope `console.error` and an IN-TEST `console.error` both vanish,
+  // while `process.stderr.write` survives from both positions. Vitest
+  // intercepts the `console` object; writing the file descriptor goes around
+  // it. Do not "tidy" this back into `console.error`, and do not assume a
+  // diagnostic is visible because it was printed — in this suite, check.
+  process.stderr.write(
     `\n[artifact-gate] ${suite} is SKIPPING its end-to-end cases — this run ` +
       `proves nothing about them.\n${detail}\n` +
       `[artifact-gate] Set KANDELO_REQUIRE_E2E=1 to make this a failure.\n`,
