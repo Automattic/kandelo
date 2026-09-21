@@ -10,8 +10,16 @@ static memory out of every fork-capable THREAD's mmap window before it forks,
 by moving eleven durable stores, the allocator floor and one guest-facing
 transient onto chunk-and-chain storage that is allocated at first use during a
 fork and released at `dlclose`. The per-instance, per-thread reservation goes
-from **3,735,552 bytes to roughly 1,179,648** — and, for the first time, the
-per-activation registries get a release path at all.
+from **3,735,552 bytes to 17 pages (1,114,112) plus the resized staging slab**
+— and, for the first time, the per-activation registries get a release path at
+all.
+
+**Both of those numbers are measurements, not constants.** 3,735,552 was
+measured on the pre-Change-2 artifact of 2026-09-20; Change 2 adds a static of
+its own, so the baseline this plan actually starts from is whatever Task 1
+Step 2 records. Every figure in this plan is therefore expressed as a DELTA
+against a recorded row, and the absolutes are kept only as an illustration of
+the shape. See Task 0 section B.
 
 **Architecture:** One payload arena of never-moved, variable-size records
 tagged `(activation_id, kind)`, plus a directory chain of fixed-size
@@ -139,15 +147,71 @@ Every task's requirements implicitly include this section.
   cd host && npx vitest run test/surface-budget.test.ts && echo "BUDGET OK"
   ```
 
-  **Never raise a ceiling to make a check pass.** If a ceiling must move, STOP
-  and report rather than committing against a red gate. Note the budget test
-  also fails on REDUCTIONS with `slack: 0`, so a commit that shrinks a surface
-  lowers its ceiling in the same commit with a recorded reason. The surfaces
-  this plan moves: `forkTypeScript` (ceiling 894, slack 0 — covers
-  `host/src/fork-module-*.ts`), `forkModuleEntryPoints` (71, slack 2),
-  `forkModuleHostEntries` (58, slack 2), `forkModuleEntriesWithoutProductionCaller`
-  (2, slack 0 — **already at its ceiling, so this plan adds no test-only
-  `fm_*` entry**).
+  **Never raise a ceiling to make a check pass.** That sentence is absolute
+  and it is not what the next one is about.
+
+  **A ceiling may be raised WHEN THIS PLAN MANDATES THE GROWTH**, under the
+  maintainer's standing authorization of 2026-09-20. The two cases are easy
+  to blur and the difference is the whole point:
+
+  * **MANDATED GROWTH** — this plan's own text requires an addition, the
+    addition is correct, and the CEILING is what has gone stale. **Raise it,
+    in the same commit.** Record, in `docs/surface-budget.json`'s `why` field
+    AND in the commit message: what was added, which task mandated it, the
+    before and after values, and that it was raised under the 2026-09-20
+    standing authorization. **Flag it in the task report** so it reaches the
+    maintainer's close-out list — an authorized raise is still a raise to be
+    reviewed, not a settled matter.
+  * **ANYTHING ELSE** — an unrelated red gate, a surface that grew by
+    accident, a number that would not have moved had the work been done well,
+    or growth you are not CERTAIN this plan mandates. **Do not raise it. Stop
+    and report.** A ceiling raise must never be the thing that makes an
+    unrelated check go green, and "the gate is red and I need to commit" is
+    not a mandate.
+
+  **The test to apply: "would this number still move if I had implemented
+  this task perfectly?"** If yes, the growth is mandated and the ceiling is
+  stale. If no, the growth IS the defect and the ceiling is doing its job.
+
+  Note the budget test also fails on REDUCTIONS with `slack: 0`, so a commit
+  that shrinks a surface lowers its ceiling in the same commit with a
+  recorded reason. That half is unchanged by any of the above.
+
+  **MEASURE THE SURFACE BEFORE YOU MOVE IT. Do not carry a number out of this
+  plan.** Change 2 is still landing, and its Task 3 adds
+  `fm_publish_resume_assignment` — so `forkModuleEntryPoints` and
+  `forkModuleHostEntries` will each be one higher than they are today by the
+  time this plan runs, and `forkTypeScript` will have grown too. Any absolute
+  an implementer pre-computes from this document is wrong. Every ceiling move
+  in this plan is therefore expressed as a DELTA, with the before-value
+  measured in the same step:
+
+  ```bash
+  cd /Users/brandon/kandelo-lane-f
+  grep -cE '^\s*pub (unsafe )?extern "C" fn fm_' crates/fork-module/src/lib.rs
+  python3 -c 'import json;b=json.load(open("docs/surface-budget.json"))["surfaces"];print({k:b[k]["ceiling"] for k in ("forkTypeScript","forkModuleEntryPoints","forkModuleHostEntries","forkModuleEntriesWithoutProductionCaller")})'
+  ```
+
+  The surfaces this plan moves, with the values measured on this branch at
+  `a99a3a2d8` on 2026-09-20 — **as a starting point to re-measure, not as a
+  gate**: `forkTypeScript` (ceiling 894, slack 0 — covers
+  `host/src/fork-module-*.ts` plus `host/src/fork-reference-capture-module.ts`),
+  `forkModuleEntryPoints` (ceiling 71, slack 2, measuring 71 today),
+  `forkModuleHostEntries` (ceiling 58, slack 2),
+  `forkModuleEntriesWithoutProductionCaller` (ceiling 2, slack 0).
+
+  **This plan still adds no `fm_*` entry, and here is what that rests on.**
+  `forkModuleEntryPoints` counts lines matching
+  `/^\s*pub (unsafe )?extern "C" fn fm_/` in
+  `crates/fork-module/src/lib.rs` (`host/test/surface-budget.test.ts:879-883`),
+  and `forkModuleEntriesWithoutProductionCaller` buckets those same names by
+  whether a production host mentions them. Every observable this plan adds —
+  including ruling D1-a's live directory-entry count — is a FIELD ON THE
+  EXISTING `fm_stats` ENTRY, which matches neither count. The only movement
+  this plan causes is Task 6's DELETION of `fm_set_resume_catalog`. So the
+  zero-slack `forkModuleEntriesWithoutProductionCaller` ceiling is not a
+  constraint this plan can breach — but re-run the grep above before relying
+  on that, because it is a claim about the code as it stands, not a law.
 - **The spec's testing requirement (decision 2):** the full suite must pass in
   BOTH the default build AND a build with every arena's first chunk forced
   small enough to chain. A conversion whose chunk path has not executed is not
@@ -163,12 +227,40 @@ Every task's requirements implicitly include this section.
   exists for. Assert the responder's `SYS_MUNMAP` tally beside it, one unmap
   per chunk, as `host/test/fork-identity-release.test.ts:145-205` already
   does. **Both halves, or neither is a guard.**
-- **`fm_stats` field numbers for new observables start at 101.** 100 is
-  `IDENTITY_CHUNK_COUNT_FIELD`, deliberately far above the reference table's
-  contiguous index space so the next counter appended cannot shadow it
-  (`crates/fork-module/src/lib.rs:10916-10929`). Use 101, 102, 103, 104 and
-  keep the same gap reasoning. `host/test/fork-module-backend.test.ts` asserts
-  these stay above `FORK_MODULE_STATS.length`.
+- **EVERY `fm_stats` field this plan adds, in one place. This list is the
+  only place a number is chosen.** 100 is `IDENTITY_CHUNK_COUNT_FIELD`,
+  deliberately far above the reference table's contiguous index space so the
+  next counter appended cannot shadow it
+  (`crates/fork-module/src/lib.rs:10916-10929`). Follow that convention: a
+  HIGH, EXPLICITLY CHOSEN index with an enforcing pin, **never "the next free
+  index"**. `fm_stats` answers a high field from an `if field == K` compare
+  placed BEFORE the reference table, so two arms sharing a number is not a
+  compile error at the call site — the second arm is dead and the first
+  answers both reads with a plausible number from the wrong source.
+
+  | field | constant | counts | added by |
+  |---|---|---|---|
+  | 100 | `IDENTITY_CHUNK_COUNT_FIELD` | identity-registry chunks | already landed (Phase 0) |
+  | 101 | `ARENA_RECORD_CHUNK_COUNT_FIELD` | payload-record chunks | Task 1 |
+  | 102 | `ARENA_DIRECTORY_CHUNK_COUNT_FIELD` | directory chunks | Task 1 |
+  | 103 | `RESUME_FREE_CHUNK_COUNT_FIELD` | free-slot bitmap chunks | Task 2 |
+  | 104 | `SCRATCH_CHUNK_COUNT_FIELD` | guest scratch chunks | Task 10 |
+  | 105 | `ARENA_DIRECTORY_ENTRY_COUNT_FIELD` | LIVE directory entries (ruling D1-a) | Task 1 |
+
+  **105 is higher than 104 although Task 1 lands before Task 10, and that is
+  the point.** The number is chosen from this table, not from what happens to
+  be free when the code is written; D1-a's field went unnumbered in an earlier
+  draft and an implementer taking the next free index would have taken 103 and
+  silently shadowed Task 2's.
+
+  **Every task that adds a field pins its own number.** Task 1 creates the
+  compile-time pin `FM_STATS_HIGH_FIELDS` (Task 1 Step 5); Tasks 2 and 10 each
+  add their constant to that array in the same edit that adds the `if` arm, so
+  a reused number fails the BUILD rather than answering a read. Each of those
+  tasks also has a perturbation step that sets its field to an already-claimed
+  number and confirms `build-wasm.sh` fails.
+  `host/test/fork-module-backend.test.ts` separately asserts these stay above
+  `FORK_MODULE_STATS.length`.
 - **ABI is 44, unreleased, and this lane is already defining its contents.**
   No separate `ABI_VERSION` bump is in scope. Task 6 removes an `fm_*` entry,
   which is an ABI change landing inside an in-progress bump — the spec
@@ -176,6 +268,30 @@ Every task's requirements implicitly include this section.
 - Commit subject begins `Area: Purpose`; subject and body wrap at 72 columns.
   Gate a wrap check on EXIT STATUS:
   `awk 'length($0) > 72 { print; n++ } END { if (n) exit 1 }'` and check `$?`.
+- **`$?` AFTER A PIPE IS THE PIPE'S LAST STAGE, NOT YOUR COMMAND.** This rule
+  has been stated in the abstract and broken twice in this plan's own drafts,
+  in the two steps whose entire job was to return a verdict, so here is the
+  failing shape and its two fixes verbatim:
+
+  ```bash
+  # WRONG. `tee` and `tail` always succeed, so this prints 0 on a red suite.
+  npx vitest run 2>&1 | tee /tmp/claude-501/run.txt
+  echo "SUITE EXIT: $?"
+
+  # RIGHT (a), PIPESTATUS -- the status of each stage, index 0 is the command:
+  npx vitest run 2>&1 | tee /tmp/claude-501/run.txt
+  suite=${PIPESTATUS[0]}; echo "SUITE EXIT: $suite"
+  test "$suite" -eq 0 || echo "SUITE RED"
+
+  # RIGHT (b), pipefail -- the pipeline takes the first failing stage's status:
+  set -o pipefail
+  npx vitest run 2>&1 | tee /tmp/claude-501/run.txt && echo "SUITE OK"
+  ```
+
+  `PIPESTATUS` is bash/zsh; if a step runs under `/bin/sh`, use `set -o
+  pipefail` or redirect to a file and run the reader separately. A step that
+  reports a status it did not read is worse than a step with no status at
+  all, because it looks like evidence.
 - Work on branch `brandonpayton/lane-f-fork-inversion` (or its successor).
   Push after every commit. Trailer on every commit:
   `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`
@@ -238,17 +354,39 @@ decided on top of it. **Do not re-derive any of it.**
 | 11 | `VectorInFlight` — withdrawn in the decision notes, "its own chain too" in the table | **The spec contradicts itself.** Task 11 Step 5 stops and asks rather than picking. |
 | 12 | "checking three lifetime classifications found two errors" | **Three of three.** The `CapturedExternrefs` remedy itself is wrong (row 6). |
 
-Everything in the spec's per-store BYTE table is still exactly right, and the
-module's `dylink.0 memorySize = 2,395,460` is unchanged in artifacts built
-2026-09-19.
+Everything in the spec's per-store BYTE table is still exactly right — those
+nine savings are read from the source declarations and sum to 2,372,352, which
+is why this plan gates on DELTAS. The module's `dylink.0 memorySize` measured
+2,395,460 in artifacts built 2026-09-19 and again on 2026-09-20, **and Change
+2 will move it before this plan starts**: treat it as the last pre-Change-2
+measurement, not as a constant (Task 0 section B1).
 
 ### B. Finding: the 36,164-byte threshold, and how this plan is structured around it
 
 `regionBytes` rounds `staticBytes + SHADOW_STACK_BYTES` up to a 64 KiB page
-BEFORE adding the slab. Today `stackTopOffset = 3,444,036` sits at 52.55
-pages, rounded to 53. **Dropping to 52 pages needs a saving of at least
-36,164 bytes before anything is observable at all.** Seven of the eleven
-stores are individually below that line.
+BEFORE adding the slab. The four terms are read from
+`host/src/fork-module-instance.ts:185-214`, and **every number in this section
+is derived from them** rather than asserted:
+
+```
+staticBytes    = alignUp(memorySize, 1 << memoryAlign)   // memoryAlign is an
+                                                         // EXPONENT, not a
+                                                         // byte count
+stackTopOffset = staticBytes + SHADOW_STACK_BYTES        // 1,048,576
+stagingOffset  = ceil(stackTopOffset / 65,536) * 65,536
+regionBytes    = stagingOffset + STAGING_SLAB_BYTES      // 262,144 today
+```
+
+Measured on the pre-Change-2 artifact, 2026-09-20: `memorySize` **2,395,460**,
+`memoryAlign` **4** (so the alignment is 16), `staticBytes` **2,395,472**,
+`stackTopOffset` **3,444,048** — 52.55 pages, rounded up to 53 (3,473,408) —
+and `regionBytes` **3,735,552**.
+
+**Dropping to 52 pages needs a saving of at least 36,164 bytes before anything
+is observable at all.** A 52-page region needs
+`staticBytes <= 3,407,872 - 1,048,576 = 2,359,296`, and
+`2,395,460 - 2,359,296 = 36,164`. Seven of the eleven stores are individually
+below that line.
 
 The spec's own experiment demonstrated this and drew no conclusion: shrinking
 `ACT_GC_CODEC_FLOOR` from 32,768 to 1 left `regionBytes` at exactly
@@ -256,26 +394,68 @@ The spec's own experiment demonstrated this and drew no conclusion: shrinking
 
 **So this plan does not land one store per commit.** Conversions are batched
 so that each commit either crosses a page boundary or says plainly that it
-moves zero region bytes and names what it DOES buy. The ledger below is
-computed from `staticBytes` at each step and is the expected result of each
-task. **Every task's verification step checks its own row.** A task that
-reports a different number has either not reached the artifact or has changed
-something this plan did not predict — in both cases, stop.
+moves zero region bytes and names what it DOES buy.
 
-| Task | Store(s) | static Δ | staticBytes after | stackTopOffset | pages | **regionBytes Δ** |
-|---|---|---|---|---|---|---|
-| — | baseline | — | 2,395,460 | 3,444,036 | 53 | — (3,735,552) |
-| 1 | arena + directory (no store) | +~64 | ~2,395,524 | ~3,444,100 | 53 | **0** (enabling) |
-| 2 | `ResumeFreeBits` | −8,192 | 2,387,268 | 3,435,844 | 53 | **0** (correctness) |
-| 3 | `ResumeSlotIndex` | −786,432 | 1,600,836 | 2,649,412 | 41 | **−786,432** |
-| 4 | `ActKfigBytes`+`Index` | −67,584 | 1,533,252 | 2,581,828 | 40 | **−65,536** |
-| 5 | GC codec + exn tags | −68,608 | 1,464,644 | 2,513,220 | 39 | **−65,536** |
-| 6 | `CatalogCell` + activation catalog | −296,448 | 1,168,196 | 2,216,772 | 34 | **−327,680** |
-| 7 | staging slab | 0 | 1,168,196 | 2,216,772 | 34 | **−(measured), exact** |
-| 8 | the five small stores | −14,592 | 1,153,604 | 2,202,180 | 34 | **0** (correctness) |
-| 9 | `HEAP_FLOOR` | −1,048,576 | 105,028 | 1,153,604 | 18 | **−1,048,576** |
-| 10 | `ScratchCell` | −65,536 | 39,492 | 1,088,068 | 17 | **−65,536** |
-| 11 | `CapturedExternrefs` | −16,384 | 23,108 | 1,071,684 | 17 | **0** (correctness) |
+### B1. THE LEDGER IS RELATIVE. Nothing in it is a constant to gate on.
+
+**2,395,460 is not the number this plan starts from.** Change 2's Task 3 adds
+a fixed-BSS assignment buffer to `crates/fork-module/src/lib.rs` by design,
+and its size is the implementer's choice, so `dylink.0 memorySize` will have
+MOVED by the time Task 1 runs. An earlier draft of this plan opened with
+`Expected: memorySize 2395460 … if it is anything else, stop and report`,
+which would have fired on the plan's very first command.
+
+So the ledger works like this, and every task follows it:
+
+1. **Task 1 Step 2 MEASURES AND RECORDS the baseline** into
+   `/tmp/claude-501/fork-storage-pristine/ledger.json`, along with the build
+   key of the artifact it measured. Call that recorded `memorySize` **B**, and
+   Task 1's own measured growth **d₁**.
+2. **Every per-task expectation is a DELTA against the previous recorded
+   row**, never an absolute. The per-store savings below are fixed — they come
+   from the source declarations of the statics being deleted, which no
+   baseline change affects — so the deltas are the durable part of this
+   ledger.
+3. **`regionBytes` is recomputed from the measured `memorySize`** with the
+   four-term formula above, by the same recorder. A task reports the page
+   count it got; the ledger's page column is a PREDICTION, and a prediction
+   that misses is a finding to report, not a reason to stop.
+4. The absolute columns below are marked **illustrative** and are kept only so
+   a reader can see the shape of the run. **Nothing gates on them.**
+
+| Task | Store(s) | static Δ (fixed) | cumulative Δ | illustrative `memorySize` after | pages | **regionBytes Δ** | threshold at this row |
+|---|---|---|---|---|---|---|---|
+| — | baseline | — | — | B (2,395,460 measured pre-Change-2) | 53 | — (3,735,552) | 36,164 |
+| 1 | arena + directory (no store) | +d₁ (~64 measured) | +d₁ | B + d₁ | 53 | **0** (enabling) | — |
+| 2 | `ResumeFreeBits` | −8,192 | −8,192 + d₁ | 2,387,268 + d₁ | 53 | **0** (correctness) | 36,164 |
+| 3 | `ResumeSlotIndex` | −786,432 | −794,624 + d₁ | 1,600,836 + d₁ | 41 | **−786,432** | 27,972 |
+| 4 | `ActKfigBytes`+`Index` | −67,584 | −862,208 + d₁ | 1,533,252 + d₁ | 40 | **−65,536** | 27,972 |
+| 5 | GC codec + exn tags | −68,608 | −930,816 + d₁ | 1,464,644 + d₁ | 39 | **−65,536** | 25,924 |
+| 6 | `CatalogCell` + activation catalog | −296,448 | −1,227,264 + d₁ | 1,168,196 + d₁ | 34 | **−327,680** | 22,852 |
+| 7 | staging slab | 0 | −1,227,264 + d₁ | 1,168,196 + d₁ | 34 | **−(measured), exact** | 54,084 |
+| 8 | the five small stores | −14,592 | −1,241,856 + d₁ | 1,153,604 + d₁ | 34 | **0** (correctness) | 54,084 |
+| 9 | `HEAP_FLOOR` | −1,048,576 | −2,290,432 + d₁ | 105,028 + d₁ | 18 | **−1,048,576** | 39,492 |
+| 10 | `ScratchCell` | −65,536 | −2,355,968 + d₁ | 39,492 + d₁ | 17 | **−65,536** | 39,492 |
+| 11 | `CapturedExternrefs` | −16,384 | −2,372,352 + d₁ | 23,108 + d₁ | 17 | **0** (correctness) | 39,492 |
+
+The nine per-store savings sum to 2,372,352, which is why the last row reads
+`B − 2,372,352 + d₁`. **The illustrative final region is 17 pages =
+1,114,112, plus whatever slab Task 7 measured.** (An earlier draft said
+1,179,648 in Task 13; that is 18 pages, Task 9's figure carried forward past
+Task 10's −65,536.)
+
+**Where the thresholds come from.** A "threshold" is how far `memorySize` must
+fall FROM THE ROW ABOVE before the region drops one page:
+
+```
+threshold = memorySize_prev − ((pages_prev − 1) × 65,536 − 1,048,576)
+```
+
+The column above evaluates that against the illustrative row above it, WITHOUT
+d₁ — so each is off by d₁ from what you will measure, which is tens of bytes
+and moves none of them across a page step. **Recompute yours from your own
+recorded row** with the recorder Task 1 Step 2 writes; it prints the threshold
+beside every measurement.
 
 Three tasks move ZERO region bytes: **2, 8 and 11**. Each says so in its own
 text. **Do not let an implementer land one of them and wonder why nothing
@@ -284,10 +464,13 @@ changed.**
 Two arithmetic facts you will need:
 
 * **Task 1 has 29,372 bytes of headroom before it pushes the region UP a
-  page.** `3,473,408 − 3,444,036 = 29,372`. New Rust *code* lives in the code
-  section and costs nothing here; only new *statics* count. The arena's four
-  roots are 32 bytes. If Task 1's measured `memorySize` rises by more than
-  29,372, something is wrong — stop.
+  page**, measured against the pre-Change-2 baseline:
+  `2,424,832 − 2,395,460 = 29,372`, where 2,424,832 is
+  `53 × 65,536 − 1,048,576`, the largest `staticBytes` a 53-page region holds.
+  New Rust *code* lives in the code section and costs nothing here; only new
+  *statics* count. The arena's roots are a few dozen bytes. **Recompute this
+  against YOUR recorded baseline** — the recorder prints it as `headroom` —
+  and if Task 1's measured growth exceeds it, something is wrong; stop.
 * **Task 7's saving is the only exact one in the plan.** The slab is added
   AFTER the page round-up (`regionBytes = stagingOffset + STAGING_SLAB_BYTES`),
   so a byte off the slab is a byte off the region with no rounding.
@@ -381,10 +564,18 @@ guard whose failure is silent that D1 rejects in the spec's design. Task 1
 must therefore carry the bound in code:
 
 * maintain a live directory-entry count alongside the chain;
-* expose it as a new `fm_stats` field (follow the `IDENTITY_CHUNK_COUNT_FIELD
-  = 100` convention added in Phase 0 — a high, explicitly numbered index with
-  a matching pin, NOT the next free slot, so a later insertion cannot shadow
-  it);
+* expose it as `fm_stats` field **105**, named
+  `ARENA_DIRECTORY_ENTRY_COUNT_FIELD` — the number is taken from the single
+  table in Global Constraints, which is the only place this plan chooses one.
+  It follows the `IDENTITY_CHUNK_COUNT_FIELD = 100` convention added in Phase
+  0: a high, explicitly numbered index with an enforcing pin, NOT the next
+  free slot, so a later insertion cannot shadow it. **105 sits above Task 10's
+  104 although Task 1 lands first**, and that is deliberate: an earlier draft
+  left this field unnumbered, and an implementer taking the next free index
+  would have taken 103 — the number Task 2 also takes. Both are `if field ==
+  K` compares placed before the reference table, so the collision would have
+  been a plausible number from the wrong source, not a compile error. Task 1
+  Step 5's `FM_STATS_HIGH_FIELDS` pin makes any such reuse a BUILD failure;
 * when the count first exceeds 64, emit the module's existing loud diagnostic
   once, naming the count and this ruling, and keep running. Do NOT return an
   errno and do NOT abort: exceeding 64 is a performance signal, not a
@@ -394,6 +585,30 @@ must therefore carry the bound in code:
 
 That makes the revisit trigger observable from any run, including a browser
 one, instead of depending on which fixtures an implementer chose.
+
+**RESOLUTION (2026-09-21), after the premise was checked.** D1-a's third
+bullet rests on the module having a loud diagnostic. **It does not.**
+`crates/fork-module` is a `no_std` PIC side module whose only outward paths
+are syscalls through the channel, `fm_stats` and `fm_last_errno`; there is no
+`module_log`, no `SYS_WRITE` diagnostic, nothing to emit through. So the
+ruling stands with its loudness moved rather than dropped:
+
+* **The COUNT stays in the module** — field 105, exactly as bulleted above.
+  That is the runtime fact, and it is what the third bullet was for.
+* **The EMIT moves to the host, as a test assertion** (Task 1 Step 5a). The
+  fixture every arena test instantiates reads field 105 after each scenario
+  and FAILS past 64, with a message naming this ruling. A test is not counted
+  surface, so this adds none — and it fires by itself rather than depending
+  on which fixtures someone thought to check.
+* **ACCEPTED CONSEQUENCE, stated rather than hidden:** the trigger fires when
+  a TEST runs, not inside a browser production run. A module-side diagnostic
+  channel would cover that case and is **a separate change this plan
+  deliberately does not attempt** — inventing a host-visible reporting path
+  inside a storage conversion is the kind of scope creep this plan's own
+  rules reject.
+* **No errno, no abort**, exactly as the third bullet says: past 64 the
+  sorted-directory design from the spec is worth revisiting and that is the
+  maintainer's call, not a fork failure.
 
 **D2. `RESUME_FREE_BITS` is a redesign, not a conversion** (research R-D).
 `RESUME_NEXT_SLOT` (`lib.rs:628`) is monotonic and the only thing bounding
@@ -434,8 +649,36 @@ the child inherits through the memory clone.
 of the parent's, so the parent's chunk mappings are real mappings in the
 child. Resetting a root to zero without unmapping leaks every one of them in a
 long-lived child. So Task 1 gives the arena `arena_release_all()` and the
-scrub calls it — **sequenced AFTER `CHANNEL_BASE` is stored** (`lib.rs:3532`),
-because the release needs a serviced channel. Task 1 Step 7 tests it.
+scrub calls it — **sequenced AFTER `CHANNEL_BASE` is stored**, because the
+release needs a serviced channel. Task 1 Step 7 tests it.
+
+**The store is at `crates/fork-module/src/lib.rs:3551`**, not the `:3532` an
+earlier draft of this plan cited in three places. Verified on this branch at
+`a99a3a2d8`, together with its two neighbours, because a line number that is
+wrong by nineteen lines in a sequencing argument is a sequencing argument
+about the wrong code:
+
+```bash
+grep -n "CHANNEL_BASE.store\|reset_captured_externrefs()\|RESUME_FREE_BITS.0.get() }.fill(0)" \
+  crates/fork-module/src/lib.rs | head -5
+```
+
+| line | statement | why this plan cites it |
+|---|---|---|
+| `:3522` | `unsafe { &mut *RESUME_FREE_BITS.0.get() }.fill(0);` | Task 2 replaces it with `free_bits_release_all()` |
+| `:3534` | `reset_captured_externrefs();` | Task 11 makes this an allocating call, which is why Task 9's floor-of-zero ordering matters |
+| `:3551` | `CHANNEL_BASE.store(channel_base, Ordering::Relaxed);` | every release in the scrub is sequenced AFTER this |
+
+All three shift as Tasks 1-8 edit the block. **Re-grep rather than trusting
+any of them after the first commit lands.**
+
+**This is also an ordering dependency that spans three tasks.** `:3534` runs
+SEVENTEEN LINES BEFORE `:3551`, so with `HEAP_FLOOR = 0` (Task 9) any bump
+allocation inside `reset_captured_externrefs()` (Task 11) would run before the
+channel base exists and fail with `EINVAL` from `channel_base()`
+(`lib.rs:9029-9035`) — at the module's FIRST call, at instantiation. Task 9
+records the dependency; **Task 11 Step 3a is where it is checked**, because
+that is the first moment the condition can be violated.
 
 ### G. The native host is a third consumer with no staging slab (research R-G)
 
@@ -472,8 +715,10 @@ headroom before the region would move UP a page — not that anything shrank.
   COW-child scrub calls `arena_release_all()`
 - Modify: `crates/fork-module/src/lib.rs:11003` (`fm_resume_slots` op 1) —
   calls `arena_release_activation()` beside `release_identity_activation()`
-- Modify: `crates/fork-module/src/lib.rs:10916-10929` — two new `fm_stats`
-  fields
+- Modify: `crates/fork-module/src/lib.rs:10916-10929` — **three** new
+  `fm_stats` fields (101 record chunks, 102 directory chunks, 105 live
+  directory entries per ruling D1-a) plus the `FM_STATS_HIGH_FIELDS`
+  compile-time pin they are checked by
 - Create: `host/test/fork-arena-release.test.ts`
 - Create: `host/test/fork-arena-lifetime.test.ts`
 - Create: `host/test/fork-arena-cow-scrub.test.ts`
@@ -486,13 +731,24 @@ headroom before the region would move UP a page — not that anything shrank.
 /// the build key is derived from source, so an env-driven variant would
 /// produce different bytes under an identical key.
 const ARENA_CHUNK_BYTES: u64 = 65_536;
-/// +0 next: u64, +8 size: u64, +16 used: u32, +20 live: u32.
-/// WIDER THAN THE IDENTITY REGISTRY'S 16, and the two extra fields are why:
+/// +0 next: u64, +8 size: u64, +16 used: u32, +20 live: u32,
+/// +24 chain-specific: u64.
+///
+/// **THE ONE HEADER SIZE. Every chain in this plan uses it**, because a
+/// chain that sized its mapping with one header and addressed its body with
+/// another would overrun by the difference -- and on the oversized path,
+/// which Task 12's forced build makes the COMMON path, that difference lands
+/// in the last bytes of a live record.
+///
+/// WIDER THAN THE IDENTITY REGISTRY'S 16, and the three extra fields are why:
 /// `size` because a chunk holding an oversized record is not
-/// `ARENA_CHUNK_BYTES` and release must unmap exactly what it mapped, and
-/// `live` separate from `used` because payload records never move, so
-/// "handed out" and "still owned" are different numbers.
-const ARENA_CHUNK_HEADER: u64 = 24;
+/// `ARENA_CHUNK_BYTES` and release must unmap exactly what it mapped; `live`
+/// separate from `used` because payload records never move, so "handed out"
+/// and "still owned" are different numbers; and +24 because each chain needs
+/// one word of its own -- the record and directory chains keep `capacity`
+/// there (see `arena_map_chunk`), the scratch chain keeps `prev` (Task 10),
+/// and the free-bits chain leaves it zero (Task 2).
+const ARENA_CHUNK_HEADER: u64 = 32;
 /// +0 next_in_activation: u64, +8 kind: u32, +12 byte_len: u32.
 const RECORD_HEADER: u64 = 16;
 /// +0 activation_id: u64, +8 records_head: u64.
@@ -515,6 +771,13 @@ const REC_KIND_STATIC_ROOT_BASE: u32 = 11;
 /// Allocate `byte_len` bytes owned by `(activation_id, kind)`, returning the
 /// PAYLOAD address in guest linear memory. The bytes are zeroed.
 /// `EINVAL` if `(activation_id, kind)` already has a record.
+///
+/// **Capacity comes from the chunk's recorded `capacity` at +24, NEVER from
+/// its `size`.** `size` is what was MAPPED, and `channel_mmap` rounds up to a
+/// 64 KiB wasm page; `capacity` is what the constant says a chunk holds. The
+/// identity registry makes the same distinction with
+/// `IDENTITY_ENTRIES_PER_CHUNK` (`lib.rs:1006-1007`), derived from its
+/// constant rather than from any mapping.
 fn arena_alloc(activation_id: u32, kind: u32, byte_len: usize) -> Result<u64, Errno>;
 
 /// The payload address and byte length for `(activation_id, kind)`, or `None`.
@@ -534,6 +797,11 @@ fn arena_release_all();
 
 fn arena_record_chunk_count() -> u32;
 fn arena_directory_chunk_count() -> u32;
+
+/// LIVE directory entries -- one per activation with any record. Ruling D1-a
+/// makes the linear walk's 64-activation revisit trigger a runtime fact
+/// rather than an instruction to an implementer.
+fn arena_directory_entry_count() -> u32;
 ```
 
 - [ ] **Step 1: Take a pristine copy before touching anything**
@@ -548,24 +816,180 @@ git rev-parse HEAD > /tmp/claude-501/fork-storage-pristine/base-sha
 Every perturbation in this plan restores from this copy, never from
 `git checkout --`.
 
-- [ ] **Step 2: Record the baseline numbers you are about to move**
+- [ ] **Step 2: MEASURE and RECORD the baseline — do not assert it**
+
+**There is no expected number here.** Change 2's Task 3 adds a fixed-BSS
+assignment buffer to `crates/fork-module/src/lib.rs`, sized by its
+implementer, so `dylink.0 memorySize` will not be the 2,395,460 this plan was
+drafted against. An earlier draft opened with
+`Expected: memorySize 2395460 … if it is anything else, stop and report`,
+which would have fired on this plan's very first command for a reason that is
+not a defect. What matters is the DELTA each task produces, so this step
+records the row every later task measures against.
+
+Write the recorder once. Every task from here calls it.
 
 ```bash
 cd /Users/brandon/kandelo-lane-f
-node -e '
-const fs=require("fs");
-const m=new WebAssembly.Module(fs.readFileSync("local-binaries/fork_module32.wasm"));
-const s=WebAssembly.Module.customSections(m,"dylink.0")[0];
-const b=new Uint8Array(s); let i=0;
-const uleb=()=>{let r=0,sh=0,x;do{x=b[i++];r|=(x&0x7f)<<sh;sh+=7}while(x&0x80);return r>>>0};
-const id=b[i++]; const len=uleb();
-console.log("subsection",id,"memorySize",uleb(),"memoryAlign",uleb(),"tableSize",uleb());
-'
+mkdir -p /tmp/claude-501/fork-storage-pristine
+cat > /tmp/claude-501/fork-storage-pristine/ledger.mjs <<'LEDGER_MJS'
+// The Change 3 storage ledger.
+//
+//   node ledger.mjs record <label>          append a measured row
+//   node ledger.mjs expect <label> <delta>  append, and exit 1 unless
+//                                           memorySize moved by exactly
+//                                           <delta> since the previous row
+//
+// Run from the repository root. Derives the region from the SAME four terms
+// host/src/fork-module-instance.ts:185-214 uses, so this file and the host
+// cannot drift into two answers.
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+
+const LEDGER = "/tmp/claude-501/fork-storage-pristine/ledger.json";
+const WASM = "local-binaries/fork_module32.wasm";
+const KEY = `${WASM}.build-key`;
+const SHADOW_STACK_BYTES = 1024 * 1024;
+const PAGE = 65536;
+
+const [mode, label, deltaArg] = process.argv.slice(2);
+if ((mode !== "record" && mode !== "expect") || !label) {
+  console.error("usage: ledger.mjs record <label> | expect <label> <delta>");
+  process.exit(2);
+}
+
+const section = WebAssembly.Module.customSections(
+  new WebAssembly.Module(readFileSync(WASM)),
+  "dylink.0",
+)[0];
+if (!section) {
+  console.error(`${WASM}: no dylink.0 section`);
+  process.exit(2);
+}
+const bytes = new Uint8Array(section);
+let at = 0;
+const uleb = () => {
+  let result = 0, shift = 0, byte;
+  do {
+    byte = bytes[at++];
+    result |= (byte & 0x7f) << shift;
+    shift += 7;
+  } while (byte & 0x80);
+  return result >>> 0;
+};
+const subsection = bytes[at++];
+uleb(); // subsection byte length, unused
+if (subsection !== 1) {
+  console.error(`dylink.0 opens with subsection ${subsection}, not the mem-info record`);
+  process.exit(2);
+}
+const memorySize = uleb();
+const memoryAlign = uleb();
+
+// Read from the host rather than hard-coded, so Task 7's resize reaches every
+// later row without editing this file.
+const slab = /const STAGING_SLAB_BYTES = ([^;]+);/.exec(
+  readFileSync("host/src/fork-module-instance.ts", "utf8"),
+);
+if (!slab) {
+  console.error("STAGING_SLAB_BYTES not found in host/src/fork-module-instance.ts");
+  process.exit(2);
+}
+const stagingBytes = slab[1]
+  .split("*")
+  .reduce((product, term) => product * Number(term.trim()), 1);
+if (!Number.isInteger(stagingBytes)) {
+  console.error(`STAGING_SLAB_BYTES is not a product of integer literals: ${slab[1]}`);
+  process.exit(2);
+}
+
+// memoryAlign is an EXPONENT, so 4 means 16 bytes.
+const alignUp = (value, alignPow2) =>
+  Math.ceil(value / (1 << alignPow2)) * (1 << alignPow2);
+const staticBytes = alignUp(memorySize, memoryAlign);
+const stackTopOffset = staticBytes + SHADOW_STACK_BYTES;
+const pages = Math.ceil(stackTopOffset / PAGE);
+const regionBytes = pages * PAGE + stagingBytes;
+// How far memorySize may RISE before the region gains a page, and how far it
+// must FALL before the region loses one.
+const headroom = pages * PAGE - SHADOW_STACK_BYTES - memorySize;
+const threshold = memorySize - ((pages - 1) * PAGE - SHADOW_STACK_BYTES);
+
+const rows = existsSync(LEDGER) ? JSON.parse(readFileSync(LEDGER, "utf8")) : [];
+const previous = rows.length > 0 ? rows[rows.length - 1] : null;
+const row = {
+  label,
+  memorySize,
+  memoryAlign,
+  staticBytes,
+  stackTopOffset,
+  pages,
+  stagingBytes,
+  regionBytes,
+  headroom,
+  threshold,
+  buildKey: existsSync(KEY) ? readFileSync(KEY, "utf8").trim() : "MISSING",
+  at: new Date().toISOString(),
+};
+console.log(JSON.stringify(row, null, 2));
+
+const sameArtifact = previous !== null && row.buildKey === previous.buildKey;
+if (previous) {
+  console.log(`memorySize delta ${row.memorySize - previous.memorySize} (from "${previous.label}")`);
+  console.log(`regionBytes delta ${row.regionBytes - previous.regionBytes}, pages ${previous.pages} -> ${row.pages}`);
+  if (sameArtifact) {
+    console.log("NOTE: the build key is unchanged, so this is the SAME module artifact as the previous row.");
+  }
+}
+
+if (mode === "expect") {
+  const expected = Number(deltaArg);
+  if (!Number.isInteger(expected)) {
+    console.error(`expect needs an integer delta, got "${deltaArg}"`);
+    process.exit(2);
+  }
+  if (!previous) {
+    console.error("expect needs a previous row; run `record baseline` first");
+    process.exit(2);
+  }
+  if (expected !== 0 && sameArtifact) {
+    console.error("BUILD KEY UNCHANGED but a non-zero delta was expected: the edit did not reach the artifact. Rebuild, then re-run.");
+    process.exit(1);
+  }
+  const actual = row.memorySize - previous.memorySize;
+  if (actual !== expected) {
+    console.error(`MISMATCH: memorySize moved ${actual}, this task predicted ${expected}. Stop and report which store differs; the row was NOT recorded.`);
+    process.exit(1);
+  }
+  console.log(`DELTA OK: ${actual}`);
+}
+
+rows.push(row);
+writeFileSync(LEDGER, JSON.stringify(rows, null, 2));
+LEDGER_MJS
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs record baseline && echo "BASELINE RECORDED"
 ```
 
-Expected: `memorySize 2395460 memoryAlign 4`. **If it is anything else, stop
-and report** — every number in Task 0's ledger is derived from 2,395,460, and
-a different baseline means the ledger is wrong before you start.
+**`console.log`/`console.error` are correct in this file and must stay.** The
+rule that Task 1 Step 5a states — use `process.stderr.write`, because
+`host/vitest.config.ts` swallows `console.*` both at module scope and inside a
+test — is about the VITEST realm, not about the function name. `ledger.mjs`
+runs standalone from bash and never under vitest, so nothing intercepts it.
+Do not "fix" these to match Step 5a.
+
+Report the recorded `memorySize`, `pages`, `regionBytes`, `headroom` and
+`threshold`. Those five ARE the ledger for this run; Task 0 section B's
+absolutes are the pre-Change-2 illustration of the same shape.
+
+**Two sanity checks on what you recorded, both derivations, neither a
+constant:**
+
+* `memoryAlign` should be 4 — an EXPONENT, so alignment 16. If it is not,
+  `staticBytes` is not `alignUp(memorySize, 16)` and every derived figure in
+  this plan needs re-deriving before you continue.
+* `headroom` is how much Task 1 may add before the region grows a page. On
+  the pre-Change-2 baseline it was 29,372 (`2,424,832 − 2,395,460`, where
+  2,424,832 is `53 × 65,536 − 1,048,576`). Yours will differ. **Step 8 checks
+  against the number you just recorded, not against 29,372.**
 
 - [ ] **Step 3: Write the failing release test**
 
@@ -607,19 +1031,48 @@ indistinguishable from one that has stopped working.
  * allocation once KFIG sections are arena-backed. Until then the zeros below
  * ARE the assertion -- specifically that the fields are wired and return 0
  * rather than the -1 an unclaimed `fm_stats` field answers.
+ *
+ * THE NUMBERS ARE PINNED HERE AND IN THE MODULE. 101, 102 and 105 are chosen
+ * from the single table in the plan's Global Constraints, not taken as "the
+ * next free index": `fm_stats` answers a high field from an `if field == K`
+ * compare placed BEFORE its reference table, so two arms sharing a number is
+ * not a compile error -- the second is dead and the first answers both reads
+ * with a plausible number from the wrong source. 105 is above Task 10's 104
+ * although this task lands first, for exactly that reason.
  */
 const ARENA_RECORD_CHUNK_COUNT_FIELD = 101;
 const ARENA_DIRECTORY_CHUNK_COUNT_FIELD = 102;
+const ARENA_DIRECTORY_ENTRY_COUNT_FIELD = 105;   // ruling D1-a
 
-it("wires both arena observables and starts empty", () => {
+it("wires all three arena observables and starts empty", () => {
   const x = instantiateFixtureModule();
   // NOT `toBeFalsy()`. An unclaimed `fm_stats` field answers -1, and -1 is
   // truthy -- but a `toBe(0)` here fails loudly against a module built
   // without the field, which is the case this assertion exists to catch.
   expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD)).toBe(0);
   expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD)).toBe(0);
+  expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD)).toBe(0);
+});
+
+it("answers each arena observable from its OWN counter", () => {
+  // Three fields returning 0 proves nothing about which counter answered
+  // which read -- a collision reads as agreement. So drive the counts APART
+  // and require them to differ: one activation with two records puts 1 entry
+  // in the directory and at least 1 chunk on each chain, and the entry count
+  // must track activations while the chunk counts track chunks.
+  const x = instantiateFixtureModule();
+  x.seedActivationCatalog(ACTIVATION_A, [1, 2, 3]);
+  x.seedActivationCatalog(ACTIVATION_B, [4, 5, 6]);
+  expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "two activations").toBe(2);
+  expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "one directory chunk holds both").toBe(1);
+  x.slots(1, ACTIVATION_B, 0);
+  expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "one released").toBe(1);
 });
 ```
+
+**The second test needs a store on the arena**, so land it with `it.skip` and
+un-skip it in Task 3 Step 4 alongside the other two deferred files. Say so in
+the file header.
 
 - [ ] **Step 4: Run it and watch it fail**
 
@@ -627,7 +1080,8 @@ it("wires both arena observables and starts empty", () => {
 cd host && npx vitest run test/fork-arena-release.test.ts
 ```
 
-Expected: FAIL, both fields returning `-1` — the module has no such fields.
+Expected: FAIL, all three fields returning `-1` — the module has no such
+fields.
 
 - [ ] **Step 5: Implement the arena and the directory**
 
@@ -668,13 +1122,23 @@ taken before it.
 // `release_identity_activation` does -- because nothing stores an address
 // INTO the directory. It is found by walking, never by a cached pointer.
 //
-// Chunk layout (both chains), little-endian:
+// Chunk layout (EVERY chain in this change), little-endian:
 //     +0   next: u64    (0 = end of list)
-//     +8   size: u64    (what was mapped, so release unmaps exactly that)
+//     +8   size: u64    (what was MAPPED, so release unmaps exactly that)
 //     +16  used: u32    (bytes/entries handed out; MONOTONIC in a record
 //                        chunk, because payload records never move)
 //     +20  live: u32    (record chain: live bytes; directory: live entries)
-//     +24  body
+//     +24  chain word   (record + directory chains: `capacity`, the usable
+//                        body bytes -- see `arena_map_chunk`. Task 10's
+//                        scratch chain keeps `prev` here; Task 2's free-bits
+//                        chain leaves it zero and uses +16/+20 as
+//                        `base_slot`/`live_bits`.)
+//     +32  body
+//
+// ONE HEADER SIZE, 32 BYTES, FOR ALL OF THEM. A chain that sized its mapping
+// with one header and addressed its body with another would overrun by the
+// difference, and on the oversized path -- which the forced-chunk build makes
+// the common path -- that lands in the last bytes of a live record.
 //
 // Record layout inside a record chunk:
 //     +0   next_in_activation: u64  (0 = end of this activation's records)
@@ -686,12 +1150,22 @@ taken before it.
 //     +0   activation_id: u64
 //     +8   records_head: u64
 const ARENA_CHUNK_BYTES: u64 = 65_536;
-const ARENA_CHUNK_HEADER: u64 = 24;
+const ARENA_CHUNK_HEADER: u64 = 32;
 const RECORD_HEADER: u64 = 16;
 const DIRECTORY_ENTRY_BYTES: u64 = 16;
 
 static RECORD_HEAD: AtomicU64 = AtomicU64::new(0);
 static DIRECTORY_HEAD: AtomicU64 = AtomicU64::new(0);
+
+// RULING D1-a: the 64-activation revisit trigger is a RUNTIME FACT, not an
+// instruction to whoever writes this code. A "stop and report if any fixture
+// exceeds 64" note binds one implementer, at authoring time, for the fixtures
+// they happened to run -- which is the guard-whose-failure-is-silent that D1
+// rejects in the spec's sorted-directory design. So the count is maintained,
+// exported as `fm_stats` field 105, and says so once when it first crosses.
+static DIRECTORY_ENTRIES: AtomicU32 = AtomicU32::new(0);
+static DIRECTORY_OVER_64_REPORTED: AtomicU32 = AtomicU32::new(0);
+const DIRECTORY_WALK_REVISIT_AT: u32 = 64;
 
 // A ONE-ENTRY MEMO, not a sorted index. `func_catalog_base` runs per funcref
 // reference during replay and `table_state_owned` per guest import call, and
@@ -746,13 +1220,30 @@ fn arena_set_u64(addr: u64, value: u64) {
 /// php seeds 19,026 resume ordinals, which is 76,104 bytes, so it runs on
 /// every real php process start.
 fn arena_map_chunk(head: &AtomicU64, want: u64) -> Result<u64, Errno> {
-    let size = page_round_up(core::cmp::max(ARENA_CHUNK_BYTES, ARENA_CHUNK_HEADER + want));
+    // CAPACITY COMES FROM THE REQUEST, NOT FROM THE MAPPING, and the two are
+    // different numbers: `channel_mmap` rounds up to a 64 KiB wasm page, so a
+    // chunk asked for `ARENA_CHUNK_BYTES = 4_096` is still MAPPED at 65,536.
+    // An allocator that read its remaining room out of `size` would hand out
+    // 65,504 bytes from a chunk the constant says holds 4,064 -- and Task
+    // 12's forced-chunk build, whose single knob is `ARENA_CHUNK_BYTES`,
+    // would then chain nothing while reporting green, which is the exact
+    // "tested nothing, passed everything" shape that build exists to prevent.
+    // The identity registry above makes the same distinction:
+    // `IDENTITY_ENTRIES_PER_CHUNK` is derived from its constant
+    // (`lib.rs:1006-1007`), never from a mapping.
+    //
+    // `size` stays in the header for one job only: unmapping exactly what was
+    // mapped.
+    let usable = core::cmp::max(ARENA_CHUNK_BYTES, ARENA_CHUNK_HEADER + want);
+    let size = page_round_up(usable);
+    let capacity = usable - ARENA_CHUNK_HEADER;
     let base = channel_base()?;
     let fresh = channel_mmap(base, size)?;
     arena_set_u64(fresh, 0);            // next
     arena_set_u64(fresh + 8, size);     // size, for the unmap
     arena_set_u32(fresh + 16, 0);       // used (bytes handed out from the body)
     arena_set_u32(fresh + 20, 0);       // live
+    arena_set_u64(fresh + 24, capacity); // what `arena_alloc` may hand out
     let mut tail = 0u64;
     let mut chunk = head.load(Ordering::Relaxed);
     while chunk != 0 {
@@ -769,19 +1260,258 @@ fn arena_map_chunk(head: &AtomicU64, want: u64) -> Result<u64, Errno> {
 ```
 
 Then `arena_alloc`, `arena_find`, `arena_extend`,
-`arena_release_activation`, `arena_release_all`, and the two counts. Write
+`arena_release_activation`, `arena_release_all`, the two chunk counts and the
+live directory-entry count. Write
 them following the identity registry's shapes: one walk doing several jobs,
 best-effort `channel_munmap` on unlink ("a munmap hiccup must not fail an
 otherwise-complete dlclose"), and `memory` views re-derived per access.
 
-Wire the two `fm_stats` fields beside field 100, as single `if` compares
-before the reference table, with the same reasoning the existing comment at
-`lib.rs:10916-10929` gives:
+`arena_alloc` takes its remaining room from the chunk's `capacity` at +24 and
+`used` at +16 — `capacity - used` — and never from `size`. A record that does
+not fit the current tail chunk gets a fresh chunk via `arena_map_chunk`, which
+is what makes the chain a chain.
+
+`arena_release_activation` and `arena_release_all` both decrement
+`DIRECTORY_ENTRIES` by the entries they remove, and both invalidate the memo.
+
+Then wire the THREE `fm_stats` fields beside field 100, as single `if`
+compares before the reference table, with the same reasoning the existing
+comment at `lib.rs:10916-10929` gives — and add the pin that makes a reused
+number a BUILD failure rather than a plausible answer from the wrong counter:
 
 ```rust
 const ARENA_RECORD_CHUNK_COUNT_FIELD: u32 = 101;
 const ARENA_DIRECTORY_CHUNK_COUNT_FIELD: u32 = 102;
+/// Ruling D1-a. 105, not 103: 103 and 104 are claimed by Tasks 2 and 10, and
+/// this number is chosen from the plan's one table rather than from whatever
+/// is free when this code is written.
+const ARENA_DIRECTORY_ENTRY_COUNT_FIELD: u32 = 105;
+
+/// EVERY high `fm_stats` field this module answers, in one place.
+///
+/// A high field is answered by an `if field == K` compare placed BEFORE the
+/// reference table, so two arms sharing a number is NOT a compile error where
+/// it is written: the second arm is dead and the first answers both reads
+/// with a plausible number from the wrong source. That is the failure the
+/// comment at `lib.rs:10916-10929` exists to prevent, and a comment cannot
+/// enforce it. This table can. Every later task that adds a field ADDS IT
+/// HERE in the same edit.
+const FM_STATS_HIGH_FIELDS: [u32; 4] = [
+    IDENTITY_CHUNK_COUNT_FIELD,        // 100, already shipped
+    ARENA_RECORD_CHUNK_COUNT_FIELD,    // 101
+    ARENA_DIRECTORY_CHUNK_COUNT_FIELD, // 102
+    ARENA_DIRECTORY_ENTRY_COUNT_FIELD, // 105
+];
+const _: () = {
+    let mut i = 0;
+    while i < FM_STATS_HIGH_FIELDS.len() {
+        assert!(
+            FM_STATS_HIGH_FIELDS[i] >= IDENTITY_CHUNK_COUNT_FIELD,
+            "an fm_stats field below the high band can shadow the reference table",
+        );
+        let mut j = i + 1;
+        while j < FM_STATS_HIGH_FIELDS.len() {
+            assert!(
+                FM_STATS_HIGH_FIELDS[i] != FM_STATS_HIGH_FIELDS[j],
+                "two fm_stats fields share a number; the second arm is dead",
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+};
 ```
+
+And the D1-a diagnostic, on the ONE path that grows the directory:
+
+```rust
+// Ruling D1-a: crossing 64 live activations is a PERFORMANCE signal -- the
+// linear walk stops being three cache lines and the sorted design the spec
+// wanted is worth revisiting. It is NOT a correctness failure, so this does
+// not return an errno and does not abort: turning a working system's walk
+// cost into a fork failure would report a working system as broken. Said
+// once, because a per-lookup line would bury the run it is trying to inform.
+let live = DIRECTORY_ENTRIES.load(Ordering::Relaxed) + 1;
+DIRECTORY_ENTRIES.store(live, Ordering::Relaxed);
+if live > DIRECTORY_WALK_REVISIT_AT
+    && DIRECTORY_OVER_64_REPORTED.swap(1, Ordering::Relaxed) == 0
+{
+    module_log(
+        "fork-module: arena directory holds more than 64 live activations; \
+         the linear walk plus one-entry memo was chosen for <= 64 \
+         (plan deviation D1, ruling D1-a). Revisit the sorted directory.",
+        live as i64,
+    );
+}
+```
+
+`module_log` stands for the module's EXISTING loud diagnostic. **Find it
+before writing that call — this plan could not, and says so rather than
+letting you discover it mid-edit:**
+
+```bash
+grep -n "fn module_log\|fn host_log\|fn diag\|DIAG\|host_diagnostic\|SYS_WRITE" \
+  crates/fork-module/src/lib.rs | head -20
+```
+
+A scan of the module on 2026-09-20 found none: this is a `no_std` PIC side
+module whose only outward paths are syscalls through the channel, `fm_stats`
+and `fm_last_errno`. If your grep agrees:
+
+* **Land field 105 anyway, and land it as specified.** The field alone
+  delivers what D1-a asked for — "make that bound a runtime fact, not an
+  instruction … observable from any run, including a browser one". A count
+  any host can read at any moment is exactly that, and it does not depend on
+  a diagnostic facility existing.
+* **Drop the `module_log` call and the `DIRECTORY_OVER_64_REPORTED` latch**
+  rather than inventing a host-visible reporting path inside a storage
+  conversion. A new diagnostic channel is a different change with a different
+  contract, and this module's silence about it is itself a finding.
+* **Report both facts to the maintainer** — that D1-a's emit-once half has no
+  facility to emit through, and that the field carries the bound without it —
+  and let them rule on whether the module should gain one. Do not decide it
+  here and do not quietly skip it.
+
+- [ ] **Step 5a: Make ruling D1-a's bound fail by itself, on the host side**
+
+Field 105 is the runtime fact. This step is its LOUDNESS, and it lives in the
+host because the module has nowhere to be loud from (Task 0 D1-a, RESOLUTION).
+Two assertions, in two existing places, and neither is a new file.
+
+**(i) The number, pinned where the other field numbers are pinned.**
+`host/test/fork-module-backend.test.ts` already carries
+"keeps the identity-chunk-count field clear of the stats table", which reads
+the module source with a regex and requires the field to sit above
+`FORK_MODULE_STATS.length`. Add the same shape for this plan's fields, in that
+file, beside it:
+
+```ts
+it("keeps every high fm_stats field clear of the stats table and of each other", () => {
+  // Same reasoning as the identity-chunk-count pin above, for the fields the
+  // storage conversion adds. `fm_stats` answers each from an `if` that runs
+  // BEFORE the reference table, so a number reused between two of them is
+  // not a compile error: the second arm is dead and the first answers both
+  // reads. The module carries a const-assert (`FM_STATS_HIGH_FIELDS`) that
+  // catches a reuse at BUILD time; this catches a field that drifts DOWN into
+  // the table's contiguous index space, which the const-assert cannot see.
+  const fields = [
+    "ARENA_RECORD_CHUNK_COUNT_FIELD",
+    "ARENA_DIRECTORY_CHUNK_COUNT_FIELD",
+    "ARENA_DIRECTORY_ENTRY_COUNT_FIELD",
+  ].map((name) => {
+    const match = new RegExp(`const ${name}: u32 = ([0-9_]+);`).exec(moduleSource);
+    expect(match, `the module no longer names ${name}`).not.toBeNull();
+    return [name, Number(match![1].replace(/_/g, ""))] as const;
+  });
+  for (const [name, value] of fields) {
+    expect(value, `${name} must stay above the stats table`)
+      .toBeGreaterThanOrEqual(FORK_MODULE_STATS.length);
+  }
+  expect(new Set(fields.map(([, v]) => v)).size, "two fields share a number")
+    .toBe(fields.length);
+});
+```
+
+Tasks 2 and 10 add their constant's name to that array when they add the
+field, in the same commit.
+
+**(ii) The bound, asserted after every arena scenario the suite runs.** Put it
+in `host/test/fork-module-capture-fixture` — the fixture this task already
+extends with `mmaps()` — so every test that instantiates a module gets it
+without remembering to:
+
+```ts
+/**
+ * RULING D1-a. The directory is a LINEAR WALK plus a one-entry memo, chosen
+ * over the spec's sorted O(log n) design because the invariant that design
+ * needs is held by a different component than the one relying on it. That
+ * choice is good for tens of activations and the measured maximum is 7.
+ *
+ * "Stop and report if any fixture exceeds 64" binds one implementer, at
+ * authoring time, for the fixtures they happened to run -- which is the
+ * guard-whose-failure-is-silent the deviation rejects in the spec's own
+ * design. So the module COUNTS (fm_stats field 105) and this FAILS.
+ *
+ * ACCEPTED CONSEQUENCE: this fires when a test runs, not inside a browser
+ * production run. The module is `no_std` with no diagnostic channel to be
+ * loud through, and adding one is a separate change this plan does not
+ * attempt.
+ */
+const ARENA_DIRECTORY_ENTRY_COUNT_FIELD = 105;
+const DIRECTORY_WALK_REVISIT_AT = 64;
+
+/**
+ * The comparison and the message, SEPARATED FROM THE MODULE that produces the
+ * count -- so the guard can be proven capable of failing without driving 65
+ * real activations through a fixture. See the proof below.
+ */
+export function assertDirectoryWithinWalkBound(live: number): void {
+  expect(
+    live,
+    `the arena directory holds ${live} live activations, past the `
+      + `${DIRECTORY_WALK_REVISIT_AT} the linear-walk-plus-memo directory was `
+      + `chosen for (plan deviation D1, ruling D1-a).\n`
+      + `  This is a PERFORMANCE signal, not a correctness failure: nothing is `
+      + `wrong with the run that produced it.\n`
+      + `  Past ${DIRECTORY_WALK_REVISIT_AT} the spec's sorted O(log n) `
+      + `directory is worth revisiting, and that is the MAINTAINER'S CALL. `
+      + `Report the count and the fixture that produced it; do not raise this `
+      + `bound to make the suite green.`,
+  ).toBeLessThanOrEqual(DIRECTORY_WALK_REVISIT_AT);
+}
+
+export function expectDirectoryWithinWalkBound(x: FixtureModule): void {
+  const live = x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD);
+  // -1 means the module does not answer this field at all, which is a
+  // different failure and belongs to the pin above, not here.
+  if (live < 0) return;
+  assertDirectoryWithinWalkBound(live);
+}
+```
+
+Call `expectDirectoryWithinWalkBound` from the fixture's own `afterEach` (or
+from `terminate`, whichever hook every arena-touching test already goes
+through — say which you used).
+**Do not print this with `console.error`**: measured under
+`host/vitest.config.ts`, `console.error` is swallowed both at module scope and
+inside a test. The assertion's message rides the `expect` and survives; if you
+ever need a bare line, use `process.stderr.write`.
+
+**(iii) Prove the guard can fire, because the teardown never will.** Every
+fixture in this suite runs a handful of activations — the measured maximum is
+7 — so the teardown assertion would sit green for the life of this plan
+whether its comparison is right, whether its message renders, and whether
+someone later inverts the operator. **"It never tripped" and "it cannot trip"
+look identical from outside.** So drive the helper DIRECTLY with a synthetic
+count rather than building 65 real activations, which would be slow and would
+test the fixture instead of the guard:
+
+```ts
+it("ruling D1-a's directory bound can actually fail, and fails at the right number", () => {
+  // 65 must throw, and the message must still carry the four things that
+  // make the failure actionable rather than merely red.
+  let message = "";
+  try {
+    assertDirectoryWithinWalkBound(65);
+    throw new Error("the D1-a bound did not fire at 65 -- it is not a guard");
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  expect(message, "names the count").toContain("65");
+  expect(message, "names the ruling").toContain("D1-a");
+  expect(message, "says it is not a correctness failure")
+    .toContain("PERFORMANCE signal, not a correctness failure");
+  expect(message, "says not to raise the bound")
+    .toContain("do not raise this bound");
+
+  // And 64 must NOT throw, so the boundary is pinned rather than assumed.
+  expect(() => assertDirectoryWithinWalkBound(64)).not.toThrow();
+});
+```
+
+Put this beside the helper, not in the teardown path: the teardown observes
+real runs, and this proves the thing the teardown calls is capable of
+refusing one.
 
 - [ ] **Step 6: Write the lifetime test — the one that catches the stale address**
 
@@ -884,8 +1614,17 @@ Also `it.skip` until Task 3. Then wire the scrub:
 arena_release_all();
 ```
 
-**Placed after `CHANNEL_BASE` is stored (`lib.rs:3532`), not with the counter
-resets.** Read the surrounding code and confirm the ordering yourself.
+**Placed after `CHANNEL_BASE` is stored — `lib.rs:3551` on this branch at
+`a99a3a2d8`, not the `:3532` an earlier draft of this plan cited — and NOT
+with the counter resets**, which run about thirty lines earlier. The release
+syscalls, and `channel_base()` answers `EINVAL` until that store
+(`lib.rs:9029-9035`). Confirm the line yourself rather than trusting either
+number, because Tasks 2, 4, 5 and 8 all edit this block and every line in it
+moves:
+
+```bash
+grep -n "CHANNEL_BASE.store" crates/fork-module/src/lib.rs
+```
 
 - [ ] **Step 8: Rebuild, verify fresh, and check the headroom**
 
@@ -893,16 +1632,49 @@ resets.** Read the surrounding code and confirm the ordering yourself.
 cd /Users/brandon/kandelo-lane-f
 bash crates/fork-module/build-wasm.sh
 bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs record task1
 ```
 
-Then re-run the `memorySize` reader from Step 2. Expected: **between
-2,395,460 and 2,424,832.** The upper bound is Task 0's 29,372-byte headroom —
-beyond it the region moves UP a page, which is the opposite of the point.
-Report the exact number.
+**This task has no expected delta — it has a BOUND**, and the bound is the
+`headroom` the recorder printed for the baseline row, not the 29,372 the
+pre-Change-2 illustration gives. New Rust *code* lives in the code section and
+costs nothing here; only new *statics* count, and this task adds a handful of
+roots. Check it against your own recorded rows:
 
-- [ ] **Step 9: Perturb both halves of the leak observable**
+```bash
+python3 - <<'PY'
+import json
+rows = json.load(open("/tmp/claude-501/fork-storage-pristine/ledger.json"))
+base = next(r for r in rows if r["label"] == "baseline")
+task1 = next(r for r in rows if r["label"] == "task1")
+grew = task1["memorySize"] - base["memorySize"]
+print(f"task 1 grew memorySize by {grew}; baseline headroom was {base['headroom']}")
+print(f"pages {base['pages']} -> {task1['pages']}, regionBytes "
+      f"{base['regionBytes']} -> {task1['regionBytes']}")
+assert grew >= 0, "the enabling task cannot SHRINK the module; something else moved"
+assert grew <= base["headroom"], (
+    "task 1 pushed the region UP a page, which is the opposite of the point")
+assert task1["pages"] == base["pages"], "the region moved; stop and report"
+print("HEADROOM OK")
+PY
+```
 
-Two perturbations, both required, because they catch different things.
+Report the exact growth, and record it as **d₁** — Task 0 section B's ledger
+carries it in every later row.
+
+- [ ] **Step 9: Perturb both halves of the leak observable, and the field pin**
+
+**FIRST, take a second pristine copy — of this task's FINISHED work.** The
+Step 1 copy predates everything you just wrote, so restoring from it would
+delete the task:
+
+```bash
+cd /Users/brandon/kandelo-lane-f
+cp crates/fork-module/src/lib.rs /tmp/claude-501/fork-storage-pristine/lib-task1.rs
+cat local-binaries/fork_module32.wasm.build-key > /tmp/claude-501/key-task1.txt
+```
+
+Three perturbations, all required, because they catch different things.
 
 (a) Delete the `channel_munmap` call in `arena_release_activation`. The chunk
 count still reaches zero; the munmap tally does not. Expected: the tally
@@ -912,24 +1684,47 @@ assertion is not wired.**
 (b) Delete the unlink in `arena_release_activation` (leave the munmap).
 Expected: the count assertion fails.
 
-After each:
+(c) Set `ARENA_DIRECTORY_ENTRY_COUNT_FIELD` to `102`. **Expected: the BUILD
+fails**, on `FM_STATS_HIGH_FIELDS`'s const assertion "two fm_stats fields
+share a number". This is the one perturbation whose verdict comes from
+`build-wasm.sh` rather than from vitest — if the build SUCCEEDS, the pin is
+not wired and the collision this plan's one-table rule exists to prevent can
+still land silently.
+
+After (a) and (b):
 
 ```bash
+cd /Users/brandon/kandelo-lane-f
 bash crates/fork-module/build-wasm.sh
-cat local-binaries/fork_module32.wasm.build-key   # MUST differ from the pre-perturbation value
+diff <(cat local-binaries/fork_module32.wasm.build-key) /tmp/claude-501/key-task1.txt \
+  && echo "KEY UNCHANGED -- THE PERTURBATION DID NOT REACH THE ARTIFACT; STOP" \
+  || echo "key moved, as expected"
 cd host && npx vitest run test/fork-arena-release.test.ts
-cd .. && cp /tmp/claude-501/fork-storage-pristine/lib.rs crates/fork-module/src/lib.rs
+cd /Users/brandon/kandelo-lane-f
+cp /tmp/claude-501/fork-storage-pristine/lib-task1.rs crates/fork-module/src/lib.rs
 ```
 
-Wait — the pristine copy predates this task's own work. Take a SECOND pristine
-copy of your finished implementation before perturbing:
+After (c), the same restore — there is no test run, because there is no
+artifact:
 
 ```bash
-cp crates/fork-module/src/lib.rs /tmp/claude-501/fork-storage-pristine/lib-task1.rs
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh && echo "BUILD SUCCEEDED -- THE PIN IS NOT WIRED; STOP"
+cp /tmp/claude-501/fork-storage-pristine/lib-task1.rs crates/fork-module/src/lib.rs
 ```
 
-and restore from that one. Rebuild after restoring and confirm the key returns
-to its pre-perturbation value.
+Rebuild after the final restore and confirm the key returns to
+`/tmp/claude-501/key-task1.txt`:
+
+```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+diff <(cat local-binaries/fork_module32.wasm.build-key) /tmp/claude-501/key-task1.txt \
+  && echo "key restored" || echo "KEY DIFFERS -- the tree is not back to task 1; STOP"
+```
+
+**Never `git checkout -- <path>`.** It discards uncommitted work in that file
+and leaves built artifacts stale while `git status` looks clean.
 
 - [ ] **Step 10: Budget, then commit**
 
@@ -953,10 +1748,16 @@ rather than binary-searched and why.
 
 ## Task 2: Bound the resume free-slot bitmap by something real
 
-**This task moves ZERO region bytes** (8,192 bytes, against a 29,564-byte
-threshold at this point in the ledger). It lands for correctness, and it lands
-BEFORE Task 3 because Task 3 deletes the constant this bitmap's bound comes
-from.
+**This task moves ZERO region bytes**: 8,192 bytes against a **36,164-byte**
+threshold. That threshold is the ledger's baseline figure, and it is derived,
+not asserted — `memorySize_prev − ((pages_prev − 1) × 65,536 − 1,048,576)`,
+which on the pre-Change-2 baseline is `2,395,460 − 2,359,296 = 36,164`
+(Task 0 section B). **Recompute yours**: the recorder prints `threshold`
+beside every row, and Change 2's new static moves the baseline it comes from.
+An earlier draft said 29,564 here, which was underived and wrong.
+
+It lands for correctness, and it lands BEFORE Task 3 because Task 3 deletes
+the constant this bitmap's bound comes from.
 
 `RESUME_FREE_BITS` is indexed by SLOT NUMBER (`lib.rs:747`), behind a guard
 `if (slot as usize) < RESUME_SLOT_CAP` (`lib.rs:745`) whose stated purpose is
@@ -973,6 +1774,12 @@ place thunks by different rules. Silent, not a trap.
 - Modify: `crates/fork-module/src/lib.rs:600-651` (declaration, `resume_allocate_slot`)
 - Modify: `crates/fork-module/src/lib.rs:733-763` (`resume_unregister_impl`)
 - Modify: `crates/fork-module/src/lib.rs:3510-3525` (the scrub's `.fill(0)`)
+- Modify: `crates/fork-module/src/lib.rs` — add
+  `RESUME_FREE_CHUNK_COUNT_FIELD = 103` to `FM_STATS_HIGH_FIELDS` (Task 1
+  Step 5) in the same edit that adds its `if` arm
+- Modify: `host/test/fork-module-capture-fixture` — an `mmaps()` reader for
+  the responder's `SYS_MMAP` tally, beside the existing `MUNMAP_COUNTER`, if
+  it is not already there. The test below needs it and so does Task 9 Step 3
 - Create: `host/test/fork-resume-slot-bitmap.test.ts`
 
 **Interfaces:**
@@ -985,6 +1792,12 @@ place thunks by different rules. Silent, not a trap.
 /// dense and monotonic from `RESUME_NEXT_SLOT`, so the chunks are a dense
 /// ascending sequence with no gaps to search.
 static FREE_BITS_HEAD: AtomicU64 = AtomicU64::new(0);
+/// Derived from Task 1's constants, so Task 12's single knob reaches this
+/// chain too: at `ARENA_CHUNK_BYTES = 65_536` a chunk covers
+/// `(65,536 - 32) * 8 = 524,032` slots, and at the forced 4,096 it covers
+/// `(4,096 - 32) * 8 = 32,512`, which a 65,536-ordinal seed spans three of.
+/// `ARENA_CHUNK_HEADER` is 32 for every chain in this change (Task 1); this
+/// chain uses +16/+20 as `base_slot`/`live_bits` and leaves +24 zero.
 const FREE_BITS_PER_CHUNK: u32 = ((ARENA_CHUNK_BYTES - ARENA_CHUNK_HEADER) * 8) as u32;
 
 /// Mark `slot` free. `EINVAL` for a slot never handed out -- which is now a
@@ -1016,32 +1829,90 @@ fn free_bits_chunk_count() -> u32;
  * WHAT GOES WRONG WITHOUT THIS TEST: a freed slot past the bitmap's extent
  * is silently not freed. The slot leaks, later numbering drifts, and the
  * module and the guest's resume table place thunks by different rules --
- * which is a wrong `call_indirect` target, not a trap. The assertion below
- * frees a slot in the SECOND bitmap chunk and requires it to come back.
+ * which is a wrong `call_indirect` target, not a trap.
+ *
+ * WHAT THIS CAN REACH TODAY, DERIVED RATHER THAN ASSUMED. A bitmap chunk
+ * covers
+ *
+ *     FREE_BITS_PER_CHUNK = (ARENA_CHUNK_BYTES - ARENA_CHUNK_HEADER) * 8
+ *                         = (65,536 - 32) * 8 = 524,032 slots
+ *
+ * and until Task 3 lands, slot numbers cannot get near that. `RESUME_SLOT_CAP`
+ * (65,536) still bounds live slots (`lib.rs:681`), the host refuses a catalog
+ * above `FORK_MODULE_RESUME_CATALOG_CAP = 65,536`
+ * (`host/src/fork-module-backend.ts:215` and `:367`), and `RESUME_NEXT_SLOT`
+ * never outruns the cap because a released slot comes back HERE and is
+ * reused. So NO SEQUENCE OF SEEDS REACHES A SECOND CHUNK while the cap is
+ * live: 65,536 < 524,032. An earlier draft of this test seeded
+ * `FREE_BITS_PER_CHUNK + 16` ordinals into one activation; that is 524,048
+ * ordinals, which the cap refuses with `E2BIG`, the host refuses before the
+ * module sees it, and whose 2 MB of staging is eight times the slab. It could
+ * not have run.
+ *
+ * THIS TEST IS BOUNDED BY ARITHMETIC, NOT BY LAZINESS. Nothing here is
+ * scoped down to make it pass: 524,032 slots per chunk against a live cap of
+ * 65,536, with freed slots returning to this bitmap so `RESUME_NEXT_SLOT`
+ * never outruns the cap, leaves no route to a second chunk at all. Do not
+ * "strengthen" this test by seeding more; the seed that would cross is the
+ * one three refusals stop.
+ *
+ * So this test asserts the whole lifetime of the chunk it CAN reach -- none,
+ * then one mapped, then none and unmapped -- and the 1 -> 2 crossing is
+ * asserted where it is reachable: Task 12's forced-chunk build sets
+ * `ARENA_CHUNK_BYTES = 4,096`, a chunk then covers `(4,096 - 32) * 8 =
+ * 32,512` slots, and a 65,536-ordinal seed spans three. Task 12 Step 3a
+ * asserts that crossing happened rather than assuming the constant forced it.
+ *
+ * BOTH HALVES, as everywhere else in this plan: the chunk count walks the
+ * list, so a chunk unlinked but never unmapped reads as zero. The responder's
+ * SYS_MMAP and SYS_MUNMAP tallies are asserted beside it.
  */
 const RESUME_FREE_CHUNK_COUNT_FIELD = 103;
 
-it("reuses a freed slot from beyond the first bitmap chunk", () => {
-  // Seed one activation with more ordinals than a single bitmap chunk
-  // covers, so the highest slots live in chunk 2.
-  const n = FREE_BITS_PER_CHUNK + 16;
-  x.seedActivationCatalog(ACTIVATION_A, range(1, n));
+it("maps a bitmap chunk on the first free and returns it on the last reuse", () => {
+  const x = instantiateFixtureModule();
+
+  // Three ordinals take slots 1, 2, 3 from RESUME_NEXT_SLOT. Nothing has been
+  // freed, so the chain is still empty -- a bitmap that allocated eagerly
+  // would already be one chunk here, which is the 8 KiB this task deletes.
+  x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
   expect(x.errno()).toBe(0);
   expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD), "nothing freed yet").toBe(0);
 
-  x.slots(1, ACTIVATION_A, 0);                    // release: every slot freed
-  expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD)).toBeGreaterThan(1);
+  const mmapsBefore = x.mmaps();
+  const munmapsBefore = x.munmaps();
 
-  // A fresh activation must reuse the SMALLEST freed slot, which is 1 -- not
-  // a newly grown one. Observed through the module's own numbering: seeding
-  // one ordinal and releasing it must free exactly one slot, and the total
-  // slot high-water must not have advanced.
-  x.seedActivationCatalog(ACTIVATION_B, [1]);
+  // Release: three slots come back, so the chain has to exist now.
+  expect(x.slots(1, ACTIVATION_A, 0), "three slots freed").toBe(3);
+  expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD), "the first free maps a chunk").toBe(1);
+  expect(x.mmaps() - mmapsBefore, "one mapping for one chunk").toBe(1);
+
+  // REUSE, and this is the assertion that distinguishes a working free list
+  // from a bitmap that merely exists: seeding three more ordinals must
+  // consume the three freed bits rather than growing three fresh slots. If it
+  // grew instead, the chunk would still hold three set bits and neither
+  // assertion below would hold.
+  x.seedActivationCatalog(ACTIVATION_B, [11, 22, 33]);
   expect(x.errno()).toBe(0);
-  expect(x.slots(1, ACTIVATION_B, 0)).toBe(1);
-  expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD), "every chunk returned").toBe(0);
+  expect(
+    x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
+    "the emptied chunk is unlinked, not kept for the next free",
+  ).toBe(0);
+  expect(x.munmaps() - munmapsBefore, "one unmap for the one chunk").toBe(1);
+  expect(x.mmaps() - mmapsBefore, "reuse maps nothing new").toBe(1);
 });
 ```
+
+**One assertion this test deliberately does not make, and where it lives
+instead.** "Smallest freed slot first" is the fourth of the four slot rules,
+and after Change 2 no `fm_*` entry hands the host a `(activation, ordinal) ->
+slot` answer — `fm_resume_slots` op 0 was deleted with `resume_slot_of`, and
+this plan adds no entry to get one back
+(`forkModuleEntriesWithoutProductionCaller` has zero slack). Task 3 Step 1
+determines whether Change 2's `fm_publish_resume_assignment` exposes the
+pairs; **if it does, extend this test with
+`expect(x.publishedSlots(ACTIVATION_B)).toEqual([1, 2, 3])` at that point**,
+and say in Task 3's report that you did. Do not add an `fm_*` entry for it.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -1053,10 +1924,13 @@ Expected: FAIL — field 103 returns -1.
 
 - [ ] **Step 3: Implement the chained bitmap**
 
-Chunk layout reuses Task 1's 24-byte header, with the two chain-specific
-fields where the record chain keeps `used` and `live`:
-`+0 next: u64`, `+8 size: u64`, `+16 base_slot: u32`, `+20 live_bits: u32`,
-`+24 bits`. `free_bits_mark` walks to the chunk covering
+Chunk layout reuses Task 1's header unchanged — **32 bytes, the one header
+size every chain in this change uses** — with the two chain-specific fields
+where the record chain keeps `used` and `live`, and the chain word at +24
+left zero here: `+0 next: u64`, `+8 size: u64`, `+16 base_slot: u32`,
+`+20 live_bits: u32`, `+24 unused: u64`, `+32 bits`. Write `base_slot` AFTER
+`arena_map_chunk` returns, because it zeroes +16/+20 as part of mapping.
+`free_bits_mark` walks to the chunk covering
 `slot`, mapping intermediate chunks as needed; `free_bits_take_smallest`
 walks chunks in order and takes `trailing_zeros` of the first non-zero word,
 unlinking and unmapping a chunk whose `live_bits` reaches zero.
@@ -1075,28 +1949,91 @@ if slot == 0 || slot >= RESUME_NEXT_SLOT.load(Ordering::Relaxed) {
 And in `set_format_impl`, replace the `.fill(0)` at `lib.rs:3522` with
 `free_bits_release_all()`, keeping the existing comment's reason ("a stale bit
 would hand the child a slot the child never assigned") and adding the mapping
-reason from Task 0 section F.
+reason from Task 0 section F. **Sequence it after `CHANNEL_BASE` is stored**
+(`lib.rs:3551` before this plan's edits — re-grep, Task 1 moved lines in this
+block), because the release unmaps and unmapping syscalls.
+
+Then claim the `fm_stats` field, **and pin it in the same edit**:
+
+```rust
+/// 103, from the plan's one field table. NOT "the next free index": 105 is
+/// already spoken for by ruling D1-a's directory-entry count, which Task 1
+/// landed, and both are `if` compares before the reference table.
+const RESUME_FREE_CHUNK_COUNT_FIELD: u32 = 103;
+```
+
+and extend Task 1's pin — the array length grows with it, which is the point:
+
+```rust
+const FM_STATS_HIGH_FIELDS: [u32; 5] = [
+    IDENTITY_CHUNK_COUNT_FIELD,        // 100, already shipped
+    ARENA_RECORD_CHUNK_COUNT_FIELD,    // 101
+    ARENA_DIRECTORY_CHUNK_COUNT_FIELD, // 102
+    RESUME_FREE_CHUNK_COUNT_FIELD,     // 103
+    ARENA_DIRECTORY_ENTRY_COUNT_FIELD, // 105
+];
+```
 
 - [ ] **Step 4: Rebuild, verify fresh, check the ledger row**
 
 ```bash
+cd /Users/brandon/kandelo-lane-f
 bash crates/fork-module/build-wasm.sh
 bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task2 -8192 \
+  && echo "LEDGER OK"
 ```
 
-Expected `memorySize`: **2,387,268** (baseline minus 8,192), modulo Task 1's
-measured delta. Expected `regionBytes`: **unchanged at 3,735,552**. Say both
-numbers in your report, and say the region did not move and why.
+**The gate is the DELTA: −8,192**, which is `RESUME_FREE_WORDS` (1,024) × 8.
+It is the same whatever baseline Change 2 left behind. The recorder also
+prints the new `regionBytes` and page count: **expect the page count to be
+unchanged**, because 8,192 is far below the threshold this task opened with.
+Say both numbers in your report, and say the region did not move and why.
 
-- [ ] **Step 5: Perturb the new bound**
+- [ ] **Step 5: Perturb the new bound, and the field pin**
 
-Change the guard to `if slot == 0` (drop the upper bound). A freed
-out-of-range slot then silently allocates a bitmap chunk for a slot that
-never existed. Add one assertion that catches it — free slot
-`RESUME_NEXT_SLOT + 1000` and require `EINVAL` — then confirm it fails with
-the guard weakened and passes with it restored. Restore from
-`/tmp/claude-501/fork-storage-pristine/lib-task1.rs` plus your Task 2 diff, or
-from a Task 2 pristine copy taken before perturbing.
+Take a Task 2 pristine copy FIRST, of your finished work:
+
+```bash
+cd /Users/brandon/kandelo-lane-f
+cp crates/fork-module/src/lib.rs /tmp/claude-501/fork-storage-pristine/lib-task2.rs
+cat local-binaries/fork_module32.wasm.build-key > /tmp/claude-501/key-task2.txt
+```
+
+**(a) The bound. Two edits, because one alone is not observable.** No `fm_*`
+entry lets a host free an arbitrary slot — `free_bits_mark` is reached only
+from `resume_unregister_impl` with slots that came out of the record — so
+weakening the guard on its own changes nothing any test can see. Perturb the
+CALLER too:
+
+1. In `resume_unregister_impl`, free `slot + 1_000_000` instead of `slot`.
+   With the guard intact the release must REFUSE: `x.slots(1, ACTIVATION_A,
+   0)` returns -1 with errno 22, and
+   `x.stats(RESUME_FREE_CHUNK_COUNT_FIELD)` stays 0. **That is the truthful
+   refusal, and it is the half the guard exists for** — add it as an
+   assertion in this perturbation and watch it hold.
+2. Now also weaken the guard to `if slot == 0`. The module silently maps a
+   bitmap chunk covering slot 1,000,003, the three real slots are never
+   freed, and Step 1's test goes red on the reuse assertions: the chunk count
+   does not return to 0 and the munmap never happens. **If it stays green,
+   the test is not observing the bitmap.**
+
+Restore both edits from `lib-task2.rs` between (a) and (b).
+
+**(b) The field pin.** Set `RESUME_FREE_CHUNK_COUNT_FIELD` to `101`.
+**Expected: the BUILD fails** on `FM_STATS_HIGH_FIELDS`'s const assertion. If
+`build-wasm.sh` succeeds, your constant never reached the array and a
+collision can still land silently — fix that before committing.
+
+Restore and confirm the key returns:
+
+```bash
+cd /Users/brandon/kandelo-lane-f
+cp /tmp/claude-501/fork-storage-pristine/lib-task2.rs crates/fork-module/src/lib.rs
+bash crates/fork-module/build-wasm.sh
+diff <(cat local-binaries/fork_module32.wasm.build-key) /tmp/claude-501/key-task2.txt \
+  && echo "key restored" || echo "KEY DIFFERS -- the tree is not back to task 2; STOP"
+```
 
 - [ ] **Step 6: Budget, then commit**
 
@@ -1177,10 +2114,38 @@ disagreement matters more than this conversion.
 /// lookup, and the per-ordinal append that re-loaded `RESUME_SLOT_COUNT`
 /// every iteration is one bounded write into a record sized up front.
 fn resume_register_impl(activation_id: u32) -> Result<u32, Errno> {
-    let catalog = activation_catalog(activation_id).ok_or(Errno::EINVAL)?;
+    // THE PROCESS-WIDE FALLBACK STAYS UNTIL TASK 6. It looks like dead
+    // legacy-harness code and it is not: `fm_set_resume_catalog` seeds
+    // ACTIVATION 0's ordinals into `RESUME_CATALOG`
+    // (`host/src/fork-module-backend.ts:275` -> `resume_reseed(0)`,
+    // `lib.rs:7123`), and `activation_catalog(0)` has NO entry, so this arm
+    // is the only way activation 0's catalog is reachable. Deleting it here
+    // -- which an earlier draft of this plan did, three tasks early -- makes
+    // every activation-0 registration return `EINVAL`, which is every fork.
+    //
+    // Task 6 merges `CatalogCell` into the activation-keyed store, seeds
+    // activation 0 through `fm_set_activation_resume_catalog` like everything
+    // else, and THEN this becomes
+    // `activation_catalog(activation_id).ok_or(Errno::EINVAL)?`. Task 6 Step
+    // 1 owns that line and the argument for it; this task does not touch it.
+    let catalog = match activation_catalog(activation_id) {
+        Some(catalog) => catalog,
+        None => {
+            let global = resume_catalog();
+            if global.is_empty() {
+                return Ok(0);
+            }
+            global
+        }
+    };
     if arena_find(activation_id, REC_KIND_RESUME_ASSIGNMENT).is_some() {
         return Err(Errno::EINVAL); // already registered
     }
+    // The cap check (`count + catalog.len() > RESUME_SLOT_CAP`, `lib.rs:681`)
+    // goes with the cap: there is no fixed table to overrun any more, and a
+    // chunk that cannot be mapped fails with `channel_mmap`'s truthful
+    // `ENOMEM`/`EAGAIN` instead of an `E2BIG` for a boundary that no longer
+    // exists.
     let mut sorted: Vec<u32> = catalog.to_vec();
     sorted.sort_unstable();
     for window in sorted.windows(2) {
@@ -1217,6 +2182,17 @@ fn resume_register_impl(activation_id: u32) -> Result<u32, Errno> {
 `free_bits_mark(slot)`, then `arena_release_activation(activation_id)`.
 `resume_assignment_of` becomes `arena_find` + a read of the pairs.
 
+**A MISSING RECORD IS `Ok(0)`, NOT `Err(EINVAL)`, and the distinction is
+load-bearing in two directions.** `fm_resume_slots` op 1 reaches
+`release_identity_activation` and Task 1's `arena_release_activation` ONLY
+from the `Ok` arm (`lib.rs:11003-11016`), so an `Err` on a never-registered
+activation leaks every arena record and identity entry that activation owns —
+including Task 4's KFIG sections, which is exactly what Task 4 Step 1's
+release test releases. And `lib.rs:719-731` records that reading "zero slots"
+as "never registered" already cost a real fork
+(`libneeded-provider.so`). Write it as: no record, or a record with no pairs,
+both return `Ok(0)` and still run the release.
+
 **Note the compaction-semantics change and assert it.** Today
 `resume_unregister_impl` compacts by SWAP-REMOVE
 (`index[position] = index[count-1]`, `lib.rs:757`), which does not preserve
@@ -1235,19 +2211,24 @@ Every hit must be gone except in comments you rewrite. The bitmap already
 stopped depending on the cap in Task 2 — confirm no `RESUME_FREE_WORDS`
 remains.
 
-- [ ] **Step 4: Un-skip Tasks 1's two deferred tests**
+- [ ] **Step 4: Un-skip Task 1's three deferred tests**
 
-Remove `it.skip` from `host/test/fork-arena-lifetime.test.ts` and
-`host/test/fork-arena-cow-scrub.test.ts`, and delete the "skipped until Task
-3" sentences from their headers. **A header that still says a test is skipped,
-on a test that runs, is the comment-without-a-test class this lane keeps
+Remove `it.skip` from `host/test/fork-arena-lifetime.test.ts`,
+`host/test/fork-arena-cow-scrub.test.ts` and the
+"answers each arena observable from its OWN counter" case in
+`host/test/fork-arena-release.test.ts`, and delete the "skipped until Task 3"
+sentences from their headers. **A header that still says a test is skipped, on
+a test that runs, is the comment-without-a-test class this lane keeps
 finding.**
 
 ```bash
-cd host && npx vitest run test/fork-arena-lifetime.test.ts test/fork-arena-cow-scrub.test.ts
+cd host && npx vitest run test/fork-arena-lifetime.test.ts \
+  test/fork-arena-cow-scrub.test.ts test/fork-arena-release.test.ts
 ```
 
-Both must now pass.
+All three must now pass. The third is the one that proves fields 101, 102 and
+105 answer from three different counters rather than from one that three
+numbers happen to agree with.
 
 - [ ] **Step 5: Rebuild, verify fresh, check the ledger row**
 
@@ -1255,16 +2236,30 @@ Both must now pass.
 cd /Users/brandon/kandelo-lane-f
 bash crates/fork-module/build-wasm.sh
 bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task3 -786432 \
+  && echo "LEDGER OK"
 ```
 
-Expected `memorySize`: **1,600,836**. Expected `regionBytes`: **2,949,120**
-(down 786,432, twelve pages). Verify the region by running
-`host/test/fork-module-instance.test.ts` and reading `fm.regionBytes`, not by
-arithmetic alone:
+**The gate is the DELTA: −786,432**, which is `65,536 × 3 × 4` — the
+`[[u32; 3]; RESUME_SLOT_CAP]` index this task deletes. The recorder prints the
+new `regionBytes` and the page transition; on the pre-Change-2 illustration
+that is 53 → 41 pages, a 786,432-byte drop, and **twelve pages is the
+prediction to check, not a constant to assert**. Report what you got.
+
+Then confirm the region independently, through the host that computes it:
 
 ```bash
 cd host && npx vitest run test/fork-module-instance.test.ts
 ```
+
+That file asserts by derivation (`:47-58`) rather than printing, so either add
+a temporary `process.stderr.write("regionBytes " + fm.regionBytes + "\n")` to
+the test — **not `console.log`, which `host/vitest.config.ts` swallows both at
+module scope and inside a test** — or compare the recorder's `regionBytes`
+against the same four terms the test uses. The recorder reads
+`STAGING_SLAB_BYTES` out of `host/src/fork-module-instance.ts`, so the two
+cannot drift. **"Run it and read `fm.regionBytes`" is not executable as
+written**; say which of the two you did.
 
 - [ ] **Step 6: Run the fork surface — this is the store that deadlocked before**
 
@@ -1310,8 +2305,12 @@ compaction semantics are gone and the ordering is now asserted.
 
 ## Task 4: The KFIG/KFIT section pool becomes records
 
-**67,584 bytes. This commit moves regionBytes by 65,536 — one page** (the
-threshold at this point is 27,972 bytes; margin 39,612).
+**67,584 bytes. This commit moves regionBytes by 65,536 — one page.** The
+threshold at this row is **27,972** and the margin is 39,612. Both are
+derived, not asserted: `threshold = memorySize_prev − ((pages_prev − 1) ×
+65,536 − 1,048,576)`, which on the ledger's illustrative Task 3 row is
+`1,600,836 − 1,572,864 = 27,972`. **Recompute yours** — the recorder prints
+`threshold` on every row and Change 2 moved the baseline it descends from.
 
 This is the first byte-pool conversion, and it is the one where the
 offset-into-a-shared-pool index (`[space, activation_id, offset, byte_len]`,
@@ -1343,15 +2342,20 @@ a number, exactly as `fork-identity-release.test.ts` does:
  * How many bytes to seed, DERIVED from the module's own constants.
  *
  *     ARENA_CHUNK_BYTES  = 65_536
- *     ARENA_CHUNK_HEADER = 24
+ *     ARENA_CHUNK_HEADER = 32     // ONE header size for every chain (Task 1)
  *     RECORD_HEADER      = 16
  *
- * so one chunk holds 65,536 - 24 = 65,512 bytes of records, and a record
+ * so one chunk holds 65,536 - 32 = 65,504 bytes of records, and a record
  * costs 16 bytes of header. Two activations at 40,000 payload bytes each
  * therefore need 2 chunks: 40,016 fits in the first, the second does not
- * (80,032 > 65,512).
+ * (80,032 > 65,504).
+ *
+ * CAPACITY IS THE CHUNK'S RECORDED `capacity` AT +24, NOT ITS `size`. The
+ * two differ whenever `channel_mmap`'s page round-up exceeds the constant,
+ * which is every chunk in the forced-chunk build. Deriving this number from
+ * `size` here would make the test agree with a bug.
  */
-const CHUNK_BODY = 65_536 - 24;
+const CHUNK_BODY = 65_536 - 32;
 const PAYLOAD = 40_000;
 const EXPECTED_CHUNKS = 2;
 ```
@@ -1412,7 +2416,18 @@ boundary that no longer exists.
 
 - [ ] **Step 4: Rebuild, verify fresh, check the ledger row**
 
-Expected `memorySize`: **1,533,252**. Expected `regionBytes`: **2,883,584**.
+```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task4 -67584 \
+  && echo "LEDGER OK"
+```
+
+**The gate is the DELTA: −67,584** — the 64 KiB byte pool plus the
+128 × 4 × 4 index. Expect the recorder to report one page off `regionBytes`
+(the illustrative row is 41 → 40 pages, 2,949,120 → 2,883,584); report what
+you actually got.
 
 - [ ] **Step 5: Perturb the idempotent-re-seed rule**
 
@@ -1436,10 +2451,13 @@ git push origin brandonpayton/lane-f-fork-inversion
 
 ## Task 5: The GC-codec and exception-tag floors become records
 
-**68,608 bytes together. This commit moves regionBytes by 65,536 — one page**
-(threshold 25,924; margin 42,684). **Batched deliberately: neither crosses the
-threshold alone**, and landing them separately would produce a commit that
-moves nothing while implying it moved something.
+**68,608 bytes together. This commit moves regionBytes by 65,536 — one page.**
+Threshold **25,924** (from the illustrative Task 4 row:
+`1,533,252 − 1,507,328`), margin 42,684 — derived with the same formula as
+every other threshold in this plan, and to be recomputed from your own
+recorded row. **Batched deliberately: neither store crosses the threshold
+alone**, and landing them separately would produce a commit that moves nothing
+while implying it moved something.
 
 Both stores are the same shape as each other and as Task 4's, with one extra
 property: both index halves hold **absolute** guest addresses today
@@ -1518,7 +2536,17 @@ release path at all. Say so in the commit body.
 
 - [ ] **Step 5: Rebuild, verify fresh, check the ledger row**
 
-Expected `memorySize`: **1,464,644**. Expected `regionBytes`: **2,818,048**.
+```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task5 -68608 \
+  && echo "LEDGER OK"
+```
+
+**The gate is the DELTA: −68,608** — 34,304 each, both being a floor plus
+`64 × 3 × 8` of index. Expect one page off `regionBytes` (illustrative:
+40 → 39 pages, 2,883,584 → 2,818,048).
 
 - [ ] **Step 6: Perturb the COW exclusion**
 
@@ -1596,6 +2624,15 @@ sed -n '908,921p' crates/fork-module/src/lib.rs     # the committed_ordinals arm
 Removing only the `Ok(0)` leaves the `committed_ordinals` arm
 unreachable-but-present; removing only the arm turns `Ok(0)` into a silent
 no-slots activation.
+
+**THIS TASK OWNS THE `ok_or(Errno::EINVAL)?` LINE. Task 3 deliberately does
+not.** An earlier draft specified the same line as new work in both tasks,
+and landing it at Task 3 would have deleted the `None -> resume_catalog()`
+arm three tasks before activation 0 moved onto the activation-keyed store —
+`activation_catalog(0)` has no entry until this task, so every activation-0
+registration would have returned `EINVAL`, which is every fork, for three
+commits. The precondition for this line is the merge below, and the merge is
+here.
 
 **The refusal must distinguish two cases, and one of them is in the suite.**
 Seeding an EMPTY catalog is legitimate — `libneeded-provider.so` in
@@ -1676,24 +2713,61 @@ cargo test -p wasm-posix-host-native
 
 - [ ] **Step 4: Rebuild, verify fresh, check the ledger row**
 
-Expected `memorySize`: **1,168,196**. Expected `regionBytes`: **2,490,368**.
+```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task6 -296448 \
+  && echo "LEDGER OK"
+```
 
-- [ ] **Step 5: Lower the ceilings this commit reduces**
+**The gate is the DELTA: −296,448** — the 262,144-byte `CatalogCell` plus the
+34,304-byte activation-catalog floor and index. This is the one task whose
+region falls by MORE than its static delta (illustrative: 39 → 34 pages, a
+327,680-byte drop against a 296,448-byte saving), because it also consumes the
+partial page the rows above it left. Report both numbers and say which is
+which.
+
+- [ ] **Step 5: MEASURE the ceilings, then lower them by what this commit removes**
+
+**Do not carry a number out of this plan.** An earlier draft said "lower
+`forkModuleEntryPoints` 71 → 70 and `forkModuleHostEntries` 58 → 57". 71 and
+58 are what the budget file and the measurement both said on 2026-09-20 at
+`a99a3a2d8` — but Change 2's Task 3 adds `fm_publish_resume_assignment`, so
+by the time this task runs the measurement will be one higher and a
+pre-computed "70" would bank a reduction of two against a removal of one.
+Measure first:
 
 ```bash
+cd /Users/brandon/kandelo-lane-f
+echo "fm_* entries BEFORE this commit:"
+grep -cE '^\s*pub (unsafe )?extern "C" fn fm_' crates/fork-module/src/lib.rs
 cd host && npx vitest run test/surface-budget.test.ts
 ```
 
-It will fail on reductions. Lower, in `docs/surface-budget.json`, in this same
+The budget test fails on REDUCTIONS as well as growth, and its message names
+the exact value to write. Lower, in `docs/surface-budget.json`, in this same
 commit, each with a recorded reason:
 
-* `forkModuleEntryPoints` 71 → 70 and `forkModuleHostEntries` 58 → 57 —
-  `fm_set_resume_catalog` removed, the duplicate seeding entry for activation
-  0.
+* `forkModuleEntryPoints` and `forkModuleHostEntries` — **each down by
+  exactly one**, for the one entry this commit deletes,
+  `fm_set_resume_catalog`, the duplicate seeding entry for activation 0.
+  Write the before and after values you measured into the `why`, so the next
+  reader can tell a one-entry deletion from a mis-banked ceiling.
 * `forkTypeScript` — by the measured reduction in
-  `host/src/fork-module-backend.ts` and `fork-module-instance.ts`.
+  `host/src/fork-module-backend.ts` and `fork-module-instance.ts`. Its slack
+  is 0, so the ceiling must equal the new measurement exactly.
+* `forkModuleEntriesWithoutProductionCaller` — **check it did not move.**
+  This commit deletes an entry the host calls, so the no-production-caller
+  bucket should be untouched; if it moved, an entry changed buckets and that
+  is a finding, not a ceiling edit.
 
-**Do not raise anything.** If a ceiling needs to go UP, stop and report.
+**Do not raise anything in THIS task.** Global Constraints permits a raise
+when the plan mandates the growth — and nothing in Task 6 mandates any: it
+deletes an entry and shrinks TypeScript, so every number here should move
+DOWN. Apply the test: this task implemented perfectly moves no ceiling up. So
+a ceiling that needs to go UP here is a finding, not a mandate — stop and
+report it.
 
 - [ ] **Step 6: Perturb the never-seeded refusal**
 
@@ -1823,11 +2897,18 @@ above the new size.
 - [ ] **Step 7: Verify the region and commit**
 
 ```bash
+cd /Users/brandon/kandelo-lane-f
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task7 0 \
+  && echo "LEDGER OK"
 cd host && npx vitest run test/fork-module-instance.test.ts
 ```
 
-Read `fm.regionBytes` and confirm it fell by exactly
-`262,144 − <new slab>`. No rounding, no page step.
+**The `memorySize` delta is 0** — this task edits the host, not the module, so
+the build key does not move and the recorder says so. What must move is
+`regionBytes`, and the recorder reads the new `STAGING_SLAB_BYTES` straight
+out of `host/src/fork-module-instance.ts`, so its `regionBytes` delta is the
+slab reduction itself. Confirm it fell by exactly `262,144 − <new slab>`. No
+rounding, no page step — this is the one exact saving in the plan.
 
 ```bash
 cd host && npx vitest run test/surface-budget.test.ts && echo "BUDGET OK"
@@ -1842,10 +2923,15 @@ git push origin brandonpayton/lane-f-fork-inversion
 
 ## Task 8: The five small per-activation stores
 
-**This commit moves ZERO region bytes.** 14,592 bytes against a 43,948-byte
-threshold at this point in the ledger. Even together they cannot move the
-reservation, and this task says so rather than implying a win it does not
-deliver.
+**This commit moves ZERO region bytes.** 14,592 bytes against a **54,084-byte**
+threshold. Derived, like every threshold here:
+`threshold = memorySize_prev − ((pages_prev − 1) × 65,536 − 1,048,576)`, which
+on the illustrative Task 7 row is `1,168,196 − 1,114,112 = 54,084`. An earlier
+draft said 43,948, which was underived and wrong; the conclusion is unchanged
+either way, but a row whose entire purpose is to state a number truthfully is
+the wrong place for a magic one. **Recompute yours from the recorder.** Even
+together these five cannot move the reservation, and this task says so rather
+than implying a win it does not deliver.
 
 **What it DOES buy, and why it is worth a commit:**
 
@@ -1969,16 +3055,22 @@ rather than leaving reasons for resets that no longer exist.
 
 - [ ] **Step 5: Rebuild, verify fresh, confirm the ZERO**
 
-Expected `memorySize`: **1,153,604**. Expected `regionBytes`: **2,490,368 −
-(Task 7's slab reduction)** — **unchanged by this task**.
-
 ```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task8 -14592 \
+  && echo "LEDGER OK"
 cd host && npx vitest run test/fork-module-instance.test.ts
 ```
 
-**Say the region did not move, and say why** (14,592 bytes against a 43,948
-threshold). Do not report a `memorySize` delta as if it were a reservation
-delta.
+**The gate is the DELTA: −14,592** (8,192 + 2,304 + 3,072 + 512 + 512). The
+recorder must report **`regionBytes` delta 0 and the same page count** — that
+is this task's real assertion.
+
+**Say the region did not move, and say why** (14,592 bytes against the
+threshold the recorder printed on the previous row, ~54,084). Do not report a
+`memorySize` delta as if it were a reservation delta.
 
 - [ ] **Step 6: Perturb the table-state UPDATE semantics**
 
@@ -2034,14 +3126,30 @@ It calls `channel_syscall` with a fixed `[i64; 6]`. No `Vec`, no `Box`, no
 (b) Nothing allocates before `fm_set_format` stores `CHANNEL_BASE`:
 
 ```bash
-grep -n "CHANNEL_BASE.store" crates/fork-module/src/lib.rs
+grep -n "CHANNEL_BASE.store\|reset_captured_externrefs()" crates/fork-module/src/lib.rs | head -5
 ```
 
-`fm_set_format` is the first module call the backend makes. Confirm the store
-precedes every allocating path in that function — including the
+`fm_set_format` is the first module call the backend makes, and with
+`HEAP_FLOOR = 0` any bump allocation before that store fails: `channel_base()`
+answers `EINVAL` until it happens (`lib.rs:9029-9035`). Confirm the store
+precedes every allocating path in `set_format_impl` — including the
 `arena_release_all()` Task 1 added, which is why that was sequenced after it.
 
-**If either fails, STOP.** A floor of zero with a recursing allocator is an
+**THIS CHECK CANNOT FAIL YET, AND THAT IS THE POINT.** Before this plan's
+edits the store is at `lib.rs:3551` and `reset_captured_externrefs()` is at
+`:3534` — SEVENTEEN LINES EARLIER — but today that reset only zeroes counters
+and a fixed array, so it allocates nothing and the ordering is harmless.
+**Task 11 is what makes it dangerous**, by turning `CapturedExternrefs` into a
+bump allocation. Running this check here proves a property of code that has
+not been written.
+
+So: **record the ordering fact now — which of the scrub's calls run before the
+`CHANNEL_BASE` store, with their current line numbers — and carry it into
+Task 11.** Task 11 Step 3a re-checks it against the allocating version, which
+is the first moment it can be violated. Write the finding into your report
+either way; a checked-and-harmless ordering is evidence, and Task 11 needs it.
+
+**If (a) fails, STOP.** A floor of zero with a recursing allocator is an
 infinite loop at instantiation, not a test failure.
 
 - [ ] **Step 2: Correct the retracted justification, in the same change**
@@ -2108,12 +3216,18 @@ every later fork.
 
 - [ ] **Step 5: Rebuild, verify fresh, check the ledger row**
 
-Expected `memorySize`: **105,028**. Expected `regionBytes`:
-**1,179,648 + (Task 7's slab)** — down 1,048,576 from Task 8.
-
 ```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task9 -1048576 \
+  && echo "LEDGER OK"
 cd host && npx vitest run test/fork-module-instance.test.ts
 ```
+
+**The gate is the DELTA: −1,048,576**, the whole floor. Expect sixteen pages
+off `regionBytes` (illustrative: 34 → 18 pages). **18 pages is not the plan's
+final figure** — Task 10 takes one more, and the last row is 17.
 
 - [ ] **Step 6: Run the child path specifically**
 
@@ -2164,12 +3278,22 @@ release would hand the next reserve a region overlapping a live one, arriving
 by a route `__wpk_fork_ref_scratch_release`'s trap cannot see.
 
 **Files:**
-- Modify: `crates/fork-module/src/lib.rs:3893-3910` (`SCRATCH_SIZE`,
-  `ScratchCell`, `SCRATCH`, `SCRATCH_TOP`, `SCRATCH_HIGH_WATER`)
+- Modify: `crates/fork-module/src/lib.rs:3893-3912` (`SCRATCH_SIZE`,
+  `ScratchCell`, `SCRATCH`, `SCRATCH_TOP`, and `SCRATCH_HIGH_WATER` at
+  `:3912` — outside the `3893-3910` an earlier draft listed, and the one
+  `fm_borrowed_replay_workspace` reads)
 - Modify: `crates/fork-module/src/lib.rs:8507-8537` (the two guest entries)
 - Modify: `crates/fork-module/src/lib.rs:3980-4000` (`reset_bump_heap`)
-- Modify: `crates/fork-module/src/lib.rs:10880-10905` (the high-water
-  `fm_stats` reader, which reads `SCRATCH_HIGH_WATER`)
+- Modify: `crates/fork-module/src/lib.rs:10880-10905` — the high-water
+  reader. **It is NOT an `fm_stats` field**: it is
+  `fm_borrowed_replay_workspace(field)` field 1, loading `SCRATCH_HIGH_WATER`
+  at `:10902`. The line range is right and the entry name in an earlier draft
+  was wrong; read the entry before editing it
+- Modify: `crates/fork-module/src/lib.rs` (`set_format_impl`, the COW-child
+  scrub) — the scratch chain's release point, beside Task 1's
+  `arena_release_all()`
+- Modify: `crates/fork-module/src/lib.rs` — add `SCRATCH_CHUNK_COUNT_FIELD =
+  104` to `FM_STATS_HIGH_FIELDS` in the same edit that adds its `if` arm
 
 **Interfaces:**
 - Produces:
@@ -2181,8 +3305,26 @@ static SCRATCH_CUR: AtomicU64 = AtomicU64::new(0);
 /// Offset within `SCRATCH_CUR`'s body.
 static SCRATCH_TOP: AtomicUsize = AtomicUsize::new(0);
 
-/// Abandon every open frame and return every chunk. Called at all four
-/// `reset_bump_heap` points.
+/// Abandon every open frame and return every chunk: unlink each, best-effort
+/// `channel_munmap`, zero all three roots.
+///
+/// TWO CALLERS, for two different reasons, and both are required.
+///   1. `reset_bump_heap` (one site, reached from all four reset points) --
+///      a capture that trapped mid-encode leaves frames open, and "reclaim
+///      them with the bump, or the next fork in this worker starts with a
+///      stack that never comes back down" is a FIXED DEFECT the code
+///      records, not an artifact of where the storage lived.
+///   2. `set_format_impl`, the COW-child scrub -- a child inherits the
+///      PARENT's chunk mappings through the memory clone, and
+///      `set_format_impl` never calls `reset_bump_heap` (its only four call
+///      sites are `lib.rs:4599`, `:5185`, `:7947` and `:10351`). Without
+///      this second call the child zeroes nothing and frees nothing, and
+///      every chunk the parent ever took leaks in a child that may outlive
+///      it -- the exact leak Task 0 section F exists to prevent, for the one
+///      chain section F did not cover.
+///
+/// In the scrub it is sequenced AFTER `CHANNEL_BASE` is stored, like every
+/// other release there, because unmapping syscalls.
 fn scratch_abort_frames();
 fn scratch_chunk_count() -> u32;
 ```
@@ -2216,6 +3358,29 @@ the CURRENT line numbers, not the spec's, which are all wrong by 18-19:
 Put the call inside `reset_bump_heap` itself, beside the existing
 `SCRATCH_TOP.store(0)` it replaces, so there is one site rather than four.
 
+**And add the SECOND release point the four resets do not cover: the COW-child
+scrub.** `set_format_impl` never calls `reset_bump_heap` — confirm it for
+yourself, because it is the whole reason this is a separate call:
+
+```bash
+grep -n "reset_bump_heap" crates/fork-module/src/lib.rs
+```
+
+Four sites, and none of them is in `set_format_impl`. So a COW child inherits
+`SCRATCH_HEAD`/`SCRATCH_CUR`/`SCRATCH_TOP` pointing at the parent's cloned
+mappings and, on a chain, never gives them back. Call
+`scratch_abort_frames()` in the scrub beside Task 1's `arena_release_all()`,
+after the `CHANNEL_BASE` store:
+
+```rust
+// The scratch chain is MAPPINGS the COW child inherited through the memory
+// clone, exactly like the arena's. `reset_bump_heap` is what normally
+// returns them, and this function is not one of its four callers -- so
+// without this call a child starts with a scratch stack it did not build,
+// cannot use, and never releases.
+scratch_abort_frames();
+```
+
 - [ ] **Step 2: Handle the frame-crosses-a-chunk case explicitly**
 
 `__wpk_fork_ref_scratch_release(ptr, len)` today computes
@@ -2223,11 +3388,17 @@ Put the call inside `reset_bump_heap` itself, beside the existing
 reserve that does not fit the current chunk takes a new one and places the
 frame at its base — so `top` restarts and the arithmetic breaks.
 
-The fix is per-chunk: a scratch chunk uses a 32-byte header — Task 1's
-`+0 next: u64`, `+8 size: u64`, `+16 used: u32`, `+20 live: u32`, plus
-`+24 prev: u64` — and a release whose `need > top` pops to `prev` and
-recomputes there,
-**still trapping** if the resulting address does not name the frame the caller
+The fix is per-chunk: a scratch chunk uses **Task 1's header, unchanged** —
+`+0 next: u64`, `+8 size: u64`, `+16 used: u32`, `+20 live: u32`, and the
+chain word at `+24`, which this chain uses as `prev: u64`. `ARENA_CHUNK_HEADER`
+is **32** and every chain in this change uses that one value; an earlier draft
+had Task 1 sizing mappings with 24 while this task addressed bodies at 32, so
+the last eight bytes of an oversized frame fell PAST the mapping — and Task 12
+makes oversized the common path, so the symptom would have been memory
+corruption rather than a clean failure.
+
+A release whose `need > top` pops to `prev` and recomputes there, **still
+trapping** if the resulting address does not name the frame the caller
 passed. The trap is the contract ("a release that does not match the top means
 the nesting the whole scheme assumes has been violated, and continuing would
 hand the next reserve a region that overlaps a live one"). Do not soften it.
@@ -2250,16 +3421,96 @@ the same `max(ARENA_CHUNK_BYTES, header + want)` rule.
  */
 const SCRATCH_CHUNK_COUNT_FIELD = 104;
 
-it("reserves and releases across a chunk boundary", () => { ... });
-it("traps on a release that does not name the top frame", () => { ... });
+// A frame that cannot fit beside another in one chunk, derived from the
+// module's own constants rather than picked: one chunk's body is
+// ARENA_CHUNK_BYTES - ARENA_CHUNK_HEADER = 65,536 - 32 = 65,504 bytes, so two
+// frames of 40,000 cannot share one and the second takes a fresh chunk.
+const CHUNK_BODY = 65_536 - 32;
+const FRAME = 40_000;
+
+it("reserves and releases across a chunk boundary", () => {
+  const x = instantiateFixtureModule();
+  expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "nothing reserved yet").toBe(0);
+
+  // Frame A fits the first chunk; frame B cannot, so it lands at the BASE of
+  // a second -- which is the case the old `base + top - need` arithmetic got
+  // wrong, because B's `top` restarts rather than continuing A's.
+  const a = x.scratchReserve(FRAME);
+  expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "one chunk").toBe(1);
+  const b = x.scratchReserve(FRAME);
+  expect(2 * FRAME, "the fixture's own arithmetic").toBeGreaterThan(CHUNK_BODY);
+  expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "the second frame chains").toBe(2);
+  // Not merely "different": B must not overlap A, which is the corruption
+  // this whole scheme exists to prevent.
+  expect(Math.abs(b - a), "frames do not overlap").toBeGreaterThanOrEqual(FRAME);
+
+  // Releasing B pops back to A's chunk; releasing A empties the chain.
+  x.scratchRelease(b, FRAME);
+  expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "the empty chunk is returned").toBe(1);
+  x.scratchRelease(a, FRAME);
+  expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "and so is the last one").toBe(0);
+});
+
+it("traps on a release that does not name the top frame", () => {
+  const x = instantiateFixtureModule();
+  const a = x.scratchReserve(1_024);
+  // One byte off the top frame's base is not the top frame. The contract is
+  // a TRAP, not an errno: "a release that does not match the top means the
+  // nesting the whole scheme assumes has been violated, and continuing would
+  // hand the next reserve a region that overlaps a live one."
+  expect(() => x.scratchRelease(a + 1, 1_024)).toThrow();
+  // And a release of the right address with the wrong length is the same
+  // violation arriving the other way round.
+  expect(() => x.scratchRelease(a, 512)).toThrow();
+});
+
 it("returns every chunk when a reset aborts open frames", () => {
-  // Reserve without releasing, then drive a reset. Every chunk must come
-  // back -- the defect the existing `SCRATCH_TOP.store(0)` comment records
-  // as already fixed, arriving by a new route.
+  const x = instantiateFixtureModule();
+  // Reserve twice without releasing: two open frames across two chunks.
+  x.scratchReserve(FRAME);
+  x.scratchReserve(FRAME);
+  const chunksHeld = x.stats(SCRATCH_CHUNK_COUNT_FIELD);
+  expect(chunksHeld, "two open frames, two chunks").toBe(2);
+  const before = x.munmaps();
+
+  x.driveBumpReset();   // any entry that reaches `reset_bump_heap`
+
+  // Every chunk must come back -- the defect the existing
+  // `SCRATCH_TOP.store(0)` comment records as already fixed, arriving by a
+  // new route. BOTH HALVES: the count walks the list, so an unlinked-but-
+  // unmapped chunk reads as zero here and only the tally sees it.
   expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD)).toBe(0);
   expect(x.munmaps() - before).toBe(chunksHeld);
 });
+
+it("does not hand a COW child the parent's scratch chunks", () => {
+  // `set_format_impl` is the COW-child scrub, and it is NOT one of
+  // `reset_bump_heap`'s four callers -- so without its own release call the
+  // child inherits SCRATCH_HEAD pointing at mappings it did not make and
+  // never gives them back. This is the leak Task 0 section F describes, for
+  // the one chain section F does not cover.
+  const x = instantiateFixtureModule();
+  x.scratchReserve(FRAME);
+  x.scratchReserve(FRAME);
+  const chunksHeld = x.stats(SCRATCH_CHUNK_COUNT_FIELD);
+  expect(chunksHeld).toBe(2);
+  const before = x.munmaps();
+
+  x.setFormat();   // the scrub: the child's first call into the module
+
+  expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "the child inherits no chunks").toBe(0);
+  expect(x.munmaps() - before, "one unmap per inherited chunk").toBe(chunksHeld);
+});
 ```
+
+`scratchReserve` / `scratchRelease` are the existing guest entries
+`__wpk_fork_ref_scratch_reserve` / `__wpk_fork_ref_scratch_release`
+(`lib.rs:8507-8537`), called directly on the fixture instance — they are guest
+imports, not `fm_*` entries, so exercising them adds nothing to any surface
+budget. `driveBumpReset` is whichever fixture call already reaches
+`reset_bump_heap`; name the one you used in the file header, because a test
+that resets by a route production never takes is testing a different
+function.
 
 - [ ] **Step 4: Keep the high-water observable honest**
 
@@ -2271,14 +3522,60 @@ class this lane keeps finding.
 
 - [ ] **Step 5: Rebuild, verify fresh, check the ledger row**
 
-Expected `memorySize`: **39,492**. Expected `regionBytes`: down 65,536.
+```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task10 -65536 \
+  && echo "LEDGER OK"
+```
 
-- [ ] **Step 6: Perturb the trap**
+**The gate is the DELTA: −65,536**, which is `SCRATCH_SIZE = 64 * 1024`.
+Expect one page off `regionBytes` (illustrative: 18 → 17 pages). **17 is the
+plan's final page count**; Task 11 moves zero.
 
-Make the release accept a `ptr` that is merely within the current chunk rather
-than exactly the top frame. The trap test must go red. **The wasm trap is the
-observable here** — the test asserts the call traps, so confirm it does by
-seeing the failure, not by reading the code.
+Claim the `fm_stats` field and pin it in the same edit:
+
+```rust
+/// 104, from the plan's one field table. 105 belongs to ruling D1-a's
+/// directory-entry count, which Task 1 already landed above this number.
+const SCRATCH_CHUNK_COUNT_FIELD: u32 = 104;
+```
+
+```rust
+const FM_STATS_HIGH_FIELDS: [u32; 6] = [
+    IDENTITY_CHUNK_COUNT_FIELD,        // 100, already shipped
+    ARENA_RECORD_CHUNK_COUNT_FIELD,    // 101
+    ARENA_DIRECTORY_CHUNK_COUNT_FIELD, // 102
+    RESUME_FREE_CHUNK_COUNT_FIELD,     // 103
+    SCRATCH_CHUNK_COUNT_FIELD,         // 104
+    ARENA_DIRECTORY_ENTRY_COUNT_FIELD, // 105
+];
+```
+
+- [ ] **Step 6: Perturb the trap, the COW release, and the field pin**
+
+Take a Task 10 pristine copy of your finished work first
+(`/tmp/claude-501/fork-storage-pristine/lib-task10.rs`), and after each
+perturbation rebuild, confirm the build key MOVED, run, then restore and
+confirm the key returns.
+
+(a) **The trap.** Make the release accept a `ptr` that is merely within the
+current chunk rather than exactly the top frame. The trap test must go red.
+**The wasm trap is the observable here** — the test asserts the call traps, so
+confirm it does by seeing the failure, not by reading the code.
+
+(b) **The COW release.** Delete the `scratch_abort_frames()` call from
+`set_format_impl` — leaving the one inside `reset_bump_heap`. The
+"does not hand a COW child the parent's scratch chunks" test must go red on
+BOTH of its assertions. **If it stays green, the test is reaching
+`reset_bump_heap` by some other route and is not testing the scrub**, which
+would leave the inherited-mapping leak uncovered; find out which call did the
+release before proceeding.
+
+(c) **The field pin.** Set `SCRATCH_CHUNK_COUNT_FIELD` to `102`. **Expected:
+the BUILD fails** on `FM_STATS_HIGH_FIELDS`'s const assertion. A successful
+build means the constant never reached the array.
 
 - [ ] **Step 7: Budget, then commit**
 
@@ -2295,11 +3592,18 @@ git push origin brandonpayton/lane-f-fork-inversion
 
 ## Task 11: `CapturedExternrefs` to the bump heap, with the corrected ordering
 
-**This commit moves ZERO region bytes.** 16,384 bytes against a 47,684-byte
-threshold. It lands because the store's lifetime is genuinely per-capture and
-the bump heap is where per-capture storage belongs — and because the spec's
-ordering requirement for it names the wrong function, which is worth correcting
-in the tree.
+**This commit moves ZERO region bytes.** 16,384 bytes against a **39,492-byte**
+threshold — derived, like every threshold here, as
+`memorySize_prev − ((pages_prev − 1) × 65,536 − 1,048,576)`, which on the
+illustrative Task 10 row is `39,492 − 0 = 39,492` (at 17 pages the shadow
+stack is exactly sixteen of them, so the subtrahend is zero and the threshold
+equals the whole remaining static footprint). An earlier draft said 47,684,
+which was underived and wrong. **Recompute yours from the recorder.**
+
+It lands because the store's lifetime is genuinely per-capture and the bump
+heap is where per-capture storage belongs — and because the spec's ordering
+requirement for it names the wrong function, which is worth correcting in the
+tree.
 
 **Files:**
 - Modify: `crates/fork-module/src/lib.rs:8124-8135` (`CAPTURED_EXTERNREF_MAX`,
@@ -2367,7 +3671,50 @@ it("reports the externrefs it captured, not whatever reused their storage", () =
 (`lib.rs:8156`) and `fm_captured_externref` (`lib.rs:8165`) host queries. No
 new entry.
 
-- [ ] **Step 3: Fix the ordering, then convert**
+- [ ] **Step 3a: Settle the OTHER ordering first — the one Task 9 could not check**
+
+**This is the check Task 9 Step 1(b) was written to make and could not**,
+because the condition it tests cannot be violated until this task exists.
+Task 9 took `HEAP_FLOOR` to 0, so the FIRST bump allocation must
+`channel_mmap`, and `channel_mmap` needs `CHANNEL_BASE` (`channel_base()`
+answers `EINVAL` until it is stored, `lib.rs:9029-9035`). In
+`set_format_impl`, `reset_captured_externrefs()` runs at `:3534` and
+`CHANNEL_BASE.store` at `:3551` — **seventeen lines later**. Re-derive both
+line numbers before you rely on them; Tasks 1, 2, 4, 5 and 8 all edited this
+block:
+
+```bash
+grep -n "CHANNEL_BASE.store\|reset_captured_externrefs()" crates/fork-module/src/lib.rs | head -5
+```
+
+If your `reset_captured_externrefs()` allocates, that call is the module's
+FIRST call, at instantiation, and it fails — not as a test failure but as a
+module that cannot start. Two ways out, and they are not equivalent:
+
+* **(a) RECOMMENDED: make the reset non-allocating.** Drop the buffer and null
+  the root; the next `push` allocates. A reset that allocates is a reset that
+  can FAIL, and this one runs on a path with no way to report — so the
+  narrower design is also the honest one. `set_format_impl`'s ordering then
+  stops mattering for this store entirely.
+* **(b) Move the scrub's `reset_captured_externrefs()` call to after the
+  `CHANNEL_BASE` store**, beside Task 1's `arena_release_all()` and Task 10's
+  `scratch_abort_frames()`. This works, but it makes a fourth caller depend on
+  a sequencing rule inside a block five tasks already rewrote.
+
+**Say which you took and why.** Then prove it, with the test Task 9 wrote for
+exactly this observable:
+
+```bash
+cd host && npx vitest run test/fork-module-worker-instantiation.test.ts
+```
+
+Task 9 Step 3's assertion — `x.mmaps()` is 0 after instantiation, and
+`fm_set_format` is the first module call the backend makes — is what catches a
+reset that allocates before the channel exists. **If instantiation still maps
+nothing and nothing throws, the ordering is safe.** If it throws `EINVAL` from
+`channel_base()`, you took neither way out.
+
+- [ ] **Step 3: Fix the capture ordering, then convert**
 
 Move the `reset_captured_externrefs()` at `lib.rs:4725` to AFTER the
 `begin_unwind_impl` call at `:4727`, matching the order
@@ -2376,8 +3723,17 @@ make the storage a bump allocation.
 
 - [ ] **Step 4: Rebuild, verify fresh, confirm the ZERO**
 
-Expected `memorySize`: **23,108**. Expected `regionBytes`: **unchanged**. Say
-so explicitly.
+```bash
+cd /Users/brandon/kandelo-lane-f
+bash crates/fork-module/build-wasm.sh
+bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs expect task11 -16384 \
+  && echo "LEDGER OK"
+```
+
+**The gate is the DELTA: −16,384** (`CAPTURED_EXTERNREF_MAX` 4,096 × 4). The
+recorder must report **`regionBytes` delta 0 and the same page count.** Say so
+explicitly: this is the last conversion and it moves no reservation at all.
 
 - [ ] **Step 5: STOP on `VectorInFlight` and ask**
 
@@ -2471,9 +3827,32 @@ build key is derived from source, so an env-driven variant would produce
 different artifact bytes under an identical key.
 
 4,096 is a whole wasm page's worth of records for the small stores and forces
-the oversized-chunk path for every real catalog. If the chunk allocator
-refuses a size below one wasm page, use the smallest it accepts and say so —
-the point is that chunks CHAIN, not that they are tiny.
+the oversized-chunk path for every real catalog.
+
+**Why this one line actually forces chaining, and what would have made it a
+no-op.** `channel_mmap` rounds up to a 64 KiB wasm page, so a chunk asked for
+4,096 bytes is still MAPPED at 65,536 and its header's `size` says 65,536. An
+allocator that took its remaining room from `size` would hand out 65,504 bytes
+from every "4,096-byte" chunk and **never chain** — the forced build would run
+for 25 minutes and test nothing while reporting green. Task 1 therefore
+records `capacity` in the header at +24, computed from the REQUEST before the
+page round-up, and `arena_alloc` bounds itself by that. Confirm the code you
+are about to force still does that:
+
+```bash
+grep -n "capacity" crates/fork-module/src/lib.rs | head -20
+```
+
+If `arena_alloc` reads `size` anywhere in its capacity arithmetic, **stop and
+fix that first** — the forcing mechanism depends on it, and Step 3a below is
+what proves it worked.
+
+The free-bits chain follows automatically: `FREE_BITS_PER_CHUNK` is derived
+from the same two constants, so at 4,096 a bitmap chunk covers
+`(4,096 - 32) * 8 = 32,512` slots and any seed above that spans two.
+
+If the chunk allocator refuses a size below one wasm page, use the smallest it
+accepts and say so — the point is that chunks CHAIN, not that they are tiny.
 
 ```bash
 bash crates/fork-module/build-wasm.sh
@@ -2485,16 +3864,73 @@ diff <(cat local-binaries/fork_module32.wasm.build-key) /tmp/claude-501/key-befo
 - [ ] **Step 3: Run the full suite, and record what it ran**
 
 ```bash
-cd host && npx vitest run 2>&1 | tee /tmp/claude-501/forced-chunk-run.txt
-echo "SUITE EXIT: $?"
+cd host
+npx vitest run 2>&1 | tee /tmp/claude-501/forced-chunk-run.txt
+forced=${PIPESTATUS[0]}
+echo "SUITE EXIT: $forced"
 tail -20 /tmp/claude-501/forced-chunk-run.txt
+test "$forced" -eq 0 && echo "FORCED BUILD GREEN" || echo "FORCED BUILD RED"
 ```
 
-**Gate on the exit status, and record the file and test counts**, not just
-"passed". The spec's baseline is 185 tests across 29 files in ~25 minutes; a
-run that covers materially less has not run the suite, and a green summary
-line printed in an unconditional block says "ok" on the same run that lists
-failures.
+**`${PIPESTATUS[0]}`, not `$?`.** After a pipe, `$?` is `tee`'s status, and
+`tee` always succeeds — so `npx vitest run | tee f; echo "$?"` prints 0 on a
+red suite, in the step whose entire job is to return a verdict. An earlier
+draft of this step did exactly that. Use `set -o pipefail` instead if the step
+runs under a shell without `PIPESTATUS`.
+
+**Record the file and test counts**, not just "passed". The spec's baseline is
+185 tests across 29 files in ~25 minutes; a run that covers materially less
+has not run the suite, and a green summary line printed in an unconditional
+block says "ok" on the same run that lists failures.
+
+- [ ] **Step 3a: PROVE the chains chained — do not assume the knob did it**
+
+A forced build that did not force anything is indistinguishable from a clean
+run. The observables already exist; assert them:
+
+```bash
+cd host && npx vitest run test/fork-arena-release.test.ts \
+  test/fork-resume-slot-bitmap.test.ts 2>&1 | tee /tmp/claude-501/forced-chains.txt
+chains=${PIPESTATUS[0]}; echo "CHAIN TESTS EXIT: $chains"
+```
+
+Then add, to `host/test/fork-arena-release.test.ts`, an assertion that runs in
+BOTH builds and tells them apart by the module's own arithmetic rather than by
+a flag:
+
+```ts
+// In the default build one chunk holds 65,504 bytes, so the two 40,000-byte
+// KFIG sections take 2 chunks; in the forced build a chunk holds 4,064, so
+// each section is its own oversized chunk and the small stores chain within
+// their own. Either way MORE THAN ONE CHUNK EXISTS -- and that is the claim
+// the forced build is here to make good on.
+expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "the record arena chained")
+  .toBeGreaterThan(1);
+```
+
+and to `host/test/fork-resume-slot-bitmap.test.ts`, the crossing that is
+unreachable in the default build and routine here:
+
+```ts
+// 32,512 slots per bitmap chunk at ARENA_CHUNK_BYTES = 4,096, against the
+// 65,536 the cap used to allow -- so this seed spans three chunks. In the
+// default build a chunk covers 524,032 slots and this assertion is skipped,
+// with the reason named rather than the test quietly weakened.
+const perChunk = (ARENA_CHUNK_BYTES - 32) * 8;
+if (perChunk < 65_536) {
+  x.seedActivationCatalog(ACTIVATION_A, range(1, 65_536));
+  x.slots(1, ACTIVATION_A, 0);
+  expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD), "the bitmap chained")
+    .toBeGreaterThan(1);
+}
+```
+
+`ARENA_CHUNK_BYTES` is not host-visible, so read it from the source the build
+used — `grep -oE 'const ARENA_CHUNK_BYTES: u64 = [0-9_]+' crates/fork-module/src/lib.rs`
+— in the test's setup, and say in the file header that the test reads the
+constant rather than being told which build it is in. **If either assertion
+fails in the forced build, the knob did not reach that chain**; that is a
+defect in the chain's sizing, not a reason to lower the assertion.
 
 If anything HANGS, that is the `RESUME_SLOT_INDEX` deadlock reproducing inside
 the change, which the spec's risk 1 anticipated. Capture where every worker is
@@ -2522,12 +3958,21 @@ bash crates/fork-module/build-wasm.sh
 bash crates/fork-module/build-wasm.sh --verify-fresh; echo "FRESH: $?"
 diff <(cat local-binaries/fork_module32.wasm.build-key) /tmp/claude-501/key-before.txt \
   && echo "key restored" || echo "key differs -- expected if Step 4 changed source"
-cd host && npx vitest run 2>&1 | tee /tmp/claude-501/default-run.txt
-echo "SUITE EXIT: $?"
+cd host
+npx vitest run 2>&1 | tee /tmp/claude-501/default-run.txt
+default=${PIPESTATUS[0]}
+echo "SUITE EXIT: $default"
+test "$default" -eq 0 && echo "DEFAULT BUILD GREEN" || echo "DEFAULT BUILD RED"
 ```
 
+**`${PIPESTATUS[0]}` again**, for the same reason as Step 3.
+
 **Both runs must be green.** Report both, with their file and test counts and
-their durations.
+their durations. Also re-run Step 3a's two chain tests in the DEFAULT build
+and report what the chunk counts were there — the record arena still chains
+(two 40,000-byte sections), the bitmap does not (524,032 slots per chunk,
+against a seed that cannot exceed 65,536), and saying both out loud is how a
+reader knows which coverage came from which build.
 
 - [ ] **Step 6: Commit**
 
@@ -2560,24 +4005,37 @@ Task 0 catalogued twelve stale claims in.
 - Modify: `crates/fork-module/src/lib.rs` (any comment still describing a
   static that no longer exists)
 
-- [ ] **Step 1: Measure the real result, both numbers**
+- [ ] **Step 1: Measure the real result against the ledger you recorded**
 
 ```bash
 cd /Users/brandon/kandelo-lane-f
-node -e '
-const fs=require("fs");
-const m=new WebAssembly.Module(fs.readFileSync("local-binaries/fork_module32.wasm"));
-const b=new Uint8Array(WebAssembly.Module.customSections(m,"dylink.0")[0]); let i=0;
-const uleb=()=>{let r=0,sh=0,x;do{x=b[i++];r|=(x&0x7f)<<sh;sh+=7}while(x&0x80);return r>>>0};
-i++; uleb();
-console.log("memorySize", uleb());
-'
+node /tmp/claude-501/fork-storage-pristine/ledger.mjs record final
+python3 - <<'PY'
+import json
+rows = json.load(open("/tmp/claude-501/fork-storage-pristine/ledger.json"))
+base = next(r for r in rows if r["label"] == "baseline")
+final = rows[-1]
+print(f"memorySize {base['memorySize']} -> {final['memorySize']} "
+      f"(delta {final['memorySize'] - base['memorySize']})")
+print(f"regionBytes {base['regionBytes']} -> {final['regionBytes']} "
+      f"(delta {final['regionBytes'] - base['regionBytes']})")
+print(f"pages {base['pages']} -> {final['pages']}, staging {final['stagingBytes']}")
+PY
 cd host && npx vitest run test/fork-module-instance.test.ts
 ```
 
-Report `memorySize` and `fm.regionBytes` against the ledger's final row
-(**~23,108** and **~1,179,648 + slab**). A discrepancy is a finding, not a
-rounding error — say what it is.
+**Compare against the deltas, which are what this plan predicted, not against
+the illustrative absolutes.** The nine per-store savings sum to **2,372,352**,
+so `memorySize` should have fallen by that amount plus Task 1's measured
+growth d₁. The region should be at **17 pages = 1,114,112, plus Task 7's
+slab** — the shape the ledger's last two rows give. (An earlier draft said
+"~1,179,648 + slab" here; that is 18 pages, Task 9's figure carried forward
+past Task 10's −65,536, and the plan's Goal line only looked right because it
+folded a 65,536-byte slab into the same number.)
+
+A discrepancy is a finding, not a rounding error — say what it is, and say
+which row it first appears in. The ledger file has every row, so the task that
+diverged is one `diff` away.
 
 Also state the honest shape of the win, which the spec does state and which it
 would be easy to overclaim: **the reservation still has a shadow stack in
@@ -2665,13 +4123,26 @@ reading its source with a regex.
 - [ ] **Step 5: Final full suite, both hosts' Rust side, and the budget**
 
 ```bash
+set -o pipefail
 cd /Users/brandon/kandelo-lane-f
-cargo test -p wasm-posix-host-native 2>&1 | tail -20; echo "NATIVE EXIT: $?"
-cd host && npx vitest run 2>&1 | tail -20; echo "SUITE EXIT: $?"
-cd host && npx vitest run test/surface-budget.test.ts && echo "BUDGET OK"
+cargo test -p wasm-posix-host-native 2>&1 | tail -20
+native=$?; echo "NATIVE EXIT: $native"
+cd host
+npx vitest run 2>&1 | tail -20
+suite=$?; echo "SUITE EXIT: $suite"
+npx vitest run test/surface-budget.test.ts && echo "BUDGET OK"
+test "$native" -eq 0 && test "$suite" -eq 0 && echo "ALL GREEN" || echo "NOT GREEN"
 ```
 
-Gate on every exit status with `&&`, never `;`.
+**`set -o pipefail` is what makes those two statuses real.** Without it, `$?`
+after `| tail -20` is `tail`'s status, which is always 0 — so an earlier draft
+of this step reported `NATIVE EXIT: 0` and `SUITE EXIT: 0` on a red run, in
+the step that then says "gate on every exit status". If your shell has no
+`pipefail`, use `${PIPESTATUS[0]}` as Task 12 does, or write to a file and
+read it separately.
+
+Gate on every exit status with `&&`, never `;` — and after a pipe, read the
+status of the COMMAND, not of the pipe.
 
 - [ ] **Step 6: Commit**
 
