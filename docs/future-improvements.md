@@ -1621,14 +1621,29 @@ the **outer** timeout fires first, so the failure reads as a bare
 assertion the inner budget exists to produce.
 
 So the test is least informative exactly when the thing that ran out is the
-startup margin, which is also the most likely thing to run out. Observed
-2026-09-21: K-03 failed at 10423ms and again at 12056ms on a machine whose
-one-minute load average was 26 on 18 cores, with another workspace's
-`wasm-opt` at 931% CPU. Two supposedly identical isolated runs differing by
-16% is a load signature, not a cost regression — but the failure text says
-nothing that would let a reader draw that conclusion, and an agent
-investigating it spent considerable time before measuring the machine rather
-than the worktree.
+startup margin, which is also the most likely thing to run out.
+
+**The margin is 1.5 seconds.** Measured 2026-09-21, same binary throughout,
+one-minute load recorded before each run:
+
+| 1-min load (18 cores) | K-03 test phase | vs the 10s budget |
+|---|---|---|
+| 2.43 | 8.57s | 14% margin, pass |
+| 1.98 | 8.49s | 15% margin, pass |
+| 2.00 | 8.49s | 15% margin, pass |
+| ~20  | 10.42s | 4% over, fail |
+| ~26  | 12.06s | 21% over, fail |
+
+The quiet times cluster within 80ms, so the cost is deterministic at about
+8.5s and what varies is the machine. Module import moves the same way: 17.0s
+quiet against 28.6s loaded. **K-03 therefore does not need heavy contention to
+fail — it needs roughly 18% of slowdown**, which a single concurrent build on
+a shared workstation supplies easily.
+
+The failure text says none of this. It reports a bare timeout, and an
+investigation ran a long way on it before anyone measured the machine rather
+than the worktree — filtering processes to one's own checkout is structurally
+blind to the other sessions that are the contention.
 
 Two candidate fixes, both cheap. Shrink the inner budget relative to the
 outer, so the inner assertion always fires first and names what was missing.
