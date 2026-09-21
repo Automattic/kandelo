@@ -296,6 +296,77 @@ describe("ForkResumeTable, numbered by the module", () => {
     expect(h.table.resumeTable.get(2)).toBeNull();
   });
 
+  it("nulls PLACED slots when a catalog is re-seeded over them", () => {
+    // THE RE-SEED PATH, pinned. `fm_set_resume_catalog` seeds the worker-wide
+    // catalog, and seeding over one already seeded RENUMBERS activation 0:
+    // `resume_reseed` returns its slots to the free bitmap and assigns fresh
+    // ones from the new ordinal set. Anything left in a returned slot is a
+    // stale thunk at a slot the allocator is about to hand out again -- a real
+    // function of the right type, so a later resume through it runs instead of
+    // faulting. Census 194.
+    //
+    // That path nulls LENIENTLY: it is the one caller that can reach the free
+    // routine before any placement, because seeding is what ASSIGNS slots, so
+    // a slot past the end of the table provably holds nothing and is skipped
+    // rather than trapped on. `fork-module-instance.test.ts` covers that half
+    // by seeding two catalogs with no guest anywhere. This covers the half
+    // that matters for correctness: when the thunks HAVE been placed, the
+    // re-seed clears them.
+    const h = harness();
+    const setGlobalCatalog = (ordinals: readonly number[]): void => {
+      const bytes = new Uint8Array(ordinals.length * 4);
+      const view = new DataView(bytes.buffer);
+      ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
+      new Uint8Array(h.memory.buffer, CATALOG_AT, bytes.length).set(bytes);
+      (h.exports.fm_set_resume_catalog as (p: number, c: number) => void)(
+        CATALOG_AT,
+        ordinals.length,
+      );
+      expect(h.errno(), "seeding the worker catalog").toBe(0);
+    };
+
+    setGlobalCatalog([0, 1, 2]);
+    expect(slotsOf(h, 0)).toEqual([1, 2, 3]);
+    h.table.registerActivation(0, guest(h, [0, 1, 2]));
+    expect(h.resumeTable.get(1)).not.toBeNull();
+    expect(h.resumeTable.get(2)).not.toBeNull();
+    expect(h.resumeTable.get(3)).not.toBeNull();
+
+    // Re-seed with a SHORTER catalog, so slots 2 and 3 are freed and not
+    // immediately reassigned. A re-seed that did not null would leave live
+    // thunks in both.
+    setGlobalCatalog([0]);
+    expect(slotsOf(h, 0)).toEqual([1]);
+    expect(h.resumeTable.get(1), "slot 1 was freed and reassigned").toBeNull();
+    expect(h.resumeTable.get(2), "slot 2 was freed").toBeNull();
+    expect(h.resumeTable.get(3), "slot 3 was freed").toBeNull();
+  });
+
+  it("rejects every op but the release", () => {
+    // OP 0 IS DELETED -- the per-coordinate slot query the host used while it
+    // placed each thunk itself. The guard that proved it had no callers left
+    // was a grep, justified by "a surviving caller fails at INSTANTIATION".
+    // That justification assumed the whole ENTRY went; it did not, because op
+    // 1 is still the `dlclose` release. So a surviving op-0 caller now gets a
+    // quiet -1 with EINVAL instead of failing to instantiate, and this is the
+    // assertion that makes the rejection a contract rather than a fallthrough.
+    const h = harness();
+    h.seed(0, [0, 1]);
+    const slots = h.exports.fm_resume_slots as (
+      op: number,
+      activation: number,
+      ordinal: number,
+    ) => number;
+    const EINVAL = 22;
+    for (const op of [0, 2, 0xffff_ffff]) {
+      expect(slots(op, 0, 0), `op ${op}`).toBe(-1);
+      expect(h.errno(), `errno after op ${op}`).toBe(EINVAL);
+    }
+    // And the activation still holds everything it did, so a rejected op is a
+    // refusal rather than a partial release.
+    expect(slotsOf(h, 0)).toEqual([1, 2]);
+  });
+
   it("refuses a repeated ordinal, in the module", () => {
     // Accepting it would place N-1 thunks where N are expected and shift every
     // later slot by one. The refusal is the module's now; this asserts the host
@@ -340,6 +411,25 @@ describe("ForkResumeTable, numbered by the module", () => {
     // at the first ordinal. The counts are compared instead.
     const h = harness();
     h.seed(0, [0, 1, 2]);
+    expect(() => h.table.registerActivation(0, guest(h, [0, 1]))).toThrow(
+      /are not the same artifact/,
+    );
+  });
+
+  it("refuses a guest with thunks the module was seeded with NONE of", () => {
+    // THE OTHER DIRECTION, and the one an early return is tempted to skip.
+    // "The module assigned nothing" and "this guest has nothing to place" are
+    // different facts: an EMPTY seeded catalog against an instance exporting
+    // two thunks is a mismatch, not an empty activation. The count comparison
+    // has to run at `count === 0` too, or the only thing left to notice is a
+    // bare `undefined element` trap inside a fork child later.
+    //
+    // This is not hypothetical. `crates/host-native`'s own placement helper
+    // returned early on `count === 0` -- ahead of this very check -- until it
+    // was moved below it, so the native host silently accepted exactly this
+    // guest while the JavaScript host named it.
+    const h = harness();
+    h.seed(0, []);
     expect(() => h.table.registerActivation(0, guest(h, [0, 1]))).toThrow(
       /are not the same artifact/,
     );

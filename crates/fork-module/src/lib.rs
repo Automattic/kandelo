@@ -241,7 +241,10 @@ mod wasm {
         /// arm is: Rust cannot emit `table.set`, but writing a NULL is not
         /// holding a funcref -- so this does not need a host and no longer
         /// has one.
-        fn __wpk_fork_resume_null(slot: u32);
+        ///
+        /// `lenient` non-zero skips a slot at or past `table.size` instead of
+        /// trapping on it. See `resume_null_via_injector`.
+        fn __wpk_fork_resume_null(slot: u32, lenient: u32);
 
         /// `memory.atomic.wait32(addr, expected, timeout_ns) -> i32`.
         /// Returns 0 "ok", 1 "not-equal", 2 "timed-out". `-1` timeout waits
@@ -342,12 +345,25 @@ mod wasm {
     }
 
     /// Safe wrapper over the injector-wired resume-null placeholder.
-    fn resume_null_via_injector(slot: u32) {
+    ///
+    /// `lenient` decides what a slot the table does not have means. The
+    /// resume table is grown by the GUEST's placement shim, so "does not have
+    /// it" is the same statement as "nothing was ever placed there":
+    ///
+    ///   * `false` -- write it anyway, and let wasm's own bounds check trap.
+    ///     This is the `dlclose` release, where an unplaced slot means the
+    ///     guest's shim did not run and absorbing that would absorb a guest
+    ///     that placed nothing at all.
+    ///   * `true` -- skip it. This is the catalog RE-SEED, which runs before
+    ///     placement by construction, so a slot past the end provably holds
+    ///     nothing and refusing to look at it is the only correct answer.
+    fn resume_null_via_injector(slot: u32, lenient: bool) {
         // SAFETY: after injection this is a local thunk performing one
-        // `table.set` of `ref.null func` on the module's OWN resume table.
-        // The index is bounds-checked by wasm itself: an out-of-range slot
-        // traps rather than writing anywhere else.
-        unsafe { __wpk_fork_resume_null(slot) }
+        // `table.set` of `ref.null func` on the module's OWN resume table,
+        // optionally guarded by one `table.size`. The index is bounds-checked
+        // by wasm itself: an out-of-range slot traps rather than writing
+        // anywhere else.
+        unsafe { __wpk_fork_resume_null(slot, u32::from(lenient)) }
     }
 
     /// Safe wrapper over the injector-wired transit-grow placeholder.
@@ -751,19 +767,22 @@ mod wasm {
     /// a host that seeds twice has changed its mind rather than made an error.
     /// A first seed has nothing to free, which is the ordinary case.
     fn resume_reseed(activation_id: u32) -> Result<(), Errno> {
-        // `clear_table: false`. A re-seed is not a `dlclose`: the activation is
-        // still loaded and its guest instance still exists, so this is a
-        // renumbering rather than a teardown, and the thunks stay where they
-        // are until the next placement writes over them. It is also the ONE
-        // path that can reach the free routine before anything has been
-        // placed -- seeding is what ASSIGNS slots, so at the moment of a
-        // re-seed the resume table may still be its bare initial length, and
-        // a `table.set` against a slot it does not have would trap
+        // LENIENT NULLING, not no nulling. A re-seed still returns this
+        // activation's slots to the free bitmap, so anything left in them is
+        // a stale thunk at a slot the allocator is about to hand out again --
+        // a real function of the right type, which runs rather than faulting
+        // (census 194). So they are nulled.
+        //
+        // What is different from the `dlclose` release is what a slot the
+        // TABLE does not have means here. This is the one path that can reach
+        // the free routine before anything has been placed: seeding is what
+        // ASSIGNS slots, so at the moment of a re-seed the resume table may
+        // still be its bare initial length of 1, and a strict `table.set`
+        // would trap on a slot that provably holds nothing
         // (`fork-module-instance.test.ts` seeds a 20,000-ordinal catalog and
-        // then a 65,536-ordinal one over it, with no guest anywhere). Nulling
-        // belongs to the release the host issues on `dlclose`, which is where
-        // it lived before it moved in here.
-        let _ = resume_unregister_impl(activation_id, false);
+        // then a 65,536-ordinal one over it, with no guest anywhere). Lenient
+        // nulls what the table has and skips what it does not.
+        let _ = resume_unregister_impl(activation_id, true);
         resume_register_impl(activation_id).map(|_| ())
     }
 
@@ -803,19 +822,20 @@ mod wasm {
     /// the property the host's old "null first, THEN call release" ordering
     /// had, preserved rather than dropped on the way in.
     ///
-    /// `clear_table` is FALSE for exactly one caller, `resume_reseed`, and the
-    /// reason is there. It is true for the `dlclose` release, which is the
-    /// only place the nulling ever happened while it was the host's.
-    fn resume_unregister_impl(activation_id: u32, clear_table: bool) -> Result<u32, Errno> {
+    /// EVERY CALLER NULLS. `lenient` decides only what a slot the resume table
+    /// does not have means -- a trap for the `dlclose` release, a skip for a
+    /// catalog re-seed. See `resume_null_via_injector`, and `resume_reseed`
+    /// for why the re-seed is the one path that can see such a slot.
+    fn resume_unregister_impl(activation_id: u32, lenient: bool) -> Result<u32, Errno> {
         let mut count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
-        if clear_table {
+        {
             // PASS 1: null, mutating nothing. SAFETY: single-threaded;
             // `count <= RESUME_SLOT_CAP`; the borrow ends with this block,
             // before pass 2 takes a mutable one.
             let index = unsafe { &*RESUME_SLOT_INDEX.0.get() };
             for entry in index[..count].iter() {
                 if entry[0] == activation_id {
-                    resume_null_via_injector(entry[2]);
+                    resume_null_via_injector(entry[2], lenient);
                 }
             }
         }
@@ -11297,7 +11317,7 @@ mod wasm {
     pub extern "C" fn fm_resume_slots(op: u32, activation: u32, ordinal: u32) -> i32 {
         let _ = ordinal;
         match op {
-            1 => match resume_unregister_impl(activation, true) {
+            1 => match resume_unregister_impl(activation, false) {
                 Ok(freed) => {
                     // The same dlclose that retires this activation's resume
                     // slots retires its identity entries: one signal, one

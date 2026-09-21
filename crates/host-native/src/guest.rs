@@ -7211,13 +7211,18 @@ fn place_resume_thunks(
     let ptr = (packed & 0xffff_ffff) as u32;
     let count = (packed >> 32) as u32;
 
-    // An activation that holds no slots is a SUCCESS publishing `(0, 0)` — a
-    // side module with no fork-instrumented function seeds an EMPTY resume
-    // catalog, and reading that as an error once cost a real fork.
-    if count == 0 {
-        return Ok(());
-    }
-
+    // NO EARLY RETURN ON `count == 0`, and that is the whole point of the
+    // guard below. An activation that holds no slots IS a success publishing
+    // `(0, 0)` — a side module with no fork-instrumented function seeds an
+    // EMPTY resume catalog, and reading that as an error once cost a real
+    // fork. But "the module assigned nothing" and "this guest has nothing to
+    // place" are two different facts, and a module seeded with an empty
+    // ordinal set against an instance exporting N > 0 thunks is exactly the
+    // mismatch the check catches. Returning here first would skip it for the
+    // one case it exists for, leaving a bare `undefined element` trap inside a
+    // fork child where the JavaScript host gives the named error.
+    // `ForkResumeTable.registerActivation` applies both checks
+    // unconditionally; so does this.
     let catalog = instance
         .get_table(&mut *store, "__wpk_fork_resume_catalog")
         .ok_or_else(|| anyhow::anyhow!("guest missing __wpk_fork_resume_catalog export"))?;
@@ -7240,7 +7245,10 @@ fn place_resume_thunks(
         })?;
     // The return is `max(count, 0)` — what was ASKED for, not what succeeded.
     // Every failure mode inside the shim traps, so there is nothing to check
-    // here that would not be a check against itself.
+    // here that would not be a check against itself. Called even at `count ==
+    // 0`, where the shim's signed loop guard exits immediately: the call costs
+    // nothing and keeps the shim-export check above unconditional too, which
+    // is the same shape `registerActivation` has.
     place.call(store, (ptr, count))?;
     Ok(())
 }

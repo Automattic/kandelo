@@ -2172,7 +2172,8 @@ fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
 }
 
 /// Rewrite the resume-table null placeholder into a local
-/// `table.set $resume (ref.null func)`.
+/// `table.set $resume (ref.null func)`, optionally skipped when the table does
+/// not have that slot.
 ///
 /// # Why the module clears its own table
 ///
@@ -2187,15 +2188,35 @@ fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
 /// it. Rust still cannot emit `table.set`, which is why this is a placeholder
 /// import and not a Rust function.
 ///
-/// # No range check, deliberately
+/// # `lenient`, and why one primitive rather than two
 ///
-/// An out-of-range slot TRAPS on the table's own bounds, which is exactly what
-/// the JavaScript `Table.prototype.set` this replaces did by throwing a
-/// `RangeError`. A hand-rolled guard would turn "this activation holds a slot
-/// the table was never grown to hold" into a silent no-op, and that condition
-/// means the guest's placement shim did not run -- worth failing on, not worth
-/// absorbing. The caller nulls every slot BEFORE it frees any, so a trap here
-/// leaves the module's own state untouched rather than half-released.
+/// `lenient == 0` performs the write unconditionally, so a slot the table does
+/// not have TRAPS on the table's own bounds -- which is exactly what the
+/// JavaScript `Table.prototype.set` this replaces did by throwing a
+/// `RangeError`. That is the `dlclose` release, where a slot the table was
+/// never grown to hold means the guest's placement shim did not run, and
+/// absorbing it would be absorbing a guest that placed nothing at all.
+///
+/// `lenient != 0` skips the write for a slot at or past `table.size`. That is
+/// the catalog RE-SEED, which runs before placement by construction: seeding
+/// is what ASSIGNS slots, so at that moment the table may still be its bare
+/// initial length, and a slot it does not have provably holds nothing. Being
+/// able to null the slots it DOES have is the point -- a re-seed after
+/// placement returns live thunks to the free bitmap, and a stale thunk at a
+/// reallocated slot is a real function of the right type, so nothing traps
+/// when a later resume walks into it (census 194).
+///
+/// A flag rather than a second export follows `__wpk_fork_table_apply`, which
+/// already carries its `clear` arm the same way, and keeps Rust choosing the
+/// policy while only the write itself is emitted wasm.
+///
+/// ```wat
+/// (func (param $slot i32) (param $lenient i32)
+///   (if (local.get $lenient)
+///     (then (if (i32.ge_u (local.get $slot) (table.size $resume))
+///             (then (return)))))
+///   (table.set $resume (local.get $slot) (ref.null func)))
+/// ```
 ///
 /// # Width
 ///
@@ -2214,7 +2235,26 @@ fn inject_resume_null_thunk(module: &mut Module) -> Result<()> {
     }
     module
         .replace_imported_func(import_fn, |(body, args)| {
-            body.local_get(args[0])
+            let slot = args[0];
+            let lenient = args[1];
+            body.local_get(lenient).if_else(
+                None,
+                |check| {
+                    check
+                        .local_get(slot)
+                        .table_size(resume)
+                        .binop(BinaryOp::I32GeU)
+                        .if_else(
+                            None,
+                            |absent| {
+                                absent.return_();
+                            },
+                            |_present| {},
+                        );
+                },
+                |_strict| {},
+            );
+            body.local_get(slot)
                 .ref_null(RefType::FUNCREF)
                 .table_set(resume);
         })
