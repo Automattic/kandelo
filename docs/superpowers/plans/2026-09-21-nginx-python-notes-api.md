@@ -39,7 +39,7 @@ tests.
   in-scope provisioning, not a blocker; shimming an ABI mismatch is
   forbidden.
 - **Build/verify only inside the dev shell:** prefix build and test
-  commands with `scripts/dev-shell.sh -c '...'` (or run inside
+  commands with `scripts/dev-shell.sh bash -lc '...'` (or run inside
   `scripts/dev-shell.sh`). Do not rely on ambient host tools.
 - **nginx listens on `8080`**; the Python WSGI app listens on
   `127.0.0.1:8000`. The browser demo reaches nginx on `8080` (matches the
@@ -96,7 +96,7 @@ findings note committed under `.context/`.
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'grep -n "ABI_VERSION" crates/shared/src/lib.rs | head'
+scripts/dev-shell.sh bash -lc 'grep -n "ABI_VERSION" crates/shared/src/lib.rs | head'
 ```
 Expected: `pub const ABI_VERSION: u32 = 43;` (or a higher number — use
 whatever it prints as the value for `kernel_abi` throughout this plan).
@@ -105,8 +105,8 @@ whatever it prints as the value for `kernel_abi` throughout this plan).
 
 Resolve each dependency and inspect its ABI. Run:
 ```bash
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- build-deps resolve cpython'
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- build-deps resolve nginx'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- build-deps resolve cpython'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- build-deps resolve nginx'
 ```
 Expected: each prints a resolved dependency directory path, OR reports
 that the artifact must be built. If resolution reports an ABI mismatch
@@ -121,7 +121,7 @@ otherwise they need a rebuild + `kernel_abi` bump.
 If Step 2 shows missing or ABI-stale binaries, build them through the
 normal path (this is expected provisioning, per the build contract):
 ```bash
-scripts/dev-shell.sh -c './run.sh setup'
+scripts/dev-shell.sh bash -lc './run.sh setup'
 ```
 Expected: musl sysroot, kernel wasm, nginx, and cpython build to
 completion. If cpython or nginx must be rebuilt at ABI 43 and their
@@ -671,7 +671,7 @@ revision = 1
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- build-deps resolve nginx-python-vfs --dry-run 2>&1 | head -40'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- build-deps resolve nginx-python-vfs --dry-run 2>&1 | head -40'
 ```
 Expected: the resolver recognizes the package and its dependencies (it may
 report that the output needs building — that is fine; a parse/identity
@@ -758,7 +758,7 @@ the re-export list next to `nginxPhpGuide`.
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'npx tsc -p web-libs/kandelo-session/tsconfig.json --noEmit 2>&1 | head -30 || true'
+scripts/dev-shell.sh bash -lc 'npx tsc -p web-libs/kandelo-session/tsconfig.json --noEmit 2>&1 | head -30 || true'
 ```
 Expected: no new type errors referencing `nginxPythonGuide` /
 `nginx-python`. (If that tsconfig path differs, use the repo's standard
@@ -1113,7 +1113,7 @@ Then `chmod +x images/vfs/scripts/build-nginx-python-vfs-image.sh`.
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'npx tsc --noEmit images/vfs/scripts/build-nginx-python-vfs-image.ts 2>&1 | head -30 || true'
+scripts/dev-shell.sh bash -lc 'npx tsc --noEmit images/vfs/scripts/build-nginx-python-vfs-image.ts 2>&1 | head -30 || true'
 ```
 Expected: no type errors from the new file (use the repo's standard
 scripts typecheck if a bare `tsc` complains about config; the goal is that
@@ -1185,7 +1185,7 @@ and `packageBytes`/`dinit` are already in scope in this module.
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'npx tsc --noEmit images/vfs/scripts/staged-product-inputs.ts 2>&1 | head -30 || true'
+scripts/dev-shell.sh bash -lc 'npx tsc --noEmit images/vfs/scripts/staged-product-inputs.ts 2>&1 | head -30 || true'
 ```
 Expected: no new type errors; `ServiceProductId` now includes
 `"browser-nginx-python"`.
@@ -1285,8 +1285,8 @@ name consistently in both places.
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- vfs products generate'
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- vfs products check --source images/vfs/products --generated images/vfs/products/generated/catalog.json'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- vfs products generate'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- vfs products check --source images/vfs/products --generated images/vfs/products/generated/catalog.json'
 ```
 Expected: generate rewrites the (gitignored) catalog; check passes with
 `browser-nginx-python` present and package-backed.
@@ -1392,7 +1392,7 @@ passes). Follow the exact pattern of the sibling entry already in
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'node scripts/check-pages-vfs-product-registry.mjs'
+scripts/dev-shell.sh bash -lc 'node scripts/check-pages-vfs-product-registry.mjs'
 ```
 Expected: PASS — preset/gallery/registry parity holds, load↔import
 coupling is satisfied (lazy + glob present), and canonical JSON matches.
@@ -1446,8 +1446,8 @@ including the new registration.
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- vfs products check --source images/vfs/products --generated images/vfs/products/generated/catalog.json'
-scripts/dev-shell.sh -c 'node scripts/check-pages-vfs-product-registry.mjs'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- vfs products check --source images/vfs/products --generated images/vfs/products/generated/catalog.json'
+scripts/dev-shell.sh bash -lc 'node scripts/check-pages-vfs-product-registry.mjs'
 ```
 Expected: both PASS with the new test registration recognized.
 
@@ -1468,7 +1468,7 @@ git commit -m "Browser: Register nginx-python startup evidence tests"
 
 Run:
 ```bash
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- build-deps build nginx-python-vfs'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- build-deps build nginx-python-vfs'
 ```
 Expected: resolves shell/nginx/cpython/dinit, unzips the runtime, runs the
 `.ts` builder, and produces `nginx-python-vfs.vfs.zst` (path printed by
@@ -1504,7 +1504,7 @@ Ensure a Node evidence test named `nginx-python-vfs-node-startup` exists
 (mirror the `nginx-php-vfs-node-startup` test file/location). It should
 boot the image and assert the health + list endpoints respond. Run it:
 ```bash
-scripts/dev-shell.sh -c 'npx vitest run -t "nginx-python-vfs-node-startup" 2>&1 | tail -30'
+scripts/dev-shell.sh bash -lc 'npx vitest run -t "nginx-python-vfs-node-startup" 2>&1 | tail -30'
 ```
 Expected: the test passes. Commit the test file:
 ```bash
@@ -1521,7 +1521,7 @@ git add -A && git commit -m "Browser: Add nginx-python node-startup evidence tes
 
 Run:
 ```bash
-scripts/dev-shell.sh -c './run.sh browser'
+scripts/dev-shell.sh bash -lc './run.sh browser'
 ```
 Expected: the browser demo app builds (including the new
 `nginx-python-vfs` dependency) and serves. Use a unique `--port N
@@ -1544,7 +1544,7 @@ must actually run in-browser.
 
 Run the Playwright/browser evidence test:
 ```bash
-scripts/dev-shell.sh -c 'npx playwright test nginx-python-vfs-browser-startup 2>&1 | tail -30'
+scripts/dev-shell.sh bash -lc 'npx playwright test nginx-python-vfs-browser-startup 2>&1 | tail -30'
 ```
 Expected: PASS. (Use the repo's actual browser-evidence command if it
 differs; the point is a real in-browser assertion.)
@@ -1576,8 +1576,8 @@ Skip if no such index exists.
 
 Run the full check set and record exact results:
 ```bash
-scripts/dev-shell.sh -c 'cargo run -p xtask --quiet -- vfs products check --source images/vfs/products --generated images/vfs/products/generated/catalog.json'
-scripts/dev-shell.sh -c 'node scripts/check-pages-vfs-product-registry.mjs'
+scripts/dev-shell.sh bash -lc 'cargo run -p xtask --quiet -- vfs products check --source images/vfs/products --generated images/vfs/products/generated/catalog.json'
+scripts/dev-shell.sh bash -lc 'node scripts/check-pages-vfs-product-registry.mjs'
 cd packages/registry/nginx-python-vfs/app && python3 -m unittest test_app -v
 ```
 Expected: all green.
