@@ -61,6 +61,7 @@ mod package_archive_limits;
 mod package_matrix;
 mod pkg_manifest;
 mod remote_fetch;
+mod root_js_deps;
 mod source_archive_cache;
 mod source_extract;
 mod update_pkg_manifest;

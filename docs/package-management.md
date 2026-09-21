@@ -80,6 +80,15 @@ product, uses 16 concurrent jobs, stores verified sources below
 `$HOME/.cache/kandelo/source-only`, and publishes the validated projection to
 `local-binaries/source-only-v1`.
 
+Before planning, the engine (every `local-build run` and `xtask bootstrap`,
+so `./run.sh setup` too) checks the repository's root `node_modules/`
+against `package-lock.json` and runs `npm ci` when it is missing or any
+non-optional locked package is absent or at a different version. Sealed
+package builds (rootfs, shell, coreutils-docs, and others) execute
+`node_modules/tsx` from the checkout but must not install it themselves, so
+the caller provisions the locked tree. A tree that already matches, such as
+one CI installed, is left untouched.
+
 The default output ends with a concise node, cache, build, and product
 summary. Pass `--json` to print the canonical machine-readable result instead:
 
