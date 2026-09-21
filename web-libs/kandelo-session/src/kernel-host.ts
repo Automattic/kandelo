@@ -324,6 +324,57 @@ export interface BootCommand {
   env: Record<string, string>;
   uid?: number;
   gid?: number;
+  /**
+   * Structured, application-defined boot parameters. Materialized to
+   * `/run/kandelo/boot-input.json` alongside any boot inputs; never
+   * inferred from unrelated browser query parameters.
+   */
+  parameters?: BootParameters;
+  /**
+   * Content-addressed files to resolve and stage before the initial
+   * process is started.
+   */
+  inputs?: BootInput[];
+}
+
+export type BootJsonPrimitive = null | boolean | number | string;
+export type BootJsonValue =
+  | BootJsonPrimitive
+  | BootJsonValue[]
+  | { [key: string]: BootJsonValue };
+
+export type BootParameters = Record<string, BootJsonValue>;
+
+export type BootInputSource =
+  | {
+      kind: "resolver";
+      /** Host-provided resolver name, for example `internet-archive`. */
+      resolver: string;
+      /** Resolver-specific data which remains JSON-safe and size-bounded. */
+      locator: BootJsonValue;
+    }
+  | {
+      kind: "inline";
+      /** Canonical unpadded base64url of the bytes carried by the descriptor. */
+      data: string;
+      /**
+       * Optional transport compression. Verification and `byteLength` always
+       * describe the final decompressed guest file, never this encoded payload.
+       */
+      compression?: "gzip";
+    };
+
+export interface BootInput {
+  /** Stable logical name used to derive the guest directory. */
+  id: string;
+  /** Safe basename written below `/run/kandelo/inputs/<id>/`. */
+  filename: string;
+  mediaType?: string;
+  /** Exact final byte length after any resolver-side extraction. */
+  byteLength: number;
+  /** Lowercase SHA-256 of the exact final bytes. */
+  sha256: string;
+  source: BootInputSource;
 }
 
 export interface Capabilities {

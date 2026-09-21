@@ -53,10 +53,16 @@ import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import {
   LiveKernelHost,
   type BootDescriptor,
+  type BootInput,
+  type BootParameters,
   type DemoPresentation,
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import {
+  materializeBootInputs,
+  type BootInputManifest,
+} from "../../../../../web-libs/kandelo-session/src/boot-inputs";
 import {
   genericDemoPresentation,
   resolveDemoAssets,
@@ -651,6 +657,18 @@ export interface CreateLiveHostOptions {
   demo?: string | null;
   vfsUrl?: string | null;
   fb?: FbDemo;
+  /** Boot inputs from a #k1= boot link (e.g. a script input). */
+  inputs?: BootInput[] | null;
+  /** Boot parameters from a #k1= boot link (e.g. `{ runScript: "script" }`). */
+  parameters?: BootParameters | null;
+  /**
+   * True when the decoded #k1= link carried the removed top-level `script`
+   * field from before boot inputs were folded in. The decoder tolerates
+   * unknown fields, so such a link still boots, but its script is silently
+   * unmaterialized — this flag drives a visible dmesg warning so that
+   * silence isn't mistaken for the script having run.
+   */
+  legacyScriptIgnored?: boolean;
 }
 
 export async function createLiveHost(
@@ -693,8 +711,25 @@ export async function createLiveHost(
     ? liveGalleryItems()
     : [];
 
-  const initialDescriptor = protectedProfile?.descriptor ??
+  let initialDescriptor = protectedProfile?.descriptor ??
     await descriptorForBootQuery(opts.vfsUrl, opts.demo);
+  if (opts.inputs || opts.parameters) {
+    if (protectedProfile !== undefined) {
+      // Protected candidate boots pin their descriptor byte-for-byte;
+      // silently dropping the link's boot inputs would misrepresent the link.
+      throw new Error(
+        "protected browser candidate boots do not accept boot-link scripts",
+      );
+    }
+    initialDescriptor = {
+      ...initialDescriptor,
+      boot: {
+        ...initialDescriptor.boot,
+        ...(opts.inputs ? { inputs: opts.inputs } : {}),
+        ...(opts.parameters ? { parameters: opts.parameters } : {}),
+      },
+    };
+  }
   let host: LiveKernelHost;
   let protectedBoot: Promise<void> | undefined;
   const activateProtectedProfile = (): Promise<void> => {
@@ -775,6 +810,7 @@ export async function createLiveHost(
       host,
       profileForDescriptor(initialDescriptor, opts.fb),
       initialDescriptor,
+      opts.legacyScriptIgnored ?? false,
     );
   } else if (candidateVfsPlacement!.pagesLoad === null) {
     void activateProtectedProfile();
@@ -791,6 +827,7 @@ export async function createLiveHost(
     h: LiveKernelHost,
     profile: LiveProfile,
     descriptor: BootDescriptor,
+    legacyScriptIgnored = false,
   ): Promise<void> {
     const seq = ++bootSeq;
     const previousKernel = currentKernel;
@@ -813,6 +850,7 @@ export async function createLiveHost(
         bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
+        legacyScriptIgnored,
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -1144,6 +1182,30 @@ function reportInitError(
   host.setStatus("error");
 }
 
+async function runLinkScript(
+  host: LiveKernelHost,
+  path: string,
+  tick: (msg: string) => void,
+): Promise<void> {
+  // The script was already written (mode 0755, writable and executable) by
+  // materializeBootInputs during image staging, at `path`.
+  // "Default shell" for the invocation: the PTY session program is login,
+  // not a shell, so probe the image for bash and fall back to sh. Authors
+  // needing another interpreter can exec it from the script body.
+  const bash = await host.stat("/bin/bash").catch(() => null);
+  const interpreter = bash ? "bash" : "sh";
+  tick("showing boot-link script in the terminal...");
+  // Show the actual script contents in the terminal before running them —
+  // the visitor sees exactly what the link asked their machine to execute.
+  // `path` is derived from the URL-carried input id, so it is double-quoted
+  // here even though the descriptor validator already restricts input ids
+  // and filenames to a safe character set — defense in depth against a
+  // future relaxation of that validation.
+  await host.runShellCommand(`cat "${path}"`);
+  tick(`running boot-link script with ${interpreter}...`);
+  await host.runShellCommand(`${interpreter} "${path}"`);
+}
+
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
@@ -1153,6 +1215,7 @@ async function bootProfile(
   requireServiceWorker: (
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
+  legacyScriptIgnored = false,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1195,6 +1258,21 @@ async function bootProfile(
       msg,
     });
   };
+  if (legacyScriptIgnored) {
+    // The decoded #k1= link carried the removed top-level `script` field
+    // from before boot inputs were folded in. The decoder tolerates unknown
+    // fields (so old links still boot), but that field's script is never
+    // materialized or run. Say so loudly rather than silently dropping it —
+    // see docs/browser-support.md's script-carrying share links section.
+    host.pushDmesg({
+      t: bootElapsedMs(bootStartedAt),
+      level: "warn",
+      facility: "kandelo",
+      msg:
+        "this link was built for an older Kandelo: its embedded script " +
+        "field is no longer supported and was ignored",
+    });
+  }
   const webReadiness: WebReadinessState = {
     ready: false,
     probing: false,
@@ -1352,6 +1430,23 @@ async function bootProfile(
     imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
   if (profile.candidateEvidence === undefined) {
     await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
+    assertCurrent();
+  }
+
+  // Boot inputs (e.g. a #k1= link's script) are untrusted, URL-carried
+  // payloads. Materialize the whole declared set now, at the same
+  // image-staging point as the asset patches above: every input must verify
+  // its byte length and sha256 before anything is written, and a
+  // materialization failure must fail the boot loudly rather than silently
+  // continue without the input the link promised.
+  let bootInputManifest: BootInputManifest | undefined;
+  if (requestedDescriptor.boot.inputs?.length) {
+    tick("materializing boot inputs...");
+    bootInputManifest = await materializeBootInputs(requestedDescriptor, {
+      resolvers: {},
+      mkdir: (p) => ensureDirRecursive(buildFs, p),
+      writeFile: (p, b, m) => writeVfsBinary(buildFs, p, b, m),
+    });
     assertCurrent();
   }
 
@@ -1654,6 +1749,45 @@ async function bootProfile(
           }
         }
       })();
+    } else if (requestedDescriptor.boot.parameters?.runScript !== undefined) {
+      const runScriptId = requestedDescriptor.boot.parameters.runScript;
+      const scriptInput = typeof runScriptId === "string"
+        ? bootInputManifest?.inputs.find((entry) => entry.id === runScriptId)
+        : undefined;
+      if (scriptInput === undefined) {
+        // boot.parameters.runScript named an input id that materialization
+        // did not produce (typo, or boot.inputs omitted it entirely). The
+        // link promised a script; silently continuing without it would
+        // misrepresent what the link asked for, so this is a boot error,
+        // not just a dmesg note.
+        if (!webReadiness.failed) {
+          webReadiness.failed = true;
+          reportInitError(
+            host,
+            profile,
+            `boot-link script failed: boot.parameters.runScript names an ` +
+              `unmaterialized input: ${JSON.stringify(runScriptId)}`,
+            tick,
+          );
+        }
+      } else {
+        // ⚠️ CONSENT REQUIRED BEFORE PERSISTENT MACHINES ⚠️
+        // This auto-runs a URL-supplied script with no confirmation, which is
+        // acceptable ONLY because every machine this app boots is ephemeral: a
+        // hostile link can at worst waste the visitor's own tab. The moment
+        // Kandelo restores persistent machines (OPFS-backed images, restored
+        // snapshots), auto-run becomes a drive-by attack on user data. Any
+        // persistence feature MUST first add an explicit show-the-script
+        // Run/Skip consent step here. See
+        // docs/superpowers/specs/2026-09-21-script-bearing-links-design.md.
+        void runLinkScript(host, scriptInput.path, tick).catch((err) => {
+          tick(
+            `boot-link script failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+      }
     } else if (presentation?.autoCommand) {
       tick("starting configured command from the default shell...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {

@@ -2471,7 +2471,7 @@
   resize: vertical;
   border: 1px solid var(--k-border);
   border-radius: 7px;
-  background: #15100c;
+  background: var(--k-shell-bg);
   color: var(--k-shell-text);
   padding: 9px;
   font-family: var(--k-font-mono);
@@ -3990,6 +3990,30 @@
   font-size: 11px;
   color: var(--k-text-muted);
   margin-top: 1px;
+}
+
+.kshare-script textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 84px;
+  font-family: var(--k-font-mono);
+  font-size: 12px;
+  color: var(--k-text);
+  background: color-mix(in oklch, var(--k-text) 5%, transparent);
+  border: 1px solid color-mix(in oklch, var(--k-text) 16%, transparent);
+  border-radius: 6px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.kshare-script-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--k-text-muted);
+}
+.kshare-script-err {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--k-err);
 }
 
 /* ── System Config ──────────────────────────────────────────────────────── */

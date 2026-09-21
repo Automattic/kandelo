@@ -42,6 +42,9 @@ export function galleryItemUrl(
   url.searchParams.delete("demo");
   url.searchParams.delete("idle");
   clearVfsImageQueryParams(url.searchParams);
+  // A #k1= boot-link fragment belongs to the linked machine only. Launching
+  // a different machine from the gallery must not carry its script along.
+  url.hash = "";
   if (item.vfsImageUrl) {
     // WHY: the demo id selects launch behavior while the exact URL identifies
     // the VFS image and its resource limit. Gallery navigation must preserve
