@@ -1605,3 +1605,39 @@ constraint that makes this interesting is that the obvious implementation, a
 host import, grows exactly the TypeScript surface the fork campaign exists to
 shrink; a ring buffer in module memory that the host drains through an
 existing entry point probably does not.
+
+### Nested fixture budgets make the fork-coverage timeouts uninformative
+
+`host/test/fork-instrument-coverage.test.ts` gives its heaviest cases two
+budgets that must fit inside each other: an inner program timeout for the
+guest, and an outer vitest `it()` timeout. K-03 (fork from a
+`pthread_cleanup_push` handler) carries 7s inside 10s. Both have been
+unchanged since `50937c19d3` (2026-05-20).
+
+The gap between them — roughly three seconds — is everything that is not the
+guest: worker spawn and wasm compile. When a loaded machine eats that margin,
+the **outer** timeout fires first, so the failure reads as a bare
+`Test timed out in 10000ms` instead of the named "missing expected stdout"
+assertion the inner budget exists to produce.
+
+So the test is least informative exactly when the thing that ran out is the
+startup margin, which is also the most likely thing to run out. Observed
+2026-09-21: K-03 failed at 10423ms and again at 12056ms on a machine whose
+one-minute load average was 26 on 18 cores, with another workspace's
+`wasm-opt` at 931% CPU. Two supposedly identical isolated runs differing by
+16% is a load signature, not a cost regression — but the failure text says
+nothing that would let a reader draw that conclusion, and an agent
+investigating it spent considerable time before measuring the machine rather
+than the worktree.
+
+Two candidate fixes, both cheap. Shrink the inner budget relative to the
+outer, so the inner assertion always fires first and names what was missing.
+Or grow the outer until the same is true. The second is likelier correct
+given the measured cost of these fixtures — but the point is the ORDER, not
+the size: whichever budget expires first should be the one that can say why.
+
+Worth pairing with the open question behind `testTimeout: 30_000` in
+`host/vitest.config.ts`, which that file's own comment calls a stopgap and
+routes to "why does a fixture that forks and prints cost 8.5s". A suite whose
+per-test margins are thinner than the variance of the machine it runs on will
+keep producing investigations like this one.
