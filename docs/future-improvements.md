@@ -1572,3 +1572,36 @@ Two things worth doing: make the flag cover the programs cache too, or rename
 it so it stops promising isolation it does not deliver; and give agent
 worktrees a cleanup path, since 34 full checkouts with build artifacts is the
 steady state of a parallel campaign rather than an accident.
+
+### The co-resident fork module has no diagnostic channel
+
+The Rust fork module (`crates/fork-module`) is `no_std` position-independent
+code compiled to wasm and instantiated inside each guest's linear memory. Its
+only outward channels are syscalls, the `fm_stats(field)` counter surface, and
+`fm_last_errno`. It has no way to say anything to a human.
+
+That is fine for errors, which travel as errno values the host turns into real
+failures. It is a gap for **signals that are not failures**: "this is working,
+and it is working outside the envelope it was designed for". The case that
+raised it, 2026-09-20: the dynamic storage conversion replaces a sorted
+directory with a linear walk plus a one-entry memo, on the measured basis that
+live activations max out at 7. Past roughly 64 the sorted design becomes worth
+revisiting — but exceeding 64 is a *performance* signal, not a correctness
+failure, so returning an errno would be the truthful-failure contract
+inverted: a working system reported as broken.
+
+With no channel, the options were a counter nobody reads or a prose note in a
+plan telling whoever implements it to stop and report — which binds only at
+authoring time, and only for the fixtures that person happened to run. The
+resolution taken was to expose the count as an `fm_stats` field and put the
+threshold assertion in a host test, which makes the trigger fire by itself but
+only when a test runs, never inside a browser production run.
+
+Worth building: a bounded, opt-in way for the module to emit a one-shot
+diagnostic the host surfaces — the same role `dmesg` plays for a kernel. It
+should be cheap enough to leave compiled in, latched so a hot path cannot
+spam, and carry no host API surface beyond what already exists. The
+constraint that makes this interesting is that the obvious implementation, a
+host import, grows exactly the TypeScript surface the fork campaign exists to
+shrink; a ring buffer in module memory that the host drains through an
+existing entry point probably does not.
