@@ -7,6 +7,7 @@ import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import type { KernelHost } from "./kernel-host";
 import { readKandeloBootQuery } from "./url-state";
+import { decodeBootDescriptor } from "../../../../web-libs/kandelo-session/src/boot-descriptor";
 
 const container = document.getElementById("kandelo-root");
 if (!container) {
@@ -30,6 +31,17 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
+    // URL fragments are untrusted input. A malformed or oversized #k1= boot
+    // link must fail loudly here, not silently boot as if it were absent.
+    const linkDescriptor = await decodeBootDescriptor(location.hash).catch(
+      (err) => {
+        throw new Error(
+          `Rejected #k1= boot link fragment: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      },
+    );
     // WHY: the restored image owns its shell and optional runtime entries.
     // Keeping every demo on one assembler prevents a demo-specific overlay
     // from replacing immutable bottle-backed lazy files before serialization.
@@ -38,6 +50,7 @@ void (async () => {
         demo,
         vfsUrl: bootQuery.vfsImageUrl,
         fb: fbDemo === "test" ? "test" : "none",
+        script: linkDescriptor?.script?.text ?? null,
       }));
     mount(host);
   } catch (err) {

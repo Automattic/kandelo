@@ -624,6 +624,8 @@ export interface CreateLiveHostOptions {
   demo?: string | null;
   vfsUrl?: string | null;
   fb?: FbDemo;
+  /** Script text from a #k1= boot link; runs in the initial shell. */
+  script?: string | null;
 }
 
 export async function createLiveHost(
@@ -666,8 +668,18 @@ export async function createLiveHost(
     ? liveGalleryItems()
     : [];
 
-  const initialDescriptor = protectedProfile?.descriptor ??
+  let initialDescriptor = protectedProfile?.descriptor ??
     await descriptorForBootQuery(opts.vfsUrl, opts.demo);
+  if (opts.script) {
+    if (protectedProfile !== undefined) {
+      // Protected candidate boots pin their descriptor byte-for-byte;
+      // silently dropping the link's script would misrepresent the link.
+      throw new Error(
+        "protected browser candidate boots do not accept boot-link scripts",
+      );
+    }
+    initialDescriptor = { ...initialDescriptor, script: { text: opts.script } };
+  }
   let host: LiveKernelHost;
   let protectedBoot: Promise<void> | undefined;
   const activateProtectedProfile = (): Promise<void> => {
@@ -1115,6 +1127,23 @@ function reportInitError(
   host.setStatus("error");
 }
 
+const LINK_SCRIPT_PATH = "/tmp/kandelo-link.sh";
+
+async function runLinkScript(
+  host: LiveKernelHost,
+  text: string,
+  tick: (msg: string) => void,
+): Promise<void> {
+  await host.writeFile(LINK_SCRIPT_PATH, new TextEncoder().encode(text), 0o755);
+  // "Default shell" for the invocation: the PTY session program is login,
+  // not a shell, so probe the image for bash and fall back to sh. Authors
+  // needing another interpreter can exec it from the script body.
+  const bash = await host.stat("/bin/bash").catch(() => null);
+  const interpreter = bash ? "bash" : "sh";
+  tick(`running boot-link script with ${interpreter}...`);
+  await host.runShellCommand(`${interpreter} ${LINK_SCRIPT_PATH}`);
+}
+
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
@@ -1151,6 +1180,7 @@ async function bootProfile(
         : profile.descriptor.packages,
     mounts: requestedDescriptor.mounts,
     boot: effectiveBoot,
+    script: requestedDescriptor.script,
   });
   const genericPresentation =
     profile.fallbackPresentation ?? genericPresentationForProfile(profile);
@@ -1576,6 +1606,25 @@ async function bootProfile(
           }
         }
       })();
+    } else if (requestedDescriptor.script) {
+      // ⚠️ CONSENT REQUIRED BEFORE PERSISTENT MACHINES ⚠️
+      // This auto-runs a URL-supplied script with no confirmation, which is
+      // acceptable ONLY because every machine this app boots is ephemeral: a
+      // hostile link can at worst waste the visitor's own tab. The moment
+      // Kandelo restores persistent machines (OPFS-backed images, restored
+      // snapshots), auto-run becomes a drive-by attack on user data. Any
+      // persistence feature MUST first add an explicit show-the-script
+      // Run/Skip consent step here. See
+      // docs/superpowers/specs/2026-09-21-script-bearing-links-design.md.
+      void runLinkScript(host, requestedDescriptor.script.text, tick).catch(
+        (err) => {
+          tick(
+            `boot-link script failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        },
+      );
     } else if (presentation?.autoCommand) {
       tick("starting configured command from the default shell...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
