@@ -39,6 +39,31 @@ export const HARD_CAPS = {
   maxInlineOverlayBytes: 32 * 1024,
   /** Max UTF-8 bytes of a boot-link script (`descriptor.script.text`). */
   maxScriptBytes: 32 * 1024,
+  /** Max boot inputs per descriptor. */
+  maxBootInputs: 16,
+  /** Max resolved bytes for one boot input. */
+  maxInputBytes: 32 * 1024 * 1024,
+  /** Max resolved bytes retained while verifying all boot inputs. */
+  maxTotalInputBytes: 64 * 1024 * 1024,
+  /** Max compressed/raw bytes physically carried by one inline source. */
+  maxInlineInputBytes: 32 * 1024,
+  /** Max final bytes after bounded inline gzip decompression. */
+  maxInlineInflatedInputBytes: 2 * 1024 * 1024,
+  /** Max serialized JSON bytes for application boot parameters. */
+  maxParametersBytes: 32 * 1024,
+  /** Max serialized JSON bytes for one resolver locator. */
+  maxLocatorBytes: 16 * 1024,
+  /** Structural JSON caps shared by parameters and resolver locators. */
+  maxJsonDepth: 16,
+  maxJsonNodes: 4096,
+  maxJsonEntries: 1024,
+  maxJsonKeyChars: 128,
+  maxJsonStringChars: 8192,
+  /** Boot input identity/name caps. */
+  maxInputIdChars: 64,
+  maxInputFilenameBytes: 255,
+  maxMediaTypeChars: 255,
+  maxResolverNameChars: 64,
   /** Allowed mount source kinds. */
   allowedMountSources: new Set<MountSource>([
     "image", "package-layer", "inline-overlay", "remote-overlay",
@@ -156,6 +181,292 @@ function unauthenticatedHttpsUrl(value: string): boolean {
       parsed.hash === "";
   } catch {
     return false;
+  }
+}
+
+// ── Boot input / parameter validation (ported from the emulator prototype) ─
+//
+// `boot.parameters` and `boot.inputs` are untrusted, URL-carried JSON. These
+// helpers bound their shape (string lengths, object/array fan-out, recursion
+// depth, and total serialized size) before any byte reaches the VFS staging
+// path in web-libs/kandelo-session/src/boot-inputs.ts.
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function boundedString(
+  value: unknown,
+  field: string,
+  maxChars: number,
+  opts: { nonEmpty?: boolean; noNul?: boolean } = {},
+): string {
+  if (typeof value !== "string") {
+    throw new BootDescriptorError("E_FIELD_TYPE", `${field} must be a string`);
+  }
+  if (opts.nonEmpty && value.length === 0) {
+    throw new BootDescriptorError("E_MISSING_FIELD", `${field} must not be empty`);
+  }
+  if (value.length > maxChars) {
+    throw new BootDescriptorError("E_FIELD_TOO_LONG", `${field} exceeds ${maxChars} characters`);
+  }
+  if (opts.noNul !== false && value.includes("\0")) {
+    throw new BootDescriptorError("E_NUL", `${field} must not contain NUL`);
+  }
+  return value;
+}
+
+function validateJsonValue(value: unknown, field: string, maxBytes: number): void {
+  let nodes = 0;
+  const active = new Set<object>();
+
+  const visit = (candidate: unknown, path: string, depth: number): void => {
+    nodes++;
+    if (nodes > HARD_CAPS.maxJsonNodes) {
+      throw new BootDescriptorError(
+        "E_JSON_NODES",
+        `${field} exceeds ${HARD_CAPS.maxJsonNodes} JSON values`,
+      );
+    }
+    if (depth > HARD_CAPS.maxJsonDepth) {
+      throw new BootDescriptorError(
+        "E_JSON_DEPTH",
+        `${field} exceeds JSON depth ${HARD_CAPS.maxJsonDepth}`,
+      );
+    }
+    if (candidate === null || typeof candidate === "boolean") return;
+    if (typeof candidate === "number") {
+      if (!Number.isFinite(candidate)) {
+        throw new BootDescriptorError("E_JSON_NUMBER", `${path} must be a finite number`);
+      }
+      return;
+    }
+    if (typeof candidate === "string") {
+      boundedString(candidate, path, HARD_CAPS.maxJsonStringChars);
+      return;
+    }
+    if (typeof candidate !== "object") {
+      throw new BootDescriptorError("E_JSON_TYPE", `${path} is not JSON-compatible`);
+    }
+    if (active.has(candidate)) {
+      throw new BootDescriptorError("E_JSON_CYCLE", `${path} contains a cycle`);
+    }
+    active.add(candidate);
+    if (Array.isArray(candidate)) {
+      if (candidate.length > HARD_CAPS.maxJsonEntries) {
+        throw new BootDescriptorError(
+          "E_JSON_ENTRIES",
+          `${path} exceeds ${HARD_CAPS.maxJsonEntries} array entries`,
+        );
+      }
+      candidate.forEach((entry, index) => visit(entry, `${path}[${index}]`, depth + 1));
+    } else {
+      if (!isRecord(candidate)) {
+        throw new BootDescriptorError("E_JSON_TYPE", `${path} must be a plain JSON object`);
+      }
+      const entries = Object.entries(candidate);
+      if (entries.length > HARD_CAPS.maxJsonEntries) {
+        throw new BootDescriptorError(
+          "E_JSON_ENTRIES",
+          `${path} exceeds ${HARD_CAPS.maxJsonEntries} object entries`,
+        );
+      }
+      for (const [key, entry] of entries) {
+        boundedString(key, `${path} key`, HARD_CAPS.maxJsonKeyChars, { nonEmpty: true });
+        if (key === "__proto__" || key === "prototype" || key === "constructor") {
+          throw new BootDescriptorError("E_JSON_KEY", `${path} contains reserved key ${key}`);
+        }
+        visit(entry, `${path}.${key}`, depth + 1);
+      }
+    }
+    active.delete(candidate);
+  };
+
+  visit(value, field, 0);
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined || utf8Length(serialized) > maxBytes) {
+    throw new BootDescriptorError("E_JSON_TOO_LARGE", `${field} exceeds ${maxBytes} UTF-8 bytes`);
+  }
+}
+
+function inlineBase64UrlLength(value: string, field: string): number {
+  if (!/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) {
+    throw new BootDescriptorError(
+      "E_INLINE_ENCODING",
+      `${field} must be canonical unpadded base64url`,
+    );
+  }
+  const remainder = value.length % 4;
+  if (remainder === 2 || remainder === 3) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const finalDigit = alphabet.indexOf(value.at(-1) ?? "");
+    const unusedMask = remainder === 2 ? 0x0f : 0x03;
+    if (finalDigit < 0 || (finalDigit & unusedMask) !== 0) {
+      throw new BootDescriptorError(
+        "E_INLINE_ENCODING",
+        `${field} has non-canonical base64url padding bits`,
+      );
+    }
+  }
+  return Math.floor((value.length * 6) / 8);
+}
+
+/**
+ * Validates `boot.inputs`: id/filename shape, per-input and aggregate byte
+ * caps, sha256 shape, and the `inline` | `resolver` source union. Does not
+ * touch the VFS — that happens in boot-inputs.ts's `materializeBootInputs`
+ * only after every declared input has verified.
+ */
+function validateBootInputs(value: unknown): void {
+  if (!Array.isArray(value)) {
+    throw new BootDescriptorError("E_BOOT_INPUTS", "boot.inputs must be an array");
+  }
+  if (value.length > HARD_CAPS.maxBootInputs) {
+    throw new BootDescriptorError(
+      "E_TOO_MANY_INPUTS",
+      `boot input count ${value.length} exceeds cap of ${HARD_CAPS.maxBootInputs}`,
+    );
+  }
+
+  const ids = new Set<string>();
+  let totalBytes = 0;
+  for (const [index, rawInput] of value.entries()) {
+    const field = `boot.inputs[${index}]`;
+    if (!isRecord(rawInput)) {
+      throw new BootDescriptorError("E_BOOT_INPUT", `${field} must be an object`);
+    }
+    const id = boundedString(rawInput.id, `${field}.id`, HARD_CAPS.maxInputIdChars, {
+      nonEmpty: true,
+    });
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) {
+      throw new BootDescriptorError("E_INPUT_ID", `${field}.id contains unsafe characters`);
+    }
+    if (ids.has(id)) {
+      throw new BootDescriptorError("E_DUPLICATE_INPUT", `duplicate boot input id: ${id}`);
+    }
+    ids.add(id);
+
+    const filename = boundedString(
+      rawInput.filename,
+      `${field}.filename`,
+      HARD_CAPS.maxPathLen,
+      { nonEmpty: true },
+    );
+    if (
+      filename === "." || filename === ".." || filename.includes("/") ||
+      filename.includes("\\") || /[\x00-\x1f\x7f]/.test(filename) ||
+      utf8Length(filename) > HARD_CAPS.maxInputFilenameBytes
+    ) {
+      throw new BootDescriptorError("E_INPUT_FILENAME", `${field}.filename must be a safe basename`);
+    }
+    if (rawInput.mediaType !== undefined) {
+      const mediaType = boundedString(
+        rawInput.mediaType,
+        `${field}.mediaType`,
+        HARD_CAPS.maxMediaTypeChars,
+        { nonEmpty: true },
+      );
+      if (/[^\x20-\x7e]/.test(mediaType)) {
+        throw new BootDescriptorError("E_MEDIA_TYPE", `${field}.mediaType must be printable ASCII`);
+      }
+    }
+    if (
+      !Number.isSafeInteger(rawInput.byteLength) ||
+      (rawInput.byteLength as number) < 0 ||
+      (rawInput.byteLength as number) > HARD_CAPS.maxInputBytes
+    ) {
+      throw new BootDescriptorError(
+        "E_INPUT_SIZE",
+        `${field}.byteLength must be an integer from 0 to ${HARD_CAPS.maxInputBytes}`,
+      );
+    }
+    totalBytes += rawInput.byteLength as number;
+    if (totalBytes > HARD_CAPS.maxTotalInputBytes) {
+      throw new BootDescriptorError(
+        "E_INPUT_TOTAL_SIZE",
+        `boot inputs exceed aggregate cap of ${HARD_CAPS.maxTotalInputBytes} bytes`,
+      );
+    }
+    if (typeof rawInput.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(rawInput.sha256)) {
+      throw new BootDescriptorError(
+        "E_INPUT_HASH",
+        `${field}.sha256 must be a lowercase 64-character SHA-256`,
+      );
+    }
+    if (!isRecord(rawInput.source)) {
+      throw new BootDescriptorError("E_INPUT_SOURCE", `${field}.source must be an object`);
+    }
+    if (rawInput.source.kind === "resolver") {
+      const resolver = boundedString(
+        rawInput.source.resolver,
+        `${field}.source.resolver`,
+        HARD_CAPS.maxResolverNameChars,
+        { nonEmpty: true },
+      );
+      if (!/^[a-z][a-z0-9._-]*$/.test(resolver)) {
+        throw new BootDescriptorError(
+          "E_INPUT_RESOLVER",
+          `${field}.source.resolver contains unsafe characters`,
+        );
+      }
+      if (!("locator" in rawInput.source)) {
+        throw new BootDescriptorError(
+          "E_INPUT_LOCATOR",
+          `${field}.source.locator is required`,
+        );
+      }
+      validateJsonValue(
+        rawInput.source.locator,
+        `${field}.source.locator`,
+        HARD_CAPS.maxLocatorBytes,
+      );
+    } else if (rawInput.source.kind === "inline") {
+      const data = boundedString(
+        rawInput.source.data,
+        `${field}.source.data`,
+        Math.ceil(HARD_CAPS.maxInlineInputBytes * 4 / 3),
+      );
+      const decodedLength = inlineBase64UrlLength(data, `${field}.source.data`);
+      if (decodedLength > HARD_CAPS.maxInlineInputBytes) {
+        throw new BootDescriptorError(
+          "E_INLINE_TOO_LARGE",
+          `${field}.source.data exceeds ${HARD_CAPS.maxInlineInputBytes} carried bytes`,
+        );
+      }
+      const compression = rawInput.source.compression;
+      if (compression !== undefined && compression !== "gzip") {
+        throw new BootDescriptorError(
+          "E_INLINE_COMPRESSION",
+          `${field}.source.compression must be gzip when present`,
+        );
+      }
+      if (
+        compression === "gzip" &&
+        (rawInput.byteLength as number) > HARD_CAPS.maxInlineInflatedInputBytes
+      ) {
+        throw new BootDescriptorError(
+          "E_INLINE_TOO_LARGE",
+          `${field}.byteLength exceeds the inline inflated cap of ${HARD_CAPS.maxInlineInflatedInputBytes}`,
+        );
+      }
+      if (compression === undefined && decodedLength !== rawInput.byteLength) {
+        throw new BootDescriptorError(
+          "E_INPUT_SIZE",
+          `${field}.source.data length does not match byteLength`,
+        );
+      }
+    } else {
+      throw new BootDescriptorError(
+        "E_INPUT_SOURCE",
+        `${field}.source.kind is unsupported: ${String(rawInput.source.kind)}`,
+      );
+    }
   }
 }
 
@@ -357,6 +668,13 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
       throw new BootDescriptorError("E_BOOT_USER", `boot.${field} must be an integer from 0 to 65535`);
     }
   }
+  if (boot.parameters !== undefined) {
+    if (!isRecord(boot.parameters)) {
+      throw new BootDescriptorError("E_BOOT_PARAMETERS", "boot.parameters must be an object");
+    }
+    validateJsonValue(boot.parameters, "boot.parameters", HARD_CAPS.maxParametersBytes);
+  }
+  if (boot.inputs !== undefined) validateBootInputs(boot.inputs);
   if (d.script !== undefined) {
     if (!d.script || typeof d.script !== "object" || Array.isArray(d.script)) {
       throw new BootDescriptorError("E_SCRIPT_INVALID", "script must be an object");

@@ -6,7 +6,7 @@ import {
   HARD_CAPS,
   validateBootDescriptor,
 } from "../src/boot-descriptor";
-import type { BootDescriptor } from "../src/kernel-host";
+import type { BootDescriptor, BootInput, BootParameters } from "../src/kernel-host";
 
 const BASE: BootDescriptor = {
   version: 1,
@@ -27,6 +27,31 @@ const BASE: BootDescriptor = {
 
 function withScript(text: string): BootDescriptor {
   return { ...structuredClone(BASE), script: { text } };
+}
+
+const HELLO_SHA256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+function helloInlineInput(id = "rom"): BootInput {
+  return {
+    id,
+    filename: "game.nes",
+    byteLength: 5,
+    sha256: HELLO_SHA256,
+    // base64url("hello")
+    source: { kind: "inline", data: "aGVsbG8" },
+  };
+}
+
+function withInputs(inputs: BootInput[]): BootDescriptor {
+  const value = structuredClone(BASE);
+  value.boot.inputs = inputs;
+  return value;
+}
+
+function withParameters(parameters: BootParameters): BootDescriptor {
+  const value = structuredClone(BASE);
+  value.boot.parameters = parameters;
+  return value;
 }
 
 function validationError(desc: unknown): BootDescriptorError {
@@ -95,5 +120,126 @@ describe("script validation", () => {
   it("accepts script text exactly at maxScriptBytes", () => {
     const exact = "x".repeat(HARD_CAPS.maxScriptBytes);
     expect(() => validateBootDescriptor(withScript(exact))).not.toThrow();
+  });
+});
+
+describe("boot inputs and parameters validation", () => {
+  it("accepts inputs and parameters on a version-1 descriptor with no version bump", () => {
+    const desc = withInputs([helloInlineInput()]);
+    desc.boot.parameters = { system: "nes" };
+    expect(() => validateBootDescriptor(desc)).not.toThrow();
+  });
+
+  it("round-trips a descriptor carrying inputs and parameters through encode/decode", async () => {
+    const desc = withInputs([helloInlineInput()]);
+    desc.boot.parameters = { system: "nes", options: { overscan: false, players: 1 } };
+    const { fragment } = await encodeBootDescriptor(desc);
+    const decoded = await decodeBootDescriptor(fragment);
+    expect(decoded).toEqual(desc);
+  });
+
+  it("rejects boot input counts over maxBootInputs", () => {
+    const inputs = Array.from({ length: HARD_CAPS.maxBootInputs + 1 }, (_, index) =>
+      helloInlineInput(`rom-${index}`));
+    expect(validationError(withInputs(inputs)).code).toBe("E_TOO_MANY_INPUTS");
+  });
+
+  it("accepts a boot input count exactly at maxBootInputs", () => {
+    const inputs = Array.from({ length: HARD_CAPS.maxBootInputs }, (_, index) =>
+      helloInlineInput(`rom-${index}`));
+    expect(() => validateBootDescriptor(withInputs(inputs))).not.toThrow();
+  });
+
+  it("rejects inline input data over the carried-bytes cap", () => {
+    // The base64url char cap (`Math.ceil(maxInlineInputBytes * 4 / 3)`) is
+    // the first gate an oversized payload hits, so it fails as a plain
+    // over-length field rather than reaching the decoded-length check.
+    const oversized: BootInput = {
+      id: "big",
+      filename: "big.bin",
+      byteLength: Math.ceil(HARD_CAPS.maxInlineInputBytes * 4 / 3),
+      sha256: "0".repeat(64),
+      source: { kind: "inline", data: "A".repeat(Math.ceil(HARD_CAPS.maxInlineInputBytes * 4 / 3) + 4) },
+    };
+    expect(validationError(withInputs([oversized])).code).toBe("E_FIELD_TOO_LONG");
+  });
+
+  it("rejects a gzip-compressed input whose declared byteLength exceeds the inflated cap", () => {
+    const oversized: BootInput = {
+      id: "state",
+      filename: "save.state",
+      byteLength: HARD_CAPS.maxInlineInflatedInputBytes + 1,
+      sha256: "0".repeat(64),
+      source: { kind: "inline", data: "aGVsbG8", compression: "gzip" },
+    };
+    expect(validationError(withInputs([oversized])).code).toBe("E_INLINE_TOO_LARGE");
+  });
+
+  it("rejects boot.parameters over maxParametersBytes", () => {
+    // Each string stays under the per-string JSON char cap; only their sum
+    // pushes the serialized object over the aggregate byte cap.
+    const chunk = "x".repeat(HARD_CAPS.maxJsonStringChars - 1);
+    const chunkCount = Math.ceil(HARD_CAPS.maxParametersBytes / chunk.length) + 1;
+    const oversized = withParameters({ chunks: Array.from({ length: chunkCount }, () => chunk) });
+    expect(validationError(oversized).code).toBe("E_JSON_TOO_LARGE");
+  });
+
+  it("accepts boot.parameters comfortably under maxParametersBytes", () => {
+    const chunk = "x".repeat(HARD_CAPS.maxJsonStringChars - 1);
+    const value = withParameters({ chunks: [chunk, chunk] });
+    expect(() => validateBootDescriptor(value)).not.toThrow();
+  });
+
+  it("rejects a malformed sha256 shape", () => {
+    const bad: BootInput = { ...helloInlineInput(), sha256: "ABC" };
+    expect(validationError(withInputs([bad])).code).toBe("E_INPUT_HASH");
+  });
+
+  it("rejects duplicate boot input ids", () => {
+    const dup = helloInlineInput("rom");
+    expect(validationError(withInputs([dup, { ...dup }])).code).toBe("E_DUPLICATE_INPUT");
+  });
+
+  it("rejects an unsafe input filename", () => {
+    const bad: BootInput = { ...helloInlineInput(), filename: "../escape.nes" };
+    expect(validationError(withInputs([bad])).code).toBe("E_INPUT_FILENAME");
+  });
+
+  it("validates resolver-kind sources structurally without resolving them", () => {
+    const resolverInput: BootInput = {
+      id: "rom",
+      filename: "game.nes",
+      mediaType: "application/x-nes-rom",
+      byteLength: 5,
+      sha256: HELLO_SHA256,
+      source: {
+        kind: "resolver",
+        resolver: "internet-archive",
+        locator: { identifier: "example", entries: ["game.nes"] },
+      },
+    };
+    expect(() => validateBootDescriptor(withInputs([resolverInput]))).not.toThrow();
+  });
+
+  it("rejects a resolver-kind source with an unsafe resolver name", () => {
+    const bad: BootInput = {
+      id: "rom",
+      filename: "game.nes",
+      byteLength: 5,
+      sha256: HELLO_SHA256,
+      source: { kind: "resolver", resolver: "Not Safe!", locator: {} },
+    };
+    expect(validationError(withInputs([bad])).code).toBe("E_INPUT_RESOLVER");
+  });
+
+  it("rejects an unrecognized boot input source kind", () => {
+    const bad = {
+      id: "rom",
+      filename: "game.nes",
+      byteLength: 5,
+      sha256: HELLO_SHA256,
+      source: { kind: "http", url: "https://example.com/game.nes" },
+    } as unknown as BootInput;
+    expect(validationError(withInputs([bad])).code).toBe("E_INPUT_SOURCE");
   });
 });
