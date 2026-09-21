@@ -10,6 +10,7 @@ import { useKernelHost } from "../kernel-host/react";
 import {
   classifyTier, encodeBootDescriptor, HARD_CAPS,
 } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import { createInlineBootInput } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
 import type {
   BootDescriptor,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
@@ -72,9 +73,19 @@ export const SharePanel: React.FC<SharePanelProps> = ({
           if (!cancelled) { setUrl(workingShareUrl(null)); setError(null); }
           return;
         }
+        const text = script.endsWith("\n") ? script : `${script}\n`;
         const desc: BootDescriptor = {
           ...baseDescriptor,
-          script: { text: script.endsWith("\n") ? script : `${script}\n` },
+          boot: {
+            ...baseDescriptor.boot,
+            inputs: [await createInlineBootInput({
+              id: "script",
+              filename: "kandelo-link.sh",
+              bytes: new TextEncoder().encode(text),
+              compression: "gzip",
+            })],
+            parameters: { runScript: "script" },
+          },
         };
         const { fragment } = await encodeBootDescriptor(desc);
         if (!cancelled) { setUrl(workingShareUrl(fragment)); setError(null); }
@@ -147,7 +158,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
               aria-label="Script to run when the link is opened"
             />
             <div className="kshare-script-meta">
-              {scriptBytes} B / {HARD_CAPS.maxScriptBytes} B
+              {scriptBytes} B / {HARD_CAPS.maxInlineInflatedInputBytes} B
               {" · runs in the machine's default shell, visible in the terminal"}
             </div>
             {error && <div className="kshare-script-err">{error}</div>}

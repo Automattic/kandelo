@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot-descriptor";
+import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
 import type { BootDescriptor } from "../../../web-libs/kandelo-session/src/kernel-host";
 
 const appUrl = (path: string): string => {
@@ -13,6 +14,13 @@ async function terminalText(page: Page): Promise<string> {
   );
 }
 
+/**
+ * Build a #k1= fragment carrying `text` as the "script" boot input plus a
+ * `runScript: "script"` boot parameter naming it — the same shape ShareDialog
+ * authors. The script travels inline, gzip-transported, and is materialized
+ * to /run/kandelo/inputs/script/kandelo-link.sh (manifest at
+ * /run/kandelo/boot-input.json) before the initial shell starts.
+ */
 async function scriptFragment(text: string): Promise<string> {
   const descriptor: BootDescriptor = {
     version: 1,
@@ -28,8 +36,18 @@ async function scriptFragment(text: string): Promise<string> {
     },
     packages: [],
     mounts: [{ path: "/", source: "image", ref: "shell.vfs@local" }],
-    boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} },
-    script: { text },
+    boot: {
+      argv: ["/usr/bin/login"],
+      cwd: "/root",
+      env: {},
+      inputs: [await createInlineBootInput({
+        id: "script",
+        filename: "kandelo-link.sh",
+        bytes: new TextEncoder().encode(text),
+        compression: "gzip",
+      })],
+      parameters: { runScript: "script" },
+    },
   };
   return (await encodeBootDescriptor(descriptor)).fragment;
 }
@@ -37,8 +55,11 @@ async function scriptFragment(text: string): Promise<string> {
 test("a #k1= boot link runs its script in the initial shell @slow", async ({ page }) => {
   test.setTimeout(300_000);
   // $((6 * 7)) proves the SCRIPT executed: the literal answer never appears
-  // in the typed command line, only in the script's output.
-  const fragment = await scriptFragment('echo "link-script:$((6 * 7))"\n');
+  // in the typed command line, only in the script's output. The script also
+  // cats the materialization manifest to prove it was staged before boot.
+  const fragment = await scriptFragment(
+    'echo "link-script:$((6 * 7))"\ncat /run/kandelo/boot-input.json\n',
+  );
   await page.goto(appUrl(`/?demo=shell#${fragment}`), {
     waitUntil: "domcontentloaded",
   });
@@ -46,9 +67,10 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
     timeout: 180_000,
   });
   const text = expect.poll(() => terminalText(page), { timeout: 120_000 });
-  await text.toContain("/tmp/kandelo-link.sh"); // visible invocation
+  await text.toContain("/run/kandelo/inputs/script/kandelo-link.sh"); // visible invocation
   await text.toContain('echo "link-script:$((6 * 7))"'); // script contents shown via cat
   await text.toContain("link-script:42");       // script output
+  await text.toContain("runScript");            // manifest content, proves materialization ran
 });
 
 test("a malformed #k1= fragment fails loudly instead of booting", async ({ page }) => {

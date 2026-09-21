@@ -58,7 +58,8 @@ void (async () => {
         demo,
         vfsUrl: bootQuery.vfsImageUrl,
         fb: fbDemo === "test" ? "test" : "none",
-        script: linkDescriptor?.script?.text ?? null,
+        inputs: linkDescriptor?.boot.inputs ?? null,
+        parameters: linkDescriptor?.boot.parameters ?? null,
       }));
     mount(host);
   } catch (err) {

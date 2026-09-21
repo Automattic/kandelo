@@ -6,6 +6,7 @@ import {
   HARD_CAPS,
   validateBootDescriptor,
 } from "../src/boot-descriptor";
+import { createInlineBootInput } from "../src/boot-inputs";
 import type { BootDescriptor, BootInput, BootParameters } from "../src/kernel-host";
 
 const BASE: BootDescriptor = {
@@ -25,8 +26,24 @@ const BASE: BootDescriptor = {
   boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} },
 };
 
-function withScript(text: string): BootDescriptor {
-  return { ...structuredClone(BASE), script: { text } };
+/**
+ * Build a descriptor carrying a boot-link script the way ShareDialog does
+ * post-migration: an inline, gzip-transported `script` input plus a
+ * `runScript` boot parameter naming it. Scripts no longer have a dedicated
+ * descriptor field or cap — they are an ordinary boot input, so all the
+ * generic input caps in "boot inputs and parameters validation" below (size,
+ * hash, filename, count) apply to them exactly as to any other input.
+ */
+async function withScript(text: string): Promise<BootDescriptor> {
+  const value = structuredClone(BASE);
+  value.boot.inputs = [await createInlineBootInput({
+    id: "script",
+    filename: "kandelo-link.sh",
+    bytes: new TextEncoder().encode(text),
+    compression: "gzip",
+  })];
+  value.boot.parameters = { runScript: "script" };
+  return value;
 }
 
 const HELLO_SHA256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
@@ -72,11 +89,12 @@ describe("k1 envelope round-trip", () => {
     expect(decoded).toEqual(BASE);
   });
 
-  it("round-trips a descriptor with a script", async () => {
-    const desc = withScript('echo "hello from a link"\nuname -a\n');
+  it("round-trips a descriptor carrying a boot-link script as an input", async () => {
+    const desc = await withScript('echo "hello from a link"\nuname -a\n');
     const { fragment } = await encodeBootDescriptor(desc);
     const decoded = await decodeBootDescriptor(fragment);
-    expect(decoded?.script).toEqual(desc.script);
+    expect(decoded?.boot.inputs).toEqual(desc.boot.inputs);
+    expect(decoded?.boot.parameters).toEqual({ runScript: "script" });
   });
 
   it("returns null for a non-k1 fragment", async () => {
@@ -89,41 +107,34 @@ describe("k1 envelope round-trip", () => {
   });
 });
 
-describe("script validation", () => {
+describe("boot inputs and parameters validation", () => {
   it("accepts a descriptor without a script", () => {
     expect(() => validateBootDescriptor(structuredClone(BASE))).not.toThrow();
   });
 
-  it("rejects a non-object script", () => {
-    const bad = { ...structuredClone(BASE), script: "echo hi" };
-    expect(validationError(bad).code).toBe("E_SCRIPT_INVALID");
+  it("accepts a script-carrying descriptor built by createInlineBootInput", async () => {
+    const desc = await withScript("echo hi\n");
+    expect(() => validateBootDescriptor(desc)).not.toThrow();
   });
 
-  it("rejects a script with extra fields", () => {
-    const bad = { ...structuredClone(BASE), script: { text: "echo hi", x: 1 } };
-    expect(validationError(bad).code).toBe("E_SCRIPT_INVALID");
+  it("accepts a zero-byte script input", async () => {
+    // Boot inputs have no dedicated non-empty rule (unlike the removed
+    // `script.text` field): `createInlineBootInput` and descriptor
+    // validation both accept byteLength 0, mirroring the donor library this
+    // was ported from. An empty link script is inert, not malformed.
+    const desc = await withScript("");
+    expect(() => validateBootDescriptor(desc)).not.toThrow();
+    expect(desc.boot.inputs?.[0]?.byteLength).toBe(0);
   });
 
-  it("rejects an empty script text", () => {
-    expect(validationError(withScript("")).code).toBe("E_SCRIPT_INVALID");
+  it("rejects a script input over the inline transport cap the same way any input does", async () => {
+    // Scripts carry no bespoke size cap post-migration; oversized script
+    // text hits the same generic inline caps exercised below for arbitrary
+    // inputs (`rejects inline input data over the carried-bytes cap`).
+    const big = "x".repeat(HARD_CAPS.maxInlineInflatedInputBytes + 1);
+    await expect(withScript(big)).rejects.toMatchObject({ name: "BootDescriptorError" });
   });
 
-  it("rejects NUL bytes in script text", () => {
-    expect(validationError(withScript("echo\0hi")).code).toBe("E_SCRIPT_INVALID");
-  });
-
-  it("rejects script text over maxScriptBytes", () => {
-    const big = "x".repeat(HARD_CAPS.maxScriptBytes + 1);
-    expect(validationError(withScript(big)).code).toBe("E_SCRIPT_TOO_LARGE");
-  });
-
-  it("accepts script text exactly at maxScriptBytes", () => {
-    const exact = "x".repeat(HARD_CAPS.maxScriptBytes);
-    expect(() => validateBootDescriptor(withScript(exact))).not.toThrow();
-  });
-});
-
-describe("boot inputs and parameters validation", () => {
   it("accepts inputs and parameters on a version-1 descriptor with no version bump", () => {
     const desc = withInputs([helloInlineInput()]);
     desc.boot.parameters = { system: "nes" };
