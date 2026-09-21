@@ -30,7 +30,7 @@
 //
 // Nothing here mints a stand-in for the thing under test.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -294,11 +294,126 @@ const { skip } = artifactGate("fork resume-assignment seam", [
 const PLACE_EXPORT = "__wpk_fork_place_resume_thunks";
 const CATALOG_EXPORT = "__wpk_fork_resume_catalog";
 
+/**
+ * THE FIXTURE HAS TWO CONSUMERS AND ONLY ONE HAD A FRESHNESS GATE.
+ *
+ * `crates/host-native/src/fixtures.rs` rebuilds these artifacts when anything
+ * they are built FROM is newer, and `c8789ac27` repaired that check by adding
+ * `crates/fork-instrument` to its input set -- the instrumenter is as much an
+ * input as libc, because `build-fixtures.sh` runs it over the instrumented
+ * arm. But that gate lives in Rust provisioning, and THIS file is vitest
+ * loading the artifact by path. It bypasses the gate entirely.
+ *
+ * That is not hypothetical. The first version of this file was reviewed
+ * against a fixture built at 00:08 while `instrument.rs` changed at 00:27, so
+ * its shim predated Task 2's reserved-slot guard: the seam was proven against
+ * a READER THAT NO LONGER EXISTS. The record layout happened to be identical
+ * across those two revisions, so the layout verdict survived -- but that was
+ * luck, not the test's doing, and the next instrumenter change will not be so
+ * kind.
+ *
+ * # Why a staleness gate and not a recorded fingerprint
+ *
+ * `fork-resume-placement-baseline.test.ts` fingerprints its guests, and that
+ * is right for the question it asks: "did the recorded mapping's inputs
+ * change?", where a recorded sha256 is the only way to notice. The question
+ * HERE is different -- "is this artifact older than the thing that produces
+ * it?" -- and a recorded hash answers it badly. It would have to be re-recorded
+ * on every instrumenter change, which is a ceremony that drifts, and a
+ * re-record by a tired hand is exactly how a stale artifact gets blessed. An
+ * mtime watermark over the real input closure needs no recorded constant, so
+ * it cannot drift, and adding an input can only make it stricter. These
+ * artifacts are gitignored build products, so their mtimes are build times
+ * rather than checkout times, which is what makes the comparison meaningful.
+ *
+ * It FAILS rather than skips. A missing artifact is `artifactGate`'s business
+ * and a skip is a defensible answer to it; a STALE one is worse than missing,
+ * because it runs, reports green, and says nothing about the code in the tree.
+ */
+const FIXTURE_INPUT_ROOTS = [
+  "crates/fork-instrument/src",
+  "crates/host-native/fixtures",
+] as const;
+const FIXTURE_INPUT_FILES = [
+  "crates/fork-instrument/Cargo.toml",
+  "scripts/run-wasm-fork-instrument.sh",
+  "libc/glue/channel_syscall.c",
+  "sysroot/lib/libc.a",
+  "sysroot64/lib/libc.a",
+] as const;
+/** Only the SOURCES in the fixtures directory; the outputs live there too. */
+const FIXTURE_SOURCE_EXTENSIONS = [".c", ".wat", ".sh"];
+
+function mtimeOf(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    // A missing input cannot raise the watermark. This check answers "cannot
+    // tell" rather than failing, the same way its Rust twin does.
+    return 0;
+  }
+}
+
+function newestUnder(directory: string, extensions: string[] | null): number {
+  let newest = 0;
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      // Walked, not hand-listed, so a NEW source file counts without anyone
+      // remembering to add it -- the omission `c8789ac27` closed was exactly a
+      // hand-listed input set missing one.
+      newest = Math.max(newest, newestUnder(path, extensions));
+      continue;
+    }
+    if (extensions !== null && !extensions.some((e) => entry.name.endsWith(e))) {
+      continue;
+    }
+    newest = Math.max(newest, mtimeOf(path));
+  }
+  return newest;
+}
+
+/** Throw, naming the rebuild, if the fixture predates anything it is built from. */
+function requireFixtureNotStale(): void {
+  const built = mtimeOf(GUEST_FIXTURE);
+  const newestInput = Math.max(
+    ...FIXTURE_INPUT_ROOTS.map((rel) =>
+      newestUnder(
+        join(REPO_ROOT, rel),
+        rel.endsWith("fixtures") ? FIXTURE_SOURCE_EXTENSIONS : null,
+      ),
+    ),
+    ...FIXTURE_INPUT_FILES.map((rel) => mtimeOf(join(REPO_ROOT, rel))),
+  );
+  if (built >= newestInput) return;
+  throw new Error(
+    `crates/host-native/fixtures/native_fork.instrumented.wasm was built at ` +
+      `${new Date(built).toISOString()}, which is OLDER than something it is ` +
+      `built from (newest input: ${new Date(newestInput).toISOString()}).\n` +
+      `This test proves that the fork module's published record buffer and ` +
+      `the guest's emitted placement shim agree. A stale fixture carries an ` +
+      `OLD shim, so a green run would be a verdict about a reader that is no ` +
+      `longer in the tree.\n` +
+      `Rebuild with: scripts/dev-shell.sh bash ` +
+      `crates/host-native/fixtures/build-fixtures.sh`,
+  );
+}
+
 /** Instantiate the guest co-resident with the module, on its memory. */
 function instantiateGuest(h: Harness, activationId: number): {
   place: (ptr: number, count: number) => number;
   catalog: WebAssembly.Table;
 } {
+  // Checked HERE rather than in one dedicated case, so no seam case can be
+  // added later that reaches the fixture without passing the gate. A gate a
+  // caller must remember to call is the same gap this closes.
+  requireFixtureNotStale();
   const guestModule = new WebAssembly.Module(readFileSync(GUEST_FIXTURE));
   // THE PRODUCTION BUILDER. It binds `__wpk_fork_resume_table` (and the transit
   // table, and the unwind tag) from the module's own exports, which is the
@@ -447,6 +562,11 @@ describe.skipIf(skip)("fork resume-assignment seam", () => {
   it("places a second activation into the slots the allocator reused", () => {
     const h = harness();
     const { place, catalog } = instantiateGuest(h, 0);
+    // The same guard case 1 carries, and it was missing here. Without it every
+    // `toBe(catalog.get(ordinal))` below could compare null against null and
+    // pass while nothing had been placed at all -- a case that cannot fail is
+    // not evidence, and this one is run in isolation often enough to matter.
+    expect(catalog.length, "fixture catalog entries").toBeGreaterThanOrEqual(3);
     const ordinals = [0, 1, 2];
 
     h.seed(9, [0, 1, 2, 3, 4]);
@@ -467,10 +587,12 @@ describe.skipIf(skip)("fork resume-assignment seam", () => {
 
     const records = readRecords(h.memory, published);
     for (const { ordinal, slot } of records) {
+      const thunk = catalog.get(ordinal) as WebAssembly.ExportValue | null;
+      expect(thunk, `catalog ordinal ${ordinal} is null`).not.toBeNull();
       expect(
         h.resumeTable.get(slot),
         `slot ${slot} must hold the catalog thunk for ordinal ${ordinal}`,
-      ).toBe(catalog.get(ordinal));
+      ).toBe(thunk);
     }
     expect(records).toEqual([
       { ordinal: 0, slot: 1 },
@@ -482,5 +604,41 @@ describe.skipIf(skip)("fork resume-assignment seam", () => {
     for (const slot of [6, 7, 8]) {
       expect(h.resumeTable.get(slot), `slot ${slot} lost its thunk`).not.toBeNull();
     }
+  });
+
+  it("the reader still refuses slot 0, which this publisher never emits", () => {
+    const h = harness();
+    const { place, catalog } = instantiateGuest(h, 0);
+    expect(catalog.length, "fixture catalog entries").toBeGreaterThanOrEqual(3);
+
+    // THE OTHER HALF OF THE FRESHNESS QUESTION, asked behaviourally.
+    //
+    // The mtime gate above says the artifact is not older than its producer.
+    // This says the artifact still HAS the property this publisher depends on,
+    // which is a different question and the one that actually bit: the shim
+    // gained its reserved-slot guard in a revision later than the fixture that
+    // the first review ran against, and nothing noticed, because no case ever
+    // asked the reader to refuse anything.
+    //
+    // Slot 0 is the `resume_peek` "run the lexical callee" sentinel and must
+    // stay null for the life of the process. `resume_allocate_slot` starts at
+    // 1, so this module never publishes a record naming it -- which means the
+    // guard is a contract the publisher RELIES ON and never exercises. A
+    // zeroed or stale buffer decodes to (ordinal 0, slot 0), and both are in
+    // range, so only the reservation makes it wrong.
+    const PAIRS = 24 * 1024 * 1024;
+    const view = new DataView(h.memory.buffer);
+    view.setUint32(PAIRS, 2, true); // a real, live catalog ordinal
+    view.setUint32(PAIRS + 4, 0, true); // the reserved sentinel
+    expect(
+      () => place(PAIRS, 1),
+      "an instrumented guest whose shim does not refuse slot 0 predates " +
+        "the reserved-sentinel guard; rebuild the fixture with " +
+        "crates/host-native/fixtures/build-fixtures.sh",
+    ).toThrow(WebAssembly.RuntimeError);
+    expect(
+      h.resumeTable.get(0),
+      "the reserved resume_peek sentinel was overwritten",
+    ).toBeNull();
   });
 });

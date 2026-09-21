@@ -868,9 +868,33 @@ mod wasm {
     /// (`RESUME_SLOT_CAP` records, 512 KiB) would take that much out of every
     /// guest's mmap window to serve the one program that needs it.
     ///
-    /// Every activation in the tree's fixtures fits: the dlopen side-module
-    /// baseline's largest is 86 records. php's ~47,757 does not, which is what
-    /// the spill below is for.
+    /// # THE NUMBER IS INHERITED, NOT DERIVED, AND PHP CROSSES IT
+    ///
+    /// 8,192 is `ACTIVATION_CATALOG_ORD_FLOOR`'s record count carried over
+    /// because the two buffers answer the same shape of question, not because
+    /// anything measured said 8,192 was the right line for THIS buffer. Said
+    /// plainly so nobody reads it as a measured threshold.
+    ///
+    /// Every activation in the tree's fixtures fits far inside it: the dlopen
+    /// side-module baseline's largest is 86 records. **php's main activation
+    /// does not.** It holds 19,025 resume slots -- the per-process-start
+    /// placement count recorded in
+    /// `docs/superpowers/plans/2026-09-20-fork-resume-thunk-placement.md`,
+    /// which is the number of `table.get`/`table.set` crossings this whole
+    /// change removes. (An earlier draft of this comment said "~47,757". That
+    /// figure sums TWO processes and this lane has already corrected it; the
+    /// conclusion is unchanged, because 19,025 is still more than twice the
+    /// floor.)
+    ///
+    /// So a REAL, SHIPPED WORKLOAD takes the spill branch below, and that
+    /// branch cannot be exercised in a unit harness: `channel_mmap` issues a
+    /// `SYS_MMAP` over the syscall channel and blocks in
+    /// `memory_atomic_wait32` until a kernel worker answers, so a test that
+    /// crossed the floor would HANG rather than fail. The coverage it has is
+    /// the coverage the activation-catalog spill beside it has -- none in
+    /// isolation, and whatever an end-to-end fork of a large program gives it.
+    /// An end-to-end run that includes an activation above this floor is the
+    /// thing that would close it.
     const RESUME_ASSIGNMENT_FLOOR_RECORDS: usize = 8_192;
 
     #[repr(C, align(8))]
