@@ -41,7 +41,7 @@
 // ONE worker, so both activations share one slot space -- which is exactly the
 // property the baseline records.
 
-import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,7 @@ import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { readForkResumeCatalog } from "../src/fork-resume-catalog";
 import { ForkResumeTable, type ForkResumeSlots } from "../src/fork-resume-table";
+import { artifactGate } from "./support/artifact-gate";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -85,21 +86,47 @@ const CATALOG_AT = 12 * 1024 * 1024;
 const MAIN_ACTIVATION = 0;
 const SIDE_ACTIVATION = 1;
 
-const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
-if (process.env.KANDELO_REQUIRE_FORK_PLACEMENT_BASELINE === "1" && !hasSysroot) {
-  throw new Error(
-    "fork resume placement baseline was required but " +
-      `${join(SYSROOT, "lib", "libc.a")} is missing; run scripts/build-musl.sh`,
-  );
-}
+/**
+ * The shared gate, not a bespoke one.
+ *
+ * This file builds its guests with the SDK, so a worktree without a sysroot
+ * cannot run it. A plain `describe.skipIf` would print nothing and exit 0,
+ * and a Task 4 run in that worktree would report "placement matches the
+ * baseline" having compared nothing -- the vacuous green this whole file
+ * exists to prevent. `artifactGate` announces the skip by default and turns
+ * it into a failure under the repo-standard `KANDELO_REQUIRE_E2E=1`, which is
+ * what a run whose result is being used as evidence should set.
+ */
+const { skip } = artifactGate("fork resume-thunk placement baseline", [
+  {
+    what: `${join(SYSROOT, "lib", "libc.a")} (SDK sysroot)`,
+    present: existsSync(join(SYSROOT, "lib", "libc.a")),
+    build: "scripts/dev-shell.sh scripts/build-musl.sh",
+  },
+]);
 
 interface PlacementEntry {
   readonly ordinal: number;
   readonly slot: number;
 }
 
+/**
+ * sha256 of the two guest binaries the ordinals were read out of.
+ *
+ * WHY: the ordinals come from SDK-built, fork-instrumented guests, so a change
+ * anywhere in `libc/`, `sdk/` or `crates/fork-instrument/` moves the KFRC
+ * ordinal set and reddens the mapping comparison with a diff that reads
+ * exactly like a placement regression. Recorded so the mismatch can name
+ * itself instead of costing someone an afternoon.
+ */
+interface FixtureFingerprint {
+  readonly program: string;
+  readonly library: string;
+}
+
 interface PlacementBaseline {
   readonly fixture: string;
+  readonly fixtureFingerprint: FixtureFingerprint;
   /** Activation id (as a string key) to its ordinal -> slot mapping. */
   readonly activations: Record<string, readonly PlacementEntry[]>;
 }
@@ -132,6 +159,16 @@ function harness(): Harness {
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
 
   const errno = () => (x.fm_last_errno as () => number)();
+  // OP 0, AND THE SECOND OP-0 COUPLING IN THIS FILE. This one is load-bearing
+  // and cannot be removed: `ForkResumeTable.registerActivation` -- the
+  // production placement path being characterized -- asks a `ForkResumeSlots`
+  // for every slot it writes, and op 0 is that query today. The read-back
+  // below deliberately does NOT use it.
+  //
+  // Task 6 of this plan deletes the op-0 arm, which will break this harness.
+  // That is expected: this is the BEFORE recorder. Task 6's grep guard scans
+  // `host/src` and `crates`, so it will not see this hit -- the coordinator is
+  // widening that guard to `host/test`.
   const resumeSlots = x.fm_resume_slots as (
     op: number,
     activation: number,
@@ -208,7 +245,12 @@ function catalogOrdinals(wasmPath: string): readonly number[] {
   return readForkResumeCatalog(module).map((record) => record.functionOrdinal);
 }
 
-describe.skipIf(!hasSysroot)("fork resume-thunk placement baseline", () => {
+/** sha256 of a file, for the fixture fingerprint. */
+function fileDigest(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
   it("records where every activation's thunks land in the resume table", () => {
     const fixture = buildVforkSideModuleFixture();
     try {
@@ -240,11 +282,26 @@ describe.skipIf(!hasSysroot)("fork resume-thunk placement baseline", () => {
       for (const activationId of [MAIN_ACTIVATION, SIDE_ACTIVATION]) {
         const ordinals = catalogs.get(activationId)!;
         h.seed(activationId, ordinals);
-        // THE PRODUCTION PLACEMENT PATH as of this commit. When placement
-        // moves into the guest shim, this is the one call in this file that
-        // changes; the seeding above, the read-back below and the recorded
-        // artifact must not. If a later task finds itself editing anything
-        // else here, the comparison has stopped being a comparison.
+        // THE PRODUCTION PLACEMENT PATH as of this commit, and the whole of
+        // what this file can characterize.
+        //
+        // WHAT THIS FILE CANNOT DO, said plainly so nobody plans around it:
+        // it never INSTANTIATES either guest. It reads their custom sections
+        // and mints stand-in thunks. So the guest-side placement shim Task 2
+        // adds -- `__wpk_fork_place_resume_thunks`, a guest EXPORT that reads
+        // the guest's own catalog table -- can never be driven from here.
+        // Swapping this one call for that export is not possible; it would
+        // need a live instance of an SDK-linked program, with the kandelo
+        // import object and a syscall channel, which is precisely the
+        // in-process instantiation this file exists to avoid.
+        //
+        // CONTROLLER RULING: Task 4 produces the AFTER half by seeding these
+        // same two catalogs and calling `fm_publish_resume_assignment`
+        // (Task 3), decoding its `(ordinal, slot)` pairs and diffing them
+        // against the SAME recorded artifact. That compares the thing which
+        // actually decides placement, and needs no guest instance. The
+        // artifact's shape is therefore the stable contract between the two
+        // halves -- not any line in this file.
         h.table.registerActivation(
           activationId,
           ordinals.map((functionOrdinal) => {
@@ -292,6 +349,10 @@ describe.skipIf(!hasSysroot)("fork resume-thunk placement baseline", () => {
 
       const baseline: PlacementBaseline = {
         fixture: "vfork-side-module (main program + dlopen'd side module)",
+        fixtureFingerprint: {
+          program: fileDigest(fixture.programPath),
+          library: fileDigest(fixture.libraryPath),
+        },
         activations,
       };
 
@@ -314,8 +375,32 @@ describe.skipIf(!hasSysroot)("fork resume-thunk placement baseline", () => {
       const recorded = JSON.parse(
         readFileSync(BASELINE_PATH, "utf8"),
       ) as PlacementBaseline;
-      // THE COMPARISON. A difference is a regression, not a new normal: do not
-      // re-record to make this pass.
+
+      // FIRST, and with its own message: did the INPUTS move? A toolchain
+      // change under `libc/`, `sdk/` or `crates/fork-instrument/` gives the
+      // guests a different ordinal set, and the mapping diff that follows
+      // would look identical to a placement regression while meaning nothing
+      // of the sort. Fail here instead, saying which it is.
+      if (
+        baseline.fixtureFingerprint.program !== recorded.fixtureFingerprint?.program
+        || baseline.fixtureFingerprint.library !== recorded.fixtureFingerprint?.library
+      ) {
+        throw new Error(
+          "the fixture binaries changed; this is NOT a placement regression. " +
+            "The recorded baseline was taken against different guest wasm " +
+            `(program ${recorded.fixtureFingerprint?.program ?? "<absent>"}, ` +
+            `library ${recorded.fixtureFingerprint?.library ?? "<absent>"}) ` +
+            `than this run built (program ${baseline.fixtureFingerprint.program}, ` +
+            `library ${baseline.fixtureFingerprint.library}). Something under ` +
+            "libc/, sdk/ or crates/fork-instrument/ moved. Re-record against " +
+            "UNMODIFIED placement before comparing: " +
+            "KANDELO_RECORD_PLACEMENT_BASELINE=1 npx vitest run " +
+            "test/fork-resume-placement-baseline.test.ts",
+        );
+      }
+
+      // THEN THE COMPARISON. A difference is a regression, not a new normal:
+      // do not re-record to make this pass.
       expect(baseline).toEqual(recorded);
     } finally {
       fixture.cleanup();
