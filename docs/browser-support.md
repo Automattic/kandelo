@@ -606,22 +606,38 @@ const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 The Share button in the dock produces links of the form
 `…/?demo=<id>#k1=<payload>`. The fragment is a versioned, gzip-compressed
 boot descriptor (`web-libs/kandelo-session/src/boot-descriptor.ts`) that may
-carry an optional `script` field: shell script text, capped at 32 KiB
-(UTF-8), validated with the same hard caps and loud `BootDescriptorError`
-failures as the rest of the descriptor. A malformed or oversized fragment
-rejects the boot with a visible error; it never falls back to booting as if
-the fragment were absent.
+carry optional `inputs` and `parameters` fields. The payload is validated
+with hard caps and loud `BootDescriptorError` failures. A malformed or
+oversized fragment rejects the boot with a visible error; it never falls
+back to booting as if the fragment were absent.
+
+Boot inputs carry named, sha256-verified files materialized into the kernel
+VFS before the initial shell. The library in
+`web-libs/kandelo-session/src/boot-inputs.ts` validates every input's
+compressed bytes, decompresses (gzip-transported payloads are supported),
+and verifies the final sha256+byteLength before writing to the VFS. Inputs
+are all-or-nothing: if any input fails verification, no changes occur.
+Resolver-kind inputs fail materialization loudly when no resolver is
+registered (the production registry is empty; inline sources only today).
 
 Opening a script link boots the machine selected by the query parameters
-(the fragment cannot select an image the query parameters could not), writes
-the script to `/tmp/kandelo-link.sh`, prints its full contents in the
-terminal with `cat` before execution, and then runs it from the initial
-interactive shell — `bash` when the image ships it, `sh` otherwise. The
-file is left writable so the visitor can experiment: edit it and re-run it
-after boot. The script's source, the invocation, and the script's output
-are all visible in the terminal, and the script takes the image
-`autoCommand`'s place in the launch sequence. Navigating to a different
-machine from the gallery drops the fragment.
+(the fragment cannot select an image the query parameters could not) and
+materializes the boot inputs. A script travels as input id `"script"`
+→ `/run/kandelo/inputs/script/kandelo-link.sh` (mode 0o755). An input
+manifest at `/run/kandelo/boot-input.json` records the descriptor's
+`{version:1, parameters, inputs}`. When `boot.parameters.runScript` names
+the "script" input, that input is printed to the terminal with `cat` before
+execution, and then run from the initial interactive shell — `bash` when
+the image ships it, `sh` otherwise. The file is left writable so the visitor
+can experiment: edit it and re-run it after boot. The script's source, the
+invocation, and the script's output are all visible in the terminal, and the
+script takes the image `autoCommand`'s place in the launch sequence.
+Navigating to a different machine from the gallery drops the fragment.
+
+Caps enforce untrusted-input boundaries: maxBootInputs, 32 KiB carried per
+inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
+parameters JSON. Zero-byte inputs are accepted; the dialog simply skips
+empty scripts during authoring.
 
 Scripts currently run without a confirmation step because every machine the
 browser app boots is ephemeral. This is a load-bearing boundary: before any

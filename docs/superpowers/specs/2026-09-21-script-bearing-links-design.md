@@ -1,7 +1,7 @@
 # Script-Bearing Kandelo Links
 
 Date: 2026-09-21
-Status: Approved design, pre-implementation
+Status: Implementation complete
 
 ## Why
 
@@ -50,37 +50,52 @@ the script-execution site.
 
 ## Design
 
-### 1. Carrier: descriptor v1 gains an optional `script` field
+### 1. Carrier: descriptor v1 gains optional `inputs` and `parameters` fields
+
+Descriptor `version: 1` remains unchanged in structure; two new optional fields
+carry boot inputs and configuration parameters:
 
 In `web-libs/kandelo-session/src/kernel-host.ts`:
 
 ```ts
 export interface BootDescriptor {
   // ...existing fields...
-  /** Optional script run in the initial interactive shell after boot. */
-  script?: BootScript;
+  /** Optional array of named input files to materialize before boot. */
+  inputs?: BootInput[];
+  /** Optional configuration parameters passed to boot inputs. */
+  parameters?: BootParameters;
 }
 
-export interface BootScript {
-  /**
-   * Script text, executed by the image's default shell. Authors should
-   * target the shell the image ships (bash for the stock shell image).
-   */
-  text: string;
+export interface BootInput {
+  /** Unique input identifier (e.g., "script"). */
+  id: string;
+  /** Filename when materialized (e.g., "kandelo-link.sh"). */
+  filename: string;
+  /** Input source: inline bytes or resolver reference. */
+  source: BootInputSource;
 }
+
+export type BootInputSource =
+  | { kind: "inline"; bytes: Uint8Array; sha256: Uint8Array; compression?: "gzip" }
+  | { kind: "resolver"; resolverName: string; resolverData: unknown };
+
+export type BootParameters = Record<string, unknown>;
 ```
 
 Validation in `boot-descriptor.ts` (`validateBootDescriptor`):
 
-- New `HARD_CAPS.maxScriptBytes = 32 * 1024` (UTF-8 byte length,
-  mirroring `maxInlineOverlayBytes`).
-- `script`, when present, must be an object with exactly a non-empty
-  string `text`; reject NUL bytes; reject oversize with a coded
-  `BootDescriptorError` (`E_SCRIPT_TOO_LARGE`, `E_SCRIPT_INVALID`).
-- Descriptor stays `version: 1`. The existing parser tolerates unknown
-  fields, so old app builds that decode a script-bearing link simply
-  ignore the script; they do not fail. The emulator branch's
-  descriptor-v2 work absorbs this field at rebase time.
+- New `HARD_CAPS`: `maxBootInputs`, `maxInlineInputBytes` (32 KiB per input),
+  `maxInlineInflatedInputBytes` (2 MiB per input), `maxTotalInputBytes`,
+  `maxParametersBytes` (32 KiB JSON text).
+- `inputs`, when present, must be an array of objects with `id`, `filename`,
+  and `source`; each id must be unique; inline sources require sha256 hash
+  and uncompressed byte length for verification; reject oversize with coded
+  `BootDescriptorError`s (`E_TOO_MANY_INPUTS`, `E_INPUT_TOO_LARGE`,
+  `E_PARAMETERS_TOO_LARGE`, `E_INVALID_INPUT_SHA256`).
+- `parameters`, when present, must be a plain JSON object; reject oversize.
+- Descriptor stays `version: 1`. The existing parser tolerates unknown fields,
+  so old app builds that decode a descriptor with inputs simply ignore them;
+  they do not fail.
 
 ### 2. Boot wiring: first consumer of `decodeBootDescriptor`
 
@@ -103,47 +118,57 @@ in `url-state.ts`) gains fragment handling:
   image or escalate a limit that the query params could not.
 - `descriptor.script` is stashed for the execution hook (below).
 
-### 3. Execution: the script runs *as* the autoCommand
+### 3. Execution: boot inputs materialize before the initial shell
 
-The launch chain at
-`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1438-1469`
-is an if/else-if ladder: `profile.framebufferTest` →
-`presentation.autoCommand` → `profile.autoCommand`. The URL script
-becomes a new branch in that ladder, inserted as the
-highest-precedence *shell-command* branch (above
-`presentation.autoCommand`; `framebufferTest` is a dev-profile
-surface test and keeps its position):
+Boot inputs are materialized in the kernel-owned VFS before the initial shell
+starts. The library `materializeBootInputs` in `web-libs/kandelo-session/src/boot-inputs.ts`
+performs all-or-nothing materialization with sha256+byteLength verification:
 
-1. Before the ladder runs:
-   `host.writeFile("/tmp/kandelo-link.sh", bytes, 0o755)` — `/tmp` is
-   the always-present ephemeral scratch mount, so no mkdir is needed.
-   The file is left in place writable so the visitor can inspect,
-   edit, and re-run it after boot.
-2. Resolve the invoking shell: the PTY session program is `login`, not
-   a shell, so there is no `startShellCommand`-style config to read.
-   Instead, probe the image directly — `host.stat("/bin/bash")` — and
-   invoke with `bash` when it exists, falling back to `sh` when it
-   doesn't. Authors needing another interpreter can `exec` it from the
-   script body.
-3. The new branch first runs
-   `host.runShellCommand("cat /tmp/kandelo-link.sh")` so the full
-   script contents are displayed in the terminal, then runs
-   `host.runShellCommand("<shellPath> /tmp/kandelo-link.sh")` with the
-   same `tick` progress line and `.catch` error reporting the existing
-   autoCommand branches use — one code path, identical semantics.
+1. Each inline input's compressed bytes are decompressed if tagged with
+   `compression: "gzip"`.
+2. Every input's sha256 hash and final byteLength are verified against the
+   descriptor's declared values. If any input fails verification, the entire
+   operation aborts with no VFS changes.
+3. Inputs materialize under `/run/kandelo/inputs/<id>/<filename>` with mode
+   `0o755` (writable, executable). The directory `/run/kandelo/inputs` is
+   created recursively.
+4. An input manifest at `/run/kandelo/boot-input.json` records `{version:1,
+   parameters, inputs}` so guest code can inspect what was supplied.
 
-The visitor sees the script's contents printed via `cat`, then the
-invocation typed into their terminal and the output stream normally.
+The script is the first consumer of boot inputs: when `boot.parameters.runScript`
+names an input id (e.g., `"script"`), the launch ladder in
+`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` becomes:
 
-Precedence falls out of the ladder: a link that carries a script
-suppresses the image's `presentation.autoCommand` and the profile
-`autoCommand` (running both would interleave two command streams in
-one PTY).
+1. `profile.framebufferTest` (unchanged).
+2. **New branch: script-input execution** (highest precedence, above
+   `presentation.autoCommand`):
+   - If `boot.parameters.runScript` names an input that exists in the
+     manifest, resolve the invoking shell: probe `host.stat("/bin/bash")`
+     and invoke with `bash` when it exists, falling back to `sh` when it
+     doesn't. Authors needing another interpreter can `exec` it from the
+     script body.
+   - Run `host.runShellCommand("cat <scriptPath>")` so the full script
+     contents are displayed in the terminal.
+   - Run `host.runShellCommand("<shellPath> <scriptPath>")` with the same
+     `tick` progress line and `.catch` error reporting the existing
+     autoCommand branches use — one code path, identical semantics.
+   - If `runScript` names an unknown input id or materialization failed
+     previously, this branch throws a loud boot error and aborts.
+3. `presentation.autoCommand`, `profile.autoCommand` (unchanged).
 
-Ownership boundary: the script occupies the autoCommand *slot in the
-launch chain* but is never written into `/etc/kandelo/demo.json` —
-that file is image-owned presentation metadata, and a URL payload
-must not masquerade as image state.
+The visitor sees the script's contents printed via `cat`, then the invocation
+typed into their terminal and the output stream normally. The file remains
+writable at `0o755` so the visitor can inspect, edit, and re-run it after boot.
+
+Precedence falls out of the ladder: a link that carries a script suppresses
+the image's `presentation.autoCommand` and the profile `autoCommand` (running
+both would interleave two command streams in one PTY).
+
+Ownership boundary: the script occupies the autoCommand *slot in the launch chain*
+but is never written into `/etc/kandelo/demo.json` — that file is image-owned
+presentation metadata, and a URL payload must not masquerade as image state.
+The materialized script files live under `/run/kandelo/inputs`, which is a
+boot-local runtime directory, not image metadata.
 
 ### 4. Share dialog: wire it in and add script authoring
 
@@ -154,9 +179,13 @@ must not masquerade as image state.
   existing theme/internals controls) that opens `ShareDialog` for the
   current machine.
 - Adds a "Run a script on open" textarea to the dialog. Non-empty text
-  becomes `descriptor.script`, is validated live against
-  `maxScriptBytes` (show the byte count against the cap), and feeds the
-  existing tier bar so authors see URL size as they type.
+  is compressed with gzip, wrapped in `createInlineBootInput({ id:
+  "script", filename: "kandelo-link.sh", bytes, compression: "gzip" })`,
+  and becomes a `boot.inputs` entry with corresponding `boot.parameters:
+  { runScript: "script" }`. The byte counter shows the inflated size vs
+  `maxInlineInflatedInputBytes` (2 MiB); the dialog skips zero-length
+  scripts silently. Authors see URL size in the existing tier bar as they
+  type.
 - Emits links in the shape that actually opens today:
   `location.origin + location.pathname + "?demo=<id>" + "#" + fragment`.
   `buildShareUrl`'s path-based modes (`/c/<id>`, `/m/…`, `/p/…`) have
@@ -182,20 +211,21 @@ Authoring flow: open a demo → click Share → paste script → copy URL.
 
 ## Testing
 
-- **Unit (Vitest):** encode→decode round-trip for a script-bearing
-  descriptor; rejection cases for every new cap (`E_SCRIPT_TOO_LARGE`,
-  `E_SCRIPT_INVALID`, NUL bytes, non-string, empty); confirm a non-`k1`
-  fragment still decodes to `null`; confirm unknown-field tolerance
-  (old descriptor without `script` and new descriptor decoded by
-  validation both pass). The unwritten `k1` round-trip cases listed in
-  `docs/plans/2026-05-14-kandelo-ui-followups.md` are implemented for
-  the paths this change touches.
-- **Browser (Playwright):** open a URL with a script-bearing fragment →
-  machine boots → terminal shows the invocation and the script's
-  expected output; malformed fragment → visible error, no boot-as-if-
-  nothing-happened; Share dialog round-trip (open dialog, enter
-  script, copy URL, open copied URL in a new page, observe the script
-  run).
+- **Unit (Vitest):** encode→decode round-trip for a descriptor with
+  script input; rejection cases for every new cap (`E_TOO_MANY_INPUTS`,
+  `E_INPUT_TOO_LARGE`, `E_PARAMETERS_TOO_LARGE`, oversized parameters
+  JSON, bad sha256, duplicate input ids); confirm a non-`k1` fragment
+  still decodes to `null`; confirm unknown-field tolerance (old descriptor
+  without `inputs` and new descriptor decoded by validation both pass);
+  zero-length inline inputs round-trip without error; sha256 mismatch
+  fails materialization loudly.
+- **Browser (Playwright):** open a URL with a script-bearing input
+  fragment → machine boots → `/run/kandelo/inputs/script/kandelo-link.sh`
+  exists with mode 0o755 → `/run/kandelo/boot-input.json` exists → terminal
+  shows the script's invocation and output; malformed fragment → visible
+  error, no boot-as-if-nothing-happened; Share dialog round-trip (open
+  dialog, enter script, copy URL, open copied URL in a new page, observe
+  the script run and the materialized files on disk).
 - **Manual:** user-visible browser behavior verified with
   `./run.sh browser` per the validation contract.
 
@@ -203,11 +233,11 @@ Authoring flow: open a demo → click Share → paste script → copy URL.
 
 | File | Change |
 |---|---|
-| `web-libs/kandelo-session/src/kernel-host.ts` | `BootScript` type, `script?` field |
-| `web-libs/kandelo-session/src/boot-descriptor.ts` | `maxScriptBytes` cap, script validation, error codes |
-| `apps/browser-demos/pages/kandelo/main.tsx` | decode `#k1=` fragment, loud failure surface |
-| `apps/browser-demos/pages/kandelo/url-state.ts` | fragment/query precedence helpers |
-| `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` | script branch in the autoCommand ladder + consent warning comment |
-| `apps/browser-demos/pages/kandelo/dialogs/ShareDialog.tsx` | script textarea, working-URL shape, hide unroutable modes |
+| `web-libs/kandelo-session/src/kernel-host.ts` | `BootInput`, `BootInputSource`, `BootParameters` types; `inputs?` and `parameters?` fields |
+| `web-libs/kandelo-session/src/boot-inputs.ts` | new library: `materializeBootInputs`, `BootInputManifest`, materialization with verification and VFS write atomicity |
+| `web-libs/kandelo-session/src/boot-descriptor.ts` | input/parameter caps and validation, error codes |
+| `apps/browser-demos/pages/kandelo/main.tsx` | decode `#k1=` fragment, pass `inputs`/`parameters` to boot |
+| `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` | call `materializeBootInputs`, script branch in the autoCommand ladder (resolving input id "script"), consent warning comment |
+| `apps/browser-demos/pages/kandelo/dialogs/ShareDialog.tsx` | script textarea → boot input via `createInlineBootInput` with gzip |
 | `apps/browser-demos/pages/kandelo/app/App.tsx` | Share affordance |
-| `web-libs/kandelo-session/test/…`, `apps/browser-demos/test/…` | tests above |
+| `web-libs/kandelo-session/test/…`, `apps/browser-demos/test/…` | tests covering inputs, parameters, materialization, and script-input execution |
