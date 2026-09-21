@@ -5256,6 +5256,29 @@ pub mod input {
     /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
     pub const EVIOCGRAB: u32 = 0x4004_4590;
 
+    /// `EVIOCGKEY(len)` — `_IOC(_IOC_READ, 'E', 0x18, len)`. Returns the
+    /// bitmap of currently-pressed `EV_KEY` codes for the device (this is
+    /// device-global state, not per-fd). Userspace re-reads it after a
+    /// `SYN_DROPPED` to resynchronise, which is the only Linux-sanctioned
+    /// recovery from a dropped event.
+    pub const EVIOCGKEY_NR: u32 = 0x18;
+
+    /// `EVIOCGLED(len)` — `_IOC(_IOC_READ, 'E', 0x19, len)`. Bitmap of lit
+    /// LEDs. Kandelo's virtual devices have none, so the reply is zeroed.
+    pub const EVIOCGLED_NR: u32 = 0x19;
+
+    /// `EVIOCGSW(len)` — `_IOC(_IOC_READ, 'E', 0x1b, len)`. Bitmap of
+    /// active switches. Kandelo has none, so the reply is zeroed.
+    pub const EVIOCGSW_NR: u32 = 0x1b;
+
+    /// `KEY_MAX` / `KEY_CNT` — the largest `EV_KEY` code and the bit count
+    /// of an `EVIOCGKEY` bitmap (`KEY_CNT / 8 = 96` bytes), matching Linux
+    /// UAPI. The keystate bitmap is sized to `KEY_CNT` so it can hold every
+    /// code Kandelo emits (keys `1..=KEY_MICMUTE` and `BTN_*` up to
+    /// `BTN_EXTRA = 0x114`).
+    pub const KEY_MAX: u16 = 0x2ff;
+    pub const KEY_CNT: u16 = KEY_MAX + 1;
+
     // --- marshalled structs ----------------------------------------------
 
     /// `struct input_event` on wasm32-musl (`time_t = int64_t`,
@@ -5721,5 +5744,13 @@ mod input_tests {
         assert_eq!(EVIOCGNAME_NR, 0x06);
         assert_eq!(EVIOCGBIT_NR_BASE, 0x20);
         assert_eq!(EVIOCGABS_NR_BASE, 0x40);
+        // State-query reads used for SYN_DROPPED resync.
+        assert_eq!(EVIOCGKEY_NR, 0x18);
+        assert_eq!(EVIOCGLED_NR, 0x19);
+        assert_eq!(EVIOCGSW_NR, 0x1b);
+        // KEY_CNT / 8 = 96-byte EVIOCGKEY bitmap, and every code Kandelo
+        // emits fits (BTN_EXTRA = 0x114 < KEY_CNT).
+        assert_eq!(KEY_CNT, 0x300);
+        assert!(BTN_EXTRA < KEY_CNT);
     }
 }

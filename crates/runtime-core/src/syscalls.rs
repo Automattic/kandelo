@@ -1997,6 +1997,31 @@ fn handle_input_ioctl(
             }
             Ok(())
         }
+        n if n == EVIOCGKEY_NR && dir == 2 => {
+            // Return the device-global pressed-key bitmap. This is the
+            // state a client re-reads after a SYN_DROPPED to recover from
+            // a lost key/button transition.
+            let device = input_state(proc, ofd_idx)?.device;
+            let len = size.min(buf.len());
+            let slice = &mut buf[..len];
+            for b in slice.iter_mut() {
+                *b = 0;
+            }
+            crate::input::copy_key_state(device, slice);
+            Ok(())
+        }
+        n if (n == EVIOCGLED_NR || n == EVIOCGSW_NR) && dir == 2 => {
+            // Kandelo's virtual devices have no LEDs or switches, so the
+            // bitmap is all-zero. That is the honest current state (Linux
+            // copies an empty dev->led/dev->sw here too) and lets a
+            // SYN_DROPPED resync that queries all three states complete.
+            input_state(proc, ofd_idx)?; // must be an input fd
+            let len = size.min(buf.len());
+            for b in buf[..len].iter_mut() {
+                *b = 0;
+            }
+            Ok(())
+        }
         0x90 if dir == 1 => {
             if buf.len() < 4 {
                 return Err(Errno::EINVAL);
@@ -4729,9 +4754,10 @@ pub fn sys_read(
                                 return Ok(0);
                             }
                             let mut written = 0;
-                            // Producer overflowed: prepend SYN_DROPPED
-                            // so userspace resyncs via EVIOCG* before
-                            // consuming the next real record.
+                            // Producer overflowed: prepend SYN_DROPPED to
+                            // signal the gap before the next real record.
+                            // The client then re-reads current state via
+                            // EVIOCGKEY/GLED/GSW (handled below) to recover.
                             if input.dropped {
                                 let (sec, nsec) = host
                                     .host_clock_gettime(CLOCK_MONOTONIC)
@@ -45517,6 +45543,34 @@ mod tests {
         assert_eq!(err, Errno::ENOTTY);
     }
 
+    #[test]
+    fn evioc_gkey_reports_currently_pressed_keys() {
+        use wasm_posix_shared::input::{EVIOCGKEY_NR, EV_KEY, KEY_A, KEY_CNT};
+        crate::input::reset_key_state();
+        let (mut proc, mut host, fd) = open_evdev(613, b"/dev/input/event0");
+        // Inject a key-down through the normal producer path.
+        crate::input::dispatch::push_event(0, EV_KEY, KEY_A, 1, 0, 0);
+        let mut buf = [0u8; (KEY_CNT as usize) / 8];
+        let req = evioc(2, EVIOCGKEY_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let a_byte = (KEY_A >> 3) as usize;
+        assert_ne!(buf[a_byte] & (1u8 << (KEY_A & 7)), 0, "KEY_A must read pressed");
+        crate::input::reset_key_state();
+    }
+
+    #[test]
+    fn evioc_gled_and_gsw_return_zeroed_success() {
+        // No LEDs / switches on the virtual devices: a zeroed bitmap is
+        // the honest state and a valid resync reply (not ENOTTY).
+        use wasm_posix_shared::input::{EVIOCGLED_NR, EVIOCGSW_NR};
+        let (mut proc, mut host, fd) = open_evdev(615, b"/dev/input/event0");
+        for nr in [EVIOCGLED_NR, EVIOCGSW_NR] {
+            let mut buf = [0xffu8; 8];
+            let req = evioc(2, nr, buf.len() as u32);
+            sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; 8], "EVIOCG(LED|SW) must zero the reply");
+        }
+    }
 
     #[test]
     fn evioc_gabs_pointer_x_returns_canvas_width_minus_one() {

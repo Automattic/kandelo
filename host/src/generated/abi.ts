@@ -1653,6 +1653,9 @@ export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [
   { dir: 2, magic: 69, nrFirst: 6, nrLast: 6, direction: "out", fixedSize: null, maxCallerSize: 256 },
   { dir: 2, magic: 69, nrFirst: 32, nrLast: 63, direction: "out", fixedSize: null, maxCallerSize: 256 },
   { dir: 2, magic: 69, nrFirst: 64, nrLast: 127, direction: "out", fixedSize: 24, maxCallerSize: null },
+  { dir: 2, magic: 69, nrFirst: 24, nrLast: 24, direction: "out", fixedSize: null, maxCallerSize: 256 },
+  { dir: 2, magic: 69, nrFirst: 25, nrLast: 25, direction: "out", fixedSize: null, maxCallerSize: 256 },
+  { dir: 2, magic: 69, nrFirst: 27, nrLast: 27, direction: "out", fixedSize: null, maxCallerSize: 256 },
 ];
 
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {

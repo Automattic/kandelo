@@ -7020,6 +7020,36 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "ioctl_request_contracts" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            // A request number in an nr range absent before resolved to
+            // "unknown" (ENOTTY), so adding a disjoint family cannot change
+            // how an older program marshals a call it already made — the
+            // same additive argument as ioctl_request_contracts above.
+            // Changing or removing an existing family stays breaking.
+            "ioctl_request_families" => classify_additive_array(
+                key,
+                old_value,
+                new_value,
+                &mut report,
+                |entry| {
+                    let field = |name: &str| {
+                        entry
+                            .get(name)
+                            .and_then(Value::as_u64)
+                            .ok_or_else(|| {
+                                format!(
+                                    "ioctl_request_families entry missing numeric {name}: {entry}"
+                                )
+                            })
+                    };
+                    Ok(format!(
+                        "{}:{}:{}:{}",
+                        field("dir")?,
+                        field("magic")?,
+                        field("nrFirst")?,
+                        field("nrLast")?,
+                    ))
+                },
+            )?,
             "vfs_metadata" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
@@ -8430,6 +8460,10 @@ mod tests {
 
     #[test]
     fn narrowing_an_existing_ioctl_request_family_is_breaking() {
+        // Families are keyed by (dir, magic, nrFirst, nrLast), so narrowing
+        // the range changes the key: the old range disappears (breaking —
+        // request numbers it used to handle now resolve to unknown) and the
+        // narrowed range shows up as a new (additive) entry.
         let family = |nr_last: u32| {
             json!([{
                 "dir": 2,
@@ -8453,7 +8487,47 @@ mod tests {
         let report = classify_compat_change(&old, &new).unwrap();
         assert_eq!(
             report.breaking,
-            vec!["changed top-level section \"ioctl_request_families\""]
+            vec!["removed ioctl_request_families entry \"2:69:64:127\""]
+        );
+    }
+
+    #[test]
+    fn adding_a_disjoint_ioctl_request_family_entry_is_compatible() {
+        // The EVIOCGKEY/GLED/GSW case: a new single-nr family whose range
+        // was previously unknown is a backward-compatible addition.
+        let base_family = json!([{
+            "dir": 2,
+            "magic": 69,
+            "nrFirst": 64,
+            "nrLast": 127,
+            "direction": "out",
+            "fixedSize": 24,
+            "maxCallerSize": null
+        }]);
+        let mut old = base_snapshot();
+        old.as_object_mut()
+            .unwrap()
+            .insert("ioctl_request_families".into(), base_family.clone());
+        let mut new = base_snapshot();
+        let mut families = base_family.as_array().unwrap().clone();
+        families.push(json!({
+            "dir": 2,
+            "magic": 69,
+            "nrFirst": 24,
+            "nrLast": 24,
+            "direction": "out",
+            "fixedSize": null,
+            "maxCallerSize": 256
+        }));
+        new.as_object_mut()
+            .unwrap()
+            .insert("ioctl_request_families".into(), Value::Array(families));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added ioctl_request_families entry \"2:69:24:24\""]
         );
     }
 

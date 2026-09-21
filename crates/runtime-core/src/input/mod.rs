@@ -6,7 +6,7 @@
 
 pub mod dispatch;
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use wasm_posix_shared::input::*;
 
@@ -28,6 +28,71 @@ pub fn canvas_dims() -> (u32, u32) {
 pub fn set_canvas_dims(width: u32, height: u32) {
     CANVAS_W.store(width.max(1), Ordering::Relaxed);
     CANVAS_H.store(height.max(1), Ordering::Relaxed);
+}
+
+/// Device-global pressed-key bitmaps for `EVIOCGKEY`, indexed by device
+/// (0 = keyboard, 1 = pointer) and sized to `KEY_CNT` bits so every code
+/// Kandelo emits fits (keys `1..=KEY_MICMUTE`, `BTN_*` up to `BTN_EXTRA`).
+///
+/// This mirrors Linux's per-device `dev->key`: it is machine-wide device
+/// state shared by every open fd and every process. It therefore
+/// "survives fork" the same way the canvas dims do — it lives in the one
+/// kernel instance, not in per-process state serialized by `fork.rs` —
+/// and, crucially, it is updated even when a per-fd event ring overflows.
+/// That is what makes `SYN_DROPPED` recovery real: after a drop, a client
+/// re-reads `EVIOCGKEY` and sees the true current key state, unsticking
+/// any key whose release was lost.
+const KEYSTATE_BYTES: usize = (KEY_CNT as usize) / 8;
+static KEYSTATE: [[AtomicU8; KEYSTATE_BYTES]; 2] = [
+    [const { AtomicU8::new(0) }; KEYSTATE_BYTES],
+    [const { AtomicU8::new(0) }; KEYSTATE_BYTES],
+];
+
+/// Record an `EV_KEY` transition in the device-global keystate bitmap.
+/// `value != 0` (press or autorepeat) sets the bit; `value == 0`
+/// (release) clears it. Unknown devices and out-of-range codes are
+/// ignored. Called from the event fan-out so keystate stays correct
+/// regardless of ring overflow.
+pub fn note_key_event(device: u8, code: u16, value: i32) {
+    if device > 1 {
+        return;
+    }
+    let byte = (code as usize) >> 3;
+    if byte >= KEYSTATE_BYTES {
+        return;
+    }
+    let mask = 1u8 << ((code as usize) & 7);
+    let cell = &KEYSTATE[device as usize][byte];
+    if value != 0 {
+        cell.fetch_or(mask, Ordering::Relaxed);
+    } else {
+        cell.fetch_and(!mask, Ordering::Relaxed);
+    }
+}
+
+/// Copy the device-global pressed-key bitmap into `buf` for `EVIOCGKEY`,
+/// truncated to `buf.len()` (Linux copies `min(len, sizeof(dev->key))`).
+/// The caller zeroes `buf` first, so any bytes beyond the tracked range
+/// stay zero. Unknown devices leave `buf` untouched.
+pub fn copy_key_state(device: u8, buf: &mut [u8]) {
+    if device > 1 {
+        return;
+    }
+    let n = buf.len().min(KEYSTATE_BYTES);
+    for (i, out) in buf[..n].iter_mut().enumerate() {
+        *out = KEYSTATE[device as usize][i].load(Ordering::Relaxed);
+    }
+}
+
+/// Clear both device keystate bitmaps. Test-only: the bitmaps are global,
+/// so a test that presses keys must reset them to stay independent.
+#[cfg(test)]
+pub fn reset_key_state() {
+    for device in &KEYSTATE {
+        for cell in device {
+            cell.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 fn set_bit(buf: &mut [u8], bit: u16) {
@@ -164,5 +229,77 @@ mod tests {
         let mut buf = [0u8; 1];
         populate_evbit(0, EV_KEY, &mut buf);
         assert_ne!(buf[0] & (1 << KEY_ESC), 0);
+    }
+
+    #[test]
+    fn keystate_press_sets_bit_release_clears_it() {
+        reset_key_state();
+        let mut buf = [0u8; KEYSTATE_BYTES];
+        // Nothing pressed yet.
+        copy_key_state(0, &mut buf);
+        let a_byte = (KEY_A >> 3) as usize;
+        let a_mask = 1u8 << (KEY_A & 7);
+        assert_eq!(buf[a_byte] & a_mask, 0);
+        // Press → bit set.
+        note_key_event(0, KEY_A, 1);
+        buf = [0u8; KEYSTATE_BYTES];
+        copy_key_state(0, &mut buf);
+        assert_ne!(buf[a_byte] & a_mask, 0);
+        // Release → bit cleared.
+        note_key_event(0, KEY_A, 0);
+        buf = [0u8; KEYSTATE_BYTES];
+        copy_key_state(0, &mut buf);
+        assert_eq!(buf[a_byte] & a_mask, 0);
+        reset_key_state();
+    }
+
+    #[test]
+    fn keystate_autorepeat_keeps_key_down() {
+        reset_key_state();
+        note_key_event(0, KEY_A, 1);
+        note_key_event(0, KEY_A, 2); // autorepeat, key still physically down
+        let mut buf = [0u8; KEYSTATE_BYTES];
+        copy_key_state(0, &mut buf);
+        let a_byte = (KEY_A >> 3) as usize;
+        assert_ne!(buf[a_byte] & (1u8 << (KEY_A & 7)), 0);
+        reset_key_state();
+    }
+
+    #[test]
+    fn keystate_is_per_device_keyboard_and_pointer_are_disjoint() {
+        reset_key_state();
+        // A button press on the pointer must not show on the keyboard.
+        note_key_event(1, BTN_LEFT, 1);
+        let mut kbd = [0u8; KEYSTATE_BYTES];
+        let mut ptr = [0u8; KEYSTATE_BYTES];
+        copy_key_state(0, &mut kbd);
+        copy_key_state(1, &mut ptr);
+        let left_byte = (BTN_LEFT >> 3) as usize;
+        let left_mask = 1u8 << (BTN_LEFT & 7);
+        assert_eq!(kbd[left_byte] & left_mask, 0, "keyboard must not see BTN_LEFT");
+        assert_ne!(ptr[left_byte] & left_mask, 0, "pointer records BTN_LEFT");
+        reset_key_state();
+    }
+
+    #[test]
+    fn keystate_copy_truncates_to_caller_buffer_without_panic() {
+        reset_key_state();
+        note_key_event(0, KEY_A, 1);
+        // KEY_A = 30 → byte 3; a 2-byte buffer drops it, no panic.
+        let mut small = [0xffu8; 2];
+        copy_key_state(0, &mut small);
+        assert_eq!(&small, &[0u8, 0u8]);
+        reset_key_state();
+    }
+
+    #[test]
+    fn keystate_ignores_unknown_device_and_out_of_range_code() {
+        reset_key_state();
+        note_key_event(2, KEY_A, 1); // device out of range — no-op
+        note_key_event(0, KEY_CNT, 1); // code past the bitmap — no-op
+        let mut buf = [0u8; KEYSTATE_BYTES];
+        copy_key_state(0, &mut buf);
+        assert!(buf.iter().all(|&b| b == 0));
+        reset_key_state();
     }
 }

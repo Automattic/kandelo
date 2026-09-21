@@ -286,14 +286,18 @@ pub const INPUT_RING_MAX_BYTES: usize = INPUT_RING_MAX_RECORDS * 24;
 /// OFD rather than folding it into `DriOfdState` because the two
 /// state machines have no shared invariants.
 ///
-/// Linux semantics replicated:
+/// Semantics:
 /// * The ring is per-OFD, not per-process. `dup` / fork-inherit share
-///   one ring; a fresh `open()` gets a new one.
-/// * On overflow, the **new** event is discarded and `dropped` is set
-///   (mirrors `drivers/input/evdev.c::evdev_pass_values`). The next
-///   `read()` synthesises a `SYN_DROPPED` record at the head of the
-///   returned buffer and clears `dropped`; userspace is expected to
-///   resynchronise by re-querying state via `EVIOCG*`.
+///   one ring; a fresh `open()` gets a new one. (Matches Linux.)
+/// * On overflow, the **new** event is discarded and `dropped` is set.
+///   The next `read()` synthesises a `SYN_DROPPED` record at the head
+///   of the returned buffer and clears `dropped`. This diverges from
+///   Linux `drivers/input/evdev.c::evdev_pass_values`, which evicts the
+///   *oldest* records rather than dropping the incoming one.
+/// * After a `SYN_DROPPED`, userspace resynchronises by re-querying
+///   state via `EVIOCGKEY`/`EVIOCGLED`/`EVIOCGSW`. Those are implemented
+///   against a device-global keystate (see `crate::input`) that is
+///   updated even when this ring overflows, so the recovery path works.
 /// * `grabbed` is recorded but NOT enforced in v1 — plan 9
 ///   (wpkcompositor) adds the cross-OFD focus-routing layer.
 #[derive(Default, Clone, Debug)]

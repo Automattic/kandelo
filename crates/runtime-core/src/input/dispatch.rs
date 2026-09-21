@@ -1,7 +1,16 @@
-//! Event producer for `/dev/input/event{0,1}`. Mirrors Linux
-//! `drivers/input/evdev.c::evdev_pass_values`: a full ring discards
-//! the incoming record and latches `dropped`; the next read prepends
-//! a synthetic `SYN_DROPPED` so userspace can resync via `EVIOCG*`.
+//! Event producer for `/dev/input/event{0,1}`. On a full ring this
+//! discards the *incoming* record and latches `dropped`; the next read
+//! prepends a synthetic `SYN_DROPPED`. Note this diverges from Linux
+//! `drivers/input/evdev.c::evdev_pass_values`, which evicts the
+//! *oldest* records to make room for the newest — we keep the older
+//! buffered events instead.
+//!
+//! Recovery from a drop is real: [`push_event`] updates the
+//! device-global keystate (see [`crate::input::note_key_event`]) *before*
+//! the ring fan-out, so a key/button transition is recorded even when
+//! its record is dropped. After the `SYN_DROPPED`, a client re-reads
+//! current state via `EVIOCGKEY`/`EVIOCGLED`/`EVIOCGSW` and unsticks any
+//! key whose release was lost.
 
 use alloc::collections::VecDeque;
 
@@ -27,6 +36,13 @@ pub fn push_event(
 ) -> usize {
     if device > 1 {
         return 0;
+    }
+    // Update the device-global keystate first — before the per-OFD ring
+    // fan-out — so a key/button transition is recorded even when a ring
+    // is full and drops this record. That is what lets a client recover
+    // the true key state via EVIOCGKEY after a SYN_DROPPED.
+    if ev_type == wasm_posix_shared::input::EV_KEY {
+        crate::input::note_key_event(device, code, value);
     }
     let ev = WpkInputEvent {
         tv_sec,
@@ -157,8 +173,9 @@ mod tests {
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
         assert!(!proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().dropped);
 
-        // Linux semantics: ring stays at max, `dropped` latches on,
-        // the incoming record is the one discarded.
+        // Overflow semantics: ring stays at max, `dropped` latches on,
+        // and the incoming record is the one discarded (unlike Linux,
+        // which would evict the oldest to make room for this one).
         push_event(0, EV_KEY, KEY_A, 0xdead, 0, 0);
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
         assert!(
@@ -178,6 +195,38 @@ mod tests {
         push_event(0, EV_KEY, KEY_A, 1, 0, 0);
         assert_eq!(ring_records(proc, a), 1);
         assert_eq!(ring_records(proc, b), 1);
+    }
+
+    #[test]
+    fn keystate_records_key_up_even_when_ring_overflows() {
+        // #1(B): keystate is updated before the per-OFD ring fan-out, so a
+        // release dropped by a full ring is still reflected in EVIOCGKEY.
+        use wasm_posix_shared::input::KEY_A;
+        crate::input::reset_key_state();
+        let proc = install_process(7008);
+        let ofd_idx = install_input_ofd(proc, 0);
+        // Press, then saturate the ring, then release. The release record
+        // cannot fit the full ring and is dropped from delivery.
+        push_event(0, EV_KEY, KEY_A, 1, 0, 0);
+        for _ in 0..INPUT_RING_MAX_RECORDS {
+            push_event(0, EV_KEY, KEY_A, 2, 0, 0);
+        }
+        push_event(0, EV_KEY, KEY_A, 0, 0, 0);
+        assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
+        assert!(
+            proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().dropped,
+            "ring must have overflowed and latched dropped",
+        );
+        // Despite the dropped key-up, keystate shows KEY_A released.
+        let mut buf = [0u8; 64];
+        crate::input::copy_key_state(0, &mut buf);
+        let a_byte = (KEY_A >> 3) as usize;
+        assert_eq!(
+            buf[a_byte] & (1u8 << (KEY_A & 7)),
+            0,
+            "keystate must record the key-up the ring dropped",
+        );
+        crate::input::reset_key_state();
     }
 
     #[test]
