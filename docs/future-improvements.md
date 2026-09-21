@@ -1740,6 +1740,76 @@ pattern in `build_deps.rs`. The same shape has now been found four times --
 the kernel `build.toml` omitting `crates/runtime-core`, the `has_programs()`
 hand-list, `newest_input()` omitting the instrumenter, and this.
 
+### There is a fourth freshness list, and it is the ABI contract itself
+
+The three lists above are build-side. A fourth lives in the ABI contract:
+`crates/shared/src/lib.rs`'s `WPK_FORK_REQUIRED_EXPORTS`, a hand-written
+table of 28 `wpk_fork_*` guest exports. It is the authoritative one, and it
+does not list `__wpk_fork_place_resume_thunks` either.
+
+`docs/agent-guidance/abi.md:13-28` names "`wasm-fork-instrument`'s
+`wpk_fork_*` exports" as ABI surface, so the new export is ABI surface by the
+enumeration. Three separate mechanisms read the list and therefore cannot see
+it:
+
+1. **Publication.** `tools/xtask/src/build_deps.rs:15119-15127` rejects an
+   artifact with fork surface that is missing any listed export
+   ("has incomplete ABI 43 wasm-fork-instrument exports; missing ..."). A
+   guest instrumented by a pre-2026-09-20 toolchain passes.
+2. **Process admission.** `host/src/worker-main.ts:3154-3166` refuses a guest
+   carrying some but not all of them ("incomplete wasm-fork-instrument
+   exports; ... Rebuild the package for the current ABI"). The same stale
+   guest passes here too, and dies later and differently, from
+   `ForkResumeTable.registerActivation`
+   (`host/src/fork-resume-table.ts:189-198`).
+3. **`dlsym` visibility.** `host/src/dylink-artifact.ts:44-59` derives
+   `isForkRuntimeExport` from the same list so activation-control machinery
+   is not handed out as an application symbol. `dlsym` on a side module can
+   currently return the placement shim.
+
+`abi/snapshot.json` records the list at
+`/program_artifact/fork_instrumentation/required_exports`, so the snapshot is
+missing the entry for the same reason. Regenerating it is a no-op until the
+list is corrected: the snapshot is generated from `wasm_posix_shared` plus the
+kernel wasm, and neither the fork module's own imports
+(`__wpk_fork_resume_null`) nor its own exports
+(`fm_publish_resume_assignment`) are in either source. Adding the entry is
+additive and belongs under ABI 44, which is unreleased.
+
+Doing so is deliberately left for the maintainer, because it converts latent
+staleness into a loud refusal for at least one package that ships today (see
+below) -- which is the behaviour `docs/agent-guidance/abi.md` asks for, but
+not a gate to introduce without a rebuild plan.
+
+### `dash` ships a stale fork-instrumented guest, and six packages could
+
+msmtpd was not the only one. On 2026-09-21, in a worktree that had built the
+registry, `packages/registry/dash/bin/dash.wasm` (dated Sep 20 13:28) exports
+`__wpk_fork_ref_gc_fill` and `__wpk_fork_resume_catalog` but not
+`__wpk_fork_place_resume_thunks`, which landed at 23:25 the same day. dash is
+a shell: it forks, so it reaches `registerActivation` and fails there.
+
+Auditing every registry package with a fork-instrumented prebuilt binary:
+
+| Package | Has the new export | Declares the wrapper as an input | Declares `crates/fork-instrument` |
+|---|---|---|---|
+| dash | **no** | no | no |
+| git | yes | no | no |
+| msmtpd | yes | yes | yes |
+| redis | yes | no | no |
+| tar | yes | no | no |
+| vim | yes | no | no |
+| wget | yes | no | no |
+
+Only msmtpd's `inputs` were corrected. The other six declare neither the
+wrapper nor the instrumenter, which is narrower still than the eight packages
+named in item 1 above -- those at least declare the wrapper. Five of the six
+happen to be current because their build nodes re-ran for other reasons; dash
+did not, and nothing in its cache key could have noticed.
+
+`packages/registry/*/bin/` is gitignored, so this reproduces only in a
+checkout that has built before -- the same invisibility described above.
+
 ### `tsc` does not typecheck `host/test`
 
 `host/tsconfig.typecheck.json` sets `"include": ["src"]`, so
