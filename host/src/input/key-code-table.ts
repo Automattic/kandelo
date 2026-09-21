@@ -1,149 +1,157 @@
 /**
  * `KeyboardEvent.code` → Linux `KEY_*` lookup.
  *
- * Matches the kernel-side `shared::input::KEY_*` constants (Linux UAPI
- * verbatim — same numeric space SDL2's evdev backend would consume on
- * real Linux). The W3C "UI Events KeyboardEvent code Values" spec
- * defines the `KeyboardEvent.code` strings; we map each one to its
- * Linux keycode where Linux has an equivalent.
+ * The W3C "UI Events KeyboardEvent code Values" spec defines the
+ * `KeyboardEvent.code` strings; this table maps each one to the *name*
+ * of its Linux keycode where Linux has an equivalent. The numeric value
+ * of each `KEY_*` comes from the generated ABI (`INPUT_CODES`, sourced
+ * from `shared::input`), so this file never hard-codes a keycode number:
+ * a renumber in the kernel flows through automatically and cannot leave
+ * the translator emitting a stale value.
  *
  * Returns `null` for codes we don't translate (locale-specific keys
  * Linux has no UAPI for, browser-specific extensions, etc.). userspace
  * stacks like libxkbcommon handle the locale layer.
  */
+import { INPUT_CODES } from "../generated/abi.js";
 
-const CODE_TO_KEY: Record<string, number> = {
-  // Writing-system letters: KeyA → KEY_A = 30, etc.
-  KeyA: 30, KeyB: 48, KeyC: 46, KeyD: 32, KeyE: 18, KeyF: 33,
-  KeyG: 34, KeyH: 35, KeyI: 23, KeyJ: 36, KeyK: 37, KeyL: 38,
-  KeyM: 50, KeyN: 49, KeyO: 24, KeyP: 25, KeyQ: 16, KeyR: 19,
-  KeyS: 31, KeyT: 20, KeyU: 22, KeyV: 47, KeyW: 17, KeyX: 45,
-  KeyY: 21, KeyZ: 44,
+/** `KeyboardEvent.code` → `shared::input` `KEY_*` name. */
+const CODE_TO_KEY_NAME: Record<string, keyof typeof INPUT_CODES> = {
+  // Writing-system letters: KeyA → KEY_A, etc.
+  KeyA: "KEY_A", KeyB: "KEY_B", KeyC: "KEY_C", KeyD: "KEY_D", KeyE: "KEY_E",
+  KeyF: "KEY_F", KeyG: "KEY_G", KeyH: "KEY_H", KeyI: "KEY_I", KeyJ: "KEY_J",
+  KeyK: "KEY_K", KeyL: "KEY_L", KeyM: "KEY_M", KeyN: "KEY_N", KeyO: "KEY_O",
+  KeyP: "KEY_P", KeyQ: "KEY_Q", KeyR: "KEY_R", KeyS: "KEY_S", KeyT: "KEY_T",
+  KeyU: "KEY_U", KeyV: "KEY_V", KeyW: "KEY_W", KeyX: "KEY_X", KeyY: "KEY_Y",
+  KeyZ: "KEY_Z",
 
-  // Top-row digits: Digit1 → KEY_1 = 2, …, Digit0 → KEY_0 = 11.
-  Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
-  Digit6: 7, Digit7: 8, Digit8: 9, Digit9: 10, Digit0: 11,
+  // Top-row digits: Digit1 → KEY_1, …, Digit0 → KEY_0.
+  Digit1: "KEY_1", Digit2: "KEY_2", Digit3: "KEY_3", Digit4: "KEY_4",
+  Digit5: "KEY_5", Digit6: "KEY_6", Digit7: "KEY_7", Digit8: "KEY_8",
+  Digit9: "KEY_9", Digit0: "KEY_0",
 
   // Punctuation.
-  Minus: 12,
-  Equal: 13,
-  BracketLeft: 26,
-  BracketRight: 27,
-  Backslash: 43,
-  Semicolon: 39,
-  Quote: 40,
-  Backquote: 41,
-  Comma: 51,
-  Period: 52,
-  Slash: 53,
+  Minus: "KEY_MINUS",
+  Equal: "KEY_EQUAL",
+  BracketLeft: "KEY_LEFTBRACE",
+  BracketRight: "KEY_RIGHTBRACE",
+  Backslash: "KEY_BACKSLASH",
+  Semicolon: "KEY_SEMICOLON",
+  Quote: "KEY_APOSTROPHE",
+  Backquote: "KEY_GRAVE",
+  Comma: "KEY_COMMA",
+  Period: "KEY_DOT",
+  Slash: "KEY_SLASH",
 
   // International (rare on US layouts; required for JIS/PT-BR/etc).
-  IntlBackslash: 86,   // KEY_102ND
-  IntlRo: 89,          // KEY_RO
-  IntlYen: 124,        // KEY_YEN
+  IntlBackslash: "KEY_102ND",
+  IntlRo: "KEY_RO",
+  IntlYen: "KEY_YEN",
 
   // Whitespace + editing.
-  Enter: 28,
-  Tab: 15,
-  Space: 57,
-  Backspace: 14,
-  Escape: 1,
+  Enter: "KEY_ENTER",
+  Tab: "KEY_TAB",
+  Space: "KEY_SPACE",
+  Backspace: "KEY_BACKSPACE",
+  Escape: "KEY_ESC",
 
   // Modifiers.
-  ShiftLeft: 42,
-  ShiftRight: 54,
-  ControlLeft: 29,
-  ControlRight: 97,
-  AltLeft: 56,
-  AltRight: 100,
-  MetaLeft: 125,
-  MetaRight: 126,
-  CapsLock: 58,
+  ShiftLeft: "KEY_LEFTSHIFT",
+  ShiftRight: "KEY_RIGHTSHIFT",
+  ControlLeft: "KEY_LEFTCTRL",
+  ControlRight: "KEY_RIGHTCTRL",
+  AltLeft: "KEY_LEFTALT",
+  AltRight: "KEY_RIGHTALT",
+  MetaLeft: "KEY_LEFTMETA",
+  MetaRight: "KEY_RIGHTMETA",
+  CapsLock: "KEY_CAPSLOCK",
 
   // Function keys F1–F24.
-  F1: 59,  F2: 60,  F3: 61,  F4: 62,  F5: 63,  F6: 64,
-  F7: 65,  F8: 66,  F9: 67,  F10: 68, F11: 87, F12: 88,
-  F13: 183, F14: 184, F15: 185, F16: 186, F17: 187, F18: 188,
-  F19: 189, F20: 190, F21: 191, F22: 192, F23: 193, F24: 194,
+  F1: "KEY_F1", F2: "KEY_F2", F3: "KEY_F3", F4: "KEY_F4", F5: "KEY_F5",
+  F6: "KEY_F6", F7: "KEY_F7", F8: "KEY_F8", F9: "KEY_F9", F10: "KEY_F10",
+  F11: "KEY_F11", F12: "KEY_F12", F13: "KEY_F13", F14: "KEY_F14",
+  F15: "KEY_F15", F16: "KEY_F16", F17: "KEY_F17", F18: "KEY_F18",
+  F19: "KEY_F19", F20: "KEY_F20", F21: "KEY_F21", F22: "KEY_F22",
+  F23: "KEY_F23", F24: "KEY_F24",
 
   // Control pad.
-  Insert: 110,
-  Delete: 111,
-  Home: 102,
-  End: 107,
-  PageUp: 104,
-  PageDown: 109,
-  Help: 138,
+  Insert: "KEY_INSERT",
+  Delete: "KEY_DELETE",
+  Home: "KEY_HOME",
+  End: "KEY_END",
+  PageUp: "KEY_PAGEUP",
+  PageDown: "KEY_PAGEDOWN",
+  Help: "KEY_HELP",
 
   // Arrow pad.
-  ArrowUp: 103,
-  ArrowDown: 108,
-  ArrowLeft: 105,
-  ArrowRight: 106,
+  ArrowUp: "KEY_UP",
+  ArrowDown: "KEY_DOWN",
+  ArrowLeft: "KEY_LEFT",
+  ArrowRight: "KEY_RIGHT",
 
   // System keys.
-  PrintScreen: 99,     // KEY_SYSRQ
-  ScrollLock: 70,
-  Pause: 119,
-  ContextMenu: 127,    // KEY_COMPOSE — the "menu" key beside RightMeta
-  Power: 116,
-  Sleep: 142,
-  WakeUp: 143,
+  PrintScreen: "KEY_SYSRQ",
+  ScrollLock: "KEY_SCROLLLOCK",
+  Pause: "KEY_PAUSE",
+  ContextMenu: "KEY_COMPOSE", // the "menu" key beside RightMeta
+  Power: "KEY_POWER",
+  Sleep: "KEY_SLEEP",
+  WakeUp: "KEY_WAKEUP",
 
   // Numpad.
-  NumLock: 69,
-  Numpad0: 82,
-  Numpad1: 79, Numpad2: 80, Numpad3: 81,
-  Numpad4: 75, Numpad5: 76, Numpad6: 77,
-  Numpad7: 71, Numpad8: 72, Numpad9: 73,
-  NumpadAdd: 78,        // KEY_KPPLUS
-  NumpadSubtract: 74,   // KEY_KPMINUS
-  NumpadMultiply: 55,   // KEY_KPASTERISK
-  NumpadDivide: 98,     // KEY_KPSLASH
-  NumpadDecimal: 83,    // KEY_KPDOT
-  NumpadEnter: 96,      // KEY_KPENTER
-  NumpadEqual: 117,     // KEY_KPEQUAL
-  NumpadComma: 121,     // KEY_KPCOMMA
+  NumLock: "KEY_NUMLOCK",
+  Numpad0: "KEY_KP0",
+  Numpad1: "KEY_KP1", Numpad2: "KEY_KP2", Numpad3: "KEY_KP3",
+  Numpad4: "KEY_KP4", Numpad5: "KEY_KP5", Numpad6: "KEY_KP6",
+  Numpad7: "KEY_KP7", Numpad8: "KEY_KP8", Numpad9: "KEY_KP9",
+  NumpadAdd: "KEY_KPPLUS",
+  NumpadSubtract: "KEY_KPMINUS",
+  NumpadMultiply: "KEY_KPASTERISK",
+  NumpadDivide: "KEY_KPSLASH",
+  NumpadDecimal: "KEY_KPDOT",
+  NumpadEnter: "KEY_KPENTER",
+  NumpadEqual: "KEY_KPEQUAL",
+  NumpadComma: "KEY_KPCOMMA",
 
   // IME / CJK input.
-  Convert: 92,             // KEY_HENKAN
-  NonConvert: 94,          // KEY_MUHENKAN
-  KanaMode: 93,            // KEY_KATAKANAHIRAGANA
-  Lang1: 122,              // KEY_HANGEUL — Korean Hangul/English toggle
-  Lang2: 123,              // KEY_HANJA   — Korean Hanja conversion
-  Lang3: 90,               // KEY_KATAKANA
-  Lang4: 91,               // KEY_HIRAGANA
+  Convert: "KEY_HENKAN",
+  NonConvert: "KEY_MUHENKAN",
+  KanaMode: "KEY_KATAKANAHIRAGANA",
+  Lang1: "KEY_HANGEUL", // Korean Hangul/English toggle
+  Lang2: "KEY_HANJA", // Korean Hanja conversion
+  Lang3: "KEY_KATAKANA",
+  Lang4: "KEY_HIRAGANA",
 
   // Audio / media.
-  AudioVolumeMute: 113,    // KEY_MUTE
-  AudioVolumeDown: 114,    // KEY_VOLUMEDOWN
-  AudioVolumeUp: 115,      // KEY_VOLUMEUP
-  MediaPlayPause: 164,
-  MediaStop: 166,          // KEY_STOPCD
-  MediaTrackNext: 163,     // KEY_NEXTSONG
-  MediaTrackPrevious: 165, // KEY_PREVIOUSSONG
-  Eject: 161,              // KEY_EJECTCD
+  AudioVolumeMute: "KEY_MUTE",
+  AudioVolumeDown: "KEY_VOLUMEDOWN",
+  AudioVolumeUp: "KEY_VOLUMEUP",
+  MediaPlayPause: "KEY_PLAYPAUSE",
+  MediaStop: "KEY_STOPCD",
+  MediaTrackNext: "KEY_NEXTSONG",
+  MediaTrackPrevious: "KEY_PREVIOUSSONG",
+  Eject: "KEY_EJECTCD",
 
   // Browser-style hotkeys (Linux UAPI subset).
-  BrowserRefresh: 173,
-  BrowserStop: 128,        // KEY_STOP
-  LaunchApp2: 140,         // KEY_CALC
+  BrowserRefresh: "KEY_REFRESH",
+  BrowserStop: "KEY_STOP",
+  LaunchApp2: "KEY_CALC",
 
   // Editing hotkeys (mostly Sun-keyboard heritage; libinput still emits).
-  Cut: 137,
-  Copy: 133,
-  Paste: 135,
-  Undo: 131,
-  Again: 129,
-  Find: 136,
-  Open: 134,
-  Props: 130,
+  Cut: "KEY_CUT",
+  Copy: "KEY_COPY",
+  Paste: "KEY_PASTE",
+  Undo: "KEY_UNDO",
+  Again: "KEY_AGAIN",
+  Find: "KEY_FIND",
+  Open: "KEY_OPEN",
+  Props: "KEY_PROPS",
 };
 
 /** Translate a `KeyboardEvent.code` string to its Linux `KEY_*` value.
  * Returns `null` for codes we don't translate (locale-specific keys
  * outside Linux UAPI, browser-specific extensions). */
 export function codeToKey(code: string): number | null {
-  const k = CODE_TO_KEY[code];
-  return k === undefined ? null : k;
+  const name = CODE_TO_KEY_NAME[code];
+  return name === undefined ? null : INPUT_CODES[name];
 }

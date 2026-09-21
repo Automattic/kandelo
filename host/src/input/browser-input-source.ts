@@ -7,28 +7,38 @@
  *
  * Coordinate convention:
  *   - Pointer-lock active   → REL_X / REL_Y deltas (from movementX/Y).
- *   - Pointer-lock inactive → ABS_X / ABS_Y absolute (from offsetX/Y).
+ *   - Pointer-lock inactive → ABS_X / ABS_Y absolute (from clientX/Y,
+ *     viewport pixels — the same space the host reports to the kernel as
+ *     the EVIOCGABS maxima via `set_input_canvas_dims`).
  *   On a lock-state transition we emit a bare SYN_REPORT so libinput /
  *   SDL2 see a re-sync point and don't carry forward a stale axis
  *   value.
+ *
+ * Event-type / SYN / REL / ABS / BTN codes come from the generated ABI
+ * (`INPUT_CODES`), sourced from `shared::input`, so a code renumber in
+ * the kernel cannot silently leave this translator emitting a stale
+ * value.
  */
 import type { InputSource, InputEvent } from "./input-source.js";
+import { INPUT_CODES } from "../generated/abi.js";
 import { codeToKey } from "./key-code-table.js";
 
-const EV_SYN = 0x00,
-  EV_KEY = 0x01,
-  EV_REL = 0x02,
-  EV_ABS = 0x03;
-const SYN_REPORT = 0x00;
-const REL_X = 0x00,
-  REL_Y = 0x01,
-  REL_WHEEL = 0x08,
-  REL_HWHEEL = 0x06;
-const ABS_X = 0x00,
-  ABS_Y = 0x01;
-const BTN_LEFT = 0x110,
-  BTN_RIGHT = 0x111,
-  BTN_MIDDLE = 0x112;
+const {
+  EV_SYN,
+  EV_KEY,
+  EV_REL,
+  EV_ABS,
+  SYN_REPORT,
+  REL_X,
+  REL_Y,
+  REL_WHEEL,
+  REL_HWHEEL,
+  ABS_X,
+  ABS_Y,
+  BTN_LEFT,
+  BTN_RIGHT,
+  BTN_MIDDLE,
+} = INPUT_CODES;
 
 export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
@@ -70,7 +80,11 @@ export class BrowserInputSource implements InputSource {
     code: number,
     value: number,
   ): void {
-    this.dispatch!({ device, ev_type, code, value });
+    // A DOM event already queued when stop() runs can still fire its
+    // listener after dispatch was nulled and before removeEventListener
+    // unwinds; drop it rather than call null.
+    if (!this.dispatch) return;
+    this.dispatch({ device, ev_type, code, value });
   }
 
   private frame(device: 0 | 1): void {
@@ -102,8 +116,14 @@ export class BrowserInputSource implements InputSource {
       if (e.movementX !== 0) this.emit(1, EV_REL, REL_X, e.movementX);
       if (e.movementY !== 0) this.emit(1, EV_REL, REL_Y, e.movementY);
     } else {
-      this.emit(1, EV_ABS, ABS_X, Math.round(e.offsetX));
-      this.emit(1, EV_ABS, ABS_Y, Math.round(e.offsetY));
+      // clientX/clientY are viewport pixels — the coordinate space the
+      // host advertises to the kernel as the ABS_X/ABS_Y maxima
+      // (window.innerWidth/innerHeight via set_input_canvas_dims).
+      // offsetX/offsetY would be relative to whatever element sits under
+      // the pointer, which for a window-targeted listener is unrelated to
+      // that axis range and can fall outside it.
+      this.emit(1, EV_ABS, ABS_X, Math.round(e.clientX));
+      this.emit(1, EV_ABS, ABS_Y, Math.round(e.clientY));
     }
     this.frame(1);
   }

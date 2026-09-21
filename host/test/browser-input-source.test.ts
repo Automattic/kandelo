@@ -104,10 +104,16 @@ describe("BrowserInputSource", () => {
     ]);
   });
 
-  it("pointermove without pointer lock emits ABS_X/ABS_Y absolute coords", () => {
+  it("pointermove without pointer lock emits ABS_X/ABS_Y from viewport clientX/clientY", () => {
+    // Absolute coords come from clientX/clientY (viewport pixels), the
+    // same space the host reports as the EVIOCGABS maxima. offsetX/offsetY
+    // (element-relative) is deliberately different here to prove it is not
+    // used.
     target.fire("pointermove", {
-      offsetX: 123.7,
-      offsetY: 45,
+      clientX: 123.7,
+      clientY: 45,
+      offsetX: 9,
+      offsetY: 9,
       movementX: 0,
       movementY: 0,
     });

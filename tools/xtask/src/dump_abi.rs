@@ -2813,6 +2813,8 @@ fn render_ts_module() -> String {
 
     render_pcm_ts_bindings(&mut out);
 
+    render_input_ts_bindings(&mut out);
+
     out.push_str("export const HOST_ADAPTER_MANIFEST_FIELDS = {\n");
     for field in host_adapter_manifest_fields() {
         out.push_str(&format!(
@@ -3476,6 +3478,20 @@ fn program_artifact_type_name(value: shared::abi::ProgramArtifactValueType) -> &
         ProgramArtifactValueType::ExnRef => "exnref",
         ProgramArtifactValueType::AnyRef => "anyref",
     }
+}
+
+/// Emit every evdev event-type / SYN / KEY / BTN / REL / ABS code as a
+/// single frozen `INPUT_CODES` object, sourced from the authoritative
+/// `shared::input::CODE_TABLE`. The browser input translator and the
+/// `KeyboardEvent.code` → `KEY_*` table import these values instead of
+/// hand-redeclaring them, so a code renumber in `shared::input` flows to
+/// the host through the generated ABI rather than silently diverging.
+fn render_input_ts_bindings(out: &mut String) {
+    out.push_str("export const INPUT_CODES = {\n");
+    for (name, value) in shared::input::CODE_TABLE {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
 }
 
 fn render_pcm_ts_bindings(out: &mut String) {

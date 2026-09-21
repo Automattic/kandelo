@@ -37,18 +37,30 @@ pub fn push_event(
         value,
     };
     let mut delivered = 0;
+    // A single OFD identity can appear in several processes' tables at
+    // once (parent + child after fork) sharing one ring. Deliver to each
+    // distinct ring exactly once — mirroring Linux, where a forked
+    // `struct file` carries one `struct evdev_client`. Independent
+    // `open()`s keep distinct rings and each still receive the event.
+    let mut seen: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
     crate::process_table::with_processes(|procs| {
         for proc in procs {
             for (_idx, ofd) in proc.ofd_table.iter_mut() {
-                let Some(input) = ofd.input_mut() else { continue };
+                let Some(input) = ofd.input() else { continue };
                 if input.device != device {
                     continue;
                 }
-                if input.event_ring.len() + RECORD_SIZE > INPUT_RING_MAX_BYTES {
-                    input.dropped = true;
+                let ring_id = input.ring.identity();
+                if seen.contains(&ring_id) {
                     continue;
                 }
-                push_record(&mut input.event_ring, &ev);
+                seen.push(ring_id);
+                let mut ring = input.ring.borrow_mut();
+                if ring.event_ring.len() + RECORD_SIZE > INPUT_RING_MAX_BYTES {
+                    ring.dropped = true;
+                    continue;
+                }
+                push_record(&mut ring.event_ring, &ev);
                 delivered += 1;
             }
         }
@@ -103,8 +115,20 @@ mod tests {
     }
 
     fn ring_records(proc: &Process, ofd_idx: usize) -> usize {
-        proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().event_ring.len()
+        proc.ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .borrow()
+            .event_ring
+            .len()
             / RECORD_SIZE
+    }
+
+    fn ring_dropped(proc: &Process, ofd_idx: usize) -> bool {
+        proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().ring.borrow().dropped
     }
 
     #[test]
@@ -125,6 +149,8 @@ mod tests {
         assert_eq!(ring_records(proc, ofd_idx), 1);
         let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
         let tv_sec_bytes: [u8; 8] = input
+            .ring
+            .borrow()
             .event_ring
             .iter()
             .take(8)
@@ -155,16 +181,13 @@ mod tests {
             push_event(0, EV_KEY, KEY_A, i as i32, 0, 0);
         }
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
-        assert!(!proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().dropped);
+        assert!(!ring_dropped(proc, ofd_idx));
 
         // Linux semantics: ring stays at max, `dropped` latches on,
         // the incoming record is the one discarded.
         push_event(0, EV_KEY, KEY_A, 0xdead, 0, 0);
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
-        assert!(
-            proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().dropped,
-            "dropped flag must latch on overflow"
-        );
+        assert!(ring_dropped(proc, ofd_idx), "dropped flag must latch on overflow");
 
         push_event(0, EV_KEY, KEY_A, 0xbeef, 0, 0);
         assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
@@ -178,6 +201,35 @@ mod tests {
         push_event(0, EV_KEY, KEY_A, 1, 0, 0);
         assert_eq!(ring_records(proc, a), 1);
         assert_eq!(ring_records(proc, b), 1);
+    }
+
+    #[test]
+    fn push_event_delivers_once_to_a_shared_ring() {
+        // Post-fork share: two OFDs (in two processes) whose evdev rings
+        // are the same SharedInputRing. A fanned-out event must land in
+        // that ring exactly once, not once per OFD reference — otherwise
+        // parent and child would each see a duplicate of every event.
+        let parent = install_process(7008);
+        let p_idx = install_input_ofd(parent, 1);
+        let shared = parent
+            .ofd_table
+            .get(p_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .clone();
+
+        let child = install_process(7009);
+        let c_idx = install_input_ofd(child, 1);
+        child.ofd_table.get_mut(c_idx).unwrap().input_mut().unwrap().ring =
+            shared.clone();
+
+        push_event(1, EV_REL, REL_X, 5, 0, 0);
+
+        assert_eq!(shared.borrow().event_ring.len(), RECORD_SIZE);
+        assert_eq!(ring_records(parent, p_idx), 1);
+        assert_eq!(ring_records(child, c_idx), 1);
     }
 
     #[test]
