@@ -42,7 +42,8 @@ Out of scope:
 - pip / third-party Python packages.
 - Durable cross-session persistence of the database.
 - A production-grade multi-worker WSGI server; the demo uses the
-  single-threaded stdlib server, which is sufficient and honest for a
+  stdlib `wsgiref` server in its threading form
+  (`ThreadingWSGIServer`), which is sufficient and honest for a
   demonstration.
 
 ## Approach (chosen)
@@ -100,9 +101,14 @@ browser demo UI ──HTTP──> nginx (:80, /usr/sbin/nginx)
 - **nginx** serves static files under `/` from `/srv/notes/static/`
   and reverse-proxies `/api/` to the Python app via
   `proxy_pass http://127.0.0.1:8000`.
-- **Python app** is a single-threaded `wsgiref.simple_server` bound to
-  loopback `127.0.0.1:8000` — the proven socket path, analogous to the
-  PHP demo's `127.0.0.1:9000` FastCGI listener.
+- **Python app** is a `wsgiref` WSGI server in its threading form
+  (`ThreadingWSGIServer`, so concurrent `fetch`es from the demo page do
+  not serialize) bound to loopback `127.0.0.1:8000` — the proven socket
+  path, analogous to the PHP demo's `127.0.0.1:9000` FastCGI listener.
+  The SQLite connection handling must be thread-safe (per-request
+  connection, or `check_same_thread=False` with appropriate care), and
+  threading exercises Kandelo's pthread behavior — verified under the
+  in-Kandelo run.
 - **dinit** orders services so the Python app is listening before
   nginx starts: `nginx` `dependsOn: ["notes-app"]`, mirroring
   `nginx dependsOn php-fpm` in `build-nginx-php-vfs-image.ts`.
@@ -117,7 +123,7 @@ chosen because the existing nginx→php-fpm demo proves that exact path.
 
 ```
 packages/registry/nginx-python-vfs/
-  package.toml          # composite image: kernel_abi=41,
+  package.toml          # composite image: kernel_abi=43,
                         #   fork_instrumentation="disabled",
                         #   depends_on=[shell,nginx,cpython@3.13.3,dinit,kernel],
                         #   output nginx-python-vfs.vfs.zst
@@ -220,15 +226,34 @@ was not.
 
 ## Risks and open questions
 
-- **Single-threaded WSGI server**: `wsgiref.simple_server` handles one
-  request at a time. Acceptable and honest for a demo; documented as a
-  limitation, not hidden. If concurrency becomes necessary, revisit
-  with `ThreadingWSGIServer` (depends on Kandelo pthread behavior).
+- **Threaded WSGI server**: the app uses `ThreadingWSGIServer` so
+  concurrent requests from the demo page do not serialize. This depends
+  on Kandelo's pthread behavior and requires thread-safe SQLite usage
+  (per-request connection, or `check_same_thread=False` handled
+  carefully). Both are verified under the in-Kandelo run and browser
+  verification. If threading proves unstable on Kandelo, the fallback
+  is the single-threaded `wsgiref.simple_server`, documented as a real
+  limitation rather than hidden.
 - **cpython cold start**: the Python app process starts once at boot
   (long-lived), so per-request cold start is not on the hot path —
   this is a benefit of the reverse-proxy approach over CGI.
 - **HTTP surfacing in the browser demo**: reaching nginx from the
-  browser UI reuses whatever mechanism the existing nginx-php demo
-  uses; this design mirrors it and verification confirms it in-browser.
-- **ABI**: declare `kernel_abi = 41` to match cpython / python-vfs and
-  the modern image packages. No ABI change is introduced.
+  browser UI reuses whatever mechanism the existing nginx-php demo uses
+  (local virtual network / fetch projection). This design asserts
+  parity without yet reading that mechanism end to end, so the
+  implementation plan's opening step reads exactly how the nginx-php
+  demo exposes port 80 to the browser and confirms this example
+  mirrors it; verification then confirms it in-browser.
+- **ABI**: sibling image packages (`nginx-php-vfs`, `python-vfs`) do
+  declare `kernel_abi`, so this package declares it too — set to `43`,
+  the current `ABI_VERSION` (`crates/shared/src/lib.rs`). Because
+  Kandelo enforces strict `__abi_version` equality (any bump
+  invalidates every binary), the nginx and cpython binaries this image
+  consumes must be built against the same ABI as the kernel it boots.
+  The existing packages still declare `41`; if the consumed nginx /
+  cpython artifacts are stale relative to ABI 43, they must be rebuilt
+  through the normal package path — not shimmed — and an ABI-mismatched
+  artifact must fail loud. Confirming this coherence (the consumed
+  binaries and the booted kernel agree on the ABI) is the first
+  de-risking step of implementation. No new ABI change is introduced by
+  this example itself.
