@@ -72,19 +72,38 @@ export interface BootCommand {
 }
 
 export interface BootInput {
-  /** Unique input identifier (e.g., "script"). */
+  /** Stable logical name used to derive the guest directory. */
   id: string;
-  /** Filename when materialized (e.g., "kandelo-link.sh"). */
+  /** Safe basename written below `/run/kandelo/inputs/<id>/`. */
   filename: string;
-  /** Input source: inline bytes or resolver reference. */
+  mediaType?: string;
+  /** Exact final byte length after any resolver-side extraction. */
+  byteLength: number;
+  /** Lowercase SHA-256 of the exact final bytes. */
+  sha256: string;
   source: BootInputSource;
 }
 
 export type BootInputSource =
-  | { kind: "inline"; bytes: Uint8Array; sha256: Uint8Array; compression?: "gzip" }
-  | { kind: "resolver"; resolverName: string; resolverData: unknown };
+  | {
+      kind: "resolver";
+      /** Host-provided resolver name, for example `internet-archive`. */
+      resolver: string;
+      /** Resolver-specific data which remains JSON-safe and size-bounded. */
+      locator: BootJsonValue;
+    }
+  | {
+      kind: "inline";
+      /** Canonical unpadded base64url of the bytes carried by the descriptor. */
+      data: string;
+      /**
+       * Optional transport compression. Verification and `byteLength` always
+       * describe the final decompressed guest file, never this encoded payload.
+       */
+      compression?: "gzip";
+    };
 
-export type BootParameters = Record<string, unknown>;
+export type BootParameters = Record<string, BootJsonValue>;
 ```
 
 Validation in `boot-descriptor.ts` (`validateBootDescriptor`):
@@ -94,10 +113,13 @@ Validation in `boot-descriptor.ts` (`validateBootDescriptor`):
   `maxParametersBytes` (32 KiB JSON text).
 - `inputs`, when present, must be an array of objects with `id`, `filename`,
   and `source`; each id must be unique; inline sources require sha256 hash
-  and uncompressed byte length for verification; reject oversize with coded
-  `BootDescriptorError`s (`E_TOO_MANY_INPUTS`, `E_INPUT_SIZE`,
-  `E_INPUT_TOTAL_SIZE`, `E_INLINE_TOO_LARGE`, `E_INPUT_HASH`,
-  `E_INPUT_HASH_MISMATCH`).
+  and uncompressed byte length for verification; reject oversize/malshaped
+  input with coded `BootDescriptorError`s from `boot-descriptor.ts`
+  (`E_TOO_MANY_INPUTS`, `E_INPUT_SIZE`, `E_INPUT_TOTAL_SIZE`,
+  `E_INLINE_TOO_LARGE`, `E_INPUT_HASH`). These are validation-time checks on
+  the declared shape; the corresponding materialization-time check that the
+  resolved bytes actually match (`E_INPUT_HASH_MISMATCH`) lives in
+  `boot-inputs.ts` — see §3.
 - `parameters`, when present, must be a plain JSON object; reject oversize
   with `E_JSON_TOO_LARGE`.
 - Descriptor stays `version: 1`. The existing parser tolerates unknown fields,
@@ -162,7 +184,11 @@ names an input id (e.g., `"script"`), the launch ladder in
      `tick` progress line and `.catch` error reporting the existing
      autoCommand branches use — one code path, identical semantics.
    - If `runScript` names an unknown input id or materialization failed
-     previously, this branch throws a loud boot error and aborts.
+     previously, this branch reports a boot error: it calls
+     `reportInitError` (dmesg line + `host.setStatus("error")`). It does not
+     throw or abort the machine — the kernel and its other processes keep
+     running; only this launch-ladder branch stops short of invoking the
+     script.
 3. `presentation.autoCommand`, `profile.autoCommand` (unchanged).
 
 The visitor sees the script's contents printed via `cat`, then the invocation
@@ -221,13 +247,25 @@ Authoring flow: open a demo → click Share → paste script → copy URL.
 ## Testing
 
 - **Unit (Vitest):** encode→decode round-trip for a descriptor with
-  script input; rejection cases for every new cap (`E_TOO_MANY_INPUTS`,
-  `E_INPUT_TOO_LARGE`, `E_PARAMETERS_TOO_LARGE`, oversized parameters
-  JSON, bad sha256, duplicate input ids); confirm a non-`k1` fragment
-  still decodes to `null`; confirm unknown-field tolerance (old descriptor
-  without `inputs` and new descriptor decoded by validation both pass);
-  zero-length inline inputs round-trip without error; sha256 mismatch
-  fails materialization loudly.
+  script input; rejection cases for every new cap, split by where the check
+  runs:
+  - Validation-time (`boot-descriptor.ts`, thrown from
+    `validateBootDescriptor`/`decodeBootDescriptor`): too many inputs
+    (`E_TOO_MANY_INPUTS`), an inline input over its carried-bytes or
+    inflated-bytes cap (`E_INLINE_TOO_LARGE`), oversized `parameters` JSON
+    (`E_JSON_TOO_LARGE`), a malformed sha256 field (`E_INPUT_HASH`), and a
+    duplicate input id (`E_DUPLICATE_INPUT`).
+  - Materialization-time (`boot-inputs.ts`, thrown from
+    `materializeBootInputs`, only reachable once a descriptor has already
+    passed validation): a resolved input whose sha256 doesn't match the
+    declared value (`E_INPUT_HASH_MISMATCH`), and a resolver-kind input
+    naming a resolver the host didn't register
+    (`E_INPUT_RESOLVER_UNAVAILABLE`).
+  - Also: confirm a non-`k1` fragment still decodes to `null`; confirm
+    unknown-field tolerance (old descriptor without `inputs` and new
+    descriptor decoded by validation both pass); zero-length inline inputs
+    round-trip without error; sha256 mismatch fails materialization loudly
+    with no partial VFS writes.
 - **Browser (Playwright):** open a URL with a script-bearing input
   fragment → machine boots → `/run/kandelo/inputs/script/kandelo-link.sh`
   exists with mode 0o755 → `/run/kandelo/boot-input.json` exists → terminal

@@ -624,15 +624,28 @@ Opening a script link boots the machine selected by the query parameters
 (the fragment cannot select an image the query parameters could not) and
 materializes the boot inputs. A script travels as input id `"script"`
 → `/run/kandelo/inputs/script/kandelo-link.sh` (mode 0o755). An input
-manifest at `/run/kandelo/boot-input.json` records the descriptor's
-`{version:1, parameters, inputs}`. When `boot.parameters.runScript` names
-the "script" input, that input is printed to the terminal with `cat` before
-execution, and then run from the initial interactive shell — `bash` when
-the image ships it, `sh` otherwise. The file is left writable so the visitor
-can experiment: edit it and re-run it after boot. The script's source, the
-invocation, and the script's output are all visible in the terminal, and the
-script takes the image `autoCommand`'s place in the launch sequence.
-Navigating to a different machine from the gallery drops the fragment.
+manifest at `/run/kandelo/boot-input.json` (mode 0o644) records the
+materialized result: the manifest's own `version: 1`, the descriptor's
+`parameters`, and one entry per successfully materialized input (id,
+filename, guest `path`, byteLength, sha256) — not the raw descriptor
+`boot.inputs`/`boot.parameters` fields verbatim. When `boot.parameters.runScript`
+names the "script" input, that input is printed to the terminal with `cat`
+before execution, and then run from the initial interactive shell — `bash`
+when the image ships it, `sh` otherwise. The file is left writable so the
+visitor can experiment: edit it and re-run it after boot. The script's
+source, the invocation, and the script's output are all visible in the
+terminal, and the script takes the image `autoCommand`'s place in the
+launch sequence. Navigating to a different machine from the gallery drops
+the fragment.
+
+Links built before boot inputs were folded in could carry a top-level
+`script: { text }` field on the descriptor (superseded by `boot.inputs` +
+`boot.parameters.runScript`). The decoder tolerates that unknown field
+rather than rejecting the link, so such a link still boots — but the script
+field is ignored: no script is materialized or run. The machine log carries
+a visible warning so this isn't silent: a warn-level dmesg line at the start
+of boot, from `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
+names the ignored field.
 
 Caps enforce untrusted-input boundaries: maxBootInputs, 32 KiB carried per
 inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
