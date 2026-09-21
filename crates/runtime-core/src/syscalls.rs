@@ -1955,9 +1955,12 @@ fn handle_input_ioctl(
             Ok(())
         }
         n if (EVIOCGABS_NR_BASE..EVIOCGABS_NR_BASE + 64).contains(&n) && dir == 2 => {
-            if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
-                return Err(Errno::EINVAL);
-            }
+            // Resolve the unsupported cases (wrong device, unmodeled axis)
+            // to ENOTTY *before* validating the caller buffer. SDL2 greps
+            // the errno and treats EINVAL as fatal, so an unsupported query
+            // must keep the probe alive regardless of buffer size; only a
+            // supported (device, axis) pair with a too-small buffer is the
+            // genuine EINVAL caller error.
             let axis = (n - EVIOCGABS_NR_BASE) as u16;
             let device = input_state(proc, ofd_idx)?.device;
             if device != 1 {
@@ -1983,6 +1986,9 @@ fn handle_input_ioctl(
                 },
                 _ => return Err(Errno::ENOTTY),
             };
+            if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
+                return Err(Errno::EINVAL);
+            }
             unsafe {
                 core::ptr::write_unaligned(
                     buf.as_mut_ptr() as *mut WpkInputAbsinfo,
@@ -45482,6 +45488,35 @@ mod tests {
         // ENOTTY (not EINVAL) — SDL2 greps the errno; EINVAL fatals it.
         assert_eq!(err, Errno::ENOTTY);
     }
+
+    #[test]
+    fn evioc_gabs_keyboard_small_buffer_still_returns_enotty() {
+        // The unsupported-device check must win over the buffer-size check:
+        // an EVIOCGABS on the keyboard is ENOTTY regardless of buffer size,
+        // so SDL2's probe keeps going. A too-small buffer must not turn that
+        // into the fatal EINVAL.
+        use wasm_posix_shared::input::{EVIOCGABS_NR_BASE, ABS_X};
+        let (mut proc, mut host, fd) = open_evdev(611, b"/dev/input/event0");
+        let mut buf = [0u8; 4];
+        let req = evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, buf.len() as u32);
+        let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_gabs_pointer_unsupported_axis_small_buffer_returns_enotty() {
+        // Likewise for a supported device but an axis we do not model
+        // (only ABS_X/ABS_Y): unsupported → ENOTTY, never EINVAL, even
+        // when the caller buffer is too small.
+        use wasm_posix_shared::input::EVIOCGABS_NR_BASE;
+        let (mut proc, mut host, fd) = open_evdev(612, b"/dev/input/event1");
+        let mut buf = [0u8; 4];
+        // Axis 5 is not ABS_X (0) or ABS_Y (1).
+        let req = evioc(2, EVIOCGABS_NR_BASE + 5, buf.len() as u32);
+        let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
 
     #[test]
     fn evioc_gabs_pointer_x_returns_canvas_width_minus_one() {
