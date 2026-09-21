@@ -90,7 +90,6 @@ export const SharePanel: React.FC<SharePanelProps> = ({
 
   const tier = classifyTier(url.length);
   const tierPct = url.length === 0 ? 0 : Math.min(100, (url.length / (8 * 1024)) * 100);
-  const shareTargetLabel = presetDesc ? "selected preset" : "current machine";
 
   const copy = () => {
     if (!url) return;
@@ -134,21 +133,6 @@ export const SharePanel: React.FC<SharePanelProps> = ({
         )}
 
         <div className="kshare-body">
-          <div className="kshare-summary">
-            <div className="kshare-summary-card">
-              <div className="kshare-summary-k">Share target</div>
-              <div className="kshare-summary-v">{shareTargetLabel}</div>
-              <p>The link boots the same base preset; your live local edits stay on this machine.</p>
-            </div>
-            <div className="kshare-summary-card">
-              <div className="kshare-summary-k">Export boundary</div>
-              <p>
-                Link-only sharing. The machine is ephemeral; the link carries
-                the preset identity plus your script, nothing else.
-              </p>
-            </div>
-          </div>
-
           {/* Script */}
           <div className="kshare-script">
             <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>
@@ -187,46 +171,6 @@ export const SharePanel: React.FC<SharePanelProps> = ({
             </div>
           </div>
 
-          {/* What's in this link */}
-          <div>
-            <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>What's in this link</div>
-            <div className="kshare-prev">
-              <PrevRow k="base" v={<span className="accent">{baseDescriptor.base}</span>} />
-              <PrevRow
-                k="runtime"
-                v={`${baseDescriptor.runtime.arch} · ${baseDescriptor.runtime.memoryPages} pages · time: ${baseDescriptor.runtime.time}`}
-              />
-              <PrevRow
-                k="kernel"
-                v={baseDescriptor.runtime.kernel.replace(/^kernel@sha256:/, "")}
-              />
-              <PrevRow
-                k="packages"
-                v={baseDescriptor.packages.map((p) => p.split("@")[0]).join(" · ") || "none"}
-              />
-              <PrevRow
-                k="mounts"
-                v={baseDescriptor.mounts.map((m) => `${m.path} (${m.source})`).join(" · ") || "none"}
-              />
-              <PrevRow
-                k="boot"
-                v={`${baseDescriptor.boot.argv.join(" ")} · cwd ${baseDescriptor.boot.cwd}`}
-              />
-              <PrevRow
-                k="caps"
-                v={
-                  Object.entries(baseDescriptor.caps ?? {})
-                    .filter(([, v]) => v && v !== false)
-                    .map(([k]) => k)
-                    .join(" · ") || "none"
-                }
-              />
-              <PrevRow
-                k="script"
-                v={script.trim() ? `${scriptBytes} B, runs at boot` : "none"}
-              />
-            </div>
-          </div>
         </div>
 
         <div className="kshare-actions">
@@ -257,13 +201,6 @@ export const SharePanel: React.FC<SharePanelProps> = ({
       </div>
   );
 };
-
-const PrevRow: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
-  <div className="kshare-prev-row">
-    <div className="kshare-prev-k">{k}</div>
-    <div className="kshare-prev-v">{v}</div>
-  </div>
-);
 
 /**
  * Links must open in THIS app. The codec's buildShareUrl() path modes
