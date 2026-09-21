@@ -1,3 +1,20 @@
+/**
+ * The KFRC section reader, and only that.
+ *
+ * WHAT LEFT WITH THE PLACEMENT CUTOVER: two cases that drove
+ * `forkResumeTargetsFromInstance` -- "pairs deterministic ordinals with
+ * fresh-instance thunk objects" and "rejects metadata that cannot resolve
+ * against the instance table". They tested the host reading a guest's catalog
+ * TABLE and pairing each ordinal with the live thunk in it. Nothing does that
+ * any more: the module publishes the `(ordinal, slot)` decision and the
+ * guest's own emitted shim copies its thunks across, so the function they
+ * covered has no caller and is deleted. Deleting the cases with it is not a
+ * loss of coverage -- coverage of what is gone is not coverage.
+ *
+ * What the section reader guarantees is still covered below, and it still has
+ * three production callers in `worker-main.ts`.
+ */
+
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +25,6 @@ import {
   FORK_RESUME_CATALOG_HEADER_SIZE,
   FORK_RESUME_CATALOG_SECTION,
   FORK_RESUME_CATALOG_VERSION,
-  forkResumeTargetsFromInstance,
   readForkResumeCatalog,
 } from "../src/fork-resume-catalog";
 
@@ -106,28 +122,6 @@ function moduleWithDescriptor(
 }
 
 describe("fork resume catalog", () => {
-  it("pairs deterministic ordinals with fresh-instance thunk objects", () => {
-    const module = moduleWithDescriptor([
-      { functionOrdinal: 3, localCatalogSlot: 0 },
-      { functionOrdinal: 9, localCatalogSlot: 1 },
-    ]);
-    const first = new WebAssembly.Instance(module);
-    const second = new WebAssembly.Instance(module);
-    const firstTargets = forkResumeTargetsFromInstance(module, first);
-    const secondTargets = forkResumeTargetsFromInstance(module, second);
-
-    expect(firstTargets.map(({ functionOrdinal, localCatalogSlot }) => ({
-      functionOrdinal,
-      localCatalogSlot,
-    }))).toEqual([
-      { functionOrdinal: 3, localCatalogSlot: 0 },
-      { functionOrdinal: 9, localCatalogSlot: 1 },
-    ]);
-    expect(firstTargets[0]!.thunk).not.toBe(secondTargets[0]!.thunk);
-    expect((firstTargets[0]!.thunk as () => number)()).toBe(17);
-    expect((secondTargets[1]!.thunk as () => number)()).toBe(29);
-  });
-
   it("rejects malformed or ambiguous KFRC metadata", () => {
     const base = baseCatalogBytes();
     expect(() => readForkResumeCatalog(new WebAssembly.Module(base)))
@@ -165,30 +159,5 @@ describe("fork resume catalog", () => {
       { functionOrdinal: 3, localCatalogSlot: 0 },
       { functionOrdinal: 9, localCatalogSlot: 0 },
     ]))).toThrow("repeats local slot");
-  });
-
-  it("rejects metadata that cannot resolve against the instance table", () => {
-    const wrongLength = moduleWithDescriptor([
-      { functionOrdinal: 3, localCatalogSlot: 0 },
-    ]);
-    expect(() => forkResumeTargetsFromInstance(
-      wrongLength,
-      new WebAssembly.Instance(wrongLength),
-    )).toThrow("length 2, expected 1");
-
-    const outOfBounds = moduleWithDescriptor([
-      { functionOrdinal: 3, localCatalogSlot: 0 },
-      { functionOrdinal: 9, localCatalogSlot: 2 },
-    ]);
-    expect(() => forkResumeTargetsFromInstance(
-      outOfBounds,
-      new WebAssembly.Instance(outOfBounds),
-    )).toThrow("out of bounds");
-
-    const nullModule = moduleWithDescriptor([], 0);
-    expect(forkResumeTargetsFromInstance(
-      nullModule,
-      new WebAssembly.Instance(nullModule),
-    )).toEqual([]);
   });
 });

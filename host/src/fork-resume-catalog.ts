@@ -1,19 +1,42 @@
 /**
- * One resume target the guest can be re-entered at.
+ * The reader for `kandelo.wpk_fork.resume_catalog`, a host-known custom
+ * section the instrumenter emits into every fork-instrumented artifact.
  *
- * Declared here rather than imported from the replay journal: this file reads a
- * host-known custom section, and the journal is replay orchestration the
- * co-resident module now owns. Importing it for a two-field shape would keep
- * 738 lines of that alive.
+ * It answers one question -- which function ordinals does this module declare,
+ * and in what order -- and `worker-main.ts` asks it once per activation it
+ * seeds into the fork module (`:891`, `:3713`, `:6421`). That is the whole of
+ * its production use.
+ *
+ * # What used to be here, and why it is gone
+ *
+ * `forkResumeTargetsFromInstance` paired each declared ordinal with the live
+ * thunk at its slot in that instance's `__wpk_fork_resume_catalog` table: one
+ * `table.get` per fork-instrumented function -- 19,025 per php process start
+ * -- to hand the host funcrefs it then wrote into another table the guest
+ * already holds. The placement cutover
+ * (`docs/superpowers/plans/2026-09-20-fork-resume-thunk-placement.md`) made
+ * the pairing unnecessary: the module publishes the whole `(ordinal, slot)`
+ * decision and the guest's own emitted shim copies its own thunks across. That
+ * left this function with no production caller, and `requireCatalogTable`,
+ * `ForkResumeCatalogTarget` and `ForkResumeTarget` existed only to serve it.
+ *
+ * NO HOST CODE READS A RESUME THUNK ANY MORE. That is what the deletion means;
+ * the lines are the consequence.
  */
-export interface ForkResumeTarget {
-  readonly functionOrdinal: number;
-  /** No-parameter Wasm thunk that restores params from the unconsumed frame. */
-  readonly thunk: CallableFunction;
-}
 
 export const FORK_RESUME_CATALOG_SECTION =
   "kandelo.wpk_fork.resume_catalog";
+/**
+ * The instance's own catalog table.
+ *
+ * TEST-ONLY as of the deletion above: nothing in `host/src` reads that table
+ * now, and this name survives because `fork-resume-catalog.test.ts` builds its
+ * fixtures around it. Kept rather than inlined into the test, because deleting
+ * a name a test still uses to make a surface number fall is the incentive
+ * `docs/surface-budget.json` warns about in `forkModuleEntriesWithoutProductionCaller`.
+ * `fork-resume-table.ts` spells the same string separately, for the length
+ * check it makes on the guest it is registering.
+ */
 export const FORK_RESUME_CATALOG_EXPORT = "__wpk_fork_resume_catalog";
 export const FORK_RESUME_CATALOG_VERSION = 1;
 export const FORK_RESUME_CATALOG_HEADER_SIZE = 12;
@@ -24,20 +47,6 @@ const FORK_RESUME_CATALOG_MAGIC = 0x4352_464b; // "KFRC", little endian.
 export interface ForkResumeCatalogRecord {
   readonly functionOrdinal: number;
   readonly localCatalogSlot: number;
-}
-
-export interface ForkResumeCatalogTarget extends ForkResumeTarget {
-  readonly localCatalogSlot: number;
-}
-
-function requireCatalogTable(instance: WebAssembly.Instance): WebAssembly.Table {
-  const value = instance.exports[FORK_RESUME_CATALOG_EXPORT];
-  if (!(value instanceof WebAssembly.Table)) {
-    throw new Error(
-      `fork resume catalog is missing table export ${FORK_RESUME_CATALOG_EXPORT}`,
-    );
-  }
-  return value;
 }
 
 /**
@@ -107,40 +116,4 @@ export function readForkResumeCatalog(
     records.push({ functionOrdinal, localCatalogSlot });
   }
   return records;
-}
-
-/**
- * Resolve one fresh module instance's local catalog to process registration
- * targets. No function object is serialized; each child performs this pairing
- * again after instantiation.
- */
-export function forkResumeTargetsFromInstance(
-  module: WebAssembly.Module,
-  instance: WebAssembly.Instance,
-): readonly ForkResumeCatalogTarget[] {
-  const records = readForkResumeCatalog(module);
-  const table = requireCatalogTable(instance);
-  if (table.length !== records.length) {
-    throw new Error(
-      `fork resume catalog table has length ${table.length}, expected ${records.length}`,
-    );
-  }
-  return records.map(({ functionOrdinal, localCatalogSlot }) => {
-    if (localCatalogSlot >= table.length) {
-      throw new Error(
-        `fork resume catalog slot ${localCatalogSlot} is out of bounds`,
-      );
-    }
-    const thunk = table.get(localCatalogSlot);
-    if (typeof thunk !== "function") {
-      throw new Error(
-        `fork resume catalog slot ${localCatalogSlot} is not a Wasm function`,
-      );
-    }
-    return {
-      functionOrdinal,
-      localCatalogSlot,
-      thunk: thunk as CallableFunction,
-    };
-  });
 }
