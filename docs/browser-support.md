@@ -584,6 +584,32 @@ general live host use the bounded custom-image profile when they do not match.
 The specialized Node host always boots its fixed built-in image rather than
 consuming a `vfs` override.
 
+### Script-carrying share links
+
+The Share button in the dock produces links of the form
+`…/?demo=<id>#k1=<payload>`. The fragment is a versioned, gzip-compressed
+boot descriptor (`web-libs/kandelo-session/src/boot-descriptor.ts`) that may
+carry an optional `script` field: shell script text, capped at 32 KiB
+(UTF-8), validated with the same hard caps and loud `BootDescriptorError`
+failures as the rest of the descriptor. A malformed or oversized fragment
+rejects the boot with a visible error; it never falls back to booting as if
+the fragment were absent.
+
+Opening a script link boots the machine selected by the query parameters
+(the fragment cannot select an image the query parameters could not), writes
+the script to `/tmp/kandelo-link.sh`, and runs it from the initial
+interactive shell — `bash` when the image ships it, `sh` otherwise. The
+invocation and the script's output are visible in the terminal, and the
+script takes the image `autoCommand`'s place in the launch sequence.
+Navigating to a different machine from the gallery drops the fragment.
+
+Scripts currently run without a confirmation step because every machine the
+browser app boots is ephemeral. This is a load-bearing boundary: before any
+persistent or restored-machine feature ships, script links must gain an
+explicit show-the-script consent step (see the warning at the execution
+site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
+`docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
+
 ```typescript
 // Typical demo pattern
 import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
