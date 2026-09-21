@@ -20,6 +20,7 @@ import type {
 } from "./vfs/closed-lazy-assets";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
+import type { InputEvent } from "./input/input-source";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -350,6 +351,17 @@ export interface InputEventInjectMessage {
 }
 
 /**
+ * Main-thread → kernel-worker batched evdev injection. Mirrors the
+ * Browser-side `InputEventBatchInjectMessage`: one `SYN_REPORT` frame per
+ * message, so the worker runs a single kernel entry and wake scan for the
+ * whole frame. Routes to `CentralizedKernelWorker.injectInputEventBatch`.
+ */
+export interface InputEventBatchInjectMessage {
+  type: "input_event_batch_inject";
+  records: InputEvent[];
+}
+
+/**
  * Main-thread → kernel-worker canvas-dims update. Mirrors the
  * Browser-side `SetInputCanvasDimsMessage`. Sets `ABS_X.maximum` /
  * `ABS_Y.maximum` reported by EVIOCGABS on `/dev/input/event1`.
@@ -394,6 +406,7 @@ export type MainToKernelMessage =
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
   | InputEventInjectMessage
+  | InputEventBatchInjectMessage
   | SetInputCanvasDimsMessage;
 
 // ── Kernel Worker → Main Thread ──

@@ -47,7 +47,8 @@ import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
-import type { InputSource } from "./input/input-source";
+import type { InputEvent, InputSource } from "./input/input-source";
+import { batchBySynReport } from "./input/input-batch";
 
 export type { HttpRequest, HttpResponse };
 
@@ -684,6 +685,16 @@ export class NodeKernelHost {
   }
 
   /**
+   * Push a whole `SYN_REPORT` frame of evdev records to the worker in one
+   * message, so the worker runs a single kernel entry and wake scan for
+   * the frame. Mirrors `BrowserKernel.injectInputEventBatch`.
+   */
+  injectInputEventBatch(records: InputEvent[]): void {
+    if (records.length === 0) return;
+    this.sendToWorker({ type: "input_event_batch_inject", records });
+  }
+
+  /**
    * Tell the kernel the current host canvas dimensions so EVIOCGABS
    * on `/dev/input/event1` reports the right `ABS_X.maximum` /
    * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
@@ -693,11 +704,11 @@ export class NodeKernelHost {
   }
 
   /**
-   * Wire an `InputSource` into the kernel: sets canvas dims, then
-   * starts the source with a dispatch callback that funnels each
-   * emitted record through `injectInputEvent`. Mirrors
-   * `BrowserKernel.attachInputSource` — dual-host parity per
-   * CLAUDE.md §"Two hosts".
+   * Wire an `InputSource` into the kernel: sets canvas dims, then starts
+   * the source with a dispatch callback that groups each `SYN_REPORT`
+   * frame (`batchBySynReport`) and forwards it via
+   * `injectInputEventBatch`. Mirrors `BrowserKernel.attachInputSource`
+   * — dual-host parity per CLAUDE.md §"Two hosts".
    *
    * On the Node host the source is typically a `NodeInputSource`
    * (no-op) so the init path is symmetric with the browser; tests
@@ -708,8 +719,8 @@ export class NodeKernelHost {
     dims: { width: number; height: number },
   ): void {
     this.setInputCanvasDims(dims.width, dims.height);
-    source.start((ev) =>
-      this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
+    source.start(
+      batchBySynReport((records) => this.injectInputEventBatch(records)),
     );
   }
 

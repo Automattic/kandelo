@@ -13,6 +13,7 @@ import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { InputEvent } from "./input/input-source";
 import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
@@ -317,6 +318,18 @@ export interface InputEventInjectMessage {
 }
 
 /**
+ * Main-thread → kernel-worker batched evdev injection. One `SYN_REPORT`
+ * frame's worth of records crosses in a single message so the worker runs
+ * one kernel entry and one pending-reader wake scan for the whole frame
+ * instead of one per record. `attachInputSource` produces these via
+ * `batchBySynReport`; `injectInputEvent` remains for single-record paths.
+ */
+export interface InputEventBatchInjectMessage {
+  type: "input_event_batch_inject";
+  records: InputEvent[];
+}
+
+/**
  * Main-thread → kernel-worker canvas-dims update. Tells the kernel
  * the current host canvas dimensions so EVIOCGABS on
  * `/dev/input/event1` reports the right `ABS_X.maximum` /
@@ -481,6 +494,7 @@ export type MainToKernelMessage =
   | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
   | InputEventInjectMessage
+  | InputEventBatchInjectMessage
   | SetInputCanvasDimsMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
