@@ -584,6 +584,23 @@ general live host use the bounded custom-image profile when they do not match.
 The specialized Node host always boots its fixed built-in image rather than
 consuming a `vfs` override.
 
+```typescript
+// Typical demo pattern
+import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
+
+const [kernelBuf, vfsImageBuf] = await Promise.all([
+  fetch(kernelUrl).then(r => r.arrayBuffer()),
+  fetch(vfsImageUrl).then(r => r.arrayBuffer()),
+]);
+
+const memfs = await restoreVerifiedVfsImage(
+  new Uint8Array(vfsImageBuf),
+  { maxByteLength: 512 * 1024 * 1024 },
+);
+
+const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
+```
+
 ### Script-carrying share links
 
 The Share button in the dock produces links of the form
@@ -609,23 +626,6 @@ persistent or restored-machine feature ships, script links must gain an
 explicit show-the-script consent step (see the warning at the execution
 site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
 `docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
-
-```typescript
-// Typical demo pattern
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
-
-const [kernelBuf, vfsImageBuf] = await Promise.all([
-  fetch(kernelUrl).then(r => r.arrayBuffer()),
-  fetch(vfsImageUrl).then(r => r.arrayBuffer()),
-]);
-
-const memfs = await restoreVerifiedVfsImage(
-  new Uint8Array(vfsImageBuf),
-  { maxByteLength: 512 * 1024 * 1024 },
-);
-
-const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
-```
 
 ### Kandelo demo metadata
 
