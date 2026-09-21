@@ -210,6 +210,34 @@ test("rejects an archive body that differs from its image integrity metadata", a
   }
 });
 
+test("derives the closure size from the product images instead of a fixed count", async () => {
+  // Products gain and lose lazy bodies as packages change; the group must
+  // follow the images rather than a hand-maintained total.
+  const fixture = await createFixture({ lazyFileCount: 88 });
+  try {
+    const run = () =>
+      withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+        buildLocalVfsAssetGroup({
+          assetGroupDirectory: fixture.outputDirectory,
+          productMapPath: fixture.productMapPath,
+          sourceRoot,
+        }),
+      );
+    await run();
+    // The second run compares against the published group (the reuse path),
+    // which must be bounded by the verified staged size too.
+    await run();
+    const manifest = validateVfsAssetGroupManifest(
+      JSON.parse(
+        readFileSync(join(fixture.outputDirectory, "manifest.json"), "utf8"),
+      ),
+    );
+    assert.equal(manifest.assets.length, 90);
+  } finally {
+    fixture.dispose();
+  }
+});
+
 test("rejects a lazy asset member that collides with a product image member", async () => {
   const fixture = await createFixture({ collidingImageMember: true });
   try {
@@ -221,7 +249,7 @@ test("rejects a lazy asset member that collides with a product image member", as
           sourceRoot,
         }),
       ),
-      /image and lazy asset members collide|87 distinct snapshot members/,
+      /image and lazy asset members collide|distinct snapshot members/,
     );
     assert.equal(existsSync(fixture.outputDirectory), false);
   } finally {
@@ -665,6 +693,7 @@ function publicationFixture() {
     dispose: () => rmSync(root, { force: true, recursive: true }),
     productMapPath,
     root,
+    stagedFileCount: 1,
     stagedGroup,
     stagedMap,
   };
@@ -674,6 +703,7 @@ async function createFixture(
   options: {
     collidingImageMember?: boolean;
     extraReference?: { reference: string; sizeDelta: number };
+    lazyFileCount?: number;
     vimBody?: Buffer;
   } = {},
 ): Promise<Fixture> {
@@ -686,7 +716,8 @@ async function createFixture(
   mkdirSync(outputParent);
   const members = new Map<string, Buffer>();
   const assetBodies = new Map<string, Buffer>();
-  for (let index = 0; index < 78; index += 1) {
+  const lazyFileCount = options.lazyFileCount ?? 78;
+  for (let index = 0; index < lazyFileCount; index += 1) {
     const relative = `lazy/file-${String(index).padStart(3, "0")}.bin`;
     assetBodies.set(relative, Buffer.from(`lazy-${index}\n`));
   }
@@ -697,8 +728,10 @@ async function createFixture(
   for (const [id, _load, sourceName] of PRODUCTS) {
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
     if (id === "browser-main-shell") {
-      const lazyFileCount = options.collidingImageMember ? 77 : 78;
-      for (let index = 0; index < lazyFileCount; index += 1) {
+      const registeredLazyFileCount = options.collidingImageMember
+        ? lazyFileCount - 1
+        : lazyFileCount;
+      for (let index = 0; index < registeredLazyFileCount; index += 1) {
         const relative = `lazy/file-${String(index).padStart(3, "0")}.bin`;
         const reference =
           index < 39
