@@ -25,7 +25,10 @@ fragment and adds a script payload to it.
 - No consent dialog in the first slice, because every machine the app
   boots today is ephemeral. See the loud warning below.
 - Execution is file-then-invoke (write the script to a file, type the
-  invocation into the shell), not pasting script text into the PTY.
+  invocation into the shell), not pasting script text into the PTY,
+  and the invocation runs *as* the image's autoCommand — a new
+  highest-precedence branch in the existing launch ladder, not a
+  separate hook.
 - Authoring lives in the existing `ShareDialog`, which this work also
   wires into the app UI for the first time.
 
@@ -100,31 +103,41 @@ in `url-state.ts`) gains fragment handling:
   image or escalate a limit that the query params could not.
 - `descriptor.script` is stashed for the execution hook (below).
 
-### 3. Execution: file + visible invocation, image's default shell
+### 3. Execution: the script runs *as* the autoCommand
 
-At the hook where `presentation.autoCommand` fires today
-(`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1455`,
-after the interactive shell is up):
+The launch chain at
+`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1438-1469`
+is an if/else-if ladder: `profile.framebufferTest` →
+`presentation.autoCommand` → `profile.autoCommand`. The URL script
+becomes a new branch in that ladder, inserted as the
+highest-precedence *shell-command* branch (above
+`presentation.autoCommand`; `framebufferTest` is a dev-profile
+surface test and keeps its position):
 
-1. `host.writeFile("/tmp/kandelo-link.sh", bytes, 0o755)` — `/tmp` is
+1. Before the ladder runs:
+   `host.writeFile("/tmp/kandelo-link.sh", bytes, 0o755)` — `/tmp` is
    the always-present ephemeral scratch mount, so no mkdir is needed.
 2. Resolve the invoking shell: the image's configured default shell
    (`/etc/kandelo/shell.json` via the host's shell config, the same
    source `startShellCommand` uses for prompt detection), falling back
    to `sh` when the image declares none.
-3. `host.dispatchShellCommand("<shellPath> /tmp/kandelo-link.sh")`.
+3. The new branch runs
+   `host.runShellCommand("<shellPath> /tmp/kandelo-link.sh")` with the
+   same `tick` progress line and `.catch` error reporting the existing
+   autoCommand branches use — one code path, identical semantics.
 
 The visitor sees the invocation typed into their terminal and the
 output stream normally, and can `cat /tmp/kandelo-link.sh` afterward.
-`dispatchShellCommand` (not `runShellCommand`) is used so long-running
-foreground programs launched by the script do not wedge the dispatch
-queue.
 
-Precedence: when a link carries a script, it runs *instead of* the
-image's `presentation.autoCommand` / profile `autoCommand` (the link
-author is asking for specific behavior; running both would interleave
-two command streams in one PTY). This precedence must be documented at
-the hook.
+Precedence falls out of the ladder: a link that carries a script
+suppresses the image's `presentation.autoCommand` and the profile
+`autoCommand` (running both would interleave two command streams in
+one PTY).
+
+Ownership boundary: the script occupies the autoCommand *slot in the
+launch chain* but is never written into `/etc/kandelo/demo.json` —
+that file is image-owned presentation metadata, and a URL payload
+must not masquerade as image state.
 
 ### 4. Share dialog: wire it in and add script authoring
 
@@ -188,7 +201,7 @@ Authoring flow: open a demo → click Share → paste script → copy URL.
 | `web-libs/kandelo-session/src/boot-descriptor.ts` | `maxScriptBytes` cap, script validation, error codes |
 | `apps/browser-demos/pages/kandelo/main.tsx` | decode `#k1=` fragment, loud failure surface |
 | `apps/browser-demos/pages/kandelo/url-state.ts` | fragment/query precedence helpers |
-| `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` | script execution hook + consent warning comment |
+| `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` | script branch in the autoCommand ladder + consent warning comment |
 | `apps/browser-demos/pages/kandelo/dialogs/ShareDialog.tsx` | script textarea, working-URL shape, hide unroutable modes |
 | `apps/browser-demos/pages/kandelo/app/App.tsx` | Share affordance |
 | `web-libs/kandelo-session/test/…`, `apps/browser-demos/test/…` | tests above |
