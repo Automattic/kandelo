@@ -55,14 +55,19 @@ the script-execution site.
 Descriptor `version: 1` remains unchanged in structure; two new optional fields
 carry boot inputs and configuration parameters:
 
-In `web-libs/kandelo-session/src/kernel-host.ts`:
+In `web-libs/kandelo-session/src/kernel-host.ts`, the new fields attach to
+`BootCommand` (reached as `descriptor.boot.inputs`/`descriptor.boot.parameters`):
 
 ```ts
-export interface BootDescriptor {
-  // ...existing fields...
-  /** Optional array of named input files to materialize before boot. */
+export interface BootCommand {
+  argv: string[];
+  cwd: string;
+  env: Record<string, string>;
+  uid?: number;
+  gid?: number;
+  /** Named input files to resolve and stage before the initial process. */
   inputs?: BootInput[];
-  /** Optional configuration parameters passed to boot inputs. */
+  /** Structured boot parameters materialized to /run/kandelo/boot-input.json. */
   parameters?: BootParameters;
 }
 
@@ -90,9 +95,11 @@ Validation in `boot-descriptor.ts` (`validateBootDescriptor`):
 - `inputs`, when present, must be an array of objects with `id`, `filename`,
   and `source`; each id must be unique; inline sources require sha256 hash
   and uncompressed byte length for verification; reject oversize with coded
-  `BootDescriptorError`s (`E_TOO_MANY_INPUTS`, `E_INPUT_TOO_LARGE`,
-  `E_PARAMETERS_TOO_LARGE`, `E_INVALID_INPUT_SHA256`).
-- `parameters`, when present, must be a plain JSON object; reject oversize.
+  `BootDescriptorError`s (`E_TOO_MANY_INPUTS`, `E_INPUT_SIZE`,
+  `E_INPUT_TOTAL_SIZE`, `E_INLINE_TOO_LARGE`, `E_INPUT_HASH`,
+  `E_INPUT_HASH_MISMATCH`).
+- `parameters`, when present, must be a plain JSON object; reject oversize
+  with `E_JSON_TOO_LARGE`.
 - Descriptor stays `version: 1`. The existing parser tolerates unknown fields,
   so old app builds that decode a descriptor with inputs simply ignore them;
   they do not fail.
@@ -116,7 +123,9 @@ in `url-state.ts`) gains fragment handling:
   trusted-source matching (`matchTrustedVfsSourceId`) and capacity
   policy as `?demo=` / `?vfs=` today. A fragment cannot select an
   image or escalate a limit that the query params could not.
-- `descriptor.script` is stashed for the execution hook (below).
+- `descriptor.boot.inputs` and `descriptor.boot.parameters` are passed to
+  `createLiveHost` for materialization at the image-staging point in
+  `live-setup.ts`.
 
 ### 3. Execution: boot inputs materialize before the initial shell
 
