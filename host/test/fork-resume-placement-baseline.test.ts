@@ -166,9 +166,9 @@ function harness(): Harness {
   // below deliberately does NOT use it.
   //
   // Task 6 of this plan deletes the op-0 arm, which will break this harness.
-  // That is expected: this is the BEFORE recorder. Task 6's grep guard scans
-  // `host/src` and `crates`, so it will not see this hit -- the coordinator is
-  // widening that guard to `host/test`.
+  // That is expected: this is the BEFORE recorder. Task 6's caller grep was
+  // blind to `host/test` and so could not see this hit; `a99a3a2d8` widened
+  // its search path to cover this directory.
   const resumeSlots = x.fm_resume_slots as (
     op: number,
     activation: number,
