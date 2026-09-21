@@ -1431,6 +1431,18 @@ mod tests {
                 ),
             }
 
+            // WHAT AN INJECTOR-REWRITTEN PLACEHOLDER DOES TO THIS NUMBER:
+            // nothing, and that is the point. The fork module declares
+            // several `env.__wpk_fork_*` imports it never intends a host to
+            // serve -- `__wpk_fork_table_apply`, `__wpk_fork_transit_grow`,
+            // `__wpk_fork_resume_null` -- because Rust cannot emit the
+            // instruction each stands for. `fork-module-inject` replaces every
+            // one with a local function before the artifact is staged, so they
+            // are absent from the bytes this reads and the obligation below
+            // counts only what a host must really implement. A placeholder
+            // that survived injection would show up here as an import neither
+            // population describes, which is what the assertion immediately
+            // below is for.
             let surface = inspect_fork_module(&module);
             assert!(
                 surface.other_imports.is_empty(),
@@ -3413,15 +3425,25 @@ mod tests {
     ///     replay now traps `undefined element: out of bounds table access`.
     ///     Traced (via `crates/fork-codec::rewind_driver::RewindDriver::
     ///     resume_peek` / `ResumeSlotTable::slot_for`) to the JOURNAL's own
-    ///     resume-slot selection returning a slot number this host's
-    ///     `__wpk_fork_resume_table` population does not cover for a chain
-    ///     whose outermost frame is a `resume_thread`-reached pthread entry
-    ///     (as opposed to `resume_start`'s `_start`) — a `crates/fork-
-    ///     instrument`/`crates/fork-codec` behavior this NATIVE-ONLY task
-    ///     must not modify (and Node/browser's own `wpk_fork_resume_thread`
-    ///     usage was not independently verified against this exact scenario
-    ///     either — this may be a genuinely new gap, not merely
-    ///     native-specific).
+    ///     resume-slot selection returning a slot number the resume table
+    ///     does not cover for a chain whose outermost frame is a
+    ///     `resume_thread`-reached pthread entry (as opposed to
+    ///     `resume_start`'s `_start`) — a `crates/fork-instrument`/
+    ///     `crates/fork-codec` behavior this NATIVE-ONLY task must not modify
+    ///     (and Node/browser's own `wpk_fork_resume_thread` usage was not
+    ///     independently verified against this exact scenario either — this
+    ///     may be a genuinely new gap, not merely native-specific).
+    ///   - RE-PROBED 2026-09-21, and it is NOT this host's numbering. The
+    ///     original wording blamed "this host's `__wpk_fork_resume_table`
+    ///     population", which was a plausible suspect while this host minted
+    ///     its own table and numbered slots `i + 1` itself. It does neither
+    ///     now: it binds the fork module's own exported table and the guest's
+    ///     placement shim fills it from the module's published assignment, so
+    ///     there is exactly one numbering left in the system. Re-run with
+    ///     `--ignored` after that change: the SAME trap, `undefined element:
+    ///     out of bounds table access` inside `wpk_fork_resume_thread`. So
+    ///     the gap really is on the fork-instrument/fork-codec side, as the
+    ///     line above suspected, and converting the host did not touch it.
     ///
     /// `#[ignore]`d rather than deleted or left failing: an honest, visible,
     /// documented residual (Platform Values Contract) beats either hiding
