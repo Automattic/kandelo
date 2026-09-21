@@ -31,10 +31,38 @@ fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
+/// The repository root, spelled WITHOUT `..` components.
+///
+/// This used to be `MANIFEST_DIR.join("..").join("..")`, which is the same
+/// directory and a different STRING -- and the string is what mattered.
+/// `build_all` passes `repo_root().join("sysroot")` to
+/// `fixtures/build-fixtures.sh`, whose guard refuses any `SYSROOT` that is not
+/// byte-equal to its own `REPO_ROOT="$(cd "$FIXTURES_DIR/../../.." && pwd)"`.
+/// `pwd` normalises; `join("..")` does not. So the script saw
+/// `/…/crates/host-native/../../sysroot`, compared it against
+/// `/…/sysroot`, and exited 1 with "cannot be honoured" -- every time,
+/// unconditionally. The script's own comment says "crates/host-native/src/
+/// fixtures.rs passes these two exact values", and it did not.
+///
+/// That made the runtime provisioning this module exists to provide
+/// (see the header: loading fixtures at runtime is what "dissolves that
+/// cycle") impossible: any tree that genuinely needed a rebuild got 46 tests
+/// failing on a panic whose advice is to run inside the dev shell, which the
+/// caller already was.
+///
+/// It stayed invisible because a SECOND defect hid it. `newest_input` omitted
+/// `crates/fork-instrument`, so the instrumenter could change without marking
+/// the fixtures stale -- and with nothing ever judged stale, the broken
+/// rebuild was never invoked. Fixing the freshness check is what made this
+/// one reachable, and fixing only that would have converted silent staleness
+/// into an unconditional 46-test failure.
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(|crates| crates.parent())
+        .expect("CARGO_MANIFEST_DIR is <repo>/crates/host-native")
+        .to_path_buf()
 }
 
 /// The newest mtime among everything a fixture is built FROM.
@@ -42,6 +70,32 @@ fn repo_root() -> PathBuf {
 /// Sources, the recipe itself, and the sysroot: a libc change is exactly the
 /// drift that made the committed artifacts stale, so it has to count as an
 /// input or this check would answer a narrower question than it was asked.
+///
+/// # `crates/fork-instrument`, added 2026-09-20
+///
+/// It was missing, and the omission was the same defect this doc comment
+/// warns about, one layer over. `build-fixtures.sh:213` runs
+/// `scripts/run-wasm-fork-instrument.sh` over every fixture in its
+/// fork-instrumented arm, so the INSTRUMENTER is as much an input as libc is
+/// -- but only the sysroot and the fixture sources were consulted. A change
+/// to the instrumenter left every instrumented fixture looking fresh, so
+/// `cargo test -p host-native` silently tested guests built by a DIFFERENT
+/// instrumenter than the one in the tree, and reported green.
+///
+/// Found while investigating eight host-native failures during the
+/// resume-thunk placement work: the fixtures had to be rebuilt by hand to
+/// establish that the failures were pre-existing, which is exactly the manual
+/// step a freshness check exists to remove.
+///
+/// This is the third instance of one shape in this repository -- a
+/// hand-maintained list of build inputs that omits one, after the kernel's
+/// `build.toml` omitting `crates/runtime-core` and `has_programs()`. The
+/// durable fix is deriving inputs from the real build closure, as
+/// `build_deps.rs` does for the cargo closure. This is the narrow fix; see
+/// `docs/future-improvements.md`.
+///
+/// Adding an input can only make this check STRICTER: it may cause a rebuild
+/// that was not needed, and can never accept an artifact that is stale.
 fn newest_input() -> Option<std::time::SystemTime> {
     let mut newest = None;
     let mut consider = |p: PathBuf| {
@@ -64,7 +118,33 @@ fn newest_input() -> Option<std::time::SystemTime> {
     consider(repo_root().join("sysroot/lib/libc.a"));
     consider(repo_root().join("sysroot64/lib/libc.a"));
     consider(repo_root().join("libc/glue/channel_syscall.c"));
+    // The fork instrumenter that `build-fixtures.sh` runs over the
+    // instrumented arm. Walked rather than listed, so a NEW source file in
+    // that crate counts without anyone remembering to add it here -- a
+    // hand-listed subset would reproduce the omission this closes.
+    consider_tree(&mut consider, repo_root().join("crates/fork-instrument/src"));
+    consider(repo_root().join("crates/fork-instrument/Cargo.toml"));
+    consider(repo_root().join("scripts/run-wasm-fork-instrument.sh"));
     newest
+}
+
+/// Every regular file under `root`, recursively, fed to `consider`.
+///
+/// A missing directory is not an error: this check reports "cannot tell"
+/// rather than failing, and an absent input simply does not raise the
+/// watermark.
+fn consider_tree(consider: &mut impl FnMut(PathBuf), root: PathBuf) {
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => consider_tree(consider, path),
+            Ok(t) if t.is_file() => consider(path),
+            _ => {}
+        }
+    }
 }
 
 fn oldest_artifact() -> Option<std::time::SystemTime> {
