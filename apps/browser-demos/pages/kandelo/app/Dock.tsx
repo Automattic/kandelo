@@ -497,31 +497,6 @@ export const Dock: React.FC<{
               <div className="kdock-separator" aria-hidden="true" />
               <div className="kdock-section kdock-section-actions" aria-label="Machine overlays">
                 <button
-                  type="button"
-                  className="kdock-item"
-                  title={SHARE_ITEM.title}
-                  aria-label={SHARE_ITEM.title}
-                  disabled={!shareAvailable}
-                  onClick={onOpenShare}
-                >
-                  <span className="kdock-icon">{SHARE_ITEM.icon}</span>
-                  <span className="kdock-label">{SHARE_ITEM.label}</span>
-                </button>
-                <button
-                  ref={guideButtonRef}
-                  type="button"
-                  className="kdock-item"
-                  aria-pressed={guideOpen}
-                  aria-expanded={guideOpen}
-                  title={GUIDE_ITEM.title}
-                  aria-label={GUIDE_ITEM.title}
-                  disabled={!guideAvailable}
-                  onClick={onToggleGuide}
-                >
-                  <span className="kdock-icon">{GUIDE_ITEM.icon}</span>
-                  <span className="kdock-label">{GUIDE_ITEM.label}</span>
-                </button>
-                <button
                   ref={internalsButtonRef}
                   type="button"
                   className="kdock-item"
@@ -545,6 +520,31 @@ export const Dock: React.FC<{
                 >
                   <span className="kdock-icon">{THEME_ITEM.icon}</span>
                   <span className="kdock-label">{THEME_ITEM.label}</span>
+                </button>
+                <button
+                  type="button"
+                  className="kdock-item"
+                  title={SHARE_ITEM.title}
+                  aria-label={SHARE_ITEM.title}
+                  disabled={!shareAvailable}
+                  onClick={onOpenShare}
+                >
+                  <span className="kdock-icon">{SHARE_ITEM.icon}</span>
+                  <span className="kdock-label">{SHARE_ITEM.label}</span>
+                </button>
+                <button
+                  ref={guideButtonRef}
+                  type="button"
+                  className="kdock-item"
+                  aria-pressed={guideOpen}
+                  aria-expanded={guideOpen}
+                  title={GUIDE_ITEM.title}
+                  aria-label={GUIDE_ITEM.title}
+                  disabled={!guideAvailable}
+                  onClick={onToggleGuide}
+                >
+                  <span className="kdock-icon">{GUIDE_ITEM.icon}</span>
+                  <span className="kdock-label">{GUIDE_ITEM.label}</span>
                 </button>
               </div>
             </div>
