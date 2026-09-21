@@ -63,6 +63,16 @@ not preventing races. Do not reach for it as a routine default — a
 per-worktree cache discards the cross-worktree reuse the shared cache exists
 to provide.
 
+Because the cache is shared, per-checkout maintenance must stay scoped to the
+checkout's own keys. `xtask clean <target>` (behind `./run.sh clean` and
+`./run.sh rebuild`) removes only the generation stored under the cache key
+this checkout's inputs currently resolve to, for the target and its
+reverse-dependency cascade, plus this checkout's mirrored outputs under
+`local-binaries/source-only-v1`. Generations of the same package under other
+keys were built from other inputs, usually another worktree's, and are left
+in place; deleting them would silently force that worktree to rebuild the
+package and everything built on it.
+
 ## Line editing for REPL CLIs
 
 A command-line program with an interactive REPL — a read-eval-print loop that

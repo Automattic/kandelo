@@ -1094,12 +1094,26 @@ fn resolve_clean_target(graph: &PlannedGraphV1, target: &str) -> Result<PlanNode
 /// version/revision/arch prefix rather than the current content hash, so a
 /// clean sweeps every generation ever cached for this node — not just the one
 /// matching today's source tree — the same way `rm -rf` would.
+/// Invalidate one package node for THIS checkout: remove the compiled cache
+/// generation stored under `current_cache_key` (the key this checkout's
+/// inputs resolve to) plus its receipt sidecar, and every mirrored output any
+/// generation of the package projected into `output_root`.
+///
+/// The compiled cache is shared by every worktree on the machine
+/// (`default_source_cache_root`), and each generation is content-addressed by
+/// its full cache key. A generation under any other key belongs to a
+/// different set of inputs — typically another checkout's — and cleaning
+/// this checkout gives no authority over it: deleting it would force that
+/// checkout to rebuild the package and its whole reverse-dependency cascade
+/// for no reason. Those generations are left in place. The mirrors under
+/// `output_root` are checkout-local, so all of them are removed.
 fn clean_package_node_outputs(
     registry: &Registry,
     compiled_cache_root: &Path,
     output_root: &Path,
     name: &str,
     target_arch: &str,
+    current_cache_key: &str,
 ) -> Result<Vec<PathBuf>, String> {
     let manifest = registry.load(name)?;
     let kind_subdir = match manifest.kind {
@@ -1145,6 +1159,9 @@ fn clean_package_node_outputs(
                     }
                 }
             }
+        }
+        if cache_key_sha != current_cache_key {
+            continue;
         }
         if let Ok(receipt_path) = source_only_cache_receipt_path(&canonical, &cache_key_sha) {
             match fs::remove_file(&receipt_path) {
@@ -1228,12 +1245,22 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
     for cleaned in &removal {
         match cleaned {
             PlanNodeV1::Package { name, target_arch } => {
+                let arch = parse_node_target_arch(target_arch).ok_or_else(|| {
+                    format!("clean: {name} has unsupported target arch {target_arch:?}")
+                })?;
+                let current_cache_key = crate::build_deps::source_only_cache_key_sha(
+                    &registry.load(name)?,
+                    &registry,
+                    arch,
+                    wasm_posix_shared::ABI_VERSION,
+                )?;
                 removed_paths.extend(clean_package_node_outputs(
                     &registry,
                     &compiled_cache_root,
                     &output_root,
                     name,
                     target_arch,
+                    &current_cache_key,
                 )?);
             }
             PlanNodeV1::Product { id } => {
@@ -5385,9 +5412,15 @@ mod tests {
         assert!(alpha_mirror.is_file());
         assert!(beta_mirror.is_file());
 
-        let removed =
-            clean_package_node_outputs(&reg, &compiled_cache_root, output_root, "alpha", "wasm32")
-                .unwrap();
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            alpha_cache_key,
+        )
+        .unwrap();
         assert!(
             removed.contains(&alpha_canonical)
                 && removed.contains(&alpha_receipt_sidecar)
@@ -5419,6 +5452,78 @@ mod tests {
         assert!(
             beta_mirror.is_file(),
             "decoy sibling's mirrored output must survive"
+        );
+    }
+
+    #[test]
+    fn clean_package_node_outputs_keeps_generations_under_other_cache_keys() {
+        // The compiled cache is shared by every worktree on the machine. A
+        // generation of the same package under a different cache key was
+        // built from different inputs (another checkout's), so cleaning this
+        // checkout must leave it alone; otherwise one worktree's `clean`
+        // silently forces every other worktree to rebuild the package and
+        // its whole reverse-dependency cascade.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let current_key = "cachekey-current-000000000000000000000000000000000000000";
+        let other_key = "cachekey-other-checkout-0000000000000000000000000000000";
+        let other_output = tempfile::TempDir::new().unwrap();
+        let other_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            other_output.path(),
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            other_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            current_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let other_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&other_canonical, other_key)
+                .unwrap();
+        let current_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&current_canonical, current_key)
+                .unwrap();
+        let mirror = output_root.join("programs/wasm32/alpha.wasm");
+
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            current_key,
+        )
+        .unwrap();
+
+        assert!(!current_canonical.exists(), "current generation must be removed");
+        assert!(!current_receipt_sidecar.exists(), "current receipt must be removed");
+        assert!(!mirror.exists(), "this checkout's mirrored output must be removed");
+        assert!(
+            other_canonical.is_dir() && other_receipt_sidecar.is_file(),
+            "another cache key's generation and receipt must survive; removed {removed:?}"
+        );
+        assert!(
+            !removed.contains(&other_canonical) && !removed.contains(&other_receipt_sidecar),
+            "the removed list must not report the surviving generation; got {removed:?}"
         );
     }
 
