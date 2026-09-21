@@ -29,6 +29,13 @@ const VIEW_ITEMS: DockItem<DockViewId>[] = [
   },
 ];
 
+const SHARE_ITEM: DockItem<"share"> = {
+  id: "share",
+  label: "Share",
+  title: "Share this machine as a link",
+  icon: <svg width="16" height="16" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="5.5" cy="11" r="2.4" /><circle cx="16" cy="5" r="2.4" /><circle cx="16" cy="17" r="2.4" /><path d="M7.6 10l6.4-3.6M7.6 12l6.4 3.6" /></svg>,
+};
+
 const INTERNALS_ITEM: DockItem<"internals"> = {
   id: "internals",
   label: "Internals",
@@ -96,6 +103,7 @@ export const Dock: React.FC<{
   internalsAvailable: boolean;
   internalsOpen: boolean;
   themeOpen: boolean;
+  shareAvailable: boolean;
   status: MachineStatus;
   machineTitle?: string;
   viewDisabled?: Partial<Record<DockViewId, boolean>>;
@@ -104,6 +112,7 @@ export const Dock: React.FC<{
   onToggleGuide: () => void;
   onToggleInternals: () => void;
   onToggleTheme: () => void;
+  onOpenShare: () => void;
   onCloseGuide: () => void;
   onCloseInternals: () => void;
   onCloseTheme: () => void;
@@ -121,6 +130,7 @@ export const Dock: React.FC<{
   internalsAvailable,
   internalsOpen,
   themeOpen,
+  shareAvailable,
   status,
   machineTitle,
   viewDisabled = {},
@@ -129,6 +139,7 @@ export const Dock: React.FC<{
   onToggleGuide,
   onToggleInternals,
   onToggleTheme,
+  onOpenShare,
   onCloseGuide,
   onCloseInternals,
   onCloseTheme,
@@ -485,6 +496,17 @@ export const Dock: React.FC<{
               </div>
               <div className="kdock-separator" aria-hidden="true" />
               <div className="kdock-section kdock-section-actions" aria-label="Machine overlays">
+                <button
+                  type="button"
+                  className="kdock-item"
+                  title={SHARE_ITEM.title}
+                  aria-label={SHARE_ITEM.title}
+                  disabled={!shareAvailable}
+                  onClick={onOpenShare}
+                >
+                  <span className="kdock-icon">{SHARE_ITEM.icon}</span>
+                  <span className="kdock-label">{SHARE_ITEM.label}</span>
+                </button>
                 <button
                   ref={internalsButtonRef}
                   type="button"

@@ -11,6 +11,7 @@ import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
 import { navigateToGalleryItemUrl } from "../url-state";
+import { ShareDialog } from "../dialogs/ShareDialog";
 import type {
   BootDescriptor,
   GalleryItem,
@@ -68,6 +69,7 @@ export const App: React.FC = () => {
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -343,6 +345,8 @@ export const App: React.FC = () => {
         />
       )}
 
+      {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
+
       <Dock
         activePane={dockPane}
         activeView={dockActiveView}
@@ -355,6 +359,7 @@ export const App: React.FC = () => {
         internalsAvailable={!isEmpty && surface.canUseInternals}
         internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
         themeOpen={themeOpen}
+        shareAvailable={!isEmpty}
         status={surface.status}
         machineTitle={desc.title}
         viewDisabled={{
@@ -366,6 +371,7 @@ export const App: React.FC = () => {
         onToggleGuide={toggleDemoGuide}
         onToggleInternals={toggleInternals}
         onToggleTheme={toggleTheme}
+        onOpenShare={() => setShareOpen(true)}
         onCloseGuide={() => setDemoGuideOpen(false)}
         onCloseInternals={() => setInternalsOpen(false)}
         onCloseTheme={() => setThemeOpen(false)}

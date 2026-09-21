@@ -1,22 +1,18 @@
 // Share dialog — modal portaled to <body>.
 //
-// Re-runs host.snapshot() whenever the user changes the mode picker or the
-// overlay/encrypt toggles, encodes the descriptor, builds the URL, and
-// updates the tier bar / byte count.
+// Encodes the current (or preset) boot descriptor plus an optional
+// boot-time script into a #k1= URL fragment, and updates the tier bar /
+// byte count as the user types.
 
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { useKernelHost } from "../kernel-host/react";
 import {
-  buildShareUrl, classifyTier, encodeBootDescriptor,
-  SHARE_MODE_INFO,
+  classifyTier, encodeBootDescriptor, HARD_CAPS,
 } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
-  BootDescriptor, ShareMode, Snapshot,
+  BootDescriptor,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-
-// Order of mode chips after the Auto card.
-const MODE_ORDER: ShareMode[] = ["preset", "delta", "inline", "manifest", "private", "local"];
 
 export interface ShareDialogProps {
   /**
@@ -24,8 +20,6 @@ export interface ShareDialogProps {
    * boot descriptor. Used by Gallery to share a not-yet-applied preset.
    */
   descriptor?: BootDescriptor;
-  /** Preset id to embed in the URL path. Falls back to descriptor.id. */
-  presetId?: string;
   onClose: () => void;
 }
 
@@ -51,14 +45,12 @@ export const ShareDialog: React.FC<ShareDialogProps> = (props) => {
 };
 
 export const SharePanel: React.FC<SharePanelProps> = ({
-  descriptor: presetDesc, presetId, onClose, embedded = false,
+  descriptor: presetDesc, onClose, embedded = false,
 }) => {
   const host = useKernelHost();
-  const [mode, setMode] = React.useState<ShareMode>("auto");
-  const [includeOverlay, setIncludeOverlay] = React.useState(true);
-  const [encrypt, setEncrypt] = React.useState(false);
-  const [snap, setSnap] = React.useState<Snapshot | null>(null);
+  const [script, setScript] = React.useState("");
   const [url, setUrl] = React.useState<string>("");
+  const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
 
   const baseDescriptor: BootDescriptor = React.useMemo(
@@ -66,55 +58,39 @@ export const SharePanel: React.FC<SharePanelProps> = ({
     [presetDesc, host],
   );
 
+  const scriptBytes = React.useMemo(
+    () => new TextEncoder().encode(script).byteLength,
+    [script],
+  );
+
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        // Bias the host's snapshot toward the user's preference.
-        const s = await host.snapshot({ preferMode: mode });
-        if (cancelled) return;
-        // If we're sharing a preset descriptor (Gallery context), the
-        // host's snapshot may not be relevant — replace it with our base.
-        const desc = stripOverlayIfDisabled(
-          presetDesc ?? s.descriptor,
-          includeOverlay,
-        );
-        setSnap({ ...s, descriptor: desc });
-
-        let fragment = "";
-        let resolvedMode = mode === "auto" ? s.mode : (mode as Exclude<ShareMode, "auto">);
-
-        if (resolvedMode === "delta" || resolvedMode === "inline") {
-          try {
-            const enc = await encodeBootDescriptor(desc);
-            if (cancelled) return;
-            fragment = enc.fragment;
-          } catch {
-            fragment = "";
-          }
+        const trimmed = script.trim();
+        if (!trimmed) {
+          if (!cancelled) { setUrl(workingShareUrl(null)); setError(null); }
+          return;
         }
-        const builtUrl = buildShareUrl(desc, {
-          mode: resolvedMode,
-          fragment,
-          presetId: presetId ?? desc.id,
-        });
-        if (!cancelled) setUrl(builtUrl);
+        const desc: BootDescriptor = {
+          ...baseDescriptor,
+          script: { text: script.endsWith("\n") ? script : `${script}\n` },
+        };
+        const { fragment } = await encodeBootDescriptor(desc);
+        if (!cancelled) { setUrl(workingShareUrl(fragment)); setError(null); }
       } catch (err) {
         if (!cancelled) {
-          console.warn("[ShareDialog] snapshot/encode failed:", err);
           setUrl("");
+          setError(err instanceof Error ? err.message : String(err));
         }
       }
     })();
     return () => { cancelled = true; };
-  }, [host, mode, includeOverlay, encrypt, presetDesc, presetId]);
+  }, [baseDescriptor, script]);
 
   const tier = classifyTier(url.length);
   const tierPct = url.length === 0 ? 0 : Math.min(100, (url.length / (8 * 1024)) * 100);
   const shareTargetLabel = presetDesc ? "selected preset" : "current machine";
-  const overlaySummary = includeOverlay
-    ? "Overlay-capable modes may include current descriptor edits when KernelHost can encode them."
-    : "The link is limited to the base preset/descriptor; local edits stay in this browser.";
 
   const copy = () => {
     if (!url) return;
@@ -125,7 +101,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
 
   const renderUrl = () => {
     if (!url) return <span style={{ color: "var(--k-text-faint)" }}>computing…</span>;
-    const m = url.match(/^(https:\/\/)([^/]+)(\/[^#]*)(#.*)?$/);
+    const m = url.match(/^(https?:\/\/)([^/]+)(\/[^#]*)(#.*)?$/);
     if (!m) return url;
     return (
       <>
@@ -162,19 +138,41 @@ export const SharePanel: React.FC<SharePanelProps> = ({
             <div className="kshare-summary-card">
               <div className="kshare-summary-k">Share target</div>
               <div className="kshare-summary-v">{shareTargetLabel}</div>
-              <p>{overlaySummary}</p>
+              <p>The link boots the same base preset; your live local edits stay on this machine.</p>
             </div>
             <div className="kshare-summary-card">
               <div className="kshare-summary-k">Export boundary</div>
-              <div className="kshare-summary-v">No VFS archive export</div>
-              <p>Use this URL flow for descriptor sharing. Full image export is not simulated here.</p>
+              <p>
+                Link-only sharing. The machine is ephemeral; the link carries
+                the preset identity plus your script, nothing else.
+              </p>
             </div>
+          </div>
+
+          {/* Script */}
+          <div className="kshare-script">
+            <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>
+              Run a script on open
+            </div>
+            <textarea
+              value={script}
+              onChange={(e) => setScript(e.target.value)}
+              placeholder={'echo "hello from this link"'}
+              rows={5}
+              spellCheck={false}
+              aria-label="Script to run when the link is opened"
+            />
+            <div className="kshare-script-meta">
+              {scriptBytes} B / {HARD_CAPS.maxScriptBytes} B
+              {" · runs in the machine's default shell, visible in the terminal"}
+            </div>
+            {error && <div className="kshare-script-err">{error}</div>}
           </div>
 
           {/* URL + tier */}
           <div>
             <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Link</div>
-            <div className="kshare-url">{renderUrl()}</div>
+            <div className="kshare-url" data-share-url={url}>{renderUrl()}</div>
             <div className="kshare-tier">
               <div className="kshare-tier-track">
                 <div
@@ -186,41 +184,6 @@ export const SharePanel: React.FC<SharePanelProps> = ({
               <div className="kshare-tier-label">
                 {url ? `${url.length} B` : "—"} · {tier}
               </div>
-            </div>
-          </div>
-
-          {/* Mode picker */}
-          <div>
-            <div className="kshare-sect-lbl" style={{ marginBottom: 8 }}>
-              Mode
-              {snap && mode === "auto" && (
-                <span style={{
-                  marginLeft: 6,
-                  color: "var(--k-text-muted)",
-                  fontWeight: 400,
-                  textTransform: "none",
-                  letterSpacing: 0,
-                }}>
-                  {snap.reason}
-                </span>
-              )}
-            </div>
-            <div className="kshare-modes">
-              <button className="kshare-mode" aria-current={mode === "auto"} onClick={() => setMode("auto")}>
-                <div className="kshare-mode-name">
-                  Auto
-                  {snap && mode === "auto" && (
-                    <span className="kshare-mode-auto">→ {snap.mode}</span>
-                  )}
-                </div>
-                <div className="kshare-mode-blurb">Kandelo picks the smallest viable mode.</div>
-              </button>
-              {MODE_ORDER.map((m) => (
-                <button key={m} className="kshare-mode" aria-current={mode === m} onClick={() => setMode(m)}>
-                  <div className="kshare-mode-name">{SHARE_MODE_INFO[m].label}</div>
-                  <div className="kshare-mode-blurb">{SHARE_MODE_INFO[m].blurb}</div>
-                </button>
-              ))}
             </div>
           </div>
 
@@ -258,28 +221,10 @@ export const SharePanel: React.FC<SharePanelProps> = ({
                     .join(" · ") || "none"
                 }
               />
-            </div>
-          </div>
-
-          {/* Options */}
-          <div className="kshare-opts">
-            <div className="kshare-opt">
-              <div style={{ flex: 1 }}>
-                <div className="kshare-opt-lbl">Include my overlay</div>
-                <div className="kshare-opt-sub">
-                  If off, the link is just the preset — your edits stay on this machine.
-                </div>
-              </div>
-              <Toggle on={includeOverlay} onChange={setIncludeOverlay} />
-            </div>
-            <div className="kshare-opt">
-              <div style={{ flex: 1 }}>
-                <div className="kshare-opt-lbl">Encrypt overlay</div>
-                <div className="kshare-opt-sub">
-                  Ciphertext goes to the server; the key stays in the URL fragment.
-                </div>
-              </div>
-              <Toggle on={encrypt} onChange={setEncrypt} />
+              <PrevRow
+                k="script"
+                v={script.trim() ? `${scriptBytes} B, runs at boot` : "none"}
+              />
             </div>
           </div>
         </div>
@@ -320,42 +265,14 @@ const PrevRow: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
   </div>
 );
 
-const Toggle: React.FC<{ on: boolean; onChange: (v: boolean) => void }> = ({ on, onChange }) => (
-  <button
-    type="button"
-    onClick={() => onChange(!on)}
-    aria-pressed={on}
-    style={{
-      width: 32,
-      height: 18,
-      borderRadius: 999,
-      border: 0,
-      padding: 0,
-      cursor: "pointer",
-      background: on ? "var(--k-accent)" : "color-mix(in oklch, var(--k-text) 14%, transparent)",
-      position: "relative",
-      transition: "background 0.15s",
-    }}
-  >
-    <span style={{
-      position: "absolute",
-      top: 2,
-      left: 2,
-      width: 14,
-      height: 14,
-      borderRadius: "50%",
-      background: "#fff",
-      boxShadow: "0 1px 2px rgba(0, 0, 0, 0.25)",
-      transform: on ? "translateX(14px)" : "translateX(0)",
-      transition: "transform 0.15s",
-    }} />
-  </button>
-);
-
-function stripOverlayIfDisabled(d: BootDescriptor, include: boolean): BootDescriptor {
-  if (include) return d;
-  return {
-    ...d,
-    mounts: d.mounts.filter((m) => m.source !== "inline-overlay"),
-  };
+/**
+ * Links must open in THIS app. The codec's buildShareUrl() path modes
+ * (/c/<id>, /m/…, /p/…) have no routes here, so the working link is the
+ * current page URL (which already carries ?demo=/?vfs= machine identity)
+ * plus the descriptor fragment.
+ */
+function workingShareUrl(fragment: string | null): string {
+  const url = new URL(window.location.href);
+  url.hash = fragment ?? "";
+  return url.href;
 }

@@ -76,3 +76,35 @@ test("gallery navigation drops a boot-link fragment", async ({ page }) => {
   expect(new URL(next).hash).toBe("");
   expect(new URL(next).searchParams.get("demo")).toBe("node");
 });
+
+test("share dialog authors a script link that runs on open @slow", async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+    timeout: 180_000,
+  });
+
+  await page
+    .getByRole("button", { name: "Share this machine as a link" })
+    .click();
+  await page
+    .locator(".kshare textarea")
+    .fill('echo "shared-script:$((40 + 2))"');
+  await expect
+    .poll(async () =>
+      page.locator(".kshare-url").getAttribute("data-share-url"),
+    )
+    .toMatch(/#k1=/);
+  const sharedUrl = await page
+    .locator(".kshare-url")
+    .getAttribute("data-share-url");
+  if (!sharedUrl) throw new Error("share dialog produced no URL");
+
+  await page.goto(sharedUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+    timeout: 180_000,
+  });
+  await expect
+    .poll(() => terminalText(page), { timeout: 120_000 })
+    .toContain("shared-script:42");
+});
