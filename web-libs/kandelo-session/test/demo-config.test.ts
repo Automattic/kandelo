@@ -4,6 +4,8 @@ import {
   MAX_REQUESTED_WORKERS,
   validateKandeloDemoConfig,
   resolveDemoWeb,
+  resolveDemoIdentity,
+  resolveDefaultProfileId,
   type KandeloDemoConfig,
 } from "../src/demo-config";
 
@@ -131,5 +133,81 @@ describe("init and web blocks", () => {
       requiredPorts: [8080],
       probeHttp: true,
     });
+  });
+});
+
+describe("identity, display, and defaultProfile", () => {
+  it("accepts a complete identity block", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      identity: {
+        title: "fbDOOM",
+        summary: "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
+        accent: "#b5301c",
+        glyph: "D",
+        base: "kandelo:shell@abi44",
+        packages: ["fbdoom@local", "doom-shareware@local"],
+      },
+    }))).not.toThrow();
+  });
+
+  it("rejects a non-hex accent", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      identity: { title: "T", summary: "S", accent: "red", glyph: "D" },
+    }))).toThrow(/profiles\.m\.identity\.accent must be a #rrggbb colour/);
+  });
+
+  it("rejects an overlong glyph", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      identity: { title: "T", summary: "S", accent: "#b5301c", glyph: "DOOMY" },
+    }))).toThrow(/profiles\.m\.identity\.glyph must be 1 to 4 characters/);
+  });
+
+  // Review Focus 4: a machine must not be able to wedge the UI.
+  it("rejects display minimums beyond any real viewport", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      display: { minWidth: 99999, minHeight: 100 },
+    }))).toThrow(/profiles\.m\.display\.minWidth exceeds the 7680-pixel ceiling/);
+  });
+
+  it("accepts sane display minimums", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      display: { minWidth: 640, minHeight: 480 },
+    }))).not.toThrow();
+  });
+
+  // Review Focus 2: a dangling default must fail at build time.
+  it("rejects a defaultProfile naming a profile that does not exist", () => {
+    expect(() => validateKandeloDemoConfig({
+      version: 1,
+      defaultProfile: "ghost",
+      profiles: { m: {} },
+    } as unknown as KandeloDemoConfig)).toThrow(
+      /defaultProfile "ghost" is not a declared profile/,
+    );
+  });
+
+  it("resolves a declared defaultProfile", () => {
+    const config = {
+      version: 1,
+      defaultProfile: "m",
+      profiles: { m: {} },
+    } as unknown as KandeloDemoConfig;
+    validateKandeloDemoConfig(config);
+    expect(resolveDefaultProfileId(config)).toBe("m");
+  });
+
+  it("resolves the sole profile when no default is declared", () => {
+    const config = withProfile({});
+    validateKandeloDemoConfig(config);
+    expect(resolveDefaultProfileId(config)).toBe("m");
+  });
+
+  it("resolves null when multiple profiles exist with no declared default", () => {
+    const config = {
+      version: 1,
+      profiles: { a: {}, b: {} },
+    } as unknown as KandeloDemoConfig;
+    validateKandeloDemoConfig(config);
+    expect(resolveDefaultProfileId(config)).toBeNull();
   });
 });

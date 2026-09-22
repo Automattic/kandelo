@@ -137,6 +137,26 @@ export interface DemoWebConfig {
   probePath?: string;
 }
 
+/** What the gallery and machine chrome show for this profile. */
+export interface DemoIdentityConfig {
+  title: string;
+  summary: string;
+  accent: string;
+  glyph: string;
+  base?: string;
+  packages?: string[];
+}
+
+/**
+ * A FLOOR the machine states, not a size it imposes. The viewport is the
+ * browser window; these only tell the host the smallest surface the machine
+ * expects to be usable at.
+ */
+export interface DemoDisplayConfig {
+  minWidth: number;
+  minHeight: number;
+}
+
 export interface DemoGuideConfig {
   title: string;
   summary?: string;
@@ -153,6 +173,8 @@ export interface KandeloDemoProfileConfig {
   runtime?: DemoRuntimeConfig;
   init?: DemoInitConfig;
   web?: DemoWebConfig;
+  identity?: DemoIdentityConfig;
+  display?: DemoDisplayConfig;
 }
 
 export interface KandeloDemoConfig {
@@ -164,6 +186,9 @@ export interface KandeloDemoConfig {
   runtime?: DemoRuntimeConfig;
   init?: DemoInitConfig;
   web?: DemoWebConfig;
+  identity?: DemoIdentityConfig;
+  display?: DemoDisplayConfig;
+  defaultProfile?: string;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
 
@@ -235,15 +260,22 @@ export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
     throw new Error("demo config must use version 1");
   }
   validateProfileFields(config, "demo config");
-  if (config.profiles === undefined) return;
-  if (!isRecord(config.profiles)) {
-    throw new Error("profiles must be an object");
-  }
-  for (const [profileId, profile] of Object.entries(config.profiles)) {
-    if (!isRecord(profile)) {
-      throw new Error(`profiles.${profileId} must be an object`);
+  if (config.profiles !== undefined) {
+    if (!isRecord(config.profiles)) {
+      throw new Error("profiles must be an object");
     }
-    validateProfileFields(profile, `profiles.${profileId}`);
+    for (const [profileId, profile] of Object.entries(config.profiles)) {
+      if (!isRecord(profile)) {
+        throw new Error(`profiles.${profileId} must be an object`);
+      }
+      validateProfileFields(profile, `profiles.${profileId}`);
+    }
+  }
+  if (config.defaultProfile !== undefined) {
+    const declared = requiredString(config.defaultProfile, "defaultProfile");
+    if (!Object.hasOwn(config.profiles ?? {}, declared)) {
+      throw new Error(`defaultProfile "${declared}" is not a declared profile`);
+    }
   }
 }
 
@@ -467,6 +499,103 @@ export function resolveDemoWeb(
   return config.web === undefined ? null : normalizeWeb(config.web, "web");
 }
 
+const ACCENT_RE = /^#[0-9a-f]{6}$/i;
+/** 8K, well past any real browser viewport, so a bad value fails loudly. */
+const MAX_DISPLAY_PIXELS = 7680;
+const MAX_IDENTITY_TITLE_CHARS = 64;
+const MAX_IDENTITY_SUMMARY_CHARS = 512;
+const MAX_IDENTITY_PACKAGES = 64;
+
+function normalizeIdentity(value: unknown, field: string): DemoIdentityConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  const title = requiredString(value.title, `${field}.title`);
+  if (title.length > MAX_IDENTITY_TITLE_CHARS) {
+    throw new Error(
+      `${field}.title must be at most ${MAX_IDENTITY_TITLE_CHARS} characters`,
+    );
+  }
+  const summary = requiredString(value.summary, `${field}.summary`);
+  if (summary.length > MAX_IDENTITY_SUMMARY_CHARS) {
+    throw new Error(
+      `${field}.summary must be at most ${MAX_IDENTITY_SUMMARY_CHARS} characters`,
+    );
+  }
+  const accent = requiredString(value.accent, `${field}.accent`);
+  if (!ACCENT_RE.test(accent)) {
+    throw new Error(`${field}.accent must be a #rrggbb colour`);
+  }
+  const glyph = requiredString(value.glyph, `${field}.glyph`);
+  if (glyph.length > 4) {
+    throw new Error(`${field}.glyph must be 1 to 4 characters`);
+  }
+
+  const identity: DemoIdentityConfig = { title, summary, accent, glyph };
+  if (value.base !== undefined) {
+    identity.base = requiredString(value.base, `${field}.base`);
+  }
+  if (value.packages !== undefined) {
+    if (!Array.isArray(value.packages)) {
+      throw new Error(`${field}.packages must be an array`);
+    }
+    if (value.packages.length > MAX_IDENTITY_PACKAGES) {
+      throw new Error(
+        `${field}.packages must list at most ${MAX_IDENTITY_PACKAGES} entries`,
+      );
+    }
+    identity.packages = value.packages.map((entry, index) =>
+      requiredString(entry, `${field}.packages[${index}]`));
+  }
+  return identity;
+}
+
+function normalizeDisplay(value: unknown, field: string): DemoDisplayConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  return {
+    minWidth: boundedCount(
+      value.minWidth,
+      `${field}.minWidth`,
+      MAX_DISPLAY_PIXELS,
+      "pixel",
+    ),
+    minHeight: boundedCount(
+      value.minHeight,
+      `${field}.minHeight`,
+      MAX_DISPLAY_PIXELS,
+      "pixel",
+    ),
+  };
+}
+
+export function resolveDemoIdentity(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoIdentityConfig | null {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.identity !== undefined) {
+    return normalizeIdentity(profile.identity, `profiles.${profileId}.identity`);
+  }
+  return config.identity === undefined
+    ? null
+    : normalizeIdentity(config.identity, "identity");
+}
+
+/**
+ * The profile a bare `?vfs=` URL boots. An image with exactly one profile
+ * needs no declaration; an image with several must say which, or the caller
+ * has to choose explicitly rather than the app guessing.
+ */
+export function resolveDefaultProfileId(
+  config: KandeloDemoConfig,
+): string | null {
+  if (typeof config.defaultProfile === "string") return config.defaultProfile;
+  const ids = isRecord(config.profiles) ? Object.keys(config.profiles) : [];
+  return ids.length === 1 ? ids[0] : null;
+}
+
 function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);
@@ -563,6 +692,12 @@ function validateProfileFields(
   }
   if (value.web !== undefined) {
     normalizeWeb(value.web, `${field}.web`);
+  }
+  if (value.identity !== undefined) {
+    normalizeIdentity(value.identity, `${field}.identity`);
+  }
+  if (value.display !== undefined) {
+    normalizeDisplay(value.display, `${field}.display`);
   }
   normalizeAssets(value.assets, `${field}.assets`);
   if (value.guide !== undefined) {
