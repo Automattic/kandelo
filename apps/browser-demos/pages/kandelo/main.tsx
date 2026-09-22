@@ -7,6 +7,10 @@ import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import type { KernelHost } from "./kernel-host";
 import { readKandeloBootQuery } from "./url-state";
+import {
+  BootDescriptorError,
+  decodeBootDescriptor,
+} from "../../../../web-libs/kandelo-session/src/boot-descriptor";
 
 const container = document.getElementById("kandelo-root");
 if (!container) {
@@ -30,6 +34,32 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
+    // URL fragments are untrusted input. A malformed or oversized #k1= boot
+    // link must fail loudly here, not silently boot as if it were absent.
+    const linkDescriptor = await decodeBootDescriptor(location.hash).catch(
+      (err) => {
+        if (err instanceof BootDescriptorError) {
+          throw new Error(
+            `Rejected #k1= boot link fragment: [${err.code}] ${err.message}`,
+          );
+        }
+        throw new Error(
+          `Rejected #k1= boot link fragment: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      },
+    );
+    // A pre-fold-in `#k1=` link could carry a top-level `script: { text }`
+    // field (superseded by `boot.inputs` + `boot.parameters.runScript`).
+    // decodeBootDescriptor tolerates unknown fields, so such a link still
+    // decodes and boots, but that script is never materialized or run.
+    // Detect it here so live-setup can surface a visible boot-log notice
+    // instead of silently dropping it.
+    const legacyScriptIgnored =
+      linkDescriptor !== null &&
+      typeof (linkDescriptor as { script?: unknown }).script !== "undefined";
+
     // WHY: the restored image owns its shell and optional runtime entries.
     // Keeping every demo on one assembler prevents a demo-specific overlay
     // from replacing immutable bottle-backed lazy files before serialization.
@@ -38,6 +68,9 @@ void (async () => {
         demo,
         vfsUrl: bootQuery.vfsImageUrl,
         fb: fbDemo === "test" ? "test" : "none",
+        inputs: linkDescriptor?.boot.inputs ?? null,
+        parameters: linkDescriptor?.boot.parameters ?? null,
+        legacyScriptIgnored,
       }));
     mount(host);
   } catch (err) {

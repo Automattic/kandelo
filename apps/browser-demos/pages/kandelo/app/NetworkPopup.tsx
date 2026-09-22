@@ -11,6 +11,7 @@
 import * as React from "react";
 import type { MachineHandover } from "./machine-handover";
 import type { MachineReplication } from "./machine-replication";
+import { NICKNAME_MAX_LENGTH } from "../../../lib/peer-nickname";
 import type { PeerSession } from "./peer-session";
 import type { FramebufferSharing } from "./shared-framebuffer";
 import type { PrimarySurface } from "../../../../../web-libs/kandelo-session/src/kernel-host";
@@ -169,6 +170,14 @@ export const NetworkPopup: React.FC<{
    * that person the opposite.
    */
   replication: MachineReplication;
+  /**
+   * This person's nickname, as typed.
+   *
+   * The pair exchanges the names, and the watching page's dock badge then
+   * says who it is viewing instead of the word "Viewer".
+   */
+  nickname: string;
+  onNicknameChange: (name: string) => void;
 }> = ({
   session,
   sharingTerminal,
@@ -178,9 +187,32 @@ export const NetworkPopup: React.FC<{
   hasMachine,
   presenting,
   replication,
+  nickname,
+  onNicknameChange,
 }) => {
   const connected = session.link !== null;
   const note = takeNote(handover);
+
+  // Offered before connecting only: the name introduces you, and once the
+  // pair is linked the introduction is made — the connected popup keeps to
+  // the link itself.
+  const nicknameSection = (
+    <section className="knetwork-section">
+      <label className="knetwork-label" htmlFor="knetwork-nickname">
+        Your nickname — how the other person sees you
+      </label>
+      <input
+        id="knetwork-nickname"
+        className="knetwork-name"
+        type="text"
+        spellCheck={false}
+        maxLength={NICKNAME_MAX_LENGTH}
+        value={nickname}
+        placeholder="Ada"
+        onChange={(event) => onNicknameChange(event.target.value)}
+      />
+    </section>
+  );
 
   // The grant is the machine owner's: joining starts by sending the machine's
   // whole state to the other computer, so the person holding it decides how
@@ -362,6 +394,8 @@ export const NetworkPopup: React.FC<{
 
   return (
     <div className="knetwork-popup">
+      {nicknameSection}
+
       <section className="knetwork-section">
         <div className="knetwork-label">Connect another computer</div>
         {session.signalling ? (

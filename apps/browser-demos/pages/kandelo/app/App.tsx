@@ -13,11 +13,13 @@ import { SharedMachine } from "../panes/SharedMachine";
 import { NetworkPopup } from "./NetworkPopup";
 import { useMachineHandover } from "./machine-handover";
 import { useMachineReplication } from "./machine-replication";
+import { usePeerNickname } from "./peer-nickname";
 import { usePeerSession } from "./peer-session";
 import { useFramebufferPublisher } from "./shared-framebuffer";
 import { useTerminalPublisher } from "./shared-terminal";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
 import { navigateToGalleryItemUrl, replaceGalleryItemUrl } from "../url-state";
+import { ShareDialog } from "../dialogs/ShareDialog";
 import type {
   BootDescriptor,
   GalleryItem,
@@ -37,7 +39,6 @@ type ThemePreference = {
 };
 
 const THEME_STORAGE_KEY = "kandelo.theme";
-const DEMO_GUIDE_SEEN_STORAGE_KEY = "kandelo.demo-guide.seen";
 const THEME_STORAGE_VERSION = 4;
 
 type StoredThemePreference = ThemePreference & {
@@ -73,10 +74,13 @@ export const App: React.FC = () => {
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
   const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: true });
+  // The demo guide never auto-opens; the dock's Demo button is the only way
+  // in. Machines with a guide simply have that button enabled.
   const [demoGuideOpen, setDemoGuideOpen] = React.useState(false);
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [networkOpen, setNetworkOpen] = React.useState(false);
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
@@ -114,6 +118,7 @@ export const App: React.FC = () => {
     replication.replicating,
     replication.promote,
   );
+  const names = usePeerNickname(peer.link);
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {
@@ -182,22 +187,9 @@ export const App: React.FC = () => {
     const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
     if (autoOpenedDemoGuideKey.current === key) return;
     autoOpenedDemoGuideKey.current = key;
-    // A replica's descriptor is the other computer's launch, not this
-    // person's; its guide would cover the machine they were already watching.
-    // A guide this browser has already auto-opened stays closed: a machine
-    // that reloads is not a new demo, and the dock button still opens it.
-    const replicaBoot = replication.joining || replication.replicating;
-    const open = dockPane === null && demoGuide !== null && !replicaBoot
-      && !hasSeenDemoGuide(key);
-    setDemoGuideOpen(open);
-    if (open) rememberSeenDemoGuide(key);
-  }, [
-    demoGuide?.title,
-    desc.id,
-    dockPane,
-    replication.joining,
-    replication.replicating,
-  ]);
+    // Close a guide left open by the previous machine; never auto-open.
+    setDemoGuideOpen(false);
+  }, [demoGuide?.title, desc.id, dockPane]);
 
   React.useEffect(() => {
     setDemoDockControls(null);
@@ -323,6 +315,22 @@ export const App: React.FC = () => {
   }, [terminals]);
 
   const isEmpty = surface.status === "idle";
+  // Only in a pair. A computer on its own is neither, and one machine with
+  // one person at it needs no word for that. A replica parked by a dropped
+  // link is the exception: the machine here is still the other computer's,
+  // and the word for that stays "viewer".
+  const pairRole =
+    replication.replicating
+      ? "viewer"
+      : peer.link === null
+        ? null
+        : isEmpty
+          ? "viewer"
+          : "user";
+  // A name only for someone you are watching: on your own dock you know who
+  // you are, so the user's badge keeps the role word, and the other person's
+  // name replaces only "Viewer". Null falls back to the role words.
+  const pairRoleName = pairRole === "viewer" ? names.peerNickname : null;
   const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
     ? surface.activeView
     : null;
@@ -488,6 +496,8 @@ export const App: React.FC = () => {
         />
       )}
 
+      {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
+
       <Dock
         activePane={dockPane}
         activeView={dockActiveView}
@@ -508,6 +518,8 @@ export const App: React.FC = () => {
             hasMachine={!isEmpty}
             presenting={presenting}
             replication={replication}
+            nickname={names.nickname}
+            onNicknameChange={names.setNickname}
           />
         }
         themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
@@ -517,20 +529,10 @@ export const App: React.FC = () => {
         internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
         networkOpen={networkOpen}
         networkConnected={peer.link !== null}
-        // Only in a pair. A computer on its own is neither, and one machine
-        // with one person at it needs no word for that. A replica parked by
-        // a dropped link is the exception: the machine here is still the
-        // other computer's, and the word for that stays "viewer".
-        role={
-          replication.replicating
-            ? "viewer"
-            : peer.link === null
-              ? null
-              : isEmpty
-                ? "viewer"
-                : "user"
-        }
+        role={pairRole}
+        roleName={pairRoleName}
         themeOpen={themeOpen}
+        shareAvailable={!isEmpty}
         // A machine on its way here is booting, whatever the surface it is
         // replacing happens to be doing. During a take-over the departing
         // replica still reports "running", and showing that beside a role
@@ -549,6 +551,7 @@ export const App: React.FC = () => {
         onToggleInternals={toggleInternals}
         onToggleNetwork={toggleNetwork}
         onToggleTheme={toggleTheme}
+        onOpenShare={() => setShareOpen(true)}
         onCloseGuide={() => setDemoGuideOpen(false)}
         onCloseInternals={() => setInternalsOpen(false)}
         onCloseNetwork={() => setNetworkOpen(false)}
@@ -786,35 +789,6 @@ function humanBytes(bytes: number): string {
   if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`;
   const mib = kib / 1024;
   return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`;
-}
-
-function hasSeenDemoGuide(key: string): boolean {
-  try {
-    const raw = window.localStorage.getItem(DEMO_GUIDE_SEEN_STORAGE_KEY);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) && parsed.includes(key);
-  } catch {
-    return false;
-  }
-}
-
-function rememberSeenDemoGuide(key: string): void {
-  try {
-    const raw = window.localStorage.getItem(DEMO_GUIDE_SEEN_STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    const seen = Array.isArray(parsed)
-      ? parsed.filter((value): value is string => typeof value === "string")
-      : [];
-    if (seen.includes(key)) return;
-    seen.push(key);
-    window.localStorage.setItem(
-      DEMO_GUIDE_SEEN_STORAGE_KEY,
-      JSON.stringify(seen),
-    );
-  } catch {
-    // User preference storage can be unavailable in private or restricted contexts.
-  }
 }
 
 function readThemePreference(): ThemePreference {

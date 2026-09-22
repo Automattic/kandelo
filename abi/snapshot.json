@@ -1241,6 +1241,12 @@
     }
   },
   "ioctl_request_contracts": {
+    "1074021776": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
     "1074024452": {
       "argKind": "pointer",
       "direction": "in",
@@ -1343,6 +1349,12 @@
       "wasm32Size": 0,
       "wasm64Size": 0
     },
+    "2147763457": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
     "2147766274": {
       "argKind": "pointer",
       "direction": "out",
@@ -1396,6 +1408,12 @@
       "direction": "out",
       "wasm32Size": 4,
       "wasm64Size": 4
+    },
+    "2148025602": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 8,
+      "wasm64Size": 8
     },
     "2148028435": {
       "argKind": "pointer",
@@ -1776,6 +1794,62 @@
       "wasm64Size": null
     }
   },
+  "ioctl_request_families": [
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 6,
+      "nrLast": 6
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 32,
+      "nrLast": 63
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": 24,
+      "magic": 69,
+      "maxCallerSize": null,
+      "nrFirst": 64,
+      "nrLast": 127
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 24,
+      "nrLast": 24
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 25,
+      "nrLast": 25
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 27,
+      "nrLast": 27
+    }
+  ],
   "kernel_exports": [
     {
       "kind": "func",
@@ -2434,6 +2508,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_input_event",
+      "signature": "(i32,i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
       "name": "kernel_ioctl",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -3011,6 +3090,11 @@
       "kind": "func",
       "name": "kernel_set_fork_fd_action",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_input_canvas_dims",
+      "signature": "(i32,i32) -> ()"
     },
     {
       "kind": "func",

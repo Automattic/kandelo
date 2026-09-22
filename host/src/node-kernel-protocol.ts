@@ -24,6 +24,7 @@ import type { MachineCheckpoint } from "./migration/checkpoint";
 import type { ReplicationLogEntry } from "./replication/log";
 import type { MachineStateHash } from "./replication/state-hash";
 import type { ReplicationReplaySpec } from "./replication/worker";
+import type { InputEvent } from "./input/input-source";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -544,6 +545,43 @@ export interface KmsAttachStatsMessage {
   stats: SharedArrayBuffer;
 }
 
+/**
+ * Main-thread → kernel-worker evdev injection. Mirrors the Browser-side
+ * `InputEventInjectMessage`. Under Node there is no DOM, so production
+ * traffic on this channel comes from tests / headless drivers; the
+ * Node-side `NodeInputSource` is a null-source. Routes to
+ * `CentralizedKernelWorker.injectInputEvent`.
+ */
+export interface InputEventInjectMessage {
+  type: "input_event_inject";
+  device: 0 | 1;
+  ev_type: number;
+  code: number;
+  value: number;
+}
+
+/**
+ * Main-thread → kernel-worker batched evdev injection. Mirrors the
+ * Browser-side `InputEventBatchInjectMessage`: one `SYN_REPORT` frame per
+ * message, so the worker runs a single kernel entry and wake scan for the
+ * whole frame. Routes to `CentralizedKernelWorker.injectInputEventBatch`.
+ */
+export interface InputEventBatchInjectMessage {
+  type: "input_event_batch_inject";
+  records: InputEvent[];
+}
+
+/**
+ * Main-thread → kernel-worker canvas-dims update. Mirrors the
+ * Browser-side `SetInputCanvasDimsMessage`. Sets `ABS_X.maximum` /
+ * `ABS_Y.maximum` reported by EVIOCGABS on `/dev/input/event1`.
+ */
+export interface SetInputCanvasDimsMessage {
+  type: "set_input_canvas_dims";
+  width: number;
+  height: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -584,7 +622,10 @@ export type MainToKernelMessage =
   | ReplicationHashReplicaMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
-  | KmsAttachStatsMessage;
+  | KmsAttachStatsMessage
+  | InputEventInjectMessage
+  | InputEventBatchInjectMessage
+  | SetInputCanvasDimsMessage;
 
 // ── Kernel Worker → Main Thread ──
 

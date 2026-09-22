@@ -97,6 +97,12 @@ test("connects two computers by session name", async ({
       "a session name is lowercase words separated by dashes",
     );
 
+    // Named before connecting, so the pair exchanges the names as soon as
+    // the link opens.
+    await sharer.fill("#knetwork-nickname", "garply");
+    await openNetworkPopover(viewer);
+    await viewer.fill("#knetwork-nickname", "waldo");
+
     let linked = false;
     for (let attempt = 0; attempt < 3 && !linked; attempt++) {
       // The computer holding the machine hosts the name; the empty one joins
@@ -146,6 +152,17 @@ test("connects two computers by session name", async ({
         + "Playwright browser Local Network permission to run this spec",
       );
     }
+
+    // A name shows only for someone you watch: the viewer's badge names the
+    // sharer, and the sharer's own badge says what its seat does. The
+    // distinct viewer nickname proves the badge picks the watched person's
+    // name, not any name in the pair.
+    await expect(viewer.locator(".kdock-role")).toHaveText("garply", {
+      timeout: 30_000,
+    });
+    await expect(sharer.locator(".kdock-role")).toHaveText("Sharing", {
+      timeout: 30_000,
+    });
   } finally {
     await viewerContext.close();
     await sharerContext.close();

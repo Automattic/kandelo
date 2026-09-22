@@ -1,0 +1,21 @@
+<h1>About this demo</h1>
+<div class="sub"><a href="/">← back to todos</a></div>
+
+<p>This is a real Ruby web application running inside Kandelo, a POSIX-compatible
+multi-process kernel for WebAssembly. Nothing here is simulated — the request you
+just made was served by a Ruby process running in the kernel.</p>
+
+<ul>
+  <li><span class="title">Ruby</span> <%= ruby %></li>
+  <li><span class="title">Roda (web framework)</span> <%= roda %></li>
+  <li><span class="title">SQLite (via the sqlite3 gem)</span> <%= sqlite %></li>
+</ul>
+
+<p style="color:#94a3b8; font-size:.9rem; margin-top:1rem">
+  The <code>sqlite3</code> gem's native C extension is compiled into the Kandelo
+  Ruby build. The HTTP layer is a small Rack server over the standard-library
+  socket. This is <strong>not</strong> Ruby on Rails — Rails needs platform
+  capabilities Kandelo does not yet provide (OpenSSL and a native-gem pipeline
+  for gems such as nokogiri). This app is the honest, working Ruby web stack that
+  Kandelo supports today.
+</p>

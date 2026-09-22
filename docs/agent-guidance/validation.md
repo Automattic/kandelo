@@ -92,7 +92,11 @@ part of the task. Build or fetch what is missing:
    scripts/dev-shell.sh bash scripts/build-musl.sh
    ```
 3. **Node dependencies** — `node_modules` are per-checkout, and both the repo
-   root (the conformance runners load `tsx` from root) and `host/` are needed:
+   root (the conformance runners load `tsx` from root) and `host/` are needed.
+   `./run.sh setup` and `./run.sh local-build` already run the root `npm ci`
+   when root `node_modules/` is missing or out of sync with
+   `package-lock.json` (sealed package builds such as rootfs and shell run
+   `node_modules/tsx` but never install it themselves); `host/` is separate:
    ```bash
    npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
    (cd host && npm ci)
