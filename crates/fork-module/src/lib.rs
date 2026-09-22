@@ -5205,6 +5205,12 @@ mod wasm {
         // Bump-backed like the two above. Reading a plan built before the reset
         // would read bytes the next allocation has overwritten.
         abandon_resident(import_plan());
+        // The captured externref set is bump-backed too. Abandoned HERE, at the
+        // one site every reset point reaches, rather than only where a capture
+        // begins: `fm_capture_begin` resets the bump before `begin_capture_impl`
+        // runs, and a push arriving between the two through a buffer that
+        // survived this reset would write into memory the builder now owns.
+        reset_captured_externrefs();
         ALLOC.reset();
     }
 
@@ -5917,13 +5923,22 @@ mod wasm {
         sides_ptr: u64,
         sides_count: u64,
     ) -> Result<u64, Errno> {
-        // A fresh capture records a fresh externref set. Without this a COW child,
-        // which inherits this module's memory, would report the handles its
-        // PARENT interned and lease references it does not hold.
-        reset_captured_externrefs();
         // Activation 0: open the fresh capture (reclaims prior fork state) and
         // publish its arena root.
         let root0 = begin_unwind_impl(0, channel_base)?;
+        // A fresh capture records a fresh externref set. Without this a COW child,
+        // which inherits this module's memory, would report the handles its
+        // PARENT interned and lease references it does not hold.
+        //
+        // AFTER `begin_unwind_impl`, not before it, and BEFORE the unwind drive
+        // at the end of this function, which is where the guest's interns
+        // arrive. The set is bump-backed, and `begin_unwind_impl` resets the
+        // bump when no capture session is armed: a set cleared before that
+        // reset is a buffer the reset hands back out, and a reclaimed bump
+        // region is REUSED, not poisoned, so the symptom would be a wrong
+        // externref lease rather than a trap. `capture_peer_tables_impl` has
+        // the same order for the same reason.
+        reset_captured_externrefs();
         // `arena_root == 0` asks the module to allocate the KFMS arena root
         // itself, instead of the host allocating it and handing the address in.
         //
@@ -9271,56 +9286,63 @@ mod wasm {
     //
     // Capture-scoped: cleared when a capture begins, so a child that inherits
     // this module's memory does not report its parent's handles.
-    const CAPTURED_EXTERNREF_MAX: usize = 4096;
-
-    #[repr(C, align(4))]
-    struct CapturedExternrefs(UnsafeCell<[u32; CAPTURED_EXTERNREF_MAX]>);
+    //
+    // BUMP-BACKED. The set is per-capture storage, and the per-fork heap is
+    // where per-capture storage belongs: it costs nothing while no capture is
+    // open (it was a 16 KiB static, reserved out of every guest's mmap window
+    // whether a program forked or not) and it has no cap, so the `-1` the host
+    // still handles from `fm_captured_externref_count` -- "more than the module
+    // can record" -- is no longer produced.
+    //
+    // Being bump-backed makes it a RESIDENT in `reset_bump_heap`'s sense: a
+    // buffer that survives a bump reset points into memory the next allocation
+    // reuses, and a reclaimed bump region is REUSED, not poisoned, so a push
+    // through such a buffer is a wrong externref lease rather than a trap. So
+    // the set is abandoned at every bump reset, in `reset_bump_heap` itself,
+    // and the clear sites that follow a bump reset (`begin_capture_impl`,
+    // `capture_peer_tables_impl`) clear AFTER it, never before.
+    struct CapturedExternrefs(UnsafeCell<Vec<u32>>);
     // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for CapturedExternrefs {}
-    static CAPTURED_EXTERNREFS: CapturedExternrefs =
-        CapturedExternrefs(UnsafeCell::new([0u32; CAPTURED_EXTERNREF_MAX]));
-    static CAPTURED_EXTERNREF_COUNT: AtomicU32 = AtomicU32::new(0);
-    /// Set when a capture interned more handles than the arena holds, so the
-    /// host is told to fall back rather than silently leasing a truncated set.
-    static CAPTURED_EXTERNREF_OVERFLOW: AtomicU32 = AtomicU32::new(0);
+    /// The handles this capture interned, in intern order.
+    static CAPTURED_EXTERNREFS: CapturedExternrefs = CapturedExternrefs(UnsafeCell::new(Vec::new()));
 
     fn record_captured_externref(handle: u32) {
-        let count = CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed) as usize;
-        if count >= CAPTURED_EXTERNREF_MAX {
-            CAPTURED_EXTERNREF_OVERFLOW.store(1, Ordering::Relaxed);
-            return;
-        }
-        // SAFETY: single-threaded; `count < CAPTURED_EXTERNREF_MAX` above.
-        let arena = unsafe { &mut *CAPTURED_EXTERNREFS.0.get() };
-        arena[count] = handle;
-        CAPTURED_EXTERNREF_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        // SAFETY: single-threaded per worker.
+        let set = unsafe { &mut *CAPTURED_EXTERNREFS.0.get() };
+        set.push(handle);
     }
 
+    /// NON-ALLOCATING, deliberately. This runs in `set_format_impl`, the
+    /// COW-child scrub, BEFORE `CHANNEL_BASE` is stored -- and with no static
+    /// heap floor the first allocation maps through the channel, so a reset
+    /// that allocated there would fail on a path with no way to report. The
+    /// root is emptied and the next `push` allocates. The old buffer is
+    /// forgotten rather than dropped, like every other bump-backed resident
+    /// (see `abandon_resident`): on a COW child it points into the parent's
+    /// reclaimed heap, and `dealloc` is a no-op either way.
     fn reset_captured_externrefs() {
-        CAPTURED_EXTERNREF_COUNT.store(0, Ordering::Relaxed);
-        CAPTURED_EXTERNREF_OVERFLOW.store(0, Ordering::Relaxed);
+        // SAFETY: single-threaded per worker.
+        let set = unsafe { &mut *CAPTURED_EXTERNREFS.0.get() };
+        core::mem::forget(core::mem::take(set));
     }
 
-    /// How many externref handles this capture interned, or -1 if it interned
-    /// more than the module can record (the host must then not trust the list).
+    /// How many externref handles this capture interned. The set is unbounded
+    /// now, so the `-1` the host handles for an untrustworthy set is produced
+    /// only if the count does not fit an `i32`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_captured_externref_count() -> i32 {
-        if CAPTURED_EXTERNREF_OVERFLOW.load(Ordering::Relaxed) != 0 {
-            return -1;
-        }
-        CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed) as i32
+        // SAFETY: single-threaded per worker.
+        let set = unsafe { &*CAPTURED_EXTERNREFS.0.get() };
+        i32::try_from(set.len()).unwrap_or(-1)
     }
 
     /// One recorded handle by index, or -1 if the index is past the count.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_captured_externref(index: u32) -> i64 {
-        let count = CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed);
-        if index >= count {
-            return -1;
-        }
-        // SAFETY: single-threaded; `index < count <= CAPTURED_EXTERNREF_MAX`.
-        let arena = unsafe { &*CAPTURED_EXTERNREFS.0.get() };
-        i64::from(arena[index as usize])
+        // SAFETY: single-threaded per worker.
+        let set = unsafe { &*CAPTURED_EXTERNREFS.0.get() };
+        set.get(index as usize).map_or(-1, |&handle| i64::from(handle))
     }
 
     /// Claim a fresh graph identity for a GC value before its fields are known,
