@@ -9,7 +9,13 @@ decision record is in the two SDD ledgers named at the end.
 
 - Branch: `brandonpayton/lane-f-fork-inversion`
 - Parent: `origin/brandonpayton/epoll-kernel-route`
-- Merge base: `0eb0c2e1bc87f6728663c1f0afd51cad4bbd577f`
+- Merge base: `0eb0c2e1bc87f6728663c1f0afd51cad4bbd577f`. At writing the parent has not advanced past
+  it (the PR #1350 head, whose worktree/ledger name is
+  `rust-first-abi44-reconcile`), so the merge is a fast-forward and
+  `git merge-tree` reports zero conflict hunks. Re-run
+  `git merge-tree $(git merge-base HEAD <parent>) HEAD <parent>` before
+  merging; if the parent has moved, the hotspots below are where conflicts
+  will land.
 - `origin` for this branch is stale at `161b7d6b9`; everything after is
   local-only until the maintainer pushes. Do not assume origin reflects HEAD.
 
