@@ -122,12 +122,16 @@ pattern that is about to be deleted.
 >
 > ### The sweep command, and a claim I withdrew
 >
-> **Use `npx vitest run test/fork- test/vfork-`, and expect 80 files.**
-> Measured with `npx vitest list`: `test/fork-` alone matches **74** files and
-> **none** of the `vfork-` ones, so passing both prefixes is NECESSARY rather
-> than redundant; together they give exactly 80. Eighty-one such `.test.ts`
-> files exist on disk — the two omitted are `fork-arena-cow-scrub` and
-> `fork-arena-lifetime`, skipped entirely pending Task 3.
+> **Use `npx vitest run test/fork- test/vfork-`, and expect 81 files.** A real
+> run reports 81; `npx vitest list` reports 80 because it omits files that are
+> entirely skipped (`fork-arena-cow-scrub` and `fork-arena-lifetime`, both
+> pending Task 3). **81 is the authoritative figure** — take it from a run,
+> not from `list`. A healthy full sweep takes about 500 seconds and fails only
+> `fork-host-import-runtime`, whose two tests are in the 64-file
+> `expected-failures.json` baseline.
+>
+> `test/fork-` alone matches **74** files and **none** of the `vfork-` ones,
+> so passing both prefixes is NECESSARY rather than redundant.
 >
 > Do NOT use a quoted glob: `npx vitest run "test/fork-*.test.ts"` matches
 > nothing, runs zero files and exits 1, which reads like an ordinary failure.
@@ -141,8 +145,13 @@ pattern that is about to be deleted.
 > came from `ls | grep -cE "^(fork|vfork)-"`, which counts helper modules like
 > `fork-module-capture-fixture.ts` that are not test files.
 >
-> If a sweep does hang, suspect your own build before the runner — and note
-> that explicit file subsets completed reliably throughout.
+> **If a sweep hangs, read it as a guest crash and bisect, not as a flaky
+> suite.** That is the useful form of this incident: a killed process worker
+> leaves the harness waiting forever, so a stall with no output and no summary
+> means a guest died, and the file the run stopped after is where to look.
+> The 45-minute stall died immediately after the file containing the SIGSEGVs.
+> Explicit file subsets completed reliably throughout and are the faster tool
+> while bisecting.
 
 Every task's requirements implicitly include this section.
 
