@@ -406,7 +406,7 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
 /// fast). Setting `KANDELO_SOURCE_CACHE_ROOT` to an absolute path gives a
 /// worktree its own isolated cache instead; leaving it unset shares the
 /// machine-wide default. See `docs/agent-guidance/packages-and-builds.md`.
-fn default_source_cache_root() -> Result<PathBuf, String> {
+pub(crate) fn default_source_cache_root() -> Result<PathBuf, String> {
     resolve_source_cache_root(
         std::env::var_os("KANDELO_SOURCE_CACHE_ROOT"),
         std::env::var_os("HOME"),
@@ -1237,8 +1237,12 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
     let node = resolve_clean_target(&graph, &target)?;
     let removal = clean_removal_set(&graph, &node);
 
-    let compiled_cache_root =
-        plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?.compiled;
+    let planned_cache =
+        plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?;
+    #[cfg(unix)]
+    let _cache_use =
+        crate::cache_gc::CacheUseLock::acquire_shared_if_present(&planned_cache.base, "clean")?;
+    let compiled_cache_root = planned_cache.compiled;
     let output_root = repo.join("local-binaries/source-only-v1");
 
     let mut removed_paths = Vec::new();
@@ -1844,6 +1848,12 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
     validate_run_roots(&repo, &set, &planned_cache.base, &output_intended)?;
     let cache_roots = materialize_planned_source_only_cache_roots(&planned_cache)?;
+    // Held for the whole run, children included: `cache-gc` cannot remove a
+    // generation while any build holds this, so an entry admitted here cannot
+    // vanish before the run is done with it.
+    #[cfg(unix)]
+    let cache_use =
+        crate::cache_gc::CacheUseLock::acquire_shared(&cache_roots.base, "local-build")?;
     fs::create_dir_all(&output_intended).map_err(|error| {
         format!(
             "create local-build output root {}: {error}",
@@ -2045,10 +2055,30 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     } else {
         Ok(None)
     };
+    // The compiled generations the published projection depends on --
+    // programs and the libraries under them -- recorded as this checkout's
+    // live root once publication succeeds.
+    let mut published_generations = None;
     let projection_finalization_error = match publication {
         Err(error) => Some(error),
         Ok(None) => None,
         Ok(Some(publication)) => {
+            published_generations = Some(
+                publication
+                    .receipts
+                    .iter()
+                    .filter_map(|(node, receipt)| match node {
+                        PlanNodeV1::Package { name, target_arch } => {
+                            Some(crate::cache_gc::LiveRootGenerationV1 {
+                                name: name.clone(),
+                                target_arch: target_arch.clone(),
+                                cache_key_sha256: receipt.cache_key_sha256.clone(),
+                            })
+                        }
+                        PlanNodeV1::Product { .. } => None,
+                    })
+                    .collect::<BTreeSet<_>>(),
+            );
             let projection_up_to_date = expected_receipt_nodes
                 .iter()
                 .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
@@ -2115,6 +2145,31 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     } else {
         AggregateOutcomeV1::Failed
     };
+    #[cfg(unix)]
+    {
+        if projection_finalization_error.is_none() {
+            if let Some(generations) = published_generations {
+                // Written while still holding the cache, so no collection
+                // can run between this run's last use and the record.
+                if let Err(error) = crate::cache_gc::record_live_root(
+                    &cache_roots.base,
+                    &repo,
+                    &output_root,
+                    generations,
+                ) {
+                    eprintln!("local-build warning: record cache root: {error}");
+                }
+            }
+        }
+        // The collection needs the exclusive lock, which this process's own
+        // shared hold would block.
+        drop(cache_use);
+        if outcome == AggregateOutcomeV1::Succeeded {
+            crate::cache_gc::auto_collect_after_build(&cache_roots.base);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = published_generations;
     let result = LocalBuildRunResultV1 {
         schema: 1,
         policy: LOCAL_SUPPORTED_POLICY.to_string(),

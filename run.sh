@@ -7,6 +7,8 @@
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh local-build [--json] Build all local SourceOnly VFS products
+#   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
+#                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
 #   ./run.sh browser [args]       Start the Vite browser dev server
@@ -30,6 +32,9 @@
 #                                 worktrees. Set it to isolate a worktree whose
 #                                 in-progress change alters cached artifact
 #                                 bytes. See docs/package-management.md.
+#   KANDELO_CACHE_GC_AUTO         Set to 0 to stop a successful local build
+#                                 from garbage-collecting the SourceOnly cache
+#                                 (at most once a day). See `./run.sh cache-gc`.
 #
 set -euo pipefail
 
@@ -2392,6 +2397,20 @@ cmd_rebuild() {
     info "Rebuild complete"
 }
 
+# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE]` —
+# garbage-collect the SourceOnly build cache this checkout uses
+# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). A dry run
+# unless --apply; the policy and its safety rules live in `xtask cache-gc`
+# (tools/xtask/src/cache_gc.rs) and docs/package-management.md.
+cmd_cache_gc() {
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "cache-gc: could not build xtask"
+        exit 1
+    }
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" cache-gc "$@"
+}
+
 cmd_local_build() {
     local emit_json=0
     if [ "${1:-}" = "--json" ]; then
@@ -2747,6 +2766,8 @@ cmd_list() {
     echo "  ./run.sh local-build                Build all seven local VFS products"
     echo "                                        and their package dependencies"
     echo "  ./run.sh local-build --json         Emit the canonical machine result"
+    echo "  ./run.sh cache-gc                   Show what cache GC would remove (dry run)"
+    echo "  ./run.sh cache-gc --apply           Remove unused SourceOnly cache entries"
     echo ""
     echo "${BOLD}Build targets:${RESET}"
     # kernel/sysroot/sysroot64/sdk/host/rootfs status below is inlined
@@ -2864,6 +2885,7 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     local-build) cmd_local_build "${@:2}" ;;
+    cache-gc) cmd_cache_gc "${@:2}" ;;
     setup)    cmd_setup "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;

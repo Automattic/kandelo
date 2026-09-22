@@ -50,6 +50,8 @@ mod archive_extract_member;
 mod build_deps;
 mod build_stamp;
 mod bundle_program;
+#[cfg(unix)]
+mod cache_gc;
 mod cargo_closure;
 mod determinism_check;
 mod dump_abi;
@@ -74,7 +76,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, verify-fresh"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -97,6 +99,8 @@ fn main() -> ExitCode {
         "check-determinism" => determinism_check::run(rest),
         "bootstrap" => local_build::run_bootstrap(rest),
         "clean" => local_build::run_clean(rest),
+        #[cfg(unix)]
+        "cache-gc" => cache_gc::run(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
