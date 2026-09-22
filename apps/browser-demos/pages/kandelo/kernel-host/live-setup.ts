@@ -1508,22 +1508,18 @@ async function bootProfile(
 
     if (profile.init?.web) {
       tick("initializing HTTP bridge...");
-      host.setWebPreview({
-        label: profile.init.web.label,
-        url: APP_PREFIX,
-        status: "starting",
-        message: "Waiting for services",
-      });
       try {
         // Unique id for this machine instance. Scopes the service worker's
         // cookie jar so sessions never share cookies. Temporary instances get a
         // fresh random id per boot; when machines become persistable this is
         // where their durable id would be passed instead.
         const sessionId = crypto.randomUUID();
-        await setupServiceWorkerFetchBridge(
+        // The service worker mints the machine name and app prefix; the
+        // web-preview URL comes from the returned prefix, not a static
+        // constant, so this tab addresses its own machine.
+        const { appPrefix } = await setupServiceWorkerFetchBridge(
           SW_URL,
           SW_SCOPE,
-          APP_PREFIX,
           kernel,
           HTTP_PORT,
           sessionId,
@@ -1536,6 +1532,12 @@ async function bootProfile(
           },
         );
         assertCurrent();
+        host.setWebPreview({
+          label: profile.init.web.label,
+          url: appPrefix,
+          status: "starting",
+          message: "Waiting for services",
+        });
         bridgeSent = true;
         maybeUpdateWebReadiness();
       } catch (err) {

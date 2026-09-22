@@ -71,21 +71,16 @@ export function attachBridgeToKernel(
 export async function setupServiceWorkerFetchBridge(
   swUrl: string,
   scopePath: string,
-  appPrefix: string,
   kernel: BrowserKernel,
   port: number,
   sessionId: string,
   options?: ServiceWorkerFetchBridgeOptions,
-): Promise<HttpBridgeHost> {
-  const bridge = await initServiceWorkerBridge(
-    swUrl,
-    scopePath,
-    appPrefix,
-    sessionId,
-  );
-  if (!bridge) {
+): Promise<{ bridge: HttpBridgeHost; name: string; appPrefix: string }> {
+  const created = await initServiceWorkerBridge(swUrl, scopePath, sessionId);
+  if (!created) {
     throw new Error("Service workers unavailable — HTTP bridge not initialized");
   }
+  const { bridge, name, appPrefix } = created;
   attachBridgeToKernel(bridge, kernel, port, options);
 
   if ("serviceWorker" in navigator) {
@@ -95,13 +90,15 @@ export async function setupServiceWorkerFetchBridge(
       if (!replyPort) return;
       const fresh = new HttpBridgeHost();
       attachBridgeToKernel(fresh, kernel, port, options);
+      // Re-assert this machine's SW-minted name so only its hosting tab answers
+      // the SW's restart handshake for that name.
       replyPort.postMessage(
-        { type: "bridge-restored", appPrefix, sessionId },
+        { type: "bridge-restored", name, appPrefix, sessionId },
         [fresh.getSwPort()],
       );
       options?.debugLog?.("Bridge restored after service worker restart");
     });
   }
 
-  return bridge;
+  return { bridge, name, appPrefix };
 }

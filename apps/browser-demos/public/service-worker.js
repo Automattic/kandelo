@@ -192,6 +192,110 @@ if (typeof window !== "undefined") {
   var SESSION_ID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+  // --- SW-minted machine names ---
+  // The service worker owns machine naming. On init-bridge it mints a
+  // three-word name (adjective-color-noun), so every live machine has a
+  // stable, shareable /app/<name>/ URL. The word lists are embedded here as
+  // static data (not build-injected): the classic worker cannot import a
+  // module, minting must always work — including in the Playwright harness
+  // that serves near-raw worker source — and the lists have no deployment
+  // variance. Three lists of >=128 distinct words give >=128^3 (~2M)
+  // combinations, so live collisions are negligible; mintInstanceName still
+  // regenerates on the rare hit. Keep each list alphabetized, deduplicated,
+  // lowercase [a-z], and within the 2-12 length bound the validator enforces.
+  var INSTANCE_ADJECTIVES = [
+    "able", "active", "agile", "alert", "amused", "ardent", "artful", "awake",
+    "balmy", "blithe", "bold", "bonny", "brave", "bright", "brisk", "bubbly",
+    "busy", "calm", "canny", "cheery", "chipper", "civil", "classy", "clean",
+    "clear", "clever", "cozy", "crafty", "crisp", "curious", "cute", "dapper",
+    "daring", "dashing", "deft", "dreamy", "driven", "eager", "early",
+    "earnest", "easy", "elated", "epic", "fair", "fancy", "festive", "fiery",
+    "fleet", "fond", "frank", "free", "fresh", "frisky", "funny", "fuzzy",
+    "gallant", "game", "genial", "gentle", "giddy", "gifted", "glad", "glossy",
+    "golden", "good", "graceful", "grand", "grateful", "groovy", "handy",
+    "happy", "hardy", "hearty", "helpful", "heroic", "honest", "hopeful",
+    "humble", "ideal", "jaunty", "jazzy", "jolly", "jovial", "joyful",
+    "joyous", "keen", "kind", "kindly", "lavish", "lean", "limber", "lithe",
+    "lively", "lofty", "loyal", "lucid", "lucky", "lush", "magic", "mellow",
+    "merry", "mighty", "mild", "mindful", "modest", "neat", "nice", "nimble",
+    "noble", "plucky", "poised", "polite", "prime", "prompt", "proud", "pure",
+    "quaint", "quick", "quiet", "quirky", "rapid", "ready", "regal", "robust",
+    "rosy", "ruddy", "sage", "saucy", "savvy", "serene", "sharp", "shiny",
+    "silky", "sleek", "smart", "snappy", "snazzy", "spry", "stable", "steady",
+    "sturdy", "suave", "sunny", "super", "sweet", "swift", "tame", "tender",
+    "tidy", "trusty", "upbeat", "urbane", "valiant", "vibrant", "vital",
+    "vivid", "warm", "wily", "winning", "wise", "witty", "zany", "zesty",
+  ];
+  var INSTANCE_COLORS = [
+    "amber", "amethyst", "apricot", "aqua", "ash", "auburn", "azure", "beige",
+    "beryl", "black", "blond", "blue", "blush", "brass", "bronze", "brown",
+    "buff", "burgundy", "canary", "caramel", "cardinal", "carmine", "celadon", "cerise",
+    "cerulean", "charcoal", "cherry", "chestnut", "chocolate", "cinnamon", "citrine", "claret",
+    "cobalt", "coffee", "copper", "coral", "cornflower", "cream", "crimson", "cyan",
+    "denim", "ebony", "ecru", "emerald", "fawn", "flax", "fuchsia", "garnet",
+    "ginger", "gold", "golden", "gray", "green", "heather", "henna", "honey",
+    "indigo", "ivory", "jade", "jasmine", "jet", "khaki", "lavender", "lemon",
+    "lilac", "lime", "magenta", "mahogany", "maize", "maroon", "mauve", "mint",
+    "mocha", "mulberry", "mustard", "navy", "ochre", "olive", "onyx", "opal",
+    "orange", "orchid", "peach", "pearl", "periwinkle", "pewter", "pine", "pink",
+    "plum", "puce", "pumpkin", "purple", "quartz", "raisin", "red", "rose",
+    "ruby", "russet", "rust", "saffron", "salmon", "sand", "sapphire", "scarlet",
+    "sepia", "sienna", "silver", "slate", "snow", "steel", "straw", "sunset",
+    "tan", "tangerine", "taupe", "teal", "terra", "topaz", "turquoise", "umber",
+    "verdant", "vermilion", "violet", "viridian", "wheat", "white", "wine", "wisteria",
+    "yellow",
+  ];
+  var INSTANCE_NOUNS = [
+    "acorn", "alder", "almond", "antler", "arbor", "aspen", "badger", "bamboo",
+    "basil", "beacon", "beaver", "birch", "bison", "bloom", "bluff", "bramble",
+    "branch", "breeze", "brook", "buck", "cactus", "canyon", "cedar", "cliff",
+    "clover", "comet", "cove", "crane", "creek", "crocus", "crow", "daisy",
+    "dale", "dawn", "delta", "dingo", "dolphin", "dove", "dune", "dusk",
+    "eagle", "egret", "elk", "ember", "falcon", "fawn", "fern", "finch",
+    "fjord", "forest", "fox", "frost", "garden", "glacier", "glade", "grove",
+    "gull", "harbor", "hare", "hawk", "hazel", "heath", "heron", "hollow",
+    "holly", "ibis", "inlet", "iris", "island", "jay", "juniper", "kelp",
+    "kestrel", "koala", "lagoon", "lake", "lark", "laurel", "leaf", "ledge",
+    "lily", "linden", "lotus", "lynx", "magpie", "mallard", "maple", "marsh",
+    "meadow", "mesa", "mist", "moose", "moss", "moth", "nectar", "nettle",
+    "oak", "oasis", "ocean", "orchard", "osprey", "otter", "owl", "palm",
+    "panther", "peak", "pebble", "petal", "pigeon", "plateau", "pond", "poppy",
+    "prairie", "quail", "rabbit", "raven", "reed", "reef", "ridge", "river",
+    "robin", "rowan", "sable", "sequoia", "shore", "sparrow", "spruce", "star",
+    "stone", "storm", "stream", "summit", "swan", "teak", "thistle", "thorn",
+    "thrush", "tiger", "timber", "tulip", "tundra", "valley", "vine", "vireo",
+    "walnut", "warbler", "wave", "willow", "wolf", "wombat", "wren", "yarrow",
+    "yew", "zephyr",
+  ];
+  var INSTANCE_NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}$/;
+
+  function pickWord(list) {
+    // crypto is available in a service worker global scope.
+    var idx = crypto.getRandomValues(new Uint32Array(1))[0] % list.length;
+    return list[idx];
+  }
+
+  function generateInstanceName() {
+    return pickWord(INSTANCE_ADJECTIVES) + "-" +
+      pickWord(INSTANCE_COLORS) + "-" + pickWord(INSTANCE_NOUNS);
+  }
+
+  function mintInstanceName() {
+    for (var attempt = 0; attempt < 50; attempt++) {
+      var candidate = generateInstanceName();
+      if (!instances.has(candidate)) return candidate;
+    }
+    throw new Error("service worker could not mint a unique instance name");
+  }
+
+  function isValidInstanceName(name) {
+    return typeof name === "string" && INSTANCE_NAME_PATTERN.test(name);
+  }
+
+  function appPrefixForName(name) {
+    return SCOPE_PATH + "app/" + name + "/";
+  }
+
   function utf8ByteLength(value) {
     return new TextEncoder().encode(value).byteLength;
   }
@@ -227,89 +331,50 @@ if (typeof window !== "undefined") {
     });
   }
 
-  // --- Bridge state (MessagePort-based HTTP protocol) ---
-  var bridgePort = null;
-  var pendingRequests = new Map();
+  // --- Bridge registry (per-machine, keyed by SW-minted name) ---
+  // Replaces the former single-instance globals. Each browser tab that boots a
+  // kernel gets its own InstanceRecord keyed by a minted name; the fetch
+  // handler picks the record per request so two tabs under one scope never
+  // clobber each other's routing.
+  var instances = new Map(); // name -> InstanceRecord
+  var clientToInstance = new Map(); // clientId -> name (viewing map)
+  // Request correlation stays global: request ids are unique across instances.
+  var pendingRequests = new Map(); // requestId -> {resolve, reject}
   var nextRequestId = 0;
-  var appPrefix = SCOPE_PATH + "app/";
-  // Set to true once a bridge has been configured (via init-bridge or cache restore).
-  // Used to distinguish "never configured" from "configured but SW restarted".
-  var bridgeConfigured = false;
-  var appClientIds = new Set();
 
-  // --- Bridge restoration state ---
-  // Single in-flight restoration promise, shared by concurrent fetch events
-  var bridgeRestorePromise = null;
-  // Advances with a successful queued init commit. Restoration and init use
-  // the mutation queue's order rather than changing intent around a claimed put.
-  var bridgeIntentVersion = 0;
-  // Changes only when a different live bridge/session is installed. Cookie
-  // writes capture this epoch so obsolete ports cannot persist into a successor.
-  var liveBridgeEpoch = 0;
-  // The only record restart trusts. Legacy records are migration inputs and
-  // cleanup candidates, never authority once this record exists.
-  var durableAuthority = null;
-  var legacyBridgeMigrationAllowed = false;
-  var bridgeStorageReadable = true;
+  function makeInstanceRecord(name, sessionId, owningClientId) {
+    return {
+      name: name,
+      appPrefix: appPrefixForName(name),
+      owningClientId: owningClientId || null,
+      bridgePort: null,
+      sessionId: sessionId,
+      cookieJar: new Map(),
+      liveBridgeEpoch: 0,
+      durableAuthority: null,
+      viewerClientIds: new Set(),
+      status: "live",
+    };
+  }
 
-  // Names used only to recognize the Task 3 pre-authority cookie records during
-  // one-time migration and best-effort cleanup. New state is never split across
-  // these keys. (No ":" in the legacy key — a "name:rest" string parses as a
-  // URL scheme when Cache Storage resolves it.)
-  var COOKIE_JAR_KEY_PREFIX = "cookie-jar-";
-  // The session whose cookie jar is currently loaded in memory. Learned from
-  // the page via init-bridge / bridge-restored; null until the bridge connects.
-  var currentSessionId = null;
-  // Resolves once the current session's jar has been installed.
-  var cookieJarReady = Promise.resolve();
-
-  // Eagerly validate the complete authority so its prefix can identify bridged
-  // requests after a worker restart. The jar stays durable-only until a client
-  // explicitly restores the exact authority prefix and session.
-  var appPrefixReady = caches.open(BRIDGE_CACHE).then(function (cache) {
-    return cache.match(BRIDGE_AUTHORITY_KEY).then(function (response) {
-      if (response) {
-        return response.text().then(function (text) {
-          var authority = bridgeAuthorityFromJson(text);
-          if (authority) {
-            durableAuthority = authority;
-            appPrefix = authority.appPrefix;
-            bridgeConfigured = true;
-          }
-          // A present-but-invalid authority is quarantined. Never combine it
-          // with older prefix/jar records to manufacture hybrid restart state.
-        });
-      }
-      legacyBridgeMigrationAllowed = true;
-      // Accept the Task 3 pre-authority record only as a migration input when
-      // the complete authority key is genuinely absent.
-      return cache.match("app-prefix").then(function (legacyResponse) {
-        return legacyResponse ? legacyResponse.text() : null;
-      }).then(function (prefix) {
-        if (isValidAppPrefix(prefix)) {
-          appPrefix = prefix;
-          bridgeConfigured = true;
-        }
-      });
-    });
-  }).catch(function () {
-    // Without a complete read, a later init cannot safely replace unknown
-    // authority bytes with an empty jar. Fail transitions until worker restart.
-    bridgeStorageReadable = false;
-  });
-  // Every authoritative write and live bridge transition uses this one queue.
-  var stateMutationQueue = appPrefixReady;
+  // TASK 2: per-instance durable restore. Task 1 mints and routes entirely in
+  // memory, so a restarted worker starts with an empty registry until Task 2
+  // repopulates `instances` from name-keyed durable authority and re-runs the
+  // need-bridge recovery. Until then the durable read path is a no-op that
+  // resolves immediately; the fetch handler still awaits it for the lazy-VFS
+  // classification ordering that a future restore will need.
+  var appPrefixReady = Promise.resolve();
 
   // --- Cookie jar ---
-  // (Set-Cookie on synthetic SW responses is ignored by the browser,
-  // so the SW stores cookies and injects them into outgoing requests)
+  // (Set-Cookie on synthetic SW responses is ignored by the browser, so the SW
+  // stores cookies per instance and injects them into outgoing requests.)
   //
   // Keyed by name AND path: cookies are identified by (name, domain, path) per
   // RFC 6265. WordPress sets the same auth cookie name for both /wp-admin
   // (ADMIN_COOKIE_PATH) and /wp-content/plugins (PLUGINS_COOKIE_PATH); keying by
   // name alone would drop one, breaking auth for that subtree. Domain is always
-  // this origin, so name + path is a sufficient key.
-  var cookieJar = new Map();
+  // this origin, so name + path is a sufficient key. Each InstanceRecord owns
+  // its own jar (record.cookieJar); jars are never shared between machines.
 
   function cookieKey(cookie) {
     return cookie.name + "\n" + cookie.path;
@@ -392,10 +457,10 @@ if (typeof window !== "undefined") {
     return mutated;
   }
 
-  function getCookiesForPath(path, bridgeEpoch, sessionId) {
+  function getCookiesForPath(record, path) {
     var matches = [];
     var expiredKeys = [];
-    cookieJar.forEach(function (cookie, key) {
+    record.cookieJar.forEach(function (cookie, key) {
       if (cookie.expires !== undefined && cookie.expires < Date.now()) {
         expiredKeys.push(key);
         return;
@@ -404,21 +469,11 @@ if (typeof window !== "undefined") {
         matches.push(cookie);
       }
     });
-    // Expiration persistence uses the same authority queue and epoch guard as
-    // Set-Cookie. It is non-blocking for this outgoing request.
-    if (expiredKeys.length > 0) {
-      scheduleCookieJarMutation(
-        bridgeEpoch,
-        sessionId,
-        function (nextJar) {
-          var mutated = false;
-          expiredKeys.forEach(function (key) {
-            if (nextJar.delete(key)) mutated = true;
-          });
-          return mutated;
-        },
-      ).catch(function () {});
-    }
+    // Task 1 keeps jars in memory, so expiration is a direct prune of the
+    // record's own jar (no durable write to schedule).
+    expiredKeys.forEach(function (key) {
+      record.cookieJar.delete(key);
+    });
     // RFC 6265: when several cookies match, list longer paths first.
     matches.sort(function (a, b) {
       return b.path.length - a.path.length;
@@ -430,306 +485,55 @@ if (typeof window !== "undefined") {
       .join("; ");
   }
 
-  // --- Authoritative bridge persistence (survives SW termination/restart) ---
-  function cookieJarKeyFor(sessionId) {
-    if (!isValidSessionId(sessionId)) {
-      throw new Error("service worker bridge session id is invalid");
-    }
-    return COOKIE_JAR_KEY_PREFIX + sessionId;
-  }
-
-  function cookieRecordsFromJar(jar) {
-    var records = [];
-    jar.forEach(function (cookie) {
-      records.push(cookie);
+  // Prune every instance whose owning client (host tab) has gone away. Task 1
+  // does not persist instances, so teardown is a pure in-memory prune; Task 3
+  // adds proactive offline notification to viewers.
+  function teardownInstancesOwnedBy(clientId) {
+    if (!clientId) return;
+    instances.forEach(function (record, name) {
+      if (record.owningClientId === clientId) instances.delete(name);
     });
-    return records;
-  }
-
-  function cookieJarFromRecords(records) {
-    if (
-      !Array.isArray(records) ||
-      records.length > BRIDGE_AUTHORITY_MAX_COOKIES
-    ) {
-      return null;
-    }
-    var restored = new Map();
-    var now = Date.now();
-    for (var i = 0; i < records.length; i++) {
-      var cookie = records[i];
-      if (!isValidCookieRecord(cookie)) return null;
-      if (cookie.expires !== undefined && cookie.expires < now) continue;
-      restored.set(cookieKey(cookie), cookie);
-    }
-    return restored;
-  }
-
-  function cloneCookieJar(jar) {
-    var clone = new Map();
-    jar.forEach(function (cookie, key) {
-      clone.set(key, {
-        name: cookie.name,
-        value: cookie.value,
-        path: cookie.path,
-        expires: cookie.expires,
-      });
-    });
-    return clone;
-  }
-
-  function cookieJarFromJson(text) {
-    if (!text) return new Map();
-    try {
-      return cookieJarFromRecords(JSON.parse(text)) || new Map();
-    } catch (_error) {
-      return new Map();
-    }
-  }
-
-  function bridgeAuthorityFromJson(text) {
-    if (
-      !text || utf8ByteLength(text) > BRIDGE_AUTHORITY_MAX_BYTES
-    ) {
-      return null;
-    }
-    try {
-      var record = JSON.parse(text);
-      if (
-        !record || record.version !== BRIDGE_AUTHORITY_VERSION ||
-        !Number.isSafeInteger(record.revision) || record.revision < 0 ||
-        record.revision >= BRIDGE_REVISION_LIMIT ||
-        !isValidAppPrefix(record.appPrefix) ||
-        !isValidSessionId(record.sessionId)
-      ) {
-        return null;
-      }
-      var restoredJar = cookieJarFromRecords(record.cookies);
-      if (!restoredJar) return null;
-      return {
-        version: BRIDGE_AUTHORITY_VERSION,
-        revision: record.revision,
-        appPrefix: record.appPrefix,
-        sessionId: record.sessionId,
-        cookieJar: restoredJar,
-      };
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  function nextBridgeAuthority(nextAppPrefix, nextSessionId, nextCookieJar) {
-    var nextRevision = durableAuthority ? durableAuthority.revision + 1 : 1;
-    if (
-      !Number.isSafeInteger(nextRevision) || nextRevision < 0 ||
-      nextRevision >= BRIDGE_REVISION_LIMIT
-    ) {
-      throw new Error("service worker bridge revision limit reached");
-    }
-    return {
-      version: BRIDGE_AUTHORITY_VERSION,
-      revision: nextRevision,
-      appPrefix: nextAppPrefix,
-      sessionId: nextSessionId,
-      cookieJar: nextCookieJar,
-    };
-  }
-
-  function bridgeAuthorityResponse(authority) {
-    var text = JSON.stringify({
-      version: authority.version,
-      revision: authority.revision,
-      appPrefix: authority.appPrefix,
-      sessionId: authority.sessionId,
-      cookies: cookieRecordsFromJar(authority.cookieJar),
-    });
-    if (!bridgeAuthorityFromJson(text)) {
-      throw new Error("service worker bridge authority is outside its bounds");
-    }
-    return new Response(text, {
-      headers: { "Content-Type": "application/json" },
+    clientToInstance.forEach(function (name, cid) {
+      if (!instances.has(name)) clientToInstance.delete(cid);
     });
   }
 
-  function writeBridgeAuthority(authority) {
-    // Validate and materialize all bytes before Cache Storage is touched.
-    var response = bridgeAuthorityResponse(authority);
-    return caches.open(BRIDGE_CACHE).then(function (cache) {
-      // This replacement is the sole durable linearization point. The response
-      // contains the complete prefix/session/jar authority restart will trust.
-      return cache.put(
-        BRIDGE_AUTHORITY_KEY,
-        response,
-      ).then(function () {
-        return cache;
-      });
-    });
-  }
-
-  function enqueueStateMutation(operation) {
-    var mutation = stateMutationQueue.then(operation);
-    stateMutationQueue = mutation.catch(function () {});
-    return mutation;
-  }
-
-  function readLegacyCookieJarForSession(sessionId) {
-    return caches.open(BRIDGE_CACHE).then(function (cache) {
-      return cache.match(cookieJarKeyFor(sessionId));
-    }).then(function (response) {
-      return response ? response.text().then(cookieJarFromJson) : new Map();
-    });
-  }
-
-  function bridgeCacheEntryName(request) {
-    return new URL(request.url).pathname.split("/").pop() || "";
-  }
-
-  function startLegacyBridgeCleanup(cache) {
-    return cache.keys().then(function (requests) {
-      return requests.filter(function (request) {
-        var name = bridgeCacheEntryName(request);
-        return name === "app-prefix" ||
-          name.indexOf(COOKIE_JAR_KEY_PREFIX) === 0;
-      }).reduce(function (ready, request) {
-        return ready.then(function () {
-          return cache.delete(request);
-        });
-      }, Promise.resolve());
-    }).catch(function () {
-      // Legacy cleanup is never part of authority or readiness correctness.
-    });
-  }
-
-  function prepareBridgeTransition(nextAppPrefix, nextSessionId) {
-    if (!bridgeStorageReadable) {
-      return Promise.reject(
-        new Error("service worker bridge authority could not be read"),
-      );
-    }
-    var jarReady;
-    if (durableAuthority) {
-      jarReady = Promise.resolve(
-        durableAuthority.sessionId === nextSessionId
-          ? cloneCookieJar(durableAuthority.cookieJar)
-          : new Map(),
-      );
-    } else if (legacyBridgeMigrationAllowed) {
-      jarReady = readLegacyCookieJarForSession(nextSessionId);
-    } else {
-      jarReady = Promise.resolve(new Map());
-    }
-    return jarReady.then(function (nextCookieJar) {
-      return nextBridgeAuthority(
-        nextAppPrefix,
-        nextSessionId,
-        nextCookieJar,
-      );
-    });
-  }
-
-  function scheduleCookieJarMutation(
-    bridgeEpoch,
-    sessionId,
-    mutateJar,
-  ) {
-    return enqueueStateMutation(function () {
-      if (
-        bridgeEpoch !== liveBridgeEpoch || sessionId !== currentSessionId ||
-        !durableAuthority || durableAuthority.sessionId !== sessionId
-      ) {
-        return false;
-      }
-      var nextJar = cloneCookieJar(cookieJar);
-      if (!mutateJar(nextJar, appPrefix)) return false;
-      var authority = nextBridgeAuthority(appPrefix, sessionId, nextJar);
-      return writeBridgeAuthority(authority).then(function () {
-        // No await follows the durable commit. Keep its in-memory mirror even
-        // if a synchronous navigation reset advanced the live epoch meanwhile,
-        // but never let that obsolete write repopulate the cleared live jar.
-        durableAuthority = authority;
-        if (
-          bridgeEpoch === liveBridgeEpoch && sessionId === currentSessionId
-        ) {
-          cookieJar = nextJar;
-          return true;
-        }
-        return false;
-      });
-    });
-  }
-
-  // Forget the in-memory session so the next page's requests carry no cookies
-  // until it establishes its own session. Durable authority remains available
-  // for an explicit, validated restoration.
-  function resetSessionState() {
-    liveBridgeEpoch += 1;
-    currentSessionId = null;
-    cookieJar = new Map();
-    cookieJarReady = Promise.resolve();
-  }
-
-  // --- Bridge port setup ---
-  function initBridgePort(port) {
+  // --- Bridge port setup (per instance) ---
+  // http-response/http-error resolve the global pendingRequests map; the owning
+  // record just records which port is live. (Task 2 wraps this in a durable
+  // authority commit; for Task 1 minting is in-memory only.)
+  function initBridgePortFor(record, port) {
     port.onmessage = function (event) {
-      var msg = event.data;
-      if (msg && msg.type === "http-response") {
-        var pending = pendingRequests.get(msg.requestId);
+      var m = event.data;
+      if (m && m.type === "http-response") {
+        var pending = pendingRequests.get(m.requestId);
         if (pending) {
-          pendingRequests.delete(msg.requestId);
+          pendingRequests.delete(m.requestId);
           pending.resolve({
-            status: msg.status,
-            headers: msg.headers,
-            body: msg.body,
+            status: m.status,
+            headers: m.headers,
+            body: m.body,
           });
         }
-      } else if (msg && msg.type === "http-error") {
-        var pending2 = pendingRequests.get(msg.requestId);
+      } else if (m && m.type === "http-error") {
+        var pending2 = pendingRequests.get(m.requestId);
         if (pending2) {
-          pendingRequests.delete(msg.requestId);
-          pending2.reject(new Error(msg.error || "Bridge request failed"));
+          pendingRequests.delete(m.requestId);
+          pending2.reject(new Error(m.error || "Bridge request failed"));
         }
       }
     };
-    bridgePort = port;
+    record.bridgePort = port;
   }
 
-  function commitBridgeState(port, authority) {
-    appPrefix = authority.appPrefix;
-    bridgeConfigured = true;
-    currentSessionId = authority.sessionId;
-    cookieJar = authority.cookieJar;
-    cookieJarReady = Promise.resolve();
-    liveBridgeEpoch += 1;
-    initBridgePort(port);
-  }
-
-  function scheduleBridgeTransition(port, replyPort, nextAppPrefix, nextSessionId) {
-    return enqueueStateMutation(function () {
-      return prepareBridgeTransition(nextAppPrefix, nextSessionId).then(
-        function (authority) {
-          return writeBridgeAuthority(authority).then(function (cache) {
-            // cache.put above is the commit point. Do not await anything between
-            // it and in-memory authority, live bridge, and readiness.
-            durableAuthority = authority;
-            legacyBridgeMigrationAllowed = false;
-            bridgeIntentVersion += 1;
-            commitBridgeState(port, authority);
-            replyPort.postMessage({ type: "bridge-ready" });
-            // Legacy bytes are no longer authoritative; cleanup is best effort.
-            startLegacyBridgeCleanup(cache);
-          });
-        },
-      );
-    });
-  }
-
-  function bridgeFetch(request) {
-    if (!bridgePort) {
+  function bridgeFetch(record, request) {
+    if (!record.bridgePort) {
       return Promise.reject(new Error("Bridge port not initialized"));
     }
     var requestId = nextRequestId++;
     return new Promise(function (resolve, reject) {
       pendingRequests.set(requestId, { resolve: resolve, reject: reject });
-      bridgePort.postMessage({
+      record.bridgePort.postMessage({
         type: "http-request",
         requestId: requestId,
         method: request.method,
@@ -737,207 +541,6 @@ if (typeof window !== "undefined") {
         headers: request.headers,
         body: request.body,
       });
-    });
-  }
-
-  // --- Bridge restoration ---
-  // When the browser terminates and restarts this SW, bridgePort is lost.
-  // These functions ask a client page to re-establish the bridge.
-
-  function ensureBridge() {
-    if (bridgePort) return Promise.resolve(true);
-    if (bridgeRestorePromise) return bridgeRestorePromise;
-
-    bridgeRestorePromise = requestBridgeFromClient().then(function (result) {
-      bridgeRestorePromise = null;
-      return result;
-    }).catch(function () {
-      bridgeRestorePromise = null;
-      return false;
-    });
-    return bridgeRestorePromise;
-  }
-
-  function requestBridgeFromClient() {
-    var restoreObservation = {
-      intent: bridgeIntentVersion,
-      authorityRevision: durableAuthority ? durableAuthority.revision : null,
-      liveEpoch: liveBridgeEpoch,
-    };
-    return self.clients.matchAll({ type: "window" }).then(function (allClients) {
-      if (allClients.length === 0) return false;
-
-      return new Promise(function (resolve) {
-        var attemptState = "discovering";
-        var responsePorts = [];
-        var candidateQueue = Promise.resolve();
-        var timeout;
-
-        function closeResponsePorts() {
-          responsePorts.forEach(function (port) {
-            port.onmessage = null;
-            port.close();
-          });
-          responsePorts = [];
-        }
-
-        function finish(result) {
-          if (attemptState === "settled") return;
-          attemptState = "settled";
-          clearTimeout(timeout);
-          closeResponsePorts();
-          resolve(result);
-        }
-
-        function attemptIsDiscovering() {
-          return attemptState === "discovering";
-        }
-
-        function claimAttemptForCommit() {
-          if (!attemptIsDiscovering()) return false;
-          // Cache.put cannot be canceled. Once this queued candidate owns the
-          // commit, discovery timeout and later candidates must stand behind it.
-          attemptState = "committing";
-          clearTimeout(timeout);
-          closeResponsePorts();
-          return true;
-        }
-
-        timeout = setTimeout(function () {
-          if (attemptIsDiscovering()) finish(false);
-        }, 5000);
-
-        allClients.forEach(function (client) {
-          var ch = new MessageChannel();
-          responsePorts.push(ch.port1);
-          ch.port1.onmessage = function (event) {
-            var data = event.data;
-            var candidatePort = event.ports[0];
-            if (!attemptIsDiscovering()) {
-              if (candidatePort && typeof candidatePort.close === "function") {
-                candidatePort.close();
-              }
-              return;
-            }
-            if (data && data.type === "bridge-restored") {
-              if (
-                !isValidAppPrefix(data.appPrefix) ||
-                !isValidSessionId(data.sessionId) ||
-                !isBridgeMessagePort(candidatePort)
-              ) {
-                postInvalidScopeConfig(event.source);
-                if (
-                  candidatePort && typeof candidatePort.close === "function"
-                ) {
-                  candidatePort.close();
-                }
-                return;
-              }
-              // Candidates are evaluated in arrival order. A well-formed but
-              // stale tab does not settle the attempt or starve later clients.
-              candidateQueue = candidateQueue.then(function () {
-                if (!attemptIsDiscovering()) {
-                  candidatePort.close();
-                  return;
-                }
-                return scheduleBridgeRestoration(
-                  candidatePort,
-                  data.appPrefix,
-                  data.sessionId,
-                  restoreObservation,
-                  attemptIsDiscovering,
-                  claimAttemptForCommit,
-                ).then(function (result) {
-                  if (!result.installed) candidatePort.close();
-                  if (result.satisfied) finish(true);
-                  else if (attemptState === "committing") finish(false);
-                });
-              }).catch(function () {
-                candidatePort.close();
-                if (attemptState === "committing") finish(false);
-              });
-            }
-          };
-          try {
-            client.postMessage({ type: "need-bridge" }, [ch.port2]);
-          } catch (_error) {
-            ch.port1.close();
-          }
-        });
-      });
-    });
-  }
-
-  function restorationObservationIsCurrent(observation) {
-    return observation.intent === bridgeIntentVersion &&
-      observation.liveEpoch === liveBridgeEpoch &&
-      observation.authorityRevision === (
-        durableAuthority ? durableAuthority.revision : null
-      );
-  }
-
-  function scheduleBridgeRestoration(
-    port,
-    restoredAppPrefix,
-    restoredSessionId,
-    observation,
-    isAttemptActive,
-    claimAttemptForCommit,
-  ) {
-    return enqueueStateMutation(function () {
-      // Both intent and committed/live observations must still match. This
-      // catches an init that was already pending when restoration began.
-      if (
-        !isAttemptActive() ||
-        !restorationObservationIsCurrent(observation)
-      ) {
-        return { satisfied: Boolean(bridgePort), installed: false };
-      }
-
-      if (durableAuthority) {
-        if (
-          durableAuthority.appPrefix !== restoredAppPrefix ||
-          durableAuthority.sessionId !== restoredSessionId
-        ) {
-          return { satisfied: false, installed: false };
-        }
-        if (!claimAttemptForCommit()) {
-          return { satisfied: Boolean(bridgePort), installed: false };
-        }
-        commitBridgeState(port, durableAuthority);
-        return { satisfied: true, installed: true };
-      }
-
-      // Migrate the prior Task 3 records only when no full authority exists.
-      // The cached prefix must agree with the client before reading its jar.
-      if (!bridgeConfigured || appPrefix !== restoredAppPrefix) {
-        return { satisfied: false, installed: false };
-      }
-      return readLegacyCookieJarForSession(restoredSessionId).then(
-        function (restoredJar) {
-          if (
-            !isAttemptActive() ||
-            !restorationObservationIsCurrent(observation)
-          ) {
-            return { satisfied: Boolean(bridgePort), installed: false };
-          }
-          var authority = nextBridgeAuthority(
-            restoredAppPrefix,
-            restoredSessionId,
-            restoredJar,
-          );
-          if (!claimAttemptForCommit()) {
-            return { satisfied: Boolean(bridgePort), installed: false };
-          }
-          return writeBridgeAuthority(authority).then(function (cache) {
-            durableAuthority = authority;
-            legacyBridgeMigrationAllowed = false;
-            commitBridgeState(port, authority);
-            startLegacyBridgeCleanup(cache);
-            return { satisfied: true, installed: true };
-          });
-        },
-      );
     });
   }
 
@@ -971,30 +574,34 @@ if (typeof window !== "undefined") {
     if (msg && msg.type === "init-bridge") {
       var port = event.ports[0];
       var replyPort = event.ports[1];
+      // The SW mints the name; the page no longer supplies an appPrefix. Only
+      // the session id and the transferred ports are page-supplied and must be
+      // validated before any registry mutation.
       if (
-        !isValidAppPrefix(msg.appPrefix) ||
         !isValidSessionId(msg.sessionId) ||
         !isBridgeMessagePort(port) || !isBridgeMessagePort(replyPort)
       ) {
         postInvalidScopeConfig(replyPort);
         return;
       }
-
-      // waitUntil owns preparation and the single authority replacement. Live
-      // state and readiness advance synchronously only after that put commits.
-      event.waitUntil(
-        scheduleBridgeTransition(
-          port,
-          replyPort,
-          msg.appPrefix,
-          msg.sessionId,
-        ).catch(function () {
-          replyPort.postMessage({
-            type: "bridge-error",
-            code: "bridge-init-failed",
-          });
-        }),
+      var name = mintInstanceName();
+      var record = makeInstanceRecord(
+        name,
+        msg.sessionId,
+        event.source && event.source.id,
       );
+      instances.set(name, record);
+      if (record.owningClientId) {
+        clientToInstance.set(record.owningClientId, name);
+      }
+      initBridgePortFor(record, port);
+      record.status = "live";
+      record.liveBridgeEpoch += 1;
+      replyPort.postMessage({
+        type: "bridge-ready",
+        name: name,
+        appPrefix: record.appPrefix,
+      });
     }
   });
 
@@ -1221,7 +828,7 @@ if (typeof window !== "undefined") {
     return request.method === "GET" &&
       request.mode !== "navigate" &&
       !isCrossOrigin(url) &&
-      !isAppPath(url.pathname) &&
+      instanceNameFromPath(url.pathname) === null &&
       url.search === "" &&
       url.hash === "" &&
       url.pathname.startsWith(SCOPE_PATH + "vfs-groups/");
@@ -1256,98 +863,67 @@ if (typeof window !== "undefined") {
     });
   }
 
-  function appRootPath() {
-    return appPrefix.endsWith("/") ? appPrefix.slice(0, -1) : appPrefix;
+  // Return the machine name if `pathname` addresses SCOPE_PATH + "app/<name>"
+  // or "app/<name>/..." with a validly-formatted (untrusted) name, else null.
+  // The strict format check runs before any registry use.
+  function instanceNameFromPath(pathname) {
+    var base = SCOPE_PATH + "app/";
+    if (pathname.indexOf(base) !== 0) return null;
+    var rest = pathname.slice(base.length); // "<name>" or "<name>/..."
+    var seg = rest.split("/")[0];
+    return isValidInstanceName(seg) ? seg : null;
   }
 
-  function appBasePath() {
-    var root = appRootPath();
-    var idx = root.lastIndexOf("/");
-    return idx > 0 ? root.slice(0, idx) : "";
+  function appRootPathFor(record) {
+    return record.appPrefix.slice(0, -1); // "/a/app/<name>"
   }
 
-  function isAppPath(pathname) {
-    return pathname === appRootPath() || pathname.startsWith(appPrefix);
+  function stripAppPathFor(record, pathname) {
+    var root = appRootPathFor(record);
+    if (pathname === root) return "/";
+    return pathname.slice(root.length);
   }
 
-  function stripAppPath(pathname) {
-    if (pathname === appRootPath()) return "/";
-    return pathname.slice(appRootPath().length);
-  }
-
-  function getRequestReferer(request) {
-    // In a service worker, the Referer header is not reliably exposed
-    // through Headers. Request.referrer is the fetch-owned source of truth;
-    // keep the header fallback for engines that expose it.
-    return request.referrer || request.headers.get("referer") || "";
-  }
-
-  function getAppReferer(request) {
-    var referer = getRequestReferer(request);
-    if (!referer) return null;
-    try {
-      var refererUrl = new URL(referer);
-      if (
-        refererUrl.origin === self.location.origin &&
-        isAppPath(refererUrl.pathname)
-      ) {
-        return refererUrl;
-      }
-    } catch (e) {
-      /* malformed referer — ignore */
+  // Record that `event`'s client(s) are viewing this machine, so nameless
+  // root-relative subresources they emit can be attributed back to it. This
+  // generalizes the former single-instance appClientIds set.
+  function markViewer(record, event) {
+    if (event.clientId) {
+      clientToInstance.set(event.clientId, record.name);
+      record.viewerClientIds.add(event.clientId);
     }
-    return null;
-  }
-
-  function isNavigationRequest(request) {
-    return request.mode === "navigate" || request.destination === "document";
-  }
-
-  function isAppClient(event) {
-    return event.clientId && appClientIds.has(event.clientId);
-  }
-
-  function isAppInitiatedRequest(event, request) {
-    return getAppReferer(request) !== null || isAppClient(event);
-  }
-
-  function shouldRedirectIntoApp(event, request, url) {
-    return !isAppPath(url.pathname) && isAppInitiatedRequest(event, request);
-  }
-
-  function markAppClient(event, request) {
-    var appReferer = getAppReferer(request);
-    if (isNavigationRequest(request)) {
-      if (event.resultingClientId) {
-        appClientIds.add(event.resultingClientId);
-      }
-      if (appReferer !== null && event.clientId) {
-        appClientIds.add(event.clientId);
-      }
-      return;
-    }
-
-    // A shell page may fetch /app/ as a readiness probe. That must not turn
-    // the shell page into an app client, or later gallery navigations are
-    // redirected under /app/. Only subresource/fetch requests from a document
-    // already inside appPrefix should mark their client.
-    if (appReferer !== null && event.clientId) {
-      appClientIds.add(event.clientId);
+    if (event.resultingClientId) {
+      clientToInstance.set(event.resultingClientId, record.name);
+      record.viewerClientIds.add(event.resultingClientId);
     }
   }
 
+  // Resolve the machine a fetch belongs to: a name in the path addresses one
+  // directly (unknown but well-formed -> null, never a fallback to another
+  // machine); otherwise attribute by the client's viewing map.
+  function resolveInstanceForEvent(event, url) {
+    var name = instanceNameFromPath(url.pathname);
+    if (name) return instances.get(name) || null;
+    var viewed = event.clientId ? clientToInstance.get(event.clientId) : null;
+    return viewed ? (instances.get(viewed) || null) : null;
+  }
+
+  // Map a nameless root-relative path into a machine's app prefix. Strips the
+  // deployment scope prefix (if present) before composing the app root, so a
+  // "/base/foo" request from a "/base/" deployment becomes
+  // "/base/app/<name>/foo".
   function pathInsideApp(pathname) {
-    var base = appBasePath();
-    if (base && pathname === base) return "/";
-    if (base && pathname.startsWith(base + "/")) {
-      return pathname.slice(base.length);
+    var scopeRoot = SCOPE_PATH === "/" ? "" : SCOPE_PATH.slice(0, -1);
+    if (scopeRoot && pathname === scopeRoot) return "/";
+    if (scopeRoot && pathname.indexOf(scopeRoot + "/") === 0) {
+      return pathname.slice(scopeRoot.length);
     }
     return pathname;
   }
 
-  function redirectIntoApp(url) {
+  function redirectIntoApp(record, url) {
     var redirectUrl = new URL(url.href);
-    redirectUrl.pathname = appRootPath() + pathInsideApp(url.pathname);
+    redirectUrl.pathname = appRootPathFor(record) + pathInsideApp(url.pathname);
     return new Response(null, {
       status: 307,
       headers: appRedirectHeaders(redirectUrl.href),
@@ -1514,66 +1090,63 @@ if (typeof window !== "undefined") {
     });
   }
 
-  function fetchRestoredAppRequest(event, request, url) {
-    markAppClient(event, request);
-    return ensureBridge().then(function (restored) {
-      if (restored) return handleAppRequest(request, url);
-      return new Response(
-        "Service worker bridge unavailable — please reload the page",
-        {
-          status: 503,
-          headers: {
-            "Content-Type": "text/plain",
-            "Cross-Origin-Embedder-Policy": "require-corp",
-            "Cross-Origin-Resource-Policy": "same-origin",
-          },
+  // A well-formed but unknown or offline machine resolves to no instance. Task
+  // 3 upgrades this to a shared 503 HTML page; the spec makes offline/unknown a
+  // 503, so Task 1 serves a plain-text 503 with the isolation headers.
+  function offlineOrUnknownResponse(name) {
+    return new Response(
+      "Kandelo machine " + name + " is unavailable — please reload the page",
+      {
+        status: 503,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cross-Origin-Embedder-Policy": "require-corp",
+          "Cross-Origin-Resource-Policy": "same-origin",
         },
-      );
-    });
+      },
+    );
+  }
+
+  // TASK 2: real restore path (per-instance need-bridge + durable authority).
+  // Task 1 has no restart recovery, so a named request to a live record whose
+  // bridgePort is null resolves to the same unavailable response as an unknown
+  // machine.
+  function fetchRestoredAppRequest(record, event, request, url) {
+    return Promise.resolve(offlineOrUnknownResponse(record.name));
   }
 
   // --- Fetch interception ---
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
-    // A top-level navigation to a same-origin, non-app page means a new machine
-    // instance is (re)initializing. Forget the previous session's cookies so
-    // they can never be served to the new page during the window before it
-    // establishes its own session (init-bridge). The kept-alive SW would
-    // otherwise serve the prior session's jar to the reloaded page.
+    // A top-level navigation to a same-origin, non-app page means the host tab
+    // is leaving the machines it owns. Tear them down so a navigated-away host
+    // does not linger in the registry. (Full offline notification is Task 3.)
     if (
       event.request.mode === "navigate" &&
       !isCrossOrigin(url) &&
-      !isAppPath(url.pathname)
+      instanceNameFromPath(url.pathname) === null
     ) {
-      resetSessionState();
+      teardownInstancesOwnedBy(event.clientId);
     }
 
     // Group assets have an immutable deployment-local identity. Cache only
     // their complete native responses before bridge/proxy/header rewriting.
     if (isScopedLazyVfsRequest(event.request, url)) {
-      // A restarted worker initially has the default app prefix. Load its
-      // durable authority before deciding a VFS-group path is cache-owned.
+      // appPrefixReady is a no-op in Task 1; the await keeps the ordering a
+      // Task 2 durable restore will reinstate.
       event.respondWith(appPrefixReady.then(function () {
         if (isScopedLazyVfsRequest(event.request, url)) {
           return fetchScopedLazyVfsRequest(event.request);
-        }
-        if (bridgeConfigured && isAppPath(url.pathname)) {
-          return fetchRestoredAppRequest(event, event.request, url);
         }
         return fetchWithCoiHeaders(event.request);
       }));
       return;
     }
 
-    // Fast path: bridge is active and the URL matches app prefix.
-    if (bridgePort && isAppPath(url.pathname)) {
-      markAppClient(event, event.request);
-      event.respondWith(handleAppRequest(event.request, url));
-      return;
-    }
-
-    // Cross-origin requests — route through CORS proxy if available
+    // Cross-origin requests — route through CORS proxy if available. This runs
+    // before the per-machine dispatch so a cross-origin fetch from an app
+    // viewer is never mistaken for a nameless in-app subresource.
     if (isCrossOrigin(url)) {
       event.respondWith(fetchCrossOrigin(event.request));
       return;
@@ -1588,49 +1161,54 @@ if (typeof window !== "undefined") {
       return;
     }
 
-    // A bridge-owned document can still create root-relative or relative
-    // requests that resolve outside appPrefix. Redirect those requests back
-    // into the browser-visible app namespace so the generic app bridge can
-    // handle them without app-specific path allowlists.
-    if (bridgePort && shouldRedirectIntoApp(event, event.request, url)) {
-      event.respondWith(redirectIntoApp(url));
-      return;
-    }
-
-    // Bridge may need restoration (SW was terminated and restarted by browser).
-    // Wait for cached appPrefix to load, then check if this URL should go
-    // through the bridge.
-    if (!bridgePort) {
-      event.respondWith(
-        appPrefixReady.then(function () {
-          if (bridgeConfigured && shouldRedirectIntoApp(event, event.request, url)) {
-            return redirectIntoApp(url);
+    // Per-machine bridge dispatch. A name in the path addresses a machine
+    // directly; a nameless request from a client already viewing a machine is
+    // attributed to it and redirected into that machine's app prefix so the
+    // generic bridge can serve it without app-specific path allowlists.
+    var namedInPath = instanceNameFromPath(url.pathname);
+    if (namedInPath || (event.clientId && clientToInstance.has(event.clientId))) {
+      var record = resolveInstanceForEvent(event, url);
+      if (namedInPath && !record) {
+        // Named but unknown/offline: never fall back to another machine.
+        event.respondWith(offlineOrUnknownResponse(namedInPath));
+        return;
+      }
+      if (record) {
+        markViewer(record, event);
+        if (namedInPath) {
+          if (record.bridgePort) {
+            event.respondWith(handleAppRequest(record, event.request, url));
+          } else {
+            event.respondWith(
+              fetchRestoredAppRequest(record, event, event.request, url),
+            );
           }
-          if (bridgeConfigured && isAppPath(url.pathname)) {
-            return fetchRestoredAppRequest(event, event.request, url);
-          }
-          return fetchWithCoiHeaders(event.request);
-        })
-      );
-      return;
+          return;
+        }
+        event.respondWith(redirectIntoApp(record, url));
+        return;
+      }
     }
 
     // Same-origin requests — pass through but add COI headers
     event.respondWith(fetchWithCoiHeaders(event.request));
   });
 
-  function handleAppRequest(request, url) {
+  function handleAppRequest(record, request, url) {
     return (async function () {
       try {
-        // The session this request belongs to. If the session switches while
-        // the request is in flight (page reload / new instance), we must not
-        // inject or store this request's cookies into the new session.
-        var reqSessionId = currentSessionId;
-        var reqBridgeEpoch = liveBridgeEpoch;
-        // Strip appPrefix so nginx sees the original path.
-        var hasAppPrefix = isAppPath(url.pathname);
+        // The session/epoch this request belongs to. If the record's live
+        // bridge switches while the request is in flight (page reload / new
+        // port), we must not inject or store this request's cookies.
+        var reqSessionId = record.sessionId;
+        var reqBridgeEpoch = record.liveBridgeEpoch;
+        // Strip the machine's app prefix so the app server sees the original
+        // path. handleAppRequest is only reached for named-in-path requests, so
+        // the prefix is present, but keep the guard explicit.
+        var hasAppPrefix = url.pathname === appRootPathFor(record) ||
+          url.pathname.indexOf(record.appPrefix) === 0;
         var appPath = hasAppPrefix
-          ? stripAppPath(url.pathname)
+          ? stripAppPathFor(record, url.pathname)
           : url.pathname;
 
         var headers = {};
@@ -1639,21 +1217,19 @@ if (typeof window !== "undefined") {
         });
         headers["host"] = url.host;
         headers["x-forwarded-host"] = url.host;
-        headers["x-forwarded-prefix"] = appRootPath();
+        headers["x-forwarded-prefix"] = appRootPathFor(record);
         headers["x-forwarded-proto"] = url.protocol.replace(":", "");
         headers["x-forwarded-uri"] = url.pathname + url.search;
 
-        // Inject cookies from our jar. Wait for the current session's jar to
-        // finish loading so we don't send an empty jar during the async load
-        // right after the bridge (re)connects. Skip if the session changed
-        // out from under this request.
-        await cookieJarReady;
+        // Inject cookies from this machine's jar. Skip if the record's live
+        // bridge changed out from under this request.
         var cookiePath = hasAppPrefix
           ? url.pathname
-          : appPrefix.slice(0, -1) + url.pathname;
+          : record.appPrefix.slice(0, -1) + url.pathname;
         var jarCookies =
-          reqSessionId === currentSessionId && reqBridgeEpoch === liveBridgeEpoch
-            ? getCookiesForPath(cookiePath, reqBridgeEpoch, reqSessionId)
+          reqSessionId === record.sessionId &&
+            reqBridgeEpoch === record.liveBridgeEpoch
+            ? getCookiesForPath(record, cookiePath)
             : "";
         if (jarCookies) {
           var existing = headers["cookie"];
@@ -1670,7 +1246,7 @@ if (typeof window !== "undefined") {
           }
         }
 
-        var bridgeResp = await bridgeFetch({
+        var bridgeResp = await bridgeFetch(record, {
           method: request.method,
           url: appPath + url.search,
           headers: headers,
@@ -1678,30 +1254,22 @@ if (typeof window !== "undefined") {
         });
 
 
-        // Store cookies from bridge response
+        // Store cookies from bridge response into this machine's jar. Only if
+        // the request still belongs to the record's live bridge — an in-flight
+        // response from a superseded port must not pollute the new jar. Task 1
+        // keeps jars in memory (no durable write to await); Task 2 restores the
+        // durable commit.
         var rawSetCookie =
           bridgeResp.headers["Set-Cookie"] ||
           bridgeResp.headers["set-cookie"];
-        // Only store into the jar if this request still belongs to the current
-        // session — an in-flight response from a superseded session must not
-        // pollute the new session's jar.
         if (
-          rawSetCookie && reqSessionId === currentSessionId &&
-          reqBridgeEpoch === liveBridgeEpoch
+          rawSetCookie && reqSessionId === record.sessionId &&
+          reqBridgeEpoch === record.liveBridgeEpoch
         ) {
-          // Await the flush so the (possibly new login) cookie is durable
-          // before we hand back the response — otherwise the SW could be
-          // terminated before the write lands and drop the fresh session.
-          await scheduleCookieJarMutation(
-            reqBridgeEpoch,
-            reqSessionId,
-            function (nextJar, targetAppPrefix) {
-              return storeCookies(
-                nextJar,
-                targetAppPrefix,
-                rawSetCookie.split("\n"),
-              );
-            },
+          storeCookies(
+            record.cookieJar,
+            record.appPrefix,
+            rawSetCookie.split("\n"),
           );
         }
 
@@ -1736,8 +1304,9 @@ if (typeof window !== "undefined") {
               var locUrl = new URL(location, url.origin);
               if (locUrl.hostname === url.hostname) {
                 locUrl.protocol = url.protocol;
-                if (!locUrl.pathname.startsWith(appPrefix)) {
-                  locUrl.pathname = appPrefix.slice(0, -1) + locUrl.pathname;
+                if (!locUrl.pathname.startsWith(record.appPrefix)) {
+                  locUrl.pathname = record.appPrefix.slice(0, -1) +
+                    locUrl.pathname;
                 }
               }
               var redirectStatus = bridgeResp.status;
@@ -1759,7 +1328,7 @@ if (typeof window !== "undefined") {
             }
           }
         }
-        rewriteAppUrlHeader(respHeaders, "Link", url);
+        rewriteAppUrlHeader(record, respHeaders, "Link", url);
 
         // COEP/CORP for cross-origin isolation
         addAppIsolationHeaders(respHeaders);
@@ -1767,7 +1336,7 @@ if (typeof window !== "undefined") {
         var body = bridgeResp.body;
         if (shouldRewriteAppResponseBody(respHeaders)) {
           var text = new TextDecoder().decode(body);
-          var rewritten = rewriteSameHostAppUrls(text, url);
+          var rewritten = rewriteSameHostAppUrls(record, text, url);
           // Inject the blob-iframe interceptor into HTML documents so that
           // app-created `blob:` iframes (e.g. the WordPress editor canvas)
           // render as SW-controlled about:srcdoc documents and their
@@ -1817,17 +1386,17 @@ if (typeof window !== "undefined") {
     );
   }
 
-  function rewriteAppUrlHeader(headers, name, requestUrl) {
+  function rewriteAppUrlHeader(record, headers, name, requestUrl) {
     var value = headers.get(name);
     if (!value) return;
-    var rewritten = rewriteSameHostAppUrls(value, requestUrl);
+    var rewritten = rewriteSameHostAppUrls(record, value, requestUrl);
     if (rewritten !== value) {
       headers.set(name, rewritten);
     }
   }
 
-  function rewriteSameHostAppUrls(text, requestUrl) {
-    var rootPath = appRootPath();
+  function rewriteSameHostAppUrls(record, text, requestUrl) {
+    var rootPath = appRootPathFor(record);
     var publicOrigin = requestUrl.protocol + "//" + requestUrl.host + "/";
     var publicBase = requestUrl.protocol + "//" + requestUrl.host + rootPath + "/";
     var hostPattern = escapeRegExp(requestUrl.host);
