@@ -155,6 +155,21 @@ pattern that is about to be deleted.
 > came from `ls | grep -cE "^(fork|vfork)-"`, which counts helper modules like
 > `fork-module-capture-fixture.ts` that are not test files.
 >
+> **KNOWN HAZARD, three occurrences by 2026-09-22: the full PARALLEL sweep
+> stalls in `fork-instrument-coverage` against an arena-backed module, while
+> that file passes clean when run ALONE.** Seen twice by the use-after-free
+> fix agent and once by Task 3, each time with that file last emitting and
+> the runner parked at 0% CPU with no summary. Cause not yet established;
+> candidates are a resource four concurrent kernels exhaust now that the arena
+> maps on demand, or something the parallel workers share (`global-setup`
+> regenerates `packages/registry/program-packages.json` on every run). Until
+> it is diagnosed: when a full sweep stalls there, **kill it, run
+> `fork-instrument-coverage` alone, and record both results** — a green solo
+> run plus a stalled parallel run is the finding, not a pass. Do not relaunch
+> the full sweep to see whether it stalls again; it will, and a third hang
+> teaches nothing the first two did not. Whoever diagnoses it should say WHY
+> in this section.
+>
 > **If a sweep hangs, read it as a guest crash and bisect, not as a flaky
 > suite.** That is the useful form of this incident: a killed process worker
 > leaves the harness waiting forever, so a stall with no output and no summary
