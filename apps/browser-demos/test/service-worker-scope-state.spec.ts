@@ -483,6 +483,168 @@ test("a restarted SW restores each machine by name", async ({
     .toBe("restored:two");
 });
 
+test("a restarted SW reloads durable authority and replays each machine's jar", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "solo");
+
+  // installBridge already fetched once, so the machine's login (a Set-Cookie of
+  // solo=1 at path /) is persisted as a durable authority revision keyed by the
+  // SW-minted name. The prefixed cookie path mirrors the browser-side URL.
+  const persisted = await readBridgeAuthority(page, CACHE_A, m.name);
+  expect(persisted).toMatchObject({
+    version: 1,
+    appPrefix: m.appPrefix,
+    sessionId: SESSION_A,
+    cookies: [{ name: "solo", value: "1", path: m.appPrefix }],
+  });
+  expect(persisted!.revision).toBeGreaterThanOrEqual(2);
+
+  await installNamedRestoreResponder(page, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A, label: "solo" },
+  ]);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  // The reincarnated worker reloads the durable jar and replays it onto the
+  // freshly restored bridge — the restored tab never had to re-authenticate.
+  expect(await fetchReplayedCookie(page, `${m.appPrefix}after-restart`))
+    .toContain("solo=1");
+});
+
+test("a restarted SW rejects a bridge-restored whose authority does not match", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "solo");
+
+  // Two page-side responders re-answer for this machine's name but with a wrong
+  // session id and a wrong app prefix. Restore is by exact durable authority,
+  // not merely by name, so both must be rejected and the machine stays offline.
+  await installNamedRestoreResponder(page, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A_NEXT, label: "wrong-session" },
+    { name: m.name, appPrefix: "/a/app/some-other-name/", sessionId: SESSION_A, label: "wrong-prefix" },
+  ]);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  expect((await fetchResponse(page, `${m.appPrefix}after-mismatch`)).status)
+    .toBe(503);
+
+  // A correct responder restores the same machine over the same durable
+  // authority the mismatched candidates could not satisfy.
+  await installNamedRestoreResponder(page, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A, label: "correct" },
+  ]);
+  expect(await fetchText(page, `${m.appPrefix}after-correct`))
+    .toBe("restored:correct");
+});
+
+test("restart quarantines malformed or foreign durable authority entries", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  const goodName = "able-blue-oak";
+  const foreignName = "eager-teal-fern";
+  const malformedName = "brave-gold-pine";
+
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+
+  // Seed three durable entries directly, then restart so the startup scan runs
+  // against them: malformed JSON, a valid-shaped record whose appPrefix
+  // disagrees with the name it is keyed under, and a well-formed record.
+  await seedBridgeAuthority(page, CACHE_A, malformedName, "{ this is not json");
+  await seedBridgeAuthority(page, CACHE_A, foreignName, JSON.stringify({
+    version: 1,
+    revision: 1,
+    appPrefix: "/a/app/some-other-name/",
+    sessionId: SESSION_A,
+    cookies: [],
+  }));
+  await seedBridgeAuthority(page, CACHE_A, goodName, JSON.stringify({
+    version: 1,
+    revision: 4,
+    appPrefix: `/a/app/${goodName}/`,
+    sessionId: SESSION_A,
+    cookies: [{ name: "seeded", value: "1", path: `/a/app/${goodName}/` }],
+  }));
+
+  await installNamedRestoreResponder(page, [
+    { name: goodName, appPrefix: `/a/app/${goodName}/`, sessionId: SESSION_A, label: "good" },
+    { name: foreignName, appPrefix: "/a/app/some-other-name/", sessionId: SESSION_A, label: "foreign" },
+  ]);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  // The malformed and the name/prefix-mismatched entries never become records:
+  // their machines report unavailable and never trigger a need-bridge handshake.
+  expect((await fetchResponse(page, `/a/app/${foreignName}/probe`)).status)
+    .toBe(503);
+  expect((await fetchResponse(page, `/a/app/${malformedName}/probe`)).status)
+    .toBe(503);
+  expect(await needBridgeCount(page)).toBe(0);
+
+  // The well-formed entry restores and replays its seeded jar.
+  expect(await fetchReplayedCookie(page, `/a/app/${goodName}/probe`))
+    .toContain("seeded=1");
+});
+
+test("the lazy VFS cache excludes bridge, static, query, navigation, sibling, and cross-origin routes", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "excluded");
+
+  // A real vfs-groups asset is the only route the lazy cache owns.
+  expect(await fetchText(page, "/a/vfs-groups/release-1/assets/shared.bin"))
+    .toBe("scope-a shared bytes");
+
+  // Excluded: an app/<name> bridge route (name in path, never lazy).
+  await fetchText(page, `${m.appPrefix}vfs-groups/release-1/assets/shared.bin`);
+  // Excluded: a static file outside vfs-groups.
+  await fetchText(page, "/a/static.txt");
+  // Excluded: a query string.
+  await fetchText(page, "/a/vfs-groups/release-1/assets/shared.bin?revision=1");
+  // Excluded: a sibling prefix that only shares a stem.
+  await fetchText(page, "/a/vfs-groups-sibling/release-1/assets/shared.bin");
+  // Excluded: a canonical Pages VFS object.
+  await fetchText(
+    page,
+    "/a/products/demo/sha256-" + "a".repeat(64) + "/demo-1.vfs.zst",
+  );
+  // Excluded: a navigation request under vfs-groups.
+  await page.goto(`${FIXTURE_ORIGIN}/a/vfs-groups/release-1/navigation.html`);
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  // Excluded: a cross-origin request for the same asset path.
+  await page.evaluate(async () => {
+    await fetch(
+      "http://localhost:55431/a/vfs-groups/release-1/assets/shared.bin",
+      { mode: "no-cors" },
+    ).catch(() => undefined);
+  });
+
+  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([
+    "/a/vfs-groups/release-1/assets/shared.bin",
+  ]);
+});
+
+async function fetchReplayedCookie(page: Page, pathname: string): Promise<string> {
+  return page.evaluate(async (path) => {
+    const response = await fetch(path, { cache: "no-store" });
+    return response.headers.get("x-replayed-cookie") ?? "";
+  }, pathname);
+}
+
 async function seedCaches(page: Page, names: readonly string[]): Promise<void> {
   await page.evaluate(async (cacheNamesToSeed) => {
     for (const name of cacheNamesToSeed) {
@@ -726,7 +888,9 @@ async function installNamedRestoreResponder(
             status: 200,
             headers: {
               "Content-Type": "text/plain; charset=utf-8",
-              cookie: bridgeEvent.data.headers?.cookie ?? "",
+              // Echo the cookie header the SW injected so a test can prove the
+              // reloaded durable jar is replayed onto the restored bridge.
+              "x-replayed-cookie": bridgeEvent.data.headers?.cookie ?? "",
             },
             body: new TextEncoder().encode(`restored:${machine.label}`),
           });
