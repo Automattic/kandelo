@@ -947,10 +947,16 @@ export class WasmPosixKernel {
     if (!b || b.forward) return;
     if (b.contextId == null) return; // GL context not created yet
     if (b.gl) return; // already built
+    // The CRTC we attach in this call, if any — used to defer
+    // `markKmsCanvasGlOwned` until a WebGL2 context is confirmed.
+    let attachedCrtc: number | null = null;
     if (!b.canvas) {
       // Prefer a CRTC that already has an FB bound (modeset order);
-      // otherwise, if the pid holds DRM master, fall back to any
-      // registered scanout CRTC that has no binding yet (SDL2 order).
+      // otherwise, if the pid holds DRM master, take a registered scanout
+      // CRTC even without an FB binding yet (SDL2 order — the FB is bound
+      // later, on the first SwapWindow). The kernel advertises a single
+      // CRTC (see kms-registry.ts), so the first registered id is that
+      // CRTC; multi-head would need a pid→CRTC map here.
       let crtc = this.kms.masterCrtcForPid(pid);
       if (crtc == null && this.kms.isMasterPid(pid)) {
         const ids = this.callbacks.getKmsCrtcIds?.() ?? [];
@@ -969,7 +975,7 @@ export class WasmPosixKernel {
       }
       this.gl.attachCanvas(pid, canvas);
       b.canvas = canvas;
-      this.callbacks.markKmsCanvasGlOwned?.(crtc);
+      attachedCrtc = crtc;
     }
     if (!b.canvas) return;
     const ctx = b.canvas.getContext("webgl2", {
@@ -988,6 +994,13 @@ export class WasmPosixKernel {
       ctx.getExtension("EXT_float_blend");
     }
     b.gl = ctx;
+    // Claim the canvas for GL (disabling the vblank 2D-blit pump for this
+    // CRTC) only once a WebGL2 context truly exists. Marking it earlier
+    // would strand the canvas with neither GL nor the 2D blit if
+    // getContext("webgl2") returned null (e.g. a prior 2D acquisition).
+    if (ctx && attachedCrtc != null) {
+      this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
+    }
   }
 
   /**

@@ -115,4 +115,27 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
     expect(canvas.width).toBe(1920);
     expect(canvas.height).toBe(1080);
   });
+
+  it("does not mark the canvas GL-owned if getContext('webgl2') returns null", () => {
+    // A canvas that cannot yield a WebGL2 context (e.g. a prior 2D
+    // acquisition). Marking it GL-owned would disable the 2D-blit pump,
+    // stranding it with neither GL nor a blit — a black canvas.
+    const canvas = { width: 1920, height: 1080, getContext: () => null };
+    let markedCrtc: number | null = null;
+    const { kernel, imports } = harness({
+      getKmsCanvas: (crtc: number) => (crtc === 1 ? canvas : undefined),
+      getKmsCrtcIds: () => [1],
+      markKmsCanvasGlOwned: (crtc: number) => {
+        markedCrtc = crtc;
+      },
+    });
+    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+
+    imports.env.host_kms_set_master(PID);
+    imports.env.host_gl_create_context(PID, 1, 0, 0);
+
+    const b = kernel.gl.get(PID)!;
+    expect(b.gl, "no WebGL2 context available").toBeNull();
+    expect(markedCrtc, "must not claim GL ownership without a GL context").toBeNull();
+  });
 });
