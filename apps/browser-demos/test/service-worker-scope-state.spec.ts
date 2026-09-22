@@ -13,6 +13,12 @@ const SESSION_A = "11111111-1111-4111-8111-111111111111";
 const SESSION_B = "22222222-2222-4222-8222-222222222222";
 const SESSION_A_NEXT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const BRIDGE_AUTHORITY_KEY = "bridge-authority-v1";
+const BRIDGE_AUTHORITY_VERSION = 1;
+const BRIDGE_AUTHORITY_MAX_BYTES = 64 * 1024;
+const BRIDGE_AUTHORITY_MAX_COOKIES = 32;
+const BRIDGE_COOKIE_NAME_MAX_BYTES = 256;
+const BRIDGE_COOKIE_VALUE_MAX_BYTES = 4_096;
+const BRIDGE_COOKIE_PATH_MAX_BYTES = 4_096;
 const CACHE_A = "kandelo-sw:%2Fa%2F:bridge-v2";
 const CACHE_B = "kandelo-sw:%2Fb%2F:bridge-v2";
 const LAZY_CACHE_A = "kandelo-sw:%2Fa%2F:lazy-assets-v1";
@@ -596,6 +602,93 @@ test("restart quarantines malformed or foreign durable authority entries", async
   // The well-formed entry restores and replays its seeded jar.
   expect(await fetchReplayedCookie(page, `/a/app/${goodName}/probe`))
     .toContain("seeded=1");
+});
+
+test("restart rejects every over-limit or malformed persisted authority field", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+
+  // Each invalid record is keyed under a distinct well-formed machine name so
+  // the only reason the scan can reject it is the field under test.
+  const validAuthority = (name: string) => ({
+    version: BRIDGE_AUTHORITY_VERSION,
+    revision: 1,
+    appPrefix: `/a/app/${name}/`,
+    sessionId: SESSION_A,
+    cookies: [{ name: "ok", value: "1", path: `/a/app/${name}/` }],
+  });
+
+  const cases: Array<{ name: string; text: string }> = [];
+  const add = (
+    name: string,
+    mutate: (authority: ReturnType<typeof validAuthority>) => unknown,
+  ) => {
+    const authority = validAuthority(name);
+    cases.push({ name, text: JSON.stringify(mutate(authority) ?? authority) });
+  };
+
+  // Total serialized bytes above the cap (valid JSON padded past the limit).
+  const oversizedName = "dev-red-oak";
+  const padded = JSON.stringify(validAuthority(oversizedName));
+  cases.push({
+    name: oversizedName,
+    text: padded +
+      " ".repeat(BRIDGE_AUTHORITY_MAX_BYTES + 1 - Buffer.byteLength(padded)),
+  });
+  add("dev-red-elm", (a) => {
+    a.cookies = Array.from(
+      { length: BRIDGE_AUTHORITY_MAX_COOKIES + 1 },
+      (_, index) => ({ name: `c${index}`, value: "1", path: a.appPrefix }),
+    );
+  });
+  add("dev-red-fir", (a) => {
+    a.cookies[0].name = "n".repeat(BRIDGE_COOKIE_NAME_MAX_BYTES + 1);
+  });
+  add("dev-red-ash", (a) => {
+    a.cookies[0].name = "bad name";
+  });
+  add("dev-red-yew", (a) => {
+    a.cookies[0].value = "x".repeat(BRIDGE_COOKIE_VALUE_MAX_BYTES + 1);
+  });
+  add("dev-red-bay", (a) => {
+    a.cookies[0].value = "bad;value";
+  });
+  add("dev-red-fig", (a) => {
+    a.cookies[0].path = `/a/${"p".repeat(BRIDGE_COOKIE_PATH_MAX_BYTES)}`;
+  });
+  add("dev-red-gum", (a) => {
+    a.cookies[0].path = "/b/outside-scope/";
+  });
+  add("dev-red-haw", (a) => {
+    a.version = 2;
+  });
+  add("dev-red-ivy", (a) => {
+    a.revision = -1;
+  });
+  add("dev-red-nut", (a) => {
+    a.revision = Number.MAX_SAFE_INTEGER;
+  });
+
+  for (const invalid of cases) {
+    await seedBridgeAuthority(page, CACHE_A, invalid.name, invalid.text);
+  }
+  // No responder should ever be needed: quarantined entries never become
+  // records, so they never broadcast need-bridge.
+  await installNamedRestoreResponder(page, []);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  for (const invalid of cases) {
+    expect.soft(
+      (await fetchResponse(page, `/a/app/${invalid.name}/probe`)).status,
+      invalid.name,
+    ).toBe(503);
+  }
+  expect(await needBridgeCount(page)).toBe(0);
 });
 
 test("the lazy VFS cache excludes bridge, static, query, navigation, sibling, and cross-origin routes", async ({
