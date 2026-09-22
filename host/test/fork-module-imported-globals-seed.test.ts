@@ -1,16 +1,12 @@
 import { readFileSync } from "node:fs";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
-import { Worker } from "node:worker_threads";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import {
   CHANNEL_BASE,
-  CHANNEL_RESPONDER,
   MMAP_FLOOR,
+  startChannelResponder,
 } from "./fork-module-capture-fixture";
-
-/** Responders spawned by `fixture()`, terminated in `afterAll`. */
-const liveResponders: Worker[] = [];
 
 /**
  * Seeding an activation's imported-global (KFIG) custom section.
@@ -61,11 +57,7 @@ function fixture() {
   // silent success. `fm_set_format(..., CHANNEL_BASE)` plus the shared
   // responder is what the other module tests already do; this file predated the
   // need for one.
-  const responder = new Worker(CHANNEL_RESPONDER, {
-    eval: true,
-    workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
-  });
-  liveResponders.push(responder);
+  startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
   (
     x.fm_set_format as (
       pw: number,
@@ -360,8 +352,4 @@ describe("one seed surface over two import spaces", () => {
     f.identity(SPACE_TABLE, 1, 5, 9);
     expect(f.errno()).toBe(0);
   });
-});
-
-afterAll(async () => {
-  await Promise.all(liveResponders.map((worker) => worker.terminate()));
 });

@@ -1,14 +1,14 @@
 import { readFileSync } from "node:fs";
-import { Worker } from "node:worker_threads";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import {
   CHANNEL_BASE,
-  CHANNEL_RESPONDER,
+  MMAP_COUNTER,
   MMAP_FLOOR,
   MUNMAP_COUNTER,
+  startChannelResponder,
 } from "./fork-module-capture-fixture";
 
 /**
@@ -83,9 +83,6 @@ const ENTRIES_PER_CHUNK = (65_536 - 16) / 16;
 const IDENTITIES = 4_100;
 const EXPECTED_CHUNKS = Math.ceil(IDENTITIES / ENTRIES_PER_CHUNK);
 
-/** Responders spawned by `instantiateFixtureModule()`, stopped in `afterAll`. */
-const liveResponders: Worker[] = [];
-
 interface FixtureModule {
   /** Read an `fm_stats` field. */
   stats: (field: number) => number;
@@ -126,11 +123,16 @@ function instantiateFixtureModule(): FixtureModule {
     label: "identity release",
   });
   const x = fm.exports as Record<string, unknown>;
-  const responder = new Worker(CHANNEL_RESPONDER, {
-    eval: true,
-    workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
+  // THE TALLIES ARE ASKED FOR EXPLICITLY. They are what the release assertion
+  // reads, and a responder started without them keeps answering syscalls while
+  // counting nothing -- so the assertion goes red against a zero that says
+  // nothing about the module.
+  startChannelResponder({
+    memory,
+    channelBase: CHANNEL_BASE,
+    floor: MMAP_FLOOR,
+    counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
   });
-  liveResponders.push(responder);
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
   return {
     stats: (field) => Number((x.fm_stats as (f: number) => bigint)(field)),
@@ -202,8 +204,4 @@ describe("identity chunk release", () => {
         "the unlink happens before the best-effort munmap",
     ).toBe(EXPECTED_CHUNKS);
   });
-});
-
-afterAll(async () => {
-  await Promise.all(liveResponders.map((worker) => worker.terminate()));
 });

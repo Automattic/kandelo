@@ -118,7 +118,7 @@ export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
  * an identity now needs a serviced channel, not just the capture-drive tests.
  * One responder rather than a copy per file keeps them answering the same way.
  */
-export const CHANNEL_RESPONDER = `
+const CHANNEL_RESPONDER = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { sab, channelBase, floor, mmapCounter, munmapCounter } = workerData;
 const i32 = new Int32Array(sab);
@@ -183,6 +183,21 @@ export function startChannelResponder(options: {
   readonly memory: WebAssembly.Memory;
   readonly channelBase: number;
   readonly floor: number;
+  /**
+   * Where to keep the running `SYS_MMAP` / `SYS_MUNMAP` tallies, for a caller
+   * that asserts on them.
+   *
+   * OPTIONAL BECAUSE THE ADDRESS IS NOT SAFE EVERYWHERE -- it used to be
+   * hard-coded at page 5, which is free in this file's layout and inside the
+   * guest's claim in `fork-resume-assignment`, where a counter written there
+   * would overwrite guest data. But an omitted tally is a tally that reads
+   * ZERO, and a test asserting `munmaps() - before === 2` against a silently
+   * disabled counter fails for a reason that has nothing to do with the
+   * module. That happened, once, in the edit that made this optional; passing
+   * the responder through ONE typed entry point is what makes it a compile-
+   * time decision instead of a workerData field a caller can forget.
+   */
+  readonly counters?: { readonly mmap: number; readonly munmap: number };
 }): Worker {
   const worker = new Worker(CHANNEL_RESPONDER, {
     eval: true,
@@ -190,6 +205,8 @@ export function startChannelResponder(options: {
       sab: options.memory.buffer,
       channelBase: options.channelBase,
       floor: options.floor,
+      mmapCounter: options.counters?.mmap,
+      munmapCounter: options.counters?.munmap,
     },
   });
   live.push(worker);
@@ -266,17 +283,12 @@ export function fixture(): Fixture {
     { env: { __wpk_fork_publish: () => {} } },
   ).exports as Record<string, CallableFunction>;
 
-  const worker = new Worker(CHANNEL_RESPONDER, {
-    eval: true,
-    workerData: {
-      sab: memory.buffer,
-      channelBase: CHANNEL_BASE,
-      floor: MMAP_FLOOR,
-      mmapCounter: MMAP_COUNTER,
-      munmapCounter: MUNMAP_COUNTER,
-    },
+  const worker = startChannelResponder({
+    memory,
+    channelBase: CHANNEL_BASE,
+    floor: MMAP_FLOOR,
+    counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
   });
-  live.push(worker);
 
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
   const base = (x.fm_drive_table_base as (a: number) => number)(0);
@@ -848,17 +860,12 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     label,
   });
   const x = fm.exports as Record<string, unknown>;
-  const worker = new Worker(CHANNEL_RESPONDER, {
-    eval: true,
-    workerData: {
-      sab: memory.buffer,
-      channelBase: CHANNEL_BASE,
-      floor: MMAP_FLOOR,
-      mmapCounter: MMAP_COUNTER,
-      munmapCounter: MUNMAP_COUNTER,
-    },
+  const worker = startChannelResponder({
+    memory,
+    channelBase: CHANNEL_BASE,
+    floor: MMAP_FLOOR,
+    counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
   });
-  live.push(worker);
   const setFormat = (): void => {
     (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
   };
