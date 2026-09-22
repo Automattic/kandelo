@@ -356,9 +356,8 @@ export class ForkModuleContinuationBackend {
   /**
    * Hand the module one activation's raw GC codec section.
    *
-   * The bytes are staged into the module's own slab rather than anywhere the
-   * guest might reuse: the module keeps the POINTER, not a copy, so the region
-   * has to stay valid and untouched for the life of the worker.
+   * The module COPIES it into an arena record during the call, so the staged
+   * bytes are dead once it returns; see `stage()`.
    */
   setActivationGcCodec(activationId: number, bytes: Uint8Array): void {
     const at = this.stage(bytes, `activation ${activationId} GC codec`);
@@ -477,10 +476,6 @@ export class ForkModuleContinuationBackend {
     arenaRoot: number,
     sides: readonly ForkSideActivation[],
   ): number {
-    // Rewind the staging cursor to where the last fork found it; see
-    // `perForkMark`.
-    this.staged = this.perForkMark ?? this.staged;
-    this.perForkMark = this.staged;
     // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
     // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
     // memory exhaustion that fails with ENOMEM -- which is the case
@@ -750,16 +745,17 @@ export class ForkModuleContinuationBackend {
   /**
    * Stage the captured handle list into guest memory and return its address.
    *
-   * Uses the same staging slab every other pre-fork buffer goes through, so a
-   * COPIED child reusing this region does not grow its memory relative to the
-   * parent's -- the reason `setup()`'s comment gives for staging rather than
-   * mmapping per call.
+   * THE ONE STAGE THE MODULE DOES NOT READ. The kernel worker reads it while
+   * it handles the fork syscall the caller sends next, and this worker is
+   * blocked in that syscall until the kernel is done -- so nothing can be
+   * staged over it first. Same lifetime as every other stage, then: valid
+   * until this backend stages again.
    */
   stageExternrefHandover(handles: readonly number[]): number {
     const bytes = new Uint8Array(handles.length * 4);
     const view = new DataView(bytes.buffer);
     handles.forEach((handle, index) => view.setUint32(index * 4, handle >>> 0, true));
-    return this.stage(bytes, "externref handover", true);
+    return this.stage(bytes, "externref handover");
   }
 
   /**
@@ -923,74 +919,44 @@ export class ForkModuleContinuationBackend {
       view.setUint32(index * 8, side.id >>> 0, true);
       view.setUint32(index * 8 + 4, side.fixedPrefix >>> 0, true);
     });
-    return this.stage(bytes, `${sides.length} side activation(s)`, true);
+    return this.stage(bytes, `${sides.length} side activation(s)`);
   }
 
   /**
-   * Where a per-fork rewind returns to, or `null` when the next fork must take
-   * a fresh mark at wherever the cursor then is.
+   * Copy `bytes` to the start of the module's staging slab and return their
+   * address. VALID UNTIL THE NEXT STAGE, whoever makes it.
    *
-   * `stage()` used to say that everything in the slab "is seeded once per
-   * worker and must outlive the call", and that is true of six of its eight
-   * callers. TWO are per-FORK and always were: `stageSides()`, which runs at
-   * both `parentBeginCapture` and `installChild`, and
-   * `stageExternrefHandover()`. Their bytes need only outlive the fork, and the
-   * cursor never rewound -- so a dlopen program at `N * 8` bytes per fork, or
-   * any fork carrying externref handles at 4 bytes each, consumed the 256 KiB
-   * slab permanently. Thousands of forks, not millions: a long-lived forking
-   * server is the shape that reaches it, and the failure is `staging slab
-   * exhausted` on a fork that had done nothing wrong.
+   * One lifetime, not two. The slab used to be a bump cursor with a per-fork
+   * rewind mark, because the module kept the POINTER to every durable seed
+   * (a catalog, a codec, a section) and read it back at every later fork --
+   * so a seed had to stay put for the life of the worker, and only the two
+   * per-fork stages could be reused. The module keeps a COPY of every seed
+   * now: catalogs, codecs and sections go into its own arena records and the
+   * template id into its own table, all during the entry that seeds them.
+   * The one stage the module does not read, the externref handover, is read
+   * by the kernel during the fork syscall this worker blocks in immediately
+   * after. Nothing outlives its call, so nothing needs a cursor, and the slab
+   * only has to hold the LARGEST single request rather than the sum of every
+   * activation's seeds -- which is what `STAGING_SLAB_BYTES` is sized from.
    *
-   * The mark is taken at the START of a fork rather than released at its end,
-   * because a fork has several ends -- finish, abort, a seal that failed after
-   * the journal sealed -- and a mark that is simply re-taken next time cannot
-   * be forgotten on one of them.
+   * `host/test/fork-arena-release.test.ts` is where the copy is proven: it
+   * seeds a GC codec and then an exception codec over the same staging page,
+   * and the module still answers from the codec's own bytes.
    *
-   * And a DURABLE stage drops it, which is the whole reason `stage()` takes a
-   * flag. A process that forks, then `dlopen`s, stages the new activation's
-   * catalog, GC codec and exception codec ABOVE the mark that fork took;
-   * rewinding to that mark on the next fork would hand those addresses out
-   * twice and overwrite a live codec with side-activation pairs -- a wrong
-   * child, silently, rather than an error. Clearing the mark makes the next
-   * fork re-take it above them. The cost is one fork's worth of per-fork bytes
-   * stranded below the new mark, bounded by the number of `dlopen`s rather
-   * than by the number of forks.
+   * Overflow is an error rather than a truncation, because a truncated
+   * section would be refused by the module's decoder at best and seed a wrong
+   * one at worst; the message carries both sizes so the boundary is readable.
    */
-  private perForkMark: number | null = null;
-
-  /**
-   * Copy `bytes` into the module's staging slab and return their address.
-   *
-   * `perFork` picks which of the two lifetimes the bytes have. The default is
-   * DURABLE -- seeded once per worker or per activation, and must outlive every
-   * fork. `perFork` marks bytes that need only outlive the fork that stages
-   * them, in the region `parentBeginCapture` rewinds; see `perForkMark`.
-   *
-   * This comment used to read "a bump cursor, never reset: everything staged
-   * here is seeded once per worker and must outlive the call". That was true of
-   * six callers out of eight, and stating it as though it were true of all
-   * eight is what hid the leak.
-   *
-   * Overflow is an error rather than a wrap, because wrapping would silently
-   * overwrite an earlier activation's section with a later one's and leave the
-   * module pointing at the wrong bytes.
-   */
-  private stage(bytes: Uint8Array, what: string, perFork = false): number {
-    if (!perFork) this.perForkMark = null;
-    const base = this.options.instance.stagingBase;
-    const limit = base + this.options.instance.stagingBytes;
-    const at = base + this.staged;
-    if (at + bytes.length > limit) {
+  private stage(bytes: Uint8Array, what: string): number {
+    const at = this.options.instance.stagingBase;
+    const limit = this.options.instance.stagingBytes;
+    if (bytes.length > limit) {
       throw new Error(
         `${this.label}: staging slab exhausted placing ${what} ` +
-          `(${bytes.length} bytes; ${limit - at} left)`,
+          `(${bytes.length} bytes against a ${limit}-byte slab)`,
       );
     }
     new Uint8Array(this.options.memory.buffer).set(bytes, at);
-    // 8-byte aligned so a later section's scalars are naturally aligned.
-    this.staged += (bytes.length + 7) & ~7;
     return at;
   }
-
-  private staged = 0;
 }

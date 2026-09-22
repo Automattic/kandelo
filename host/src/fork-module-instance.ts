@@ -105,12 +105,31 @@ const SHADOW_STACK_BYTES = 1024 * 1024;
 /**
  * The staging slab reserved above the shadow stack.
  *
- * A tuning choice, not a correctness boundary: the module's own internal
- * scratch is 64 KiB, and a staging request larger than this slab falls back to
- * the growing channel mmap. Sized well above that internal scratch while
- * staying small against the module's ~4 MiB static footprint.
+ * SIZED FROM A MEASUREMENT of the shipped artifacts, not chosen. The slab is
+ * a per-call scratch (`ForkModuleContinuationBackend.stage()`): the module
+ * copies every seed during the entry that takes it, so the slab holds one
+ * request at a time and must fit the LARGEST single stage any activation
+ * makes. Measured on 2026-09-22 over every fork-instrumented artifact under
+ * `local-binaries/source-only-v1/programs/wasm32` (43 of them): the largest
+ * is php's `intl.so` imported-globals (KFIG) section at 190,437 bytes; the
+ * next are php-fpm's resume catalog at 76,756 (19,189 ordinals x 4) and
+ * node/js's at 66,220. Three wasm pages hold the largest with 6,171 bytes to
+ * spare. `host/test/fork-module-staging-capacity.test.ts` re-measures the
+ * built artifacts against this number, so an extension that outgrows it
+ * fails there rather than at a `dlopen` in a forking program.
+ *
+ * It was 256 KiB, justified as `RESUME_CATALOG_CAP * 4` -- the process-wide
+ * resume-catalog cap, deleted -- and as "well above the module's 64 KiB
+ * internal scratch", which sized a slab against a footprint the storage
+ * conversion has since removed. It was also a bump cursor then, and would
+ * have needed 298,448 bytes for php-fpm plus `intl.so` together: more than
+ * it had.
+ *
+ * A request larger than this is refused loudly ("staging slab exhausted");
+ * there is no fallback path. Written as a product of two integer literals,
+ * which the storage ledger's recorder parses.
  */
-const STAGING_SLAB_BYTES = 256 * 1024;
+const STAGING_SLAB_BYTES = 192 * 1024;
 
 const WASM_PAGE_BYTES = 65536;
 
