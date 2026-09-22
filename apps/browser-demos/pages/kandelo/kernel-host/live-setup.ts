@@ -8,6 +8,15 @@ import {
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
+import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
+import sdl2PlasmaFragSrc from "../../../../../programs/sdl2/presets/image/plasma.frag?raw";
+import sdl2AudioBarsFragSrc from "../../../../../programs/sdl2/presets/image/audio_bars.frag?raw";
+import sdl2TunnelwispFragSrc from "../../../../../programs/sdl2/presets/image/tunnelwisp.frag?raw";
+import sdl2SoundSineFragSrc from "../../../../../programs/sdl2/presets/sound/sine.frag?raw";
+import sdl2SoundTunnelwispFragSrc from "../../../../../programs/sdl2/presets/sound/tunnelwisp.frag?raw";
+import sdl2SoundFmBellFragSrc from "../../../../../programs/sdl2/presets/sound/fm_bell.frag?raw";
+import sdl2SoundNoiseSweepFragSrc from "../../../../../programs/sdl2/presets/sound/noise_sweep.frag?raw";
+import sdl2SoundChordFragSrc from "../../../../../programs/sdl2/presets/sound/chord.frag?raw";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
@@ -182,6 +191,12 @@ const OPTIONAL_BINARY_URLS = {
       import: "default",
     },
   ),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/sdl2.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2.wasm", {
+    query: "?url", import: "default",
+  }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
     query: "?url", import: "default",
   }),
@@ -356,6 +371,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-mariadb",
   "doom",
   "modeset",
+  "sdl2",
   "evdev",
   "espeak",
 ] as const;
@@ -473,6 +489,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  sdl2: {
+    image: "shell",
+    features: ["kms"],
+  },
   evdev: {
     image: "shell",
   },
@@ -536,6 +556,14 @@ interface LiveProfile {
     };
   };
   framebufferTest: boolean;
+  /**
+   * Stage the SDL2 GLSL playground at `/usr/local/bin/sdl2` with its
+   * shader presets, attach a `BrowserInputSource` for the keyboard and
+   * wheel (the Modeset pane owns the pointer through `sendPointerAbs`),
+   * and run the binary from bash. Audio rides the /dev/dsp path every
+   * other sound demo uses.
+   */
+  sdl2Demo: boolean;
   /**
    * Stage `evdev_demo` into `/usr/local/bin`, attach a `BrowserInputSource`
    * to the window so keyboard/pointer events flow into the kernel's
@@ -1022,6 +1050,7 @@ function customVfsProfile(
     shell: "default",
     maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     framebufferTest: fb === "test",
+    sdl2Demo: false,
     evdevDemo: false,
     espeakDemo: false,
   };
@@ -1072,6 +1101,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       },
     },
     framebufferTest: fb === "test",
+    sdl2Demo: normalized === "sdl2",
     evdevDemo: normalized === "evdev",
     espeakDemo: normalized === "espeak",
   };
@@ -1412,8 +1442,13 @@ async function bootProfile(
       ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
       writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
     }
-    // Both demos run their binary from a path, so the bytes have to be in the
+    // Each demo runs its binary from a path, so the bytes have to be in the
     // image before the worker takes exclusive ownership of the VFS.
+    if (profile.sdl2Demo) {
+      tick("staging sdl2...");
+      await stageSdl2Runtime(buildFs);
+      assertCurrent();
+    }
     if (profile.espeakDemo) {
       tick("staging espeak-ng...");
       await stageEspeakRuntime(buildFs);
@@ -1673,6 +1708,60 @@ async function bootProfile(
         tick,
         assertCurrent,
       );
+    } else if (profile.sdl2Demo) {
+      // autoCommand can't run this: the InputSource must be attached before
+      // the binary starts polling /dev/input/event{0,1}. The binary and its
+      // shader presets are already in the image; see stageSdl2Runtime.
+      const kernelForSdl2 = kernel;
+      void (async () => {
+        try {
+          tick("attaching input source...");
+          // Keyboard goes through BrowserInputSource (typing, ESC → evdev
+          // event0). The POINTER is owned by the Modeset pane, which feeds
+          // framebuffer-positioned pointer events into evdev event1 via
+          // `sendPointerAbs` — so this source's pointer feed is disabled
+          // (its window-relative coordinates would fight the pane's
+          // correct ones). WHEEL stays enabled: REL_WHEEL carries no
+          // absolute coordinates, so it doesn't fight the pane, and it
+          // drives the editor's mouse-scroll (SDL_MOUSEWHEEL).
+          // The dims set EVIOCGABS's ABS_X/Y.maximum. SDL treats event1
+          // as a relative mouse (it advertises REL_X/Y) and clamps the
+          // cursor to the window rather than this range, but the
+          // framebuffer size (1920×1080, matching
+          // host/src/dri/kms-registry.ts and the Modeset canvas) keeps
+          // the bounds sane for any ABS-aware consumer.
+          const SDL2_FB_W = 1920;
+          const SDL2_FB_H = 1080;
+          kernelForSdl2.attachInputSource(
+            // Bind to window for global reach, but scope capture to the
+            // playground's own Modeset canvas surface so keyboard/wheel
+            // over the "New" menu, dialogs, and the sibling terminal and
+            // Inspector surfaces stay usable while the playground runs.
+            // See demoSurfaceCaptureGate.
+            new BrowserInputSource(window, {
+              pointer: false,
+              wheel: true,
+              shouldCapture: demoSurfaceCaptureGate(
+                () => document.querySelector(".kmodeset-surface"),
+              ),
+            }),
+            { width: SDL2_FB_W, height: SDL2_FB_H },
+          );
+          tick("running sdl2...");
+          // The playground runs until ESC; runShellCommand resolves when
+          // the bash prompt reappears or rejects after its internal
+          // 5-minute timeout. Both are expected — log neutrally.
+          await host.runShellCommand("/usr/local/bin/sdl2");
+          tick("sdl2 exited");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/timed out waiting for PTY prompt/.test(msg)) {
+            tick("sdl2 running (long-tail; no further status updates)");
+          } else {
+            tick(`sdl2 failed: ${msg}`);
+          }
+        }
+      })();
     } else if (profile.espeakDemo) {
       // The binary and its voice data are already in the image; see
       // stageEspeakRuntime. Playback rides the /dev/dsp path every other
@@ -1702,12 +1791,20 @@ async function bootProfile(
             // viewport (injected clientX/clientY grow with the window). The
             // resize listener lives inside BrowserInputSource, so it is
             // removed when the host stops the source on teardown/reboot.
-            new BrowserInputSource(window, () =>
-              kernelForEvdev.setInputCanvasDims(
-                window.innerWidth,
-                window.innerHeight,
+            new BrowserInputSource(window, {
+              onResize: () =>
+                kernelForEvdev.setInputCanvasDims(
+                  window.innerWidth,
+                  window.innerHeight,
+                ),
+              // evdev is the global-input logger, so it captures across the
+              // whole demo stage (<main>) by design; the gate still releases
+              // the out-of-<main> chrome (the "New" menu, dialogs) so the
+              // dock stays usable while it runs. See demoSurfaceCaptureGate.
+              shouldCapture: demoSurfaceCaptureGate(
+                () => document.querySelector("main"),
               ),
-            ),
+            }),
             {
               width: window.innerWidth,
               height: window.innerHeight,
@@ -1841,6 +1938,44 @@ function stageShellUtilities(
   } catch {
     /* exists */
   }
+}
+
+/**
+ * Bake the SDL2 GLSL playground and its shader presets into the image.
+ *
+ * The playground's source-resolution chain is
+ *   1. /home/shaders/<mode>/current.frag       (user-editable)
+ *   2. /usr/share/shaders/<mode>/<preset>.frag (preset)
+ *   3. built-in fallback compiled into main.c
+ * Staging (2) makes the browser path exercise the VFS leg;
+ * /home/shaders/<mode> is created so Ctrl+S can write (1) without first
+ * creating directories. tunnelwisp is the boot default for both modes;
+ * the others are loadable through the editor's Ctrl+L preset browser.
+ */
+async function stageSdl2Runtime(fs: MemoryFileSystem): Promise<void> {
+  const url = await optionalBinaryUrl([
+    "../../../../../local-binaries/programs/wasm32/sdl2.wasm",
+    "../../../../../binaries/programs/wasm32/sdl2.wasm",
+  ], "sdl2.wasm");
+  const bytes = await fetch(url)
+    .then(failOn("sdl2.wasm"))
+    .then((r) => r.arrayBuffer());
+  ensureDirRecursive(fs, "/usr/local/bin");
+  writeVfsBinary(fs, "/usr/local/bin/sdl2", new Uint8Array(bytes), 0o755);
+
+  ensureDirRecursive(fs, "/usr/share/shaders/image");
+  ensureDirRecursive(fs, "/home/shaders/image");
+  writeVfsFile(fs, "/usr/share/shaders/image/plasma.frag", sdl2PlasmaFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/image/audio_bars.frag", sdl2AudioBarsFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/image/tunnelwisp.frag", sdl2TunnelwispFragSrc);
+
+  ensureDirRecursive(fs, "/usr/share/shaders/sound");
+  ensureDirRecursive(fs, "/home/shaders/sound");
+  writeVfsFile(fs, "/usr/share/shaders/sound/tunnelwisp.frag", sdl2SoundTunnelwispFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/sine.frag", sdl2SoundSineFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/fm_bell.frag", sdl2SoundFmBellFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/noise_sweep.frag", sdl2SoundNoiseSweepFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/chord.frag", sdl2SoundChordFragSrc);
 }
 
 /**

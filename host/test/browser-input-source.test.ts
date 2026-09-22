@@ -104,11 +104,21 @@ describe("BrowserInputSource", () => {
     ]);
   });
 
-  it("pointermove without pointer lock emits ABS_X/ABS_Y from viewport clientX/clientY", () => {
-    // Absolute coords come from clientX/clientY (viewport pixels), the
-    // same space the host reports as the EVIOCGABS maxima. offsetX/offsetY
-    // (element-relative) is deliberately different here to prove it is not
-    // used.
+  it("pointermove without pointer lock emits REL deltas from the previous clientX/Y", () => {
+    // event1 advertises REL_X/REL_Y, so SDL's evdev backend treats it as a
+    // relative mouse and drops EV_ABS. The first move only establishes the
+    // baseline (a relative device has no absolute origin); the second
+    // reports the delta. clientX/Y (viewport) is the source, not offsetX/Y.
+    target.fire("pointermove", {
+      clientX: 100,
+      clientY: 50,
+      offsetX: 9,
+      offsetY: 9,
+      movementX: 0,
+      movementY: 0,
+    });
+    expect(recorded).toEqual([{ device: 1, ev_type: 0x00, code: 0, value: 0 }]);
+    recorded.length = 0;
     target.fire("pointermove", {
       clientX: 123.7,
       clientY: 45,
@@ -118,10 +128,66 @@ describe("BrowserInputSource", () => {
       movementY: 0,
     });
     expect(recorded).toEqual([
-      { device: 1, ev_type: 0x03, code: 0x00, value: 124 },
-      { device: 1, ev_type: 0x03, code: 0x01, value: 45 },
+      { device: 1, ev_type: 0x02, code: 0x00, value: 24 }, // round(123.7)-100
+      { device: 1, ev_type: 0x02, code: 0x01, value: -5 }, // 45-50
       { device: 1, ev_type: 0x00, code: 0, value: 0 },
     ]);
+  });
+
+  it("pointermove without lock skips an axis whose delta is zero", () => {
+    target.fire("pointermove", {
+      clientX: 10,
+      clientY: 10,
+      movementX: 0,
+      movementY: 0,
+    });
+    recorded.length = 0;
+    target.fire("pointermove", {
+      clientX: 15,
+      clientY: 10,
+      movementX: 0,
+      movementY: 0,
+    });
+    expect(recorded).toEqual([
+      { device: 1, ev_type: 0x02, code: 0x00, value: 5 },
+      { device: 1, ev_type: 0x00, code: 0, value: 0 },
+    ]);
+  });
+
+  it("pointerleave resets the baseline so re-entry emits no phantom jump", () => {
+    target.fire("pointermove", {
+      clientX: 10,
+      clientY: 10,
+      movementX: 0,
+      movementY: 0,
+    });
+    target.fire("pointerleave", {});
+    recorded.length = 0;
+    target.fire("pointermove", {
+      clientX: 500,
+      clientY: 500,
+      movementX: 0,
+      movementY: 0,
+    });
+    expect(recorded).toEqual([{ device: 1, ev_type: 0x00, code: 0, value: 0 }]);
+  });
+
+  it("pointerlockchange clears the absolute baseline", () => {
+    target.fire("pointermove", {
+      clientX: 10,
+      clientY: 10,
+      movementX: 0,
+      movementY: 0,
+    });
+    doc.fire("pointerlockchange", {}); // resets baseline + frames
+    recorded.length = 0;
+    target.fire("pointermove", {
+      clientX: 300,
+      clientY: 300,
+      movementX: 0,
+      movementY: 0,
+    });
+    expect(recorded).toEqual([{ device: 1, ev_type: 0x00, code: 0, value: 0 }]);
   });
 
   it("pointermove with pointer lock active emits REL_X/REL_Y deltas", () => {

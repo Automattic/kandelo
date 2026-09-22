@@ -208,6 +208,41 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
             core::mem::size_of::<crate::input::WpkInputAbsinfo>() as u32,
         ),
     },
+    // EVIOCGKEY / EVIOCGLED / EVIOCGSW: caller-encoded state-query reads
+    // used to resynchronise after a SYN_DROPPED. Each carries its own nr
+    // (0x18 / 0x19 / 0x1b), so they register as three single-nr families
+    // rather than one range — 0x1a (EVIOCGSND) is deliberately absent
+    // because Kandelo has no sound-key surface.
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGKEY_NR,
+        nr_last: crate::input::EVIOCGKEY_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGLED_NR,
+        nr_last: crate::input::EVIOCGLED_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGSW_NR,
+        nr_last: crate::input::EVIOCGSW_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
 ];
 
 /// Ioctls that may reach the Rust kernel dispatcher.

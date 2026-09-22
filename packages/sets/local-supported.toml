@@ -136,6 +136,10 @@ name = "libcxx"
 class = "platform"
 
 [[packages]]
+name = "libdrm"
+class = "platform"
+
+[[packages]]
 name = "libiconv"
 class = "platform"
 
@@ -290,6 +294,10 @@ class = "test-support"
 [[packages]]
 name = "sdl2"
 class = "platform"
+
+[[packages]]
+name = "sdl2-demo"
+class = "user-software"
 
 [[packages]]
 name = "sdl2-mixer-playwave"

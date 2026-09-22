@@ -3343,6 +3343,11 @@ export class CentralizedKernelWorker {
       // pid has no canvas bound yet; the kernel-worker's KMS registry
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      // CRTCs with a registered scanout canvas, so the GL auto-attach can
+      // resolve a canvas for a DRM-master pid that creates its GL context
+      // before binding an FB (SDL2's KMSDRM ordering). See
+      // WasmPosixKernel.tryAttachKmsGlCanvas.
+      getKmsCrtcIds: () => [...this.kmsCanvases.keys()],
       markKmsCanvasGlOwned: (crtcId: number) => {
         this.kmsContextMode.set(crtcId, "webgl2");
       },
@@ -30176,6 +30181,44 @@ export class CentralizedKernelWorker {
           | undefined;
         if (!inject) return;
         inject(device, ev_type, code, value);
+        this.scheduleWakeBlockedRetries(entry);
+      },
+    );
+  }
+
+  /**
+   * Push a whole `SYN_REPORT` frame of evdev records in one kernel entry
+   * and wake blocked readers once for the frame. A single pointer move is
+   * three records (REL_X, REL_Y, SYN_REPORT); routing each through
+   * `injectInputEvent` would run three kernel entries and three full
+   * pending-reader wake scans. Batching collapses that to one entry and
+   * one scan — the frame is atomic to the reader anyway (records before a
+   * SYN_REPORT are an incomplete event).
+   */
+  injectInputEventBatch(
+    records: ReadonlyArray<{
+      device: number;
+      ev_type: number;
+      code: number;
+      value: number;
+    }>,
+  ): void {
+    if (records.length === 0) return;
+    this.#runOrDeferKernelEntry(
+      "evdev input batch and wake",
+      (entry) => {
+        const inject = entry.instance.exports.kernel_input_event as
+          | ((
+              device: number,
+              ev_type: number,
+              code: number,
+              value: number,
+            ) => void)
+          | undefined;
+        if (!inject) return;
+        for (const r of records) {
+          inject(r.device, r.ev_type, r.code, r.value);
+        }
         this.scheduleWakeBlockedRetries(entry);
       },
     );

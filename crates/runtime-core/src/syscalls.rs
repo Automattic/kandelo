@@ -1945,9 +1945,12 @@ fn handle_input_ioctl(
             Ok(())
         }
         n if (EVIOCGABS_NR_BASE..EVIOCGABS_NR_BASE + 64).contains(&n) && dir == 2 => {
-            if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
-                return Err(Errno::EINVAL);
-            }
+            // Resolve the unsupported cases (wrong device, unmodeled axis)
+            // to ENOTTY *before* validating the caller buffer. SDL2 greps
+            // the errno and treats EINVAL as fatal, so an unsupported query
+            // must keep the probe alive regardless of buffer size; only a
+            // supported (device, axis) pair with a too-small buffer is the
+            // genuine EINVAL caller error.
             let axis = (n - EVIOCGABS_NR_BASE) as u16;
             let device = input_state(proc, ofd_idx)?.device;
             if device != 1 {
@@ -1973,11 +1976,39 @@ fn handle_input_ioctl(
                 },
                 _ => return Err(Errno::ENOTTY),
             };
+            if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
+                return Err(Errno::EINVAL);
+            }
             unsafe {
                 core::ptr::write_unaligned(
                     buf.as_mut_ptr() as *mut WpkInputAbsinfo,
                     abs,
                 );
+            }
+            Ok(())
+        }
+        n if n == EVIOCGKEY_NR && dir == 2 => {
+            // Return the device-global pressed-key bitmap. This is the
+            // state a client re-reads after a SYN_DROPPED to recover from
+            // a lost key/button transition.
+            let device = input_state(proc, ofd_idx)?.device;
+            let len = size.min(buf.len());
+            let slice = &mut buf[..len];
+            for b in slice.iter_mut() {
+                *b = 0;
+            }
+            crate::input::copy_key_state(device, slice);
+            Ok(())
+        }
+        n if (n == EVIOCGLED_NR || n == EVIOCGSW_NR) && dir == 2 => {
+            // Kandelo's virtual devices have no LEDs or switches, so the
+            // bitmap is all-zero. That is the honest current state (Linux
+            // copies an empty dev->led/dev->sw here too) and lets a
+            // SYN_DROPPED resync that queries all three states complete.
+            input_state(proc, ofd_idx)?; // must be an input fd
+            let len = size.min(buf.len());
+            for b in buf[..len].iter_mut() {
+                *b = 0;
             }
             Ok(())
         }
@@ -4730,9 +4761,10 @@ pub fn sys_read(
                                 return Ok(0);
                             }
                             let mut written = 0;
-                            // Producer overflowed: prepend SYN_DROPPED
-                            // so userspace resyncs via EVIOCG* before
-                            // consuming the next real record.
+                            // Producer overflowed: prepend SYN_DROPPED to
+                            // signal the gap before the next real record.
+                            // The client then re-reads current state via
+                            // EVIOCGKEY/GLED/GSW (handled below) to recover.
                             if ring.dropped {
                                 let (sec, nsec) = host
                                     .host_clock_gettime(CLOCK_MONOTONIC)
@@ -45523,6 +45555,63 @@ mod tests {
         let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
         // ENOTTY (not EINVAL) — SDL2 greps the errno; EINVAL fatals it.
         assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_gabs_keyboard_small_buffer_still_returns_enotty() {
+        // The unsupported-device check must win over the buffer-size check:
+        // an EVIOCGABS on the keyboard is ENOTTY regardless of buffer size,
+        // so SDL2's probe keeps going. A too-small buffer must not turn that
+        // into the fatal EINVAL.
+        use wasm_posix_shared::input::{EVIOCGABS_NR_BASE, ABS_X};
+        let (mut proc, mut host, fd) = open_evdev(621, b"/dev/input/event0");
+        let mut buf = [0u8; 4];
+        let req = evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, buf.len() as u32);
+        let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_gabs_pointer_unsupported_axis_small_buffer_returns_enotty() {
+        // Likewise for a supported device but an axis we do not model
+        // (only ABS_X/ABS_Y): unsupported → ENOTTY, never EINVAL, even
+        // when the caller buffer is too small.
+        use wasm_posix_shared::input::EVIOCGABS_NR_BASE;
+        let (mut proc, mut host, fd) = open_evdev(622, b"/dev/input/event1");
+        let mut buf = [0u8; 4];
+        // Axis 5 is not ABS_X (0) or ABS_Y (1).
+        let req = evioc(2, EVIOCGABS_NR_BASE + 5, buf.len() as u32);
+        let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_gkey_reports_currently_pressed_keys() {
+        use wasm_posix_shared::input::{EVIOCGKEY_NR, EV_KEY, KEY_A, KEY_CNT};
+        crate::input::reset_key_state();
+        let (mut proc, mut host, fd) = open_evdev(623, b"/dev/input/event0");
+        // Inject a key-down through the normal producer path.
+        crate::input::dispatch::push_event(0, EV_KEY, KEY_A, 1, 0, 0);
+        let mut buf = [0u8; (KEY_CNT as usize) / 8];
+        let req = evioc(2, EVIOCGKEY_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let a_byte = (KEY_A >> 3) as usize;
+        assert_ne!(buf[a_byte] & (1u8 << (KEY_A & 7)), 0, "KEY_A must read pressed");
+        crate::input::reset_key_state();
+    }
+
+    #[test]
+    fn evioc_gled_and_gsw_return_zeroed_success() {
+        // No LEDs / switches on the virtual devices: a zeroed bitmap is
+        // the honest state and a valid resync reply (not ENOTTY).
+        use wasm_posix_shared::input::{EVIOCGLED_NR, EVIOCGSW_NR};
+        let (mut proc, mut host, fd) = open_evdev(625, b"/dev/input/event0");
+        for nr in [EVIOCGLED_NR, EVIOCGSW_NR] {
+            let mut buf = [0xffu8; 8];
+            let req = evioc(2, nr, buf.len() as u32);
+            sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; 8], "EVIOCG(LED|SW) must zero the reply");
+        }
     }
 
     #[test]

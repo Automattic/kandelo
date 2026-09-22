@@ -140,6 +140,17 @@ export const PRESET_LIBRARY: Preset[] = [
     estimatedUrlBytes: 612,
   },
   {
+    id: "sdl2",
+    title: "SDL2 GLSL playground",
+    summary: "SDL2 GLSL shader playground: a live-coding editor (left) beside a GLES2 fragment shader rendered on a 1920×1080 /dev/dri/card0 surface (right), auto-recompiling 250 ms after you stop typing. F1/F2 switch between the image and sound shader, Ctrl+L cycles presets, Ctrl+S persists, ESC quits.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#9c27b0",
+    glyph: "S",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
+  {
     id: "evdev",
     title: "Evdev input log",
     summary: "Keystrokes + pointer motion captured from the DOM and replayed through /dev/input/event{0,1}.",
