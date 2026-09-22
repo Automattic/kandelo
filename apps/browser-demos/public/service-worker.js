@@ -905,10 +905,15 @@ if (typeof window !== "undefined") {
             msg.sessionId,
             event.source && event.source.id,
           );
+          // The owning/shell client is deliberately NOT added to the viewing
+          // map here. The shell (top-level demo page) is a different client
+          // from the web-preview iframe; mapping it would make the shell's own
+          // nameless same-origin GETs get redirected into the guest app and 404
+          // against the kernel. The actual viewer (the iframe) is registered via
+          // markViewer when it navigates to /app/<name>/. teardownInstancesOwnedBy
+          // and reconcileOwners key off record.owningClientId, not the viewing
+          // map, so owner attribution is unaffected.
           instances.set(name, record);
-          if (record.owningClientId) {
-            clientToInstance.set(record.owningClientId, name);
-          }
           // Persist the machine's initial authority before acknowledging so a
           // fresh login survives a worker restart. The durable write is the
           // linearization point; the live bridge commits only after it lands.
@@ -929,9 +934,6 @@ if (typeof window !== "undefined") {
         }).catch(function () {
           if (record) {
             instances.delete(record.name);
-            if (record.owningClientId) {
-              clientToInstance.delete(record.owningClientId);
-            }
           }
           replyPort.postMessage({
             type: "bridge-error",
@@ -1589,7 +1591,7 @@ if (typeof window !== "undefined") {
               }
               return;
             }
-            scheduleBridgeRestoration(record, candidatePort).then(
+            scheduleBridgeRestoration(record, candidatePort, client.id).then(
               function (satisfied) {
                 if (satisfied) finish(true);
               },
@@ -1609,8 +1611,14 @@ if (typeof window !== "undefined") {
 
   // Install a restored port as the machine's live bridge, loading the jar from
   // its durable authority. The authority revision is unchanged: restoration
-  // re-supplies a lost port, it does not create new durable state.
-  function scheduleBridgeRestoration(record, port) {
+  // re-supplies a lost port, it does not create new durable state. clientId is
+  // the window client that answered need-bridge; recording it as the record's
+  // owningClientId is what lets a restarted-then-closed machine ever go
+  // terminally offline (instance-closing, reconcileOwners, and
+  // classifyFailedRestore all require a known owner). Without it a durable-
+  // restored machine (owningClientId null) is stuck reconnecting forever and
+  // its durable authority never gets garbage-collected.
+  function scheduleBridgeRestoration(record, port, clientId) {
     return enqueueRecordMutation(record, function () {
       if (record.bridgePort) {
         // A concurrent candidate already restored this machine.
@@ -1624,6 +1632,7 @@ if (typeof window !== "undefined") {
       record.cookieJar = cloneCookieJar(record.durableAuthority.cookieJar);
       record.sessionId = record.durableAuthority.sessionId;
       initBridgePortFor(record, port);
+      record.owningClientId = clientId || null;
       record.status = "live";
       record.liveBridgeEpoch += 1;
       return true;
@@ -1633,7 +1642,7 @@ if (typeof window !== "undefined") {
   // A restarted worker serves a named machine whose live port was lost by
   // driving the need-bridge handshake; on success the request is served over
   // the restored bridge, otherwise the machine reports unavailable.
-  function fetchRestoredAppRequest(record, event, request, url) {
+  function fetchRestoredAppRequest(record, request, url) {
     return ensureBridge(record).then(function (restored) {
       if (restored && record.bridgePort) {
         return handleAppRequest(record, request, url);
@@ -1646,16 +1655,11 @@ if (typeof window !== "undefined") {
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
-    // A top-level navigation to a same-origin, non-app page means the host tab
-    // is leaving the machines it owns. Tear them down so a navigated-away host
-    // does not linger in the registry. (Full offline notification is Task 3.)
-    if (
-      event.request.mode === "navigate" &&
-      !isCrossOrigin(url) &&
-      instanceNameFromPath(url.pathname) === null
-    ) {
-      teardownInstancesOwnedBy(event.clientId);
-    }
+    // Host navigate-away is handled by the page's pagehide -> instance-closing
+    // message (see sw-bridge-fetch.ts), which offlines the machines the tab
+    // owns and notifies viewers. There is no navigation-branch teardown here:
+    // event.clientId is the empty string for a navigation request, so keying a
+    // teardown off it never matched an owning client.
 
     // Group assets have an immutable deployment-local identity. Cache only
     // their complete native responses before bridge/proxy/header rewriting.
@@ -1710,7 +1714,7 @@ if (typeof window !== "undefined") {
         if (record.bridgePort) {
           return handleAppRequest(record, event.request, url);
         }
-        return fetchRestoredAppRequest(record, event, event.request, url);
+        return fetchRestoredAppRequest(record, event.request, url);
       }));
       return;
     }

@@ -442,7 +442,7 @@ test("an unknown machine name returns a 503 HTML page", async ({ page }) => {
   const res = await fetchResponse(page, "/a/app/happy-teal-otter/");
   expect(res.status).toBe(503);
   // An HTML document, not the plain-text stub.
-  expect(res.body).toContain("<");
+  expect(res.body).toContain("<!doctype html");
   expect(res.body).toContain("happy-teal-otter");
 });
 
@@ -486,6 +486,103 @@ test("closing the host tab pushes machine-offline to viewers", async ({
       (window as typeof window & { __offline?: Promise<string> }).__offline!
     ),
   ).toBe("offline");
+});
+
+test("a restarted-then-closed machine is terminally offlined and GCs its authority", async ({
+  context,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  const host = await context.newPage();
+  await host.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(host, "/a/");
+  const m = await installBridge(host, SESSION_A, "solo");
+
+  // A viewer tab is attributed to the machine while it is live, then the SW is
+  // genuinely restarted. Only the host answers need-bridge, so restoration must
+  // re-establish the host as the record's owningClientId — without that, the
+  // machine can never be reconciled offline after the owner closes.
+  const viewer = await context.newPage();
+  await viewer.goto(`${FIXTURE_ORIGIN}${m.appPrefix}`);
+
+  await installNamedRestoreResponder(host, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A, label: "solo" },
+  ]);
+  await stopWorker(context, host, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  // The first post-restart named request from the viewer drives restore (the
+  // host re-supplies the bridge) and re-registers the viewer as an attributed
+  // viewer of the restored record.
+  expect(await fetchText(viewer, `${m.appPrefix}after-restart`))
+    .toBe("restored:solo");
+
+  await subscribeMachineOffline(viewer, m.name);
+
+  // The owning tab closes without any further signal. A restart-restored record
+  // now knows its owner, so lazy reconciliation on the next request can retire
+  // it terminally.
+  await host.close();
+
+  await expect.poll(async () =>
+    (await fetchResponse(viewer, `${m.appPrefix}after-close`)).status
+  ).toBe(503);
+  expect(await readMachineOffline(viewer)).toBe("offline");
+  // markInstanceOffline GCs the per-name durable authority so a terminated
+  // machine does not re-materialize on the next SW restart.
+  await expect.poll(() => readBridgeAuthority(viewer, CACHE_A, m.name)).toBe(
+    null,
+  );
+});
+
+test("a crashed owner (no instance-closing) is reconciled offline on the next request", async ({
+  context,
+}) => {
+  const host = await context.newPage();
+  await host.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(host, "/a/");
+  const m = await installBridge(host, SESSION_A, "solo");
+
+  const viewer = await context.newPage();
+  await viewer.goto(`${FIXTURE_ORIGIN}${m.appPrefix}`);
+  await subscribeMachineOffline(viewer, m.name);
+
+  // The owner tab goes away WITHOUT sending instance-closing — a crash, not an
+  // orderly pagehide. Only lazy reconcileOwners on a later request can notice
+  // the owning window client is gone and retire the machine.
+  await host.close();
+
+  await expect.poll(async () =>
+    (await fetchResponse(viewer, `${m.appPrefix}after-crash`)).status
+  ).toBe(503);
+  expect(await readMachineOffline(viewer)).toBe("offline");
+});
+
+test("an offlined machine returns the 503 HTML page on a later request", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "solo");
+
+  // Retire the machine via the real owner instance-closing message (the same
+  // message the pagehide listener sends). The sender is the owning client, so
+  // the SW marks it offline.
+  await page.evaluate((name) =>
+    navigator.serviceWorker.controller!.postMessage({
+      type: "instance-closing",
+      name,
+    }), m.name);
+
+  // A later named request to the now-offline machine returns the 503 HTML page
+  // (distinct in origin from an unknown name, identical as the real boundary:
+  // this machine is not running here).
+  await expect.poll(async () =>
+    (await fetchResponse(page, `${m.appPrefix}later`)).status
+  ).toBe(503);
+  const res = await fetchResponse(page, `${m.appPrefix}later`);
+  expect(res.status).toBe(503);
+  expect(res.body).toContain("<!doctype html");
+  expect(res.body).toContain(m.name);
 });
 
 test("cookie jars are isolated per machine", async ({ page }) => {
@@ -782,6 +879,30 @@ test("the lazy VFS cache excludes bridge, static, query, navigation, sibling, an
     "/a/vfs-groups/release-1/assets/shared.bin",
   ]);
 });
+
+// Subscribe a viewer page to the SW's machine-offline push for one machine,
+// storing the resolution on window.__offline so a later step can await it. The
+// listener is installed before the offline event is triggered so the push can
+// never race ahead of the subscription.
+async function subscribeMachineOffline(page: Page, name: string): Promise<void> {
+  await page.evaluate((machineName) => {
+    (window as typeof window & { __offline?: Promise<string> }).__offline =
+      new Promise<string>((resolve) => {
+        navigator.serviceWorker.addEventListener("message", (event) => {
+          const data = (event as MessageEvent).data;
+          if (data?.type === "machine-offline" && data.name === machineName) {
+            resolve("offline");
+          }
+        });
+      });
+  }, name);
+}
+
+async function readMachineOffline(page: Page): Promise<string> {
+  return page.evaluate(() =>
+    (window as typeof window & { __offline?: Promise<string> }).__offline!
+  );
+}
 
 async function fetchReplayedCookie(page: Page, pathname: string): Promise<string> {
   return page.evaluate(async (path) => {

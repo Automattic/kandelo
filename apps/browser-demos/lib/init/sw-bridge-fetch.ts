@@ -103,7 +103,12 @@ export async function setupServiceWorkerFetchBridge(
     // SW can immediately mark it offline and push machine-offline to any viewer
     // tabs instead of waiting for lazy owner reconciliation on a later request.
     // pagehide (not unload) fires reliably on bfcache and mobile tab teardown.
-    window.addEventListener("pagehide", () => {
+    // Only announce when the page is truly being discarded: a bfcache
+    // suspension fires pagehide with event.persisted === true and the tab is
+    // still alive (it can be restored), so offlining + GC'ing the machine then
+    // would kill a live tab's machine on every back/forward navigation.
+    window.addEventListener("pagehide", (event) => {
+      if (event.persisted) return;
       navigator.serviceWorker.controller?.postMessage({
         type: "instance-closing",
         name,
