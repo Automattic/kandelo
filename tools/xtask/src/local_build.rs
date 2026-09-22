@@ -604,12 +604,94 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
     let libc_a = sysroot_path.join("lib/libc.a");
     if libc_a.is_file() {
         let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
-        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])
+        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
     } else if arch == "wasm32posix" {
-        run_repo_script(repo, "scripts/build-musl.sh", &[])
+        run_repo_script(repo, "scripts/build-musl.sh", &[])?;
     } else {
-        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])
+        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])?;
     }
+    verify_sysroot_abi_headers(repo, &sysroot_path, arch)
+}
+
+/// Fail loud if a sysroot is missing — or holds stale copies of — the generated
+/// Kandelo ABI headers (`include/bits/kandelo_*.h`).
+///
+/// `dump-abi` regenerates these headers into `libc/musl-overlay/include/bits/`
+/// as the authoritative ABI surface, and `build-musl.sh` /
+/// `install-overlay-headers.sh` copy them into the sysroot. If a package build
+/// ever runs against a sysroot that lacks them (e.g. a half-installed or stale
+/// sysroot after an ABI change — `install-overlay-headers.sh` deletes the
+/// `kandelo_*.h` set before re-copying it), the SDK cc cannot even compile the
+/// autoconf conftests: `<limits.h>` pulls in `bits/kandelo_limits.h` and the
+/// channel-syscall glue pulls in `bits/kandelo_channel_scalars.h`. Every
+/// configure link/compile probe then fails for that reason and is recorded as
+/// "function absent", so e.g. gnulib's freading/fseterr modules fall back to a
+/// FILE-struct path that has no musl branch and emit a baffling
+/// `#error "Please port gnulib ... to your platform!"` far from the real cause.
+///
+/// Surface the incomplete sysroot as the truthful failure it is, before any
+/// package consumes it. This mirrors the sysroot to its overlay: the two must
+/// carry byte-identical `kandelo_*.h`, so this catches both a missing header
+/// and a stale one left behind by a skipped re-sync.
+fn verify_sysroot_abi_headers(repo: &Path, sysroot_path: &Path, arch: &str) -> Result<(), String> {
+    let overlay_bits = repo.join("libc/musl-overlay/include/bits");
+    let sysroot_bits = sysroot_path.join("include/bits");
+    let entries = match fs::read_dir(&overlay_bits) {
+        Ok(entries) => entries,
+        // No authoritative overlay bits dir means there is nothing to mirror;
+        // a missing overlay is a source-tree problem, not a sysroot one.
+        Err(_) => return Ok(()),
+    };
+    let mut missing = Vec::new();
+    let mut stale = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "verify sysroot ABI headers: reading {}: {error}",
+                overlay_bits.display()
+            )
+        })?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !(name_str.starts_with("kandelo_") && name_str.ends_with(".h")) {
+            continue;
+        }
+        let overlay_file = overlay_bits.join(&name);
+        let overlay_bytes = fs::read(&overlay_file).map_err(|error| {
+            format!(
+                "verify sysroot ABI headers: reading {}: {error}",
+                overlay_file.display()
+            )
+        })?;
+        match fs::read(sysroot_bits.join(&name)) {
+            Err(_) => missing.push(name_str.into_owned()),
+            Ok(bytes) if bytes != overlay_bytes => stale.push(name_str.into_owned()),
+            Ok(_) => {}
+        }
+    }
+    if missing.is_empty() && stale.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    stale.sort();
+    let mut detail = String::new();
+    if !missing.is_empty() {
+        detail.push_str(&format!("\n  missing: {}", missing.join(", ")));
+    }
+    if !stale.is_empty() {
+        detail.push_str(&format!("\n  stale (differ from overlay): {}", stale.join(", ")));
+    }
+    let arch_flag = if arch == "wasm32posix" {
+        String::new()
+    } else {
+        format!(" --arch {arch}")
+    };
+    Err(format!(
+        "sysroot {sysroot} is missing or has stale generated Kandelo ABI headers under include/bits/.{detail}\n\
+         The SDK cc cannot compile autoconf conftests against this sysroot (e.g. <limits.h> includes bits/kandelo_limits.h, and the channel-syscall glue includes bits/kandelo_channel_scalars.h), so package configure probes silently misreport libc functions as absent and builds fail with confusing downstream errors (e.g. gnulib \"Please port ... to your platform!\").\n\
+         Rebuild the sysroot with `scripts/build-musl.sh{arch_flag}` under scripts/dev-shell.sh; a stale sysroot must be rebuilt through the normal path, not consumed as-is.",
+        sysroot = sysroot_path.display(),
+    ))
 }
 
 /// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
@@ -4989,6 +5071,51 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn verify_sysroot_abi_headers_gates_missing_and_stale_headers() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let sysroot = temp.path().join("sysroot");
+        let overlay_bits = repo.join("libc/musl-overlay/include/bits");
+        let sysroot_bits = sysroot.join("include/bits");
+
+        write(&overlay_bits.join("kandelo_limits.h"), "#define KANDELO_LIMIT 1\n");
+        write(
+            &overlay_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 2\n",
+        );
+        // A non-kandelo bits header must be ignored by the mirror check.
+        write(&overlay_bits.join("alltypes.h"), "typedef int wasm_marker;\n");
+
+        // Complete, byte-identical sysroot -> Ok.
+        write(&sysroot_bits.join("kandelo_limits.h"), "#define KANDELO_LIMIT 1\n");
+        write(
+            &sysroot_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 2\n",
+        );
+        verify_sysroot_abi_headers(&repo, &sysroot, "wasm32posix")
+            .expect("complete, current sysroot headers must pass");
+
+        // Stale copy (content drifted from the overlay) -> loud failure.
+        write(
+            &sysroot_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 999\n",
+        );
+        let stale = verify_sysroot_abi_headers(&repo, &sysroot, "wasm32posix")
+            .expect_err("a stale ABI header must fail loud");
+        assert!(stale.contains("kandelo_channel_scalars.h"), "{stale}");
+        assert!(stale.contains("stale"), "{stale}");
+
+        // Missing header -> loud failure naming it, with rebuild guidance and
+        // the wasm64 arch flag threaded through.
+        fs::remove_file(sysroot_bits.join("kandelo_channel_scalars.h")).unwrap();
+        let missing = verify_sysroot_abi_headers(&repo, &sysroot, "wasm64posix")
+            .expect_err("a missing ABI header must fail loud");
+        assert!(missing.contains("kandelo_channel_scalars.h"), "{missing}");
+        assert!(missing.contains("missing"), "{missing}");
+        assert!(missing.contains("build-musl.sh --arch wasm64posix"), "{missing}");
     }
 
     #[test]
