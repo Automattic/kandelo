@@ -222,10 +222,14 @@ deriving ports would mean parsing `nginx.conf`.
 The image also declares `defaultProfile`, replacing
 `DEFAULT_DEMO_FOR_VFS_IMAGE`.
 
-A profile may declare `aliases` (e.g. `spidermonkey`,
-`spidermonkey-node` on the Node profile), which is where the contents of
-`DEMO_ALIASES` go. Alias spellings are a property of the machine, so the
-image owns them.
+There is no `aliases` field. `?demo=` is removed outright rather than
+deprecated, so the old spellings in `DEMO_ALIASES` have no consumer to
+serve. Two of the three are not lost anyway: the images already declare
+both spellings as real profiles — `build-wp-vfs-image.ts:434-437` emits
+`wordpress-sqlite` *and* `wordpress`, `build-lamp-vfs-image.ts:500-502`
+emits `wordpress-mariadb` *and* `lamp`. Only `spidermonkey` /
+`spidermonkey-node` disappear, and they disappear with the parameter
+that referenced them.
 
 ### Boot-time init is image-owned, without exception
 
@@ -351,22 +355,22 @@ Attach happens before `autoCommand`, as a defined step. This collapses
 the `framebufferTest → sdl2 → espeak → evdev → runScript → autoCommand`
 else-if ladder into: attach input if declared, then run the command.
 
-### Display dimensions (stated assumption)
+### Display dimensions
 
 The `SDL2_FB_W/H = 1920/1080` constants at `live-setup.ts:1731` are the
 app guessing what the guest will allocate; the adjacent comment claiming
 they match `host/src/dri/kms-registry.ts` is stale — that file holds no
-such constant, and KMS framebuffer dimensions come from whatever the
-guest allocates.
+such constant.
 
-**Assumption, overrulable at review:** the image declares expected
-display dimensions now, and a follow-up derives them from the first
-bound framebuffer via the existing `onResize → setInputCanvasDims` path.
-Deriving is the truthful end state because the guest genuinely owns
-those dimensions, but it touches the KMS/input path and does not need to
-block this work.
+The viewport is the browser window. An image may declare **minimum**
+display dimensions in `runtime.display`, and nothing more: the actual
+size tracks the window, as the evdev path already does via
+`window.innerWidth/innerHeight` with `onResize → setInputCanvasDims`.
+The declared minimum is a floor a machine can state, not a size it gets
+to impose on the visitor's window. The hardcoded 1920×1080 pair is
+deleted.
 
-## Precedence (stated assumption)
+## Precedence
 
 When a `#k1=` link carries `runScript` and the image declares
 `autoCommand`, the link's script wins — matching today's ladder — but
@@ -418,9 +422,14 @@ consent step already required by
   by reading `argv`/`cwd`/`uid`/`gid`/`env` from the image only
 - `descriptorFromGalleryItem`'s `boot.argv` assignment, since roster
   entries carry membership only and no boot command
-- the editable boot fields in `views/Config.tsx` (dead UI with no
-  importers) and `ShareDialog`'s emission of the authoring machine's
-  boot block
+- `views/Config.tsx` in its entirety, plus its 49 `kcfg-` rules in
+  `styles.css`. The file has no importers and no test coverage; its
+  Boot tab edits init identity this design forbids, and its other four
+  tabs (Mounts, Runtime, Capabilities, Trust) are unreachable dead UI
+  that can be rebuilt against the new contract if wanted
+- `ShareDialog`'s emission of the authoring machine's boot block
+- the `?demo=` parameter, `SDL2_FB_W`/`SDL2_FB_H`, and the stale comment
+  claiming they match `kms-registry.ts`
 - `customVfsProfile`, which ceases to exist as a distinct path
 
 ## Phasing
@@ -453,15 +462,12 @@ app's id tables are deleted only once nothing reads them.
    three-state listing; derive the gallery from tracked sources.
 5. **App cutover.** Read `demo.json` for everything; delete the tables
    in "What gets deleted"; collapse the boot ladder; add the
-   `&profile=` selector with `?demo=` retained as a deprecated alias.
-
-   The alias must not reintroduce an app-side id table. `?demo=<id>`
-   resolves *through the roster*: find the entry whose profile (or
-   image-declared alias) matches, then boot its product. The roster is
-   already loaded for the listing, so the alias costs no built-in
-   knowledge. A `?demo=` id that matches no roster entry is an error,
-   not a silent fallback to `shell`.
+   `&profile=` selector and **remove `?demo=` outright**. No alias, no
+   deprecation window. An unrecognized parameter is an error, not a
+   silent fallback to `shell`.
 6. **Test migration.** Move the ~14 Playwright specs off `?demo=`.
+   Because the parameter is removed rather than aliased, this phase is
+   not optional cleanup — it lands with phase 5 or the suite is red.
 7. **Checker inversion.** Rewrite
    `scripts/check-pages-vfs-product-registry.mjs` to derive from tracked
    image sources and assert the app contains no machine identities.
@@ -491,19 +497,37 @@ Per the validation contract, each claim needs evidence for that claim:
 Unmeasured is unclaimed: this design makes no performance claim, and
 none should be made without benchmark evidence.
 
-## Open questions for review
+## Resolved during design
 
-1. Display dimensions — declare now and derive later, or derive from the
-   first bound framebuffer immediately?
-2. `runScript` vs `autoCommand` precedence — link wins with a visible
-   log line, as assumed above?
-3. Does the `?demo=` deprecated alias stay indefinitely, or get a
-   removal date? `docs/browser-support.md:608` documents
-   `?demo=<id>#k1=<payload>` as the shared-link form, so links exist in
-   the wild.
-4. Is `sdl2`'s absence from `pages-vfs-product-gallery.json` intentional
-   (not yet shipped to Pages), or the drift it appears to be?
-5. `views/Config.tsx` is dead UI whose Boot tab edits init identity this
-   design forbids. Delete the file, or keep it and make the Boot tab
-   read-only, given its other four tabs (Mounts, Runtime, Capabilities,
-   Trust) may still be wanted later?
+1. **Display dimensions** — images declare a *minimum* only; the
+   viewport is the browser window.
+2. **`runScript` vs `autoCommand`** — the link's script wins, with a
+   visible log line.
+3. **`?demo=`** — removed now, not deprecated. No alias.
+4. **`sdl2`** — ships in the gallery. Its absence from
+   `pages-vfs-product-gallery.json` was drift, and the roster includes
+   it; phase 3 bakes its binary and shader presets into the shell image,
+   which is what makes the Pages product able to serve it.
+5. **`views/Config.tsx`** — deleted entirely, with its CSS.
+
+### What removing `?demo=` costs existing links
+
+Links in the wild degrade rather than break. `galleryItemUrl` writes
+*both* parameters (`url-state.ts:52-53`), so a shared link already
+carries `?vfs=` with the image URL; dropping `?demo=` means such a link
+still resolves its image and boots the image's declared default profile
+instead of the linked one. For single-profile images that is the same
+machine. For the shell image a `?demo=doom` link lands on `shell`.
+
+There is a second, pre-existing profile channel to decide on: `?vfs=`
+values carry the profile in the *image URL's own fragment*
+(`vfsImageUrlForPreset` sets `url.hash = liveId`, and
+`liveDemoIdForVfsImageUrl` reads it back). This design replaces it with
+an explicit `&profile=`; the fragment channel goes away with the rest of
+the id plumbing, since smuggling a profile inside an image URL is the
+same "special naming" in a less visible place.
+
+## Open questions
+
+None. `docs/browser-support.md:608` documents `?demo=<id>#k1=<payload>`
+as the shared-link form and must be updated by phase 5.
