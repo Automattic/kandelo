@@ -29,6 +29,7 @@ import {
 import { SHELL_DERIVED_VFS_PROFILE_MAX_BYTES } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import { webPresentation, writeKandeloDemoConfig } from "./kandelo-demo-config";
 import { nginxPythonGuide } from "./kandelo-demo-guides";
+import { prewarmPythonBytecode } from "./python-bytecode-prewarm";
 
 const PYTHON_STDLIB = "python3.13";
 const APP_DIR = join(
@@ -148,6 +149,15 @@ export interface NginxPythonVfsImageBuildInputs {
   // <runtimeRoot>/lib/python3.13 and <runtimeRoot>/share/licenses/cpython/LICENSE.
   runtimeRoot: string;
   dinit?: DinitBinaryInputs;
+  // Exact staged build inputs for the build-time CPython bytecode prewarm
+  // (see python-bytecode-prewarm.ts). When omitted, the prewarm is skipped
+  // and the image ships source-only stdlib — which the browser cannot import
+  // without overflowing the kernel worker's stack. Provided by the resolver
+  // build path (kernel-wasm toolchain + staged python.wasm).
+  buildPrograms?: {
+    python: Uint8Array;
+    kernel: Uint8Array;
+  };
   outputPath: string;
 }
 
@@ -231,9 +241,29 @@ export async function buildNginxPythonVfsImage(
     },
   });
 
+  // Prewarm CPython bytecode: precompile the stdlib and the app to .pyc so
+  // the browser loads bytecode via marshal instead of compiling from source
+  // on first import — the compile pass overflows the browser kernel worker's
+  // fixed stack. See python-bytecode-prewarm.ts for the full rationale.
+  let prewarmedPyc = 0;
+  if (inputs.buildPrograms) {
+    prewarmedPyc = await prewarmPythonBytecode(fs, {
+      sourceRoots: [`/usr/lib/${PYTHON_STDLIB}`, "/var/www/notes"],
+      label: "nginx-python",
+      programs: inputs.buildPrograms,
+    });
+  } else {
+    console.warn(
+      "[python-prewarm] skipped: no kernel/python build programs supplied " +
+        "(the browser demo will compile stdlib from source and may overflow " +
+        "the kernel worker stack)",
+    );
+  }
+
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(
-    `nginx-python VFS: interpreter + ${stdlibCount} stdlib files + ${appCount} app files`,
+    `nginx-python VFS: interpreter + ${stdlibCount} stdlib files + ${appCount} app files ` +
+      `+ ${prewarmedPyc} prewarmed .pyc`,
   );
 }
 
@@ -243,11 +273,13 @@ async function main(): Promise<void> {
   const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
   const runtimeRoot = process.env.KANDELO_PYTHON_RUNTIME_ROOT;
   const pythonWasm = process.env.KANDELO_PYTHON_WASM;
+  const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
   if (!runtimeRoot || !pythonWasm) {
     throw new Error(
       "KANDELO_PYTHON_RUNTIME_ROOT and KANDELO_PYTHON_WASM are required",
     );
   }
+  const pythonBytes = new Uint8Array(readFileSync(pythonWasm));
   await buildNginxPythonVfsImage({
     shellImage: shellRoot
       ? new Uint8Array(readFileSync(join(shellRoot, "shell.vfs.zst")))
@@ -257,12 +289,20 @@ async function main(): Promise<void> {
         nginxRoot ? join(nginxRoot, "nginx.wasm") : resolveBinary("programs/nginx.wasm"),
       ),
     ),
-    python: new Uint8Array(readFileSync(pythonWasm)),
+    python: pythonBytes,
     runtimeRoot,
     dinit: dinitRoot
       ? {
           dinit: new Uint8Array(readFileSync(join(dinitRoot, "dinit.wasm"))),
           dinitctl: new Uint8Array(readFileSync(join(dinitRoot, "dinitctl.wasm"))),
+        }
+      : undefined,
+    buildPrograms: kernelRoot
+      ? {
+          python: pythonBytes,
+          kernel: new Uint8Array(
+            readFileSync(join(kernelRoot, "kandelo-kernel.wasm")),
+          ),
         }
       : undefined,
     outputPath: process.argv[2] ?? OUT_FILE,

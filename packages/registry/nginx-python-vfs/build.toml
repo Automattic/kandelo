@@ -2,6 +2,7 @@ script_path = "images/vfs/scripts/build-nginx-python-vfs-image.sh"
 inputs = [
   "images/vfs/scripts/build-nginx-python-vfs-image.sh",
   "images/vfs/scripts/build-nginx-python-vfs-image.ts",
+  "images/vfs/scripts/python-bytecode-prewarm.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
   "images/vfs/scripts/kandelo-demo-config.ts",
   "images/vfs/scripts/kandelo-demo-guides.ts",
@@ -21,4 +22,4 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 1
+revision = 2

@@ -29,6 +29,15 @@ source_roles = []
 role = "runtime"
 materialization = "embedded"
 
+# Build-only: the CPython bytecode prewarm boots the kernel on the Node host
+# to compile the stdlib to .pyc before the image is saved (see
+# images/vfs/scripts/python-bytecode-prewarm.ts). Sets WASM_POSIX_DEP_KERNEL_DIR.
+[[software.toolchain]]
+id = "kernel-wasm"
+provider = "prepared-runtime"
+component = "kernel-wasm"
+role = "build"
+
 [[mounts]]
 path = "/"
 source = "built-image"

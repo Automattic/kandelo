@@ -7,7 +7,13 @@ depends_on = [
   "nginx@1.24.0",
   "cpython@3.13.3",
   "dinit@0.19.4",
+  "kernel@0.1.0",
 ]
+
+# The builder boots the declared kernel to prewarm CPython bytecode (compile
+# the stdlib to .pyc before saving the image), so the kernel is an explicit
+# build dependency rather than an ambient checkout artifact — the same pattern
+# nginx-php-vfs uses for its opcache prewarm.
 
 # Composite VFS image for the nginx + Python (wsgiref) browser demo. nginx
 # reverse-proxies /api/ to a standard-library Python WSGI app backed by SQLite.

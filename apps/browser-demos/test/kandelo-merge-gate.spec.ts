@@ -467,47 +467,59 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
 // and is the evidence test named by images/vfs/products/browser-nginx-python
 // .toml's [evidence.browser].
 test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the Notes API through the web preview", async ({ page }) => {
-  // KNOWN BROWSER PLATFORM GAP (found while adding this evidence test):
-  // notes-app's own startup (`python3 /var/www/notes/app.py`) imports enough
-  // of the stdlib (wsgiref -> http.server -> ... -> email.quoprimime) that
-  // compiling one of those modules from source recurses deep enough through
-  // the kernel's fork/exec continuation transport
-  // (__wpk_fork_unwind_transport_indirect_0_*) to throw a JS
-  // "RangeError: Maximum call stack size exceeded" inside the browser's
-  // dedicated kernel Worker. That is a *kernel worker* crash (not just the
-  // one process), so dinit loses notes-app and nginx together and every
-  // subsequent /api/* request gets nginx's HTML error page instead of JSON.
+  // PARTIALLY-CLOSED BROWSER PLATFORM GAP. notes-app's startup
+  // (`python3 /var/www/notes/app.py`) imports a large slice of the stdlib
+  // (wsgiref -> http.server -> ... -> email.quoprimime). On first import
+  // CPython used to compile each of those modules from *source* — a deeply
+  // recursive pass (tokenizer -> parser -> AST -> symtable -> code generator).
+  // Inside the browser's dedicated kernel Worker — whose V8 stack is a fixed,
+  // small default because the `new Worker()` API exposes no stack-size knob —
+  // that recursion, amplified by the fork-instrument transport trampoline
+  // (__wpk_fork_unwind_transport_indirect_0_*) that wraps each fork-reaching
+  // guest indirect call, threw "RangeError: Maximum call stack size exceeded"
+  // and took the whole kernel worker (not just the one process) down, so dinit
+  // lost notes-app and nginx together and every /api/* request returned
+  // nginx's HTML error page instead of JSON. The Node host survives because
+  // NodeKernelHost gives its worker a 32 MB stack (nodeWorkerStackSizeMb() in
+  // host/src/worker-adapter.ts); the browser has no equivalent knob (confirmed:
+  // even chromium --js-flags=--stack-size does not enlarge a Worker's stack).
   //
-  // The Node host does not hit this: NodeKernelHost runs the kernel in a
-  // worker_threads Worker created with an explicit, larger
-  // `resourceLimits.stackSizeMb` (see nodeWorkerStackSizeMb() in
-  // host/src/worker-adapter.ts). Browsers expose no equivalent knob for a
-  // dedicated Worker's V8 stack size, so the same import chain that is fine
-  // on Node can overflow the browser worker's fixed default stack.
+  // FIXED (build-time bytecode prewarm): the nginx-python image builder now
+  // precompiles the stdlib and the app to .pyc at build time
+  // (images/vfs/scripts/python-bytecode-prewarm.ts) using the Kandelo CPython
+  // under the kernel, with unchecked-hash invalidation so import uses the baked
+  // bytecode verbatim. At runtime the browser loads bytecode via marshal
+  // instead of compiling from source, which removes the deepest recursion and
+  // is verified by syscall trace (import opens the baked .pyc, no compile).
   //
-  // This task also found and fixed a real, separate bug in the same area:
-  // the browser's "nginx-python" service boot (and the Node demo's
-  // serve-python.ts) were not actually setting PYTHONDONTWRITEBYTECODE /
-  // PYTHONHOME, despite images/vfs/products/browser-nginx-python.toml's
-  // [boot.env] declaring them. Fixing that wiring (live-setup.ts's new
-  // "python-service" init-env profile, and serve-python.ts) removed the
-  // bytecode-cache open+write+rename syscalls from the crash's call chain,
-  // but the remaining import/compile-from-source depth alone is still
-  // enough to overflow the browser worker's stack.
+  // ALSO FIXED alongside it: the browser "nginx-python" service boot and the
+  // Node serve-python.ts were not actually setting PYTHONDONTWRITEBYTECODE /
+  // PYTHONHOME despite images/vfs/products/browser-nginx-python.toml's
+  // [boot.env] declaring them; live-setup.ts's "python-service" init-env
+  // profile and serve-python.ts now do.
   //
-  // The real fix is almost certainly to stop compiling stdlib modules from
-  // source on first boot at all: prewarm/precompile the CPython bytecode
-  // cache into the VFS image at build time, the same way
-  // images/vfs/scripts/opcache-prewarm.ts already does for PHP/LAMP's
-  // opcache. That is a build-time platform change, not something this
-  // browser-verification task should carry out. Tracked here rather than
-  // faked green; remove this test.fixme once the underlying gap is closed.
+  // RESIDUAL GAP (why this stays fixme): even loading bytecode, the stdlib
+  // import chain's execution depth still marginally exceeds chromium's fixed
+  // Worker stack. Measured on Node (KANDELO_NODE_WORKER_STACK_SIZE_MB): the
+  // import chain needs ~0.85 MB of worker stack with the fork-instrumented
+  // interpreter (succeeds at 0.9, overflows at 0.8), and chromium's dedicated
+  // Worker stack is just below that. Closing it fully needs either a larger
+  // browser worker stack (no Web Worker API/flag exists) or a frame-neutral
+  // (tail-call) fork-instrument transport so the trampoline stops adding a
+  // native frame per fork-reaching call — an ABI-adjacent fork-instrument
+  // change. Removing fork instrumentation instead is not viable: the kernel
+  // requires fork-importing programs to carry the full instrumentation
+  // contract, so it would mean shipping a CPython built without fork, which
+  // removes the currently-working os.fork (a real POSIX capability). Left as a
+  // truthful failure rather than faked green; remove this fixme once the
+  // residual worker-stack depth is closed.
   test.fixme(
     true,
-    "Known browser fork/exec depth gap: Python stdlib compile-from-source " +
-      "during notes-app startup overflows the browser kernel Worker's " +
-      "(non-configurable) V8 stack; passes on Node because " +
-      "nodeWorkerStackSizeMb() gives that host a larger worker stack.",
+    "Residual browser platform gap: with build-time .pyc prewarm the stdlib " +
+      "import chain still needs ~0.85 MB of worker stack (measured on Node) " +
+      "and chromium's fixed dedicated-Worker stack is marginally below that; " +
+      "no Web Worker API enlarges it. Full close needs a frame-neutral " +
+      "fork-instrument transport or a larger browser worker stack.",
   );
   test.setTimeout(300_000);
 
