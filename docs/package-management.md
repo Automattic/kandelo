@@ -38,6 +38,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Override an artifact locally                   | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these over the cache.                                                                                                                                   |
 | Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — `revision` lives in the project-view file). Invalidates the local cache for that package. Only bump when output bytes legitimately change.                                                            |
 | Isolate a worktree's build cache              | Set `KANDELO_SOURCE_CACHE_ROOT=<absolute path>` before `./run.sh local-build` / `setup` / `bootstrap`. The SourceOnly cache is shared across every worktree on the machine by default (content-addressed, so identical inputs build once and are reused everywhere — this is what keeps a fresh worktree fast); the override gives this worktree its own cache. Useful when an in-progress change alters cached artifact bytes and you don't want it churning the shared cache. Leave unset to share.                     |
+| Reclaim disk from the build cache             | `./run.sh cache-gc` (dry run) then `./run.sh cache-gc --apply` — see [Cache garbage collection](#cache-garbage-collection). A successful local build also collects automatically, at most once a day; `KANDELO_CACHE_GC_AUTO=0` disables that. |
 | Publish package recipes from another repository | [docs/package-sources.md](package-sources.md) — package-source layout for source-built recipes consumed via `WASM_POSIX_DEPS_REGISTRY`.                                                                                                                          |
 | Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
 | See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
@@ -80,6 +81,15 @@ product, uses 16 concurrent jobs, stores verified sources below
 `$HOME/.cache/kandelo/source-only`, and publishes the validated projection to
 `local-binaries/source-only-v1`.
 
+Before planning, the engine (every `local-build run` and `xtask bootstrap`,
+so `./run.sh setup` too) checks the repository's root `node_modules/`
+against `package-lock.json` and runs `npm ci` when it is missing or any
+non-optional locked package is absent or at a different version. Sealed
+package builds (rootfs, shell, coreutils-docs, and others) execute
+`node_modules/tsx` from the checkout but must not install it themselves, so
+the caller provisions the locked tree. A tree that already matches, such as
+one CI installed, is left untouched.
+
 The default output ends with a concise node, cache, build, and product
 summary. Pass `--json` to print the canonical machine-readable result instead:
 
@@ -93,6 +103,23 @@ command directly. `--product all` selects every active product; omitting
 those products and their transitive package dependencies. `--jobs` bounds
 concurrently running nodes; ready nodes start as soon as their own dependencies
 finish.
+
+A narrower selection, including the kernel-only build that `./run.sh build
+<pkg>` performs first, adds to the published projection instead of replacing
+it. Packages the projection already records stay published when every compiled
+package in their dependency closure still matches its cache receipt under the
+current cache keys. Packages that no longer match are dropped with a
+`dropping <pkg> from the published projection` message, so the projection never
+names an output that is not current. A later full `./run.sh local-build`
+restores them.
+
+A node is reported cached without launching its build child only when its cache
+entry and receipt are present and every output it projects into
+`local-binaries/source-only-v1` hashes to the receipt's SHA-256. Size alone is
+not enough: artifacts embed their fixed-length cache key, so an output left by
+an earlier cache key usually has the same size. The finalizer then leaves the
+published projection untouched only when it already records this run's exact
+package set, cache keys, and receipts.
 
 The machine-readable result contains every selected node and whether it was
 newly published or reused from cache. If a node fails, independent work drains
@@ -972,10 +999,12 @@ source.
 ### Sysroot libraries are not packages
 
 Some APIs are part of the Kandelo sysroot rather than the package graph. The
-DRI/EGL/GLES shims (`libdrm.a`, `libgbm.a`, `libEGL.a`, `libGLESv2.a`) are
-built by `scripts/build-musl.sh` and exposed through
-`wasm32posix-pkg-config`; they are not outputs of the `kernel` package and
-should not be modeled as standalone package dependencies.
+GBM/EGL/GLES shims (`libgbm.a`, `libEGL.a`, `libGLESv2.a`) are built by
+`scripts/build-musl.sh` and exposed through `wasm32posix-pkg-config`; they are
+not outputs of the `kernel` package and should not be modeled as standalone
+package dependencies. `libdrm.a` sits beside them in the sysroot and is
+reached the same way, but it *is* a package — `scripts/build-dri-stubs.sh`
+resolves `packages/registry/libdrm` and symlinks the result in.
 
 A package that depends on those libraries should:
 
@@ -985,7 +1014,8 @@ A package that depends on those libraries should:
    `egl`, and/or `glesv2`.
 3. Declare only the consumer artifact in `[[outputs]]`.
 4. Add the relevant sysroot/glue inputs (`libc/glue/lib*_stub.c`,
-   `libc/glue/gl_abi.h`, `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
+   `libc/glue/gl_abi.h`, `packages/registry/libdrm/*`,
+   `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
    `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
    when the sysroot implementation changes.
 
@@ -1286,15 +1316,18 @@ override, cache, and source-build tiers.
 
 ## Atomic cache install
 
-The script builds into `<canonical>.tmp-<pid>/`, not the final path.
-On success the resolver calls `rename(2)` from temp to final. Readers
-in other worktrees either see the full previous version of the cache
-entry or the full new one — never a partial write.
+A source build stages into hidden siblings of the final cache path --
+`.<generation>.work-<pid>-<n>/` for the recipe's work tree and
+`.<generation>.build-stage-<pid>-<n>/` for its output -- never into the
+final path. On success the resolver publishes the output with an atomic,
+non-replacing `rename(2)`. Readers in other worktrees either see the full
+previous version of the cache entry or the full new one — never a partial
+write.
 
 If two builds of the same cache key race, the first `rename` wins.
 The second notices the canonical path exists and discards its own
-temp dir. Identical inputs yield identical outputs, so keeping either
-copy is correct.
+staging directory. Identical inputs yield identical outputs, so keeping
+either copy is correct.
 
 This race rule covers creation of a previously absent cache key. Maintenance
 that deliberately removes an existing key—force-source rebuild or stale-cache
@@ -1302,12 +1335,92 @@ repair—uses the resolver's existing no-concurrent-same-package assumption.
 Consumers must not retain or read canonical member paths concurrently with
 that maintenance because the directory can be absent and then recreated under
 the same pathname. Live mirror publication remains atomic; this boundary is
-about maintenance of the backing cache itself.
+about maintenance of the backing cache itself. Garbage collection is the one
+maintenance path that removes keys other checkouts may use, so it does not
+rely on that assumption; it excludes running builds with a lock (below).
 
-A crashed build (process killed mid-script) leaves its `.tmp-<pid>/`
-behind. The next resolve of the same key starts a fresh temp with a
-new pid — no conflict — and the leftover is harmless until manually
-pruned. A future `xtask clean-deps` subcommand can sweep them.
+A crashed build (process killed mid-script) leaves its `.work-<pid>-<n>` and
+`.build-stage-<pid>-<n>` directories behind. The next resolve of the same key
+stages under a new pid, so the leftovers never conflict; `cache-gc` removes
+them once their pid is gone and they are a day old.
+
+## Cache garbage collection
+
+The SourceOnly cache is content-addressed: a generation directory
+`compiled/{libs,programs}/<name>-<version>-rev<N>-<arch>-<cache key>/` is
+never modified once published, and any change to a package's inputs
+produces a new generation under a new key instead of replacing the old
+one. Because the cache is shared by every checkout on the machine (see
+[`packages-and-builds.md`](agent-guidance/packages-and-builds.md)), no
+single checkout can tell whether an old generation is still used
+somewhere else. `xtask clean` therefore removes only the key its own
+checkout resolves to, and without collection the cache only grows.
+
+`xtask cache-gc` (`./run.sh cache-gc`) collects what the cache itself can
+show is unused:
+
+| Entry | Removed when |
+| ----- | ------------ |
+| Generation directory (plus its receipt, provenance, and last-used sidecars) | No live checkout root names its cache key **and** it has not been used for `--max-age-days` (default 14). |
+| Generation, under `--max-size SIZE` | After the age pass, still over the budget: least recently used first, never a root-protected one, never one used within the last day. `SIZE` is bytes or `K`/`M`/`G`/`T` (binary multiples). |
+| `.work-<pid>-*`, `.build-stage-<pid>-*`, `.git-inputs-<pid>-*`, `.source-only-dispose-<pid>-*`, `.kandelo-receipt-tmp-<pid>` | The owning pid is not running and the entry is at least a day old. |
+| Receipt/provenance/last-used sidecar whose generation directory is gone | At least a day old. |
+| `.<key>.kandelo-rebuild-mismatch.*.json` diagnostic | No generation with that key remains and the file is older than the age limit. |
+| Root record whose checkout or projection is gone | Always (it protects nothing). |
+
+Anything else in the cache is left alone and counted as unrecognized.
+
+**Last use.** Every SourceOnly cache hit, dependency admission, and store
+refreshes an empty `.<generation>.kandelo-last-used` stamp beside the
+receipt. The stamp is rewritten only when it is more than an hour old, so a
+build that reuses hundreds of generations does not write hundreds of files
+each run. A generation without a stamp — every generation written before
+this mechanism existed — is dated by the newest of its directory and
+receipt mtimes.
+
+**Live roots.** When a local build publishes its projection, it records the
+cache keys that projection depends on (programs, the kernel, and the
+libraries under them) in `<cache root>/roots/<sha256 of the output root>.json`,
+replacing the checkout's previous record. The protected set also includes
+every key the output root's current `source-only-program-projection-v1.json`
+names. A record is dead, and removed, once its checkout directory or that
+projection file no longer exists. Roots are recorded per checkout, not
+discovered: a checkout running code older than this mechanism registers no
+root and refreshes no stamps, so until every checkout on the machine has
+built with current code, age is the only protection its generations have.
+
+**Running builds.** `local-build` (for the whole run, including every node
+child), `build-deps resolve` under the SourceOnly policy, and `xtask clean`
+hold a shared `flock(2)` on `<cache root>/.kandelo-cache-gc.lock`. An
+applying collection takes that lock exclusively without waiting and skips
+with a message if any build holds it, so a generation a running build has
+admitted cannot disappear under it. While holding the lock it re-plans,
+then renames every entry it removes into
+`<cache root>/.kandelo-cache-gc-trash/<pid>-<n>/`; it deletes the trash
+after releasing the lock, so a long delete never blocks builds. A build that
+starts while a collection holds the lock waits for it. Builds run by code
+older than this mechanism take no lock; the one-day floor on debris and
+orphaned sidecars exists for them.
+
+**Dry run by default.** Without `--apply`, `cache-gc` takes no lock and
+changes nothing; it prints each entry it would remove, why, its size, and
+totals, including how many generations are protected by a root versus kept
+only because they are recent.
+
+**Automatic collection.** After a successful local build the engine runs
+the same collection with `--apply`, a 30-day age limit, and no size budget,
+at most once per 24 hours per cache (`<cache root>/.kandelo-cache-gc-auto-stamp`).
+It logs what it removed to stderr, never fails the build, and skips while
+another build holds the cache. Set `KANDELO_CACHE_GC_AUTO=0` (also `false`,
+`no`, `off`) to disable it; `scripts/dev-shell.sh` passes this variable and
+`KANDELO_SOURCE_CACHE_ROOT` through its clean environment.
+
+**Source archives are not collected.** `source-archives/sha256/` holds
+verified upstream source tarballs keyed by their SHA-256. They are small
+next to compiled generations (about 1.3 GiB when the compiled cache was 240
+GB), nothing records which of them a generation or checkout used, and
+deleting one turns the next build into a network fetch that can fail when
+an upstream mirror moves. They stay until removed by hand.
 
 ## Registry search path
 

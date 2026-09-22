@@ -19,10 +19,10 @@ libdir=${prefix}/lib
 includedir=${prefix}/include
 
 Name: libdrm
-Description: Kandelo wasm DRI userspace shim
-Version: 1.0.0
+Description: Direct Rendering Manager library, KMS subset
+Version: 2.4.120
 Libs: -L${libdir} -ldrm
-Cflags: -I${includedir}
+Cflags: -I${includedir} -I${includedir}/libdrm -I${includedir}/drm
 EOF
 
         cat >"$pc_dir/gbm.pc" <<'EOF'
@@ -34,7 +34,7 @@ Name: gbm
 Description: Kandelo wasm GBM userspace shim
 Version: 1.0.0
 Libs: -L${libdir} -lgbm -ldrm
-Cflags: -I${includedir}
+Cflags: -I${includedir} -I${includedir}/libdrm -I${includedir}/drm
 EOF
         ;;
     gles)

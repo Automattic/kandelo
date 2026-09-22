@@ -210,6 +210,10 @@ test("@slow @node-npm-acceptance Kandelo Node demo completes HTTPS and installs 
     });
     await page.waitForTimeout(2_000);
     await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+    // The demo guide no longer auto-opens; open it from the dock.
+    await page
+      .getByRole("button", { name: "Demo guide" })
+      .click({ timeout: 120_000 });
     await page.waitForSelector("aside.kdemo", { timeout: 120_000 });
     await waitForReady(page, 240_000);
     await waitForPrompt(page);

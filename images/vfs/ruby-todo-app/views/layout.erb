@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ruby Todo · Kandelo</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0; background: #0f172a; color: #e2e8f0;
+      display: flex; justify-content: center; padding: 2rem 1rem;
+    }
+    .card {
+      width: 100%; max-width: 40rem; background: #1e293b;
+      border: 1px solid #334155; border-radius: 14px; padding: 1.75rem 2rem;
+      box-shadow: 0 10px 40px rgba(0,0,0,.35);
+    }
+    h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+    .sub { color: #94a3b8; font-size: .85rem; margin-bottom: 1.5rem; }
+    .sub a { color: #7dd3fc; }
+    form.add { display: flex; gap: .5rem; margin-bottom: 1.25rem; }
+    input[type=text] {
+      flex: 1; padding: .6rem .75rem; border-radius: 8px;
+      border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 1rem;
+    }
+    button {
+      border: 0; border-radius: 8px; padding: .6rem .9rem; font-size: .95rem;
+      background: #2563eb; color: white; cursor: pointer;
+    }
+    button.secondary { background: transparent; color: #94a3b8; padding: .3rem .5rem; }
+    button.danger { background: transparent; color: #f87171; padding: .3rem .5rem; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .6rem .25rem; border-bottom: 1px solid #334155;
+    }
+    li .title { flex: 1; }
+    li.done .title { text-decoration: line-through; color: #64748b; }
+    .count { color: #94a3b8; font-size: .85rem; margin-top: 1rem; }
+    .empty { color: #64748b; padding: 1rem 0; }
+    footer { margin-top: 1.5rem; color: #64748b; font-size: .75rem; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <%= body %>
+    <footer>
+      Ruby + Roda + SQLite on Kandelo — a POSIX WebAssembly kernel.
+      State is stored in SQLite and is per browser session.
+    </footer>
+  </main>
+</body>
+</html>

@@ -207,8 +207,10 @@ function checkBrowserDependencies({ runPath, catalog, selected }) {
   const registeredTargets = new Set();
 
   // Match every catalog product to the run.sh build-target functions by
-  // content: a function that invokes the product's builder script, or that
-  // references one of the product's candidate package names, materializes it.
+  // content: a function that bootstraps the product by id (the local-build
+  // engine front door every VFS target delegates to), that invokes the
+  // product's builder script, or that references one of the product's
+  // candidate package names, materializes it.
   // BROWSER_DEPS may list non-deployed VFS targets (e.g. mariadb-vfs), so the
   // full catalog — not just the deployed set — must feed registeredTargets.
   for (const productId of catalog.productIds) {
@@ -217,6 +219,9 @@ function checkBrowserDependencies({ runPath, catalog, selected }) {
     let matches = [...targetFunctions].filter(([target, functionName]) => {
       if (productId === "platform-rootfs" && target === "rootfs") return true;
       const body = functionBodies.get(functionName) ?? "";
+      if (new RegExp(`\\bbootstrap_target[ \\t]+${escapeRegExp(productId)}(?=\\s|$)`, "m").test(body)) {
+        return true;
+      }
       if (product.builder !== undefined && body.includes(product.builder)) return true;
       return packageNames.some((pkg) => {
         const pattern = escapeRegExp(pkg);

@@ -2515,7 +2515,7 @@
   resize: vertical;
   border: 1px solid var(--k-border);
   border-radius: 7px;
-  background: #15100c;
+  background: var(--k-shell-bg);
   color: var(--k-shell-text);
   padding: 9px;
   font-family: var(--k-font-mono);
@@ -3850,9 +3850,6 @@
   color: var(--k-text-faint);
 }
 .kshare-url {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   padding: 10px 12px;
   background: var(--k-surface-sunk);
   border: 1px solid var(--k-border);
@@ -3861,7 +3858,13 @@
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--k-text);
-  word-break: break-all;
+  /* The full URL can be arbitrarily long (a #k1= script fragment runs to
+     kilobytes), so keep the field a single line and truncate with an ellipsis
+     rather than growing in height. The complete URL is still copied via the
+     Copy button / data-share-url, so truncation is purely visual. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   user-select: all;
 }
 .kshare-tier {
@@ -4053,6 +4056,30 @@
   font-size: 11px;
   color: var(--k-text-muted);
   margin-top: 1px;
+}
+
+.kshare-script textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 84px;
+  font-family: var(--k-font-mono);
+  font-size: 12px;
+  color: var(--k-text);
+  background: color-mix(in oklch, var(--k-text) 5%, transparent);
+  border: 1px solid color-mix(in oklch, var(--k-text) 16%, transparent);
+  border-radius: 6px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.kshare-script-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--k-text-muted);
+}
+.kshare-script-err {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--k-err);
 }
 
 /* ── System Config ──────────────────────────────────────────────────────── */
