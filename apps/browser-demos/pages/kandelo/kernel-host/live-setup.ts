@@ -279,7 +279,7 @@ type LiveVfsSource =
   };
 
 type ShellProfile = "default" | "node";
-type InitEnvProfile = "service" | "wordpress";
+type InitEnvProfile = "service" | "python-service" | "wordpress";
 
 interface LiveDemoSpec {
   image: LiveVfsImage;
@@ -424,7 +424,7 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
-      env: "service",
+      env: "python-service",
       programUrl: dinitWasmUrl,
       maxWorkers: 12,
       web: {
@@ -659,6 +659,18 @@ const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
   service: () => SERVICE_ENV,
+  // WHY: the interpreter must see the same PYTHONHOME/PYTHONDONTWRITEBYTECODE
+  // contract declared for this product in
+  // images/vfs/products/browser-nginx-python.toml's [boot.env]. Without it,
+  // first-run stdlib imports compile *and write* bytecode caches for every
+  // module wsgiref pulls in, which is real extra depth the browser's fixed
+  // (non-configurable) worker JS stack does not have the headroom Node's
+  // worker gets from nodeWorkerStackSizeMb().
+  "python-service": () => [
+    ...SERVICE_ENV,
+    "PYTHONHOME=/usr",
+    "PYTHONDONTWRITEBYTECODE=1",
+  ],
   wordpress: () => [
     ...SERVICE_ENV,
     `WP_APP_PATH=${APP_PATH}`,

@@ -459,6 +459,101 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   );
 });
 
+// Evidence for the nginx-python-vfs product: nginx reverse-proxies the
+// static Notes API page and its live /api/* JSON endpoints to a Python
+// (wsgiref) app over SQLite, all inside the same Kandelo machine. This is
+// the browser counterpart to the Node-host
+// "nginx-python-vfs-node-startup" test in node-host-counterparts.spec.ts,
+// and is the evidence test named by images/vfs/products/browser-nginx-python
+// .toml's [evidence.browser].
+test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the Notes API through the web preview", async ({ page }) => {
+  // KNOWN BROWSER PLATFORM GAP (found while adding this evidence test):
+  // notes-app's own startup (`python3 /var/www/notes/app.py`) imports enough
+  // of the stdlib (wsgiref -> http.server -> ... -> email.quoprimime) that
+  // compiling one of those modules from source recurses deep enough through
+  // the kernel's fork/exec continuation transport
+  // (__wpk_fork_unwind_transport_indirect_0_*) to throw a JS
+  // "RangeError: Maximum call stack size exceeded" inside the browser's
+  // dedicated kernel Worker. That is a *kernel worker* crash (not just the
+  // one process), so dinit loses notes-app and nginx together and every
+  // subsequent /api/* request gets nginx's HTML error page instead of JSON.
+  //
+  // The Node host does not hit this: NodeKernelHost runs the kernel in a
+  // worker_threads Worker created with an explicit, larger
+  // `resourceLimits.stackSizeMb` (see nodeWorkerStackSizeMb() in
+  // host/src/worker-adapter.ts). Browsers expose no equivalent knob for a
+  // dedicated Worker's V8 stack size, so the same import chain that is fine
+  // on Node can overflow the browser worker's fixed default stack.
+  //
+  // This task also found and fixed a real, separate bug in the same area:
+  // the browser's "nginx-python" service boot (and the Node demo's
+  // serve-python.ts) were not actually setting PYTHONDONTWRITEBYTECODE /
+  // PYTHONHOME, despite images/vfs/products/browser-nginx-python.toml's
+  // [boot.env] declaring them. Fixing that wiring (live-setup.ts's new
+  // "python-service" init-env profile, and serve-python.ts) removed the
+  // bytecode-cache open+write+rename syscalls from the crash's call chain,
+  // but the remaining import/compile-from-source depth alone is still
+  // enough to overflow the browser worker's stack.
+  //
+  // The real fix is almost certainly to stop compiling stdlib modules from
+  // source on first boot at all: prewarm/precompile the CPython bytecode
+  // cache into the VFS image at build time, the same way
+  // images/vfs/scripts/opcache-prewarm.ts already does for PHP/LAMP's
+  // opcache. That is a build-time platform change, not something this
+  // browser-verification task should carry out. Tracked here rather than
+  // faked green; remove this test.fixme once the underlying gap is closed.
+  test.fixme(
+    true,
+    "Known browser fork/exec depth gap: Python stdlib compile-from-source " +
+      "during notes-app startup overflows the browser kernel Worker's " +
+      "(non-configurable) V8 stack; passes on Node because " +
+      "nodeWorkerStackSizeMb() gives that host a larger worker stack.",
+  );
+  test.setTimeout(300_000);
+
+  await gotoOrSkip(page, "/?demo=nginx-python");
+  await page.waitForSelector('iframe[title="nginx + Python"]', { timeout: 180_000 });
+
+  const frame = webFrame(page, "nginx + Python");
+  await expect(frame.locator("body")).toContainText(
+    "Python Notes API on Kandelo",
+    { timeout: 180_000 },
+  );
+  await expect(frame.locator("body")).toContainText("wsgiref", { timeout: 30_000 });
+
+  // "GET /api/notes" button: the seeded rows must already be present.
+  await frame.locator("#load").click();
+  await expect(frame.locator("#out")).toContainText("Welcome to Kandelo", {
+    timeout: 60_000,
+  });
+  const seeded = await frame.locator("#out").evaluate((node) =>
+    JSON.parse(node.textContent ?? "[]"),
+  );
+  expect(Array.isArray(seeded)).toBe(true);
+  expect(seeded.length).toBeGreaterThanOrEqual(2);
+
+  // "POST a note" button: the live API must accept writes and echo a
+  // created row with an assigned id.
+  await frame.locator("#add").click();
+  await expect(frame.locator("#out")).toContainText("From the browser", {
+    timeout: 60_000,
+  });
+  const created = await frame.locator("#out").evaluate((node) =>
+    JSON.parse(node.textContent ?? "{}"),
+  );
+  expect(created).toMatchObject({ title: "From the browser" });
+  expect(typeof created.id).toBe("number");
+
+  await openTerminalDrawer(page);
+  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await runTerminalCommand(
+    page,
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
+      "printf 'KANDELO_NGINX_PYTHON_TERMINAL_OK\\n'",
+    "KANDELO_NGINX_PYTHON_TERMINAL_OK",
+  );
+});
+
 test("Kandelo WordPress SQLite demo is preinstalled and logs into wp-admin", async ({ page }) => {
   await runWordPressPreinstalledLogin(page, "wordpress-sqlite", "WordPress SQLite");
 });
