@@ -1,56 +1,46 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  RESUME_FREE_CHUNK_COUNT_FIELD,
-  arenaFixture,
-} from "./fork-module-capture-fixture";
+import { arenaFixture } from "./fork-module-capture-fixture";
 
 /**
  * WHY THIS EXISTS
  *
- * The bitmap used to be `[u64; RESUME_SLOT_CAP / 64]` and the guard that kept
- * an out-of-range slot from corrupting it compared against that cap. The cap
- * is being deleted, so the guard needs a bound that is TRUE: `RESUME_NEXT_SLOT`,
- * the highest slot ever handed out.
+ * The resume free-slot bitmap is indexed BY SLOT NUMBER, and the guard that
+ * kept an out-of-range slot from corrupting it compared against
+ * `RESUME_SLOT_CAP` -- a capacity that happens to sit nearby, not a statement
+ * about which slots exist. Worse, it SKIPPED rather than refused.
  *
  * WHAT GOES WRONG WITHOUT THIS TEST: a freed slot past the bitmap's extent is
  * silently not freed. The slot leaks, later numbering drifts, and the module
  * and the guest's resume table place thunks by different rules -- which is a
- * wrong `call_indirect` target, not a trap.
+ * wrong `call_indirect` target, not a trap. The cap is scheduled for deletion,
+ * at which point that guard has nothing left to compare against at all.
  *
- * WHAT THIS CAN REACH TODAY, DERIVED RATHER THAN ASSUMED. A bitmap chunk
- * covers
+ * So a slot the bitmap cannot represent is now a loud `ENOSPC` instead of a
+ * skip, and slot 0 -- the reserved sentinel -- is a loud `EINVAL`. The tighter
+ * bound that reads as though it must also hold, `slot >= RESUME_NEXT_SLOT`,
+ * was tried and MEASURED FALSE in production: see the note on `free_bits_mark`
+ * in the module, and this task's report.
  *
- *     FREE_BITS_PER_CHUNK = (ARENA_CHUNK_BYTES - ARENA_CHUNK_HEADER) * 8
- *                         = (65,536 - 32) * 8 = 524,032 slots
+ * WHAT THIS FILE ASSERTS, AND WHY IT IS THE SLOT NUMBERS. A free list that
+ * merely EXISTS is indistinguishable from one that works until someone reads
+ * the slots out of it. That is measured, not argued: an earlier version of
+ * these tests asserted the free list's STORAGE -- how much of it appeared and
+ * disappeared -- and a perturbation that freed `slot + 1_000_000` with the
+ * bound removed left every one of those assertions green. The module happily
+ * kept a free list for slots around 1,000,001, handed those numbers back, and
+ * tidied up after itself perfectly. Only the numbers gave it away.
  *
- * and until the cap's deletion, slot numbers cannot get near that.
- * `RESUME_SLOT_CAP` (65,536) still bounds live slots, the host refuses a
- * catalog above `FORK_MODULE_RESUME_CATALOG_CAP = 65,536`, and
- * `RESUME_NEXT_SLOT` never outruns the cap because a released slot comes back
- * HERE and is reused. So NO SEQUENCE OF SEEDS REACHES A SECOND CHUNK while the
- * cap is live: 65,536 < 524,032. An earlier draft of this test seeded
- * `FREE_BITS_PER_CHUNK + 16` ordinals into one activation; that is 524,048
- * ordinals, which the cap refuses with `E2BIG`, the host refuses before the
- * module sees it, and whose 2 MB of staging is eight times the slab. It could
- * not have run.
+ * So every assertion here goes through `fm_publish_resume_assignment`, which
+ * is the reader the guest's own placement shim consumes: asserting these
+ * numbers is asserting the numbers the thunks are actually placed at.
  *
- * THIS TEST IS BOUNDED BY ARITHMETIC, NOT BY LAZINESS. Nothing here is scoped
- * down to make it pass: 524,032 slots per chunk against a live cap of 65,536,
- * with freed slots returning to this bitmap so `RESUME_NEXT_SLOT` never
- * outruns the cap, leaves no route to a second chunk at all. Do not
- * "strengthen" this test by seeding more; the seed that would cross is the one
- * three separate refusals stop.
- *
- * So this test asserts the whole lifetime of the chunk it CAN reach -- none,
- * then one mapped, then none and unmapped -- and the 1 -> 2 crossing is
- * asserted where it is reachable: the forced-chunk build sets
- * `ARENA_CHUNK_BYTES = 4,096`, a chunk then covers `(4,096 - 32) * 8 = 32,512`
- * slots, and a 65,536-ordinal seed spans three.
- *
- * BOTH HALVES, as everywhere else in this plan: the chunk count walks the
- * list, so a chunk unlinked but never unmapped reads as zero. The responder's
- * SYS_MMAP and SYS_MUNMAP tallies are asserted beside it.
+ * WHY THE BITMAP IS STILL FIXED BSS. It was converted to chunks mapped on
+ * demand and reverted. Mapping issues a channel syscall, and this free path is
+ * reached from the vfork CHILD'S EXIT TEARDOWN while the parent is parked
+ * inside its own vfork syscall on the channel the borrowed child shares --
+ * SIGSEGV, bisected to the bare syscall rather than to the chunk. See the note
+ * on `RESUME_FREE_WORDS` in the module and the handoff in this task's report.
  */
 
 /** The activations this file drives the bitmap with. */
@@ -84,120 +74,82 @@ function growResumeTable(x: { x: Record<string, unknown> }, slots: number): void
 }
 
 describe("resume free-slot bitmap", () => {
-  it("maps a bitmap chunk on the first free and returns it on the last reuse", () => {
+  it("hands a freed slot back to the next activation, smallest first", () => {
     const x = arenaFixture("resume free bitmap");
     growResumeTable(x, 8);
 
-    // Three ordinals take slots 1, 2, 3 from RESUME_NEXT_SLOT. Nothing has been
-    // freed, so the chain is still empty -- a bitmap that allocated eagerly
-    // would already be one chunk here, which is the 8 KiB this conversion
-    // deletes.
+    // Three ordinals take slots 1, 2, 3 from RESUME_NEXT_SLOT.
     x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
     expect(x.errno(), "seeding activation A").toBe(0);
-    expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD), "nothing freed yet").toBe(0);
+    expect(x.publishedSlots(ACTIVATION_A), "a fresh activation numbers from 1")
+      .toEqual([1, 2, 3]);
 
     const mmapsBefore = x.mmaps();
-    const munmapsBefore = x.munmaps();
 
-    // Release: three slots come back, so the chain has to exist now.
     expect(x.slots(1, ACTIVATION_A, 0), "three slots freed").toBe(3);
-    expect(
-      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
-      "the first free maps a chunk",
-    ).toBe(1);
-    expect(x.mmaps() - mmapsBefore, "one mapping for one chunk").toBe(1);
 
-    // REUSE, and this is the assertion that distinguishes a working free list
-    // from a bitmap that merely exists: seeding three more ordinals must
-    // consume the three freed bits rather than growing three fresh slots. If it
-    // grew instead, the chunk would still hold three set bits and neither
-    // assertion below would hold.
+    // THE ASSERTION THAT DISTINGUISHES A WORKING FREE LIST from a bitmap that
+    // merely exists: seeding three more ordinals must consume the three freed
+    // slots rather than growing three fresh ones. If it grew instead, these
+    // would be 4, 5, 6.
     x.seedActivationCatalog(ACTIVATION_B, [11, 22, 33]);
     expect(x.errno(), "seeding activation B").toBe(0);
-    expect(
-      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
-      "the emptied chunk is unlinked, not kept for the next free",
-    ).toBe(0);
-    expect(x.munmaps() - munmapsBefore, "one unmap for the one chunk").toBe(1);
-    expect(x.mmaps() - mmapsBefore, "reuse maps nothing new").toBe(1);
-
-    // WHICH SLOTS came back, not just how many chunks it took to hold them.
-    //
-    // THE CHUNK LIFECYCLE ALONE CANNOT SEE A WRONG SLOT NUMBER, and that is
-    // measured rather than assumed: perturbing `resume_unregister_impl` to free
-    // `slot + 1_000_000` AND weakening the bound to `slot == 0` left every
-    // assertion above green. The module mapped a chunk covering slot
-    // 1,000,001, handed those three numbers back on the reuse, emptied the
-    // chunk and unmapped it -- an identical chunk lifecycle over a slot range
-    // the guest's resume table knows nothing about. That is precisely the
-    // silent divergence this task exists to prevent: a wrong `call_indirect`
-    // target, not a trap.
-    //
-    // So the reused numbers are asserted directly, through the one reader that
-    // still answers "which slots does this activation hold" -- the same
-    // whole-activation publish the guest's placement shim consumes. Slots 1, 2
-    // and 3 are the three ACTIVATION_A freed, smallest first, which is the
-    // fourth of the four slot rules.
     expect(
       x.publishedSlots(ACTIVATION_B),
       "the reused slots are the freed ones, smallest first",
     ).toEqual([1, 2, 3]);
+
+    // AND IT COSTS NO MAPPING. This is the invariant that makes the free path
+    // safe to run from the vfork child's exit teardown, where the parent is
+    // parked on the shared channel and a syscall kills the guest. Whoever
+    // converts this store to on-demand storage will break this assertion, and
+    // that is what it is here for.
+    expect(
+      x.mmaps() - mmapsBefore,
+      "freeing and reusing a slot must issue no syscall",
+    ).toBe(0);
   });
 
-  it("hands the inherited chunks back on the COW-child scrub", () => {
-    // THE CHUNKS ARE NOT BSS ANY MORE, and that changes what the scrub has to
-    // do. `fm_set_format` used to `.fill(0)` a fixed array, which a COW child
-    // could simply overwrite. A chain of MAPPINGS is inherited through the
-    // memory clone, so clearing `FREE_BITS_HEAD` alone would leak every chunk
-    // the parent took, in a child that may outlive it -- and leak it
-    // INVISIBLY, because the chunk count walks the chain and a cleared root
-    // reads as empty. Hence both halves here: the count AND the unmap.
-    //
-    // The release is also sequenced after the `CHANNEL_BASE` store, because
-    // unmapping syscalls and `channel_base()` answers EINVAL until then.
-    // Moving it back up beside the counter resets would turn every unmap into
-    // a no-op while the count still read zero, which is the same invisible
-    // leak from the other direction -- so the munmap assertion is what holds
-    // that ordering, not a comment.
+  it("gives a COW child distinct slots rather than the parent's stale ones", () => {
+    // `fm_set_format` is the COW-child scrub. It clears the bitmap AND resets
+    // `RESUME_NEXT_SLOT` to 1, and the two together are why a stale bit is
+    // worse than a wasted number: the allocator would hand out the stale bits
+    // and then hand out those same numbers AGAIN as fresh ones. Two ordinals
+    // would land on one thunk.
     const x = arenaFixture("resume free bitmap scrub");
     growResumeTable(x, 8);
     x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
     expect(x.errno(), "seeding activation A").toBe(0);
-    expect(x.slots(1, ACTIVATION_A, 0), "three slots freed").toBe(3);
-    expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD), "one chunk to inherit").toBe(1);
+    expect(x.slots(1, ACTIVATION_A, 0), "three slots freed into the bitmap").toBe(3);
 
-    const munmapsBefore = x.munmaps();
     x.setFormat();
-    expect(
-      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
-      "the scrub drops the chain",
-    ).toBe(0);
-    expect(
-      x.munmaps() - munmapsBefore,
-      "and UNMAPS it rather than only clearing the root",
-    ).toBe(1);
+
+    x.seedActivationCatalog(ACTIVATION_B, [11, 22, 33, 44, 55]);
+    expect(x.errno(), "seeding activation B in the child").toBe(0);
+    const slots = x.publishedSlots(ACTIVATION_B);
+    expect(slots, "the child numbers from 1 with nothing inherited").toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+    // Spelled out as well as compared: `toEqual` above would also catch this,
+    // but a duplicate slot is the specific corruption at stake and a later
+    // edit that loosens the comparison should not be able to lose it.
+    expect(new Set(slots).size, "no slot is handed out twice").toBe(slots.length);
   });
 
-  it("refuses a slot it never handed out rather than dropping the free", () => {
-    // THE OTHER HALF OF THE GUARD, and the half a perturbation of the caller
-    // alone cannot show. `free_bits_mark` is reached only from
-    // `resume_unregister_impl` with slots that came out of the resume index, so
-    // no `fm_*` entry lets a host free an arbitrary number -- which is exactly
-    // why the refusal has to be asserted somewhere that does not depend on one.
+  it("marks nothing when an activation holds no slots", () => {
+    // Slot 0 is the reserved "no event" sentinel and is never handed out, so a
+    // release of an activation holding no slots must mark nothing -- and must
+    // do so as the zero-freed SUCCESS it is, not as an error.
     //
-    // Slot 0 is the reserved "no event" sentinel and is never handed out, so it
-    // is the one out-of-range value reachable through a real entry: a release
-    // of an activation that holds no slots at all must not mark it. That is
-    // asserted here as the zero-freed success it is; the `EINVAL` half of the
-    // bound is proven by perturbing `resume_unregister_impl` to free
-    // `slot + 1_000_000` (Step 5a of this task), where the release returns -1
-    // with errno 22 and the chunk count stays 0.
+    // The refusal half of the bound cannot be reached through any `fm_*` entry:
+    // `free_bits_mark` is called only from `resume_unregister_impl`, with slots
+    // that came out of the resume index. It is proven by perturbing that caller
+    // to free `slot + 1_000_000`, where the release returns -1 and
+    // `fm_last_errno` is ENOSPC (28) -- the slot is past the bitmap's extent.
+    // Under the old guard that free was silently dropped and the release still
+    // reported success.
     const x = arenaFixture("resume free bitmap bound");
     expect(x.slots(1, 99, 0), "an activation holding no slots frees none").toBe(0);
     expect(x.errno(), "zero slots is a success, not an error").toBe(0);
-    expect(
-      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
-      "freeing nothing maps nothing -- slot 0 was never a free to record",
-    ).toBe(0);
   });
 });
