@@ -334,6 +334,52 @@ Every task's requirements implicitly include this section.
 
 ## Task 0: SETTLED — read this before Tasks 1-13
 
+> **MEASURED BASELINE, 2026-09-21, from Task 1 — these supersede every
+> illustrative number in this document.**
+>
+> | quantity | value |
+> |---|---|
+> | `dylink.0 memorySize` | **2,461,012** |
+> | pages | **54** |
+> | `regionBytes` | **3,801,088** |
+> | headroom before the region moves up a page | **29,356** |
+> | threshold (saving below which `regionBytes` does not move) | **36,180** |
+> | Task 1's own cost, d₁ | **+80 bytes**, region unchanged |
+>
+> **The pre-Change-2 figure of 3,735,552 is stale and the difference is not
+> rounding.** Change 2 added 65,552 bytes of fixed BSS, which pushed the module
+> over a 64 KiB page: 53 pages became 54. So the reservation this plan starts
+> from is **one full page higher** than the ~1,179,648 target was computed
+> against. **Task 12 and Task 13 must re-derive the target from 3,801,088**
+> rather than quoting the old endpoint, or the plan will report missing its
+> goal by exactly one page it never had.
+>
+> **Ruling on D1-a's emit-once half (2026-09-21):** confirmed — the module has
+> no diagnostic channel at all (no `module_log`, `host_log`, `diag` or
+> `SYS_WRITE`), so field 105 plus a host-side assertion is the whole of it.
+> The accepted consequence stands: a browser run crossing 64 activations
+> carries the true count in field 105 and nothing says so out loud. Whether
+> the module should gain such a channel is filed as future work in commit
+> `0dfa6e730` and is the maintainer's call, not this plan's.
+>
+> **Deviation accepted: the maintained `DIRECTORY_ENTRIES` counter is gone**,
+> replaced by a walk, because the two chunk counts beside it are walks and a
+> counter is a second tally of one event that must then be kept in agreement
+> with the structure it counts. **Any later step reading "decrement
+> `DIRECTORY_ENTRIES`" is now a no-op — compaction IS the decrement.** Do not
+> reintroduce the counter to make such a step literal.
+>
+> **Task 4 owes a re-run.** Task 1's Step 9 perturbations (a) and (b) could not
+> fail as written: both need an allocation the release test cannot make until
+> Task 4, so running them literally would have passed and triggered this
+> plan's own false-alarm instruction. Task 1 built a temporary probe, verified
+> both halves against it, and removed the probe — **Task 4 must re-run (a) and
+> (b) against the real allocation.**
+>
+> **`arena_extend` has no caller yet** and was never exercised, not even by
+> that probe. **Task 8 is the first thing that will test it**, and the thing to
+> test is its write-new-then-drop-old ordering.
+
 This is not a work item. It is what the research settled, and what this plan
 decided on top of it. **Do not re-derive any of it.**
 
