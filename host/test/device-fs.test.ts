@@ -56,6 +56,18 @@ describe("DeviceFileSystem", () => {
     fs.close(h);
   });
 
+  it("/dev/urandom draws from an installed random provider", () => {
+    const fs = new DeviceFileSystem();
+    fs.setRandomProvider({
+      getRandomBytes: (length) => new Uint8Array(length).fill(7),
+    });
+    const h = fs.open("/urandom", 0, 0);
+    const buf = new Uint8Array(4);
+    expect(fs.read(h, buf, null, 4)).toBe(4);
+    expect(buf).toEqual(new Uint8Array([7, 7, 7, 7]));
+    fs.close(h);
+  });
+
   it("stat on /dev/null returns character device", () => {
     const fs = new DeviceFileSystem();
     const st = fs.stat("/null");

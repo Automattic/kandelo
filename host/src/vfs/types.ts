@@ -5,6 +5,7 @@ import type {
   StatResult,
   StatfsResult,
 } from "../types";
+import type { CheckpointBytes } from "../migration/checkpoint";
 import { STATFS_FLAGS } from "../generated/abi";
 
 /** POSIX statfs(2) flag for filesystems that ignore set-ID mode bits. */
@@ -27,6 +28,17 @@ export interface DirEntry {
 export interface FileSystemBackend {
   /** Materialize deferred path backing before synchronous file I/O. */
   preparePath?(path: string): Promise<boolean>;
+  /** Stamp file times from the machine's clock rather than the host's. */
+  setTimeProvider?(time: TimeProvider): void;
+  /** Serve device randomness from the machine's source rather than the host's. */
+  setRandomProvider?(random: RandomProvider): void;
+  /**
+   * The bytes a machine checkpoint carries for this mount, or why there are none.
+   *
+   * A backend that leaves this out is recorded as unreadable, so a checkpoint
+   * never omits a mount it could not read.
+   */
+  checkpointBytes?(): CheckpointBytes;
   // File handle operations
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
@@ -91,7 +103,32 @@ export interface FileSystemBackend {
 
 export interface TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number };
+  /**
+   * Keep every future CLOCK_MONOTONIC reading at or above `floorNs`.
+   *
+   * A restored machine adopts kernel state whose monotonic deadlines were
+   * measured on the captured machine's clock. POSIX also forbids a guest's
+   * monotonic clock from running backwards, and a fresh provider (a new
+   * worker's `performance.now()` origin) starts near zero. The restore
+   * advances this provider to the captured machine's reading, so deadlines
+   * keep their remaining time and guest-visible monotonic time continues.
+   */
+  advanceMonotonicFloor?(floorNs: number): void;
   nanosleep(sec: number, nsec: number): void;
+}
+
+/**
+ * The guest's source of randomness.
+ *
+ * Random bytes are host-produced values the guest consumes, like a clock
+ * reading: two computers never draw the same bytes, so a replica that draws
+ * its own diverges on its first `getrandom`. Every guest draw — the
+ * `getrandom` syscall and a `/dev/urandom` read — crosses this one interface,
+ * so a machine swaps where its randomness comes from without any syscall
+ * path having to know.
+ */
+export interface RandomProvider {
+  getRandomBytes(length: number): Uint8Array;
 }
 
 export interface MountConfig {

@@ -97,6 +97,10 @@ if [ -n "$MACOS_SDK_DIR" ] && [ ! -d "$MACOS_SDK_DIR" ]; then
     exit 1
 fi
 
+if [ -n "$MACOS_SDK_DIR" ]; then
+    echo "==> Using macOS SDK $MACOS_SDK_DIR"
+fi
+
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "ERROR: sysroot not found at $SYSROOT. Run 'bash build.sh' first." >&2
     exit 1
