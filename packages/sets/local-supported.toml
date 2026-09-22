@@ -280,6 +280,10 @@ name = "ruby"
 class = "user-software"
 
 [[packages]]
+name = "ruby-todo-vfs"
+class = "browser-product"
+
+[[packages]]
 name = "ruby-browser-bundle"
 class = "browser-product"
 
@@ -405,6 +409,11 @@ manifest = "images/vfs/products/browser-nginx.toml"
 id = "browser-nginx-php"
 package = "nginx-php-vfs"
 manifest = "images/vfs/products/browser-nginx-php.toml"
+
+[[products]]
+id = "browser-ruby-todo"
+package = "ruby-todo-vfs"
+manifest = "images/vfs/products/browser-ruby-todo.toml"
 
 [[products]]
 id = "browser-wordpress"

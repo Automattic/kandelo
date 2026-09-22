@@ -69,6 +69,17 @@ export const PRESET_LIBRARY: Preset[] = [
     estimatedUrlBytes: 944,
   },
   {
+    id: "ruby-todo",
+    title: "Ruby + Roda todo",
+    summary: "A Roda web app on Ruby 4 with a SQLite database, served on :8080. Not Rails.",
+    base: SHELL_BASE,
+    packages: ["ruby@local"],
+    accent: "#b31217",
+    glyph: "rb",
+    bootCommand: ["/usr/bin/ruby", "/var/lib/todo/server.rb"],
+    estimatedUrlBytes: 900,
+  },
+  {
     id: "wordpress-sqlite",
     title: "WordPress SQLite",
     summary: "WordPress on nginx + PHP-FPM with the SQLite database plugin.",

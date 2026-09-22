@@ -1167,8 +1167,84 @@ if [ ! -f exts.mk ]; then
     exit 1
 fi
 
-STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console io/wait json/ext/generator json/ext/parser monitor psych pty ripper socket stringio strscan zlib"
-STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/io/wait/wait.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/ripper/ripper.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
+# ---------------------------------------------------------------------------
+# sqlite3 gem as a built-in static extension — the first native gem on Kandelo.
+#
+# Ruby here is built --with-static-linked-ext (no runtime .so loading), so a
+# native gem must be linked into ruby.wasm at build time. We compile the SQLite
+# amalgamation (same distribution the `sqlite` package uses) together with the
+# sqlite3 gem's C extension into one static archive and add it to the static-ext
+# link, so guest code can `require "sqlite3"`. No gem source patches are needed
+# on Ruby 4.0: the gem already uses the public rb_integer_pack path.
+#
+# The extinit generator maps a feature name to Init_<name with '/'→'_'>, so the
+# feature "sqlite3/sqlite3_native" wants Init_sqlite3_sqlite3_native, while the
+# gem defines Init_sqlite3_native — a tiny alias shim bridges the two.
+# ---------------------------------------------------------------------------
+SQLITE_AMALG_URL="https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+SQLITE_AMALG_SHA256="6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3"
+SQLITE3_GEM_VERSION="2.9.6"
+SQLITE3_GEM_SHA256="956fe606956420d04ac7157d3ace620c8caba2135b2e05c76e483493da24d08e"
+SQLITE_WORK="$WORK_DIR/sqlite3-ext-src"
+SQLITE_EXT_DIR="$CROSS_BUILD_DIR/ext/sqlite3"
+mkdir -p "$SQLITE_WORK" "$SQLITE_EXT_DIR"
+
+if [ ! -f "$SQLITE_WORK/amalg/sqlite3.c" ]; then
+    echo "==> Fetching SQLite amalgamation for the sqlite3 ext..."
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
+        "$SQLITE_AMALG_URL" -o "$SQLITE_WORK/amalg.zip"
+    echo "$SQLITE_AMALG_SHA256  $SQLITE_WORK/amalg.zip" | shasum -a 256 -c -
+    rm -rf "$SQLITE_WORK/amalg" "$SQLITE_WORK"/sqlite-amalgamation-*
+    unzip -oq "$SQLITE_WORK/amalg.zip" -d "$SQLITE_WORK"
+    mkdir -p "$SQLITE_WORK/amalg"
+    mv "$SQLITE_WORK"/sqlite-amalgamation-*/* "$SQLITE_WORK/amalg/"
+fi
+
+if [ ! -d "$SQLITE_WORK/gem/ext" ]; then
+    echo "==> Fetching sqlite3 gem ${SQLITE3_GEM_VERSION}..."
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
+        "https://rubygems.org/downloads/sqlite3-${SQLITE3_GEM_VERSION}.gem" -o "$SQLITE_WORK/sqlite3.gem"
+    echo "$SQLITE3_GEM_SHA256  $SQLITE_WORK/sqlite3.gem" | shasum -a 256 -c -
+    rm -rf "$SQLITE_WORK/gem"; mkdir -p "$SQLITE_WORK/gem/data"
+    tar -xf "$SQLITE_WORK/sqlite3.gem" -C "$SQLITE_WORK/gem"
+    tar -xzf "$SQLITE_WORK/gem/data.tar.gz" -C "$SQLITE_WORK/gem/data"
+    cp -R "$SQLITE_WORK/gem/data/ext" "$SQLITE_WORK/gem/ext"
+    cp -R "$SQLITE_WORK/gem/data/lib" "$SQLITE_WORK/gem/lib"
+fi
+
+echo "==> Compiling built-in sqlite3 extension..."
+SQLITE_GEMEXT="$SQLITE_WORK/gem/ext/sqlite3"
+cp "$SQLITE_WORK/amalg/sqlite3.h" "$SQLITE_GEMEXT/sqlite3.h"
+SQLITE_CFG="-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DEFAULT_MEMSTATUS=0"
+SQLITE_GEM_DEFS="-DHAVE_SQLITE3_H -DHAVE_RB_INTEGER_PACK -DHAVE_RB_PROC_ARITY \
+-DHAVE_RB_ENC_INTERNED_STR_CSTR -DHAVE_SQLITE3_INITIALIZE -DHAVE_SQLITE3_BACKUP_INIT \
+-DHAVE_SQLITE3_COLUMN_DATABASE_NAME -DHAVE_SQLITE3_OPEN_V2 -DHAVE_SQLITE3_PREPARE_V2"
+SQLITE_RUBY_INCS="-I$SRC_DIR/include -I.ext/include/wasm32-none -I$SQLITE_GEMEXT"
+wasm32posix-cc -O2 $SQLITE_CFG -I"$SQLITE_WORK/amalg" \
+    -c "$SQLITE_WORK/amalg/sqlite3.c" -o "$SQLITE_EXT_DIR/sqlite3_amalg.o"
+for c in aggregator backup database exception sqlite3 statement; do
+    wasm32posix-cc -O2 $SQLITE_RUBY_INCS $SQLITE_GEM_DEFS \
+        -c "$SQLITE_GEMEXT/$c.c" -o "$SQLITE_EXT_DIR/gem_$c.o"
+done
+cat > "$SQLITE_EXT_DIR/shim.c" <<'SQLITE_SHIM'
+/* extinit calls Init_sqlite3_sqlite3_native for feature "sqlite3/sqlite3_native";
+ * the gem defines Init_sqlite3_native. Bridge the two. */
+void Init_sqlite3_native(void);
+void Init_sqlite3_sqlite3_native(void) { Init_sqlite3_native(); }
+SQLITE_SHIM
+wasm32posix-cc -O2 -c "$SQLITE_EXT_DIR/shim.c" -o "$SQLITE_EXT_DIR/shim.o"
+rm -f "$SQLITE_EXT_DIR/sqlite3.a"
+wasm32posix-ar rcs "$SQLITE_EXT_DIR/sqlite3.a" \
+    "$SQLITE_EXT_DIR/sqlite3_amalg.o" \
+    "$SQLITE_EXT_DIR/gem_aggregator.o" "$SQLITE_EXT_DIR/gem_backup.o" \
+    "$SQLITE_EXT_DIR/gem_database.o" "$SQLITE_EXT_DIR/gem_exception.o" \
+    "$SQLITE_EXT_DIR/gem_sqlite3.o" "$SQLITE_EXT_DIR/gem_statement.o" \
+    "$SQLITE_EXT_DIR/shim.o"
+wasm32posix-ranlib "$SQLITE_EXT_DIR/sqlite3.a"
+echo "==> sqlite3 ext archive ready"
+
+STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console io/wait json/ext/generator json/ext/parser monitor psych pty ripper socket stringio strscan zlib sqlite3/sqlite3_native"
+STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/io/wait/wait.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/ripper/ripper.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a ext/sqlite3/sqlite3.a"
 STATIC_ENCOBJS="enc/encinit.o enc/libenc.a enc/libtrans.a"
 STATIC_EXTLIBS="-lyaml -lz"
 STATIC_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
@@ -1182,6 +1258,12 @@ make -f exts.mk \
     "BASERUBY=$BASERUBY_COMMAND" \
     "MINIRUBY=$BASERUBY_COMMAND -I. -rwasm32-none-fake" \
     static
+
+# Regenerate extinit.c from the augmented EXTINITS so the built-in sqlite3 ext
+# is registered. The exts.mk static step above regenerates it from the
+# configured ext list (without sqlite3); removing it forces the final `make
+# ruby` to rebuild it from the EXTINITS passed below.
+rm -f ext/extinit.c ext/extinit.o
 
 # Ruby's generated LDFLAGS include CFLAGS. Passing those compile flags through
 # the final wasm32 link produces a smaller executable shape that loses the
@@ -1235,6 +1317,12 @@ for ext_lib_dir in "$SRC_DIR/ext/monitor/lib" "$SRC_DIR/ext/socket/lib"; do
         cp -R "$ext_lib_dir"/. "$RUBY_LIB_DIR"/
     fi
 done
+# Install the sqlite3 gem's Ruby-side library (the C ext is linked in above).
+if [ -d "$SQLITE_WORK/gem/lib" ]; then
+    echo "==> Installing sqlite3 gem Ruby library..."
+    cp "$SQLITE_WORK/gem/lib/sqlite3.rb" "$RUBY_LIB_DIR/"
+    cp -R "$SQLITE_WORK/gem/lib/sqlite3" "$RUBY_LIB_DIR/"
+fi
 # Reproducibility: rbconfig.rb records the exact configure flags, which embed
 # absolute build-scratch dependency paths — e.g. `-L<cache-root>/source-only-v1/
 # compiled/libs/zlib-<key>/lib` in configure_args/CPPFLAGS/LDFLAGS/DLDFLAGS.
