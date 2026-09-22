@@ -429,6 +429,75 @@ CacheStorage authority, so a client-only timeout could reject while leaving a
 discarded bridge authoritative. Closing this gap requires a coordinated
 transaction, cancellation acknowledgement, and restart reconciliation.
 
+### Multiple machines under one service worker scope
+
+A single service-worker scope can host several live Kandelo machines at
+once, one per booted browser tab. On `init-bridge` the worker mints a
+three-word, human-readable name (`adjective-color-noun`, e.g.
+`brisk-amber-otter`, drawn from three embedded word lists of 128+ entries
+each) and gives that machine its own stable, shareable URL space at
+`/<scope>/app/<name>/`. The worker keeps one in-memory `InstanceRecord` per
+name in a registry (name -> record), so two tabs under the same scope route
+independently and never clobber each other's bridge, cookies, or lifecycle
+state.
+
+A request is attributed to a machine one of two ways. A path that already
+contains `/app/<name>/` resolves directly to that machine's record; an
+unknown or malformed name never falls back to another machine, it is a real
+"not found" (see the 503 page below). A root-relative subresource request
+with no name in its path — the common case for a page's own same-origin
+asset requests — is attributed by the requesting client's id: the first time
+the worker resolves a named request for a given client, it remembers that
+client is "viewing" that machine, and later nameless requests from the same
+tab or iframe keep routing to it. That same client-id bookkeeping is what
+makes cross-tab viewing work: opening a machine's `/<scope>/app/<name>/` link
+in a second tab reaches the same running machine and relays through the
+bridge on the tab that owns it, rather than starting a second machine, because
+the name in the URL always takes priority over any per-client attribution.
+
+Each machine has its own cookie jar, keyed by its SW-minted name, so session
+cookies for one machine (WordPress admin cookies, for example) are never
+visible to another machine's requests even though both live under the same
+scope's origin.
+
+Each machine's bridge authority (its live `MessagePort`, session id, and
+cookie jar) is also persisted to Cache Storage under a per-name key as it is
+established, independent of the in-memory registry. If the browser
+terminates and restarts the service worker while a machine's host tab is
+still open, the worker has lost every live `MessagePort` but still has each
+machine's durable authority record. On the next request for that machine it
+broadcasts `need-bridge` to window clients and accepts only a
+`bridge-restored` reply whose name, app prefix, and session id match that
+exact record, re-establishing the bridge and replaying the persisted cookie
+jar. This restart is transient: while the worker waits for the owning tab to
+respond, the machine is "reconnecting", not offline, and it recovers without
+losing session state once the tab answers.
+
+A machine goes terminally offline only when its owning tab actually closes
+(a `pagehide`-driven `instance-closing` message, or — for a crashed tab that
+never sends one — the worker noticing on a later request that the owning
+window client is gone). There is no migration of a machine to a different
+host tab: once its host tab is gone, that machine is done, and its durable
+authority and cookie jar are dropped. Starting the demo again mints a new
+machine under a new name.
+
+When a machine goes offline or starts reconnecting, the worker pushes a
+`machine-offline` or `machine-reconnecting` message to every tab currently
+viewing it (any client whose viewing map points at that machine, not just the
+host tab). Demo pages that render a web preview of the machine map that push
+to the preview's `offline` or `reconnecting` status via
+`webPreviewForMachineChromeMessage()`
+(`web-libs/kandelo-session/src/machine-chrome-message.ts`); the pane keeps
+its existing label and URL and only its status and message change, so a
+viewer sees the same preview pane report itself unavailable or reconnecting
+rather than disappearing. A request that reaches the worker for a machine
+that is offline, or whose name was never minted, gets one 503 HTML page
+naming the machine — 503 rather than 404, because the name is a valid route,
+the machine behind it is just not running here. This is the raw-request
+fallback for any request that has no demo chrome to render a status in, such
+as loading `/<scope>/app/<name>/` directly with no page-side listener
+attached.
+
 ### Blob-URL iframes (service-worker boundary)
 
 The service worker can only bridge requests from documents it **controls**. A
@@ -1007,6 +1076,11 @@ and lazy VFS cache are separately namespaced by registration scope. Restarting
 one worker restores only that prefix's durable state. The Kandelo theme is the
 intentional origin-wide exception because it is ordinary `localStorage` UI
 preference state, not machine, bridge, cookie, retry, or VFS state.
+Within one scope, that bridge authority and cookie jar are further split per
+machine by its SW-minted name — see [Multiple machines under one service
+worker scope](#multiple-machines-under-one-service-worker-scope) — so
+restarting one worker restores every machine that scope was hosting, each
+from its own persisted record.
 
 The production coexistence scenario has been measured in Chromium with `/a/`
 and `/candidate-b/`: both shells booted, Vim materialized from each prefix's
