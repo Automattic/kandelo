@@ -5,49 +5,42 @@ import { arenaFixture } from "./fork-module-capture-fixture";
 /**
  * WHY THIS EXISTS
  *
- * The resume free-slot bitmap is indexed BY SLOT NUMBER, and the guard that
- * kept an out-of-range slot from corrupting it compared against
- * `RESUME_SLOT_CAP` -- a capacity that happens to sit nearby, not a statement
- * about which slots exist. Worse, it SKIPPED rather than refused.
+ * A resume slot is an index into the table a forked guest `call_indirect`s
+ * through. One allocator hands them out, smallest freed slot first, and this
+ * file is where the numbers it hands out are checked.
  *
- * WHAT GOES WRONG WITHOUT THIS TEST: a freed slot past the bitmap's extent is
- * silently not freed. The slot leaks, later numbering drifts, and the module
- * and the guest's resume table place thunks by different rules -- which is a
- * wrong `call_indirect` target, not a trap. The cap is scheduled for deletion,
- * at which point that guard has nothing left to compare against at all.
+ * THERE IS NO FREE LIST IN STORAGE. `resume_free_set` DERIVES the free set at
+ * registration -- it walks the directory for every live activation's
+ * `(ordinal, slot)` record, marks what those records name as taken, and throws
+ * the scratch bitmap away when the call returns. Freeing a slot is the removal
+ * of the activation's record, which the arena already does.
  *
- * So a slot the bitmap cannot represent is now a loud `ENOSPC` instead of a
- * skip, and slot 0 -- the reserved sentinel -- is a loud `EINVAL`. The tighter
- * bound that reads as though it must also hold, `slot >= RESUME_NEXT_SLOT`,
- * was tried, reverted as "measured false in production", and is BACK: what it
- * caught was real. A vfork child had freed the module's region and kept
- * calling through it, so the watermark it read was a zeroed page rather than a
- * number any writer produces. See the note on `free_bits_mark` in the module.
+ * Three shapes were tried before that one, and the third is not a preference.
+ * A fixed `[u64; 1024]` in BSS cost 8 KiB on every fork-capable thread and had
+ * an extent one slot narrower than the numbering it indexed. A chain of chunks
+ * mapped on demand records the free set AT FREE -- and a `channel_mmap` from
+ * the free path never returns when a vfork borrower has been killed by an
+ * external fatal signal and the kernel has contained the address space, so the
+ * whole program hangs rather than failing. See the note above
+ * `RESUME_NEXT_SLOT` in the module for that measurement, and for what is still
+ * open about the unmaps the free path does make.
  *
  * WHAT THIS FILE ASSERTS, AND WHY IT IS THE SLOT NUMBERS. A free list that
  * merely EXISTS is indistinguishable from one that works until someone reads
  * the slots out of it. That is measured, not argued: an earlier version of
  * these tests asserted the free list's STORAGE -- how much of it appeared and
- * disappeared -- and a perturbation that freed `slot + 1_000_000` with the
- * bound removed left every one of those assertions green. The module happily
- * kept a free list for slots around 1,000,001, handed those numbers back, and
- * tidied up after itself perfectly. Only the numbers gave it away.
+ * disappeared -- and a perturbation that handed out `slot + 1_000_000` left
+ * every one of those assertions green. The module happily kept a free list for
+ * slots around 1,000,001, handed those numbers back, and tidied up after
+ * itself perfectly. Only the numbers gave it away.
  *
  * So every assertion here goes through `fm_publish_resume_assignment`, which
  * is the reader the guest's own placement shim consumes: asserting these
  * numbers is asserting the numbers the thunks are actually placed at.
  *
- * THERE IS NO BITMAP IN STORAGE ANY MORE. The free set is DERIVED at
- * registration from the live activation records and thrown away again, so a
- * free records nothing and maps nothing. Three shapes were tried -- fixed BSS,
- * a chain of chunks mapped on demand, and this -- and the third is not a
- * preference: a `channel_mmap` from the free path never returns when a vfork
- * borrower has been killed by an external fatal signal and the kernel has
- * contained the address space. See the note above `RESUME_NEXT_SLOT` in the
- * module for the measurement.
- *
- * So this file asserts TWO things beside the numbers: that a free maps
- * nothing, and that a COW child inherits none of the parent's numbering.
+ * Beside the numbers, this file asserts two things the numbers cannot show:
+ * that a free MAPS nothing, and that a COW child inherits none of the parent's
+ * numbering.
  */
 
 /** The activations this file drives the bitmap with. */
@@ -137,12 +130,13 @@ describe("resume free-slot bitmap", () => {
   });
 
   it("frees the highest slot the allocator can issue", () => {
-    // THE OFF-BY-ONE THIS CATCHES. Slots are numbered from 1 and
-    // `resume_register_impl` accepts up to `RESUME_SLOT_CAP` (65,536) live
-    // ones, so the highest number the allocator can hand out is 65,536
-    // itself. The bitmap was sized `RESUME_SLOT_CAP.div_ceil(64)`, making its
-    // EXCLUSIVE extent exactly 65,536 -- so that last slot was legitimately
-    // issued and then refused `ENOSPC` when its activation tried to free it.
+    // THE OFF-BY-ONE THIS CAUGHT, and why it still runs now that the shape it
+    // caught is gone. Slots number from 1 and registration accepted up to
+    // `RESUME_SLOT_CAP` (65,536) LIVE ones, so the highest number the allocator
+    // could hand out was 65,536 itself -- while the fixed bitmap, sized
+    // `RESUME_SLOT_CAP.div_ceil(64)`, had an EXCLUSIVE extent of exactly
+    // 65,536. That last slot was legitimately issued and then refused `ENOSPC`
+    // when its activation tried to free it.
     //
     // WHAT THAT COST A RUNNING PROGRAM, which is why this is a test and not a
     // comment: `fm_resume_slots` op 1 turns the refusal into -1,
@@ -151,11 +145,14 @@ describe("resume free-slot bitmap", () => {
     // -- before it posts its exit. A full-occupancy worker's child dies on the
     // way out, for a slot it was handed by this module's own allocator.
     //
-    // Asserted at full occupancy rather than against the constants, because
-    // the constants are what is wrong: a test that recomputed the extent from
-    // `RESUME_SLOT_CAP` would agree with the bug. The module carries the
-    // build-time half (a `const _: () = assert!` on the two constants); this
-    // is the half that proves the highest issuable slot really round-trips.
+    // Both the cap and the extent are gone now: there is no fixed table to
+    // overrun and no stored bitmap to run past, so that off-by-one is
+    // structurally unreachable rather than fixed. This case stays because the
+    // BEHAVIOUR it pins is the thing that broke -- the highest slot the
+    // allocator can issue round-trips through free and reuse -- and that is
+    // asserted at full occupancy rather than against any constant. A test that
+    // recomputed the extent from the cap agreed with the bug; a test that
+    // drives 65,536 real slots cannot.
     const CAP = 65_536;
     const x = arenaFixture("resume free bitmap extent");
     // The release nulls STRICTLY, so the table must cover every slot about to
@@ -166,8 +163,8 @@ describe("resume free-slot bitmap", () => {
     x.seedActivationCatalog(ACTIVATION_A, ordinals);
     expect(x.errno(), "seeding a full-occupancy catalog").toBe(0);
 
-    // Every one of them, including slot CAP. Before the fix this was -1 with
-    // `fm_last_errno` == ENOSPC (28).
+    // Every one of them, including slot CAP. Against the fixed bitmap this was
+    // -1 with `fm_last_errno` == ENOSPC (28).
     expect(
       x.slots(1, ACTIVATION_A, 0),
       "every issued slot is freeable, including the highest",
@@ -185,19 +182,22 @@ describe("resume free-slot bitmap", () => {
     ).toEqual([1]);
   });
 
-  it("marks nothing when an activation holds no slots", () => {
-    // Slot 0 is the reserved "no event" sentinel and is never handed out, so a
-    // release of an activation holding no slots must mark nothing -- and must
-    // do so as the zero-freed SUCCESS it is, not as an error.
+  it("frees nothing when an activation holds no slots", () => {
+    // A release of an activation with no record must answer the zero-freed
+    // SUCCESS it is, not an error. "Never registered" and "registered, holding
+    // nothing" are the same answer on this path deliberately: reading the
+    // second as an error once cost a real fork, when a side module with no
+    // fork-instrumented function seeded an EMPTY resume catalog.
     //
-    // The refusal half of the bound cannot be reached through any `fm_*` entry:
-    // `free_bits_mark` is called only from `resume_unregister_impl`, with slots
-    // that came out of the resume index. It is proven by perturbing that caller
-    // to free `slot + 1_000_000`, where the release returns -1 and
-    // `fm_last_errno` is ENOSPC (28) -- the slot is past the bitmap's extent.
-    // Under the old guard that free was silently dropped and the release still
-    // reported success.
-    const x = arenaFixture("resume free bitmap bound");
+    // The REFUSAL half -- `resume_unregister_impl`'s watermark bound, the only
+    // place that notices a caller reaching the module after its memory has been
+    // freed -- cannot be reached through any `fm_*` entry, because every slot it
+    // sees came out of a record this module wrote. It is proven by perturbing
+    // the writer to store `slot + 4`, a number inside the resume table but above
+    // the watermark: the release then returns -1 with `fm_last_errno` 22.
+    // (`slot + 1_000_000` does NOT prove it -- the strict nulling pass traps on
+    // a table index that far out before the bound is ever consulted.)
+    const x = arenaFixture("resume free set bound");
     expect(x.slots(1, 99, 0), "an activation holding no slots frees none").toBe(0);
     expect(x.errno(), "zero slots is a success, not an error").toBe(0);
   });

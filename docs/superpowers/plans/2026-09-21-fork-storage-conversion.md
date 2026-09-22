@@ -156,10 +156,15 @@ pattern that is about to be deleted.
 > `fork-module-capture-fixture.ts` that are not test files.
 >
 > **DIAGNOSED 2026-09-22 (Task 3), and it was never
-> `fork-instrument-coverage`.** Three sweeps parked at 0% CPU with no summary
-> against an arena-backed module, each with that file last emitting, and each
-> time it passed clean alone. The reading "the stall is in that file" was
-> wrong in both directions.
+> `fork-instrument-coverage`.** Three sweeps parked at 0% CPU against an
+> arena-backed module, each with that file last emitting, and each time it
+> passed clean alone. The reading "the stall is in that file" was wrong in both
+> directions.
+>
+> **Two of the three DID reach a summary** -- 77 of 81 files, with four
+> `Worker exited unexpectedly` -- so "no summary" is the wrong tell. The tell
+> is a **SHORT FILE COUNT**: a run reporting fewer files than the set has, or a
+> log that stops growing, whether or not a summary eventually appears.
 >
 > `fork-instrument-coverage` is simply the SLOWEST file in the set: 498
 > seconds alone, 406 of them in tests. It is therefore always the last thing
@@ -182,10 +187,11 @@ pattern that is about to be deleted.
 >
 > With `maxWorkers: 4`, three of those files wedged three workers, the fourth
 > stayed queued behind them, and the slow coverage file held the last worker.
-> That is a whole-pool deadlock, and it is why the sweep never reached a
-> summary. **None of the four ever printed a single line**, which is the tell:
-> a file that emits nothing at all is a better suspect than the one that
-> emitted everything.
+> That is a whole-pool deadlock. In the runs that timed a worker out and
+> summarised anyway, those four ARE the four the file count was short by.
+> **None of them ever printed a single line**, which is the tell: a file that
+> emits nothing at all is a better suspect than the one that emitted
+> everything.
 >
 > Fixed by giving each of them a responder
 > (`startChannelResponder` in `host/test/fork-module-capture-fixture.ts`). The
@@ -200,8 +206,12 @@ pattern that is about to be deleted.
 >
 > **If a sweep hangs, read it as a guest crash and bisect, not as a flaky
 > suite.** That is the useful form of this incident: a killed process worker
-> leaves the harness waiting forever, so a stall with no output and no summary
-> means a guest died, and the file the run stopped after is where to look.
+> leaves the harness waiting forever. **Read the FILE COUNT, not the presence
+> of a summary** -- Task 3's diagnosis above found a run that summarised 77 of
+> 81 files with four workers reported as exiting unexpectedly, which is a
+> stall wearing a summary. And a guest crash is one cause among several: a
+> harness that syscalls with no responder behind its channel hangs the same
+> way, with no guest involved at all.
 > The 45-minute stall died immediately after the file containing the SIGSEGVs.
 > Explicit file subsets completed reliably throughout and are the faster tool
 > while bisecting.

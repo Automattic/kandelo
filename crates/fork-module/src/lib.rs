@@ -690,12 +690,32 @@ mod wasm {
     //     compute-running borrower after an external fatal signal" is the case,
     //     measured: 2/2 hangs with the mapping free path, 6/6 green with the
     //     module that does not map there, and a probe that refused to map
-    //     turned the 15-second hang into a 261-millisecond exit.
+    //     replaced the 15-second hang with a 261-millisecond FAILING exit
+    //     (`expected 4 to be 139` -- the parent escaped containment, which is
+    //     why it was fast). That probe proves where the hang was; it does not
+    //     show the teardown behaving correctly.
     //
-    // So the free path allocates NOTHING and syscalls NOTHING. A free is the
-    // removal of the activation's record, which the arena already does, and the
-    // free SET is rebuilt from the live records at the one moment a channel is
-    // guaranteed live: registration.
+    // So the free path ALLOCATES nothing. A free is the removal of the
+    // activation's record, which the arena already does, and the free SET is
+    // rebuilt from the live records at the one moment a channel is guaranteed
+    // live: registration.
+    //
+    // # IT DOES STILL SYSCALL, and that question is OPEN
+    //
+    // Dropping the record can empty a chunk, and an emptied chunk is unmapped:
+    // `arena_unlink_record` -> `arena_sweep_record_chunks` -> `channel_munmap`,
+    // and `fm_resume_slots` op 1 then runs `arena_release_activation`, which
+    // unmaps too. `channel_munmap` goes through the SAME deadline-less
+    // `channel_syscall` as `channel_mmap` -- it publishes a request and parks
+    // in `memory_atomic_wait32` until someone answers.
+    //
+    // Whether a contained teardown answers a munmap is MEASURED ONCE, NOT
+    // PROVEN. The fatal-signal test above is green with both of those unmaps
+    // running from that teardown, which is why they are still here; there is no
+    // mechanism explaining why a munmap is answered where an mmap is not, and
+    // no probe was built to isolate it. If that teardown hangs again as more
+    // stores move onto the arena, suspect this first, and defer the sweep --
+    // do not put the free set back into storage.
 
     /// The next never-used slot. Starts at 1: slot 0 is the reserved "no event"
     /// sentinel, which is why the physical table starts at length 1.
