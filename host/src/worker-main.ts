@@ -98,8 +98,10 @@ import {
 import { ForkReferenceCaptureModule } from "./fork-reference-capture-module";
 import {
   type ForkBorrowedReplayWorkspace,
+  type ForkModuleStat,
   requireForkModuleBackend,
   FORK_MODULE_RESUME_CATALOG_CAP,
+  FORK_MODULE_STATS,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
 import {
@@ -3494,6 +3496,32 @@ export async function centralizedWorkerMain(
         requireForkModuleBackend(forkModuleBackend, pid);
 
       /**
+       * The module's counters, frozen at the moment its memory stops existing.
+       *
+       * ONLY a borrowed (vfork) child ever sets this, and the reason is the
+       * whole shape of its teardown. That child hands its fork-module region
+       * back to the kernel the instant its one replay finishes (the
+       * `forkModuleBorrowedRegion` release in `kernel_fork` below), because
+       * leaving ~5.4 MiB mapped would leak into the parked parent's restored
+       * address space. Every number `fm_stats` reports lives in that region's
+       * BSS. So the proof-of-use blocks in the worker tail, which read
+       * `framesReplayed` and friends, were reading memory the child had
+       * already freed -- and that memory does get reused: measured on the
+       * `vfork-lifecycle` child that attempts a nested fork before exiting,
+       * the module's `RESUME_NEXT_SLOT` came back 0, a value no writer in the
+       * module can produce.
+       *
+       * The counters are therefore READ while the module is still mapped and
+       * REPORTED from the snapshot. Same messages, same path, same order --
+       * only the read moves.
+       */
+      let forkModuleFinalStats: Record<ForkModuleStat, number> | null = null;
+      /** A counter: from the snapshot once it exists, else from the module. */
+      const forkModuleStat = (name: ForkModuleStat): number =>
+        forkModuleFinalStats?.[name]
+          ?? Number(requireForkModuleBackend(forkModuleBackend, pid).stat(name));
+
+      /**
        * The errno an abort replay will report, remembered from the host call
        * that started it.
        *
@@ -4122,6 +4150,36 @@ export async function centralizedWorkerMain(
           if (borrowedForkChild && forkModuleBorrowedRegion) {
             const region = forkModuleBorrowedRegion;
             forkModuleBorrowedRegion = null;
+            // EVERYTHING THE MODULE IS ASKED FOR HAPPENS HERE, above the
+            // munmap, because below it there is no module: its statics, its
+            // resume-slot bitmap, its slot index, its arena roots and its
+            // phase word all live in `region`, and `region` is about to belong
+            // to the kernel's free list again.
+            //
+            // It did not used to. The counter snapshot, `abort()` and
+            // `clear()` all ran from the worker tail, AFTER this munmap, and
+            // `fm_phase()` ran again on any later `kernel_fork`. Measured on
+            // the `vfork-lifecycle` child that attempts a nested fork, a
+            // nested vfork and a `pthread_create` before exiting -- all three
+            // refused with EAGAIN, but not before something allocated -- the
+            // kernel handed the head of this very region to that allocation
+            // and the module's `RESUME_NEXT_SLOT` came back 0. No writer in
+            // the module produces 0: `set_format_impl` stores 1 and
+            // `resume_allocate_slot` stores `slot + 1`. It was a zeroed page.
+            // The siblings that go straight to `_exit` or `exec` read intact
+            // memory, which made them look correct when they were merely
+            // unreused.
+            //
+            // `clear()` is not bookkeeping that could be skipped: it reaches
+            // `release_identity_activation` and `arena_release_activation`,
+            // both of which `channel_munmap` chunks out of the address space
+            // this child SHARES with its parked parent. Running it on freed
+            // roots is how you unmap someone else's mapping.
+            forkModuleFinalStats = Object.fromEntries(
+              FORK_MODULE_STATS.map((name) => [name, Number(forkModule().stat(name))]),
+            ) as Record<ForkModuleStat, number>;
+            forkModule().abort();
+            resumeTable.clear();
             continuationMunmap(
               memory,
               channelOffset,
@@ -4129,6 +4187,15 @@ export async function centralizedWorkerMain(
               region.bytes,
               `pid=${pid}: borrowed fork-module region`,
             );
+            // AND THE HANDLES GO WITH IT, so a later caller fails loud instead
+            // of reading freed bytes. Dropping `forkModuleFrameExports` is
+            // what makes the nested-`kernel_fork` path above honest: it asks
+            // `forkPhase()` before anything else, and `fm_phase()` reads a
+            // module static. With no exports the host answers "idle" from its
+            // own state -- the truthful answer for a process with no module --
+            // and the borrowed child falls through to its `EAGAIN`.
+            forkModuleBackend = null;
+            forkModuleFrameExports = null;
           }
           if (initData.isForkChild) {
             const gate = initData.forkReplayGate;
@@ -5204,7 +5271,7 @@ export async function centralizedWorkerMain(
       // `fork-module` diagnostic that could race a consumer waiting for the
       // parent's frame count. A nonzero value is the positive proof the module
       // drove the reconstruction rather than the JS reference fallback.
-      if (forkModuleBackend && initData.isForkChild) {
+      if ((forkModuleBackend ?? forkModuleFinalStats) && initData.isForkChild) {
         // Per-kind proof-of-use (Phase 6 D6.5): report each reference kind the
         // module reconstructed — funcref/null, externref, exnref, and typed-GC.
         // A graph can mix kinds (an exnref whose payload is an externref advances
@@ -5214,19 +5281,19 @@ export async function centralizedWorkerMain(
         // `fork-module` diagnostic that could race a consumer waiting for the
         // parent's frame count. A nonzero value is the positive proof the module
         // drove that kind's reconstruction rather than the JS reference fallback.
-        const references = Number(forkModuleBackend.stat("referencesReconstructed"));
-        const externrefs = Number(forkModuleBackend.stat("externrefsResolved"));
-        const exnrefs = Number(forkModuleBackend.stat("exnrefsReconstructed"));
-        const gcNodes = Number(forkModuleBackend.stat("gcNodesReconstructed"));
+        const references = forkModuleStat("referencesReconstructed");
+        const externrefs = forkModuleStat("externrefsResolved");
+        const exnrefs = forkModuleStat("exnrefsReconstructed");
+        const gcNodes = forkModuleStat("gcNodesReconstructed");
         // Phase 6 item 3c DRIVE proof-of-use: the module executed the typed-GC
         // drive plan (`fm_drive_execute`) rather than falling back to the JS
         // `materializeAllTyped` order. Distinct from `gcNodes`, which advances
         // merely by admitting the graph.
-        const driveSteps = Number(forkModuleBackend.stat("driveStepsExecuted"));
+        const driveSteps = forkModuleStat("driveStepsExecuted");
         // Static-root binder proof-of-use: the module republished an immutable
         // static root into the anyref transit (`fm_static_root_slot`) rather than
         // the JS `publishTransit` fallback.
-        const staticRoots = Number(forkModuleBackend.stat("staticRootsPublished"));
+        const staticRoots = forkModuleStat("staticRootsPublished");
         if (
           references > 0 ||
           externrefs > 0 ||
@@ -5255,7 +5322,7 @@ export async function centralizedWorkerMain(
         // value is the positive proof the child rewound through the module rather
         // than the JS fallback; a reference-free non-thread child that fell back
         // would leave this at 0 and stay silent.
-        const replayed = Number(forkModuleBackend.stat("framesReplayed"));
+        const replayed = forkModuleStat("framesReplayed");
         if (replayed > 0) {
           port.postMessage({
             type: "fork_module_child_frames",
@@ -5265,7 +5332,11 @@ export async function centralizedWorkerMain(
         }
       }
 
-      forkModule().abort();
+      // Both are no-ops for a borrowed (vfork) child: it ran them above,
+      // while its module still existed, and nulled the backend. A null
+      // backend here means there is nothing left to abort -- not that the
+      // abort was skipped. `clear()` walks an already-empty membership set.
+      if (forkModuleBackend) forkModule().abort();
       resumeTable.clear();
       releaseProcessForkArchiveReader();
       externrefTokens.clear();

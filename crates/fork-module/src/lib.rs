@@ -716,34 +716,44 @@ mod wasm {
     ///     what makes the cap's deletion safe: whoever deletes it must make
     ///     this bitmap dynamic or give it a bound of its own. They cannot just
     ///     drop the comparison, because dropping it is an out-of-bounds index.
+    ///   * `EINVAL` -- a slot at or above `RESUME_NEXT_SLOT`, the watermark:
+    ///     a slot this module never handed out. `resume_allocate_slot` is the
+    ///     only issuer and it only ever moves the watermark forward, so a slot
+    ///     above it did not come from this module's numbering.
     ///
-    /// # The bound that is NOT here, and the measurement that removed it
+    /// # THE WATERMARK BOUND IS THE DETECTOR FOR A USE-AFTER-FREE
     ///
-    /// The obvious tighter bound is `slot >= RESUME_NEXT_SLOT` -- "a slot this
-    /// module never handed out" -- and it reads as though it must be true,
-    /// because `resume_allocate_slot` is the only issuer and it only ever moves
-    /// that watermark forward.
+    /// It is not defensive decoration. It was tried once, reverted once, and
+    /// is back because the thing it caught turned out to be real.
     ///
-    /// IT IS NOT TRUE IN PRODUCTION. With that bound in place,
-    /// `host/test/vfork-lifecycle-guest.test.ts` reports `fm_resume_slots
-    /// failed with errno 22` from the vfork child's exit teardown on a run that
-    /// is otherwise entirely healthy. Bisected by temporarily splitting the
-    /// refusal across distinct errnos: the offending slot is not 0, the
-    /// watermark is not its initial 1, and the slot sits STRICTLY ABOVE the
-    /// watermark by 8 or less.
+    /// The first attempt made `host/test/vfork-lifecycle-guest.test.ts` report
+    /// `fm_resume_slots failed with errno 22` from a vfork child's exit
+    /// teardown, on a run that was otherwise entirely healthy, and the bound
+    /// was removed rather than guessed at. Instrumenting the host to read the
+    /// watermark at every `fm_*` call answered it: the watermark was 0. No
+    /// writer here produces 0 -- `set_format_impl` stores 1 and
+    /// `resume_allocate_slot` stores `slot + 1`, which is at least 2 -- so 0
+    /// is not a reset, it is a ZEROED PAGE.
     ///
-    /// So some path puts a slot in `RESUME_SLOT_INDEX` that `RESUME_NEXT_SLOT`
-    /// does not account for. Either that path is legitimate and the bound is
-    /// simply wrong, or it is a real defect this bound uncovered -- and the two
-    /// have opposite fixes, so neither is guessed at here. The bound is left
-    /// out and the finding is written up rather than a plausible-looking
-    /// invariant being asserted over a system that does not hold it.
+    /// The page was zeroed because the borrowed (vfork) child had already
+    /// `channel_munmap`'d the region these statics live in and then kept
+    /// calling the module through it. `host/src/worker-main.ts` now does the
+    /// module teardown ABOVE that munmap and drops its handles below it; the
+    /// comment at the `forkModuleBorrowedRegion` release there carries the
+    /// measurement.
+    ///
+    /// So this bound has a job beyond stating an invariant: it is the only
+    /// place that notices if a caller reaches the module after the module's
+    /// memory is gone. Removing it puts the corruption back to silent.
     fn free_bits_mark(slot: u32) -> Result<(), Errno> {
         if slot == 0 {
             return Err(Errno::EINVAL);
         }
         if slot >= RESUME_FREE_EXTENT {
             return Err(Errno::ENOSPC);
+        }
+        if slot >= RESUME_NEXT_SLOT.load(Ordering::Relaxed) {
+            return Err(Errno::EINVAL);
         }
         // SAFETY: single-threaded; bounds-checked against the bitmap's extent
         // immediately above.
