@@ -3,7 +3,7 @@ kind = "library"
 name = "sdl2"
 version = "2.32.10"
 kernel_abi = 43
-depends_on = []
+depends_on = ["libdrm@2.4.120"]
 arches = ["wasm32"]
 
 [source]

@@ -381,6 +381,36 @@ ac_cv_func_pthread_setname_np=${ac_cv_func_pthread_setname_np=yes}
 ac_cv_func_pthread_sigmask=${ac_cv_func_pthread_sigmask=yes}
 ac_cv_pthread=${ac_cv_pthread=yes}
 
+# musl <stdio_ext.h> internals (src/stdio/ext.c, ext2.c).
+#
+# gnulib's freading/fseterr/fpurge/fpending/fwriting/freadahead/freadptr/
+# fbufmode modules call these when the corresponding HAVE___* is defined, and
+# otherwise fall back to reaching directly into the FILE struct. That fallback
+# has no branch for musl's FILE layout, so the affected units emit
+#   #error "Please port gnulib <file>.c to your platform!"
+# (e.g. freading.c, fseterr.c). musl provides every symbol below — verified
+# with `wasm32posix-nm sysroot/lib/libc.a` (each is a defined ' T ' symbol) —
+# so the truthful answer is "present". Seed it here rather than leaving it to
+# an AC_CHECK_FUNC link probe: the probe only reports "present" by accident of
+# `-Wl,--allow-undefined` tolerating the undefined import, and a stricter link
+# regime (e.g. `-Wl,--fatal-warnings`, which turns the harmless declared-vs-
+# real signature-mismatch warning into a link error) flips it to "absent" and
+# re-triggers the gnulib #error. Asserting the musl fact keeps the answer
+# authoritative regardless of link-probe strictness, per this file's contract.
+ac_cv_func___fbufsize=${ac_cv_func___fbufsize=yes}
+ac_cv_func___flbf=${ac_cv_func___flbf=yes}
+ac_cv_func___fpending=${ac_cv_func___fpending=yes}
+ac_cv_func___fpurge=${ac_cv_func___fpurge=yes}
+ac_cv_func___freadable=${ac_cv_func___freadable=yes}
+ac_cv_func___freadahead=${ac_cv_func___freadahead=yes}
+ac_cv_func___freading=${ac_cv_func___freading=yes}
+ac_cv_func___freadptr=${ac_cv_func___freadptr=yes}
+ac_cv_func___freadptrinc=${ac_cv_func___freadptrinc=yes}
+ac_cv_func___fseterr=${ac_cv_func___fseterr=yes}
+ac_cv_func___fsetlocking=${ac_cv_func___fsetlocking=yes}
+ac_cv_func___fwritable=${ac_cv_func___fwritable=yes}
+ac_cv_func___fwriting=${ac_cv_func___fwriting=yes}
+
 # String / memory helpers present in musl
 ac_cv_func_basename=${ac_cv_func_basename=yes}
 ac_cv_func_bsearch=${ac_cv_func_bsearch=yes}

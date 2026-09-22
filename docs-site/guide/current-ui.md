@@ -79,6 +79,14 @@ Accepted image URL schemes are `http` and `https`. The image should be a `.vfs` 
 
 The host serving the image must allow the browser to fetch it from a cross-origin-isolated page. Use CORS or compatible cross-origin resource policy headers.
 
+## Script-Carrying Share Links
+
+The dock's Share button turns the current machine into a link that also runs a shell script when opened. Type a script into the dialog's editor and copy the URL; the script travels in the URL's `#k1=` fragment as a size-capped, checksum-verified payload.
+
+When someone opens the link, the machine boots, the script's full contents are printed in the terminal, and it then runs in the initial shell — bash on images that ship it. The script file is left in place at `/run/kandelo/inputs/script/kandelo-link.sh`, writable, so the visitor can inspect, edit, and re-run it. Opening the Share dialog on a machine booted from such a link pre-fills the editor with the inherited script, so a received link can be tweaked and re-shared.
+
+Scripts run without a confirmation prompt because every machine in the current UI is ephemeral: closing the tab discards everything, so a link can affect only its own session. A malformed or oversized link fragment fails with a visible error instead of booting. Launching a different machine from the gallery drops the fragment, so a script never follows you to another machine.
+
 ## External Software
 
 The demo app exposes only repository-defined gallery entries. It does not

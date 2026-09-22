@@ -46,6 +46,7 @@ import type {
 import { buildNodeVfsImage } from "./build-node-vfs-image";
 import { buildNginxVfsImage } from "./build-nginx-vfs-image";
 import { buildNginxPhpVfsImage } from "./build-nginx-php-vfs-image";
+import { buildRubyTodoVfsImage } from "./build-ruby-todo-vfs-image";
 import { buildWordPressVfsImage } from "./build-wp-vfs-image";
 import { buildLampVfsImage } from "./build-lamp-vfs-image";
 import { buildMariadbVfsImage } from "./build-mariadb-vfs-image";
@@ -206,6 +207,7 @@ const SERVICE_PRODUCT_BUILDERS = new Map([
   ["browser-node", "images/vfs/scripts/build-node-vfs-image.sh"],
   ["browser-nginx", "images/vfs/scripts/build-nginx-vfs-image.sh"],
   ["browser-nginx-php", "images/vfs/scripts/build-nginx-php-vfs-image.sh"],
+  ["browser-ruby-todo", "images/vfs/scripts/build-ruby-todo-vfs-image.sh"],
   ["browser-wordpress", "images/vfs/scripts/build-wp-vfs-image.sh"],
   ["browser-lamp", "images/vfs/scripts/build-lamp-vfs-image.sh"],
 ] as const);
@@ -353,6 +355,25 @@ export async function buildStagedBrowserService(
           outputPath: invocation.outputPath,
         });
         break;
+      case "browser-ruby-todo": {
+        // Empty-base server image (no shell base); Ruby is resident.
+        const rubyRuntimeDir = join(work, "ruby-runtime");
+        materializeArchiveContents(
+          packageBytes("ruby", "ruby-runtime"),
+          rubyRuntimeDir,
+          "browser-ruby-todo ruby runtime",
+        );
+        await buildRubyTodoVfsImage({
+          ruby: packageBytes("ruby", "ruby"),
+          rubyRuntimeDir,
+          appDir: resolve(REPOSITORY_ROOT, "images/vfs/ruby-todo-app"),
+          services: new Uint8Array(
+            readFileSync(resolve(REPOSITORY_ROOT, "images/rootfs/etc/services")),
+          ),
+          outputPath: invocation.outputPath,
+        });
+        break;
+      }
       case "browser-wordpress": {
         const wordpressDirectory = join(work, "wordpress-core");
         const sqliteDirectory = join(work, "wordpress-sqlite-integration");

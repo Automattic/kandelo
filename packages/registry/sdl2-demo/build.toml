@@ -1,0 +1,27 @@
+script_path = "packages/registry/sdl2-demo/build-sdl2-demo.sh"
+inputs = [
+  "packages/registry/sdl2-demo/build-sdl2-demo.sh",
+  "programs/sdl2/main.c",
+  "programs/sdl2/audio.c",
+  "programs/sdl2/audio.h",
+  "programs/sdl2/editor.c",
+  "programs/sdl2/editor.h",
+  "programs/sdl2/renderer.c",
+  "programs/sdl2/renderer.h",
+  "programs/sdl2/sound_shader.c",
+  "programs/sdl2/sound_shader.h",
+  "programs/sdl2/third_party/stb_truetype.h",
+  "programs/sdl2/third_party/Inconsolata-Regular.ttf",
+  "libc/glue/libgbm_stub.c",
+  "libc/glue/libegl_stub.c",
+  "libc/glue/libglesv2_stub.c",
+  "libc/glue/gl_abi.h",
+  "libc/musl-overlay/include/linux/input-event-codes.h",
+  "scripts/build-musl.sh",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = ""
+revision    = 1

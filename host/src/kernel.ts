@@ -39,8 +39,8 @@ import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
+import { resolveIoctlContract } from "./ioctl-contract";
 import {
-  IOCTL_REQUESTS,
   KERNEL_SCRATCH_FD_PAIR_BYTES,
   KERNEL_SCRATCH_SOCKLEN_BYTES,
   SELECT_FD_SET_BYTES,
@@ -807,6 +807,18 @@ export interface KernelCallbacks {
    */
   getKmsCanvas?: (crtcId: number) => OffscreenCanvas | HTMLCanvasElement | undefined;
   /**
+   * List the CRTC ids for which the embedder has registered a scanout
+   * canvas. `host_gl_create_context` uses this to auto-attach when a
+   * DRM-master pid creates its GL context *before* it has bound an FB
+   * with `drmModeSetCrtc` — the ordering SDL2's KMSDRM backend uses
+   * (it defers the first `drmModeSetCrtc` to the first `SwapWindow`,
+   * after `eglCreateContext` and all shader compiles). Without this,
+   * such a pid's context is built with no canvas and every GLES call
+   * silently no-ops. Returning `[]` (or omitting the callback) keeps
+   * the FB-binding-first behavior.
+   */
+  getKmsCrtcIds?: () => number[];
+  /**
    * Notify the embedder that GL has claimed the canvas for `crtcId`.
    * The KMS vblank pump uses this to skip the CPU `putImageData` blit
    * for canvases now painted directly by WebGL2. Idempotent.
@@ -909,6 +921,86 @@ export class WasmPosixKernel {
    */
   mergeCallbacks(callbacks: Partial<KernelCallbacks>): void {
     this.callbacks = { ...this.callbacks, ...callbacks };
+  }
+
+  /**
+   * Attach the KMS scanout canvas to `pid`'s GL binding and build its
+   * WebGL2 context when the pid holds DRM master and the embedder has
+   * registered a scanout canvas — independent of whether the pid has yet
+   * bound an FB with `drmModeSetCrtc`.
+   *
+   * Two orderings must both work:
+   *  - modeset.c: `drmModeSetCrtc` → `eglCreateContext`. A CRTC already
+   *    has an FB bound, so `masterCrtcForPid` resolves the canvas.
+   *  - SDL2 KMSDRM: `eglCreateContext` (+ every shader compile) →
+   *    first `SDL_GL_SwapWindow` → first `drmModeSetCrtc`. At context
+   *    creation no FB is bound, so we fall back to a registered scanout
+   *    CRTC for the master pid. Without this the context is built with
+   *    no canvas, `b.gl` stays null, and every GLES call silently
+   *    no-ops (black screen; audio, on its own `/dev/dsp` path, is fine).
+   *
+   * Idempotent: returns early once `b.gl` exists. Called from
+   * `host_gl_create_context` and `host_kms_set_fb`.
+   */
+  private tryAttachKmsGlCanvas(pid: number): void {
+    const b = this.gl.get(pid);
+    if (!b || b.forward) return;
+    if (b.contextId == null) return; // GL context not created yet
+    if (b.gl) return; // already built
+    // The CRTC we attach in this call, if any — used to defer
+    // `markKmsCanvasGlOwned` until a WebGL2 context is confirmed.
+    let attachedCrtc: number | null = null;
+    if (!b.canvas) {
+      // Prefer a CRTC that already has an FB bound (modeset order);
+      // otherwise, if the pid holds DRM master, take a registered scanout
+      // CRTC even without an FB binding yet (SDL2 order — the FB is bound
+      // later, on the first SwapWindow). The kernel advertises a single
+      // CRTC (see kms-registry.ts), so the first registered id is that
+      // CRTC; multi-head would need a pid→CRTC map here.
+      let crtc = this.kms.masterCrtcForPid(pid);
+      if (crtc == null && this.kms.isMasterPid(pid)) {
+        const ids = this.callbacks.getKmsCrtcIds?.() ?? [];
+        crtc = ids.length > 0 ? ids[0] : null;
+      }
+      if (crtc == null) return;
+      const canvas = this.callbacks.getKmsCanvas?.(crtc);
+      if (!canvas) return;
+      // Match the OffscreenCanvas drawing buffer to the kernel-side FB
+      // (when one is bound) so glViewport and gl_FragCoord operate on
+      // the full surface rather than the default 300×150 corner.
+      const fb = this.kms.currentFb(crtc);
+      if (fb && (canvas.width !== fb.width || canvas.height !== fb.height)) {
+        canvas.width = fb.width;
+        canvas.height = fb.height;
+      }
+      this.gl.attachCanvas(pid, canvas);
+      b.canvas = canvas;
+      attachedCrtc = crtc;
+    }
+    if (!b.canvas) return;
+    const ctx = b.canvas.getContext("webgl2", {
+      antialias: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+    }) as WebGL2RenderingContext | null;
+    if (ctx) {
+      // Mirror main-forward.ts: enable the WebGL2 float extensions so
+      // RGBA16F framebuffers are renderable and float textures accept
+      // LINEAR filtering. Without these, ping-pong sims (Pavel-style
+      // fluid, GPU-side image processing) hit
+      // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
+      ctx.getExtension("EXT_color_buffer_float");
+      ctx.getExtension("OES_texture_float_linear");
+      ctx.getExtension("EXT_float_blend");
+    }
+    b.gl = ctx;
+    // Claim the canvas for GL (disabling the vblank 2D-blit pump for this
+    // CRTC) only once a WebGL2 context truly exists. Marking it earlier
+    // would strand the canvas with neither GL nor the 2D blit if
+    // getContext("webgl2") returned null (e.g. a prior 2D acquisition).
+    if (ctx && attachedCrtc != null) {
+      this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
+    }
   }
 
   /**
@@ -2087,53 +2179,12 @@ export class WasmPosixKernel {
             b.forward.onCreateContext();
             return;
           }
-          if (!b.canvas) {
-            // Auto-attach the KMS scanout canvas if this pid holds DRM
-            // master on a CRTC the embedder has registered with
-            // `kmsAttachCanvas`. Without this, a libdrm/libgbm/EGL
-            // program (e.g. modeset.c) that drove drmModeSetCrtc and
-            // is about to call eglCreateContext would silently no-op
-            // every shader compile/link/draw because `b.canvas` stays
-            // null and `b.gl` is never built.
-            const crtc = this.kms.masterCrtcForPid(pid);
-            if (crtc != null) {
-              const canvas = this.callbacks.getKmsCanvas?.(crtc);
-              if (canvas) {
-                // Resize the OffscreenCanvas's drawing buffer to match
-                // the kernel-side FB before WebGL2 binds, so glViewport
-                // and gl_FragCoord operate on the full surface rather
-                // than the default 300×150 corner. Modeset programs set
-                // their viewport from CANVAS_W/H (the FB they registered
-                // via drmModeAddFB2) and would otherwise render into a
-                // tiny clipped region of a default-sized canvas.
-                const fb = this.kms.currentFb(crtc);
-                if (fb && (canvas.width !== fb.width || canvas.height !== fb.height)) {
-                  canvas.width = fb.width;
-                  canvas.height = fb.height;
-                }
-                this.gl.attachCanvas(pid, canvas);
-                b.canvas = canvas;
-                this.callbacks.markKmsCanvasGlOwned?.(crtc);
-              }
-            }
-            if (!b.canvas) return;
-          }
-          const ctx = b.canvas.getContext("webgl2", {
-            antialias: false,
-            premultipliedAlpha: false,
-            preserveDrawingBuffer: true,
-          }) as WebGL2RenderingContext | null;
-          if (ctx) {
-            // Mirror main-forward.ts: enable the WebGL2 float extensions
-            // so RGBA16F framebuffers are renderable and float textures
-            // accept LINEAR filtering. Without these, ping-pong sims
-            // (Pavel-style fluid, GPU-side image processing) hit
-            // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
-            ctx.getExtension("EXT_color_buffer_float");
-            ctx.getExtension("OES_texture_float_linear");
-            ctx.getExtension("EXT_float_blend");
-          }
-          b.gl = ctx;
+          // Auto-attach the KMS scanout canvas and build the WebGL2
+          // context. This handles both the modeset ordering (SETCRTC
+          // before eglCreateContext) and the SDL2 KMSDRM ordering
+          // (eglCreateContext, then shader compiles, then the first
+          // SETCRTC on the first SwapWindow) — see tryAttachKmsGlCanvas.
+          this.tryAttachKmsGlCanvas(pid);
         },
         host_gl_destroy_context: (pid: number, _ctxId: number): void => {
           const b = this.gl.get(pid);
@@ -2390,8 +2441,25 @@ export class WasmPosixKernel {
           return 0;
         },
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
-        host_kms_set_fb: (_pid: number, crtc_id: number, fb_id: number): void => {
+        host_kms_set_fb: (pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
+          // SDL2's KMSDRM backend creates its GL context before the first
+          // drmModeSetCrtc (deferred to the first SwapWindow). The
+          // create-context attach normally already ran via the master +
+          // registered-canvas fallback, but complete it here too in case
+          // the canvas was registered late, and — whether or not the
+          // context was already built — size the drawing buffer to the
+          // freshly-bound FB so glViewport(fb.w, fb.h) isn't clipped.
+          this.tryAttachKmsGlCanvas(pid);
+          const b = this.gl.get(pid);
+          const fb = this.kms.currentFb(crtc_id);
+          if (
+            b?.canvas && fb &&
+            (b.canvas.width !== fb.width || b.canvas.height !== fb.height)
+          ) {
+            b.canvas.width = fb.width;
+            b.canvas.height = fb.height;
+          }
         },
       },
     };
@@ -3995,7 +4063,7 @@ export class WasmPosixKernel {
       bufLen: number,
       processPointerWidth: number,
     ) => number;
-    const contract = IOCTL_REQUESTS[request >>> 0];
+    const contract = resolveIoctlContract(request);
     const wasm32Size = contract?.wasm32Size;
     if (contract && wasm32Size === null) {
       throw new Error(
