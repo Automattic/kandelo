@@ -4590,6 +4590,12 @@ mod wasm {
         // and leave the roots cleared -- a leak that no counter could see,
         // because the roots would read as empty.
         arena_release_all();
+        // The scratch chain is MAPPINGS the COW child inherited through the
+        // memory clone, exactly like the arena's. `reset_bump_heap` is what
+        // normally returns them, and this function is not one of its callers --
+        // so without this call a child starts with a scratch stack it did not
+        // build, cannot use, and never releases.
+        scratch_abort_frames();
         ARCHIVE_APPLIED[0].store(0, Ordering::Relaxed);
         ARCHIVE_APPLIED[1].store(0, Ordering::Relaxed);
         // THE PHASE ITSELF is inherited too, and it is the worst of them.
@@ -4829,23 +4835,6 @@ mod wasm {
         chunks: AtomicU64::new(0),
     };
 
-    /// Transient exchange storage for the guest's recursive payload codecs.
-    ///
-    /// `fork-instrument` reserves a staging buffer before encoding an
-    /// aggregate's payloads and releases it after `define`, strictly nested:
-    /// reserve, recurse, define, release. So this is a LIFO STACK, not a bump —
-    /// and it is deliberately NOT the module bump heap above, which never
-    /// reclaims (`dealloc` is a no-op). Routing scratch through the bump would
-    /// make a deep object graph consume the same 4 MiB the capture builder
-    /// needs, and never give it back until the next fork.
-    ///
-    /// **Exhaustion and misuse TRAP rather than returning an error, because the
-    /// generator does not check.** The emitted code is
-    /// `call scratch_reserve ; local.set $staging` followed directly by writes
-    /// through `$staging`; there is no null test. A 0 return would therefore be
-    /// written through as an address, corrupting low guest memory. A trap is the
-    /// truthful failure — the same choice the drive shim's post-allocate
-    /// integrity guard makes.
     /// Dirty table pages for THIS worker, keyed by the physical table's OWNER
     /// id. Worker-level and durable, NOT per-fork.
     ///
@@ -4958,26 +4947,176 @@ mod wasm {
         }
     }
 
-    const SCRATCH_SIZE: usize = 64 * 1024;
+    // -- Guest-facing scratch stack -------------------------------------------
+    //
+    // Transient exchange storage for the guest's recursive payload codecs.
+    //
+    // `fork-instrument` reserves a staging buffer before encoding an
+    // aggregate's payloads and releases it after `define`, strictly nested:
+    // reserve, recurse, define, release. So this is a LIFO STACK, not a bump --
+    // and it is deliberately NOT the module bump heap above. The guest holds
+    // the RAW linear-memory address `__wpk_fork_ref_scratch_reserve` returns
+    // and writes through it across its own recursive encode, calling back into
+    // this module in between; a bump reset between a reserve and its release
+    // would hand the next reserve a region overlapping a live one, by a route
+    // `__wpk_fork_ref_scratch_release`'s trap cannot see. So the stack has its
+    // OWN chain of mapped chunks, released on its own terms.
+    //
+    // **Exhaustion and misuse TRAP rather than returning an error, because the
+    // generator does not check.** The emitted code is
+    // `call scratch_reserve ; local.set $staging` followed directly by writes
+    // through `$staging`; there is no null test. A 0 return would therefore be
+    // written through as an address, corrupting low guest memory. A trap is the
+    // truthful failure -- the same choice the drive shim's post-allocate
+    // integrity guard makes.
+    //
+    // CHUNK LAYOUT is the arena's 32-byte header (`ARENA_CHUNK_HEADER`),
+    // unchanged in size and in its first two words:
+    //   +0  next: u64      the chunk mapped after this one; 0 at the tail
+    //   +8  size: u64      bytes MAPPED, for the unmap
+    //   +16 used: u32      this chunk's `top`, frozen while it is not current
+    //   +20 capacity: u32  bytes the body may hand out. The record chain keeps
+    //                      `live` here, but a scratch frame's liveness is its
+    //                      position under `top`, so this word carries the bound
+    //                      the record chain keeps at +24 --
+    //   +24 prev: u64      -- because this chain needs +24 for the chunk BEFORE
+    //                      this one, which the release that empties this chunk
+    //                      returns to.
+    // Capacity comes from the REQUEST, never from the mapping, for the reason
+    // `arena_map_chunk` records: `channel_mmap` rounds to a page, and the
+    // forced-chunk build's one knob is `ARENA_CHUNK_BYTES`.
+    //
+    // A chunk is returned the moment its last frame is released, so the chain
+    // holds exactly the chunks with a live frame in them. Three things follow:
+    // the current chunk is never empty; a release that finds `need > top` is
+    // always a nesting violation, never a frame that happens to sit in the
+    // previous chunk; and a borrowed vfork child that decoded a graph and
+    // released every frame has nothing left to unmap at its teardown.
 
-    #[repr(C, align(16))]
-    struct ScratchCell(UnsafeCell<[u8; SCRATCH_SIZE]>);
-    // SAFETY: single-threaded per worker, exactly as `Bump` above.
-    unsafe impl Sync for ScratchCell {}
-    static SCRATCH: ScratchCell = ScratchCell(UnsafeCell::new([0u8; SCRATCH_SIZE]));
+    /// The oldest chunk of the chain, or 0 when no frame is open.
+    static SCRATCH_HEAD: AtomicU64 = AtomicU64::new(0);
+    /// The chunk frames are currently being cut from (the newest), or 0.
+    static SCRATCH_CUR: AtomicU64 = AtomicU64::new(0);
+    /// Offset within `SCRATCH_CUR`'s body of the next frame.
     static SCRATCH_TOP: AtomicUsize = AtomicUsize::new(0);
+    /// Bytes in open frames across EVERY chunk of the chain.
+    static SCRATCH_LIVE: AtomicUsize = AtomicUsize::new(0);
 
-    /// The deepest `SCRATCH_TOP` reached since the last per-fork reset.
+    /// The most bytes ever open at once across the whole chain (`SCRATCH_LIVE`'s
+    /// peak) since the last per-fork reset. No longer a single offset: the
+    /// frames of one encode can span chunks, and a bound read from the current
+    /// chunk alone would undercount by every chunk before it.
     ///
     /// The scratch stack is strictly nested (reserve/release around a recursive
-    /// encode), so its CURRENT top is 0 again by the time a capture seals and
+    /// encode), so its CURRENT depth is 0 again by the time a capture seals and
     /// says nothing about how much room the encode actually needed. A vfork
     /// BORROWED child re-runs the decode side of that same graph in memory it
     /// must own privately, and the capture high-water is the bound the host
-    /// reserves from. Kept beside the allocator that moves it, and reset with
-    /// it, because a high-water carried across forks would over-reserve every
+    /// reserves from (`fm_borrowed_replay_workspace` field 1). Reset with the
+    /// bump, because a high-water carried across forks would over-reserve every
     /// later child by the worst fork the worker ever ran.
     static SCRATCH_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Map a chunk that can hold one frame of `need` bytes and make it current,
+    /// freezing the previous current chunk's `top` in its header.
+    fn scratch_push_chunk(need: usize) -> Result<(), Errno> {
+        let usable = core::cmp::max(ARENA_CHUNK_BYTES, ARENA_CHUNK_HEADER + need as u64);
+        let size = page_round_up(usable);
+        let capacity = usable - ARENA_CHUNK_HEADER;
+        let base = channel_base()?;
+        let fresh = channel_mmap(base, size)?;
+        let prev = SCRATCH_CUR.load(Ordering::Relaxed);
+        arena_set_u64(fresh, 0); // next
+        arena_set_u64(fresh + 8, size); // size, for the unmap
+        arena_set_u32(fresh + 16, 0); // used: frozen `top`, once not current
+        arena_set_u32(fresh + 20, capacity as u32);
+        arena_set_u64(fresh + 24, prev);
+        if prev == 0 {
+            SCRATCH_HEAD.store(fresh, Ordering::Relaxed);
+        } else {
+            arena_set_u32(prev + 16, SCRATCH_TOP.load(Ordering::Relaxed) as u32);
+            arena_set_u64(prev, fresh);
+        }
+        SCRATCH_CUR.store(fresh, Ordering::Relaxed);
+        SCRATCH_TOP.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Return the current chunk, now empty, and make its predecessor current
+    /// again at the `top` it was frozen with.
+    fn scratch_pop_chunk() {
+        let chunk = SCRATCH_CUR.load(Ordering::Relaxed);
+        // Both reads BEFORE the unmap: the header is in the chunk.
+        let prev = arena_u64(chunk + 24);
+        let size = arena_u64(chunk + 8);
+        if prev == 0 {
+            SCRATCH_HEAD.store(0, Ordering::Relaxed);
+            SCRATCH_TOP.store(0, Ordering::Relaxed);
+        } else {
+            arena_set_u64(prev, 0);
+            SCRATCH_TOP.store(arena_u32(prev + 16) as usize, Ordering::Relaxed);
+        }
+        SCRATCH_CUR.store(prev, Ordering::Relaxed);
+        // Best-effort, like `arena_unlink_chunk`: the chunk is out of the chain
+        // either way, so a hiccup leaks one mapping rather than reusing it.
+        if let Ok(base) = channel_base() {
+            let _ = channel_munmap(base, chunk, size);
+        }
+    }
+
+    /// Abandon every open frame and return every chunk: unlink each,
+    /// best-effort `channel_munmap`, zero the roots.
+    ///
+    /// TWO CALLERS, for two different reasons, and both are required.
+    ///   1. `reset_bump_heap` (one site, reached from every reset point) -- a
+    ///      capture that trapped mid-encode leaves frames open, and "reclaim
+    ///      them with the bump, or the next fork in this worker starts with a
+    ///      stack that never comes back down" is a FIXED DEFECT the old
+    ///      `SCRATCH_TOP.store(0)` recorded, not an artifact of where the
+    ///      storage lived.
+    ///   2. `set_format_impl`, the COW-child scrub -- a child inherits the
+    ///      PARENT's chunk mappings through the memory clone, and
+    ///      `set_format_impl` is not one of `reset_bump_heap`'s callers.
+    ///      Without this second call the child zeroes nothing and frees
+    ///      nothing, and every chunk the parent had open leaks in a child that
+    ///      may outlive it.
+    ///
+    /// In the scrub it is sequenced AFTER `CHANNEL_BASE` is stored, like every
+    /// other release there, because unmapping syscalls.
+    ///
+    /// Zeroing the roots WITHOUT unmapping would be the silent version of this:
+    /// a cleared root reads as empty, and `scratch_chunk_count` would report 0
+    /// over a leak. That is why the tests assert the `SYS_MUNMAP` tally beside
+    /// the count.
+    fn scratch_abort_frames() {
+        let base = channel_base().unwrap_or(0);
+        let mut chunk = SCRATCH_HEAD.swap(0, Ordering::Relaxed);
+        SCRATCH_CUR.store(0, Ordering::Relaxed);
+        SCRATCH_TOP.store(0, Ordering::Relaxed);
+        SCRATCH_LIVE.store(0, Ordering::Relaxed);
+        while chunk != 0 {
+            // Both reads BEFORE the unmap: the header is in the chunk.
+            let next = arena_u64(chunk);
+            let size = arena_u64(chunk + 8);
+            if base != 0 {
+                let _ = channel_munmap(base, chunk, size);
+            }
+            chunk = next;
+        }
+    }
+
+    /// How many chunks the scratch chain holds. List membership, blind to a
+    /// chunk unlinked but never unmapped, exactly as `arena_record_chunk_count`
+    /// says of itself; `fm_stats` field `SCRATCH_CHUNK_COUNT_FIELD` (104).
+    fn scratch_chunk_count() -> u32 {
+        let mut count = 0u32;
+        let mut chunk = SCRATCH_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            count += 1;
+            chunk = arena_u64(chunk);
+        }
+        count
+    }
 
     // The vfork BORROWED child's admitted workspace, seeded by the host.
     //
@@ -5053,8 +5192,9 @@ mod wasm {
         abandon_resident(gc_identity());
         // A capture that trapped or aborted mid-encode leaves its staging frames
         // on the scratch stack. Reclaim them with the bump, or the next fork in
-        // this worker starts with a stack that never comes back down.
-        SCRATCH_TOP.store(0, Ordering::Relaxed);
+        // this worker starts with a stack that never comes back down. The frames
+        // are chunks now, so reclaiming is unmapping (`scratch_abort_frames`).
+        scratch_abort_frames();
         SCRATCH_HIGH_WATER.store(0, Ordering::Relaxed);
         CAPTURE_ARMED.store(0, Ordering::Relaxed);
         // SAFETY: single-threaded per worker; only one fork drives these at a time.
@@ -9511,21 +9651,34 @@ mod wasm {
     /// inside that same memory, which is what lets the guest write through the
     /// result directly.
     ///
-    /// Traps on exhaustion. See `SCRATCH_SIZE` for why an error return is not
+    /// Traps when the kernel refuses the mapping or no channel is seeded. See
+    /// the scratch chain's section comment for why an error return is not
     /// available: the generator does not check this result.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_scratch_reserve(len: usize) -> usize {
         let need = scratch_align(len);
-        let top = SCRATCH_TOP.load(Ordering::Relaxed);
-        let next = match top.checked_add(need) {
-            Some(next) if next <= SCRATCH_SIZE => next,
-            _ => wasm_intr::unreachable(),
-        };
-        SCRATCH_TOP.store(next, Ordering::Relaxed);
-        if next > SCRATCH_HIGH_WATER.load(Ordering::Relaxed) {
-            SCRATCH_HIGH_WATER.store(next, Ordering::Relaxed);
+        let mut cur = SCRATCH_CUR.load(Ordering::Relaxed);
+        let mut top = SCRATCH_TOP.load(Ordering::Relaxed);
+        let fits = cur != 0
+            && top
+                .checked_add(need)
+                .is_some_and(|next| next <= arena_u32(cur + 20) as usize);
+        if !fits {
+            // The frame lands at the BASE of a fresh chunk, sized to the frame
+            // when it is larger than a default chunk's body.
+            if scratch_push_chunk(need).is_err() {
+                wasm_intr::unreachable();
+            }
+            cur = SCRATCH_CUR.load(Ordering::Relaxed);
+            top = 0;
         }
-        (SCRATCH.0.get() as usize).wrapping_add(top)
+        SCRATCH_TOP.store(top + need, Ordering::Relaxed);
+        let live = SCRATCH_LIVE.load(Ordering::Relaxed) + need;
+        SCRATCH_LIVE.store(live, Ordering::Relaxed);
+        if live > SCRATCH_HIGH_WATER.load(Ordering::Relaxed) {
+            SCRATCH_HIGH_WATER.store(live, Ordering::Relaxed);
+        }
+        (cur + ARENA_CHUNK_HEADER) as usize + top
     }
 
     /// Guest-facing `env.__wpk_fork_ref_scratch_release(ptr, len)`.
@@ -9538,12 +9691,24 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_scratch_release(ptr: usize, len: usize) {
         let need = scratch_align(len);
-        let base = SCRATCH.0.get() as usize;
+        let cur = SCRATCH_CUR.load(Ordering::Relaxed);
         let top = SCRATCH_TOP.load(Ordering::Relaxed);
-        if need > top || ptr != base.wrapping_add(top - need) {
+        // The current chunk is never empty (an emptied chunk is returned on the
+        // spot), so `need > top` is the nesting violation it always was, not a
+        // frame that sits in the previous chunk.
+        if cur == 0 || need > top {
             wasm_intr::unreachable();
         }
-        SCRATCH_TOP.store(top - need, Ordering::Relaxed);
+        let base = (cur + ARENA_CHUNK_HEADER) as usize;
+        if ptr != base.wrapping_add(top - need) {
+            wasm_intr::unreachable();
+        }
+        SCRATCH_LIVE.store(SCRATCH_LIVE.load(Ordering::Relaxed) - need, Ordering::Relaxed);
+        if top == need {
+            scratch_pop_chunk();
+        } else {
+            SCRATCH_TOP.store(top - need, Ordering::Relaxed);
+        }
     }
 
     /// Recipe already bound to this host-assigned reference identity, or 0.
@@ -11940,9 +12105,12 @@ mod wasm {
     const ARENA_RECORD_CHUNK_COUNT_FIELD: u32 = 101;
     /// The directory's chunk-chain length.
     const ARENA_DIRECTORY_CHUNK_COUNT_FIELD: u32 = 102;
-    /// Ruling D1-a. 105, not 103: 103 and 104 are claimed by later tasks of the
-    /// storage-conversion plan, and this number is chosen from that plan's one
-    /// table rather than from whatever is free when this code is written.
+    /// The scratch chain's chunk-chain length. 104, from the plan's one field
+    /// table; 103 stays reserved (see `FM_STATS_HIGH_FIELDS`).
+    const SCRATCH_CHUNK_COUNT_FIELD: u32 = 104;
+    /// Ruling D1-a. 105, not 103: 103 was reserved and 104 is the scratch
+    /// chain's, and this number is chosen from the storage-conversion plan's
+    /// one table rather than from whatever is free when this code is written.
     const ARENA_DIRECTORY_ENTRY_COUNT_FIELD: u32 = 105;
 
     /// EVERY high `fm_stats` field this module answers, in one place.
@@ -11958,7 +12126,7 @@ mod wasm {
     /// What it CANNOT see is a field that drifts DOWN into the reference
     /// table's contiguous index space, because that space's length is a host
     /// constant. `host/test/fork-module-backend.test.ts` holds that half.
-    const FM_STATS_HIGH_FIELDS: [u32; 4] = [
+    const FM_STATS_HIGH_FIELDS: [u32; 5] = [
         IDENTITY_CHUNK_COUNT_FIELD,        // 100, already shipped
         ARENA_RECORD_CHUNK_COUNT_FIELD,    // 101
         ARENA_DIRECTORY_CHUNK_COUNT_FIELD, // 102
@@ -11967,6 +12135,7 @@ mod wasm {
         // free set is derived from the live records rather than stored, so
         // there is nothing whose length could be reported. An arm is what this
         // array must list, and there is no arm.
+        SCRATCH_CHUNK_COUNT_FIELD,         // 104
         ARENA_DIRECTORY_ENTRY_COUNT_FIELD, // 105
     ];
     const _: () = {
@@ -12021,6 +12190,12 @@ mod wasm {
         }
         if field == ARENA_DIRECTORY_ENTRY_COUNT_FIELD {
             return arena_directory_entry_count() as i64;
+        }
+        // The scratch chain, same shape: walked, so it cannot join the table,
+        // and blind to an unlinked-but-unmapped chunk, so
+        // `host/test/fork-scratch-chain.test.ts` asserts the tally beside it.
+        if field == SCRATCH_CHUNK_COUNT_FIELD {
+            return scratch_chunk_count() as i64;
         }
         // Index a table of references rather than `match`-ing over the eleven
         // atomic loads directly: a `match field { 0 => A.load(), 1 => B.load(),

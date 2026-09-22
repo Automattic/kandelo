@@ -741,6 +741,8 @@ export function captureGraph(
 // this one lands first, for exactly that reason.
 export const ARENA_RECORD_CHUNK_COUNT_FIELD = 101;
 export const ARENA_DIRECTORY_CHUNK_COUNT_FIELD = 102;
+/** The guest-facing scratch stack's chunk-chain length. 104, from the same table. */
+export const SCRATCH_CHUNK_COUNT_FIELD = 104;
 /** Ruling D1-a: LIVE directory entries, one per activation holding a record. */
 export const ARENA_DIRECTORY_ENTRY_COUNT_FIELD = 105;
 
@@ -917,6 +919,22 @@ export interface ArenaFixture {
    * deletes it.
    */
   selftest: (op: number, activation: number, kind: number, bytes: number) => bigint;
+  /**
+   * The guest entries `__wpk_fork_ref_scratch_reserve(len) -> ptr` and
+   * `__wpk_fork_ref_scratch_release(ptr, len)`, called directly on the module
+   * instance. They are guest IMPORTS the module exports for the host to wire,
+   * not `fm_*` entries, so exercising them adds nothing to any surface budget.
+   * Both TRAP on misuse rather than returning an errno -- the generator does
+   * not check -- so a violation surfaces as a thrown `RuntimeError`.
+   */
+  scratchReserve: (len: number) => number;
+  scratchRelease: (ptr: number, len: number) => void;
+  /**
+   * `fm_capture_begin`: the fork's designated bump-reset point, and the one
+   * of `reset_bump_heap`'s four production callers a bare module fixture can
+   * reach without a drive table. It reaches `reset_bump_heap` unconditionally.
+   */
+  driveBumpReset: () => void;
 }
 
 /** `fm_arena_selftest` ops. */
@@ -1106,6 +1124,11 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     },
     errno,
     selftest: x.fm_arena_selftest as ArenaFixture["selftest"],
+    scratchReserve: (len) =>
+      (x.__wpk_fork_ref_scratch_reserve as (n: number) => number)(len),
+    scratchRelease: (ptr, len) =>
+      (x.__wpk_fork_ref_scratch_release as (p: number, n: number) => void)(ptr, len),
+    driveBumpReset: () => (x.fm_capture_begin as () => void)(),
   };
   liveStatsReaders.push(f.stats);
   return f;
