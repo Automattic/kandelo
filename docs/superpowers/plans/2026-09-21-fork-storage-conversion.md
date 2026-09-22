@@ -90,6 +90,28 @@ pattern that is about to be deleted.
 
 ## Global Constraints
 
+> ### EXECUTION MODE CHANGED 2026-09-22 — per-task testing suspended by the maintainer
+>
+> Testing each task on this shared box costs 30–60 minutes per task (setup
+> re-projection, an 81-file sweep, host-native, perturbation chains) and was
+> judged too slow. From Task 5 onward:
+>
+> * **Per task:** implement, build the module (`build-wasm.sh` +
+>   `--verify-fresh`), record the ledger row (`memorySize`, pages,
+>   `regionBytes`, delta vs the previous row), commit — **one commit per task**.
+>   No sweep, no host-native, no perturbation chain, no `./run.sh setup`, no
+>   per-task review.
+> * **Batch at Task 12**, which by design runs the full suite in both the
+>   normal and forced-chunk builds. Task 13 measures and corrects the record.
+>   One whole-range code review runs alongside that batch.
+> * **Perturbation proofs** that each task's steps call for are DEFERRED, not
+>   waived: Task 12 owes them, listed by task, and a guard whose failure was
+>   never demonstrated stays flagged as unproven in Task 13's record.
+>
+> Why one commit per task matters more now than before: if the batch is red,
+> the failure bisects by commit. A task folded into another's commit costs
+> the bisection its resolution.
+
 > ### THE VFORK-TEARDOWN CONSTRAINT IS REFUTED — it was a bug, and it is fixed
 >
 > This section previously recorded, as a platform law, that the module must not
