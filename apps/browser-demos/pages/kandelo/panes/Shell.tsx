@@ -11,6 +11,8 @@ import "@xterm/xterm/css/xterm.css";
 
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { TerminalLinkContext } from "../../../../../web-libs/kandelo-session/src/terminal-links";
+import { registerTerminalLinks } from "../../../lib/terminal-links";
 import { requestTerminalAutoFocus } from "./terminal-focus";
 
 export interface ShellProps {
@@ -134,6 +136,19 @@ const ShellTerminalHost: React.FC<{
       attributes: true,
       attributeFilter: ["data-k-theme", "data-k-mode", "style"],
     });
+    const links = registerTerminalLinks(term, (): TerminalLinkContext => {
+      // Pull the preview on demand rather than subscribing. This callback only
+      // runs while resolving a hovered link, and `setWebPreviewPendingRequests`
+      // fires on every HTTP request through the bridge — subscribing here would
+      // re-render the live terminal host on each one.
+      const preview = host.getWebPreview();
+      // Loopback URLs the machine prints are reachable from the page only
+      // through a running HTTP bridge, and only on the one port it forwards.
+      const machine = preview && preview.status === "running" && typeof preview.port === "number"
+        ? { url: preview.url, port: preview.port }
+        : null;
+      return { pageUrl: window.location.href, machine };
+    });
     let unsubData = () => {};
     let disposed = false;
     // Fitting the terminal depends on the flex layout, the dock's reserved
@@ -251,6 +266,7 @@ const ShellTerminalHost: React.FC<{
       }
       document.removeEventListener("pointerdown", onDocumentPointerDown, true);
       themeObserver.disconnect();
+      links.dispose();
       term.dispose();
       terminalRef.current = null;
       setAttached(false);

@@ -207,7 +207,41 @@ pipe pair.
 ### Terminal
 - PTY support with full line discipline
 - Interactive stdin via `appendStdinData` for incremental input
-- xterm.js integration via `PtyTerminal`
+- xterm.js integration. The live Shell pane
+  (`apps/browser-demos/pages/kandelo/panes/Shell.tsx`) builds its own
+  `Terminal`; `apps/browser-demos/lib/pty-terminal.ts` provides a standalone
+  `PtyTerminal` for pages that drive a `BrowserKernel` directly.
+
+#### Clickable links
+
+URLs in terminal output are clickable and always open in a new tab. Both plain
+text URLs and OSC 8 hyperlinks go through one policy, decided by
+`classifyTerminalLink` in `web-libs/kandelo-session/src/terminal-links.ts` and
+wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
+
+- **Third-party destinations** open with `rel="noopener noreferrer"`. A Kandelo
+  page URL can carry machine state — a `#k1=` boot descriptor, a share link —
+  so the `Referer` header is withheld from anything that is not this machine.
+- **Same-origin destinations**, including the machine's own web surface, open
+  with `rel="noopener"` and do send a referrer.
+- **Loopback URLs an in-machine program printed** (`localhost`, `127.0.0.0/8`,
+  `0.0.0.0`, `[::1]`, `[::]`) name a port in the *machine's* network namespace,
+  not on the user's computer. The service-worker HTTP bridge forwards exactly
+  one machine port to the app prefix, so such a URL is rewritten onto that
+  prefix — `http://localhost:8080/wp-admin/` becomes
+  `<origin>/computer/<name>/wp-admin/` —
+  and only when its port matches the bridged one.
+- **Loopback URLs on any other port, or with no bridge running, are not
+  linkified at all.** Nothing forwards them, and a click that silently landed
+  on the user's own machine would be worse than plain text.
+- Only `http:` and `https:` are linkified. `javascript:`, `data:` and `file:`
+  URLs a program writes are never clickable.
+- An **OSC 8 hyperlink** lets a program choose the visible text and the
+  destination independently, so the text can misrepresent where the link goes.
+  Following one to a third party keeps xterm.js's confirmation prompt, which
+  names the real destination; only the referrer behavior changes. (xterm's
+  built-in handler navigates with `window.open` + `location.href`, which does
+  send the `Referer`.)
 
 ### Framebuffer (`/dev/fb0`)
 - 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
