@@ -1,7 +1,12 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { findRepoRoot } from "../../../host/src/binary-resolver";
 import {
+  MAX_KANDELO_DEMO_CONFIG_BYTES,
   MAX_REQUESTED_MEMORY_PAGES,
   MAX_REQUESTED_WORKERS,
+  parseKandeloDemoConfig,
   validateKandeloDemoConfig,
   resolveDemoWeb,
   resolveDemoIdentity,
@@ -257,5 +262,27 @@ describe("resolvers", () => {
   it("resolves null for an unknown profile id", () => {
     expect(resolveDemoInit(config, "nope")).toBeNull();
     expect(resolveDemoDisplay(config, "nope")).toBeNull();
+  });
+});
+
+describe("tracked demo-config sources", () => {
+  it("parses and validates the shell image's tracked source", () => {
+    const path = join(
+      findRepoRoot(),
+      "packages/registry/shell/source-rootfs-shell-demo.json",
+    );
+    const source = readFileSync(path, "utf8");
+    const config = parseKandeloDemoConfig(source);
+    expect(config).not.toBeNull();
+    expect(() => validateKandeloDemoConfig(config!)).not.toThrow();
+  });
+
+  it("keeps every tracked source under the byte cap", () => {
+    const path = join(
+      findRepoRoot(),
+      "packages/registry/shell/source-rootfs-shell-demo.json",
+    );
+    expect(readFileSync(path).byteLength)
+      .toBeLessThanOrEqual(MAX_KANDELO_DEMO_CONFIG_BYTES);
   });
 });
