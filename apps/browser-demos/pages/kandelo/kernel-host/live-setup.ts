@@ -46,6 +46,7 @@ import {
   LiveKernelHost,
   type BootDescriptor,
   type BootInput,
+  type BootJsonValue,
   type BootParameters,
   type DemoPresentation,
   type GalleryItem,
@@ -1153,18 +1154,40 @@ function reportInitError(
   host.setStatus("error");
 }
 
+// Shell used to run a boot-link script when the link did not record one
+// (links authored before runScriptShell existed). Kandelo browser images
+// ship bash as their default shell, so this matches what those links intended
+// and keeps the invocation unconditional.
+const DEFAULT_BOOT_LINK_SHELL = "bash";
+
+// A recorded shell is untrusted, URL-carried input that is interpolated into a
+// shell command line, so it must be a bare command word with no shell
+// metacharacters. Anything else is rejected in favour of the default rather
+// than trusted, which closes the injection vector while keeping the run
+// unconditional.
+function safeBootLinkShell(recorded: BootJsonValue | undefined): string {
+  return typeof recorded === "string" && /^[a-z][a-z0-9_-]{0,15}$/.test(recorded)
+    ? recorded
+    : DEFAULT_BOOT_LINK_SHELL;
+}
+
 async function runLinkScript(
   host: LiveKernelHost,
   path: string,
+  recordedShell: BootJsonValue | undefined,
   tick: (msg: string) => void,
 ): Promise<void> {
   // The script was already written (mode 0755, writable and executable) by
   // materializeBootInputs during image staging, at `path`.
-  // "Default shell" for the invocation: the PTY session program is login,
-  // not a shell, so probe the image for bash and fall back to sh. Authors
-  // needing another interpreter can exec it from the script body.
-  const bash = await host.stat("/bin/bash").catch(() => null);
-  const interpreter = bash ? "bash" : "sh";
+  //
+  // The interpreter comes from the link itself (boot.parameters.runScriptShell,
+  // set by ShareDialog to the authoring machine's default shell), so the script
+  // runs directly as `<shell> script` with no visible `command -v bash` probe.
+  // A main-thread host.stat("/bin/bash") is not a usable substitute: the kernel
+  // owns the VFS in its worker and exposes no synchronous surface in the
+  // browser, so that probe always reads empty and would silently drop the
+  // script onto sh. The shell token is validated to a bare command word first.
+  const shell = safeBootLinkShell(recordedShell);
   tick("showing boot-link script in the terminal...");
   // Show the actual script contents in the terminal before running them —
   // the visitor sees exactly what the link asked their machine to execute.
@@ -1173,8 +1196,8 @@ async function runLinkScript(
   // and filenames to a safe character set — defense in depth against a
   // future relaxation of that validation.
   await host.runShellCommand(`cat "${path}"`);
-  tick(`running boot-link script with ${interpreter}...`);
-  await host.runShellCommand(`${interpreter} "${path}"`);
+  tick(`running boot-link script with ${shell}...`);
+  await host.runShellCommand(`${shell} "${path}"`);
 }
 
 async function bootProfile(
@@ -1702,7 +1725,8 @@ async function bootProfile(
         // persistence feature MUST first add an explicit show-the-script
         // Run/Skip consent step here. See
         // docs/superpowers/specs/2026-09-21-script-bearing-links-design.md.
-        void runLinkScript(host, scriptInput.path, tick).catch((err) => {
+        const runScriptShell = requestedDescriptor.boot.parameters.runScriptShell;
+        void runLinkScript(host, scriptInput.path, runScriptShell, tick).catch((err) => {
           tick(
             `boot-link script failed: ${
               err instanceof Error ? err.message : String(err)
@@ -2365,7 +2389,14 @@ function vfsImageUrlResolverForPreset(
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
   const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
-  if (source.kind !== "optional-demo") return undefined;
+  // A "url" source already yields an eager vfsImageUrl via
+  // vfsImageUrlForPreset. Every other kind (optional-demo AND
+  // optional-binary) needs a lazy resolver so the gallery can produce a
+  // shareable/navigable ?demo=&vfs= URL — resolveLiveVfsSourceUrl handles all
+  // of them. Without this, optional-binary items (nginx, nginx-php) had no
+  // way to resolve their image, so Launch fell back to an in-place descriptor
+  // apply that never updated the address bar and Copy produced a dead link.
+  if (source.kind === "url") return undefined;
   return async () => {
     const url = new URL(
       await resolveLiveVfsSourceUrl(source),
