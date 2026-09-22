@@ -181,6 +181,12 @@ const OPTIONAL_BINARY_URLS = {
       import: "default",
     },
   ),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/evdev_demo.wasm", {
     query: "?url", import: "default",
   }),
@@ -242,7 +248,7 @@ class BootSuperseded extends Error {
 }
 
 type LiveVfsImage =
-  "shell" | "node" | "nginx" | "nginx-php" | "wordpress" | "lamp";
+  "shell" | "node" | "nginx" | "nginx-php" | "wordpress" | "lamp" | "ruby-todo";
 
 type PagesVfsProductId =
   | "platform-rootfs"
@@ -251,7 +257,8 @@ type PagesVfsProductId =
   | "browser-nginx"
   | "browser-nginx-php"
   | "browser-wordpress"
-  | "browser-lamp";
+  | "browser-lamp"
+  | "browser-ruby-todo";
 
 type LiveVfsSource =
   | { kind: "url"; productId: PagesVfsProductId; url: string }
@@ -319,6 +326,15 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
     productId: "browser-wordpress",
   },
   lamp: { kind: "optional-demo", image: "lamp", productId: "browser-lamp" },
+  "ruby-todo": {
+    kind: "optional-binary",
+    label: "ruby-todo-vfs.vfs.zst",
+    productId: "browser-ruby-todo",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst",
+    ],
+  },
 };
 
 const DINIT_NGINX_ARGV = [
@@ -334,6 +350,7 @@ const LIVE_DEMO_IDS = [
   "node",
   "nginx",
   "nginx-php",
+  "ruby-todo",
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
@@ -390,6 +407,23 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       web: {
         requiredPorts: [HTTP_PORT],
         requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-php"]],
+      },
+    },
+  },
+  "ruby-todo": {
+    image: "ruby-todo",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    network: true,
+    init: {
+      // Single-process server: boot the resident Ruby directly as init (no
+      // dinit needed for one long-running process).
+      argv: ["/usr/bin/ruby", "/var/lib/todo/server.rb"],
+      env: "service",
+      cwd: "/var/lib/todo",
+      maxWorkers: 12,
+      maxMemoryPages: 4096,
+      web: {
+        requiredPorts: [HTTP_PORT],
       },
     },
   },
