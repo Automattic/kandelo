@@ -1,6 +1,7 @@
 import {
   expect,
   test,
+  type BrowserContext,
   type Page,
 } from "@playwright/test";
 import { readFile } from "node:fs/promises";
@@ -10,6 +11,8 @@ const FIXTURE_PORT = 55_431;
 const FIXTURE_ORIGIN = `http://127.0.0.1:${FIXTURE_PORT}`;
 const SESSION_A = "11111111-1111-4111-8111-111111111111";
 const SESSION_B = "22222222-2222-4222-8222-222222222222";
+const SESSION_A_NEXT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const BRIDGE_AUTHORITY_KEY = "bridge-authority-v1";
 const CACHE_A = "kandelo-sw:%2Fa%2F:bridge-v2";
 const CACHE_B = "kandelo-sw:%2Fb%2F:bridge-v2";
 const LAZY_CACHE_A = "kandelo-sw:%2Fa%2F:lazy-assets-v1";
@@ -452,6 +455,34 @@ test("cookie jars are isolated per machine", async ({ page }) => {
   expect(twoCookies).not.toContain("one=");
 });
 
+test("a restarted SW restores each machine by name", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const one = await installBridge(page, SESSION_A, "one");
+  const two = await installBridge(page, SESSION_B, "two");
+
+  // Page-side need-bridge responders, one per machine, each re-answering only
+  // for its own SW-minted name — the real cross-restart handshake shape.
+  await installNamedRestoreResponder(page, [
+    { name: one.name, appPrefix: one.appPrefix, sessionId: SESSION_A, label: "one" },
+    { name: two.name, appPrefix: two.appPrefix, sessionId: SESSION_B, label: "two" },
+  ]);
+
+  // Genuinely terminate the worker. A reincarnated module has no live bridge
+  // ports, so the very next in-app fetch must drive restore-by-name.
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  expect(await fetchText(page, `${one.appPrefix}after-restart`))
+    .toBe("restored:one");
+  expect(await fetchText(page, `${two.appPrefix}after-restart`))
+    .toBe("restored:two");
+});
+
 async function seedCaches(page: Page, names: readonly string[]): Promise<void> {
   await page.evaluate(async (cacheNamesToSeed) => {
     for (const name of cacheNamesToSeed) {
@@ -657,6 +688,139 @@ async function lazyCacheEntries(page: Page, cacheName: string): Promise<string[]
     return (await cache.keys()).map((request) => new URL(request.url).pathname)
       .sort();
   }, cacheName);
+}
+
+interface RestoreResponderMachine {
+  name: string;
+  appPrefix: string;
+  sessionId: string;
+  label: string;
+}
+
+// Install one page-side need-bridge responder per machine. Each answers only
+// for its own SW-minted name with a fresh bridge port that echoes
+// "restored:<label>", mirroring setupServiceWorkerFetchBridge's per-machine
+// listener. A responder whose name/appPrefix/sessionId is deliberately wrong
+// exercises the SW's restore-by-name rejection.
+async function installNamedRestoreResponder(
+  page: Page,
+  machines: RestoreResponderMachine[],
+): Promise<void> {
+  await page.evaluate((entries) => {
+    const keepAlive = window as typeof window & {
+      __bridgePorts?: MessagePort[];
+      __needBridgeCount?: number;
+    };
+    keepAlive.__bridgePorts ??= [];
+    keepAlive.__needBridgeCount = 0;
+    for (const machine of entries) {
+      navigator.serviceWorker.addEventListener("message", (event) => {
+        if (event.data?.type !== "need-bridge" || !event.ports[0]) return;
+        keepAlive.__needBridgeCount! += 1;
+        const fresh = new MessageChannel();
+        fresh.port1.onmessage = (bridgeEvent) => {
+          if (bridgeEvent.data?.type !== "http-request") return;
+          fresh.port1.postMessage({
+            type: "http-response",
+            requestId: bridgeEvent.data.requestId,
+            status: 200,
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8",
+              cookie: bridgeEvent.data.headers?.cookie ?? "",
+            },
+            body: new TextEncoder().encode(`restored:${machine.label}`),
+          });
+        };
+        fresh.port1.start();
+        keepAlive.__bridgePorts!.push(fresh.port1);
+        event.ports[0].postMessage(
+          {
+            type: "bridge-restored",
+            name: machine.name,
+            appPrefix: machine.appPrefix,
+            sessionId: machine.sessionId,
+          },
+          [fresh.port2],
+        );
+      });
+    }
+  }, machines);
+}
+
+async function needBridgeCount(page: Page): Promise<number> {
+  return page.evaluate(() => (
+    window as typeof window & { __needBridgeCount?: number }
+  ).__needBridgeCount ?? 0);
+}
+
+async function readBridgeAuthority(
+  page: Page,
+  cacheName: string,
+  name: string,
+): Promise<
+  | { version: number; revision: number; appPrefix: string; sessionId: string; cookies: Array<{ name: string; value: string; path: string }> }
+  | null
+> {
+  return page.evaluate(async ({ cache: cacheName, authorityKey, machineName }) => {
+    if (!(await caches.keys()).includes(cacheName)) return null;
+    const cache = await caches.open(cacheName);
+    const suffix = `${authorityKey}/${machineName}`;
+    const match = (await cache.keys()).find((request) =>
+      new URL(request.url).pathname.endsWith(suffix)
+    );
+    if (!match) return null;
+    const response = await cache.match(match);
+    return response ? JSON.parse(await response.text()) : null;
+  }, { cache: cacheName, authorityKey: BRIDGE_AUTHORITY_KEY, machineName: name });
+}
+
+async function seedBridgeAuthority(
+  page: Page,
+  cacheName: string,
+  name: string,
+  authorityText: string,
+): Promise<void> {
+  await page.evaluate(async ({ cache: cacheName, key, text }) => {
+    const cache = await caches.open(cacheName);
+    await cache.put(
+      key,
+      new Response(text, { headers: { "Content-Type": "application/json" } }),
+    );
+  }, { cache: cacheName, key: `${BRIDGE_AUTHORITY_KEY}/${name}`, text: authorityText });
+}
+
+// Genuinely terminate the running service worker via the Chromium DevTools
+// Protocol. A reincarnated worker re-evaluates its module with an empty live
+// registry, so this is the real restart the recovery path must survive — no
+// SW-side test backdoor required.
+async function stopWorker(
+  context: BrowserContext,
+  page: Page,
+  scriptUrl: string,
+): Promise<void> {
+  const client = await context.newCDPSession(page);
+  try {
+    const versionId = await new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`timed out finding ${scriptUrl}`)),
+        10_000,
+      );
+      client.on("ServiceWorker.workerVersionUpdated", (event) => {
+        const running = (event.versions ?? []).find((version: {
+          runningStatus?: string;
+          scriptURL?: string;
+          versionId: string;
+        }) => version.runningStatus === "running" && version.scriptURL === scriptUrl);
+        if (!running) return;
+        clearTimeout(timeout);
+        resolve(String(running.versionId));
+      });
+      void client.send("ServiceWorker.enable").catch(reject);
+    });
+    await client.send("ServiceWorker.stopWorker", { versionId });
+  } finally {
+    await client.detach();
+  }
 }
 
 async function registrationOutcome(
