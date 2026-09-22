@@ -4294,6 +4294,36 @@ the run is its evidence.
 
 ## Task 13: Measure the result and correct the record
 
+> **THE ENDPOINT, RE-DERIVED FROM MEASUREMENTS, 2026-09-22 — read before
+> writing a single number.** The plan's "~1,179,648" was computed from the
+> stale pre-Change-2 baseline and the OLD 256 KiB slab. Neither holds.
+>
+> After Task 11 the measured row is: `memorySize` **88,728**, `staticBytes`
+> 88,736 (align 16), `stackTopOffset` 88,736 + 1,048,576 = 1,137,312, rounded
+> up to **18 pages** = 1,179,648, plus the slab **196,608** (Task 7) =
+> `regionBytes` **1,376,256**. Cumulative from 3,801,088: **−2,424,832**,
+> 54 → 18 pages.
+>
+> The plan's 17-page endpoint (1,114,112 + slab = **1,310,720** with the 192
+> KiB slab) requires `stackTopOffset` ≤ 1,114,112, i.e. `staticBytes` ≤
+> **65,536**. The module is at 88,736 — **23,200 bytes over**, and Tasks 12
+> and 13 convert nothing. So the 17-page figure is NOT reachable by this
+> plan as written. **Do not report "missed by one page."** Report:
+>
+> 1. the measured endpoint, 1,376,256, and that it is 18 pages + the 192 KiB
+>    slab;
+> 2. that the remaining 23,200 bytes of static are what stand between 18 and
+>    17 pages, and WHAT they are — walk the remaining fixed BSS and name each
+>    contributor by size (the `fm_arena_selftest` deletion you owe removes
+>    some of it; measure before and after that deletion separately);
+> 3. that the 1,048,576 shadow stack is now the dominant term by a factor of
+>    twelve, so any further page comes from the SHADOW STACK, not from
+>    storage — which is a different plan, and this one should say so plainly
+>    rather than imply storage work remains.
+>
+> Task 12's forced-chunk build changes no region bytes by design; if it does,
+> that is a finding.
+
 > **ADDED 2026-09-22 (review F3):** `fm_arena_selftest`'s doc block
 > (`lib.rs:2318-2330`) and the three budget `why` entries promise deletion
 > "at the task that converts the resume assignment" — Task 3, which has
