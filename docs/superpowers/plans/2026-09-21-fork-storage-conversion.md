@@ -2969,6 +2969,29 @@ git push origin brandonpayton/lane-f-fork-inversion
 
 ## Task 8: The five small per-activation stores
 
+> **CARRIED FROM TASK 1's RE-REVIEW, 2026-09-22 — `arena_extend`'s
+> cross-chunk path is verified by code trace, not by a test.**
+>
+> Task 1 added a sweep to `arena_extend` because monotonic `used` with no
+> reclamation would make your per-entry append consume roughly 1.03 MiB
+> *mapped* for an 8 KiB record. The sweep's safety property was traced and
+> holds: `arena_insert_record` increments the NEW chunk's `live` before
+> `arena_unlink_record` decrements the old one's, so a chunk holding the
+> just-written record can never read `live == 0` and be swept — even when old
+> and new are the same chunk.
+>
+> But **every committed extend test reuses a single chunk.** Nothing forces an
+> extend that crosses into a second chunk, so the scenario that matters to you
+> — a truly-emptied chunk reclaimed while a sibling activation's chunk stays
+> live — has never executed. You are the first task to append repeatedly, so
+> you are the first to reach it.
+>
+> Land a test that crosses chunks and proves both halves: the emptied chunk is
+> unmapped, and the sibling's is not. **Measure field 101 (record chunk
+> count), not a re-allocation count** — Task 1's doc comment says so, because
+> a re-allocation count cannot see the sweep at all, which is the defect that
+> motivated it.
+
 **This commit moves ZERO region bytes.** 14,592 bytes against a **54,084-byte**
 threshold. Derived, like every threshold here:
 `threshold = memorySize_prev − ((pages_prev − 1) × 65,536 − 1,048,576)`, which
@@ -4038,6 +4061,35 @@ the run is its evidence.
 ---
 
 ## Task 13: Measure the result and correct the record
+
+> **MANDATORY, added 2026-09-22 — delete `fm_arena_selftest` and bank it.**
+>
+> Task 1's fix round added a test-only module entry, `fm_arena_selftest`,
+> because reaching a real arena allocation needs a store that later tasks add,
+> and the foundation twelve tasks build on otherwise had **no committed test
+> exercising it at all**. It cost exactly three ceilings, each by one:
+> `forkModuleEntryPoints` 72→73, `forkModuleHostEntries` 59→60,
+> `forkModuleEntriesWithoutProductionCaller` 2→3.
+>
+> That trade was accepted on the explicit condition that the give-back is by
+> **deletion**, not by wiring a production caller — the entry exists to be
+> removed once real allocations exist.
+>
+> **By Task 13 they do.** So Task 13 must:
+>
+> 1. Confirm the arena's allocation and release paths are exercised by tests
+>    that drive **production** entries only, with no dependence on
+>    `fm_arena_selftest`. Name the tests.
+> 2. Delete `fm_arena_selftest` and its wrapper.
+> 3. Lower all three ceilings by one, back to 72 / 59 / 2, in the same commit,
+>    with the reason in each `why`.
+> 4. If the entry turns out to still be load-bearing, that is a FINDING —
+>    report what still depends on it and why, and leave it. Do not delete a
+>    test's only reachable path to keep a number tidy.
+>
+> This is written here rather than left in a report because the last deferral
+> that lived only in a report was missed, and a debt recorded where nobody
+> re-reads it is not a debt anyone will pay.
 
 The plan predicted a ledger. This task checks it, banks it, and fixes the
 documents that are now wrong — including this plan's own source spec, which
