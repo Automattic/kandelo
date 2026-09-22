@@ -1248,14 +1248,55 @@ if (typeof window !== "undefined") {
   // dropped the old shell readiness-probe guard on this assumption, so if a
   // future shell ever fetched a named URL from its own client it would be
   // recorded as a viewer of that machine (and receive offline pushes for it).
-  function markViewer(record, event) {
-    if (event.clientId) {
+  function isNavigationRequest(request) {
+    return request.mode === "navigate" || request.destination === "document";
+  }
+
+  // The referer is the fetch-owned source of truth in a service worker; keep a
+  // header fallback for engines that expose it. Returns the same-origin referer
+  // pathname, or null when there is no usable same-origin referer.
+  function sameOriginRefererPath(request) {
+    var referer = request.referrer ||
+      (request.headers && typeof request.headers.get === "function"
+        ? request.headers.get("referer")
+        : "") || "";
+    if (!referer) return null;
+    try {
+      var refererUrl = new URL(referer);
+      if (refererUrl.origin !== self.location.origin) return null;
+      return refererUrl.pathname;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  // True only when the request originates from within some machine's app
+  // document (its referer is an /app/<name>/ path).
+  function requestIsFromAppDocument(request) {
+    var path = sameOriginRefererPath(request);
+    return path !== null && instanceNameFromPath(path) !== null;
+  }
+
+  // Register a client as a viewer of `record` ONLY when the request genuinely
+  // comes from within an app document: a navigation INTO the app (its resulting
+  // document) or a subresource whose referer is an app path. This deliberately
+  // excludes host-page requests to /app/<name>/ — the web-readiness probe and
+  // the boot's kernel.wasm / VFS fetches all run on the host client, which lives
+  // at "/" (or "/?demo="). Registering the host would put it in clientToInstance
+  // and then redirect its later nameless boot fetches into a machine's app
+  // prefix — fatally, into a PRIOR machine's now-dead prefix after an in-place
+  // switch — which deadlocks every host fetch. The host is never a viewer.
+  function markViewer(record, event, request) {
+    if (isNavigationRequest(request)) {
+      if (event.resultingClientId) {
+        clientToInstance.set(event.resultingClientId, record.name);
+        record.viewerClientIds.add(event.resultingClientId);
+      }
+      return;
+    }
+    if (event.clientId && requestIsFromAppDocument(request)) {
       clientToInstance.set(event.clientId, record.name);
       record.viewerClientIds.add(event.clientId);
-    }
-    if (event.resultingClientId) {
-      clientToInstance.set(event.resultingClientId, record.name);
-      record.viewerClientIds.add(event.resultingClientId);
     }
   }
 
@@ -1710,7 +1751,7 @@ if (typeof window !== "undefined") {
       }).then(function () {
         var record = instances.get(namedInPath) || null;
         if (!record) return offlineOrUnknownResponse(namedInPath);
-        markViewer(record, event);
+        markViewer(record, event, event.request);
         if (record.bridgePort) {
           return handleAppRequest(record, event.request, url);
         }
@@ -1727,7 +1768,7 @@ if (typeof window !== "undefined") {
     if (event.clientId && clientToInstance.has(event.clientId)) {
       var record = resolveInstanceForEvent(event, url);
       if (record) {
-        markViewer(record, event);
+        markViewer(record, event, event.request);
         event.respondWith(redirectIntoApp(record, url));
         return;
       }

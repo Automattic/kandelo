@@ -436,6 +436,26 @@ test("root-relative subresources are attributed to the viewing machine", async (
   }
 });
 
+test("a host-page request to a machine does not make the host a viewer", async ({ page }) => {
+  // Regression: the web-readiness probe and the boot's kernel.wasm / VFS fetches
+  // run on the HOST client (at "/"), not inside the app iframe. installBridge
+  // itself makes a host request to /a/app/<name>/cookie. If a host request to an
+  // app path registered the host as a viewer, its later NAMELESS fetches would
+  // be 307-redirected into that machine's app prefix — and after an in-place
+  // machine switch, into the PREVIOUS machine's now-dead prefix, deadlocking
+  // every host fetch (boot hangs forever). The host must never become a viewer:
+  // only navigations INTO /app/<name>/ and subresources with an app referer do.
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  await installBridge(page, SESSION_A, "solo"); // host fetches /a/app/<name>/cookie
+  const body = await page.evaluate(async () =>
+    (await fetch("/a/not-an-app-path", { cache: "no-store" })).text()
+  );
+  // Served as a normal same-origin response, NOT redirected into the machine.
+  expect(body).toBe("network:/a/not-an-app-path");
+  expect(body).not.toContain("bridge:");
+});
+
 test("an unknown machine name returns a 503 HTML page", async ({ page }) => {
   await page.goto(`${FIXTURE_ORIGIN}/a/`);
   await registerScope(page, "/a/");
