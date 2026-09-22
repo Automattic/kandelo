@@ -1066,7 +1066,7 @@ mod wasm {
 
     #[repr(C, align(8))]
     struct ResumeAssignment(UnsafeCell<[[u32; 2]; RESUME_ASSIGNMENT_FLOOR_RECORDS]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for ResumeAssignment {}
     /// Fixed BSS, for the same reason the catalogs above are: `reset_bump_heap`
     /// runs at four points during a single fork, so a buffer on the bump heap
@@ -4173,7 +4173,7 @@ mod wasm {
     // Held in its own static so it is independent of the frame `ForkModule`
     // lifecycle: the guest interleaves reference decode with frame next/peek.
     struct ReferenceStateCell(UnsafeCell<Option<ReferenceReplayDriver>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for ReferenceStateCell {}
     static REFERENCE_STATE: ReferenceStateCell = ReferenceStateCell(UnsafeCell::new(None));
 
@@ -4244,7 +4244,7 @@ mod wasm {
     // Held alongside `REFERENCE_STATE`, independent of the frame `ForkModule`
     // lifecycle, as a diagnostic anchor for the last drive.
     struct ReconstructionStateCell(UnsafeCell<Option<ReconstructionState>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for ReconstructionStateCell {}
     static RECONSTRUCTION_STATE: ReconstructionStateCell =
         ReconstructionStateCell(UnsafeCell::new(None));
@@ -4271,7 +4271,7 @@ mod wasm {
     // borrow-safe — each export borrows this cell fresh, does its synchronous
     // work, and returns before the guest can re-enter.
     struct ReferenceFeedCell(UnsafeCell<Option<ReferenceReplayFeed>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for ReferenceFeedCell {}
     static REFERENCE_FEED: ReferenceFeedCell = ReferenceFeedCell(UnsafeCell::new(None));
 
@@ -4306,7 +4306,7 @@ mod wasm {
     // pre-launch externref-handle scan runs BEFORE any replay driver is seeded,
     // and a decode may be requested purely to inspect the graph.
     struct DecodedGraphCell(UnsafeCell<Option<SegmentedReferenceTransaction>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for DecodedGraphCell {}
     static DECODED_GRAPH: DecodedGraphCell = DecodedGraphCell(UnsafeCell::new(None));
 
@@ -4323,7 +4323,7 @@ mod wasm {
     // next activation. Holding several would mean the module deciding when a
     // plan stops being interesting, which it cannot know.
     struct ImportPlanCell(UnsafeCell<Option<Vec<fork_codec::ImportPlanEntry>>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for ImportPlanCell {}
     static IMPORT_PLAN: ImportPlanCell = ImportPlanCell(UnsafeCell::new(None));
 
@@ -4364,7 +4364,7 @@ mod wasm {
     // The floor stays host-side: the module never sees a live reference — only
     // resolved i32/i64 coordinates.
     struct CaptureCell(UnsafeCell<Option<ReferenceGraphBuilder>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for CaptureCell {}
     static CAPTURE_STATE: CaptureCell = CaptureCell(UnsafeCell::new(None));
 
@@ -4444,7 +4444,7 @@ mod wasm {
     const VECTOR_STACK_DEPTH: usize = 8;
     #[repr(C, align(4))]
     struct VectorInFlight(UnsafeCell<[[u32; 3]; VECTOR_STACK_DEPTH]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for VectorInFlight {}
     /// The OPEN reference-vector builds, innermost last. Each entry is
     /// `[handle + 1, promised, appended]`.
@@ -4473,7 +4473,7 @@ mod wasm {
     // the pointer it returns stays valid while the host drains the records into
     // its module-state arena (mirrors `DRIVE_PLAN`'s rooting of the drive plan).
     struct CaptureSerializedCell(UnsafeCell<Option<Vec<u8>>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for CaptureSerializedCell {}
     static CAPTURE_SERIALIZED: CaptureSerializedCell = CaptureSerializedCell(UnsafeCell::new(None));
 
@@ -4499,7 +4499,7 @@ mod wasm {
     // it. Held in its OWN static (the bump `dealloc` is a no-op, but keeping the
     // `Vec` rooted here is explicit and independent of the per-fork heap reset).
     struct DrivePlanCell(UnsafeCell<Option<Vec<u8>>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for DrivePlanCell {}
     static DRIVE_PLAN: DrivePlanCell = DrivePlanCell(UnsafeCell::new(None));
 
@@ -4634,54 +4634,44 @@ mod wasm {
 
     // -- Per-worker bump heap ------------------------------------------------
     //
-    // A fixed static region serves the module's own `alloc` allocations (the
-    // writer/journal/slot-table `Vec`/`BTreeMap` state). It is reset at each
-    // `fm_begin_unwind`, so per-fork state is reclaimed and the module can be
-    // reused across forks without unbounded growth. `dealloc` is a no-op (bump);
-    // freeing happens only at the per-fork reset.
+    // Serves the module's own `alloc` allocations (the writer/journal/slot-table
+    // `Vec`/`BTreeMap` state) from chunks `SYS_MMAP`ed through the syscall
+    // channel on demand. It is reset at each fork start (`reset_bump_heap`), so
+    // per-fork state is reclaimed and the module can be reused across forks
+    // without unbounded growth. `dealloc` is a no-op (bump); freeing happens
+    // only at the per-fork reset, and the chunks themselves are RETAINED across
+    // it: a worker pays for growth once and reuses the mappings for every later
+    // fork.
     //
-    // Because this crate is a PIC (`--pie`) side module, this BSS region is NOT
-    // at a fixed low linear-memory offset: it lives at `__memory_base + offset`,
-    // where the HOST chooses `__memory_base` to point into a region the guest is
-    // not using. So the heap no longer collides with guest data (the D5 gating
-    // fix; see the module doc comment and `tests/harness.mjs`). 4 MiB comfortably
-    // covers a single fork's peak state — including bump waste from `Vec`
-    // doubling — for well past the 5000-frame stress workload, and it sets the
-    // module's `dylink.0` `mem_size` (how much of the `__memory_base` region the
-    // host must reserve).
-    // THE FLOOR, not the ceiling. This was 4 MiB of static BSS reserved out of
-    // the GUEST's mmap window whether a program forked or not. Measured: a real
-    // single fork peaks between 256 and 512 KiB, so 4 MiB was 8-16x oversized
-    // for the common case -- and it was still a hard bound, so a heavy fork that
-    // wanted more got a null allocation.
+    // THERE IS NO STATIC FLOOR. There was: 4 MiB of BSS, then 1 MiB, reserved
+    // out of the GUEST's mmap window whether a program forked or not -- the
+    // module is co-resident in every guest's linear memory, so every byte of
+    // its BSS is a byte no fork-capable thread can map. The floor's stated
+    // reason was that "a fork CHILD re-seeds its catalogs while the kernel is
+    // still creating it, and a syscall there is refused". That claim was
+    // RETRACTED (`docs/plans/2026-09-16-lane-f-closure.md`): forcing every
+    // activation's GC codec onto its own mapping during child seeding left
+    // `host/test/fork-module-gc-replay.test.ts` green. A fork child's
+    // `channel_mmap` IS serviced. So the first allocation after a reset maps a
+    // chunk like any other, and a module that has done nothing holds nothing.
     //
-    // Now it is the amount available BEFORE the allocator asks the kernel for
-    // more. Beyond it, chunks are `SYS_MMAP`ed and RETAINED across `reset()`,
-    // so a worker pays for growth once and reuses it for every later fork.
-    //
-    // WHY A FLOOR AT ALL, when the identity table needed none: a fork CHILD
-    // re-seeds its catalogs while the kernel is still creating it, and a syscall
-    // there is refused (`fm_set_activation_gc_codec failed with errno 12`,
-    // measured). Seeding allocates, so the allocator must be able to serve a
-    // child without syscalling. The floor is what makes that true.
-    const HEAP_FLOOR: usize = 1024 * 1024;
+    // Because this crate is a PIC (`--pie`) side module, its BSS is NOT at a
+    // fixed low linear-memory offset: it lives at `__memory_base + offset`,
+    // where the HOST chooses `__memory_base` (the D5 gating fix; see the module
+    // doc comment and `tests/harness.mjs`). The chunks are wherever the kernel
+    // maps them, and each chunk's header holds the next chunk's address, so the
+    // list lives in the chunks rather than in BSS a reset would clobber.
 
     /// Bytes of usable space in a grown chunk, after its 16-byte header.
     const HEAP_CHUNK_BYTES: u64 = 1024 * 1024;
     const HEAP_CHUNK_HEADER: u64 = 16;
 
-    #[repr(C, align(16))]
-    struct HeapCell(UnsafeCell<[u8; HEAP_FLOOR]>);
-    // SAFETY: the process worker is single-threaded for fork state; all access
-    // is serialized by the one guest that calls these exports.
-    unsafe impl Sync for HeapCell {}
-    static HEAP: HeapCell = HeapCell(UnsafeCell::new([0u8; HEAP_FLOOR]));
-
     struct Bump {
         /// Cursor within the CURRENT region.
         offset: AtomicUsize,
-        /// The region being served from: 0 is the static floor, otherwise the
-        /// address of a grown chunk.
+        /// The chunk being served from, or 0 when no region has been entered
+        /// since the last `reset()`: the first `alloc` then walks into the
+        /// retained list, or grows when that list is empty.
         region: AtomicU64,
         /// Head of the retained chunk list. Chunks are kept across `reset()`:
         /// the next fork reuses them instead of paying another syscall, and the
@@ -4690,7 +4680,8 @@ mod wasm {
         /// would clobber.
         chunks: AtomicU64,
     }
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: the process worker is single-threaded for fork state; all access
+    // is serialized by the one guest that calls these exports.
     unsafe impl Sync for Bump {}
 
     unsafe impl GlobalAlloc for Bump {
@@ -4707,9 +4698,11 @@ mod wasm {
             if self.grow(layout.size()) && let Some(p) = self.alloc_here(layout) {
                 return p;
             }
-            // Exhausted, exactly as a full 4 MiB static was before: a null
-            // allocation, not a trap. A child that cannot syscall lands here
-            // rather than failing the fork with a kernel errno.
+            // Exhausted: a null allocation, not a trap, exactly as a full static
+            // heap was. Reached when the kernel refuses the mapping (`ENOMEM`),
+            // or when no channel is seeded yet -- an allocation before
+            // `fm_set_format` stores `CHANNEL_BASE` is a host ordering bug, and
+            // the null makes it visible rather than absorbing it.
             core::ptr::null_mut()
         }
 
@@ -4717,20 +4710,21 @@ mod wasm {
     }
 
     impl Bump {
-        /// Base and usable length of the region currently being served from.
-        fn region_span(&self) -> (usize, usize) {
+        /// Base and usable length of the region currently being served from,
+        /// or `None` when no region has been entered since the last `reset()`.
+        fn region_span(&self) -> Option<(usize, usize)> {
             match self.region.load(Ordering::Relaxed) {
-                0 => (HEAP.0.get() as *mut u8 as usize, HEAP_FLOOR),
-                chunk => (
+                0 => None,
+                chunk => Some((
                     (chunk + HEAP_CHUNK_HEADER) as usize,
                     ident_u64(chunk + 8) as usize,
-                ),
+                )),
             }
         }
 
         /// Serve from the current region, or `None` when it cannot fit this.
         fn alloc_here(&self, layout: Layout) -> Option<*mut u8> {
-            let (base, len) = self.region_span();
+            let (base, len) = self.region_span()?;
             let cur = self.offset.load(Ordering::Relaxed);
             let start = base.checked_add(cur)?;
             let align = layout.align();
@@ -4765,7 +4759,7 @@ mod wasm {
         fn grow(&self, need: usize) -> bool {
             let want = HEAP_CHUNK_BYTES.max(page_round_up(need as u64 + HEAP_CHUNK_HEADER));
             let Ok(base) = channel_base() else {
-                return false; // no serviced channel: a child mid-creation
+                return false; // no channel seeded yet: see `alloc`'s null return
             };
             let Ok(chunk) = channel_mmap(base, want) else {
                 return false;
@@ -4787,11 +4781,44 @@ mod wasm {
             true
         }
 
-        /// Rewind to the floor. Grown chunks stay MAPPED and stay listed: the
+        /// Rewind to nothing. Grown chunks stay MAPPED and stay listed: the
         /// next fork walks back into them instead of paying to map them again.
         fn reset(&self) {
             self.offset.store(0, Ordering::Relaxed);
             self.region.store(0, Ordering::Relaxed);
+        }
+
+        /// Unmap every retained chunk and forget the list.
+        ///
+        /// FOR A TRANSIENT INSTANCE ONLY. The vfork BORROWED child's module
+        /// lives in a region the host returns to the kernel right after the
+        /// child's one replay (`worker-main.ts`, "borrowed fork-module
+        /// region"), and the static floor used to go with that region. A chunk
+        /// this allocator mapped does not: it is a separate mapping in the
+        /// address space the child SHARES with its parked parent, and the
+        /// kernel never shrinks memory, so a chunk left mapped is a leak into
+        /// every later fork of that parent. `abort_impl` calls this, on the
+        /// child's last releasing call, after `reset_bump_heap` has abandoned
+        /// every resident value that pointed into these chunks. A durable
+        /// worker never calls it: retaining is the point.
+        ///
+        /// Best-effort on the munmap, like `arena_unlink_chunk`. The list is
+        /// forgotten either way, so a hiccup leaks one chunk rather than
+        /// handing a returned one to the next allocation.
+        fn release_chunks(&self) {
+            let base = channel_base().unwrap_or(0);
+            self.offset.store(0, Ordering::Relaxed);
+            self.region.store(0, Ordering::Relaxed);
+            let mut chunk = self.chunks.swap(0, Ordering::Relaxed);
+            while chunk != 0 {
+                // Both reads BEFORE the unmap: the header is in the chunk.
+                let next = ident_u64(chunk);
+                let size = ident_u64(chunk + 8) + HEAP_CHUNK_HEADER;
+                if base != 0 {
+                    let _ = channel_munmap(base, chunk, size);
+                }
+                chunk = next;
+            }
         }
     }
 
@@ -4935,7 +4962,7 @@ mod wasm {
 
     #[repr(C, align(16))]
     struct ScratchCell(UnsafeCell<[u8; SCRATCH_SIZE]>);
-    // SAFETY: single-threaded per worker, exactly as HeapCell above.
+    // SAFETY: single-threaded per worker, exactly as `Bump` above.
     unsafe impl Sync for ScratchCell {}
     static SCRATCH: ScratchCell = ScratchCell(UnsafeCell::new([0u8; SCRATCH_SIZE]));
     static SCRATCH_TOP: AtomicUsize = AtomicUsize::new(0);
@@ -5441,7 +5468,7 @@ mod wasm {
     }
 
     struct StateCell(UnsafeCell<Option<ForkModule>>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for StateCell {}
     static STATE: StateCell = StateCell(UnsafeCell::new(None));
 
@@ -6122,6 +6149,18 @@ mod wasm {
                 st.module_state_chunks.release_all();
             }
             st.in_abort = false;
+        }
+        // A BORROWED child is transient: the host returns its module region to
+        // the kernel right after this call, and the heap chunks this instance
+        // mapped would otherwise outlive it in the parked parent's address
+        // space (see `Bump::release_chunks`). Residents are abandoned FIRST so
+        // nothing dropped later walks memory that is no longer mapped; the
+        // only module calls a borrowed child makes after this are
+        // `fm_resume_slots` op 1, which allocates nothing, and atomic reads.
+        // A durable worker keeps its chunks: the next fork reuses them.
+        if BORROWED_PREFIX_BASE.load(Ordering::Relaxed) != 0 {
+            reset_bump_heap();
+            ALLOC.release_chunks();
         }
         Ok(())
     }
@@ -9096,7 +9135,7 @@ mod wasm {
 
     #[repr(C, align(4))]
     struct CapturedExternrefs(UnsafeCell<[u32; CAPTURED_EXTERNREF_MAX]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
+    // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for CapturedExternrefs {}
     static CAPTURED_EXTERNREFS: CapturedExternrefs =
         CapturedExternrefs(UnsafeCell::new([0u32; CAPTURED_EXTERNREF_MAX]));

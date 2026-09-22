@@ -57,6 +57,17 @@ import {
 const SIDES_SCRATCH = 4096;
 const CHILD_SIDES_SCRATCH = SIDES_SCRATCH + 64;
 
+/**
+ * Where the borrowed-workspace test admits a region: page 7, free in the
+ * fixture's layout and below the responder's range. It was `MMAP_FLOOR + 8 *
+ * PAGE`, harmless only while nothing was mapped there -- and since the bump
+ * heap lost its static floor, a capture's FIRST allocation maps a 1 MiB chunk
+ * from `MMAP_FLOOR`, which is sixteen pages over that address. The seed itself
+ * writes nothing, so the collision was silent; it is moved for the same reason
+ * the sides vector above was.
+ */
+const BORROWED_WORKSPACE_SCRATCH = 7 * PAGE;
+
 describe("capture begin, driven through a serviced channel", () => {
   it("allocates its own arena and declares the activation set into it", () => {
     const f = fixture();
@@ -1682,11 +1693,11 @@ describe("the binding records the module assembles at capture", () => {
       (base: number, bytes: number) => void;
     seed(0, PAGE);
     expect((noWorkspace.fm_last_errno as () => number)(), "base 0").toBe(22);
-    seed(MMAP_FLOOR + 8 * PAGE, 0);
+    seed(BORROWED_WORKSPACE_SCRATCH, 0);
     expect((noWorkspace.fm_last_errno as () => number)(), "zero bytes").toBe(22);
 
     // Admitted properly, the seed carves and succeeds.
-    seed(MMAP_FLOOR + 8 * PAGE, PAGE);
+    seed(BORROWED_WORKSPACE_SCRATCH, PAGE);
     expect(
       (noWorkspace.fm_last_errno as () => number)(),
       "a real region is accepted",
