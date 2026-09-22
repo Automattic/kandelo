@@ -102,6 +102,38 @@ function deferredDinitTree(
 }
 
 describe("dinit-derived image system databases", () => {
+  it("gives every interactive account bash as its login shell", () => {
+    // Every image that boots through dinit -- nginx, WordPress, LAMP, redis,
+    // MariaDB, ruby-todo -- shares this account database. Pointing an
+    // interactive account at /bin/sh gave those demos a shell with no line
+    // editing, so arrow keys and history did not work in the terminal pane.
+    const fs = createFs();
+    addDinitBaseSystemFiles(fs);
+
+    const passwd = readGuestFile(fs, "/etc/passwd");
+    const shellFor = (user: string) =>
+      passwd
+        .split("\n")
+        .find((line) => line.startsWith(`${user}:`))
+        ?.split(":")
+        .at(6);
+
+    expect(shellFor("root")).toBe("/bin/bash");
+    expect(shellFor("maker")).toBe("/bin/bash");
+  });
+
+  it("keeps non-interactive accounts on nologin", () => {
+    // Switching the interactive accounts must not hand a shell to daemons.
+    const fs = createFs();
+    addDinitBaseSystemFiles(fs);
+
+    const passwd = readGuestFile(fs, "/etc/passwd");
+    for (const daemon of ["daemon", "nobody", "www-data", "redis", "mysql"]) {
+      const line = passwd.split("\n").find((l) => l.startsWith(`${daemon}:`));
+      expect(line?.split(":").at(6)).toBe("/usr/sbin/nologin");
+    }
+  });
+
   it("copies the authoritative rootfs services database without reducing aliases", () => {
     const fs = createFs();
     addDinitBaseSystemFiles(fs);
