@@ -215,11 +215,23 @@ async function fetchAndValidate(
   const response = await fetcher(url, { cache: "no-store" });
   if (!response.ok)
     throw new Error(`${label} returned HTTP ${response.status}`);
+  // WHY: Content-Length describes the transferred representation. A server or
+  // CDN that compresses the response (Content-Encoding: br/gzip) sends the
+  // compressed length or none at all, so the header is only an early size
+  // check for identity-encoded responses that carry it. The decoded body is
+  // always bounded to exactly `expectedBytes` and SHA-256 authenticated below.
+  const contentEncoding = response.headers
+    .get("content-encoding")
+    ?.trim()
+    .toLowerCase();
   const contentLength = response.headers.get("content-length");
   if (
-    contentLength === null ||
-    !/^[1-9][0-9]*$/u.test(contentLength) ||
-    Number(contentLength) !== expectedBytes
+    (contentEncoding === undefined ||
+      contentEncoding === "" ||
+      contentEncoding === "identity") &&
+    contentLength !== null &&
+    (!/^[1-9][0-9]*$/u.test(contentLength) ||
+      Number(contentLength) !== expectedBytes)
   ) {
     throw new Error(`${label} content-length differs from ${expectedBytes}`);
   }
