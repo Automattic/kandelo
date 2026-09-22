@@ -668,25 +668,55 @@ mod wasm {
     /// words for the first non-zero and taking its `trailing_zeros`, which is
     /// the same answer the sorted list gave: lowest slot first.
     ///
-    /// # Why this is still fixed BSS
+    /// # Why this is still fixed BSS (and what is NOT the reason)
     ///
     /// The storage conversion moves fixed arrays onto chunks mapped on demand,
-    /// and this one was converted and REVERTED. Mapping a chunk issues a
-    /// channel syscall, and the free path cannot: `resume_unregister_impl` is
-    /// reached from the vfork CHILD'S EXIT TEARDOWN (`worker-main.ts`, right
-    /// after `forkModule().abort()`), where the parent is parked inside its own
-    /// vfork syscall on the channel the borrowed child shares. A syscall issued
-    /// there clobbers the in-flight request and the guest dies with SIGSEGV --
-    /// measured, and bisected to the bare syscall rather than to the chunk: a
-    /// `channel_mmap` + `channel_munmap` pair that keeps, links and writes
-    /// nothing is just as fatal.
+    /// and this one was converted and REVERTED. The reason recorded for the
+    /// revert -- that the free path can never issue a channel syscall, because
+    /// `resume_unregister_impl` is reached from the vfork CHILD'S EXIT TEARDOWN
+    /// while the parent is parked in its own vfork syscall on the shared
+    /// channel -- IS WRONG, and the correction is measured rather than argued.
     ///
-    /// That is a constraint on every store, not on this one. Converting this
-    /// store needs the free set DERIVED AT ALLOCATION rather than recorded at
-    /// free -- see the handoff in this task's report.
-    const RESUME_FREE_WORDS: usize = RESUME_SLOT_CAP.div_ceil(64);
+    /// The SIGSEGV that bisection landed on "the bare syscall" was a
+    /// use-after-free in the host: the borrowed vfork child `channel_munmap`'d
+    /// the region these statics live in and then kept calling the module
+    /// through it (five call sites, not the two first diagnosed). With that
+    /// fixed (`host/src/worker-main.ts`, the `forkModuleBorrowedRegion`
+    /// release), the reverted conversion was rebuilt bit-for-bit -- the same
+    /// build key -- and the syscall the constraint calls fatal DOES happen: the
+    /// borrowed child's first free takes `free_bits_mark` -> `free_bits_chunk`
+    /// -> `channel_mmap` with the parent parked, and the guest exits 0.
+    ///
+    /// So this store stays fixed BSS only because nothing has converted it
+    /// yet, not because it cannot be converted.
+    ///
+    /// # The extent covers one slot MORE than the cap, on purpose
+    ///
+    /// Slots are numbered from 1 (slot 0 is the reserved sentinel) and
+    /// `resume_register_impl` accepts up to `RESUME_SLOT_CAP` LIVE slots, so
+    /// the highest number `resume_allocate_slot` can ever hand out is
+    /// `RESUME_SLOT_CAP` itself -- not `RESUME_SLOT_CAP - 1`. Sizing the bitmap
+    /// at `RESUME_SLOT_CAP.div_ceil(64)` made its exclusive extent exactly
+    /// `RESUME_SLOT_CAP`, so a full-occupancy worker could be ISSUED slot
+    /// 65,536 and then refused `ENOSPC` when it tried to free it. That is not
+    /// a theoretical edge: `fm_resume_slots` op 1 turns the refusal into -1,
+    /// `host/src/fork-module-backend.ts` throws on a non-zero errno, and the
+    /// throw lands in the vfork child's `resumeTable.clear()` before it posts
+    /// its exit.
+    const RESUME_FREE_WORDS: usize = (RESUME_SLOT_CAP + 1).div_ceil(64);
     /// The highest slot the bitmap above can represent, exclusive.
     const RESUME_FREE_EXTENT: u32 = (RESUME_FREE_WORDS * 64) as u32;
+    /// Every slot the allocator can issue must be representable here.
+    ///
+    /// A BUILD-TIME half of the runtime test in
+    /// `host/test/fork-resume-slot-bitmap.test.ts`: the runtime one proves the
+    /// highest issuable slot really can be freed today, this one fails the
+    /// build if a later edit to either constant re-opens the gap between them.
+    const _: () = assert!(
+        RESUME_FREE_EXTENT as usize > RESUME_SLOT_CAP,
+        "the free bitmap must represent every slot the allocator can issue: \
+         slots run 1..=RESUME_SLOT_CAP and the extent is exclusive",
+    );
 
     #[repr(C, align(8))]
     struct ResumeFreeBits(UnsafeCell<[u64; RESUME_FREE_WORDS]>);

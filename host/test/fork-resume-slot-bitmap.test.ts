@@ -19,8 +19,10 @@ import { arenaFixture } from "./fork-module-capture-fixture";
  * So a slot the bitmap cannot represent is now a loud `ENOSPC` instead of a
  * skip, and slot 0 -- the reserved sentinel -- is a loud `EINVAL`. The tighter
  * bound that reads as though it must also hold, `slot >= RESUME_NEXT_SLOT`,
- * was tried and MEASURED FALSE in production: see the note on `free_bits_mark`
- * in the module, and this task's report.
+ * was tried, reverted as "measured false in production", and is BACK: what it
+ * caught was real. A vfork child had freed the module's region and kept
+ * calling through it, so the watermark it read was a zeroed page rather than a
+ * number any writer produces. See the note on `free_bits_mark` in the module.
  *
  * WHAT THIS FILE ASSERTS, AND WHY IT IS THE SLOT NUMBERS. A free list that
  * merely EXISTS is indistinguishable from one that works until someone reads
@@ -35,12 +37,14 @@ import { arenaFixture } from "./fork-module-capture-fixture";
  * is the reader the guest's own placement shim consumes: asserting these
  * numbers is asserting the numbers the thunks are actually placed at.
  *
- * WHY THE BITMAP IS STILL FIXED BSS. It was converted to chunks mapped on
- * demand and reverted. Mapping issues a channel syscall, and this free path is
- * reached from the vfork CHILD'S EXIT TEARDOWN while the parent is parked
- * inside its own vfork syscall on the channel the borrowed child shares --
- * SIGSEGV, bisected to the bare syscall rather than to the chunk. See the note
- * on `RESUME_FREE_WORDS` in the module and the handoff in this task's report.
+ * WHY THE BITMAP IS STILL FIXED BSS -- and it is NOT because the free path
+ * cannot map. It was converted to chunks mapped on demand and reverted on that
+ * reasoning, and the reasoning was refuted by measurement afterwards: the
+ * SIGSEGV was the host use-after-free above, and with that fixed the same
+ * conversion, rebuilt to the same build key, frees from a vfork child's
+ * teardown and the guest exits 0. See the note on `RESUME_FREE_WORDS` in the
+ * module. The bitmap is fixed BSS here only because nothing has converted it
+ * yet.
  */
 
 /** The activations this file drives the bitmap with. */
@@ -99,11 +103,12 @@ describe("resume free-slot bitmap", () => {
       "the reused slots are the freed ones, smallest first",
     ).toEqual([1, 2, 3]);
 
-    // AND IT COSTS NO MAPPING. This is the invariant that makes the free path
-    // safe to run from the vfork child's exit teardown, where the parent is
-    // parked on the shared channel and a syscall kills the guest. Whoever
-    // converts this store to on-demand storage will break this assertion, and
-    // that is what it is here for.
+    // AND IT COSTS NO MAPPING TODAY. This is a statement about the CURRENT
+    // fixed bitmap, not a warning about a forbidden syscall: the free path
+    // issuing a channel syscall from a vfork child's teardown was measured
+    // harmless once the host use-after-free was fixed. Whoever converts this
+    // store to on-demand storage will break this assertion, and should delete
+    // it rather than design around it.
     expect(
       x.mmaps() - mmapsBefore,
       "freeing and reusing a slot must issue no syscall",
@@ -134,6 +139,55 @@ describe("resume free-slot bitmap", () => {
     // but a duplicate slot is the specific corruption at stake and a later
     // edit that loosens the comparison should not be able to lose it.
     expect(new Set(slots).size, "no slot is handed out twice").toBe(slots.length);
+  });
+
+  it("frees the highest slot the allocator can issue", () => {
+    // THE OFF-BY-ONE THIS CATCHES. Slots are numbered from 1 and
+    // `resume_register_impl` accepts up to `RESUME_SLOT_CAP` (65,536) live
+    // ones, so the highest number the allocator can hand out is 65,536
+    // itself. The bitmap was sized `RESUME_SLOT_CAP.div_ceil(64)`, making its
+    // EXCLUSIVE extent exactly 65,536 -- so that last slot was legitimately
+    // issued and then refused `ENOSPC` when its activation tried to free it.
+    //
+    // WHAT THAT COST A RUNNING PROGRAM, which is why this is a test and not a
+    // comment: `fm_resume_slots` op 1 turns the refusal into -1,
+    // `host/src/fork-module-backend.ts` throws on a non-zero errno, and the
+    // throw lands in `resumeTable.clear()` in the vfork child's exit teardown
+    // -- before it posts its exit. A full-occupancy worker's child dies on the
+    // way out, for a slot it was handed by this module's own allocator.
+    //
+    // Asserted at full occupancy rather than against the constants, because
+    // the constants are what is wrong: a test that recomputed the extent from
+    // `RESUME_SLOT_CAP` would agree with the bug. The module carries the
+    // build-time half (a `const _: () = assert!` on the two constants); this
+    // is the half that proves the highest issuable slot really round-trips.
+    const CAP = 65_536;
+    const x = arenaFixture("resume free bitmap extent");
+    // The release nulls STRICTLY, so the table must cover every slot about to
+    // be freed -- slot CAP included, hence a length of CAP + 1.
+    growResumeTable(x, CAP);
+
+    const ordinals = Array.from({ length: CAP }, (_, i) => i);
+    x.seedActivationCatalog(ACTIVATION_A, ordinals);
+    expect(x.errno(), "seeding a full-occupancy catalog").toBe(0);
+
+    // Every one of them, including slot CAP. Before the fix this was -1 with
+    // `fm_last_errno` == ENOSPC (28).
+    expect(
+      x.slots(1, ACTIVATION_A, 0),
+      "every issued slot is freeable, including the highest",
+    ).toBe(CAP);
+    expect(x.errno(), "no slot the allocator issued is unfreeable").toBe(0);
+
+    // AND IT REALLY WENT BACK. A release that reported success while dropping
+    // the top slot would leave the next activation numbering from CAP + 1, so
+    // the reuse is what distinguishes "freed" from "claimed to free".
+    x.seedActivationCatalog(ACTIVATION_B, [7]);
+    expect(x.errno(), "seeding activation B").toBe(0);
+    expect(
+      x.publishedSlots(ACTIVATION_B),
+      "the freed slots come back smallest-first, from 1",
+    ).toEqual([1]);
   });
 
   it("marks nothing when an activation holds no slots", () => {
