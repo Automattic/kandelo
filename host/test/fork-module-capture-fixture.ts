@@ -85,6 +85,19 @@ export const MODULE_BASE = 8 * 1024 * 1024;
  */
 export const MUNMAP_COUNTER = 5 * PAGE;
 
+/**
+ * A u32 the responder increments on every `SYS_MMAP`, four bytes above the
+ * munmap tally on the same free page.
+ *
+ * BOTH HALVES, the same reason the munmap tally exists. A chunk count walks a
+ * chain, so it is blind in two directions at once: a chunk unlinked but never
+ * unmapped reads as released, and a count that returns to zero says nothing
+ * about how many mappings were taken to get there. A test that asserts "one
+ * chunk appeared" wants to know one mapping was taken, not that the chain has
+ * length one for some other reason.
+ */
+export const MMAP_COUNTER = 5 * PAGE + 4;
+
 export const MMAP_FLOOR = 12 * 1024 * 1024;
 /** Where a CHILD worker's own module instance sits in the shared memory. */
 export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
@@ -125,6 +138,7 @@ while (!stop) {
   if (nr === ${SYS_MMAP}) {
     const addr = next;
     next += Math.ceil(size / ${PAGE}) * ${PAGE};
+    dv.setUint32(${MMAP_COUNTER}, dv.getUint32(${MMAP_COUNTER}, true) + 1, true);
     ret = BigInt(addr); errno = 0;
   } else if (nr === ${SYS_MUNMAP}) {
     dv.setUint32(${MUNMAP_COUNTER}, dv.getUint32(${MUNMAP_COUNTER}, true) + 1, true);
@@ -616,6 +630,12 @@ export function captureGraph(
 // this one lands first, for exactly that reason.
 export const ARENA_RECORD_CHUNK_COUNT_FIELD = 101;
 export const ARENA_DIRECTORY_CHUNK_COUNT_FIELD = 102;
+/**
+ * The resume free-slot bitmap's chunk-chain length. 103 from the same table,
+ * NOT "the next free index" -- 104 is reserved by a later task of this plan
+ * and 105 is already taken by the directory entry count, which landed first.
+ */
+export const RESUME_FREE_CHUNK_COUNT_FIELD = 103;
 /** Ruling D1-a: LIVE directory entries, one per activation holding a record. */
 export const ARENA_DIRECTORY_ENTRY_COUNT_FIELD = 105;
 
@@ -692,6 +712,8 @@ export interface ArenaFixture {
   stats: (field: number) => number;
   /** The responder's running `SYS_MUNMAP` tally, read out of shared memory. */
   munmaps: () => number;
+  /** The responder's running `SYS_MMAP` tally, the other half of the pair. */
+  mmaps: () => number;
   /** `fm_resume_slots(op, activation, ordinal)`; op 1 is the dlclose release. */
   slots: (op: number, activation: number, ordinal: number) => number;
   /** Re-run `fm_set_format`, which is the COW-child scrub. */
@@ -752,6 +774,7 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     // A fresh view each read: `channel_mmap` GROWS the shared memory, and a
     // `DataView` taken before a growth is not guaranteed to survive it.
     munmaps: () => new DataView(memory.buffer).getUint32(MUNMAP_COUNTER, true),
+    mmaps: () => new DataView(memory.buffer).getUint32(MMAP_COUNTER, true),
     slots: x.fm_resume_slots as ArenaFixture["slots"],
     setFormat,
     seedActivationCatalog: (activation, ordinals) => {
