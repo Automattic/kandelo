@@ -1290,23 +1290,12 @@ mod wasm {
     // dynamic wasm table cannot be selected per funcref, so the single merged
     // table with per-activation bases is the mechanism.
     //
-    // Like the resume catalogs, the map lives in a fixed BSS region so it
-    // survives the per-fork bump-heap reset. The map stays EMPTY for a
-    // single-activation worker (the host seeds no base), and `funcref_ordinal_
-    // impl` then defaults `base = 0` — byte-identical to the D6.1 raw-ordinal
-    // mapping. Too many distinct activations is a truthful `E2BIG`; a re-seeded
-    // activation is a truthful `EINVAL`.
-    const FUNC_CATALOG_BASE_MAX_ACTS: usize = 64;
-
-    #[repr(C, align(4))]
-    struct ActFuncCatalogBase(UnsafeCell<[[u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActFuncCatalogBase {}
-    /// Each live entry is `[activation_id, base]`; only the first
-    /// `ACT_FUNC_CATALOG_BASE_COUNT` entries are live.
-    static ACT_FUNC_CATALOG_BASE: ActFuncCatalogBase =
-        ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
-    static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
+    // Like the resume catalogs, the map is an arena record per activation
+    // (`REC_KIND_FUNC_CATALOG_BASE`, one `u32`), so it survives the per-fork
+    // bump-heap reset and is released with its activation. The map stays
+    // EMPTY for a single-activation worker (the host seeds no base), and
+    // `funcref_ordinal_impl` then defaults `base = 0` — byte-identical to the
+    // D6.1 raw-ordinal mapping. A re-seeded activation is a truthful `EINVAL`.
 
     // -- Global identity groups (host-resolved) -----------------------------
     //
@@ -1659,15 +1648,10 @@ mod wasm {
     const REC_KIND_GC_CODEC: u32 = 4;
     const REC_KIND_EXN_TAGS: u32 = 5;
     const REC_KIND_RESUME_CATALOG: u32 = 6;
-    #[allow(dead_code)]
-    const REC_KIND_PROVENANCE: u32 = 7;
-    #[allow(dead_code)]
-    const REC_KIND_TABLE_STATE_OWNER: u32 = 8;
-    #[allow(dead_code)]
+    const REC_KIND_PROVENANCE: u32 = 7; // an entry list, keyed by the CONSUMER
+    const REC_KIND_TABLE_STATE_OWNER: u32 = 8; // an entry list
     const REC_KIND_TEMPLATE_ID: u32 = 9;
-    #[allow(dead_code)]
     const REC_KIND_FUNC_CATALOG_BASE: u32 = 10;
-    #[allow(dead_code)]
     const REC_KIND_STATIC_ROOT_BASE: u32 = 11;
 
     /// First chunk of the record chain, or 0 before anything is allocated.
@@ -2081,6 +2065,89 @@ mod wasm {
         Ok(fresh)
     }
 
+    // -- Per-activation entry lists ----------------------------------------
+    //
+    // Three stores append one fixed-size entry at a time and never know their
+    // final size: a table-state coordinate, a provenance fact, and (in the
+    // tests) anything else that grows one push at a time. `arena_extend`
+    // re-allocates and copies on EVERY call -- see its cost note -- so a list
+    // that grew by one entry per push would spend `O(n^2)` bytes of `used` to
+    // hold `n` entries. These lists DOUBLE instead: a list of `n` entries is
+    // re-allocated at most `ceil(log2(n / ENTRY_LIST_FIRST)) + 1` times, which
+    // is below `n` for every `n >= 2`. That is the bound the brief asked to be
+    // measured across the fork suite; here it is met by arithmetic, and a
+    // measurement can only confirm it.
+    //
+    // Payload layout, little-endian:
+    //     +0  count: u32   live entries (the record's `byte_len` is CAPACITY)
+    //     +4  reserved     keeps the entries 8-aligned
+    //     +8  entries      `entry_bytes` each, a dense prefix
+    //
+    // A fresh record and the tail of an extended one are ZERO --
+    // `arena_insert_record` zeroes, and `arena_extend` copies only the old
+    // bytes -- which is what makes `count` read 0 on a record nothing has
+    // pushed into yet.
+    const ENTRY_LIST_HEADER: usize = 8;
+    /// Entries the first allocation holds: one table coordinate or one
+    /// provenance fact with room for a `dlopen` that adds a couple more, so the
+    /// common case never re-allocates at all.
+    const ENTRY_LIST_FIRST: usize = 4;
+
+    /// The list's payload address and live count, or `None` if
+    /// `(activation_id, kind)` has no list.
+    fn entry_list_find(activation_id: u32, kind: u32) -> Option<(u64, usize)> {
+        let (at, _) = arena_find(activation_id, kind)?;
+        Some((at, arena_u32(at) as usize))
+    }
+
+    /// Address of entry `index` of the list whose payload starts at `at`.
+    fn entry_list_at(at: u64, entry_bytes: usize, index: usize) -> u64 {
+        at + ENTRY_LIST_HEADER as u64 + (index * entry_bytes) as u64
+    }
+
+    /// Append one ZEROED entry to `(activation_id, kind)`'s list, creating the
+    /// list on first use and doubling it when full. Returns the new entry's
+    /// address; the caller writes it.
+    fn entry_list_push(activation_id: u32, kind: u32, entry_bytes: usize) -> Result<u64, Errno> {
+        let (at, count) = match arena_find(activation_id, kind) {
+            None => (
+                arena_alloc(
+                    activation_id,
+                    kind,
+                    ENTRY_LIST_HEADER + ENTRY_LIST_FIRST * entry_bytes,
+                )?,
+                0,
+            ),
+            Some((at, byte_len)) => {
+                let count = arena_u32(at) as usize;
+                let capacity = (byte_len - ENTRY_LIST_HEADER) / entry_bytes;
+                if count < capacity {
+                    (at, count)
+                } else {
+                    // Full: double. `arena_extend` writes the new record before
+                    // dropping the old one and sweeps any chunk the old one
+                    // leaves empty, so this is the one place a per-activation
+                    // list crosses a chunk boundary -- the case
+                    // `host/test/fork-arena-small-stores.test.ts` drives.
+                    (arena_extend(activation_id, kind, byte_len)?, count)
+                }
+            }
+        };
+        arena_set_u32(at, count as u32 + 1);
+        Ok(entry_list_at(at, entry_bytes, count))
+    }
+
+    /// True when ANY activation holds a record of `kind`.
+    ///
+    /// This is what "the map is empty" means now for the two catalog-base
+    /// stores: their readers default `base = 0` on an empty map, which must
+    /// keep meaning "single-activation worker" and never become an error.
+    fn arena_has_kind(kind: u32) -> bool {
+        let mut any = false;
+        arena_for_each_record(kind, |_, _, _| any = true);
+        any
+    }
+
     /// Drop every record `activation_id` owns and its directory entry, freeing
     /// chunks that empty. Called from `fm_resume_slots` op 1.
     fn arena_release_activation(activation_id: u32) {
@@ -2393,8 +2460,18 @@ mod wasm {
     // `dlopen` can add an activation that exports a global an earlier one
     // imported, and the host must be able to correct the provenance it
     // published before that activation existed.
-    const IMPORTED_GLOBAL_PROVENANCE_MAX: usize = 256;
+    //
+    // STORED PER CONSUMER ACTIVATION, as an arena entry list
+    // (`REC_KIND_PROVENANCE`), because the consumer activation is the key a
+    // `dlclose` releases by. This used to be one 256-entry static shared by
+    // the whole worker, never reset by anything -- not even the COW-child
+    // scrub -- so a `dlopen`/`dlclose` loop exhausted it at the 257th
+    // coordinate in a worker that never forked. Now the list goes with its
+    // activation, and the scrub drops it with every other per-activation
+    // record; both hosts re-publish provenance when they register an
+    // activation, on the child as on the parent.
 
+    /// One provenance fact, as decoded from its list entry.
     #[derive(Clone, Copy)]
     struct ProvenanceEntry {
         space: u32,
@@ -2405,24 +2482,56 @@ mod wasm {
         raw_bits: u64,
     }
 
-    #[repr(C, align(8))]
-    struct ImportedGlobalProvenanceTable(
-        UnsafeCell<[ProvenanceEntry; IMPORTED_GLOBAL_PROVENANCE_MAX]>,
-    );
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ImportedGlobalProvenanceTable {}
-    static IMPORTED_GLOBAL_PROVENANCE: ImportedGlobalProvenanceTable =
-        ImportedGlobalProvenanceTable(UnsafeCell::new(
-            [ProvenanceEntry {
-                space: 0,
-                consumer_activation: 0,
-                import_ordinal: 0,
-                kind: 0,
-                group_id: 0,
-                raw_bits: 0,
-            }; IMPORTED_GLOBAL_PROVENANCE_MAX],
-        ));
-    static IMPORTED_GLOBAL_PROVENANCE_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Bytes per provenance list entry. Layout, little-endian:
+    ///     +0   space: u32
+    ///     +4   import_ordinal: u32
+    ///     +8   kind: u32
+    ///     +12  group_id: u32
+    ///     +16  raw_bits: u64
+    ///     +24  reserved, zero
+    /// The consumer activation is the record's OWNER rather than a field.
+    const PROVENANCE_ENTRY_BYTES: usize = 32;
+
+    fn provenance_read(consumer_activation: u32, entry: u64) -> ProvenanceEntry {
+        ProvenanceEntry {
+            space: arena_u32(entry),
+            consumer_activation,
+            import_ordinal: arena_u32(entry + 4),
+            kind: arena_u32(entry + 8),
+            group_id: arena_u32(entry + 12),
+            raw_bits: arena_u64(entry + 16),
+        }
+    }
+
+    fn provenance_write(entry: u64, e: &ProvenanceEntry) {
+        arena_set_u32(entry, e.space);
+        arena_set_u32(entry + 4, e.import_ordinal);
+        arena_set_u32(entry + 8, e.kind);
+        arena_set_u32(entry + 12, e.group_id);
+        arena_set_u64(entry + 16, e.raw_bits);
+        arena_set_u64(entry + 24, 0);
+    }
+
+    /// Every published provenance fact for `space`, across all activations:
+    /// directory order, then publication order within an activation. The
+    /// static table answered in worker-wide publication order; the two agree
+    /// whenever activations publish as they register, which both hosts do.
+    fn provenance_entries(space: u32) -> Vec<ProvenanceEntry> {
+        let mut out: Vec<ProvenanceEntry> = Vec::new();
+        arena_for_each_record(REC_KIND_PROVENANCE, |consumer_activation, at, _| {
+            let count = arena_u32(at) as usize;
+            for index in 0..count {
+                let e = provenance_read(
+                    consumer_activation,
+                    entry_list_at(at, PROVENANCE_ENTRY_BYTES, index),
+                );
+                if e.space == space {
+                    out.push(e);
+                }
+            }
+        });
+        out
+    }
 
     fn set_import_provenance_impl(
         space: u32,
@@ -2463,9 +2572,6 @@ mod wasm {
             // the seed.
             return Err(Errno::EINVAL);
         }
-        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &mut *IMPORTED_GLOBAL_PROVENANCE.0.get() };
         let entry = ProvenanceEntry {
             space,
             consumer_activation,
@@ -2474,20 +2580,18 @@ mod wasm {
             group_id,
             raw_bits,
         };
-        for existing in table.iter_mut().take(count) {
-            if existing.space == space
-                && existing.consumer_activation == consumer_activation
-                && existing.import_ordinal == import_ordinal
-            {
-                *existing = entry;
-                return Ok(());
+        // A coordinate already published UPDATES in place (see above).
+        if let Some((at, count)) = entry_list_find(consumer_activation, REC_KIND_PROVENANCE) {
+            for index in 0..count {
+                let slot = entry_list_at(at, PROVENANCE_ENTRY_BYTES, index);
+                if arena_u32(slot) == space && arena_u32(slot + 4) == import_ordinal {
+                    provenance_write(slot, &entry);
+                    return Ok(());
+                }
             }
         }
-        if count >= IMPORTED_GLOBAL_PROVENANCE_MAX {
-            return Err(Errno::E2BIG);
-        }
-        table[count] = entry;
-        IMPORTED_GLOBAL_PROVENANCE_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        let slot = entry_list_push(consumer_activation, REC_KIND_PROVENANCE, PROVENANCE_ENTRY_BYTES)?;
+        provenance_write(slot, &entry);
         Ok(())
     }
 
@@ -2501,8 +2605,8 @@ mod wasm {
     ///
     /// `kind` is a `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` value. `source_*` matter
     /// for `ACTIVATION_GLOBAL`; `raw_bits` for `RAW_NUMBER` / `RAW_BIGINT`.
-    /// Re-publishing a coordinate updates it. `EINVAL` for an undefined kind,
-    /// `E2BIG` past the table.
+    /// Re-publishing a coordinate updates it. `EINVAL` for an undefined kind;
+    /// the truthful mapping errno if the consumer's list cannot grow.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_import_provenance(
         space: u32,
@@ -2676,19 +2780,13 @@ mod wasm {
     // arena carries it, and that record IS the arena's activation set: the
     // child-install path filters the arena on kind 1 to decide which
     // activations to drive. An arena built without them installs nothing.
-    const TEMPLATE_ID_MAX_ACTS: usize = 64;
+    //
+    // One arena record per activation (`REC_KIND_TEMPLATE_ID`, 32 bytes). It
+    // was a 64-activation static that nothing ever reset -- not a `dlclose`,
+    // not the COW-child scrub -- so the 65th activation a worker ever seeded
+    // got `E2BIG`, forks or no forks. Now it is released with its activation.
     const TEMPLATE_ID_BYTES: usize =
         abi::WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE as usize;
-
-    #[repr(C, align(4))]
-    struct ActTemplateIds(UnsafeCell<[(u32, [u8; TEMPLATE_ID_BYTES]); TEMPLATE_ID_MAX_ACTS]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActTemplateIds {}
-    /// Each live entry is `(activation_id, template_id)`; only the first
-    /// `ACT_TEMPLATE_ID_COUNT` entries are live.
-    static ACT_TEMPLATE_IDS: ActTemplateIds =
-        ActTemplateIds(UnsafeCell::new([(0u32, [0u8; TEMPLATE_ID_BYTES]); TEMPLATE_ID_MAX_ACTS]));
-    static ACT_TEMPLATE_ID_COUNT: AtomicU32 = AtomicU32::new(0);
 
     /// Seed one activation's module template id, read from `ptr` in guest memory.
     ///
@@ -2709,51 +2807,51 @@ mod wasm {
         if end > mem_len_bytes() {
             return Err(Errno::EINVAL); // template id runs past the end of memory
         }
+        // Copied OUT of guest memory before anything allocates: the allocation
+        // below can `channel_mmap`, which grows the shared memory, and the
+        // arena accessors re-derive their view after that; a slice taken
+        // here would not.
+        let mut id = [0u8; TEMPLATE_ID_BYTES];
         // SAFETY: `[start, end)` is inside guest linear memory (checked above).
-        let bytes: &[u8] =
-            unsafe { core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, TEMPLATE_ID_BYTES) };
-        let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &mut *ACT_TEMPLATE_IDS.0.get() };
-        for entry in table.iter().take(count) {
-            if entry.0 == activation_id {
-                // Idempotent on an identical re-seed, for the reason recorded in
-                // `set_activation_imports_impl`: a COW child inherits this table
-                // through the memory clone and re-seeds it with the SAME
-                // template id, because the id is a hash of the same module's
-                // bytes. A DIFFERENT id under one activation is two modules
-                // claiming one coordinate, which is what this refuses.
-                if entry.1 == bytes {
-                    return Ok(());
-                }
-                return Err(Errno::EINVAL);
+        id.copy_from_slice(unsafe {
+            core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, TEMPLATE_ID_BYTES)
+        });
+        if let Some((at, _)) = arena_find(activation_id, REC_KIND_TEMPLATE_ID) {
+            // Idempotent on an identical re-seed, for the reason recorded in
+            // `set_activation_imports_impl`: a host is free to RE-SEED a COW
+            // child or to let it inherit, and it re-seeds with the SAME
+            // template id, because the id is a hash of the same module's
+            // bytes. A DIFFERENT id under one activation is two modules
+            // claiming one coordinate, which is what this refuses.
+            let m = unsafe { mem_mut() };
+            let a = at as usize;
+            if m[a..a + TEMPLATE_ID_BYTES] == id {
+                return Ok(());
             }
+            return Err(Errno::EINVAL);
         }
-        if count >= TEMPLATE_ID_MAX_ACTS {
-            return Err(Errno::E2BIG);
-        }
-        table[count].0 = activation_id;
-        table[count].1.copy_from_slice(bytes);
-        ACT_TEMPLATE_ID_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        let at = arena_alloc(activation_id, REC_KIND_TEMPLATE_ID, TEMPLATE_ID_BYTES)?;
+        let m = unsafe { mem_mut() };
+        let a = at as usize;
+        m[a..a + TEMPLATE_ID_BYTES].copy_from_slice(&id);
         Ok(())
     }
 
     /// This activation's seeded template id, or `None` if the host never seeded one.
     fn activation_template_id(activation_id: u32) -> Option<[u8; TEMPLATE_ID_BYTES]> {
-        let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &*ACT_TEMPLATE_IDS.0.get() };
-        table
-            .iter()
-            .take(count)
-            .find(|entry| entry.0 == activation_id)
-            .map(|entry| entry.1)
+        let (at, _) = arena_find(activation_id, REC_KIND_TEMPLATE_ID)?;
+        let m = unsafe { mem_mut() };
+        let a = at as usize;
+        let mut id = [0u8; TEMPLATE_ID_BYTES];
+        id.copy_from_slice(&m[a..a + TEMPLATE_ID_BYTES]);
+        Some(id)
     }
 
     /// Seed one activation's module template id (32 bytes at `ptr`).
     ///
-    /// `EINVAL` for an out-of-range pointer or a re-seed, `E2BIG` past
-    /// `TEMPLATE_ID_MAX_ACTS`; check `fm_last_errno`.
+    /// `EINVAL` for an out-of-range pointer or a re-seed with a different id;
+    /// the truthful mapping errno if the record cannot be allocated. Check
+    /// `fm_last_errno`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_activation_template_id(activation_id: u32, ptr: usize) {
         match set_activation_template_id_impl(activation_id, ptr as u64) {
@@ -2777,21 +2875,12 @@ mod wasm {
     // host floor while leaving the part that genuinely needs JavaScript -- the
     // identity comparison -- where it has to be.
     //
-    // Storage is a flat array of live `[activation_id, owner_id, owns]` triples
-    // rather than a per-activation sub-array, because an activation usually has
-    // exactly ONE table coordinate and a rectangular map would be almost all
-    // padding. Lookup is a linear scan over the live prefix.
-    const TABLE_STATE_OWNER_MAX: usize = 256;
-
-    #[repr(C, align(4))]
-    struct ActTableStateOwners(UnsafeCell<[[u32; 3]; TABLE_STATE_OWNER_MAX]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActTableStateOwners {}
-    /// Each live entry is `[activation_id, owner_id, owns]`; only the first
-    /// `ACT_TABLE_STATE_OWNER_COUNT` entries are live.
-    static ACT_TABLE_STATE_OWNERS: ActTableStateOwners =
-        ActTableStateOwners(UnsafeCell::new([[0u32; 3]; TABLE_STATE_OWNER_MAX]));
-    static ACT_TABLE_STATE_OWNER_COUNT: AtomicU32 = AtomicU32::new(0);
+    // Storage is one arena entry list per activation
+    // (`REC_KIND_TABLE_STATE_OWNER`), each entry `[owner_id, owns]`: an
+    // activation usually has exactly ONE table coordinate, and the list's
+    // first allocation holds four, so the common case never grows. Lookup is
+    // a linear scan over the activation's live entries.
+    const TABLE_STATE_OWNER_ENTRY_BYTES: usize = 8;
 
     /// Seed one coordinate's election result.
     ///
@@ -2809,20 +2898,25 @@ mod wasm {
         if owner_id == 0 {
             return Err(Errno::EINVAL);
         }
-        let count = ACT_TABLE_STATE_OWNER_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded; the map is a static buffer.
-        let map = unsafe { &mut *ACT_TABLE_STATE_OWNERS.0.get() };
-        for entry in map.iter_mut().take(count) {
-            if entry[0] == activation_id && entry[1] == owner_id {
-                entry[2] = u32::from(owns != 0);
-                return Ok(());
+        let owns = u32::from(owns != 0);
+        // A coordinate already seeded UPDATES in place -- the demotion the
+        // comment above exists for.
+        if let Some((at, count)) = entry_list_find(activation_id, REC_KIND_TABLE_STATE_OWNER) {
+            for index in 0..count {
+                let slot = entry_list_at(at, TABLE_STATE_OWNER_ENTRY_BYTES, index);
+                if arena_u32(slot) == owner_id {
+                    arena_set_u32(slot + 4, owns);
+                    return Ok(());
+                }
             }
         }
-        if count >= TABLE_STATE_OWNER_MAX {
-            return Err(Errno::E2BIG);
-        }
-        map[count] = [activation_id, owner_id, u32::from(owns != 0)];
-        ACT_TABLE_STATE_OWNER_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        let slot = entry_list_push(
+            activation_id,
+            REC_KIND_TABLE_STATE_OWNER,
+            TABLE_STATE_OWNER_ENTRY_BYTES,
+        )?;
+        arena_set_u32(slot, owner_id);
+        arena_set_u32(slot + 4, owns);
         Ok(())
     }
 
@@ -2832,59 +2926,48 @@ mod wasm {
     /// make two aliases both write sparse state for one physical table, and that
     /// duplicate does not trap -- it surfaces as a child rebuilt wrong.
     fn table_state_owned_impl(activation_id: u32, owner_id: u32) -> u32 {
-        let count = ACT_TABLE_STATE_OWNER_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded; read-only over the live prefix.
-        let map = unsafe { &*ACT_TABLE_STATE_OWNERS.0.get() };
-        for entry in map.iter().take(count) {
-            if entry[0] == activation_id && entry[1] == owner_id {
-                return entry[2];
+        let Some((at, count)) = entry_list_find(activation_id, REC_KIND_TABLE_STATE_OWNER) else {
+            return 0;
+        };
+        for index in 0..count {
+            let slot = entry_list_at(at, TABLE_STATE_OWNER_ENTRY_BYTES, index);
+            if arena_u32(slot) == owner_id {
+                return arena_u32(slot + 4);
             }
         }
         0
     }
 
     fn set_activation_catalog_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
-        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
-        if count >= FUNC_CATALOG_BASE_MAX_ACTS {
-            return Err(Errno::E2BIG); // too many distinct activations
-        }
-        // Reject a re-seeded activation (each is seeded once per worker), matching
-        // the once-per-worker `fm_set_activation_resume_catalog` contract.
-        // SAFETY: single-threaded; the map is a static buffer read here only.
-        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
-        for entry in map.iter().take(count) {
-            if entry[0] == activation_id {
-                return Err(Errno::EINVAL);
-            }
-        }
-        // Publish the entry, then bump the count.
-        // SAFETY: single-threaded; `count < MAX_ACTS` by the check above.
-        let map = unsafe { &mut *ACT_FUNC_CATALOG_BASE.0.get() };
-        map[count] = [activation_id, base];
-        ACT_FUNC_CATALOG_BASE_COUNT.store((count + 1) as u32, Ordering::Relaxed);
+        // A re-seeded activation is refused (each is seeded once per worker),
+        // matching the once-per-worker `fm_set_activation_resume_catalog`
+        // contract of old: `arena_alloc` answers `EINVAL` for a second record
+        // of one kind, which is exactly that refusal.
+        let at = arena_alloc(activation_id, REC_KIND_FUNC_CATALOG_BASE, 4)?;
+        arena_set_u32(at, base);
         Ok(())
     }
 
     /// The seeded merged-catalog base for `activation_id`, or `None` if the host
     /// seeded no base for it.
     fn func_catalog_base(activation_id: u32) -> Option<u32> {
-        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffer outlives every borrow.
-        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
-        for entry in map.iter().take(count) {
-            if entry[0] == activation_id {
-                return Some(entry[1]);
-            }
-        }
-        None
+        arena_find(activation_id, REC_KIND_FUNC_CATALOG_BASE).map(|(at, _)| arena_u32(at))
     }
 
     /// True when the host seeded NO catalog base — the single-activation worker
     /// path, where `funcref_ordinal_impl` defaults `base = 0` (byte-identical to
     /// D6.1). Distinguishes that path from a corrupt multi-activation graph whose
-    /// funcref names an un-seeded activation.
+    /// funcref names an un-seeded activation. `arena_find` answering `None`
+    /// for one activation is NOT this: that is "un-seeded", and only an empty
+    /// map defaults the base.
     fn func_catalog_base_map_empty() -> bool {
-        ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) == 0
+        !arena_has_kind(REC_KIND_FUNC_CATALOG_BASE)
+    }
+
+    /// Visit every seeded `(activation, base)` pair of `kind` -- the two
+    /// catalog-base maps -- for the slot-to-owner elections below.
+    fn for_each_catalog_base(kind: u32, mut visit: impl FnMut(u32, u32)) {
+        arena_for_each_record(kind, |activation, at, _| visit(activation, arena_u32(at)));
     }
 
     // -- Per-activation static-root catalog bases (the static-root binder) ------
@@ -2899,52 +2982,22 @@ mod wasm {
     // activation A but held by activation B's frame resolves against A's catalog
     // slice — the coordinate the RECIPE names, never the caller. The map stays
     // EMPTY for a single-activation worker, and `static_root_slot_impl` then
-    // defaults `base = 0` — byte-identical to the raw-ordinal mapping.
-    const STATIC_ROOT_BASE_MAX_ACTS: usize = 64;
-
-    #[repr(C, align(4))]
-    struct ActStaticRootBase(UnsafeCell<[[u32; 2]; STATIC_ROOT_BASE_MAX_ACTS]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActStaticRootBase {}
-    /// Each live entry is `[activation_id, base]`; only the first
-    /// `ACT_STATIC_ROOT_BASE_COUNT` entries are live.
-    static ACT_STATIC_ROOT_BASE: ActStaticRootBase =
-        ActStaticRootBase(UnsafeCell::new([[0u32; 2]; STATIC_ROOT_BASE_MAX_ACTS]));
-    static ACT_STATIC_ROOT_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
+    // defaults `base = 0` — byte-identical to the raw-ordinal mapping. One
+    // arena record per activation (`REC_KIND_STATIC_ROOT_BASE`, one `u32`),
+    // released with it, exactly like the funcref map above.
 
     fn set_activation_static_root_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
-        let count = ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) as usize;
-        if count >= STATIC_ROOT_BASE_MAX_ACTS {
-            return Err(Errno::E2BIG); // too many distinct activations
-        }
-        // Reject a re-seeded activation (each is seeded once per worker).
-        // SAFETY: single-threaded; the map is a static buffer read here only.
-        let map = unsafe { &*ACT_STATIC_ROOT_BASE.0.get() };
-        for entry in map.iter().take(count) {
-            if entry[0] == activation_id {
-                return Err(Errno::EINVAL);
-            }
-        }
-        // Publish the entry, then bump the count.
-        // SAFETY: single-threaded; `count < MAX_ACTS` by the check above.
-        let map = unsafe { &mut *ACT_STATIC_ROOT_BASE.0.get() };
-        map[count] = [activation_id, base];
-        ACT_STATIC_ROOT_BASE_COUNT.store((count + 1) as u32, Ordering::Relaxed);
+        // A re-seeded activation is refused: `arena_alloc`'s `EINVAL` for a
+        // second record of one kind, as for the funcref map above.
+        let at = arena_alloc(activation_id, REC_KIND_STATIC_ROOT_BASE, 4)?;
+        arena_set_u32(at, base);
         Ok(())
     }
 
     /// The seeded merged-catalog base for `activation_id`, or `None` if the host
     /// seeded no static-root base for it.
     fn static_root_catalog_base(activation_id: u32) -> Option<u32> {
-        let count = ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffer outlives every borrow.
-        let map = unsafe { &*ACT_STATIC_ROOT_BASE.0.get() };
-        for entry in map.iter().take(count) {
-            if entry[0] == activation_id {
-                return Some(entry[1]);
-            }
-        }
-        None
+        arena_find(activation_id, REC_KIND_STATIC_ROOT_BASE).map(|(at, _)| arena_u32(at))
     }
 
     /// True when the host seeded NO static-root base — the single-activation
@@ -2952,7 +3005,7 @@ mod wasm {
     /// Distinguishes that path from a corrupt multi-activation graph whose static
     /// root names an un-seeded activation.
     fn static_root_catalog_base_map_empty() -> bool {
-        ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) == 0
+        !arena_has_kind(REC_KIND_STATIC_ROOT_BASE)
     }
 
     // -- Per-activation GC codec catalogs (Phase 6 item 3c — real drive plan) --
@@ -3820,11 +3873,8 @@ mod wasm {
             }
         }
 
-        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
         let mut provenance: Vec<fork_codec::ImportedTableProvenance> = Vec::new();
-        for e in table.iter().take(count).filter(|e| e.space == IMPORT_SPACE_TABLE) {
+        for e in provenance_entries(IMPORT_SPACE_TABLE) {
             let owner = by_ordinal
                 .iter()
                 .find(|(a, o, _)| *a == e.consumer_activation && *o == e.import_ordinal)
@@ -3876,8 +3926,10 @@ mod wasm {
     }
 
     fn write_imported_global_bindings() -> Result<(), Errno> {
-        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
-        if count == 0 {
+        // Any space, deliberately: the static table's `count == 0` test was
+        // over both spaces, and a table-only worker went on to write an empty
+        // global-bindings record. Kept byte-identical.
+        if !arena_has_kind(REC_KIND_PROVENANCE) {
             return Ok(()); // nothing imports a global: no record to write
         }
         if !module_owns_arena_now() {
@@ -3920,11 +3972,10 @@ mod wasm {
             }
         }
 
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let published = provenance_entries(IMPORT_SPACE_GLOBAL);
         let mut provenance: Vec<fork_codec::ImportedGlobalProvenance> =
-            Vec::with_capacity(count);
-        for e in table.iter().take(count).filter(|e| e.space == IMPORT_SPACE_GLOBAL) {
+            Vec::with_capacity(published.len());
+        for e in published {
             // An ordinal the activation's section does not declare as a global
             // is the host naming an import that is not one.
             //
@@ -4465,56 +4516,47 @@ mod wasm {
         }
         // `fm_set_format` is the FIRST module call of a worker's setup (see the
         // "once-per-worker fm_set_format contract"), run once before any fork
-        // drives capture or reconstruction. Reset the per-worker "seeded once"
-        // catalogs here so a COW child starts clean.
+        // drives capture or reconstruction. It is where a COW child starts
+        // clean. The child's memory is a CLONE of the parent's, this module's
+        // BSS sits INSIDE that memory at `__memory_base` (the PIC placement),
+        // and wasm does not re-zero BSS on instantiation -- so the child's
+        // fresh instance sees the PARENT's populated state. Left in place, it
+        // made the child's own per-activation seeding (which happens AFTER
+        // `fm_set_format`) fail as a spurious re-seed: errno 22 on real
+        // command-substitution/pipeline forks, once the capture-builder trap
+        // that masked it was fixed. What the inherited state is, and what
+        // clears each part of it:
         //
-        // These catalogs (funcref/static-root activation bases, host-exception
-        // owner, table-state owners) live in the module's BSS, which
-        // sits INSIDE the guest's shared linear memory at `__memory_base` (the PIC
-        // placement). A COW child's memory is a CLONE of the parent's, so the
-        // child's fresh fork-module instance sees the PARENT's already-populated
-        // catalogs — and BSS is not re-zeroed on instantiation. Each catalog
-        // rejects a re-seed of an already-present activation with `EINVAL`, so
-        // without this reset the child's own per-activation seeding (which happens
-        // AFTER `fm_set_format`) fails as a spurious re-seed. This surfaced as
-        // errno 22 on real command-substitution/pipeline forks once the
-        // capture-builder trap that previously masked it was fixed. Resetting the
-        // counters is enough: the backing arenas are addressed by these offsets and
-        // are overwritten by the fresh seeds.
-        //
-        // The GC codec catalog is DELIBERATELY NOT reset here. It is an arena
-        // record now, and `arena_release_all()` below KEEPS that one kind while
-        // it drops every other: the native host was written to rely on
-        // inheriting the parent's already-seeded codec on a COW child, and a
-        // reset once broke `fm_build_gc_plan` (`errno 22`) for every GC /
-        // static-root fork on that host. See `arena_release_all` for the
-        // exclusion and `set_activation_gc_codec_impl` for the identical
-        // re-seed no-op the Node/browser host's re-seed lands on.
-        // The resume catalogs are arena records now, dropped by
-        // `arena_release_all()` below with the rest.
-        // The slot assignment goes with the catalogs it was derived from. A COW
-        // child re-seeds, and re-seeding into a store that still held the
-        // parent's assignment would either refuse as already-registered or
-        // number the child's activations after the parent's -- and the child's
-        // physical table, which it inherits nothing of, starts empty. The
-        // assignment records themselves are MAPPINGS, released with the rest of
-        // the arena below; only the watermark is BSS this can simply store.
-        //
-        // THE FREE SET NEEDS NO SCRUB, and that is a property of deriving it
-        // rather than an omission: it is rebuilt from the live records at every
-        // registration, and `arena_release_all()` below drops those. A stored
-        // free set would need clearing here, and clearing it is not enough --
-        // a chained one is MAPPINGS the child inherited through the memory
-        // clone, so zeroing the root would leak every chunk the parent took, in
-        // a child that may outlive it, and leak it invisibly because a cleared
-        // root reads as empty.
+        //   * EVERY PER-ACTIVATION STORE IS AN ARENA RECORD, released by
+        //     `arena_release_all()` below: resume catalogs and slot
+        //     assignments, KFIG/KFIT sections, exception tags, template ids,
+        //     table-state elections, import provenance, and the two catalog-
+        //     base maps. Each of those used to be a fixed array with a counter
+        //     reset on this line; the counters went with the arrays. (Two of
+        //     them -- the template ids and the provenance -- were never reset
+        //     at all, which is why a `dlopen`/`dlclose` loop exhausted them.)
+        //     One kind survives the release: the GC codec, for the native-host
+        //     reason `arena_release_all` records, with
+        //     `set_activation_gc_codec_impl`'s identical-re-seed no-op as the
+        //     path a re-seeding host lands on. The child re-seeds everything
+        //     else after this call, and both hosts do.
+        //   * THE RECORDS ARE MAPPINGS the child inherited through the memory
+        //     clone, not BSS it can store over, which is why the release sits
+        //     AFTER the `CHANNEL_BASE` store below rather than here -- it
+        //     syscalls, and `channel_base()` answers `EINVAL` until that store.
+        //   * THE FREE SET NEEDS NO SCRUB, and that is a property of deriving
+        //     it rather than an omission: it is rebuilt from the live records
+        //     at every registration, and the release below drops those. A
+        //     stored free set would need clearing here, and clearing it is not
+        //     enough -- a chained one is mappings, so zeroing the root would
+        //     leak every chunk the parent took, invisibly, because a cleared
+        //     root reads as empty.
+        //   * THE SCALARS BELOW ARE PLAIN BSS and are stored over: the slot
+        //     watermark (the assignment records it numbered are released with
+        //     the arena; the child's physical table starts empty), the
+        //     host-exception owner, the archive coordinates, the phase, the
+        //     borrowed workspace, the format.
         RESUME_NEXT_SLOT.store(1, Ordering::Relaxed);
-        ACT_FUNC_CATALOG_BASE_COUNT.store(0, Ordering::Relaxed);
-        ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
-        // Table-state ownership resets for the same COW reason: a child
-        // inheriting the parent's election would answer for coordinates that
-        // belong to a table it no longer shares.
-        ACT_TABLE_STATE_OWNER_COUNT.store(0, Ordering::Relaxed);
         // Also per-capture state a COW child inherits. `begin_capture_impl`
         // already clears it, and today every read follows a capture -- but that
         // is a reasoning dependency, and this block exists so a COW child starts
@@ -8925,17 +8967,15 @@ mod wasm {
     /// structural check.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_static_root_recipe(slot: u32) -> i32 {
-        let count = ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
-        let map = unsafe { &*ACT_STATIC_ROOT_BASE.0.get() };
+        let mut seeded = false;
         let mut owner: Option<(u32, u32)> = None;
-        for entry in map.iter().take(count) {
-            let (activation, base) = (entry[0], entry[1]);
+        for_each_catalog_base(REC_KIND_STATIC_ROOT_BASE, |activation, base| {
+            seeded = true;
             if base <= slot && owner.is_none_or(|(_, best)| base > best) {
                 owner = Some((activation, base));
             }
-        }
-        if count > 0 && owner.is_none() {
+        });
+        if seeded && owner.is_none() {
             return 0;
         }
         let (activation, base) = owner.unwrap_or((0, 0));
@@ -8948,18 +8988,16 @@ mod wasm {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_funcref_slot_to_recipe(slot: u32) -> i32 {
-        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
-        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        let mut seeded = false;
         let mut owner: Option<(u32, u32)> = None;
-        for entry in map.iter().take(count) {
-            let (activation, base) = (entry[0], entry[1]);
+        for_each_catalog_base(REC_KIND_FUNC_CATALOG_BASE, |activation, base| {
+            seeded = true;
             if base <= slot && owner.is_none_or(|(_, best)| base > best) {
                 owner = Some((activation, base));
             }
-        }
+        });
         let (activation, base) = owner.unwrap_or((0, 0));
-        if count > 0 && owner.is_none() {
+        if seeded && owner.is_none() {
             // Bases were seeded but none covers this slot, so the catalog and the
             // scan disagree about the table's shape. Guessing activation 0 here
             // would record a recipe that decodes to another activation's function.
@@ -10144,22 +10182,20 @@ mod wasm {
     fn catalog_slot_coordinate(
         slot: u32,
     ) -> Result<fork_codec::dylink_archive::DylinkTableFunction, Errno> {
-        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
-        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        let mut seeded = false;
         let mut owner: Option<(u32, u32)> = None;
-        for entry in map.iter().take(count) {
-            let (activation, base) = (entry[0], entry[1]);
+        for_each_catalog_base(REC_KIND_FUNC_CATALOG_BASE, |activation, base| {
+            seeded = true;
             if base <= slot && owner.is_none_or(|(_, best)| base > best) {
                 owner = Some((activation, base));
             }
-        }
+        });
         match owner {
             Some((activation, base)) => Ok(fork_codec::dylink_archive::DylinkTableFunction {
                 activation_id: activation,
                 ordinal: slot - base,
             }),
-            None if count == 0 => Ok(fork_codec::dylink_archive::DylinkTableFunction {
+            None if !seeded => Ok(fork_codec::dylink_archive::DylinkTableFunction {
                 activation_id: 0,
                 ordinal: slot,
             }),
@@ -11269,10 +11305,8 @@ mod wasm {
         // here, so `state().activations` (which `begin_unwind_impl` fills) is
         // empty and stays empty -- this path allocates no frames at all.
         let activations: Vec<u32> = {
-            let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
-            // SAFETY: single-threaded per worker.
-            let table = unsafe { &*ACT_TEMPLATE_IDS.0.get() };
-            let mut ids: Vec<u32> = table.iter().take(count).map(|e| e.0).collect();
+            let mut ids: Vec<u32> = Vec::new();
+            arena_for_each_record(REC_KIND_TEMPLATE_ID, |activation, _, _| ids.push(activation));
             ids.sort_unstable();
             ids
         };

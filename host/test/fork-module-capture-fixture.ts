@@ -861,6 +861,35 @@ export interface ArenaFixture {
   /** `fm_set_activation_exception_codec` with the raw KFEC section staged first. */
   seedActivationExceptionCodec: (activation: number, section: Uint8Array) => void;
   /**
+   * `fm_set_activation_template_id` with 32 bytes of `fill` staged first.
+   * Two calls with the same `fill` are the idempotent re-seed a COW child
+   * makes; two with different fills are the "two modules under one
+   * activation" the module refuses.
+   */
+  seedTemplateId: (activation: number, fill: number) => void;
+  /** `fm_set_activation_table_state_owner(activation, owner, owns)`. */
+  seedTableStateOwner: (activation: number, owner: number, owns: boolean) => void;
+  /**
+   * `fm_module_state_table_state_owned(activation, owner)`: the election
+   * answer for one coordinate, 0 for an unseeded one. The two-argument
+   * export rather than the guest's one-argument import, which assumes the
+   * primary activation.
+   */
+  tableStateOwned: (activation: number, owner: number) => number;
+  /** `fm_set_activation_catalog_base(activation, base)`. */
+  seedCatalogBase: (activation: number, base: number) => void;
+  /** `fm_set_activation_static_root_base(activation, base)`. */
+  seedStaticRootBase: (activation: number, base: number) => void;
+  /** `fm_set_import_provenance(space, consumer, ordinal, kind, group, rawBits)`. */
+  seedImportProvenance: (
+    space: number,
+    consumer: number,
+    ordinal: number,
+    kind: number,
+    group: number,
+    rawBits: bigint,
+  ) => void;
+  /**
    * Grow the module's resume table to cover `slots`, standing in for the guest.
    *
    * `fm_resume_slots` op 1 is the `dlclose` release, and its first pass nulls
@@ -1024,6 +1053,49 @@ export function arenaFixture(label = "arena"): ArenaFixture {
         ARENA_STAGING_AT,
         section.length,
       );
+    },
+    seedTemplateId: (activation, fill) => {
+      // Staged on the same page as the sections: the module copies the 32
+      // bytes out before it allocates, so the staging area is free again by
+      // the time the call returns.
+      new Uint8Array(memory.buffer, ARENA_STAGING_AT, 32).fill(fill);
+      (x.fm_set_activation_template_id as (a: number, p: number) => void)(
+        activation,
+        ARENA_STAGING_AT,
+      );
+    },
+    seedTableStateOwner: (activation, owner, owns) => {
+      (x.fm_set_activation_table_state_owner as (a: number, o: number, w: number) => void)(
+        activation,
+        owner,
+        owns ? 1 : 0,
+      );
+    },
+    tableStateOwned: (activation, owner) =>
+      (x.fm_module_state_table_state_owned as (a: number, o: number) => number)(
+        activation,
+        owner,
+      ),
+    seedCatalogBase: (activation, base) => {
+      (x.fm_set_activation_catalog_base as (a: number, b: number) => void)(activation, base);
+    },
+    seedStaticRootBase: (activation, base) => {
+      (x.fm_set_activation_static_root_base as (a: number, b: number) => void)(
+        activation,
+        base,
+      );
+    },
+    seedImportProvenance: (space, consumer, ordinal, kind, group, rawBits) => {
+      (
+        x.fm_set_import_provenance as (
+          s: number,
+          c: number,
+          o: number,
+          k: number,
+          g: number,
+          r: bigint,
+        ) => void
+      )(space, consumer, ordinal, kind, group, rawBits);
     },
     growResumeTable: (slots) => {
       const table = x.__wpk_fork_resume_table as WebAssembly.Table | undefined;

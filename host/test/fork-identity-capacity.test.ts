@@ -162,20 +162,30 @@ describe("fork-module fixed caps vs a real program", () => {
         return false;
       }
     }).length;
-    // `ACTIVATION_CATALOG_MAX_ACTS`, `ACT_GC_CODEC_MAX_ACTS` and
-    // `ACT_EXN_TAGS_MAX_ACTS` are gone from this list with their stores: each
-    // of those is one arena record per activation now, and the arena has no
-    // activation count to exceed. The three below are still fixed statics.
+    // THERE IS NO PER-ACTIVATION CAP LEFT TO HOLD. `ACTIVATION_CATALOG_MAX_
+    // ACTS`, `ACT_GC_CODEC_MAX_ACTS`, `ACT_EXN_TAGS_MAX_ACTS`, and then
+    // `TEMPLATE_ID_MAX_ACTS`, `STATIC_ROOT_BASE_MAX_ACTS` and
+    // `FUNC_CATALOG_BASE_MAX_ACTS` all went with their stores: each is one
+    // arena record per activation now, released with it, and the arena has
+    // no activation count to exceed. What this pins is that none of them
+    // comes back -- the same shape as the identity-cap assertion below --
+    // while still measuring php's activation count so the number stays in
+    // front of a reader.
+    expect(acts, "php holds at least one fork-instrumented activation").toBeGreaterThan(0);
     for (const cap of [
       "TEMPLATE_ID_MAX_ACTS",
       "STATIC_ROOT_BASE_MAX_ACTS",
       "FUNC_CATALOG_BASE_MAX_ACTS",
+      "TABLE_STATE_OWNER_MAX",
+      "IMPORTED_GLOBAL_PROVENANCE_MAX",
     ]) {
-      const limit = moduleCap(cap);
       expect(
-        acts,
-        `php holds ${acts} activations against ${cap}=${limit}`,
-      ).toBeLessThanOrEqual(limit);
+        moduleSource,
+        `${cap} is back in crates/fork-module/src/lib.rs. A fixed per-worker ` +
+          `cap is billed to every fork-capable thread and was never released ` +
+          `by dlclose; php holds ${acts} activations today and the arena ` +
+          `holds any number. Put the store on the arena instead.`,
+      ).not.toMatch(new RegExp(`const ${cap}: usize`));
     }
   });
 });

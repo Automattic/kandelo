@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
+import {
+  CHANNEL_BASE,
+  MMAP_FLOOR,
+  startChannelResponder,
+} from "./fork-module-capture-fixture";
 
 /**
  * Seeding an activation's module template id (census section 139).
@@ -38,7 +43,13 @@ function freshModule(): {
     label: "template id test",
   });
   const exports = fm.exports as Record<string, unknown>;
-  (exports.fm_set_format as (pw: number, fixedPrefix: number) => void)(4, 0);
+  // A SERVICED channel, for the reason `startChannelResponder` records: the
+  // template id is an arena record now, and the first one maps a chunk
+  // through `channel_mmap`. A module whose `fm_set_format` got no channel
+  // base answers `EINVAL` from every seed, which is the truthful refusal for
+  // a module that cannot own storage -- and not what this file tests.
+  startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
+  (exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
   return {
     seed: exports.fm_set_activation_template_id as (a: number, p: number) => void,
     errno: () => (exports.fm_last_errno as () => number)(),
