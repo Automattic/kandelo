@@ -46,20 +46,15 @@ uid = 0
 gid = 0
 
 [[packages]]
-name = "dash"
-
-[[packages.outputs]]
-binary = "programs/wasm32/dash.wasm"
-path = "/usr/bin/dash"
-aliases = ["/bin/dash", "/bin/sh", "/usr/bin/sh"]
-
-[[packages]]
 name = "bash"
 
 [[packages.outputs]]
 binary = "programs/wasm32/bash.wasm"
 path = "/usr/bin/bash"
-aliases = ["/bin/bash"]
+# bash is the only shell the images ship. It is both the interactive login
+# shell and /bin/sh, which is what system(), popen() and a `#!/bin/sh`
+# script exec. bash honors POSIX mode when invoked as `sh`.
+aliases = ["/bin/bash", "/bin/sh", "/usr/bin/sh"]
 
 [[packages]]
 name = "ncurses"
