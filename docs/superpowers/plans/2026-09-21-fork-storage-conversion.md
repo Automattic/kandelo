@@ -4039,7 +4039,21 @@ Body: moves zero region bytes; corrects an ordering the spec got backwards;
 > *Task 7:* refusal perturbation (truncating `stage()` instead of throwing);
 > capacity-guard perturbation (`128 * 1024` must name `php/intl.so imported
 > globals` at 190,437); Step 1 as written; `fork-module-instance.test.ts`.
-> *Tasks 8–11:* whatever their batch report lists as deferred — append it
+> *Task 8 (`2ddfa53f0`):* **NO deferred list exists.** Its agent stalled
+> before writing a report, and its commit body enumerates nothing. Treat
+> EVERY test and perturbation Task 8's brief specified as UNPROVEN and run
+> them all here — in particular the cross-chunk `arena_extend` test Task 1
+> owed to Task 8 (an emptied chunk unmapped while a sibling activation's
+> stays live, measured by field 101, not a re-allocation count). The brief's
+> steps, for the record:
+> > Step 1: Read `arena_extend`'s cost before using it five times
+> > Step 2: Write the failing test — the dlopen/dlclose exhaustion
+> > Step 3: Convert all five
+> > Step 4: Remove the four counter resets from the scrub
+> > Step 5: Rebuild, verify fresh, confirm the ZERO
+> > Step 6: Perturb the table-state UPDATE semantics
+> > Step 7: Budget, then commit
+> *Tasks 9–11:* whatever their batch report lists as deferred — append it
 > here verbatim when that report lands.
 > *Never scheduled anywhere until now:* the mechanism probe for WHY a
 > `channel_munmap` is answered from a SIGKILL-contained vfork teardown where
