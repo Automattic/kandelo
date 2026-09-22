@@ -164,6 +164,19 @@ export interface Fixture {
 }
 
 const live: Worker[] = [];
+
+/**
+ * Every module instance this file hands out, as its `fm_stats` reader.
+ *
+ * BOTH FACTORIES REGISTER, and that is ruling D1-a's whole point. Registering
+ * only `arenaFixture()` would have covered the three fixtures that allocate
+ * NOTHING while leaving `fixture()` -- the capture rig the rest of the fork
+ * suite uses, and the one whose activations the D1-a reasoning is actually
+ * written about -- unchecked. A bound that is only asserted where it cannot
+ * be exceeded is the guard-whose-failure-is-silent the ruling rejects.
+ */
+const liveStatsReaders: Array<(field: number) => number> = [];
+
 afterAll(() => {
   for (const w of live) {
     w.postMessage("stop");
@@ -231,6 +244,9 @@ export function fixture(): Fixture {
   }
 
   const call = x.fm_module_state_arena as (o: number, a: number) => bigint;
+  // Ruling D1-a: this rig holds activations, so it is the one that most needs
+  // the directory bound checked at teardown.
+  liveStatsReaders.push((field) => Number((x.fm_stats as (n: number) => bigint)(field)));
   return {
     x,
     instance: fm,
@@ -684,7 +700,19 @@ export interface ArenaFixture {
   seedActivationCatalog: (activation: number, ordinals: readonly number[]) => void;
   /** The sticky errno of the most recent export call. */
   errno: () => number;
+  /**
+   * `fm_arena_selftest(op, activation, kind, bytes)` -- the test-only entry
+   * that drives the arena's allocating half. See its doc comment in the
+   * module: it is a debt, and the task that converts the resume assignment
+   * deletes it.
+   */
+  selftest: (op: number, activation: number, kind: number, bytes: number) => bigint;
 }
+
+/** `fm_arena_selftest` ops. */
+export const ARENA_OP_ALLOC = 0;
+export const ARENA_OP_FIND = 1;
+export const ARENA_OP_EXTEND = 2;
 
 /**
  * Where `seedActivationCatalog` stages its ordinals: page 6, between the
@@ -692,8 +720,6 @@ export interface ArenaFixture {
  * `MMAP_FLOOR`, so nothing the responder hands out can overlap it.
  */
 export const ARENA_STAGING_AT = 6 * PAGE;
-
-const liveArenaFixtures: ArenaFixture[] = [];
 
 export function arenaFixture(label = "arena"): ArenaFixture {
   const memory = new WebAssembly.Memory({
@@ -738,15 +764,16 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       )(activation, ARENA_STAGING_AT, ordinals.length);
     },
     errno,
+    selftest: x.fm_arena_selftest as ArenaFixture["selftest"],
   };
-  liveArenaFixtures.push(f);
+  liveStatsReaders.push(f.stats);
   return f;
 }
 
-// RULING D1-a's loudness, on the hook every arena fixture already goes
-// through. `live`'s `afterAll` above is the one teardown this file owns, and a
-// fixture cannot be created without being registered here -- so no test has to
-// remember to check the bound.
+// RULING D1-a's loudness, on the hook every module instance this file hands
+// out already goes through -- BOTH the capture rig and the arena fixture, so
+// no test has to remember to check the bound and no factory can opt out of it
+// by being written later.
 afterAll(() => {
-  for (const f of liveArenaFixtures) expectDirectoryWithinWalkBound(f.stats);
+  for (const stats of liveStatsReaders) expectDirectoryWithinWalkBound(stats);
 });

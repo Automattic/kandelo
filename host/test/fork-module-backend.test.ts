@@ -56,36 +56,70 @@ describe("fork-module backend constants", () => {
   });
 
   it("keeps every high fm_stats field clear of the stats table and of each other", () => {
-    // Same reasoning as the identity-chunk-count pin above, for the fields the
-    // storage conversion adds. `fm_stats` answers each from an `if` that runs
-    // BEFORE the reference table, so a number reused between two of them is
-    // not a compile error: the second arm is dead and the first answers both
-    // reads. The module carries a const-assert (`FM_STATS_HIGH_FIELDS`) that
-    // catches a reuse at BUILD time; this catches a field that drifts DOWN
-    // into the table's contiguous index space, which the const-assert cannot
-    // see because that space's length is a HOST constant.
+    // Same reasoning as the identity-chunk-count pin above, for every field
+    // `fm_stats` answers from an `if` that runs BEFORE the reference table. A
+    // number reused between two of them is not a compile error: the second arm
+    // is dead and the first answers both reads.
     //
-    // Later tasks of the same plan add their constant's name to this array in
-    // the same commit that adds the field.
-    const fields = [
-      "ARENA_RECORD_CHUNK_COUNT_FIELD",
-      "ARENA_DIRECTORY_CHUNK_COUNT_FIELD",
-      "ARENA_DIRECTORY_ENTRY_COUNT_FIELD",
-    ].map((name) => {
+    // DERIVED FROM `fm_stats`'S OWN ARMS, not from a list someone maintains.
+    // The module carries a const-assert (`FM_STATS_HIGH_FIELDS`) that catches
+    // a reuse at BUILD time, but it compares a hand-written array against
+    // itself: a task that adds an `if field == NEW_FIELD` arm and forgets the
+    // array gets no protection from it. A second hand-list here would guard
+    // against forgetting to update a list -- the same "second tally of one
+    // event" shape that got the maintained directory counter deleted. So this
+    // reads the arms out of the function body and holds BOTH the numbers and
+    // the const-assert's membership to them.
+    const body = moduleSource.slice(
+      moduleSource.indexOf("pub extern \"C\" fn fm_stats(field: u32) -> i64 {"),
+      moduleSource.indexOf("match stats.get("),
+    );
+    expect(body, "fm_stats no longer has the shape this pin reads").not.toBe("");
+    const armed = [...body.matchAll(/if field == ([A-Z][A-Z_0-9]*)\s*\{/g)].map(
+      (m) => m[1],
+    );
+    expect(armed.length, "fm_stats answers no high field at all").toBeGreaterThan(0);
+
+    const valueOf = (name: string): number => {
       const match = new RegExp(`const ${name}: u32 = ([0-9_]+);`).exec(moduleSource);
-      expect(match, `the module no longer names ${name}`).not.toBeNull();
-      return [name, Number(match![1].replace(/_/g, ""))] as const;
-    });
-    for (const [name, value] of fields) {
+      expect(match, `the module answers ${name} but never defines it`).not.toBeNull();
+      return Number(match![1].replace(/_/g, ""));
+    };
+
+    // (i) every armed field sits above the reference table's contiguous index
+    // space, which the const-assert cannot see because that space's length is
+    // a HOST constant.
+    for (const name of armed) {
       expect(
-        value,
-        `${name} must stay above the stats table`,
+        valueOf(name),
+        `${name} must stay above the stats table; raise the field, do not ` +
+          "lower this",
       ).toBeGreaterThanOrEqual(FORK_MODULE_STATS.length);
     }
+
+    // (ii) no two armed fields share a number.
+    const numbers = armed.map(valueOf);
     expect(
-      new Set(fields.map(([, v]) => v)).size,
-      "two fields share a number",
-    ).toBe(fields.length);
+      new Set(numbers).size,
+      `two fm_stats arms share a number: ${armed.join(", ")} are ` +
+        `${numbers.join(", ")}. The second arm is dead and the first answers ` +
+        "both reads.",
+    ).toBe(numbers.length);
+
+    // (iii) the const-assert's array lists exactly the armed fields. This is
+    // what keeps `FM_STATS_HIGH_FIELDS` from silently going stale: it can only
+    // catch a collision between fields someone remembered to register, so the
+    // registration itself has to be checked against the arms.
+    const table = /const FM_STATS_HIGH_FIELDS: \[u32; [0-9]+\] = \[([^\]]*)\];/.exec(
+      moduleSource,
+    );
+    expect(table, "the module no longer names FM_STATS_HIGH_FIELDS").not.toBeNull();
+    const registered = [...table![1].matchAll(/([A-Z][A-Z_0-9]*)\s*,/g)].map((m) => m[1]);
+    expect(
+      [...registered].sort(),
+      "FM_STATS_HIGH_FIELDS must list exactly the fields fm_stats arms on; an " +
+        "arm missing from it is a collision the build-time assert cannot see",
+    ).toEqual([...armed].sort());
   });
 
   it("matches the module's resume-catalog capacity", () => {

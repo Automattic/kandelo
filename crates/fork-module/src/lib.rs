@@ -1574,8 +1574,21 @@ mod wasm {
     //                        day someone updates only one.)
     //     +20  live: u32    (record chain: live bytes; directory: live entries)
     //     +24  chain word   (record + directory chains: `capacity`, the usable
-    //                        body bytes -- see `arena_map_chunk`.)
+    //                        body bytes -- see `arena_map_chunk`. The scratch
+    //                        chain keeps `prev` here; the free-bits chain
+    //                        leaves it zero and uses +16/+20 as
+    //                        `base_slot`/`live_bits`.)
     //     +32  body
+    //
+    // WHAT `arena_map_chunk` HARD-CODES, and what a new chain must therefore
+    // undo. It is generic over `head: &AtomicU64` and any chain may use it, but
+    // it writes the RECORD/DIRECTORY convention into every chunk it maps:
+    // `capacity` at +24, zero at +16 and +20. A chain with a different
+    // convention for those three words -- the free-bits chain's
+    // `base_slot`/`live_bits`, the scratch chain's `prev` -- must overwrite
+    // them itself after mapping and must not read +24 as a capacity.
+    // `arena_unlink_chunk` is genuinely generic: it touches only +0 (`next`)
+    // and +8 (`size`), which every chain shares.
     //
     // ONE HEADER SIZE, 32 BYTES, FOR ALL OF THEM. A chain that sized its mapping
     // with one header and addressed its body with another would overrun by the
@@ -1944,11 +1957,9 @@ mod wasm {
     /// **Capacity comes from the chunk's recorded `capacity` at +24, NEVER from
     /// its `size`.** `size` is what was MAPPED, and `channel_mmap` rounds up to
     /// a 64 KiB wasm page; `capacity` is what the constant says a chunk holds.
-    // FIRST CALLER: Task 3, which puts the resume assignment on the arena. This
-    // task builds the mechanism and converts nothing, so the only thing that
-    // reaches this today is a test through a converted store -- of which there
-    // are none yet.
-    #[allow(dead_code)]
+    // Reached today only through `fm_arena_selftest`, the test-only entry at
+    // the end of this block; the task that converts the resume assignment is
+    // its first production caller and deletes that entry.
     fn arena_alloc(activation_id: u32, kind: u32, byte_len: usize) -> Result<u64, Errno> {
         if arena_find(activation_id, kind).is_some() {
             return Err(Errno::EINVAL);
@@ -1958,7 +1969,6 @@ mod wasm {
 
     /// The payload address and byte length for `(activation_id, kind)`, or
     /// `None`.
-    #[allow(dead_code)] // FIRST CALLER: Task 3.
     fn arena_find(activation_id: u32, kind: u32) -> Option<(u64, usize)> {
         let entry = arena_directory_find(activation_id);
         if entry == 0 {
@@ -1984,7 +1994,33 @@ mod wasm {
     /// matters: dropping first could take the old chunk's `live` to zero, and a
     /// swept chunk is unmapped -- so the copy would read bytes the host has
     /// taken back.
-    #[allow(dead_code)] // FIRST CALLER: Task 8.
+    ///
+    /// # COST, WHICH THE SIGNATURE DOES NOT SHOW
+    ///
+    /// EVERY CALL RE-ALLOCATES. There is no in-place growth and there cannot
+    /// be: `used` is monotonic by design, because payload records never move
+    /// and an address this arena handed out stays valid for the life of its
+    /// activation. So growing a record to `n` bytes one entry at a time burns
+    /// `O(n^2 / entry)` bytes of `used`, not `O(n)`.
+    ///
+    /// Worked example, because the quadratic term is easy to miss and the
+    /// store this exists for is right at the size where it bites: appending
+    /// 256 entries of 32 bytes one at a time consumes
+    /// `sum over k of (16 + 32k)` for k = 1..256, about **1,056,768 bytes** of
+    /// `used` -- roughly 17 chunks, 1.03 MiB mapped, to hold a final record of
+    /// 8 KiB. `arena_sweep_record_chunks` at the end of this function is what
+    /// keeps that from STAYING mapped: it returns each chunk as the last
+    /// record leaves it, capping the live mapping at about two chunks. The
+    /// `used` bytes are still spent; only the mapping is reclaimed.
+    ///
+    /// SO DO NOT MEASURE THIS WITH A RE-ALLOCATION COUNT. This re-allocates
+    /// exactly once per call, so a guard comparing re-allocations against the
+    /// entry count reports 256 for 256 entries and passes, while saying
+    /// nothing about the megabyte. Measure the MAPPED CHUNK COUNT --
+    /// `fm_stats` field `ARENA_RECORD_CHUNK_COUNT_FIELD` (101) -- which is the
+    /// quantity that can actually be wrong.
+    ///
+    /// A store that knows its final size should `arena_alloc` it once instead.
     fn arena_extend(
         activation_id: u32,
         kind: u32,
@@ -2006,6 +2042,13 @@ mod wasm {
             arena_directory_find(activation_id),
             old_payload - RECORD_HEADER,
         );
+        // RETURN THE CHUNK THE OLD RECORD LEFT EMPTY, rather than waiting for
+        // some other activation's release to sweep it. Without this, a
+        // per-entry append leaves every chunk it outgrew linked and mapped
+        // (see the cost note above: ~17 chunks for an 8 KiB record). The new
+        // record is already written, so its own chunk has `live > 0` and
+        // cannot be swept; only chunks no live record occupies are returned.
+        arena_sweep_record_chunks(channel_base().unwrap_or(0));
         Ok(fresh)
     }
 
@@ -2156,6 +2199,76 @@ mod wasm {
             chunk = arena_u64(chunk);
         }
         count
+    }
+
+    /// Drive the record arena directly, so a committed test can allocate.
+    ///
+    /// # WHY THIS EXISTS, AND WHEN IT MUST BE DELETED
+    ///
+    /// THIS IS TEST-ONLY SURFACE AND IT IS A DEBT, not a feature. It is here
+    /// because the arena landed as a mechanism with no store on it: every
+    /// allocation path -- `arena_map_chunk`, `arena_alloc`,
+    /// `arena_insert_record`, the chunk chaining, and `arena_release_all`
+    /// against a NON-EMPTY chain -- would otherwise have zero live coverage,
+    /// and a suite whose guards were only ever demonstrated by a scaffold that
+    /// was then deleted is a suite that goes green on a broken arena.
+    ///
+    /// The concrete defect it exists to catch: transpose the `fm_stats` arms
+    /// so field 101 answers `arena_directory_chunk_count()` and 102 answers
+    /// `arena_record_chunk_count()`. Both read 0 in the empty state, the
+    /// `FM_STATS_HIGH_FIELDS` const-assert sees only the numbers and not the
+    /// sources, and every later task then builds its chunk-count evidence on a
+    /// transposed pair. Driving the two counts APART is the only thing that
+    /// catches it, and driving them apart requires allocating.
+    ///
+    /// **DELETE THIS ENTRY, AND GIVE ITS THREE SURFACE-BUDGET CEILINGS BACK,
+    /// as soon as a real store is on the arena** -- that is the task that
+    /// converts the resume assignment, after which
+    /// `host/test/fork-arena-release.test.ts` can allocate through
+    /// `fm_set_activation_resume_catalog`, a genuine production entry, and
+    /// this becomes redundant. The raise is recorded in
+    /// `docs/surface-budget.json` with that give-back named, in the same shape
+    /// the `fm_publish_resume_assignment` raise used.
+    ///
+    /// It deliberately does NOT wrap release: `arena_release_activation` is
+    /// driven through `fm_resume_slots` op 1 and `arena_release_all` through a
+    /// second `fm_set_format`, both real production entries. Only the
+    /// allocating half is unreachable, so only the allocating half is wrapped.
+    ///
+    ///   * op 0 -- `arena_alloc(activation, kind, bytes)`, returning the
+    ///     payload address.
+    ///   * op 1 -- `arena_find(activation, kind)`, returning
+    ///     `(byte_len << 32) | payload` (count high, pointer low, as
+    ///     `fm_publish_resume_assignment` does), or -1 with `ENOENT` when the
+    ///     record is absent.
+    ///   * op 2 -- `arena_extend(activation, kind, bytes)`, returning the new
+    ///     payload address.
+    ///
+    /// -1 with the reason in `fm_last_errno` on any failure.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_arena_selftest(op: u32, activation: u32, kind: u32, bytes: u32) -> i64 {
+        let result = match op {
+            0 => arena_alloc(activation, kind, bytes as usize),
+            1 => match arena_find(activation, kind) {
+                Some((payload, len)) => {
+                    set_ok();
+                    return ((len as i64) << 32) | payload as i64;
+                }
+                None => Err(Errno::ENOENT),
+            },
+            2 => arena_extend(activation, kind, bytes as usize),
+            _ => Err(Errno::EINVAL),
+        };
+        match result {
+            Ok(payload) => {
+                set_ok();
+                payload as i64
+            }
+            Err(errno) => {
+                set_err(errno);
+                -1
+            }
+        }
     }
 
     // -- Imported-global provenance (host-resolved) -------------------------
