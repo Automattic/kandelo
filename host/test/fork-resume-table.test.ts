@@ -310,8 +310,8 @@ describe("ForkResumeTable, numbered by the module", () => {
   });
 
   it("nulls PLACED slots when a catalog is re-seeded over them", () => {
-    // THE RE-SEED PATH, pinned. `fm_set_resume_catalog` seeds the worker-wide
-    // catalog, and seeding over one already seeded RENUMBERS activation 0:
+    // THE RE-SEED PATH, pinned. `fm_set_activation_resume_catalog` seeds a
+    // catalog, and seeding over one already seeded RENUMBERS the activation:
     // `resume_reseed` returns its slots to the free bitmap and assigns fresh
     // ones from the new ordinal set. Anything left in a returned slot is a
     // stale thunk at a slot the allocator is about to hand out again -- a real
@@ -331,11 +331,12 @@ describe("ForkResumeTable, numbered by the module", () => {
       const view = new DataView(bytes.buffer);
       ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
       new Uint8Array(h.memory.buffer, CATALOG_AT, bytes.length).set(bytes);
-      (h.exports.fm_set_resume_catalog as (p: number, c: number) => void)(
+      (h.exports.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
+        0,
         CATALOG_AT,
         ordinals.length,
       );
-      expect(h.errno(), "seeding the worker catalog").toBe(0);
+      expect(h.errno(), "seeding activation 0's catalog").toBe(0);
     };
 
     setGlobalCatalog([0, 1, 2]);

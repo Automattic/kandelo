@@ -100,7 +100,6 @@ import {
   type ForkBorrowedReplayWorkspace,
   type ForkModuleStat,
   requireForkModuleBackend,
-  FORK_MODULE_RESUME_CATALOG_CAP,
   FORK_MODULE_STATS,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
@@ -6492,12 +6491,6 @@ export async function centralizedThreadWorkerMain(
       const catalogOrdinals = readForkResumeCatalog(module).map(
         (entry) => entry.functionOrdinal,
       );
-      if (catalogOrdinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
-        throw new Error(
-          `pid=${pid} tid=${tid}: resume catalog of ${catalogOrdinals.length} ` +
-            `exceeds the fork-module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
-        );
-      }
       {
         // M2: wire the same `resolve_externref` body as the process/parent
         // path (using this pthread's own externref token cache, established

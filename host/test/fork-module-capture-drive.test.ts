@@ -34,6 +34,7 @@ import {
   childModule,
   fixture,
   saveSlotThunk,
+  seedEmptyResumeCatalog,
   seedTemplateId,
   voidSlotThunk,
   type Fixture,
@@ -1375,9 +1376,40 @@ describe("the binding records the module assembles at capture", () => {
     sideRecord.setUint32(childSides + 4, 0, true);
 
     const child = childModule(f);
-    (
-      child.fm_child_seed as (r: number, a: number, s: number, n: number) => void
-    )(root, act0Root, childSides, 1);
+    const childSeed = child.fm_child_seed as (r: number, a: number, s: number, n: number) => void;
+    // NEVER SEEDED IS REFUSED. Neither activation has a resume catalog in this
+    // child yet, and the module no longer numbers slots from the committed
+    // ordinals when it finds none: a binary arriving with nothing seeded is a
+    // build whose instrumentation step did not run, and numbering by a rule
+    // the guest's resume table does not share is the divergence the seeded
+    // catalog exists to rule out. `EINVAL` (22), from the phase the entry
+    // never left -- a failed seed enters no phase, so the retry below is
+    // clean.
+    childSeed(root, act0Root, childSides, 1);
+    expect(
+      (child.fm_last_errno as () => number)(),
+      "a child whose catalogs were never seeded is refused",
+    ).toBe(22);
+    expect((child.fm_phase as () => number)(), "and no phase was entered").toBe(PHASE_IDLE);
+    // AN EMPTY CATALOG IS NOT THAT CASE. This capture committed no frame, so
+    // both activations hold zero resume targets -- which is what
+    // `libneeded-provider.so` seeds in `fork-from-dlopen-side-module-e2e`,
+    // and mistaking it for "never registered" already cost a real fork. An
+    // empty RECORD says "registered, holding nothing"; NO record says "never
+    // registered". Seeded the way every host seeds: activation 0 through the
+    // same entry as its side.
+    for (const activation of [0, 1]) {
+      (child.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
+        activation,
+        SIDES_SCRATCH,
+        0,
+      );
+      expect(
+        (child.fm_last_errno as () => number)(),
+        `an empty catalog is a legitimate seed for activation ${activation}`,
+      ).toBe(0);
+    }
+    childSeed(root, act0Root, childSides, 1);
     expect(
       (child.fm_last_errno as () => number)(),
       "the seed resolves the side root from the manifest",
@@ -1447,6 +1479,11 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     seedTemplateId(f, 0, 2048);
     seedTemplateId(f, 1, 2048);
+    // The side activation is declared by hand here rather than through
+    // `openCapture`, so its (empty) resume catalog is seeded by hand too: the
+    // replay below registers every activation's slots from its catalog and
+    // refuses one that never seeded.
+    seedEmptyResumeCatalog(f.x, 1);
     const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);

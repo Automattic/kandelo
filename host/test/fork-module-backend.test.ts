@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   FORK_ACTIVATION_DRIVE_BINDINGS,
   FORK_ACTIVATION_DRIVE_SLOTS,
-  FORK_MODULE_RESUME_CATALOG_CAP,
   FORK_MODULE_STATS,
 } from "../src/fork-module-backend";
 
@@ -120,16 +119,6 @@ describe("fork-module backend constants", () => {
       "FM_STATS_HIGH_FIELDS must list exactly the fields fm_stats arms on; an " +
         "arm missing from it is a collision the build-time assert cannot see",
     ).toEqual([...armed].sort());
-  });
-
-  it("matches the module's resume-catalog capacity", () => {
-    // The module sizes a static `[u32; CAP]` arena from this. A host that staged
-    // more than the cap would write past the end of that arena.
-    const match = /const RESUME_CATALOG_CAP: usize = ([0-9_]+);/.exec(moduleSource);
-    expect(match).not.toBeNull();
-    expect(Number(match![1].replace(/_/g, ""))).toBe(
-      FORK_MODULE_RESUME_CATALOG_CAP,
-    );
   });
 });
 

@@ -80,12 +80,14 @@ describe("instantiateForkModule", () => {
     );
   });
 
-  it("registers a resume catalog larger than the old 16384 cap and fails loud past the new cap", () => {
-    // Phase 3 proof: the resume-catalog cap is raised (RESUME_CATALOG_CAP =
-    // 65536) so the co-resident module backs EVERY real fork — php-fpm (19190),
-    // php (19026), and node/spidermonkey (16555) all previously EXCEEDED the old
-    // 16384 cap and silently fell to the JS continuation twin. A catalog past
-    // the raised cap fails loud (`E2BIG`), never silently drops to JS.
+  it("registers a resume catalog of any size: the old caps are gone", () => {
+    // Phase 3 raised `RESUME_CATALOG_CAP` from 16,384 to 65,536 so the
+    // co-resident module backed EVERY real fork -- php-fpm (19,190), php
+    // (19,026) and node/spidermonkey (16,555) all exceeded the old cap. The
+    // cap is gone now: activation 0's catalog is an arena record like every
+    // other activation's, sized to the request, and the only boundary left is
+    // the channel's own (`channel_mmap`'s errno), which the test below this
+    // one reaches by giving the module no channel at all.
     //
     // WHY THIS RUNS ON `arenaFixture` AND NOT ON THE BARE INSTANCE ABOVE.
     // Seeding a catalog REGISTERS it, and registration now allocates the
@@ -101,21 +103,22 @@ describe("instantiateForkModule", () => {
     // `crates/host-native` passed 0 as `fm_set_format`'s channel-base argument,
     // so it could not have registered here either. It passes its channel offset
     // now, like the Node and browser hosts always have.
-    const x = arenaFixture("resume catalog cap");
-    const CAP = 65_536;
-    const E2BIG = 7;
-    // A catalog exceeding the OLD 16384 cap now registers cleanly.
-    x.seedProcessCatalog(Array.from({ length: 20_000 }, (_, i) => i));
-    expect(x.errno(), "20,000 ordinals: past the old cap, inside the new one").toBe(0);
-    // Exactly at the raised cap: still accepted. This is also the largest
-    // assignment the arena is asked for anywhere -- 65,536 records, 512 KiB in
-    // one chunk sized to the request.
-    x.seedProcessCatalog(Array.from({ length: CAP }, (_, i) => i));
-    expect(x.errno(), "exactly at the raised cap").toBe(0);
-    // One past the raised cap: a truthful E2BIG (fail-loud module-capacity
-    // boundary), not a silent JS fallback.
-    x.seedProcessCatalog(Array.from({ length: CAP + 1 }, (_, i) => i));
-    expect(x.errno(), "one past the raised cap").toBe(E2BIG);
+    const x = arenaFixture("resume catalog size");
+    const OLD_CAP = 65_536;
+    // A catalog exceeding the OLDEST cap registers cleanly.
+    x.seedActivationCatalog(0, Array.from({ length: 20_000 }, (_, i) => i));
+    expect(x.errno(), "20,000 ordinals: past the 16,384 cap").toBe(0);
+    // Exactly at the later cap: accepted, and a re-seed of activation 0
+    // replaces the first catalog. This is the largest assignment the arena is
+    // asked for anywhere -- 65,536 records, 512 KiB in one chunk sized to the
+    // request.
+    x.seedActivationCatalog(0, Array.from({ length: OLD_CAP }, (_, i) => i));
+    expect(x.errno(), "exactly at the old cap").toBe(0);
+    // One past it: ACCEPTED. There is no cap to answer E2BIG for; a catalog
+    // the arena can map is a catalog the module holds.
+    x.seedActivationCatalog(0, Array.from({ length: OLD_CAP + 1 }, (_, i) => i));
+    expect(x.errno(), "one past the old cap is not a boundary any more").toBe(0);
+    expect(x.publishedSlots(0).length, "and every ordinal got a slot").toBe(OLD_CAP + 1);
   });
 
   it("refuses to register a resume catalog when it has no channel to store it in", () => {
@@ -146,7 +149,8 @@ describe("instantiateForkModule", () => {
     const catalogAddr = 1 * 1024 * 1024; // 1 MiB, well below the module region
     const view = new DataView(memory.buffer);
     for (let i = 0; i < 4; i++) view.setUint32(catalogAddr + i * 4, i, true);
-    (fm.exports.fm_set_resume_catalog as (p: number, c: number) => void)(
+    (fm.exports.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
+      0,
       catalogAddr,
       4,
     );

@@ -1113,15 +1113,6 @@ items reduce host surface, remove fixed caps, or close truthful-failure gaps.
   Node alone. **Files:** `crates/fork-module/src/lib.rs`, `crates/fork-codec`,
   `host/src/fork-process-continuation.ts`.
 
-- **Make the fork resume-catalog cap dynamic.** The per-activation resume catalog
-  is a fixed 65536-entry fork-module BSS array (`RESUME_CATALOG_CAP` /
-  `ACTIVATION_CATALOG_ORD_CAP`), sized to survive the per-fork bump-heap reset; a
-  guest with more fork-instrumented functions fails loud (`E2BIG`) rather than
-  growing. A module-owned catalog backed by a host-provided persistent
-  (non-bump-reset) region would remove the cap if a future guest approaches it.
-  **Files:** `crates/fork-module/src/lib.rs`, `host/src/fork-module-backend.ts`,
-  `crates/host-native/src/guest.rs`.
-
 - **Bound or reclaim the native externref/GC provenance registry.** Wasmtime 48
   has no weak GC-ref primitive, so the native reference-provenance registry uses a
   4096-entry cap with a loud diagnostic instead of the TypeScript hosts' WeakMap;

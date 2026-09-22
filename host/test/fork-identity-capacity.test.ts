@@ -126,23 +126,22 @@ describe("fork-module fixed caps vs a real program", () => {
       per.push(`${name}=${count}`);
     }
     const total = programMax + extensionTotal;
-    // `ACTIVATION_CATALOG_ORD_FLOOR` is deliberately NOT checked here. It was
-    // `..._ORD_CAP`, a hard bound, and this test asserted php fitted under it.
-    // It is now a FLOOR with spill: exceeding it allocates a chunk rather than
-    // failing, so "php exceeds the floor" is correct behaviour and asserting
-    // otherwise would forbid the growth the floor exists to allow. php DOES
-    // exceed it -- 19,025 for php.wasm alone against 8,192 -- which is what
-    // makes the spill path reachable at all.
-    //
-    // `RESUME_CATALOG_CAP` is still a real cap, so it is still checked.
-    for (const cap of ["RESUME_CATALOG_CAP"]) {
-      const limit = moduleCap(cap);
-      expect(
-        total,
-        `php needs ${total} resume-catalog ordinals against ${cap}=${limit} ` +
-          `(${(limit / total).toFixed(2)}x headroom). Per-artifact: ${per.join(" ")}`,
-      ).toBeLessThanOrEqual(limit);
-    }
+    // THERE IS NO CATALOG CAP LEFT TO HOLD. `RESUME_CATALOG_CAP` (the
+    // process-wide static) and `ACTIVATION_CATALOG_ORD_FLOOR` (the shared
+    // floor) are both gone: every catalog is an arena record sized to the
+    // request, and a record larger than a chunk gets a chunk sized to hold it
+    // (`arena_map_chunk`). What this test pins now is the claim that comment
+    // makes -- that the oversized-chunk path is production, not a forced-build
+    // curiosity, because php's MAIN activation alone needs more than one
+    // 64 KiB chunk's body holds. If php ever shrank under that, the comment
+    // would be wrong and this says so.
+    const ARENA_CHUNK_BODY = 65_536 - 32;
+    expect(
+      programMax * 4,
+      `php's largest single catalog is ${programMax} ordinals (${programMax * 4} ` +
+        `bytes), which the arena's oversized-chunk path is documented to serve on ` +
+        `every php start. Per-process need: ${total}. Per-artifact: ${per.join(" ")}`,
+    ).toBeGreaterThan(ARENA_CHUNK_BODY);
   });
 
   it("holds php's activation count", () => {
@@ -163,12 +162,13 @@ describe("fork-module fixed caps vs a real program", () => {
         return false;
       }
     }).length;
+    // `ACTIVATION_CATALOG_MAX_ACTS`, `ACT_GC_CODEC_MAX_ACTS` and
+    // `ACT_EXN_TAGS_MAX_ACTS` are gone from this list with their stores: each
+    // of those is one arena record per activation now, and the arena has no
+    // activation count to exceed. The three below are still fixed statics.
     for (const cap of [
-      "ACTIVATION_CATALOG_MAX_ACTS",
-      "ACT_GC_CODEC_MAX_ACTS",
       "TEMPLATE_ID_MAX_ACTS",
       "STATIC_ROOT_BASE_MAX_ACTS",
-      "ACT_EXN_TAGS_MAX_ACTS",
       "FUNC_CATALOG_BASE_MAX_ACTS",
     ]) {
       const limit = moduleCap(cap);

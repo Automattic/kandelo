@@ -33,7 +33,7 @@ import {
 export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_last_errno",
   "fm_set_format",
-  "fm_set_resume_catalog",
+  "fm_set_activation_resume_catalog",
   "fm_stats",
   "__wpk_fork_ref_gc_transit",
 ] as const;

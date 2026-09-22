@@ -5539,30 +5539,6 @@ fn define_funcref_call_probe(linker: &mut Linker<()>) -> anyhow::Result<()> {
 /// `WASM_DYLINK_MEM_INFO`.
 const WASM_DYLINK_MEM_INFO: u8 = 1;
 
-/// The fork-module's static resume-catalog cap, mirroring `RESUME_CATALOG_CAP`
-/// in `crates/fork-module/src/lib.rs` and TypeScript's
-/// `FORK_MODULE_RESUME_CATALOG_CAP` (`host/src/fork-module-backend.ts`). Sized
-/// to hold every real guest's catalog with headroom; a catalog past it fails
-/// loud (Phase 3: the module backs every fork, no JS fallback). The scratch
-/// below scales with it and is carved from the module's 1 MiB shadow-stack
-/// padding, so this must stay small enough that the padding still covers the
-/// catalog scratch plus the three single-page scratch regions and a workable
-/// shadow stack (256 KiB catalog scratch + 3 * 64 KiB pages leaves ~576 KiB).
-const FORK_MODULE_RESUME_CATALOG_CAP: usize = 65_536;
-
-/// N1-I4 Task 3: a small, fixed-size, host-owned scratch region — big enough
-/// to hold [`FORK_MODULE_RESUME_CATALOG_CAP`] `u32` ordinals (exactly 64 KiB)
-/// — carved out of the co-resident fork-module's OWN shadow-stack padding
-/// (see [`instantiate_fork_module`]'s `catalog_scratch_base` computation) and
-/// used ONCE, synchronously, before the guest's `_start` ever runs: staging
-/// the resume-catalog ordinals `fm_set_resume_catalog` reads. Mirrors the
-/// TRANSIENT half of `ForkModuleBackendOptions.reserveRegion`/`releaseRegion`
-/// (`host/src/fork-module-backend.ts`'s `setup()`) — this host does not need
-/// a general-purpose reserve/release cycle because this scratch is used and
-/// abandoned before the guest's own allocator ever starts, so no later guest
-/// code can ever observe or collide with it.
-const FORK_MODULE_CATALOG_SCRATCH_BYTES: usize = FORK_MODULE_RESUME_CATALOG_CAP * 4;
-
 /// N1-I5b Task 1: a small, fixed-size, host-owned scratch region for the
 /// capture-side `__wpk_fork_ref_scratch_reserve`/`_release` imports — see
 /// [`NativeReferenceCapture::scratch_reserve`]'s doc comment for why this is
@@ -5670,7 +5646,7 @@ fn read_linked_frame_fixed_prefix_size(wasm_bytes: &[u8]) -> anyhow::Result<Opti
 }
 
 /// One decoded `kandelo.wpk_fork.resume_catalog` (KFRC) record: the
-/// deterministic `function_ordinal` `fm_set_resume_catalog` numbers the
+/// deterministic `function_ordinal` `fm_set_activation_resume_catalog` numbers the
 /// module's OWN resume slots from (mirrors the TS `ForkResumeCatalogRecord`).
 ///
 /// The record's second column, `local_catalog_slot`, is NOT carried: it is
@@ -6299,12 +6275,6 @@ pub(crate) fn compute_guest_fork_format(wasm_bytes: &[u8]) -> anyhow::Result<Opt
         return Ok(None);
     };
     let records = read_fork_resume_catalog_records(wasm_bytes)?;
-    anyhow::ensure!(
-        records.len() <= FORK_MODULE_RESUME_CATALOG_CAP,
-        "resume catalog of {} entries exceeds the module cap {}",
-        records.len(),
-        FORK_MODULE_RESUME_CATALOG_CAP
-    );
     let catalog_ordinals = records.iter().map(|r| r.function_ordinal).collect();
     let gc_codec_descriptor = read_gc_codec_descriptor_section(wasm_bytes)?;
     let template_id: [u8; 32] = {
@@ -6463,14 +6433,22 @@ pub struct ForkModule {
     /// shadow stack ([`FORK_MODULE_SHADOW_STACK_BYTES`]). The region is
     /// `[memory_base, memory_base + region_bytes)`.
     pub region_bytes: usize,
-    /// N1-I4 Task 3: first byte of a [`FORK_MODULE_CATALOG_SCRATCH_BYTES`]
-    /// host-owned scratch region carved out of this module's OWN
+    /// N1-I4 Task 3: first byte of a host-owned scratch region of
+    /// `catalog_scratch_bytes` bytes carved out of this module's OWN
     /// shadow-stack padding (`[memory_base + static_bytes, memory_base +
-    /// static_bytes + FORK_MODULE_CATALOG_SCRATCH_BYTES)`), used ONCE to
-    /// stage the resume-catalog ordinals before calling `fm_set_resume_
-    /// catalog` — see [`compute_guest_fork_format`] and its caller in
-    /// `spawn_guest_thread`.
+    /// static_bytes + catalog_scratch_bytes)`), used ONCE to stage the
+    /// resume-catalog ordinals before calling
+    /// `fm_set_activation_resume_catalog` — see [`compute_guest_fork_format`]
+    /// and its caller in `spawn_guest_thread`.
+    ///
+    /// SIZED FROM THE GUEST'S OWN CATALOG, not from a cap: the module stores
+    /// the catalog on its arena now and has no cap to mirror, so the scratch
+    /// is exactly `catalog_ordinal_count * 4` bytes, which is what the seed
+    /// writes. Used and abandoned before the guest's `_start` runs, so no
+    /// later guest code can observe or collide with it.
     pub catalog_scratch_base: usize,
+    /// Bytes at `catalog_scratch_base`: the resume catalog's `u32` ordinals.
+    pub catalog_scratch_bytes: usize,
     /// The page-aligned guest address of the KFMS module-state (reference
     /// transaction) arena [`drive_reference_replay`]'s `fm_begin_reference_
     /// replay` call reads. `instantiate_fork_module` writes the canonical
@@ -6512,7 +6490,7 @@ pub struct ForkModule {
     /// function table will never reconcile.
     pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
     pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
-    pub fm_set_resume_catalog: wasmtime::TypedFunc<(u32, u32), ()>,
+    pub fm_set_activation_resume_catalog: wasmtime::TypedFunc<(u32, u32, u32), ()>,
     /// `fm_publish_resume_assignment(activation) -> (count << 32) | ptr`, or
     /// `-1` with the reason in `fm_last_errno`.
     ///
@@ -6838,6 +6816,7 @@ pub(crate) fn instantiate_fork_module(
     externref_registry: Arc<Mutex<ExternrefRegistry>>,
     seed_empty_module_state_arena: bool,
     gc_codec_descriptor: Option<&[u8]>,
+    catalog_ordinal_count: usize,
 ) -> anyhow::Result<ForkModule> {
     let fork_module_wasm_path = crate::fork_module_path();
     let wasm_bytes = std::fs::read(&fork_module_wasm_path)
@@ -6858,9 +6837,10 @@ pub(crate) fn instantiate_fork_module(
     let (fm_mem_size, fm_mem_align) = read_fork_module_mem_info(&wasm_bytes)?;
     let fm_static_bytes = fm_mem_size.div_ceil(fm_mem_align) * fm_mem_align;
     let catalog_scratch_base = memory_base + fm_static_bytes;
+    let catalog_scratch_bytes = catalog_ordinal_count * 4;
     anyhow::ensure!(
-        catalog_scratch_base + FORK_MODULE_CATALOG_SCRATCH_BYTES <= memory_base + region_bytes,
-        "fork-module catalog scratch ({FORK_MODULE_CATALOG_SCRATCH_BYTES} bytes) does not fit in \
+        catalog_scratch_base + catalog_scratch_bytes <= memory_base + region_bytes,
+        "fork-module catalog scratch ({catalog_scratch_bytes} bytes) does not fit in \
          the module's shadow-stack padding"
     );
 
@@ -6880,7 +6860,7 @@ pub(crate) fn instantiate_fork_module(
     // `module_state_root` header here; see that function's doc comment for
     // why an empty (zero-record) arena is a truthful, not fabricated, value
     // for every native fork today.
-    let reference_scratch_base = (catalog_scratch_base + FORK_MODULE_CATALOG_SCRATCH_BYTES)
+    let reference_scratch_base = (catalog_scratch_base + catalog_scratch_bytes)
         .div_ceil(WASM_PAGE_SIZE)
         * WASM_PAGE_SIZE;
     anyhow::ensure!(
@@ -7090,9 +7070,10 @@ pub(crate) fn instantiate_fork_module(
         memory_base,
         region_bytes,
         catalog_scratch_base,
+        catalog_scratch_bytes,
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32, u32) => ()),
         fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
-        fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
+        fm_set_activation_resume_catalog: fm_func!("fm_set_activation_resume_catalog": (u32, u32, u32) => ()),
         fm_publish_resume_assignment: fm_func!("fm_publish_resume_assignment": u32 => i64),
         fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
@@ -7159,7 +7140,7 @@ pub(crate) fn instantiate_fork_module(
 /// Mirrors `ForkResumeTable.registerActivation` (`host/src/fork-resume-
 /// table.ts`) exactly: ask the module for the whole activation's decision, and
 /// hand the guest its own `(ptr, count)`. The module decided every slot when
-/// `fm_set_resume_catalog` seeded this guest's ordinals and writes that
+/// `fm_set_activation_resume_catalog` seeded this guest's ordinals and writes that
 /// decision into the memory it and the guest SHARE; the guest's emitted
 /// `__wpk_fork_place_resume_thunks` copies each thunk out of its own
 /// `__wpk_fork_resume_catalog` table into the module's resume table. Two calls,
@@ -7675,6 +7656,7 @@ fn spawn_guest_thread(
                 // the SAME address and must not be re-seeded).
                 matches!(fork_entry, ForkEntry::Normal | ForkEntry::ChildBorrowedReplay { .. }),
                 fork_format.as_ref().and_then(|f| f.gc_codec_descriptor.as_deref()),
+                fork_format.as_ref().map_or(0, |f| f.catalog_ordinals.len()),
             ) {
                 Ok(fm) => {
                     // The five frame imports, bound by name because each is
@@ -7781,27 +7763,40 @@ fn spawn_guest_thread(
                                 return;
                             }
                         }
-                        if !fmt.catalog_ordinals.is_empty() {
+                        // Activation 0's catalog, through the one seeding
+                        // entry every activation uses. An EMPTY catalog is
+                        // seeded too: the module distinguishes "registered,
+                        // holding nothing" from "never registered", and only
+                        // the latter refuses a replay.
+                        {
                             let mut buf = Vec::with_capacity(fmt.catalog_ordinals.len() * 4);
                             for ordinal in &fmt.catalog_ordinals {
                                 buf.extend_from_slice(&ordinal.to_le_bytes());
                             }
+                            if buf.len() > fm.catalog_scratch_bytes {
+                                eprintln!(
+                                    "resume catalog of {} bytes overruns its {}-byte scratch",
+                                    buf.len(),
+                                    fm.catalog_scratch_bytes
+                                );
+                                return;
+                            }
                             unsafe { write_bytes(&guest_mem, fm.catalog_scratch_base, &buf) };
-                            if let Err(e) = fm.fm_set_resume_catalog.call(
+                            if let Err(e) = fm.fm_set_activation_resume_catalog.call(
                                 &mut store,
-                                (fm.catalog_scratch_base as u32, fmt.catalog_ordinals.len() as u32),
+                                (0, fm.catalog_scratch_base as u32, fmt.catalog_ordinals.len() as u32),
                             ) {
-                                eprintln!("fm_set_resume_catalog failed: {e:#}");
+                                eprintln!("fm_set_activation_resume_catalog failed: {e:#}");
                                 return;
                             }
                             match fm.fm_last_errno.call(&mut store, ()) {
                                 Ok(0) => {}
                                 Ok(errno) => {
-                                    eprintln!("fm_set_resume_catalog failed: errno {errno}");
+                                    eprintln!("fm_set_activation_resume_catalog failed: errno {errno}");
                                     return;
                                 }
                                 Err(e) => {
-                                    eprintln!("fm_last_errno after fm_set_resume_catalog failed: {e:#}");
+                                    eprintln!("fm_last_errno after fm_set_activation_resume_catalog failed: {e:#}");
                                     return;
                                 }
                             }
@@ -11226,6 +11221,7 @@ fn run_worker_thread(
             // describes for a fork child.
             false,
             fork_format.as_ref().and_then(|f| f.gc_codec_descriptor.as_deref()),
+            fork_format.as_ref().map_or(0, |f| f.catalog_ordinals.len()),
         )
         .map_err(|e| anyhow::anyhow!("instantiate_fork_module failed: {e:#}"))?;
 
@@ -11304,18 +11300,26 @@ fn run_worker_thread(
             let errno = fm.fm_last_errno.call(&mut store, ())?;
             anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
             seed_activation_template_id(&mut store, &fm, guest_mem, &fmt.template_id)?;
-            if !fmt.catalog_ordinals.is_empty() {
+            // Activation 0's catalog, empty or not, through the one seeding
+            // entry every activation uses (see `spawn_guest_thread`'s copy).
+            {
                 let mut buf = Vec::with_capacity(fmt.catalog_ordinals.len() * 4);
                 for ordinal in &fmt.catalog_ordinals {
                     buf.extend_from_slice(&ordinal.to_le_bytes());
                 }
+                anyhow::ensure!(
+                    buf.len() <= fm.catalog_scratch_bytes,
+                    "resume catalog of {} bytes overruns its {}-byte scratch",
+                    buf.len(),
+                    fm.catalog_scratch_bytes
+                );
                 unsafe { write_bytes(guest_mem, fm.catalog_scratch_base, &buf) };
-                fm.fm_set_resume_catalog.call(
+                fm.fm_set_activation_resume_catalog.call(
                     &mut store,
-                    (fm.catalog_scratch_base as u32, fmt.catalog_ordinals.len() as u32),
+                    (0, fm.catalog_scratch_base as u32, fmt.catalog_ordinals.len() as u32),
                 )?;
                 let errno = fm.fm_last_errno.call(&mut store, ())?;
-                anyhow::ensure!(errno == 0, "fm_set_resume_catalog failed: errno {errno}");
+                anyhow::ensure!(errno == 0, "fm_set_activation_resume_catalog failed: errno {errno}");
             }
             // N1-F6: seed activation 0's GC-layout catalog AFTER `fm_set_format`
             // reset the per-worker catalogs, on every worker carrying a GC codec
@@ -14687,6 +14691,7 @@ mod fork_module_tests {
             Arc::new(Mutex::new(ExternrefRegistry::new())),
             true,
             None,
+            0,
         )?;
 
         assert!(fork_module.region_bytes > 0, "expected a non-empty reserved region");
@@ -14760,6 +14765,7 @@ mod fork_module_tests {
             Arc::new(Mutex::new(ExternrefRegistry::new())),
             true,
             None,
+            0,
         )?;
         fm.fm_set_format.call(&mut *store, (4, 0, 0, 0, 0))?;
         let errno = fm.fm_last_errno.call(&mut *store, ())?;

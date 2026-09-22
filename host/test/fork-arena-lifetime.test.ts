@@ -79,21 +79,19 @@ describe("arena record lifetime", () => {
     expect(x.slots(1, LATER, 0), "five slots freed on the second release").toBe(5);
   });
 
-  it("re-seeds the process-wide catalog over its own released record", () => {
-    // THE SAME-ACTIVATION ROUND TRIP, which the activation-keyed entry above
-    // cannot drive. `fm_set_activation_resume_catalog` REFUSES a re-seed by
-    // design -- `set_activation_resume_catalog_impl` scans its index and
-    // answers `EINVAL` for an activation it has already seen, once per worker,
-    // and a release of the resume slots does not clear that index. That guard
-    // belongs to a different store and is not what this file is about.
-    //
-    // `fm_set_resume_catalog` is the entry that DOES re-decide: it is activation
-    // 0's, the host calls it once per worker, and `resume_reseed` frees the old
-    // assignment before registering the new one. So it is the one that exercises
+  it("re-seeds an activation's catalog over its own released record", () => {
+    // THE SAME-ACTIVATION ROUND TRIP. A re-seed through
+    // `fm_set_activation_resume_catalog` REPLACES the catalog record and
+    // re-decides the slots: `resume_reseed` frees the old assignment before
+    // registering the new one. That used to be true only of the process-wide
+    // entry for activation 0 (`fm_set_resume_catalog`, deleted with the store
+    // behind it) while the per-activation entry refused a re-seed with
+    // `EINVAL`; there is one entry and one rule now, so this exercises
     // release-then-allocate on a single activation through the arena, which is
-    // the lifetime this file asserts.
+    // the lifetime this file asserts. Activation 0 because that is the seed
+    // every worker's `setup()` performs.
     const x = arenaFixture("arena lifetime reseed");
-    x.seedProcessCatalog([10, 20, 30]);
+    x.seedActivationCatalog(0, [10, 20, 30]);
     expect(x.errno(), "the first seed").toBe(0);
     expect(x.publishedPairs(0)).toEqual([
       [10, 1],
@@ -103,7 +101,7 @@ describe("arena record lifetime", () => {
 
     // The re-seed frees the three slots and allocates a NEW record for five.
     // Its slots are the freed 1, 2, 3 reused smallest-first, then 4 and 5.
-    x.seedProcessCatalog([11, 22, 33, 44, 55]);
+    x.seedActivationCatalog(0, [11, 22, 33, 44, 55]);
     expect(x.errno(), "the re-seed").toBe(0);
     expect(x.publishedPairs(0), "five records, none of them the old three")
       .toEqual([

@@ -82,17 +82,6 @@ export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
 const FORK_MODULE_ENOMEM = 12;
 
 /**
- * The module's resume-catalog capacity, in ordinals.
- *
- * DUPLICATED from `RESUME_CATALOG_CAP` in `crates/fork-module/src/lib.rs`, whose
- * comment names THIS file as its counterpart -- the module sizes a static
- * `[u32; CAP]` arena from it, so a host that staged more would be writing past
- * the end of it. Pinned against that constant by
- * `host/test/fork-module-backend.test.ts`.
- */
-export const FORK_MODULE_RESUME_CATALOG_CAP = 65_536;
-
-/**
  * Drive-table slots reserved per activation.
  *
  * DUPLICATED from `DRIVE_SLOTS_PER_ACTIVATION` in `fork-codec`; the module
@@ -195,11 +184,7 @@ export class ForkModuleContinuationBackend {
   private readonly label: string;
   private didSetup = false;
 
-  /**
-   * Read lazily, so the capacity check below genuinely runs BEFORE any export is
-   * touched -- which is what lets a caller prove the boundary with a stand-in
-   * instance, and is what `fork-module-backend-coarse-failures` asserts.
-   */
+  /** Read lazily: the constructor touches no export. */
   private get exports(): Record<string, (...args: never[]) => unknown> {
     return this.options.instance.exports as Record<
       string,
@@ -209,16 +194,6 @@ export class ForkModuleContinuationBackend {
 
   constructor(private readonly options: ForkModuleBackendOptions) {
     this.label = options.label ?? "fork-module backend";
-    // Checked HERE, not in `setup()`: it needs no module call, and a catalog
-    // over the cap is a fact about the guest that is knowable the moment this is
-    // constructed. The module sizes a static `[u32; CAP]` arena from the same
-    // number, so staging more would write past its end.
-    if (options.catalogOrdinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
-      throw new Error(
-        `${this.label}: a resume catalog of ${options.catalogOrdinals.length} ` +
-          `ordinals exceeds the module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
-      );
-    }
   }
 
   /** The errno the last module call reported. */
@@ -267,13 +242,9 @@ export class ForkModuleContinuationBackend {
     );
     // The catalog is seeded AFTER the format, which resets it. Seeding first
     // would be silently discarded -- the bug the module's own reset comment
-    // records having been hit on real forks.
-    const ordinals = this.options.catalogOrdinals;
-    const bytes = new Uint8Array(ordinals.length * 4);
-    const view = new DataView(bytes.buffer);
-    ordinals.forEach((ordinal, i) => view.setUint32(i * 4, ordinal >>> 0, true));
-    const at = this.stage(bytes, "resume catalog");
-    this.call("fm_set_resume_catalog", at, ordinals.length);
+    // records having been hit on real forks. Activation 0 seeds through the
+    // same entry as every dlopen side module; the module keeps one store.
+    this.setActivationResumeCatalog(0, this.options.catalogOrdinals);
     this.didSetup = true;
   }
 
@@ -357,21 +328,15 @@ export class ForkModuleContinuationBackend {
   /**
    * One activation's own resume-target ordinals.
    *
-   * Distinct from the process catalog `setup()` seeds: a side module loaded by
-   * `dlopen` brings its own resume targets, and its slot numbering has to match
-   * the funcref table the module indexes for it.
+   * Activation 0's is what `setup()` seeds; a side module loaded by `dlopen`
+   * brings its own resume targets, and its slot numbering has to match the
+   * funcref table the module indexes for it. No cap: the module stores the
+   * catalog on its arena and answers the channel's own errno when it cannot.
    */
   setActivationResumeCatalog(
     activationId: number,
     ordinals: readonly number[],
   ): void {
-    if (ordinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
-      throw new Error(
-        `${this.label}: activation ${activationId}'s catalog of ` +
-          `${ordinals.length} ordinals exceeds the module cap ` +
-          `${FORK_MODULE_RESUME_CATALOG_CAP}`,
-      );
-    }
     const bytes = new Uint8Array(ordinals.length * 4);
     const view = new DataView(bytes.buffer);
     ordinals.forEach((ordinal, i) => view.setUint32(i * 4, ordinal >>> 0, true));

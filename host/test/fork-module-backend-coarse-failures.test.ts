@@ -29,10 +29,7 @@ import {
   type ForkModuleExports,
   instantiateForkModule,
 } from "../src/fork-module-instance";
-import {
-  ForkModuleContinuationBackend,
-  FORK_MODULE_RESUME_CATALOG_CAP,
-} from "../src/fork-module-backend";
+import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
 import {
   ContinuationAllocationError,
   type LinkedFrameFormatDescriptor,
@@ -128,27 +125,9 @@ describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
   });
 });
 
-// MODULE-OR-FATAL (Phase 4 point of no return): the co-resident module backs
-// EVERY fork; there is no JS continuation fallback. A fork the module cannot
-// back (here: a resume catalog larger than the module's static BSS cap) must
-// FAIL LOUD at construction, never silently drop to a deleted JS route.
-describe("ForkModuleContinuationBackend module-or-fatal capacity boundary", () => {
-  it("a resume catalog past the module cap is a loud fatal, not a silent JS route", () => {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-    const overCap = new Array<number>(FORK_MODULE_RESUME_CATALOG_CAP + 1).fill(0);
-    expect(
-      () =>
-        new ForkModuleContinuationBackend({
-          // The cap check runs in the constructor before any export is touched,
-          // so an empty instance stand-in is sufficient to prove the boundary.
-          instance: {} as unknown as ForkModuleInstance,
-          memory,
-          ptrWidth: 4,
-          format: format(128),
-          catalogOrdinals: overCap,
-          channelBase: CHANNEL_BASE,
-          label: "module-or-fatal",
-        }),
-    ).toThrow(/exceeds the module cap/);
-  });
-});
+// WHAT USED TO BE HERE: a "module-or-fatal capacity boundary" test, asserting
+// that a resume catalog past `FORK_MODULE_RESUME_CATALOG_CAP` threw at
+// construction. The cap is gone: the module stores every catalog on its arena
+// and a catalog it cannot map fails with the channel's own errno through
+// `fm_set_activation_resume_catalog`, which is the `call()` throw the other
+// tests in this file already cover.

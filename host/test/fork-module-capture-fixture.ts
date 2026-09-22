@@ -291,6 +291,18 @@ export function fixture(): Fixture {
   });
 
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+  // Activation 0's resume catalog, EMPTY, seeded the way every worker's
+  // `setup()` seeds it before any fork. The module registers an activation's
+  // resume slots from its seeded catalog and from nothing else: a replay of
+  // an activation that never seeded one is refused with `EINVAL`, because a
+  // module numbering slots by a rule the guest's resume table does not share
+  // is the divergence the seeded catalog exists to rule out. No test on this
+  // rig commits a frame, so an empty catalog is the truthful one; a test that
+  // did would seed the ordinals it commits, as a real guest's catalog holds
+  // them. Two mappings (a directory chunk and a record chunk) precede every
+  // later one because of this, which is why nothing may be staged inside the
+  // responder's range -- see `openCapture`.
+  seedEmptyResumeCatalog(x, 0);
   const base = (x.fm_drive_table_base as (a: number) => number)(0);
   const table = fm.driveTable;
   if (table.length < base + 14) table.grow(base + 14 - table.length);
@@ -332,6 +344,24 @@ export function fixture(): Fixture {
     arena: (op, arg = 0) => Number(call(op, arg)),
     worker,
   };
+}
+
+/**
+ * Seed an EMPTY resume catalog for `activation`, as a host does for an
+ * activation whose module has no fork-instrumented function. The module keeps
+ * the record and treats "registered, holding nothing" as distinct from "never
+ * registered", which only the latter refuses.
+ */
+export function seedEmptyResumeCatalog(x: Record<string, unknown>, activation: number): void {
+  (x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
+    activation,
+    0,
+    0,
+  );
+  const errno = (x.fm_last_errno as () => number)();
+  if (errno !== 0) {
+    throw new Error(`seeding activation ${activation}'s empty resume catalog: errno ${errno}`);
+  }
 }
 
 /** Put a template id for `activation` in guest memory and seed it. */
@@ -485,6 +515,9 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): void {
     new Uint8Array(f.memory.buffer, at, 32).fill(0xb0 + index);
     seedTemplateId(f, activation, at);
     expect(f.errno(), `template id for activation ${activation}`).toBe(0);
+    // And its resume catalog, empty, as `dlopen` seeds a side module's before
+    // the fork that carries it; see `fixture()` for why a replay needs one.
+    seedEmptyResumeCatalog(f.x, activation);
   });
 
   for (const activation of [0, ...sides]) {
@@ -597,6 +630,13 @@ export interface CapturedAggregate {
  * Returns the sealed root, the leaf recipe ids in the order they were interned,
  * and the aggregate recipe ids in theirs.
  */
+/**
+ * Where `captureGraph` stages aggregate scalars by default: page 0, above the
+ * template ids (2048), the sides vector (4096) and the GC codec some tests
+ * stage at 8192, and far below `CHANNEL_BASE`.
+ */
+const SCALAR_SCRATCH = 16384;
+
 export function captureGraph(
   f: Fixture,
   leaves: readonly (readonly [kind: number, a: number, b: number])[],
@@ -612,7 +652,15 @@ export function captureGraph(
     return id;
   });
 
-  let scalarAt = options.scalarStagingBase ?? MMAP_FLOOR + 6 * PAGE;
+  // LOW scratch, not `MMAP_FLOOR + 6 * PAGE` as it was: the responder
+  // bump-allocates upward from `MMAP_FLOOR` and never clears a page, so bytes
+  // staged there survive only while fewer than six mappings precede the one
+  // that lands on them -- and the seeds `fixture()` and `openCapture` now make
+  // (an empty resume catalog per activation, a directory chunk and a record
+  // chunk for the first) take mappings BEFORE the capture's own. Same finding
+  // as the sides vector in `fork-module-capture-drive.test.ts` and the codec
+  // in `fork-module-gc-replay.test.ts`.
+  let scalarAt = options.scalarStagingBase ?? SCALAR_SCRATCH;
 
   // CLAIM every aggregate before building any edge vector. A recipe id has to
   // exist before an edge can name it, so a struct<->array CYCLE -- the shape the
@@ -813,16 +861,6 @@ export interface ArenaFixture {
   /** `fm_set_activation_exception_codec` with the raw KFEC section staged first. */
   seedActivationExceptionCodec: (activation: number, section: Uint8Array) => void;
   /**
-   * `fm_set_resume_catalog` -- the PROCESS-WIDE seed, which is activation 0's.
-   *
-   * A different entry from `seedActivationCatalog`, and the difference matters:
-   * activation 0's ordinals reach `resume_register_impl` through
-   * `resume_catalog()` rather than `activation_catalog(0)`, so this is the only
-   * way to drive that arm. `host/src/fork-module-backend.ts` `setup()` calls it
-   * on every worker.
-   */
-  seedProcessCatalog: (ordinals: readonly number[]) => void;
-  /**
    * Grow the module's resume table to cover `slots`, standing in for the guest.
    *
    * `fm_resume_slots` op 1 is the `dlclose` release, and its first pass nulls
@@ -985,16 +1023,6 @@ export function arenaFixture(label = "arena"): ArenaFixture {
         activation,
         ARENA_STAGING_AT,
         section.length,
-      );
-    },
-    seedProcessCatalog: (ordinals) => {
-      const staged = new Uint8Array(ordinals.length * 4);
-      const view = new DataView(staged.buffer);
-      ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
-      new Uint8Array(memory.buffer, ARENA_STAGING_AT, staged.length).set(staged);
-      (x.fm_set_resume_catalog as (p: number, c: number) => void)(
-        ARENA_STAGING_AT,
-        ordinals.length,
       );
     },
     growResumeTable: (slots) => {
