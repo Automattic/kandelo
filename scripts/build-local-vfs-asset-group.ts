@@ -178,11 +178,10 @@ export async function buildLocalVfsAssetGroup(
       }
     }
   }
-  if (expectedAssets.size !== 80) {
-    throw new Error(
-      `Pages product images reference ${expectedAssets.size} lazy bodies, expected 80`,
-    );
-  }
+  // WHY: the expected lazy closure is derived from the product images
+  // themselves and every body is verified against the byte identity those
+  // images record, so its size is not a separate invariant. A fixed count
+  // here only went stale whenever a product gained or lost a lazy body.
 
   const assetMembers = [...expectedAssets.values()].map(
     ({ sourceMember }) => sourceMember,
@@ -195,8 +194,8 @@ export async function buildLocalVfsAssetGroup(
     );
   }
   const allMembers = [...imageMembers, ...assetMembers];
-  if (allMembers.length !== 87 || new Set(allMembers).size !== 87) {
-    throw new Error("Pages VFS closure must contain 87 distinct snapshot members");
+  if (new Set(allMembers).size !== allMembers.length) {
+    throw new Error("Pages VFS closure must contain distinct snapshot members");
   }
   const snapshots = requireSnapshots(
     session.snapshots(allMembers, MAX_CAPTURE_BYTES),
@@ -292,7 +291,7 @@ export async function buildLocalVfsAssetGroup(
       }),
       schema: 1,
     };
-    validateStagedGroup(stagedGroup, manifest);
+    const stagedFileCount = validateStagedGroup(stagedGroup, manifest);
     validateStagedProductMap({
       finalMap: map,
       products,
@@ -305,6 +304,7 @@ export async function buildLocalVfsAssetGroup(
     publishGeneratedTargets({
       assetGroupDirectory,
       productMapPath,
+      stagedFileCount,
       stagedGroup,
       stagedMap,
     });
@@ -397,10 +397,11 @@ function requireSnapshots(
   });
 }
 
+/** Verify the staged group against its manifest; returns its file count. */
 function validateStagedGroup(
   root: string,
   manifest: VfsAssetGroupManifestV1,
-): void {
+): number {
   const expected = new Map<string, { bytes: number; sha256: string }>();
   const manifestBytes = readFileSync(join(root, "manifest.json"));
   expected.set("manifest.json", {
@@ -434,11 +435,14 @@ function validateStagedGroup(
       "staged local VFS asset-group inventory differs from its manifest",
     );
   }
+  return actual.size;
 }
 
 export function publishGeneratedTargets(options: {
   assetGroupDirectory: string;
   productMapPath: string;
+  // Verified size of the staged group; bounds the reuse comparison.
+  stagedFileCount: number;
   stagedGroup: string;
   stagedMap: string;
 }, operations: { rename(from: string, to: string): void } = {
@@ -458,7 +462,11 @@ export function publishGeneratedTargets(options: {
   let discardBackup = false;
   try {
     if (
-      treesEqual(options.stagedGroup, options.assetGroupDirectory) &&
+      treesEqual(
+        options.stagedGroup,
+        options.assetGroupDirectory,
+        options.stagedFileCount,
+      ) &&
       filesEqual(options.stagedMap, options.productMapPath)
     ) return;
     backupRoot = mkdtempSync(join(parent, ".local-vfs-asset-group-backup-"));
@@ -659,12 +667,16 @@ function inventory(
   return result;
 }
 
-function treesEqual(left: string, right: string): boolean {
+function treesEqual(
+  left: string,
+  right: string,
+  stagedFileCount: number,
+): boolean {
   if (!existsSync(right)) return false;
   const stagedInventory = inventory(left, {
     label: "staged asset group",
     maxBytes: MAX_CAPTURE_BYTES,
-    maxFiles: 88,
+    maxFiles: stagedFileCount,
   });
   const maxBytes = [...stagedInventory.values()].reduce(
     (total, identity) => total + identity.bytes,

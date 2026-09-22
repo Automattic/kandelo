@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -1835,13 +1835,17 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // Sealed package builds run tools from the root node_modules but never
     // install them; provision the locked tree here, before any node runs.
     crate::root_js_deps::ensure_root_js_dependencies(&repo)?;
-    generate_vfs_product_catalog(&repo)?;
-    generate_program_package_index(&repo)?;
+    report_phase("Generating the VFS product catalog and program index", || {
+        generate_vfs_product_catalog(&repo)?;
+        generate_program_package_index(&repo)
+    })?;
     let set = resolve_repo_file(&repo, &args.set, "supported set")?;
     let set = fs::canonicalize(&set)
         .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
     let registry = fixed_registry(&repo);
-    let graph = load_and_plan(&repo, &set, &registry)?;
+    let graph = report_phase("Planning the build graph", || {
+        load_and_plan(&repo, &set, &registry)
+    })?;
     let selected = select_graph_dependencies(&graph, &args.products)?;
 
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
@@ -1907,7 +1911,9 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let skip_receipts = if args.rebuild || args.verify_cache {
         BTreeMap::new()
     } else {
-        compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
+        report_phase("Checking cached packages", || {
+            compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
+        })
     };
     let skip_receipts = Arc::new(skip_receipts);
     let results = execute_graph_with_events(
@@ -2040,6 +2046,12 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // disk. Leave it in place instead of re-deriving and re-publishing it.
     // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
     let eligible = package_projection_is_eligible(&selected, &results);
+    let publication_started = if eligible {
+        eprintln!("==> Finalizing {}...", output_root.display());
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let publication = if eligible {
         carry_forward_published_nodes(
             &registry,
@@ -2142,6 +2154,9 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             }
         }
     };
+    if let Some(started) = publication_started {
+        report_phase_elapsed("Finalizing", started);
+    }
     if let Some(error) = &projection_finalization_error {
         if !aggregate_failed {
             eprintln!("{}", render_projection_failure_banner(color));
@@ -2895,6 +2910,24 @@ fn write_node_result_no_replace(path: &Path, result: &NodeExecutionResultV1) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Announce a long-running engine phase on stderr and, when it takes a second
+/// or more, how long it took, so a run never sits silent for minutes between
+/// the scheduler's per-node lines.
+fn report_phase<T>(label: &str, phase: impl FnOnce() -> T) -> T {
+    eprintln!("==> {label}...");
+    let started = std::time::Instant::now();
+    let result = phase();
+    report_phase_elapsed(label, started);
+    result
+}
+
+fn report_phase_elapsed(label: &str, started: std::time::Instant) {
+    let elapsed = started.elapsed();
+    if elapsed.as_secs() >= 1 {
+        eprintln!("    {label} took {:.1}s", elapsed.as_secs_f64());
+    }
+}
+
 fn run_child_process(
     repo: &Path,
     set: &Path,
@@ -2950,23 +2983,56 @@ fn run_child_process(
     if verify_cache {
         command.arg("--verify-cache");
     }
-    let output = command
-        .output()
+    // Stream the child's output as it is produced rather than after it exits:
+    // a package build can run for minutes, and holding its log until the end
+    // makes the whole run look stalled. Both streams go to our stderr, because
+    // our stdout is the machine-readable result channel.
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("spawn local-build child {}: {error}", node_label(node)))?;
-    forward_child_output(node, &output.stdout);
-    forward_child_output(node, &output.stderr);
+    let label = node_label(node);
+    let forwarders = [
+        child.stdout.take().map(|stream| forward_child_output(label.clone(), stream)),
+        child.stderr.take().map(|stream| forward_child_output(label.clone(), stream)),
+    ];
+    let status = child
+        .wait()
+        .map_err(|error| format!("wait for local-build child {label}: {error}"))?;
+    for forwarder in forwarders.into_iter().flatten() {
+        // A forwarder only fails if writing our own stderr fails; the child's
+        // result below is still authoritative.
+        let _ = forwarder.join();
+    }
     let bytes = read_stable_regular_file(result_json, 64 * 1024, "local-build child result")?;
-    let exit_code = output.status.code();
+    let exit_code = status.code();
     validate_child_result(node, receipt_required, exit_code, &bytes)
 }
 
-fn forward_child_output(node: &PlanNodeV1, bytes: &[u8]) {
-    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        eprint!("[{}] {}", node_label(node), String::from_utf8_lossy(line));
-        if !line.ends_with(b"\n") {
-            eprintln!();
+/// Copy one child output stream to stderr line by line, prefixing each line
+/// with the node label. Each line is written under the stderr lock so lines
+/// from concurrently running nodes interleave whole, never mid-line.
+fn forward_child_output(
+    label: String,
+    stream: impl Read + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stream);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match std::io::BufRead::read_until(&mut reader, b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&line);
+                    let text = text.strip_suffix('\n').unwrap_or(&text);
+                    let mut stderr = std::io::stderr().lock();
+                    let _ = writeln!(stderr, "[{label}] {text}");
+                }
+            }
         }
-    }
+    })
 }
 
 fn render_scheduler_event(event: SchedulerEventV1, color: bool, aggregate_failed: &mut bool) {

@@ -963,6 +963,11 @@ served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
 at `/candidate-b/`. A completed build is not freely relocatable, and
 `base: "./"` is not a supported substitute for choosing its public path.
 
+`./run.sh build-browser [--base /prefix/] [--out DIR]` performs every step
+below for one prefix (default `/`, output `apps/browser-demos/dist`) and
+fails if the output lacks `index.html`, `service-worker.js`, or the VFS
+group, or contains the private product map.
+
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
 way to build the seven active VFS products. Produce
@@ -985,8 +990,8 @@ VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
 ```
 
 Vite authenticates and copies the complete group beneath the owning output as
-`vfs-groups/release-1/`: manifest, seven unchanged images, and all 80 lazy
-assets. The private map is not published. Changing the public group path
+`vfs-groups/release-1/`: manifest, seven unchanged images, and every lazy
+asset those images reference. The private map is not published. Changing the public group path
 requires regenerating the complete manifest/images/assets handoff, updating
 the private map to its new manifest path, and rebuilding the distribution.
 Never move a group within an already completed build. Its complete group must
