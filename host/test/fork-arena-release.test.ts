@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -252,5 +254,116 @@ describe("arena chunk release", () => {
 
     // And 64 must NOT throw, so the boundary is pinned rather than assumed.
     expect(() => assertDirectoryWithinWalkBound(64)).not.toThrow();
+  });
+});
+
+/**
+ * The committed KFGC and KFEC fixtures the `fork-codec` decoder tests use,
+ * because both seeds DECODE what they are handed and refuse filler.
+ */
+const GC_CODEC = new Uint8Array(
+  readFileSync(new URL("../../crates/fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url)),
+);
+const EXCEPTION_CODEC = new Uint8Array(
+  readFileSync(
+    new URL("../../crates/fork-codec/testdata/exception-codec-wasm32.bin", import.meta.url),
+  ),
+);
+
+/** An activation that seeds only exception tags, so the scrub has an entry to drop. */
+const ACTIVATION_TAGS_ONLY = 13;
+/** An activation nothing seeds until the control assertion needs a fresh one. */
+const ACTIVATION_FRESH = 14;
+
+describe("GC-codec and exception-tag records", () => {
+  it("seeds both onto the arena and releases them with the activation", () => {
+    const x = arenaFixture("arena codec release");
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(0);
+    const mmapsBefore = x.mmaps();
+    const munmapsBefore = x.munmaps();
+
+    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
+    expect(x.errno(), "seeding the GC codec").toBe(0);
+    x.seedActivationExceptionCodec(ACTIVATION_A, EXCEPTION_CODEC);
+    expect(x.errno(), "seeding the exception codec").toBe(0);
+
+    // Two small records share one chunk; the directory took one more.
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(1);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(1);
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(1);
+    expect(x.mmaps() - mmapsBefore, "one mmap per chunk, directory included").toBe(2);
+
+    // An identical re-seed of either is a no-op: nothing new is mapped, and
+    // nothing is refused. A CONFLICTING one is refused: an empty section
+    // decodes as valid input and differs from the stored bytes.
+    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
+    expect(x.errno(), "identical GC codec re-seed").toBe(0);
+    x.seedActivationExceptionCodec(ACTIVATION_A, EXCEPTION_CODEC);
+    expect(x.errno(), "identical exception codec re-seed").toBe(0);
+    expect(x.mmaps() - mmapsBefore, "a re-seed maps nothing").toBe(2);
+    x.seedActivationGcCodec(ACTIVATION_A, new Uint8Array(0));
+    expect(x.errno(), "a conflicting GC codec is refused").toBe(22);
+    x.seedActivationExceptionCodec(ACTIVATION_A, new Uint8Array(0));
+    expect(x.errno(), "a conflicting exception codec is refused").toBe(22);
+
+    // Released through the dlclose entry, which returns 0 freed SLOTS (this
+    // activation registered no resume ordinals) and drops both records.
+    expect(x.slots(1, ACTIVATION_A, 0), `releasing activation ${ACTIVATION_A}`).toBe(0);
+    expect(x.errno()).toBe(0);
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(0);
+    expect(x.munmaps() - munmapsBefore, "one munmap per chunk released").toBe(2);
+  });
+
+  it("the COW-child scrub keeps the GC codec and drops everything else", () => {
+    // THE INHERITED-CODEC CASE. `arena_release_all` keeps `REC_KIND_GC_CODEC`
+    // because the native host was written to inherit the parent's codec on a
+    // COW child rather than re-seed it; a scrub that dropped the record broke
+    // `fm_build_gc_plan` with errno 22 for every GC / static-root fork on that
+    // host. No entry reads a codec back directly, so the record's survival
+    // is observed two ways: the chunk that holds it is NOT unmapped, and a
+    // CONFLICTING re-seed after the scrub is still refused with 22 -- which it
+    // can only be if the stored bytes are still there to differ from. A
+    // dropped record would accept the empty section as a first seed.
+    const x = arenaFixture("arena codec cow scrub");
+    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
+    expect(x.errno(), "seeding the GC codec").toBe(0);
+    x.seedActivationExceptionCodec(ACTIVATION_A, EXCEPTION_CODEC);
+    expect(x.errno(), "seeding A's exception codec").toBe(0);
+    x.seedActivationExceptionCodec(ACTIVATION_TAGS_ONLY, EXCEPTION_CODEC);
+    expect(x.errno(), "seeding a tags-only activation").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "two activations").toBe(2);
+    const mmapsBefore = x.mmaps();
+    const munmapsBefore = x.munmaps();
+
+    x.setFormat(); // the COW-child scrub
+
+    // The tags-only activation is gone with its only record; A survives on
+    // its codec alone. Both chunks still hold something, so nothing is
+    // returned.
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "only the codec's owner").toBe(1);
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "the codec's chunk stays").toBe(1);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "the directory stays").toBe(1);
+    expect(x.munmaps() - munmapsBefore, "the scrub unmapped nothing").toBe(0);
+
+    // The codec is still THERE: the Node/browser host's identical re-seed is
+    // a no-op, and a conflicting one is refused against the stored bytes.
+    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
+    expect(x.errno(), "the child's identical re-seed").toBe(0);
+    x.seedActivationGcCodec(ACTIVATION_A, new Uint8Array(0));
+    expect(x.errno(), "a conflicting re-seed is refused: the codec survived").toBe(22);
+    // The control: the same empty section is a legitimate FIRST seed for an
+    // activation that has none, so the 22 above is a comparison, not a rule.
+    x.seedActivationGcCodec(ACTIVATION_FRESH, new Uint8Array(0));
+    expect(x.errno(), "an empty first seed is accepted").toBe(0);
+    // And the exception tags did NOT survive: the child re-seeds them, and its
+    // seed is a first seed again -- a DIFFERENT set is accepted where before
+    // the scrub it was refused.
+    x.seedActivationExceptionCodec(ACTIVATION_A, new Uint8Array(0));
+    expect(x.errno(), "A's tags were dropped, so an empty seed is a first seed").toBe(0);
+    expect(x.mmaps() - mmapsBefore, "all of that fit the surviving chunk").toBe(0);
   });
 });

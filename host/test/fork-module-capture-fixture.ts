@@ -802,6 +802,17 @@ export interface ArenaFixture {
    */
   seedActivationImports: (space: number, activation: number, section: Uint8Array) => void;
   /**
+   * `fm_set_activation_gc_codec` with the raw KFGC section staged first, on
+   * the same one-page staging area and with the same overrun refusal as
+   * `seedActivationImports`. An EMPTY section is accepted by the module
+   * without decoding, which makes it a valid CONFLICTING re-seed against any
+   * non-empty one -- the one way a test can ask "is the stored codec still
+   * there?" without a second well-formed codec to seed.
+   */
+  seedActivationGcCodec: (activation: number, section: Uint8Array) => void;
+  /** `fm_set_activation_exception_codec` with the raw KFEC section staged first. */
+  seedActivationExceptionCodec: (activation: number, section: Uint8Array) => void;
+  /**
    * `fm_set_resume_catalog` -- the PROCESS-WIDE seed, which is activation 0's.
    *
    * A different entry from `seedActivationCatalog`, and the difference matters:
@@ -949,6 +960,32 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       (
         x.fm_set_activation_imports as (s: number, a: number, p: number, n: number) => void
       )(space, activation, ARENA_STAGING_AT, section.length);
+    },
+    seedActivationGcCodec: (activation, section) => {
+      if (section.length > PAGE) {
+        throw new Error(
+          `seedActivationGcCodec: a ${section.length}-byte section overruns the one-page staging area`,
+        );
+      }
+      new Uint8Array(memory.buffer, ARENA_STAGING_AT, section.length).set(section);
+      (x.fm_set_activation_gc_codec as (a: number, p: number, n: number) => void)(
+        activation,
+        ARENA_STAGING_AT,
+        section.length,
+      );
+    },
+    seedActivationExceptionCodec: (activation, section) => {
+      if (section.length > PAGE) {
+        throw new Error(
+          `seedActivationExceptionCodec: a ${section.length}-byte section overruns the one-page staging area`,
+        );
+      }
+      new Uint8Array(memory.buffer, ARENA_STAGING_AT, section.length).set(section);
+      (x.fm_set_activation_exception_codec as (a: number, p: number, n: number) => void)(
+        activation,
+        ARENA_STAGING_AT,
+        section.length,
+      );
     },
     seedProcessCatalog: (ordinals) => {
       const staged = new Uint8Array(ordinals.length * 4);

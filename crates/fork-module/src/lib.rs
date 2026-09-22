@@ -733,17 +733,22 @@ mod wasm {
     /// counter: a second tally of a fact the structure already holds can
     /// disagree with it, and this one would disagree by handing out a slot two
     /// activations both believe they own.
-    fn arena_for_each_record(kind: u32, mut visit: impl FnMut(u64, usize)) {
+    fn arena_for_each_record(kind: u32, mut visit: impl FnMut(u32, u64, usize)) {
         let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
         while chunk != 0 {
             let live = arena_u32(chunk + 20);
             for index in 0..live {
                 let entry =
                     chunk + ARENA_CHUNK_HEADER + u64::from(index) * DIRECTORY_ENTRY_BYTES;
+                let activation_id = arena_u64(entry) as u32;
                 let mut record = arena_u64(entry + 8);
                 while record != 0 {
                     if arena_u32(record + 8) == kind {
-                        visit(record + RECORD_HEADER, arena_u32(record + 12) as usize);
+                        visit(
+                            activation_id,
+                            record + RECORD_HEADER,
+                            arena_u32(record + 12) as usize,
+                        );
                     }
                     record = arena_u64(record);
                 }
@@ -791,7 +796,7 @@ mod wasm {
         if tail != 0 {
             bits[words - 1] &= (1u64 << tail) - 1;
         }
-        arena_for_each_record(REC_KIND_RESUME_ASSIGNMENT, |at, byte_len| {
+        arena_for_each_record(REC_KIND_RESUME_ASSIGNMENT, |_, at, byte_len| {
             for index in 0..(byte_len / RESUME_ASSIGNMENT_RECORD_BYTES) {
                 let slot = arena_u32(at + (index * RESUME_ASSIGNMENT_RECORD_BYTES) as u64 + 4);
                 if slot != 0 && slot < watermark {
@@ -1826,9 +1831,7 @@ mod wasm {
     const REC_KIND_RESUME_ASSIGNMENT: u32 = 1;
     const REC_KIND_KFIG: u32 = 2; // imported globals (space 0)
     const REC_KIND_KFIT: u32 = 3; // imported tables  (space 1)
-    #[allow(dead_code)]
     const REC_KIND_GC_CODEC: u32 = 4;
-    #[allow(dead_code)]
     const REC_KIND_EXN_TAGS: u32 = 5;
     #[allow(dead_code)]
     const REC_KIND_RESUME_CATALOG: u32 = 6;
@@ -2316,22 +2319,92 @@ mod wasm {
         arena_sweep_record_chunks(base);
     }
 
-    /// Drop EVERY record and unmap every chunk. Called from the COW-child scrub
-    /// in `set_format_impl`, after `CHANNEL_BASE` is stored.
+    /// Drop every record BUT THE GC CODECS, and unmap every chunk that empties.
+    /// Called from the COW-child scrub in `set_format_impl`, after
+    /// `CHANNEL_BASE` is stored.
+    ///
+    /// # Why one kind survives the scrub
+    ///
+    /// `REC_KIND_GC_CODEC` is deliberately kept. The Node/browser host
+    /// re-seeds every activation's GC codec on a COW child (`worker-main.ts`'s
+    /// per-activation `setActivationGcCodec`), but the native host was written
+    /// to rely on INHERITING the parent's already-seeded codec through the
+    /// memory clone instead, and a blanket reset of the codec store on
+    /// `fm_set_format` once destroyed that inherited codec and broke
+    /// `fm_build_gc_plan` with `errno 22` for every GC / static-root fork on
+    /// that host. When the codec was static BSS the scrub simply left its
+    /// counters alone; now that it is a record, leaving it alone means walking
+    /// the directory rather than unmapping every chunk blind. The kept record
+    /// is then what `set_activation_gc_codec_impl`'s identical-re-seed no-op
+    /// answers from, so a re-seeding host and an inheriting host converge on
+    /// the same codec, exactly as before.
+    ///
+    /// `crates/host-native/src/guest.rs` now re-seeds the codec after
+    /// `fm_set_format` on both of its launch paths, which would make this
+    /// exclusion unnecessary -- but retiring it is a native-host behaviour
+    /// change on a path the storage conversion does not otherwise touch, and
+    /// it is reported as a follow-up rather than bundled here.
+    ///
+    /// A kept chunk is a mapping the child inherited and keeps, which is what
+    /// the static floor (inside the same shared linear memory) amounted to.
     fn arena_release_all() {
         let base = channel_base().unwrap_or(0);
-        for head in [&RECORD_HEAD, &DIRECTORY_HEAD] {
-            let mut chunk = head.load(Ordering::Relaxed);
-            while chunk != 0 {
-                let next = arena_u64(chunk);
-                if base != 0 {
-                    let _ = channel_munmap(base, chunk, arena_u64(chunk + 8));
-                }
-                chunk = next;
-            }
-            head.store(0, Ordering::Relaxed);
-        }
+        // The memo first: the copy-down below can move the entry it names.
         arena_forget_memo();
+        let mut previous = 0u64;
+        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            let next = arena_u64(chunk);
+            let live = arena_u32(chunk + 20);
+            let mut kept = 0u32;
+            for index in 0..live {
+                let from = chunk + ARENA_CHUNK_HEADER + u64::from(index) * DIRECTORY_ENTRY_BYTES;
+                // Relink this activation's chain to the kept records only,
+                // returning every other record's bytes to its chunk.
+                let mut survivors_head = 0u64;
+                let mut survivors_tail = 0u64;
+                let mut record = arena_u64(from + 8);
+                while record != 0 {
+                    let following = arena_u64(record);
+                    if arena_u32(record + 8) == REC_KIND_GC_CODEC {
+                        arena_set_u64(record, 0);
+                        if survivors_tail == 0 {
+                            survivors_head = record;
+                        } else {
+                            arena_set_u64(survivors_tail, record);
+                        }
+                        survivors_tail = record;
+                    } else {
+                        let total =
+                            arena_record_total(u64::from(arena_u32(record + 12))) as u32;
+                        let owner = arena_chunk_of(record);
+                        if owner != 0 {
+                            let owner_live = arena_u32(owner + 20);
+                            arena_set_u32(owner + 20, owner_live.saturating_sub(total));
+                        }
+                    }
+                    record = following;
+                }
+                if survivors_head == 0 {
+                    continue; // nothing kept: the entry is compacted out
+                }
+                arena_set_u64(from + 8, survivors_head);
+                if kept != index {
+                    let to = chunk + ARENA_CHUNK_HEADER + u64::from(kept) * DIRECTORY_ENTRY_BYTES;
+                    arena_set_u64(to, arena_u64(from));
+                    arena_set_u64(to + 8, arena_u64(from + 8));
+                }
+                kept += 1;
+            }
+            arena_set_u32(chunk + 20, kept);
+            if kept == 0 {
+                arena_unlink_chunk(&DIRECTORY_HEAD, previous, chunk, base);
+            } else {
+                previous = chunk;
+            }
+            chunk = next;
+        }
+        arena_sweep_record_chunks(base);
     }
 
     /// How many chunks the record chain holds. Zero means nothing is mapped.
@@ -3072,55 +3145,24 @@ mod wasm {
     // activation to build `fork_codec::GcCodecHints` (the faithful port of the JS
     // `gcAllocationDependencies` / owner derivation).
     //
-    // Like the resume catalogs, storage is a fixed BSS byte arena plus a small
-    // index (activation id -> `[offset, byte_len)`), so it survives the per-fork
-    // bump-heap reset. Both are capped; overflow is a truthful `E2BIG` and the
-    // host keeps the JS drive-order for that program. A re-seeded activation is a
-    // truthful `EINVAL`.
-    /// A FLOOR, not a cap. Was `[u8; 262_144]` sized for "every activation's
-    /// KFGC section at once", reserved out of the guest's mmap window whether a
-    /// program forked or not, and still a hard bound that a bigger program hit.
-    ///
-    /// ONE MMAP PER SECTION DOES NOT WORK, and the reason is worth keeping.
-    /// `mmap_anonymous` rounds every length up to a whole 64 KiB wasm page
-    /// (`runtime-core/src/memory.rs`, pinned by `test_mmap_aligns_to_page`:
-    /// two 1-byte mappings land 0x10000 apart). That is mmap's contract, not a
-    /// shortcut, though NOT for the reason first written here. "Protection is
-    /// tracked per page" is false in Kandelo: `MemoryManager::Mapping::prot` is
-    /// "tracked but not enforced" and `sys_mprotect` is a no-op, because wasm
-    /// linear memory has no MMU. The real reasons are that 64 KiB is the wasm
-    /// page -- `memory.grow`'s unit, so the granularity the kernel can obtain
-    /// memory in -- and that `munmap` removes whole pages, so two mappings
-    /// sharing one could not be unmapped independently. So eight activations
-    /// holding a few
-    /// hundred bytes each would claim 512 KiB of pages to replace a 256 KiB
-    /// static they SHARED. Measured: that version passed 39 lifecycle tests and
-    /// failed P-11, whose process has 2-6 pages of slack.
-    ///
-    /// Sections therefore SHARE. Small ones pack into this floor; only when it
-    /// fills does a section get its own mapping. The index holds an ABSOLUTE
-    /// guest address either way, so a reader cannot tell the two apart and
-    /// nothing downstream has to care which it got.
-    const ACT_GC_CODEC_FLOOR: usize = 32_768;
-    const ACT_GC_CODEC_MAX_ACTS: usize = 64; // distinct activations
-
-    #[repr(C, align(8))]
-    struct ActGcCodecBytes(UnsafeCell<[u8; ACT_GC_CODEC_FLOOR]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActGcCodecBytes {}
-    static ACT_GC_CODEC_BYTES: ActGcCodecBytes =
-        ActGcCodecBytes(UnsafeCell::new([0u8; ACT_GC_CODEC_FLOOR]));
-
-    /// Each live entry is `[activation_id, guest_addr, byte_len]`.
-    #[repr(C, align(8))]
-    struct ActGcCodecIndex(UnsafeCell<[[u64; 3]; ACT_GC_CODEC_MAX_ACTS]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActGcCodecIndex {}
-    static ACT_GC_CODEC_INDEX: ActGcCodecIndex =
-        ActGcCodecIndex(UnsafeCell::new([[0u64; 3]; ACT_GC_CODEC_MAX_ACTS]));
-
-    static ACT_GC_CODEC_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
-    static ACT_GC_CODEC_BYTES_USED: AtomicU32 = AtomicU32::new(0);
+    // Storage: one arena record per activation under `REC_KIND_GC_CODEC`,
+    // holding the raw section bytes. An identical re-seed is a no-op, a
+    // conflicting one is `EINVAL`, and a section the arena cannot map fails
+    // with `channel_mmap`'s truthful `ENOMEM`/`EAGAIN`.
+    //
+    // WHAT THIS REPLACED, and what changed with the storage: a 32 KiB static
+    // floor the activations shared, a 64-entry index of `[activation_id,
+    // guest_addr, byte_len]` and two counters -- about 34 KiB of BSS
+    // subtracted from every fork-capable thread's mmap window whether the
+    // thread ever forked or not -- plus a spill branch that gave a section the
+    // floor could not hold a `channel_mmap` of its own. That spill mapping had
+    // NO release path: the index could not tell a floor address from a mapped
+    // one, so neither `dlclose` nor the COW-child scrub ever returned it. A
+    // record has the activation's lifetime instead. The floor's two caps
+    // (`E2BIG` for a 65th activation or a full floor) went with it.
+    //
+    // THE COW-CHILD SCRUB KEEPS THIS KIND, and only this kind. See
+    // `arena_release_all` for the inherited-codec reason.
 
     // The `hostExceptionOwner` the host computed (the smallest activation that
     // declared an exception descriptor), used to remap a host-exception exnref's
@@ -3131,26 +3173,12 @@ mod wasm {
 
     fn set_activation_gc_codec_impl(activation_id: u32, ptr: u64, byte_len: u64) -> Result<(), Errno> {
         let byte_len = usize::try_from(byte_len).map_err(|_| Errno::EINVAL)?;
-        let act_count = ACT_GC_CODEC_ACT_COUNT.load(Ordering::Relaxed) as usize;
-        let used = ACT_GC_CODEC_BYTES_USED.load(Ordering::Relaxed) as usize;
-        // Bound the incoming section against guest memory FIRST, so the identical-
-        // re-seed comparison below can read it safely.
         let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
         let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        if end > mem_len_bytes() {
-            return Err(Errno::EINVAL); // section region past the end of guest memory
-        }
-        // The raw incoming section bytes in guest linear memory.
-        // SAFETY: `[start, end)` is within guest linear memory (checked above). An
-        // empty section uses a valid empty slice rather than a possibly-null raw
-        // part (`from_raw_parts` requires a non-null base even for len 0).
-        let incoming: &[u8] = if byte_len == 0 {
-            &[]
-        } else {
-            unsafe {
-                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, byte_len)
-            }
-        };
+        // `EINVAL` when the section runs past the end of guest memory. An
+        // empty section is a valid empty slice rather than a raw part at a
+        // null base.
+        let incoming = guest_bytes(ptr, byte_len)?;
         // DECODE IT NOW, and discard the result.
         //
         // The module owns this wire format, so it is the module that should say
@@ -3169,63 +3197,29 @@ mod wasm {
         if !incoming.is_empty() {
             fork_codec::gc_codec::decode_gc_codec(incoming)?;
         }
-        // Idempotent re-seed of an already-present activation. A COW fork CHILD
-        // inherits the parent's already-seeded catalog through the memory clone
-        // (the module's BSS lives inside the shared linear memory and is NOT
-        // re-zeroed on instantiation), yet the production Node/browser host
-        // RE-SEEDS every activation's GC codec on the child (`worker-main.ts`'s
-        // per-activation `setActivationGcCodec`), while the native host relies on
-        // inheritance and does NOT re-seed. A GC codec is the activation module's
-        // invariant KFGC section, so a re-seed is byte-IDENTICAL by construction:
-        // accept it as a no-op here so BOTH hosts converge on the same (correct)
-        // catalog. This replaces a blanket `fm_set_format` GC-codec reset that
-        // destroyed the inherited catalog on the host that never re-seeds, which
-        // broke `fm_build_gc_plan` (`errno 22`) for every GC / static-root fork. A
-        // CONFLICTING re-seed (same activation, DIFFERENT bytes) is still a
-        // truthful `EINVAL` — the guard's real purpose.
-        // SAFETY: single-threaded; the index/bytes are static buffers read here.
-        let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
-        for entry in index.iter().take(act_count) {
-            if entry[0] == u64::from(activation_id) {
-                let stored = guest_bytes(entry[1], entry[2] as usize)?;
-                if stored == incoming {
-                    return Ok(()); // identical re-seed: no-op
-                }
-                return Err(Errno::EINVAL); // conflicting re-seed of the same activation
-            }
+        if let Some((at, len)) = arena_find(activation_id, REC_KIND_GC_CODEC) {
+            // IDENTICAL re-seed is a no-op; a CONFLICTING one is `EINVAL`.
+            //
+            // A COW fork CHILD inherits the parent's record through the memory
+            // clone -- the COW-child scrub keeps this kind on purpose, see
+            // `arena_release_all` -- and the production Node/browser host then
+            // RE-SEEDS every activation's GC codec on the child
+            // (`worker-main.ts`'s per-activation `setActivationGcCodec`), while
+            // the native host was written to rely on the inherited record. A GC
+            // codec is the activation module's invariant KFGC section, so a
+            // re-seed is byte-IDENTICAL by construction: accept it as a no-op so
+            // both hosts converge on the same catalog. A CONFLICTING re-seed
+            // (same activation, DIFFERENT bytes) is the corruption this check
+            // exists for, and stays loud.
+            let stored = guest_bytes(at, len)?;
+            return if stored == incoming { Ok(()) } else { Err(Errno::EINVAL) };
         }
-        if act_count >= ACT_GC_CODEC_MAX_ACTS {
-            return Err(Errno::E2BIG); // too many distinct activations
-        }
-        // Pack into the shared floor when it fits; otherwise this one section
-        // gets its own mapping. Either way the index gets an absolute address.
-        let end_used = used.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        let addr = if byte_len == 0 {
-            0
-        } else if end_used <= ACT_GC_CODEC_FLOOR {
-            let base = unsafe { ACT_GC_CODEC_BYTES.0.get() as *mut u8 as usize };
-            ACT_GC_CODEC_BYTES_USED.store(end_used as u32, Ordering::Relaxed);
-            // SAFETY: `[used, end_used)` is inside the floor, and `incoming` is a
-            // distinct guest-memory region.
-            unsafe {
-                core::ptr::copy(incoming.as_ptr(), (base + used) as *mut u8, byte_len);
-            }
-            (base + used) as u64
-        } else {
-            let at = channel_mmap(channel_base()?, page_round_up(byte_len as u64))?;
-            // Re-derive the view AFTER the mapping: `channel_mmap` grows the
-            // shared memory and invalidates anything taken before it, `incoming`
-            // included.
-            // SAFETY: both ranges were bounds-checked against the live memory.
-            let m = unsafe { mem_mut() };
-            m.copy_within(start..start + byte_len, at as usize);
-            at
-        };
-        // Publish the index entry, then bump the counters.
-        // SAFETY: single-threaded; `act_count < MAX_ACTS` by the check above.
-        let index = unsafe { &mut *ACT_GC_CODEC_INDEX.0.get() };
-        index[act_count] = [u64::from(activation_id), addr, byte_len as u64];
-        ACT_GC_CODEC_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
+        let at = arena_alloc(activation_id, REC_KIND_GC_CODEC, byte_len)?;
+        // Copied AFTER the allocation, through a view taken after it:
+        // `channel_mmap` grows the shared memory, and `incoming` was a view
+        // taken before that growth.
+        let m = unsafe { mem_mut() };
+        m.copy_within(start..end, at as usize);
         Ok(())
     }
 
@@ -3246,103 +3240,46 @@ mod wasm {
     // exnref (an activation that seeded no tags, or a tag not in its set) then
     // fails loud with `EINVAL`, exactly as the host boundary did.
     //
-    // Like the resume / GC-codec catalogs, storage is a fixed BSS ordinal arena
-    // plus a small index (activation id -> `[offset, len)`), so it survives the
-    // per-fork bump-heap reset. Both are capped; overflow is a truthful `E2BIG`.
-    // A COW fork CHILD inherits the parent's already-seeded tags through the memory
-    // clone (the module's BSS lives inside the shared linear memory and is NOT
-    // re-zeroed on instantiation), yet the production Node/browser host RE-SEEDS
-    // every activation's tags on the child (`worker-main.ts`'s per-activation
-    // `setActivationExceptionTags`), while the native host relies on inheritance and
-    // does NOT re-seed. Exception tags are the activation module's invariant codec
-    // section, so a re-seed is byte-IDENTICAL by construction: accept it as a no-op
-    // so BOTH hosts converge on the same catalog. A CONFLICTING re-seed (same
+    // Storage: one arena record per activation under `REC_KIND_EXN_TAGS`,
+    // holding the little-endian `u32` ordinals. The production Node/browser
+    // host RE-SEEDS every activation's tags on a COW child (`worker-main.ts`'s
+    // per-activation `setActivationExceptionCodec`), after the scrub in
+    // `set_format_impl` has dropped the inherited records; the native host
+    // never seeds this store at all (it has no `fm_set_activation_exception_
+    // codec` call), so nothing relies on inheriting one and this kind is NOT
+    // among those the scrub keeps. Two seeders can still meet in one worker,
+    // so an identical re-seed is a no-op and a CONFLICTING re-seed (same
     // activation, DIFFERENT tags) is a truthful `EINVAL`.
-    /// A FLOOR of tag ordinals the activations SHARE, not a cap. Was
-    /// `[u32; 65_536]` = 256 KiB reserved out of the guest's mmap window
-    /// whether a program forked or not. Same shape, and same reason for
-    /// sharing rather than a mapping each, as the activation catalogs.
-    const ACT_EXN_TAGS_ORD_FLOOR: usize = 8_192; // ordinals, 32 KiB
-    const ACT_EXN_TAGS_MAX_ACTS: usize = 64; // distinct activations
-
-    #[repr(C, align(4))]
-    struct ActExnTagsOrds(UnsafeCell<[u32; ACT_EXN_TAGS_ORD_FLOOR]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActExnTagsOrds {}
-    static ACT_EXN_TAGS_ORDS: ActExnTagsOrds =
-        ActExnTagsOrds(UnsafeCell::new([0u32; ACT_EXN_TAGS_ORD_FLOOR]));
-
-    /// Each live entry is `[activation_id, guest_addr, len]`, absolute so a
-    /// floor-resident set and a spilled one read alike.
-    #[repr(C, align(8))]
-    struct ActExnTagsIndex(UnsafeCell<[[u64; 3]; ACT_EXN_TAGS_MAX_ACTS]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActExnTagsIndex {}
-    static ACT_EXN_TAGS_INDEX: ActExnTagsIndex =
-        ActExnTagsIndex(UnsafeCell::new([[0u64; 3]; ACT_EXN_TAGS_MAX_ACTS]));
-
-    static ACT_EXN_TAGS_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
-    static ACT_EXN_TAGS_ORD_USED: AtomicU32 = AtomicU32::new(0);
-
+    //
+    // WHAT THIS REPLACED: a shared 8,192-ordinal static floor, a 64-entry
+    // index of `[activation_id, guest_addr, len]` and two counters -- about
+    // 34 KiB of BSS on every fork-capable thread -- plus a spill mapping for a
+    // set the floor could not hold, which nothing ever released. A record has
+    // the activation's lifetime, and the floor's two `E2BIG` caps went with it.
 
     /// Record one activation's exception tag ordinals.
     ///
     /// Split out of the host-facing entry so the codec path can reuse it: the
-    /// storage rules (idempotent re-seed, conflicting re-seed is `EINVAL`, caps
-    /// are `E2BIG`) are the same whoever produced the ordinals.
+    /// storage rules (idempotent re-seed, conflicting re-seed is `EINVAL`) are
+    /// the same whoever produced the ordinals.
     fn store_activation_exception_tags(
         activation_id: u32,
         incoming: &[u32],
     ) -> Result<(), Errno> {
-        let count = incoming.len();
-        let act_count = ACT_EXN_TAGS_ACT_COUNT.load(Ordering::Relaxed) as usize;
-        let ord_used = ACT_EXN_TAGS_ORD_USED.load(Ordering::Relaxed) as usize;
-        // Idempotent re-seed of an already-present activation (see the block
-        // comment): identical tags are a no-op; conflicting tags are `EINVAL`.
-        // SAFETY: single-threaded; the index/ordinals are static buffers read here.
-        let index = unsafe { &*ACT_EXN_TAGS_INDEX.0.get() };
-        for entry in index.iter().take(act_count) {
-            if entry[0] == u64::from(activation_id) {
-                let stored = guest_u32s(entry[1], entry[2] as usize)?;
-                if stored == incoming {
-                    return Ok(()); // identical re-seed: no-op
-                }
-                return Err(Errno::EINVAL); // conflicting re-seed of the same activation
-            }
+        if let Some((at, byte_len)) = arena_find(activation_id, REC_KIND_EXN_TAGS) {
+            let stored = guest_u32s(at, byte_len / 4)?;
+            return if stored == incoming { Ok(()) } else { Err(Errno::EINVAL) };
         }
-        if act_count >= ACT_EXN_TAGS_MAX_ACTS {
-            return Err(Errno::E2BIG); // too many distinct activations
+        let byte_len = incoming.len().checked_mul(4).ok_or(Errno::EINVAL)?;
+        let at = arena_alloc(activation_id, REC_KIND_EXN_TAGS, byte_len)?;
+        // Written AFTER the allocation, byte-wise: `channel_mmap` grows the
+        // shared memory, and `incoming` is the caller's own buffer rather than
+        // a view of the destination.
+        let m = unsafe { mem_mut() };
+        let at = at as usize;
+        for (i, value) in incoming.iter().enumerate() {
+            m[at + i * 4..at + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
         }
-        let ord_end = ord_used.checked_add(count).ok_or(Errno::EINVAL)?;
-        // Pack into the shared floor when it fits, else this set gets its own
-        // mapping. The index records an absolute address either way.
-        let addr = if count == 0 {
-            0
-        } else if ord_end <= ACT_EXN_TAGS_ORD_FLOOR {
-            let base = unsafe { ACT_EXN_TAGS_ORDS.0.get() as *mut u32 as usize };
-            // SAFETY: `[ord_used, ord_end)` is inside the floor; `incoming` is a
-            // distinct local buffer.
-            let ords = unsafe { &mut *ACT_EXN_TAGS_ORDS.0.get() };
-            ords[ord_used..ord_end].copy_from_slice(incoming);
-            ACT_EXN_TAGS_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
-            (base + ord_used * 4) as u64
-        } else {
-            let at = channel_mmap(channel_base()?, page_round_up((count * 4) as u64))?;
-            // Written AFTER the mapping, byte-wise: `channel_mmap` grows the
-            // shared memory, and the destination carries no alignment promise
-            // this write needs to rely on.
-            // SAFETY: the mapping is `count * 4` bytes and in bounds.
-            let m = unsafe { mem_mut() };
-            let at_usize = at as usize;
-            for (i, value) in incoming.iter().enumerate() {
-                m[at_usize + i * 4..at_usize + i * 4 + 4]
-                    .copy_from_slice(&value.to_le_bytes());
-            }
-            at
-        };
-        let index = unsafe { &mut *ACT_EXN_TAGS_INDEX.0.get() };
-        index[act_count] = [u64::from(activation_id), addr, count as u64];
-        ACT_EXN_TAGS_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
         Ok(())
     }
 
@@ -3407,16 +3344,11 @@ mod wasm {
     /// at all). An exnref naming a `None` activation, or a tag outside the returned
     /// set, fails the admission gate below.
     fn activation_exception_tags(activation_id: u32) -> Option<&'static [u32]> {
-        let act_count = ACT_EXN_TAGS_ACT_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffers outlive every borrow and
-        // every live entry's `[offset, len)` was bounded on seed.
-        let index = unsafe { &*ACT_EXN_TAGS_INDEX.0.get() };
-        for entry in index.iter().take(act_count) {
-            if entry[0] == u64::from(activation_id) {
-                return guest_u32s(entry[1], entry[2] as usize).ok();
-            }
-        }
-        None
+        // A view into the record's payload, valid until the record is released
+        // (`fm_resume_slots` op 1, or the COW-child scrub). The payload is
+        // 8-aligned by construction, which `guest_u32s` requires.
+        let (at, byte_len) = arena_find(activation_id, REC_KIND_EXN_TAGS)?;
+        guest_u32s(at, byte_len / 4).ok()
     }
 
     /// Exnref tag-validity ADMISSION gate. Walks the resident replay graph's exnref
@@ -3446,14 +3378,15 @@ mod wasm {
     /// section that fails to decode is a truthful `EINVAL` (the host would have
     /// declined admission; a corrupt seed must not silently build a wrong plan).
     fn decoded_gc_codecs() -> Result<BTreeMap<u32, fork_codec::GcCodec>, Errno> {
-        let act_count = ACT_GC_CODEC_ACT_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffers outlive every borrow and
-        // every live entry's `[offset, byte_len)` was bounded on seed.
-        let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
+        // Collected first, decoded second: the walk is a closure and the decode
+        // is fallible, and the seeded records are the whole set either way.
+        let mut records: Vec<(u32, u64, usize)> = Vec::new();
+        arena_for_each_record(REC_KIND_GC_CODEC, |activation, at, byte_len| {
+            records.push((activation, at, byte_len));
+        });
         let mut map = BTreeMap::new();
-        for entry in index.iter().take(act_count) {
-            let slice = guest_bytes(entry[1], entry[2] as usize)?;
-            map.insert(entry[0] as u32, fork_codec::decode_gc_codec(slice)?);
+        for (activation, at, byte_len) in records {
+            map.insert(activation, fork_codec::decode_gc_codec(guest_bytes(at, byte_len)?)?);
         }
         Ok(map)
     }
@@ -4725,15 +4658,14 @@ mod wasm {
         // counters is enough: the backing arenas are addressed by these offsets and
         // are overwritten by the fresh seeds.
         //
-        // The GC codec catalog (`ACT_GC_CODEC_*`) is DELIBERATELY NOT reset here.
-        // Unlike the capture-side catalogs above, the native host does NOT re-seed
-        // it on a COW child — it relies on inheriting the parent's already-seeded
-        // codec — while the Node/browser host DOES re-seed it. A reset here
-        // destroyed the inherited codec on the native host, breaking
-        // `fm_build_gc_plan` (`errno 22`) for every GC / static-root fork. Instead
-        // `set_activation_gc_codec_impl` is idempotent on an identical re-seed, so
-        // both a re-seeding host and an inheriting host converge on the same codec
-        // without a reset. See that function.
+        // The GC codec catalog is DELIBERATELY NOT reset here. It is an arena
+        // record now, and `arena_release_all()` below KEEPS that one kind while
+        // it drops every other: the native host was written to rely on
+        // inheriting the parent's already-seeded codec on a COW child, and a
+        // reset once broke `fm_build_gc_plan` (`errno 22`) for every GC /
+        // static-root fork on that host. See `arena_release_all` for the
+        // exclusion and `set_activation_gc_codec_impl` for the identical
+        // re-seed no-op the Node/browser host's re-seed lands on.
         ACT_CATALOG_ACT_COUNT.store(0, Ordering::Relaxed);
         ACT_CATALOG_ORD_USED.store(0, Ordering::Relaxed);
         // The slot assignment goes with the catalogs it was derived from. A COW
@@ -10591,12 +10523,15 @@ mod wasm {
     /// — the same structural refusal `__wpk_fork_ref_exn_broker_encode` uses.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_gc_broker_encode(slot: u32) -> i32 {
-        let act_count = ACT_GC_CODEC_ACT_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker; the buffer outlives the borrow.
-        let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
-        for entry in index.iter().take(act_count) {
-            // The index stores a 64-bit guest address beside the id now.
-            let activation = entry[0] as u32;
+        // Every activation that seeded a codec, in directory order (the order
+        // the activations first took a record). Collected before the probes:
+        // each probe re-enters the guest's own generated code, which may call
+        // back into this module, so the walk is not held across them.
+        let mut activations: Vec<u32> = Vec::new();
+        arena_for_each_record(REC_KIND_GC_CODEC, |activation, _, _| {
+            activations.push(activation);
+        });
+        for activation in activations {
             if capture_probe_via_injector(activation, slot) == 0 {
                 continue; // this codec does not recognise the value
             }

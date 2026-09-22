@@ -58,7 +58,6 @@ import {
   CAPTURE_KIND_EXNREF,
   CAPTURE_KIND_STRUCT,
   INTERN_KIND_EXTERNREF,
-  MMAP_FLOOR,
   PAGE,
   captureGraph,
   childInstance,
@@ -68,6 +67,20 @@ import {
 
 const PTR_WIDTH = 4 as const;
 const PID = 6262;
+/**
+ * Where the GC codec section is staged for `fm_set_activation_gc_codec`: LOW
+ * scratch, on the page `openCapture` uses for template ids (2048) and the sides
+ * vector (4096), clear of both.
+ *
+ * NOT inside the responder's mmap range. This used to be `MMAP_FLOOR + 10 *
+ * PAGE`, which survived only while fewer than ten mappings preceded the seed
+ * -- the responder bump-allocates upward from `MMAP_FLOOR` and never clears a
+ * page. Putting the GC codec on the arena adds mappings ahead of the capture
+ * (a directory chunk and a record chunk), the same way the KFIG conversion
+ * did for `fork-module-capture-drive.test.ts`'s sides vector, so the codec is
+ * staged where no mapping can land on it.
+ */
+const CODEC_SCRATCH = 8192;
 const GENERATION_ID = 11;
 // The durable broker handle the aliased externref leaf names.
 const LEAF_HANDLE = 77;
@@ -138,7 +151,7 @@ function captureGcCycle(f: Fixture): {
       },
     ],
   );
-  const codecPtr = MMAP_FLOOR + 10 * PAGE;
+  const codecPtr = CODEC_SCRATCH;
   new Uint8Array(f.memory.buffer, codecPtr, GC_CODEC.byteLength).set(GC_CODEC);
   return {
     root,
