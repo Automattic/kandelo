@@ -630,12 +630,6 @@ export function captureGraph(
 // this one lands first, for exactly that reason.
 export const ARENA_RECORD_CHUNK_COUNT_FIELD = 101;
 export const ARENA_DIRECTORY_CHUNK_COUNT_FIELD = 102;
-/**
- * The resume free-slot bitmap's chunk-chain length. 103 from the same table,
- * NOT "the next free index" -- 104 is reserved by a later task of this plan
- * and 105 is already taken by the directory entry count, which landed first.
- */
-export const RESUME_FREE_CHUNK_COUNT_FIELD = 103;
 /** Ruling D1-a: LIVE directory entries, one per activation holding a record. */
 export const ARENA_DIRECTORY_ENTRY_COUNT_FIELD = 105;
 

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  RESUME_FREE_CHUNK_COUNT_FIELD,
-  arenaFixture,
-} from "./fork-module-capture-fixture";
+import { arenaFixture } from "./fork-module-capture-fixture";
 
 /**
  * WHY THIS EXISTS
@@ -40,20 +37,17 @@ import {
  * is the reader the guest's own placement shim consumes: asserting these
  * numbers is asserting the numbers the thunks are actually placed at.
  *
- * THE BITMAP IS NOW CHUNKS MAPPED ON DEMAND, not fixed BSS. It was converted
- * once and reverted, on a measurement that the free path could never issue a
- * channel syscall because a vfork child's exit teardown reaches it while the
- * parent is parked on the shared channel. That was refuted afterwards: the
- * SIGSEGV was the host use-after-free above, and with it fixed the same
- * conversion, rebuilt to the same build key, frees from a vfork child's
- * teardown and the guest exits 0. See the note on `FREE_BITS_HEAD` in the
- * module.
+ * THERE IS NO BITMAP IN STORAGE ANY MORE. The free set is DERIVED at
+ * registration from the live activation records and thrown away again, so a
+ * free records nothing and maps nothing. Three shapes were tried -- fixed BSS,
+ * a chain of chunks mapped on demand, and this -- and the third is not a
+ * preference: a `channel_mmap` from the free path never returns when a vfork
+ * borrower has been killed by an external fatal signal and the kernel has
+ * contained the address space. See the note above `RESUME_NEXT_SLOT` in the
+ * module for the measurement.
  *
- * So the chunk lifecycle is asserted here BESIDE the slot numbers: a chain
- * that maps a chunk and never returns it is a leak the numbers cannot see, and
- * a chunk count alone is blind to a wrong slot NUMBER, which is how an earlier
- * version of these tests stayed green while the module handed out slots around
- * 1,000,001.
+ * So this file asserts TWO things beside the numbers: that a free maps
+ * nothing, and that a COW child inherits none of the parent's numbering.
  */
 
 /** The activations this file drives the bitmap with. */
@@ -85,24 +79,19 @@ describe("resume free-slot bitmap", () => {
       [30, 3],
     ]);
 
-    // MEASURED AROUND THE FREE ALONE, and the scoping is deliberate: the
-    // mmap/munmap tallies are the RESPONDER's, so the record arena shares them.
-    // A release MAPS nothing -- `arena_unlink_record`, the chunk sweep and
-    // `arena_release_activation` only unmap -- so every mmap between these two
-    // reads is the bitmap's, and the number is exact rather than a floor.
+    // THE FREE PATH MAPS NOTHING, and this is the assertion that holds it to
+    // that. Measured around the release alone: a release drops the
+    // activation's record and its directory entry, both of which only UNMAP,
+    // so any mmap between these two reads is a free path that started storing
+    // something -- which is the shape that hangs a killed vfork borrower's
+    // teardown. See the note above `RESUME_NEXT_SLOT` in the module.
     const mmapsBefore = x.mmaps();
 
     expect(x.slots(1, ACTIVATION_A, 0), "three slots freed").toBe(3);
     expect(
-      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
-      "the free mapped a chunk to record itself in",
-    ).toBe(1);
-    expect(x.mmaps() - mmapsBefore, "exactly one, and only for the bitmap").toBe(1);
-
-    // And around the REUSE alone, for the same reason in the other direction:
-    // a registration allocates (two arena chunks here) but unmaps nothing, so
-    // every munmap between these two reads is the bitmap's.
-    const munmapsBefore = x.munmaps();
+      x.mmaps() - mmapsBefore,
+      "freeing a slot must map nothing",
+    ).toBe(0);
 
     // THE ASSERTION THAT DISTINGUISHES A WORKING FREE LIST from a bitmap that
     // merely exists: seeding three more ordinals must consume the three freed
@@ -115,23 +104,10 @@ describe("resume free-slot bitmap", () => {
       "the reused slots are the freed ones, smallest first",
     ).toEqual([1, 2, 3]);
 
-    // AND THE CHUNK IT TOOK WENT BACK. The reuse emptied the chunk the free
-    // mapped, and an emptied chunk is unlinked and unmapped rather than held
-    // for the next free -- otherwise the steady state of a process that frees
-    // once and never again is one permanently mapped 64 KiB chunk, which is the
-    // fixed reservation this conversion removes.
-    //
-    // BOTH HALVES. The chunk COUNT is list membership, blind to a chunk that
-    // was unlinked but never unmapped, because `channel_munmap` is best-effort
-    // by design. The munmap tally sees exactly that case and nothing else.
-    expect(
-      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
-      "the reuse emptied the chunk and handed it back",
-    ).toBe(0);
-    expect(
-      x.munmaps() - munmapsBefore,
-      "and unmapped it rather than unlinking it and keeping the mapping",
-    ).toBe(1);
+    // AND THE FREE SET COST NO STORAGE TO KEEP. It was rebuilt here, at
+    // registration, from the live records -- on the bump heap, for the length
+    // of this one call. Nothing persists between a free and its reuse, so
+    // there is no chain to leak and no counter to scrub.
   });
 
   it("gives a COW child distinct slots rather than the parent's stale ones", () => {
@@ -146,25 +122,7 @@ describe("resume free-slot bitmap", () => {
     expect(x.errno(), "seeding activation A").toBe(0);
     expect(x.slots(1, ACTIVATION_A, 0), "three slots freed into the bitmap").toBe(3);
 
-    const munmapsBefore = x.munmaps();
-    const held = x.stats(RESUME_FREE_CHUNK_COUNT_FIELD);
-    expect(held, "the free left a chunk for the scrub to return").toBe(1);
-
     x.setFormat();
-
-    // THE CHUNKS GO BACK, and this is the half a cleared root cannot show. The
-    // `.fill(0)` this chain replaced was BSS a COW child could simply
-    // overwrite; a chain of MAPPINGS is inherited through the memory clone, so
-    // clearing the root alone leaks every chunk the parent took -- INVISIBLY,
-    // because the count walks the chain and a cleared root reads as empty.
-    expect(
-      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
-      "the scrub emptied the chain",
-    ).toBe(0);
-    expect(
-      x.munmaps() - munmapsBefore,
-      "one unmap per chunk the scrub released",
-    ).toBeGreaterThanOrEqual(held);
 
     x.seedActivationCatalog(ACTIVATION_B, [11, 22, 33, 44, 55]);
     expect(x.errno(), "seeding activation B in the child").toBe(0);

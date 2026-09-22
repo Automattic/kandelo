@@ -665,284 +665,145 @@ mod wasm {
     // exists. `RESUME_CATALOG_CAP` still bounds the PROCESS-WIDE catalog, which
     // is a different quantity and a different store (and a later task's).
 
-    /// Slots freed by an unregistered activation. A BITMAP, one bit per slot,
-    /// not a sorted list of slot numbers -- and a CHAINED one, mapped on
-    /// demand rather than reserved in BSS.
-    ///
-    /// The list it replaced cost `[u32; 65_536]` -- 256 KiB of the guest's mmap
-    /// window -- to hold at most 65,536 values it already knew the range of. A
-    /// bit each was 8 KiB for the same information. Chunks mapped on demand are
-    /// ZERO for every fork-capable thread that never frees a slot, which is
-    /// nearly all of them: a thread that seeds a catalog and forks once never
-    /// unregisters anything.
-    ///
-    /// It was also the slower structure for both operations. Taking the
-    /// smallest free slot meant `free[0]` plus a `copy_within` shift of the
-    /// whole live prefix, and freeing one meant appending and re-sorting it --
-    /// O(n) and O(n log n) over as many as 65,536 entries. A bitmap frees in
-    /// O(1) and finds the smallest by scanning words for the first non-zero and
-    /// taking its `trailing_zeros`, which is the same answer the sorted list
-    /// gave: lowest slot first.
-    ///
-    /// # Chunk layout
-    ///
-    /// The header is Task 1's, unchanged -- 32 bytes, the one header size every
-    /// chain in this change uses -- with the two chain-specific fields where
-    /// the record chain keeps `used` and `live`:
-    ///
-    ///     +0   next: u64
-    ///     +8   size: u64        (what to unmap)
-    ///     +16  base_slot: u32   (the first slot this chunk covers)
-    ///     +20  live_bits: u32   (set bits in this chunk)
-    ///     +24  capacity: u64    (written by `arena_map_chunk`; unread here)
-    ///     +32  bits
-    ///
-    /// `base_slot` is written AFTER `arena_map_chunk` returns, because mapping
-    /// zeroes +16/+20 as part of initialising the header.
-    ///
-    /// # THE FREE PATH MAY MAP, and the record that says it may not is wrong
-    ///
-    /// This conversion was made once and reverted, on a measurement that the
-    /// free path can never issue a channel syscall: `resume_unregister_impl` is
-    /// reached from a vfork CHILD'S EXIT TEARDOWN while the parent is parked in
-    /// its own vfork syscall on the channel the borrowed child shares, and the
-    /// guest died with SIGSEGV. That bisection was correct about WHERE and
-    /// wrong about WHY.
-    ///
-    /// The real cause was a use-after-free in the host: the borrowed child had
-    /// `channel_munmap`'d the region the module's statics live in and then kept
-    /// calling the module through it. With that fixed
-    /// (`host/src/worker-main.ts`, the `forkModuleBorrowedRegion` release), the
-    /// reverted conversion was rebuilt to the same build key and the syscall
-    /// the constraint calls fatal DOES happen -- a borrowed child's first free
-    /// takes `free_bits_mark` -> `free_bits_chunk` -> `arena_map_chunk` ->
-    /// `channel_mmap` with the parent parked -- and the guest exits 0.
-    ///
-    /// # Why nothing here depends on the chain being ordered
-    ///
-    /// A chunk whose last bit is taken is unlinked and unmapped, so a chunk in
-    /// the MIDDLE of the chain can disappear and a later free can re-map its
-    /// range -- and `arena_map_chunk` links at the TAIL. The chain is therefore
-    /// ascending by construction only until the first middle unlink, which is
-    /// an invariant held nowhere and violated silently. So there is no ordering
-    /// invariant: `free_bits_mark` finds a chunk by its `base_slot` and
-    /// `free_bits_take_smallest` scans EVERY chunk for the global minimum. The
-    /// cost is one extra pointer chase per allocation over a chain that is one
-    /// chunk in every reachable workload, and the fourth slot rule --
-    /// smallest freed slot first -- holds whatever order the chunks sit in.
-    static FREE_BITS_HEAD: AtomicU64 = AtomicU64::new(0);
-
-    /// Derived from Task 1's constants, so the forced-chunk build's single knob
-    /// reaches this chain too: at `ARENA_CHUNK_BYTES = 65_536` a chunk covers
-    /// `(65,536 - 32) * 8 = 524,032` slots, and at a forced 4,096 it covers
-    /// `(4,096 - 32) * 8 = 32,512`, which a 65,536-ordinal seed spans three of.
-    const FREE_BITS_PER_CHUNK: u32 = ((ARENA_CHUNK_BYTES - ARENA_CHUNK_HEADER) * 8) as u32;
-    /// `u64` words in a chunk's body. Exact, not rounded: the const-assert
-    /// below is what makes it exact, because a body that is not a multiple of 8
-    /// would leave a tail of bits this scan never reads and `free_bits_mark`
-    /// could still set -- a slot freed into a word no allocator looks at, which
-    /// is the silent leak this whole conversion exists to avoid reintroducing.
-    const FREE_BITS_WORDS_PER_CHUNK: u64 = (ARENA_CHUNK_BYTES - ARENA_CHUNK_HEADER) / 8;
-    const _: () = assert!(
-        (ARENA_CHUNK_BYTES - ARENA_CHUNK_HEADER) % 8 == 0,
-        "a bitmap chunk body must be a whole number of u64 words, or its tail bits are unreachable",
-    );
+    /// THE FREE SET IS DERIVED, NOT RECORDED, and that is a measured constraint
+    // rather than a preference. See `resume_free_set` below for what it is and
+    // `free_bits_mark`'s deleted mapping path for what happened when it was
+    // stored.
+    //
+    // WHAT WAS TRIED, IN ORDER, because two of the three are written up
+    // elsewhere as settled and neither is:
+    //
+    //  1. A fixed `[u64; 1024]` bitmap in BSS. 8 KiB reserved on every
+    //     fork-capable thread, and its extent was one slot narrower than the
+    //     numbering it indexed.
+    //  2. A chain of chunks mapped on demand, marked at FREE. Reverted once on
+    //     the argument that a vfork child's exit teardown can never syscall;
+    //     that argument was then refuted by measurement, for the HEALTHY child
+    //     exit it was written about.
+    //  3. This. Because the refutation's scope was not the whole path: when a
+    //     vfork borrower is killed by an external fatal signal, the kernel
+    //     contains the address space and completes the parent's blocked vfork
+    //     with `EINTR`. The exit teardown that follows calls `fm_resume_slots`
+    //     op 1, and a `channel_mmap` from THERE never gets an answer -- the
+    //     worker parks in `memory_atomic_wait32` and the whole program hangs.
+    //     `host/test/vfork-lifecycle-guest.test.ts`'s "contains a
+    //     compute-running borrower after an external fatal signal" is the case,
+    //     measured: 2/2 hangs with the mapping free path, 6/6 green with the
+    //     module that does not map there, and a probe that refused to map
+    //     turned the 15-second hang into a 261-millisecond exit.
+    //
+    // So the free path allocates NOTHING and syscalls NOTHING. A free is the
+    // removal of the activation's record, which the arena already does, and the
+    // free SET is rebuilt from the live records at the one moment a channel is
+    // guaranteed live: registration.
 
     /// The next never-used slot. Starts at 1: slot 0 is the reserved "no event"
     /// sentinel, which is why the physical table starts at length 1.
+    ///
+    /// The watermark is also the only bound `resume_unregister_impl` has left to
+    /// check a slot against, and that bound has a second job -- see the note
+    /// there on the use-after-free it detects.
     static RESUME_NEXT_SLOT: AtomicU32 = AtomicU32::new(1);
 
-    /// The chunk covering `base_slot`, mapping one if the chain has none.
+    /// Visit every live record of `kind`, as `(payload address, byte length)`.
     ///
-    /// `base_slot` is the caller's slot rounded DOWN to a chunk boundary, so
-    /// there are no intermediate chunks to map: a chunk is created only for the
-    /// range someone actually freed into.
-    fn free_bits_chunk(base_slot: u32) -> Result<u64, Errno> {
-        let mut chunk = FREE_BITS_HEAD.load(Ordering::Relaxed);
+    /// The directory is the only index of live activations, so this is the only
+    /// way to ask a whole-arena question. It is a walk, not a maintained set,
+    /// for the reason Task 1 gave when it deleted the maintained directory
+    /// counter: a second tally of a fact the structure already holds can
+    /// disagree with it, and this one would disagree by handing out a slot two
+    /// activations both believe they own.
+    fn arena_for_each_record(kind: u32, mut visit: impl FnMut(u64, usize)) {
+        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
         while chunk != 0 {
-            if arena_u32(chunk + 16) == base_slot {
-                return Ok(chunk);
-            }
-            chunk = arena_u64(chunk);
-        }
-        // `want` is 0: `arena_map_chunk` floors every chunk at
-        // `ARENA_CHUNK_BYTES`, which is exactly the size `FREE_BITS_PER_CHUNK`
-        // is derived from. Asking for more would silently widen the chunk
-        // without widening the constant that says how many slots it covers.
-        let fresh = arena_map_chunk(&FREE_BITS_HEAD, 0)?;
-        arena_set_u32(fresh + 16, base_slot);
-        Ok(fresh)
-    }
-
-    /// Mark `slot` free.
-    ///
-    /// A REFUSAL WHERE THERE USED TO BE A SILENT SKIP, and that is the whole
-    /// correctness half of this store. The old guard compared against the fixed
-    /// array's capacity and anything past it was simply NOT FREED: the slot
-    /// leaked, later numbering drifted, and the module and the guest's resume
-    /// table placed thunks by different rules -- a wrong `call_indirect` target
-    /// rather than a trap. Nothing anywhere could see it happen.
-    ///
-    ///   * `EINVAL` -- slot 0, the reserved "no event" sentinel, which is
-    ///     never handed out and must never be marked free.
-    ///   * `EINVAL` -- a slot at or above `RESUME_NEXT_SLOT`, the watermark:
-    ///     a slot this module never handed out. `resume_allocate_slot` is the
-    ///     only issuer and it only ever moves the watermark forward, so a slot
-    ///     above it did not come from this module's numbering.
-    ///
-    /// THERE IS NO "PAST THE BITMAP'S EXTENT" REFUSAL LEFT, because there is no
-    /// extent: chunks are mapped for whatever range is freed into. The fixed
-    /// bitmap had one, and it was one slot too narrow -- slot 65,536 was
-    /// issuable and unfreeable -- which is the off-by-one the commit before
-    /// this one fixed and this one makes structurally impossible.
-    /// `host/test/fork-resume-slot-bitmap.test.ts` still drives a full
-    /// 65,536-slot activation through free and reuse, so the behaviour that
-    /// off-by-one broke stays asserted across the change of shape.
-    ///
-    /// # THE WATERMARK BOUND IS THE DETECTOR FOR A USE-AFTER-FREE
-    ///
-    /// It is not defensive decoration. It was tried once, reverted once, and
-    /// is back because the thing it caught turned out to be real.
-    ///
-    /// The first attempt made `host/test/vfork-lifecycle-guest.test.ts` report
-    /// `fm_resume_slots failed with errno 22` from a vfork child's exit
-    /// teardown, on a run that was otherwise entirely healthy, and the bound
-    /// was removed rather than guessed at. Instrumenting the host to read the
-    /// watermark at every `fm_*` call answered it: the watermark was 0. No
-    /// writer here produces 0 -- `set_format_impl` stores 1 and
-    /// `resume_allocate_slot` stores `slot + 1`, which is at least 2 -- so 0
-    /// is not a reset, it is a ZEROED PAGE.
-    ///
-    /// The page was zeroed because the borrowed (vfork) child had already
-    /// `channel_munmap`'d the region these statics live in and then kept
-    /// calling the module through it. `host/src/worker-main.ts` now does the
-    /// module teardown ABOVE that munmap and drops its handles below it; the
-    /// comment at the `forkModuleBorrowedRegion` release there carries the
-    /// measurement.
-    ///
-    /// So this bound has a job beyond stating an invariant: it is the only
-    /// place that notices if a caller reaches the module after the module's
-    /// memory is gone. Removing it puts the corruption back to silent.
-    fn free_bits_mark(slot: u32) -> Result<(), Errno> {
-        if slot == 0 || slot >= RESUME_NEXT_SLOT.load(Ordering::Relaxed) {
-            return Err(Errno::EINVAL);
-        }
-        let base_slot = (slot / FREE_BITS_PER_CHUNK) * FREE_BITS_PER_CHUNK;
-        let chunk = free_bits_chunk(base_slot)?;
-        let offset = u64::from(slot - base_slot);
-        let at = chunk + ARENA_CHUNK_HEADER + (offset / 64) * 8;
-        let word = arena_u64(at);
-        let bit = 1u64 << (offset % 64);
-        if word & bit == 0 {
-            arena_set_u64(at, word | bit);
-            arena_set_u32(chunk + 20, arena_u32(chunk + 20) + 1);
-        }
-        Ok(())
-    }
-
-    /// Take the smallest free slot, or `None`.
-    ///
-    /// Smallest-first is the fourth of the four slot rules and this is its only
-    /// implementation. Every chunk is scanned rather than the first one that
-    /// holds a bit, for the reason `FREE_BITS_HEAD` states: the chain carries
-    /// no ordering invariant.
-    fn free_bits_take_smallest() -> Option<u32> {
-        let mut previous = 0u64;
-        let mut best_chunk = 0u64;
-        let mut best_previous = 0u64;
-        let mut best_at = 0u64;
-        let mut best_bit = 0u64;
-        let mut best_slot = u32::MAX;
-        let mut chunk = FREE_BITS_HEAD.load(Ordering::Relaxed);
-        while chunk != 0 {
-            if arena_u32(chunk + 20) != 0 {
-                let base = arena_u32(chunk + 16);
-                let mut word_index = 0u64;
-                while word_index < FREE_BITS_WORDS_PER_CHUNK {
-                    let at = chunk + ARENA_CHUNK_HEADER + word_index * 8;
-                    let word = arena_u64(at);
-                    if word != 0 {
-                        let slot = base + (word_index as u32) * 64 + word.trailing_zeros();
-                        if slot < best_slot {
-                            best_slot = slot;
-                            best_chunk = chunk;
-                            best_previous = previous;
-                            best_at = at;
-                            // The lowest set bit, isolated.
-                            best_bit = word & word.wrapping_neg();
-                        }
-                        break;
+            let live = arena_u32(chunk + 20);
+            for index in 0..live {
+                let entry =
+                    chunk + ARENA_CHUNK_HEADER + u64::from(index) * DIRECTORY_ENTRY_BYTES;
+                let mut record = arena_u64(entry + 8);
+                while record != 0 {
+                    if arena_u32(record + 8) == kind {
+                        visit(record + RECORD_HEADER, arena_u32(record + 12) as usize);
                     }
-                    word_index += 1;
+                    record = arena_u64(record);
                 }
             }
-            previous = chunk;
             chunk = arena_u64(chunk);
         }
-        if best_chunk == 0 {
-            return None;
-        }
-        arena_set_u64(best_at, arena_u64(best_at) & !best_bit);
-        let live = arena_u32(best_chunk + 20) - 1;
-        arena_set_u32(best_chunk + 20, live);
-        if live == 0 {
-            // An emptied chunk goes back to the host rather than waiting for
-            // the next free. Keeping it would make the steady state of a
-            // process that never frees again one permanently mapped 64 KiB
-            // chunk, which is the fixed reservation this conversion removes.
-            let base = channel_base().unwrap_or(0);
-            arena_unlink_chunk(&FREE_BITS_HEAD, best_previous, best_chunk, base);
-        }
-        Some(best_slot)
     }
 
-    /// Drop every chunk. Called from the COW-child scrub, replacing the
-    /// `.fill(0)` of the fixed array.
-    fn free_bits_release_all() {
-        let base = channel_base().unwrap_or(0);
-        let mut chunk = FREE_BITS_HEAD.load(Ordering::Relaxed);
-        while chunk != 0 {
-            let next = arena_u64(chunk);
-            if base != 0 {
-                let _ = channel_munmap(base, chunk, arena_u64(chunk + 8));
+    /// The slots below the watermark that no live activation holds, as a bitmap.
+    ///
+    /// # Why this is derived rather than maintained
+    ///
+    /// See the note above `RESUME_NEXT_SLOT`: recording the free set AT FREE
+    /// needs somewhere to record it, and every version of "somewhere" either
+    /// reserves BSS on every fork-capable thread or maps a chunk from a path
+    /// that a killed vfork borrower's teardown reaches, where a channel syscall
+    /// never returns. Derived, the free set costs no storage at all between
+    /// registrations and the free path becomes pure record removal.
+    ///
+    /// # What it costs, stated where it can be checked
+    ///
+    /// O(watermark + live slots) per REGISTRATION -- not per allocation, which
+    /// would be quadratic in an activation's size and php registers 19,026
+    /// ordinals at once. Registration happens once per worker plus once per
+    /// `dlopen`, so a dlopen-heavy program pays O(registrations x live slots):
+    /// 100 `dlopen`s over php's 19,026 slots is about 1.9 million bit
+    /// operations spread across 100 calls. The measured dlopen fixture's
+    /// largest activation is 86 slots.
+    ///
+    /// The scratch vector is bump-heap and lives only for the registration that
+    /// built it. `reset_bump_heap` runs at four points during a FORK, and this
+    /// runs at catalog-seed time, so nothing resets under it -- and even if it
+    /// did, nothing outlives the call to be clobbered.
+    fn resume_free_set() -> alloc::vec::Vec<u64> {
+        let watermark = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
+        let words = (watermark as usize).div_ceil(64);
+        let mut bits = alloc::vec![u64::MAX; words];
+        if words == 0 {
+            return bits;
+        }
+        // Slot 0 is the reserved sentinel and is never free.
+        bits[0] &= !1u64;
+        // And nothing at or above the watermark exists yet.
+        let tail = watermark as usize % 64;
+        if tail != 0 {
+            bits[words - 1] &= (1u64 << tail) - 1;
+        }
+        arena_for_each_record(REC_KIND_RESUME_ASSIGNMENT, |at, byte_len| {
+            for index in 0..(byte_len / RESUME_ASSIGNMENT_RECORD_BYTES) {
+                let slot = arena_u32(at + (index * RESUME_ASSIGNMENT_RECORD_BYTES) as u64 + 4);
+                if slot != 0 && slot < watermark {
+                    bits[slot as usize / 64] &= !(1u64 << (slot as usize % 64));
+                }
             }
-            chunk = next;
-        }
-        FREE_BITS_HEAD.store(0, Ordering::Relaxed);
+        });
+        bits
     }
 
-    /// How many chunks the free-slot bitmap holds. Zero means nothing is mapped.
+    /// Take the smallest slot the set still holds, clearing it.
     ///
-    /// WHAT IT OBSERVES, EXACTLY: list membership, the same boundary the arena's
-    /// chunk counts state. A chunk unlinked but never unmapped reads as zero
-    /// here, so `host/test/fork-resume-slot-bitmap.test.ts` asserts the
-    /// `SYS_MMAP` and `SYS_MUNMAP` tallies beside it. Both halves, or neither
-    /// is a guard.
-    fn free_bits_chunk_count() -> u32 {
-        let mut count = 0u32;
-        let mut chunk = FREE_BITS_HEAD.load(Ordering::Relaxed);
-        while chunk != 0 {
-            count += 1;
-            chunk = arena_u64(chunk);
+    /// Smallest-first is the fourth of the four slot rules and this is its only
+    /// implementation. `host/test/fork-resume-slot-bitmap.test.ts` asserts the
+    /// NUMBERS it hands back, through the same whole-activation publish the
+    /// guest's placement shim consumes -- because a free list that merely
+    /// EXISTS is indistinguishable from one that works until someone reads the
+    /// slots out of it. That is measured, not argued: an earlier version of
+    /// those tests asserted the free list's STORAGE and stayed green while a
+    /// perturbed module handed out slots around 1,000,001.
+    fn resume_take_free(bits: &mut [u64], cursor: &mut usize) -> Option<u32> {
+        while *cursor < bits.len() {
+            let word = bits[*cursor];
+            if word == 0 {
+                *cursor += 1;
+                continue;
+            }
+            let bit = word.trailing_zeros();
+            bits[*cursor] = word & (word - 1);
+            return Some((*cursor as u32) * 64 + bit);
         }
-        count
-    }
-
-    /// Smallest free slot, else a freshly grown one. The one allocator.
-    ///
-    /// NO SEPARATE FREE COUNT. The old `RESUME_FREE_COUNT` was a second tally
-    /// of an event the bitmap already records -- the same shape as the
-    /// maintained directory counter Task 1 deleted -- and it could disagree
-    /// with the bits in exactly one direction: a non-zero count with no bit
-    /// set, which the old code had a fall-through for. An empty chain is a null
-    /// `FREE_BITS_HEAD`, which cannot disagree with itself.
-    fn resume_allocate_slot() -> u32 {
-        if let Some(slot) = free_bits_take_smallest() {
-            return slot;
-        }
-        let slot = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
-        RESUME_NEXT_SLOT.store(slot + 1, Ordering::Relaxed);
-        slot
+        None
     }
 
     /// Assign this activation's slots from its seeded catalog, into ONE arena
@@ -1005,6 +866,12 @@ mod wasm {
         // already cost a real fork (see `resume_unregister_impl`). An empty
         // record says "registered, holding nothing"; no record says "never
         // registered". Those are different facts and the arena holds both.
+        // BUILT BEFORE THE RECORD, so the walk sees only activations that
+        // really hold slots. This activation's record is zeroed at allocation,
+        // and a zero slot is skipped anyway, but building first means the
+        // answer does not depend on knowing that.
+        let mut free = resume_free_set();
+        let mut cursor = 0usize;
         let at = arena_alloc(
             activation_id,
             REC_KIND_RESUME_ASSIGNMENT,
@@ -1012,7 +879,14 @@ mod wasm {
         )?;
         let mut assigned = 0u32;
         for (index, ordinal) in sorted.iter().enumerate() {
-            let slot = resume_allocate_slot();
+            let slot = match resume_take_free(&mut free, &mut cursor) {
+                Some(slot) => slot,
+                None => {
+                    let fresh = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
+                    RESUME_NEXT_SLOT.store(fresh + 1, Ordering::Relaxed);
+                    fresh
+                }
+            };
             let record = at + (index * RESUME_ASSIGNMENT_RECORD_BYTES) as u64;
             arena_set_u32(record, *ordinal);
             arena_set_u32(record + 4, slot);
@@ -1108,24 +982,47 @@ mod wasm {
             resume_null_via_injector(arena_u32(record + 4), lenient);
         }
 
-        // PASS 2: free.
+        // PASS 2: CHECK. There is nothing to free -- dropping the record IS
+        // the free, because the free set is derived from the live records -- so
+        // what is left is the bound the old `free_bits_mark` carried, kept for
+        // the job it turned out to have.
         //
-        // REPORTED, NOT THROWN MID-WALK. A failed free is a reason to tell the
+        // # THE WATERMARK BOUND IS THE DETECTOR FOR A USE-AFTER-FREE
+        //
+        // It is not defensive decoration. It was tried once, reverted once, and
+        // is here because the thing it caught turned out to be real.
+        //
+        // The first attempt made `host/test/vfork-lifecycle-guest.test.ts`
+        // report `fm_resume_slots failed with errno 22` from a vfork child's
+        // exit teardown, on a run that was otherwise entirely healthy, and the
+        // bound was removed rather than guessed at. Instrumenting the host to
+        // read the watermark at every `fm_*` call answered it: the watermark
+        // was 0. No writer produces 0 -- `set_format_impl` stores 1 and the
+        // allocator stores `fresh + 1`, which is at least 2 -- so 0 is not a
+        // reset, it is a ZEROED PAGE. The borrowed (vfork) child had
+        // `channel_munmap`'d the region these statics live in and then kept
+        // calling the module through it. `host/src/worker-main.ts` now does the
+        // module teardown ABOVE that munmap and drops its handles below it.
+        //
+        // So this bound has a job beyond stating an invariant: it is the only
+        // place that notices if a caller reaches the module after the module's
+        // memory is gone. Removing it puts that corruption back to silent.
+        //
+        // REPORTED, NOT THROWN MID-WALK. A bad slot is a reason to tell the
         // caller, never a reason to stop dismantling the record: an early
-        // return would leave the activation still holding a record that is half
-        // released, and the very next `resume_reseed` of that activation would
-        // refuse it as "already registered" -- a wedge, from one slot. That is
-        // not hypothetical: it is exactly how the first attempt at this
-        // conversion broke `host/test/fork-module-instance.test.ts`, which
-        // reported `EINVAL` from a re-seed rather than from the free that
-        // caused it.
+        // return would leave the activation holding a half-released record, and
+        // the very next `resume_reseed` would refuse it as "already
+        // registered" -- a wedge, from one slot. That is not hypothetical: it
+        // is how the first attempt at this conversion broke
+        // `host/test/fork-module-instance.test.ts`, which reported `EINVAL`
+        // from a re-seed rather than from the slot that caused it.
+        let watermark = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
         let mut failure: Option<Errno> = None;
         for index in 0..pairs {
             let record = at + (index * RESUME_ASSIGNMENT_RECORD_BYTES) as u64;
-            if let Err(errno) = free_bits_mark(arena_u32(record + 4)) {
-                if failure.is_none() {
-                    failure = Some(errno);
-                }
+            let slot = arena_u32(record + 4);
+            if (slot == 0 || slot >= watermark) && failure.is_none() {
+                failure = Some(Errno::EINVAL);
             }
         }
 
@@ -4861,12 +4758,14 @@ mod wasm {
         // assignment records themselves are MAPPINGS, released with the rest of
         // the arena below; only the watermark is BSS this can simply store.
         //
-        // The free-slot bitmap goes with it -- a stale bit would hand the child
-        // a slot the child never assigned -- and it is RELEASED rather than
-        // cleared, further down beside `arena_release_all()`, for the reason
-        // stated there: the bitmap is mappings the COW child inherited through
-        // the memory clone, dropping them syscalls, and `channel_base()`
-        // answers `EINVAL` until `CHANNEL_BASE` is stored.
+        // THE FREE SET NEEDS NO SCRUB, and that is a property of deriving it
+        // rather than an omission: it is rebuilt from the live records at every
+        // registration, and `arena_release_all()` below drops those. A stored
+        // free set would need clearing here, and clearing it is not enough --
+        // a chained one is MAPPINGS the child inherited through the memory
+        // clone, so zeroing the root would leak every chunk the parent took, in
+        // a child that may outlive it, and leak it invisibly because a cleared
+        // root reads as empty.
         RESUME_NEXT_SLOT.store(1, Ordering::Relaxed);
         ACT_FUNC_CATALOG_BASE_COUNT.store(0, Ordering::Relaxed);
         ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
@@ -4908,14 +4807,6 @@ mod wasm {
         // and leave the roots cleared -- a leak that no counter could see,
         // because the roots would read as empty.
         arena_release_all();
-        // The resume free-slot bitmap is the same kind of thing for the same
-        // reason: chunks the child inherited as mappings, not BSS it can
-        // overwrite. Zeroing `FREE_BITS_HEAD` alone would leak every chunk the
-        // parent took, in a child that may outlive it -- and leak it invisibly,
-        // because the chunk count walks the chain and a cleared root reads as
-        // empty. Sequenced after the `CHANNEL_BASE` store above, like the
-        // arena's release, because unmapping syscalls.
-        free_bits_release_all();
         ARCHIVE_APPLIED[0].store(0, Ordering::Relaxed);
         ARCHIVE_APPLIED[1].store(0, Ordering::Relaxed);
         // THE PHASE ITSELF is inherited too, and it is the worst of them.
@@ -12299,11 +12190,6 @@ mod wasm {
     const ARENA_RECORD_CHUNK_COUNT_FIELD: u32 = 101;
     /// The directory's chunk-chain length.
     const ARENA_DIRECTORY_CHUNK_COUNT_FIELD: u32 = 102;
-    /// The resume free-slot bitmap's chunk-chain length. 103 from the same
-    /// table, NOT "the next free index" -- 104 is reserved by a later task of
-    /// this plan and 105 is already taken by the directory entry count, which
-    /// landed first.
-    const RESUME_FREE_CHUNK_COUNT_FIELD: u32 = 103;
     /// Ruling D1-a. 105, not 103: 103 and 104 are claimed by later tasks of the
     /// storage-conversion plan, and this number is chosen from that plan's one
     /// table rather than from whatever is free when this code is written.
@@ -12322,11 +12208,15 @@ mod wasm {
     /// What it CANNOT see is a field that drifts DOWN into the reference
     /// table's contiguous index space, because that space's length is a host
     /// constant. `host/test/fork-module-backend.test.ts` holds that half.
-    const FM_STATS_HIGH_FIELDS: [u32; 5] = [
+    const FM_STATS_HIGH_FIELDS: [u32; 4] = [
         IDENTITY_CHUNK_COUNT_FIELD,        // 100, already shipped
         ARENA_RECORD_CHUNK_COUNT_FIELD,    // 101
         ARENA_DIRECTORY_CHUNK_COUNT_FIELD, // 102
-        RESUME_FREE_CHUNK_COUNT_FIELD,     // 103
+        // 103 stays RESERVED. It was claimed by this plan for the resume
+        // free-slot bitmap's chunk-chain length, and there is no chain: the
+        // free set is derived from the live records rather than stored, so
+        // there is nothing whose length could be reported. An arm is what this
+        // array must list, and there is no arm.
         ARENA_DIRECTORY_ENTRY_COUNT_FIELD, // 105
     ];
     const _: () = {
@@ -12381,11 +12271,6 @@ mod wasm {
         }
         if field == ARENA_DIRECTORY_ENTRY_COUNT_FIELD {
             return arena_directory_entry_count() as i64;
-        }
-        // The resume free-slot bitmap's chain, for the same reason and in the
-        // same shape: a fixed array could not leak, a chunk chain can.
-        if field == RESUME_FREE_CHUNK_COUNT_FIELD {
-            return free_bits_chunk_count() as i64;
         }
         // Index a table of references rather than `match`-ing over the eleven
         // atomic loads directly: a `match field { 0 => A.load(), 1 => B.load(),
