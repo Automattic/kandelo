@@ -29,10 +29,21 @@
  * The protocol is channel-agnostic in the same way the migration transports
  * are: the default is a same-origin `BroadcastChannel`, and any injected
  * `MessageChannelLike` carries the same messages to a remote peer.
+ *
+ * A recording outlives the channel that published it. A remote link drops —
+ * the network hiccuped, the peers reconnect by session name — and everything
+ * the wire needs to continue lives in a {@link ReplicationHistory}: the ring
+ * of recently published entries and the digest chain over the whole stream.
+ * The machine's side suspends its recording instead of stopping it, hands the
+ * history to the next wire, and a replica that reports the last sequence it
+ * received resumes from the ring — no fresh checkpoint, no second freeze. A
+ * position the ring no longer holds is refused, and the replica falls back to
+ * the join it would have made anyway.
  */
 import type { MessageChannelLike } from "../migration/channel.js";
 import type { ReplicationLogEntry } from "./log.js";
 import { ReplicationDivergence } from "./log.js";
+import type { MachineStateHash } from "./state-hash.js";
 import { encodeMessage } from "../migration/codec.js";
 
 const LOCAL_REPLICATION_CHANNEL = "kandelo-replication-log";
@@ -45,6 +56,17 @@ const LOCAL_REPLICATION_CHANNEL = "kandelo-replication-log";
  * disappears next to the entries it covers.
  */
 const DIGEST_INTERVAL = 256;
+
+/**
+ * How many bytes of published entries a recording keeps for a resume.
+ *
+ * The ring exists to ride out a dropped link, not to replace the join: it
+ * needs to hold what a machine decides across the seconds-to-minutes a
+ * reconnect takes, and a replica whose position fell off the tail still has
+ * the checkpoint path. Entries are counted at their codec size, the same
+ * bytes the digest folds and the wire carries.
+ */
+const HISTORY_BYTES = 8 * 1024 * 1024;
 
 /**
  * The chained digest the publisher and every watcher fold entry by entry.
@@ -71,6 +93,144 @@ function foldDigest(seed: bigint, entry: ReplicationLogEntry): bigint {
     hash = (hash * FNV_PRIME) & FNV_MASK;
   }
   return hash;
+}
+
+/**
+ * What one recording accumulates and a dropped wire must not lose.
+ *
+ * Two things live here because both have to survive the channel: the ring of
+ * recently published entries, which is what a rejoining replica resumes from,
+ * and the digest chain, which is what lets that replica keep verifying a
+ * stream it re-entered in the middle. The recording pushes entries in as it
+ * makes them — with or without a wire attached — and whichever wire currently
+ * publishes the recording subscribes here and folds here.
+ *
+ * The ring is bounded by codec bytes and evicts oldest-first. Eviction is
+ * safe exactly because everything here was already offered to the wire: an
+ * entry a replica still needs but the ring no longer holds means the replica
+ * is too far behind to resume, and {@link after} says so with `null`.
+ */
+export class ReplicationHistory {
+  readonly #capacityBytes: number;
+  readonly #entries: ReplicationLogEntry[] = [];
+  readonly #sizes: number[] = [];
+  readonly #listeners = new Set<(entries: readonly ReplicationLogEntry[]) => void>();
+  #bytes = 0;
+  #lastSeq = -1;
+  #digest = FNV_OFFSET;
+  #digestedThrough = -1;
+  #sinceDigest = 0;
+
+  constructor(capacityBytes = HISTORY_BYTES) {
+    this.#capacityBytes = capacityBytes;
+  }
+
+  /** Keep `entries` for a resume, and hand them to the attached wire. */
+  push(entries: readonly ReplicationLogEntry[]): void {
+    for (const entry of entries) {
+      this.#entries.push(entry);
+      const size = encodeMessage(entry).byteLength;
+      this.#sizes.push(size);
+      this.#bytes += size;
+      this.#lastSeq = entry.seq;
+    }
+    while (this.#bytes > this.#capacityBytes && this.#entries.length > 0) {
+      this.#entries.shift();
+      this.#bytes -= this.#sizes.shift()!;
+    }
+    for (const listener of [...this.#listeners]) listener(entries);
+  }
+
+  /** Watch entries as they are pushed. Returns an unsubscribe. */
+  subscribe(
+    listener: (entries: readonly ReplicationLogEntry[]) => void,
+  ): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  /** What the ring still holds, oldest first. */
+  get entries(): readonly ReplicationLogEntry[] {
+    return this.#entries;
+  }
+
+  /**
+   * The entries after `afterSeq`, or null when the ring no longer reaches
+   * back that far.
+   *
+   * An empty array is a valid answer — the replica received everything the
+   * recording has made — and null is the refusal that sends it back to the
+   * checkpoint path.
+   */
+  after(afterSeq: number): readonly ReplicationLogEntry[] | null {
+    if (afterSeq > this.#lastSeq) return null;
+    if (afterSeq === this.#lastSeq) return [];
+    const first = this.#entries[0];
+    if (first === undefined || first.seq > afterSeq + 1) return null;
+    return this.#entries.slice(afterSeq + 1 - first.seq);
+  }
+
+  /**
+   * Fold one published entry into the digest chain, once.
+   *
+   * False when the entry was already folded — a backlog resend, a ring
+   * replay — so the chain covers every sequence number exactly once however
+   * many times the wire repeats it.
+   */
+  fold(entry: ReplicationLogEntry): boolean {
+    if (entry.seq <= this.#digestedThrough) return false;
+    this.#digest = foldDigest(this.#digest, entry);
+    this.#digestedThrough = entry.seq;
+    this.#sinceDigest += 1;
+    return true;
+  }
+
+  /** Entries folded since the last digest crossed the wire. */
+  get sinceDigest(): number {
+    return this.#sinceDigest;
+  }
+
+  /** The last sequence number folded into the digest. */
+  get digestedThrough(): number {
+    return this.#digestedThrough;
+  }
+
+  /** The digest so far, as the wire sends it. */
+  get digestHex(): string {
+    return this.#digest.toString(16);
+  }
+
+  /** Mark the digest so far as published. */
+  settleDigest(): void {
+    this.#sinceDigest = 0;
+  }
+}
+
+/**
+ * A recording whose wire is gone but whose machine is still deciding.
+ *
+ * The machine's side holds one of these across a dropped link: the history
+ * keeps absorbing what the recording makes, and the next wire's `serve`
+ * either adopts it for a resume or stops it for a fresh join. Whoever holds
+ * it owes it a `stop` eventually — a recording nobody resumes must not run
+ * for the rest of the session.
+ */
+export interface SuspendedRecording {
+  readonly history: ReplicationHistory;
+  readonly stop: () => Promise<void>;
+}
+
+/**
+ * Where a watcher stands in the published stream.
+ *
+ * `nextSeq` is the sequence it expects next; `digest` is its fold through
+ * `nextSeq - 1`, or null when it joined a stream it could not verify from
+ * the middle. A watcher hands this to its successor after a dropped link, so
+ * the resumed stream continues both the sequence and the verification.
+ */
+export interface ReplicationWatchPosition {
+  readonly nextSeq: number;
+  readonly digest: string | null;
 }
 
 /** One running recording a publisher can read and follow. */
@@ -134,6 +294,15 @@ export interface ReplicationLogSink {
    * tall in both.
    */
   scrolled?(position: PreviewScroll): void;
+  /**
+   * Where this watcher now stands, after each batch it accepted.
+   *
+   * A page that may have to resume after a dropped link keeps the latest one:
+   * it is the `afterSeq` the resume reports and the digest the successor
+   * watch verifies on from. A sink without the callback is a watcher that
+   * will never resume, and loses nothing.
+   */
+  advanced?(position: ReplicationWatchPosition): void;
 }
 
 /**
@@ -174,6 +343,30 @@ type LocalReplicationMessage<TMachine> =
   | { readonly kind: "granted"; readonly grant: ReplicationGrant }
   | { readonly kind: "ended" }
   | { readonly kind: "join"; readonly joinId: string }
+  | { readonly kind: "promote"; readonly takeId: string }
+  | {
+      readonly kind: "promotion_sealed";
+      readonly takeId: string;
+      readonly seq: number;
+      readonly hash: MachineStateHash;
+    }
+  | {
+      readonly kind: "adopt";
+      readonly takeId: string;
+      readonly hash: MachineStateHash;
+    }
+  | { readonly kind: "promotion_released"; readonly takeId: string }
+  | {
+      readonly kind: "promotion_refused";
+      readonly takeId: string;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "resume";
+      readonly joinId: string;
+      readonly afterSeq: number;
+    }
+  | { readonly kind: "resumed"; readonly joinId: string }
   | { readonly kind: "withdrawn"; readonly joinId: string }
   | { readonly kind: "serving" }
   | {
@@ -197,61 +390,52 @@ type LocalReplicationMessage<TMachine> =
 export class LocalReplicationLog<TMachine = never> {
   readonly #channel: MessageChannelLike;
   readonly #digestInterval: number;
-  /** The running digest over every entry this publisher has put on the wire. */
-  #digest = FNV_OFFSET;
-  /** The last sequence number folded into the digest. */
-  #digestedThrough = -1;
-  /** Entries folded since the last digest crossed the wire. */
-  #sinceDigest = 0;
+  readonly #historyBytes: number;
 
   constructor(
     channel: string | MessageChannelLike = LOCAL_REPLICATION_CHANNEL,
-    options: { digestInterval?: number } = {},
+    options: { digestInterval?: number; historyBytes?: number } = {},
   ) {
     this.#channel =
       typeof channel === "string" ? new BroadcastChannel(channel) : channel;
     this.#digestInterval = options.digestInterval ?? DIGEST_INTERVAL;
+    this.#historyBytes = options.historyBytes ?? HISTORY_BYTES;
   }
 
   /**
-   * Put entries on the wire, and fold each one into the running digest.
+   * Put entries on the wire, and fold each one into the recording's digest.
    *
    * Every path that publishes entries — a backlog, a live recording, a
-   * capture's held batch — goes through here, so the digest covers the
-   * stream a watcher receives, whatever mixture of paths produced it. A
-   * hello re-sends entries already folded, and the sequence guard keeps a
-   * re-send from folding twice. The digest goes out right after the entry
-   * that completes its interval, on the same ordered channel, which is what
-   * lets a watcher verify it against its own running digest by position.
+   * capture's held batch, a ring replay — goes through here, so the digest
+   * covers the stream a watcher receives, whatever mixture of paths produced
+   * it. A hello or a resume re-sends entries already folded, and the
+   * history's own guard keeps a re-send from folding twice. The digest goes
+   * out right after the entry that completes its interval, on the same
+   * ordered channel, which is what lets a watcher verify it against its own
+   * running digest by position. The state lives in the history rather than
+   * this wire, so the chain survives the wire the way the recording does.
    */
-  #postEntries(entries: readonly ReplicationLogEntry[]): void {
+  #postEntries(
+    history: ReplicationHistory,
+    entries: readonly ReplicationLogEntry[],
+  ): void {
     this.#post({ kind: "entries", entries });
     for (const entry of entries) {
-      if (entry.seq <= this.#digestedThrough) continue;
-      this.#digest = foldDigest(this.#digest, entry);
-      this.#digestedThrough = entry.seq;
-      this.#sinceDigest += 1;
-      if (this.#sinceDigest < this.#digestInterval) continue;
-      this.#flushDigest();
+      if (!history.fold(entry)) continue;
+      if (history.sinceDigest < this.#digestInterval) continue;
+      this.#flushDigest(history);
     }
   }
 
   /** Publish the digest so far, so short intervals verify as whole ones do. */
-  #flushDigest(): void {
-    if (this.#sinceDigest === 0) return;
-    this.#sinceDigest = 0;
+  #flushDigest(history: ReplicationHistory): void {
+    if (history.sinceDigest === 0) return;
+    history.settleDigest();
     this.#post({
       kind: "digest",
-      seq: this.#digestedThrough,
-      hash: this.#digest.toString(16),
+      seq: history.digestedThrough,
+      hash: history.digestHex,
     });
-  }
-
-  /** Start the digest over, for a recording that begins on this channel. */
-  #resetDigest(): void {
-    this.#digest = FNV_OFFSET;
-    this.#digestedThrough = -1;
-    this.#sinceDigest = 0;
   }
 
   /**
@@ -262,13 +446,15 @@ export class LocalReplicationLog<TMachine = never> {
    * tells watchers the recording ended.
    */
   publish(source: ReplicationLogSource): () => void {
-    this.#resetDigest();
+    // The source retains its own entries, so this history carries only the
+    // digest chain; nothing is ever pushed into its ring.
+    const history = new ReplicationHistory(this.#historyBytes);
     const backlog = () => {
       if (source.entries.length === 0) return;
-      this.#postEntries([...source.entries]);
+      this.#postEntries(history, [...source.entries]);
     };
     const stopRecord = source.onRecord((entry) => {
-      this.#postEntries([entry]);
+      this.#postEntries(history, [entry]);
     });
     const listener = (event: MessageEvent) => {
       const message = event.data as LocalReplicationMessage<TMachine>;
@@ -279,7 +465,7 @@ export class LocalReplicationLog<TMachine = never> {
     return () => {
       stopRecord();
       this.#channel.removeEventListener("message", listener);
-      this.#flushDigest();
+      this.#flushDigest(history);
       this.#post({ kind: "ended" });
     };
   }
@@ -305,17 +491,47 @@ export class LocalReplicationLog<TMachine = never> {
    * withdrew is gone, so a recording claimed in its name would run for nobody
    * while every live join is refused — the machine stops it, and says it is
    * serving again so an asker still waiting re-asks.
+   *
+   * `options.suspended` is a recording an earlier wire left running when its
+   * link died. A `resume` naming a position the recording's ring still holds
+   * adopts it — the replay goes out, then live entries, then `resumed`, and
+   * `options.resumed` tells the caller its recording is serving again. A
+   * position the ring lost is refused. A fresh `join` supersedes it: the
+   * asker that joins instead of resuming has no replica the recording could
+   * continue, so the recording stops before the machine is read again.
+   *
+   * Returns the serving's controls: `stop` ends the recording — including a
+   * suspended one nobody resumed — and `suspend` detaches from this wire
+   * without stopping it, handing back what the next wire's `serve` needs.
    */
   serve(
     capture: (
       publish: (entries: readonly ReplicationLogEntry[]) => void,
     ) => Promise<{ machine: TMachine; stop: () => Promise<void> } | null>,
-  ): () => void {
+    options: {
+      suspended?: SuspendedRecording | null;
+      resumed?: () => void;
+    } = {},
+  ): { stop: () => void; suspend: () => SuspendedRecording | null } {
+    let suspended = options.suspended ?? null;
     let serving: { stop: () => Promise<void> } | null = null;
+    let history: ReplicationHistory | null = null;
+    let stopPublishing: (() => void) | null = null;
     let capturing = false;
     let servingId: string | null = null;
     const refuse = (joinId: string, reason: string) => {
       this.#post({ kind: "refused", joinId, reason });
+    };
+    const attach = (adopted: ReplicationHistory) => {
+      history = adopted;
+      stopPublishing = adopted.subscribe((entries) =>
+        this.#postEntries(adopted, entries),
+      );
+    };
+    const detach = () => {
+      stopPublishing?.();
+      stopPublishing = null;
+      history = null;
     };
     const listener = (event: MessageEvent) => {
       const message = event.data as LocalReplicationMessage<TMachine>;
@@ -327,12 +543,47 @@ export class LocalReplicationLog<TMachine = never> {
         // now. Either way the machine answers the next asker.
         if (serving !== null) {
           const stopping = serving;
+          const chain = history;
           serving = null;
+          detach();
           void stopping.stop();
-          this.#flushDigest();
+          if (chain !== null) this.#flushDigest(chain);
           this.#post({ kind: "ended" });
           this.#post({ kind: "serving" });
         }
+        return;
+      }
+      if (message.kind === "resume") {
+        // A repeat of the resume already serving, like a repeated join.
+        if (message.joinId === servingId) return;
+        if (serving !== null || capturing) {
+          refuse(message.joinId, "this machine is already being replicated");
+          return;
+        }
+        const recording = suspended;
+        if (recording === null) {
+          refuse(message.joinId, "this machine holds no recording to resume");
+          return;
+        }
+        const replay = recording.history.after(message.afterSeq);
+        if (replay === null) {
+          refuse(
+            message.joinId,
+            `this machine no longer holds the log after ${message.afterSeq}`,
+          );
+          return;
+        }
+        suspended = null;
+        servingId = message.joinId;
+        serving = { stop: recording.stop };
+        // The replay before `resumed`, on the ordered channel, so the asker
+        // that hears the answer has already been handed everything it missed.
+        if (replay.length > 0) {
+          this.#postEntries(recording.history, replay);
+        }
+        attach(recording.history);
+        this.#post({ kind: "resumed", joinId: message.joinId });
+        options.resumed?.();
         return;
       }
       if (message.kind !== "join") return;
@@ -345,21 +596,30 @@ export class LocalReplicationLog<TMachine = never> {
         refuse(message.joinId, "this machine is already being replicated");
         return;
       }
+      // A fresh join while a recording sits suspended is the asker saying it
+      // has no replica to resume. The recording continues for nobody from
+      // here on, so it stops before the machine is read again.
+      if (suspended !== null) {
+        const parked = suspended;
+        suspended = null;
+        void parked.stop();
+      }
       capturing = true;
       servingId = message.joinId;
       // Held back until the join is answered. The recording still starts at
       // the capture instant — the entries go out, in order, right before the
       // `joined` — but a capture whose asker withdraws publishes nothing, so
       // no other watcher absorbs sequence numbers from a recording that
-      // never served anyone.
+      // never served anyone. Held outside the history: the ring may evict,
+      // and nothing may be evicted before it was ever offered to the wire.
       let held: ReplicationLogEntry[] | null = [];
-      this.#resetDigest();
+      const fresh = new ReplicationHistory(this.#historyBytes);
       void capture((entries) => {
         if (held !== null) {
           held.push(...entries);
           return;
         }
-        this.#postEntries(entries);
+        fresh.push(entries);
       }).then(
         (joined) => {
           capturing = false;
@@ -382,8 +642,10 @@ export class LocalReplicationLog<TMachine = never> {
           const releasing = held;
           held = null;
           if (releasing !== null && releasing.length > 0) {
-            this.#postEntries(releasing);
+            fresh.push(releasing);
+            this.#postEntries(fresh, releasing);
           }
+          attach(fresh);
           this.#post({
             kind: "joined",
             joinId: message.joinId,
@@ -407,15 +669,39 @@ export class LocalReplicationLog<TMachine = never> {
     // machine it is waiting for starts answering, and a single unanswered
     // question would leave it waiting out its whole timeout.
     this.#post({ kind: "serving" });
-    return () => {
-      this.#channel.removeEventListener("message", listener);
-      const stopping = serving;
-      serving = null;
-      servingId = null;
-      if (stopping === null) return;
-      void stopping.stop();
-      this.#flushDigest();
-      this.#post({ kind: "ended" });
+    return {
+      stop: () => {
+        this.#channel.removeEventListener("message", listener);
+        // A recording still suspended here has nobody left to resume it.
+        const parked = suspended;
+        suspended = null;
+        if (parked !== null) void parked.stop();
+        const stopping = serving;
+        const chain = history;
+        serving = null;
+        servingId = null;
+        detach();
+        if (stopping === null) return;
+        void stopping.stop();
+        if (chain !== null) this.#flushDigest(chain);
+        this.#post({ kind: "ended" });
+      },
+      suspend: () => {
+        this.#channel.removeEventListener("message", listener);
+        const stopping = serving;
+        const chain = history;
+        serving = null;
+        servingId = null;
+        detach();
+        if (stopping !== null && chain !== null) {
+          return { history: chain, stop: stopping.stop };
+        }
+        // Nothing was adopted on this wire; what arrived suspended leaves
+        // suspended, for the caller to hand on or stop.
+        const parked = suspended;
+        suspended = null;
+        return parked;
+      },
     };
   }
 
@@ -494,6 +780,258 @@ export class LocalReplicationLog<TMachine = never> {
       signal?.addEventListener("abort", abort);
       this.#channel.addEventListener("message", listener);
       this.#post({ kind: "join", joinId });
+    });
+  }
+
+  /**
+   * Ask the machine on this channel to continue a recording from `afterSeq`.
+   *
+   * For the replica whose link died: it still runs the machine and still
+   * holds every entry through `afterSeq`, so what it needs is the rest of
+   * the log, not another checkpoint. Call {@link watch} first, with the
+   * position the previous watch reported — the machine replays the missed
+   * entries before it answers, and a resume asked before watching would miss
+   * them. A watcher that received nothing before the link died asks with
+   * `-1` and a fresh watch: a recording that published nothing agrees, and
+   * one whose ring lost the start refuses.
+   *
+   * Resolves when the machine adopted the recording; the entries themselves
+   * arrive through the watch. Rejects when the machine refused — it holds no
+   * suspended recording, or its ring no longer reaches back to `afterSeq` —
+   * and the caller falls back to a full join. `signal` withdraws the ask
+   * exactly as {@link join}'s does, and outlives the answer the same way: a
+   * resumed recording is freed by aborting, so the machine serves the next
+   * asker.
+   */
+  resume(afterSeq: number, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    const joinId = crypto.randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        finish();
+        reject(
+          new Error(
+            `no machine resumed the recording after ${afterSeq} within `
+              + `${timeoutMs} ms`,
+          ),
+        );
+      }, timeoutMs);
+      const abort = () => {
+        finish();
+        this.#post({ kind: "withdrawn", joinId });
+        reject(new Error("the request to resume the recording was withdrawn"));
+      };
+      const listener = (event: MessageEvent) => {
+        const message = event.data as LocalReplicationMessage<TMachine>;
+        if (message.kind === "serving") {
+          this.#post({ kind: "resume", joinId, afterSeq });
+          return;
+        }
+        if (message.kind === "refused" && message.joinId === joinId) {
+          finish();
+          reject(new Error(`the machine refused to resume: ${message.reason}`));
+          return;
+        }
+        if (message.kind !== "resumed" || message.joinId !== joinId) return;
+        clearTimeout(timer);
+        this.#channel.removeEventListener("message", listener);
+        resolve();
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        this.#channel.removeEventListener("message", listener);
+        signal?.removeEventListener("abort", abort);
+      };
+      if (signal?.aborted) {
+        clearTimeout(timer);
+        reject(new Error("the request to resume the recording was withdrawn"));
+        return;
+      }
+      signal?.addEventListener("abort", abort);
+      this.#channel.addEventListener("message", listener);
+      this.#post({ kind: "resume", joinId, afterSeq });
+    });
+  }
+
+  /**
+   * Answer take-over promotions for the machine this computer holds.
+   *
+   * A taker that already runs a caught-up replica asks to be promoted
+   * instead of paying a checkpoint transfer. `seal` freezes the machine,
+   * stops the recording at the frozen instant, and answers with the seal
+   * position and the sealed state's hash; `adopt` receives the drained
+   * replica's hash and answers whether the machine was released — the
+   * keeper releases only on a match, so a mismatch or a refusal sends the
+   * taker to the checkpoint path it would have used anyway. One promotion
+   * runs at a time. Returns an unsubscribe.
+   */
+  servePromotion(handlers: {
+    seal: () => Promise<
+      | { readonly seq: number; readonly hash: MachineStateHash }
+      | { readonly refused: string }
+    >;
+    adopt: (hash: MachineStateHash) => Promise<boolean>;
+  }): () => void {
+    let activeTakeId: string | null = null;
+    const refuse = (takeId: string, reason: string) => {
+      this.#post({ kind: "promotion_refused", takeId, reason });
+    };
+    const listener = (event: MessageEvent) => {
+      const message = event.data as LocalReplicationMessage<TMachine>;
+      if (message.kind === "promote") {
+        if (message.takeId === activeTakeId) return;
+        if (activeTakeId !== null) {
+          refuse(message.takeId, "a take-over is already in progress");
+          return;
+        }
+        activeTakeId = message.takeId;
+        void handlers.seal().then(
+          (sealed) => {
+            if (activeTakeId !== message.takeId) return;
+            if ("refused" in sealed) {
+              activeTakeId = null;
+              refuse(message.takeId, sealed.refused);
+              return;
+            }
+            this.#post({
+              kind: "promotion_sealed",
+              takeId: message.takeId,
+              seq: sealed.seq,
+              hash: sealed.hash,
+            });
+          },
+          (error: unknown) => {
+            if (activeTakeId !== message.takeId) return;
+            activeTakeId = null;
+            refuse(
+              message.takeId,
+              error instanceof Error ? error.message : String(error),
+            );
+          },
+        );
+        return;
+      }
+      if (message.kind !== "adopt") return;
+      if (message.takeId !== activeTakeId) {
+        refuse(message.takeId, "this take-over is not the one being served");
+        return;
+      }
+      void handlers.adopt(message.hash).then(
+        (released) => {
+          if (activeTakeId !== message.takeId) return;
+          activeTakeId = null;
+          if (released) {
+            this.#post({ kind: "promotion_released", takeId: message.takeId });
+            return;
+          }
+          refuse(
+            message.takeId,
+            "the machine refused the adoption: the states do not match",
+          );
+        },
+        (error: unknown) => {
+          if (activeTakeId !== message.takeId) return;
+          activeTakeId = null;
+          refuse(
+            message.takeId,
+            error instanceof Error ? error.message : String(error),
+          );
+        },
+      );
+    };
+    this.#channel.addEventListener("message", listener);
+    return () => this.#channel.removeEventListener("message", listener);
+  }
+
+  /**
+   * Ask the machine on this channel to seal its recording for a take-over.
+   *
+   * Resolves with the seal position, the sealed state's hash, and the take
+   * id `requestAdoption` continues with. Rejects when the machine refused
+   * or never answered — the caller falls back to the checkpoint take.
+   */
+  requestPromotion(timeoutMs: number): Promise<{
+    takeId: string;
+    seq: number;
+    hash: MachineStateHash;
+  }> {
+    const takeId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        finish();
+        reject(
+          new Error(`no machine sealed its recording within ${timeoutMs} ms`),
+        );
+      }, timeoutMs);
+      const listener = (event: MessageEvent) => {
+        const message = event.data as LocalReplicationMessage<TMachine>;
+        if (
+          message.kind === "promotion_refused"
+          && message.takeId === takeId
+        ) {
+          finish();
+          reject(new Error(`the machine refused the take-over: ${message.reason}`));
+          return;
+        }
+        if (message.kind !== "promotion_sealed" || message.takeId !== takeId) {
+          return;
+        }
+        finish();
+        resolve({ takeId, seq: message.seq, hash: message.hash });
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        this.#channel.removeEventListener("message", listener);
+      };
+      this.#channel.addEventListener("message", listener);
+      this.#post({ kind: "promote", takeId });
+    });
+  }
+
+  /**
+   * Report the drained replica's hash, and wait for the machine's release.
+   *
+   * Resolves when the keeper released the machine — the taker owns it from
+   * that moment. Rejects on a mismatch, a refusal, or silence, and the
+   * taker falls back to the checkpoint take, which still works after a
+   * seal: the keeper kept running, and a fresh capture reads it again.
+   */
+  requestAdoption(
+    takeId: string,
+    hash: MachineStateHash,
+    timeoutMs: number,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        finish();
+        reject(
+          new Error(`the machine did not release within ${timeoutMs} ms`),
+        );
+      }, timeoutMs);
+      const listener = (event: MessageEvent) => {
+        const message = event.data as LocalReplicationMessage<TMachine>;
+        if (
+          message.kind === "promotion_refused"
+          && message.takeId === takeId
+        ) {
+          finish();
+          reject(new Error(`the machine refused the adoption: ${message.reason}`));
+          return;
+        }
+        if (
+          message.kind !== "promotion_released"
+          || message.takeId !== takeId
+        ) {
+          return;
+        }
+        finish();
+        resolve();
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        this.#channel.removeEventListener("message", listener);
+      };
+      this.#channel.addEventListener("message", listener);
+      this.#post({ kind: "adopt", takeId, hash });
     });
   }
 
@@ -645,16 +1183,28 @@ export class LocalReplicationLog<TMachine = never> {
    * log that skips or repeats a decision, so an entry that does not continue
    * the sequence is reported as divergence rather than passed on. Returns a
    * stop function.
+   *
+   * `options.from` continues a predecessor watch whose wire died: the
+   * position it last reported through `advanced`. The sequence check picks
+   * up at `nextSeq` instead of taking the first entry as the start, and the
+   * digest fold continues from the carried value, so a resumed stream stays
+   * verified end to end.
    */
-  watch(sink: ReplicationLogSink): () => void {
-    let nextSeq = -1;
-    let digest = FNV_OFFSET;
+  watch(
+    sink: ReplicationLogSink,
+    options: { from?: ReplicationWatchPosition } = {},
+  ): () => void {
+    const from = options.from ?? null;
+    let nextSeq = from === null ? -1 : from.nextSeq;
+    let digest = from?.digest != null ? BigInt(`0x${from.digest}`) : FNV_OFFSET;
     // Verification needs the stream from its first entry: a watcher folding
     // from the middle would disagree with every digest and report a healthy
     // stream as corrupt. Every supported flow starts at zero — a backlog is
     // resent whole, a capture's log starts at the capture — so folding is on
-    // until the stream proves it began earlier.
-    let verifying = true;
+    // until the stream proves it began earlier. A resumed watch inherits its
+    // predecessor's answer: the carried digest continues the fold, and a
+    // predecessor that was not verifying leaves it off.
+    let verifying = from === null ? true : from.digest !== null;
     const listener = (event: MessageEvent) => {
       const message = event.data as LocalReplicationMessage<TMachine>;
       if (message.kind === "ended") {
@@ -720,6 +1270,10 @@ export class LocalReplicationLog<TMachine = never> {
       }
       nextSeq = fresh[fresh.length - 1]!.seq + 1;
       sink.entries(fresh);
+      sink.advanced?.({
+        nextSeq,
+        digest: verifying ? digest.toString(16) : null,
+      });
     };
     this.#channel.addEventListener("message", listener);
     this.#post({ kind: "hello" });

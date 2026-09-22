@@ -125,9 +125,13 @@ own memory:
   item above this one and is not in the log yet, so a machine with more
   than one process reads its clocks in an order the two computers never
   share; without the reader's identity such a machine diverges on its
-  first reading. Threads of one process share one stream and can still
-  diverge, which needs the current thread id at the syscall the same way
-  this needed the current process.
+  first reading. Threads of one process are the same boundary one level
+  down, and closed the same way since 2026-09-09: the kernel worker binds
+  the channel's thread before every dispatch, so readings and random
+  draws carry the tid alongside the pid and every task replays its own
+  stream. A byte-identical replica is what the take-over hash gate
+  requires, and same-clock readings swapped between two threads of one
+  pid would fail it without ever tripping a divergence check.
 - **Accept selection.** Which process took each connection off a shared
   accept queue. A pre-fork server — nginx, php-fpm — leaves every worker
   blocked in `accept` on one queue, and the connection goes to whichever
@@ -461,6 +465,129 @@ source". Replication is what that mode means. `"replay"` in the same
 list — "start from clean base and replay a command transcript" — is the
 same determinism requirement in single-machine form, so the two modes
 share the work.
+
+### How a replica survives a dropped link
+
+**Built 2026-09-09.** A recording used to last exactly as long as the peer
+link that carried it: the link died, `machine-replication.ts` stopped the
+recording on one side and dropped the replica on the other, and a reconnect
+paid a full checkpoint transfer for a machine the viewer had held one network
+hiccup earlier. Take-over makes that cost structural — promotion only works
+from a caught-up replica, and a scheme where one dropped link destroys the
+replica's lead destroys it exactly when the user reaches for it.
+
+What survives the link now lives in `ReplicationHistory`
+(`host/src/replication/log-local.ts`): a byte-bounded ring of the recently
+published entries and the digest chain over the whole stream. The recording
+pushes into it with or without a wire attached, and whichever wire currently
+serves the recording subscribes to it and folds digests out of it. On a link
+death the machine's side calls `suspend()` on its serve handle instead of
+`stop()`, keeps the returned `SuspendedRecording` for one resume window, and
+hands it to the next link's `serve`. The replica's side keeps its machine
+parked on its queue — the queue's writer is deliberately not ended — together
+with the position its watch last reported (`advanced` on the sink).
+
+The rejoin is a `resume(afterSeq)` instead of a `join`. A position the ring
+still holds is answered with the missed entries out of the ring, then the
+live stream, then `resumed` — no freeze, no checkpoint. The watcher continues
+its digest fold from the carried position, so the resumed stream stays
+verified end to end; the digest state travels in the history precisely so the
+chain survives the wire. A position the ring evicted is refused, and the
+refusal sends the viewer to the join it would have made anyway, which also
+stops the recording nobody could resume. A viewer that received nothing
+before the drop asks from `-1`: a recording that published nothing agrees and
+resumes empty, one that did publish refuses. Both halves give up after
+`RESUME_WINDOW_MS` (120 s): the machine must not record for nobody
+indefinitely, and a parked replica whose user never returns is let go.
+
+During the gap the viewer's page keeps calling itself the viewer — the parked
+replica still reports "running", but it is another computer's machine, so
+`replicating` survives the link in `useMachineReplication` and
+`KernelHost.holdsReplica()` is public so a page deciding roles on a new link
+can tell a parked replica from a machine of its own.
+
+`host/test/replication/log-local.test.ts` covers the wire — resume from the
+ring, digest continuity across the resume (a tampered ring replay is caught),
+eviction refusal with the join fallback, the empty-recording resume, and a
+recording handed across two dead links. `host/test/replication/live-join.test.ts`
+proves the platform claim with real machines: a wire dropped mid-follow, the
+workload finished into the ring alone, and the replica drained to a transcript
+equal to the primary's with one capture total and zero replay-tolerance
+borrows. `apps/browser-demos/test/kandelo-machine-replication.spec.ts` covers
+the product surface; its reconnect half skips where headless Chromium refuses
+a second loopback ICE pair, which is an environment boundary, not a platform
+one.
+
+### Take-over promotion: adopt the replica instead of transferring the machine
+
+**Built 2026-09-09; promotion succeeds on Node and in the browser shell
+demo. The modeset demo falls back at the mid-run seal boundary below.** A
+take-over was a checkpoint transfer even
+when the taker had been running a caught-up replica all along — the benchmark
+on this branch measured an 18.6 MB checkpoint and a ~245 ms restore against an
+~18 ms drain. Promotion replaces the transfer with a proof: seal → drain →
+hash → adopt, with the checkpoint take as the fallback, so the worst case
+equals the previous behavior plus one freeze.
+
+The platform half is two worker primitives. `replication_seal` (keeper) stops
+the streaming recorder inside a checkpoint freeze — the log's final entry and
+the frozen state name one instant — and hashes the captured state in the
+worker; only the seal position and hash reach the main thread, and the machine
+resumes unrecorded, its post-seal decisions discarded on adoption exactly as a
+checkpoint handover discards what follows its freeze.
+`replication_hash_replica` (taker) freezes the replica with a hook that
+refuses unless the replay stands exactly at the seal, then hashes. The gate is
+`comparePromotionStateHashes`: every filesystem and process region byte for
+byte, the kernel region exempt at the measured boundary restore-fidelity pins
+(a restore's own kernel calls move the kernel heap, so keeper and replica
+kernels never match even when they are one machine).
+
+The product half rides the replication wire — `promote` / `promotion_sealed`
+/ `adopt` / `promotion_released` / `promotion_refused`, `servePromotion` on
+the keeper and `requestPromotion`/`requestAdoption` on the taker — and the
+take button tries it first whenever the page runs a replica
+(`machine-handover.ts` falls through to the checkpoint take on any refusal,
+mismatch, or silence). On adoption the taker's host promotes the replica in
+place (`KernelHost.promoteReplicaMachine`: the replay ends, the input gate
+opens, the machine never stops running), the page flips roles by hand — the
+status never changes, so no status transition can flip them — and the
+released keeper walks the existing viewer path into the reverse join.
+
+`host/test/replication/promotion.test.ts` proves the protocol on real Node
+machines: sealed mid-workload recording, drained replica, hashes agreeing at
+the promotion boundary, and the machine running a fresh guest on its own
+clock afterward. The browser shell demo promotes by proof end to end
+(`kandelo-machine-replication.spec.ts` "gives the machine to the viewer");
+two browser-only findings made that true:
+
+- **A replica keeps the primary's trust store until promotion.** The
+  `filesystem:/` divergence that refused every browser gate was the MITM CA
+  install: the kernel worker wrote this page's `tlsBackend` CA into
+  `/etc/ssl/certs/ca-certificates.crt` on every boot, a replica's restore
+  included — host-generated bytes with a host-clock mtime over restored
+  machine state. A machine booted as a replica now defers the bundle; it is
+  installed in `replication_replay_stop`, the moment promotion makes the
+  machine this page's own and live TLS starts terminating against this
+  page's backend.
+- **The taker holds its replica through the adoption.** The keeper's
+  `adopt` handler releases its machine before the release answer travels,
+  releasing stops its recording, and the recording's `ended` reaches the
+  taker's watch before `requestAdoption` resolves. A taker that dropped its
+  replica on `ended` destroyed the machine mid-adoption; the page's
+  `adopting` guard keeps it. `log-local.test.ts` "ends the taker's watch
+  before the release answer arrives" pins the ordering. Open design
+  question: should the wire answer the release before the keeper stops its
+  recording instead? The current order keeps the one-owner invariant, and
+  the taker-side guard compensates.
+
+The remaining open boundary: a seal under a still-running guest contends
+with the freeze exactly as any capture of a busy machine does — the modeset
+demo's guest never idles, keeper and replica freeze at different
+instructions between decisions, and `process:` regions differ (measured:
+5 of 171 chunks), so the modeset take-over lands on the checkpoint fallback
+today. A reader that parks post-seal reads for the freeze instead of
+borrowing is the sketched fix, and it touches the freeze gate, so it wants
+a design pass.
 
 ## Surfaces, and what sharing each one needs
 

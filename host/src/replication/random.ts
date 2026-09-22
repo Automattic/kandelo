@@ -1,5 +1,5 @@
 import type { RandomProvider } from "../vfs/types";
-import type { ReplicationGuestPid } from "./clock";
+import type { ReplicationGuestPid, ReplicationGuestTid } from "./clock";
 import type {
   ReplicationLogReader,
   ReplicationLogRecorder,
@@ -21,15 +21,18 @@ export class RecordingRandomProvider implements RandomProvider {
   readonly #source: RandomProvider;
   readonly #recorder: ReplicationLogRecorder;
   readonly #pid: ReplicationGuestPid;
+  readonly #tid: ReplicationGuestTid;
 
   constructor(
     source: RandomProvider,
     recorder: ReplicationLogRecorder,
     pid: ReplicationGuestPid,
+    tid: ReplicationGuestTid,
   ) {
     this.#source = source;
     this.#recorder = recorder;
     this.#pid = pid;
+    this.#tid = tid;
   }
 
   getRandomBytes(length: number): Uint8Array {
@@ -39,6 +42,7 @@ export class RecordingRandomProvider implements RandomProvider {
     this.#recorder.record({
       kind: "random",
       pid: this.#pid(),
+      tid: this.#tid(),
       bytes: bytes.slice(),
     });
     return bytes;
@@ -49,16 +53,22 @@ export class RecordingRandomProvider implements RandomProvider {
 export class ReplayingRandomProvider implements RandomProvider {
   readonly #reader: ReplicationLogReader;
   readonly #pid: ReplicationGuestPid;
+  readonly #tid: ReplicationGuestTid;
 
-  constructor(reader: ReplicationLogReader, pid: ReplicationGuestPid) {
+  constructor(
+    reader: ReplicationLogReader,
+    pid: ReplicationGuestPid,
+    tid: ReplicationGuestTid,
+  ) {
     this.#reader = reader;
     this.#pid = pid;
+    this.#tid = tid;
   }
 
   getRandomBytes(length: number): Uint8Array {
     // A copy for the same reason the recording keeps one: the log's bytes
     // are the recording, and a caller that wrote into them would hand the
     // next replica of this log a different machine.
-    return this.#reader.takeRandom(this.#pid(), length).slice();
+    return this.#reader.takeRandom(this.#pid(), this.#tid(), length).slice();
   }
 }

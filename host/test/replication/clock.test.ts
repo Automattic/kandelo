@@ -10,7 +10,7 @@ import {
 } from "../../src/replication/log";
 import type { TimeProvider } from "../../src/vfs/types";
 
-/** The one process every test below reads for, unless it names another. */
+/** The one task every test below reads for, unless it names another. */
 const GUEST = () => 102;
 
 /** A host clock that never repeats a reading, the way a real one does not. */
@@ -41,13 +41,13 @@ describe("recording time provider", () => {
   it("returns the host reading and records exactly what the guest was told", () => {
     const source = tickingClock();
     const recorder = new ReplicationLogRecorder();
-    const provider = new RecordingTimeProvider(source, recorder, GUEST);
+    const provider = new RecordingTimeProvider(source, recorder, GUEST, GUEST);
 
     expect(provider.clockGettime(1)).toEqual({ sec: 1, nsec: 1 });
     expect(provider.clockGettime(0)).toEqual({ sec: 0, nsec: 2 });
     expect(recorder.entries.map((entry) => entry.decision)).toEqual([
-      { kind: "clock", pid: 102, clockId: 1, sec: 1, nsec: 1 },
-      { kind: "clock", pid: 102, clockId: 0, sec: 0, nsec: 2 },
+      { kind: "clock", pid: 102, tid: 102, clockId: 1, sec: 1, nsec: 1 },
+      { kind: "clock", pid: 102, tid: 102, clockId: 0, sec: 0, nsec: 2 },
     ]);
   });
 
@@ -56,6 +56,7 @@ describe("recording time provider", () => {
     const provider = new RecordingTimeProvider(
       source,
       new ReplicationLogRecorder(),
+      GUEST,
       GUEST,
     );
 
@@ -70,7 +71,7 @@ describe("replaying time provider", () => {
   it("gives a second machine the readings the first one saw", () => {
     const source = tickingClock();
     const recorder = new ReplicationLogRecorder();
-    const primary = new RecordingTimeProvider(source, recorder, GUEST);
+    const primary = new RecordingTimeProvider(source, recorder, GUEST, GUEST);
     const first = primary.clockGettime(1);
     const second = primary.clockGettime(1);
 
@@ -79,6 +80,7 @@ describe("replaying time provider", () => {
       tickingClock(),
       new ReplicationLogReader(recorder.entries),
       GUEST,
+      GUEST,
     );
     expect(replica.clockGettime(1)).toEqual(first);
     expect(replica.clockGettime(1)).toEqual(second);
@@ -86,10 +88,11 @@ describe("replaying time provider", () => {
 
   it("refuses to invent a reading the primary never made", () => {
     const recorder = new ReplicationLogRecorder(4);
-    new RecordingTimeProvider(tickingClock(), recorder, GUEST).clockGettime(1);
+    new RecordingTimeProvider(tickingClock(), recorder, GUEST, GUEST).clockGettime(1);
     const replica = new ReplayingTimeProvider(
       tickingClock(),
       new ReplicationLogReader(recorder.entries),
+      GUEST,
       GUEST,
     );
     replica.clockGettime(1);
@@ -103,6 +106,7 @@ describe("replaying time provider", () => {
       source,
       new ReplicationLogReader([]),
       GUEST,
+      GUEST,
     );
 
     replica.nanosleep(0, 250);
@@ -111,11 +115,12 @@ describe("replaying time provider", () => {
 
   it("skips the sleep while the primary's next reading is already here", () => {
     const recorder = new ReplicationLogRecorder();
-    new RecordingTimeProvider(tickingClock(), recorder, GUEST).clockGettime(1);
+    new RecordingTimeProvider(tickingClock(), recorder, GUEST, GUEST).clockGettime(1);
     const source = tickingClock();
     const replica = new ReplayingTimeProvider(
       source,
       new ReplicationLogReader(recorder.entries),
+      GUEST,
       GUEST,
     );
 
@@ -134,6 +139,7 @@ describe("replaying time provider", () => {
     const replica = new ReplayingTimeProvider(
       source,
       new ReplicationLogReader([]),
+      GUEST,
       GUEST,
     );
 

@@ -31,20 +31,32 @@ import type {
  */
 export type ReplicationGuestPid = () => number;
 
+/**
+ * Which thread of that process is being served.
+ *
+ * The kernel worker binds the channel's thread before every dispatch, so the
+ * tid is known exactly where the pid is. A process's leader thread answers
+ * with the pid itself, and host work answers 0 alongside pid 0.
+ */
+export type ReplicationGuestTid = () => number;
+
 /** Delegate to the real clock, and record what the guest was told. */
 export class RecordingTimeProvider implements TimeProvider {
   readonly #source: TimeProvider;
   readonly #recorder: ReplicationLogRecorder;
   readonly #pid: ReplicationGuestPid;
+  readonly #tid: ReplicationGuestTid;
 
   constructor(
     source: TimeProvider,
     recorder: ReplicationLogRecorder,
     pid: ReplicationGuestPid,
+    tid: ReplicationGuestTid,
   ) {
     this.#source = source;
     this.#recorder = recorder;
     this.#pid = pid;
+    this.#tid = tid;
   }
 
   clockGettime(clockId: number): { sec: number; nsec: number } {
@@ -52,6 +64,7 @@ export class RecordingTimeProvider implements TimeProvider {
     this.#recorder.record({
       kind: "clock",
       pid: this.#pid(),
+      tid: this.#tid(),
       clockId,
       sec: reading.sec,
       nsec: reading.nsec,
@@ -73,19 +86,22 @@ export class ReplayingTimeProvider implements TimeProvider {
   readonly #source: TimeProvider;
   readonly #reader: ReplicationLogReader;
   readonly #pid: ReplicationGuestPid;
+  readonly #tid: ReplicationGuestTid;
 
   constructor(
     source: TimeProvider,
     reader: ReplicationLogReader,
     pid: ReplicationGuestPid,
+    tid: ReplicationGuestTid,
   ) {
     this.#source = source;
     this.#reader = reader;
     this.#pid = pid;
+    this.#tid = tid;
   }
 
   clockGettime(clockId: number): { sec: number; nsec: number } {
-    const reading = this.#reader.takeClock(clockId, this.#pid());
+    const reading = this.#reader.takeClock(clockId, this.#pid(), this.#tid());
     return { sec: reading.sec, nsec: reading.nsec };
   }
 

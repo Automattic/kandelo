@@ -50,7 +50,13 @@ import {
   type PreviewCursor,
   type PreviewScroll,
   type ReplicationGrant,
+  type ReplicationWatchPosition,
+  type SuspendedRecording,
 } from "@host/replication/log-local";
+import {
+  comparePromotionStateHashes,
+  type MachineStateHash,
+} from "@host/replication/state-hash";
 import {
   ReplicationLogQueueWriter,
   createReplicationLogQueue,
@@ -89,6 +95,49 @@ const JOIN_TIMEOUT_MS = 120_000;
  * continuous one.
  */
 const RETRY_AFTER_MS = 15_000;
+
+/**
+ * How long either side keeps its half of a dropped link alive.
+ *
+ * The user's machine goes on recording into its ring, and the viewer's
+ * replica stays parked on its queue, so a link that comes back inside this
+ * window resumes the log instead of paying another checkpoint. It matches
+ * the join's own wait: reconnecting by session name is the same amount of
+ * human work as a first connection. When it runs out, the recording stops
+ * and the replica is let go — a machine must not record for nobody
+ * indefinitely.
+ */
+const RESUME_WINDOW_MS = 120_000;
+
+/**
+ * How long a viewer waits for the answer to a resume.
+ *
+ * A resume reads no machine — the answer comes from the ring the user's
+ * page already holds — so it is quick or it is refused, and the fallback
+ * join carries the long wait.
+ */
+const RESUME_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a taker waits for the keeper to seal its recording.
+ *
+ * A seal is one freeze — the parking a capture already pays, without the
+ * state crossing the wire — so it is quick or it is refused, and the
+ * checkpoint take behind the fallback carries the long wait.
+ */
+const PROMOTE_SEAL_TIMEOUT_MS = 30_000;
+
+/**
+ * How long a drained replica may take to stand exactly at the seal.
+ *
+ * A caught-up replica is milliseconds behind — the benchmark on this branch
+ * measured an ~18 ms drain — so a replica that cannot reach the seal in this
+ * window is one the checkpoint path serves better.
+ */
+const PROMOTE_DRAIN_LIMIT_MS = 15_000;
+
+/** How long the taker waits for the release after the hashes matched. */
+const PROMOTE_ADOPT_TIMEOUT_MS = 15_000;
 
 const pause = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -161,6 +210,17 @@ export interface MachineReplication {
    * mirror; switching to "join" serves the next ask.
    */
   readonly setGrant: (grant: ReplicationGrant) => void;
+  /**
+   * Take the user's machine by proof instead of by transfer.
+   *
+   * The replica this page runs is already the machine, milliseconds behind.
+   * The keeper seals its recording, this replica drains to the seal, both
+   * sides hash, and the keeper releases on a match — no checkpoint crosses
+   * the wire, and the screen never goes through a boot. False when this
+   * page runs no replica or anything in the proof fell through; the caller
+   * then takes by checkpoint, which still works after a seal.
+   */
+  readonly promote: () => Promise<boolean>;
 }
 
 const IDLE: MachineReplication = {
@@ -170,6 +230,7 @@ const IDLE: MachineReplication = {
   failure: null,
   grant: "join",
   setGrant: () => {},
+  promote: async () => false,
   navigation: { publish: () => {}, viewerPath: null },
   cursor: { publish: () => {}, viewerCursor: null },
   scroll: { publish: () => {}, viewerScroll: null },
@@ -211,6 +272,28 @@ export function useMachineReplication(
   const wireRef = React.useRef<LocalReplicationLog<CapturedMachine> | null>(
     null,
   );
+  // The viewer stint below owns the promotion — it holds the wire, the
+  // replica flag, and the role machinery — and renders outlive it, so the
+  // take button reaches it through a ref the stint installs and clears.
+  const promoteRef = React.useRef<(() => Promise<boolean>) | null>(null);
+  const promote = React.useCallback(
+    () => promoteRef.current?.() ?? Promise.resolve(false),
+    [],
+  );
+  // The two halves of a dropped link, each kept for one resume window. The
+  // effect below tears down per link, so what must outlive the link lives
+  // here: the user's side keeps its recording — ring and digest chain — and
+  // the viewer's side keeps its parked replica's queue and position.
+  const suspendedRecordingRef = React.useRef<{
+    recording: SuspendedRecording;
+    expire: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const suspendedReplicaRef = React.useRef<{
+    writer: ReplicationLogQueueWriter;
+    /** Null when the log published nothing before the link died. */
+    position: ReplicationWatchPosition | null;
+    expire: ReturnType<typeof setTimeout>;
+  } | null>(null);
   const publishNavigation = React.useCallback((path: string) => {
     wireRef.current?.publishNavigation(path);
   }, []);
@@ -224,7 +307,9 @@ export function useMachineReplication(
   React.useEffect(() => {
     setPublishing(false);
     setJoining(false);
-    setReplicating(false);
+    // A suspended replica is still running on the user's decisions — parked,
+    // not stopped — so the flag survives the link the way the machine does.
+    if (suspendedReplicaRef.current === null) setReplicating(false);
     setFailure(null);
     setViewerPath(null);
     setViewerCursor(null);
@@ -245,22 +330,41 @@ export function useMachineReplication(
     const becomeUser = () => {
       role = "user";
       const grantOnWire = wire.publishGrant(grantRef.current);
-      let stopServing: (() => void) | null = null;
+      // A recording an earlier link left suspended: this link either serves
+      // its resume or supersedes it with a fresh capture. Granted only the
+      // mirror, it stops now — no ask will ever adopt it.
+      const parked = suspendedRecordingRef.current;
+      suspendedRecordingRef.current = null;
+      if (parked !== null) clearTimeout(parked.expire);
+      let suspended = parked?.recording ?? null;
+      if (suspended !== null && grantRef.current !== "join") {
+        const stopping = suspended;
+        suspended = null;
+        void stopping.stop();
+      }
+      let serving: {
+        stop: () => void;
+        suspend: () => SuspendedRecording | null;
+      } | null = null;
       const serve = () => {
-        stopServing = wire.serve(async (publish) => {
-          const joined = await host.captureMachineForViewer((entries) => {
-            publish(entries as readonly ReplicationLogEntry[]);
-          });
-          if (joined === null) return null;
-          setPublishing(true);
-          return {
-            machine: joined.machine,
-            stop: async () => {
-              setPublishing(false);
-              await joined.stop();
-            },
-          };
-        });
+        serving = wire.serve(
+          async (publish) => {
+            const joined = await host.captureMachineForViewer((entries) => {
+              publish(entries as readonly ReplicationLogEntry[]);
+            });
+            if (joined === null) return null;
+            setPublishing(true);
+            return {
+              machine: joined.machine,
+              stop: async () => {
+                setPublishing(false);
+                await joined.stop();
+              },
+            };
+          },
+          { suspended, resumed: () => setPublishing(true) },
+        );
+        suspended = null;
       };
       // A machine granted only the mirror serves no join at all: what leaves
       // this computer is enforced here, not by the viewer's manners.
@@ -270,8 +374,8 @@ export function useMachineReplication(
         if (next === "watch") {
           // Ends a recording already running, which tells the viewer; its
           // page lets the replica go and falls back to the mirror.
-          stopServing?.();
-          stopServing = null;
+          serving?.stop();
+          serving = null;
           return;
         }
         serve();
@@ -279,9 +383,58 @@ export function useMachineReplication(
       const stopServingMisses = wire.onMiss((key) => {
         serveMissedRequest(host, key);
       });
+      // A taker that runs a caught-up replica asks for the machine by proof
+      // instead of by transfer. The seal's hash is held for the adoption:
+      // this machine is released only when the drained replica matches it.
+      let sealedForTake: {
+        seq: number;
+        hash: MachineStateHash;
+      } | null = null;
+      const stopPromotions = wire.servePromotion({
+        seal: async () => {
+          const sealed = await host.sealMachineRecording();
+          if (sealed === null) {
+            return { refused: "this machine cannot seal its recording" };
+          }
+          if (sealed.status === "refused") return { refused: sealed.reason };
+          sealedForTake = {
+            seq: sealed.seq,
+            hash: sealed.hash as MachineStateHash,
+          };
+          return sealedForTake;
+        },
+        adopt: async (hash) => {
+          const sealedHash = sealedForTake;
+          if (sealedHash === null) return false;
+          const report = comparePromotionStateHashes(sealedHash.hash, hash);
+          if (report.diverged) return false;
+          await host.releaseMachine();
+          return true;
+        },
+      });
       leaveRole = () => {
         grantChangedRef.current = null;
-        stopServing?.();
+        stopPromotions();
+        if (gone) {
+          // The link died, not the role. The recording keeps running into
+          // its ring for one resume window, so the viewer that reconnects
+          // continues the log instead of paying another checkpoint.
+          const recording = serving?.suspend() ?? null;
+          serving = null;
+          if (recording !== null) {
+            const expire = setTimeout(() => {
+              if (suspendedRecordingRef.current?.recording !== recording) {
+                return;
+              }
+              suspendedRecordingRef.current = null;
+              void recording.stop();
+            }, RESUME_WINDOW_MS);
+            suspendedRecordingRef.current = { recording, expire };
+          }
+        } else {
+          serving?.stop();
+          serving = null;
+        }
         stopServingMisses();
         grantOnWire.stop();
         setPublishing(false);
@@ -307,6 +460,13 @@ export function useMachineReplication(
         attempt = null;
         ending?.end();
       };
+      // What a suspension must keep of the current attempt: the writer that
+      // feeds the parked replica's queue, and where in the log this page
+      // stands. The queue itself is already installed in the machine.
+      let live: {
+        writer: ReplicationLogQueueWriter;
+        position: ReplicationWatchPosition | null;
+      } | null = null;
       /**
        * Let go of the copy this page is running, because it copies nothing now.
        *
@@ -323,9 +483,15 @@ export function useMachineReplication(
        * running now.
        */
       let stopMisses: (() => void) | null = null;
+      // The keeper's release stops its recording, and the recording's end
+      // reaches this page on the wire before the release does. During an
+      // adoption that end is the take-over happening, not the machine going
+      // away: the replica must stay, because it is about to be the machine.
+      let adopting = false;
       const dropReplica = () => {
         if (!replica) return;
         replica = false;
+        live = null;
         stopMisses?.();
         stopMisses = null;
         setReplicating(false);
@@ -353,12 +519,174 @@ export function useMachineReplication(
       leaveRole = () => {
         left = true;
         setJoining(false);
+        if (gone && replica && live !== null) {
+          // The link died under a live replica. The machine stays, parked on
+          // its queue, for one resume window: the next link continues the
+          // log from this position instead of restoring another checkpoint.
+          // The attempt is discarded rather than ended — ending it would end
+          // the writer, and the parked replica still reads that queue.
+          replica = false;
+          attempt = null;
+          stopMisses?.();
+          stopMisses = null;
+          setViewerPath(null);
+          setViewerCursor(null);
+          const kept = live;
+          live = null;
+          const expire = setTimeout(() => {
+            if (suspendedReplicaRef.current?.writer !== kept.writer) return;
+            suspendedReplicaRef.current = null;
+            setReplicating(false);
+            kept.writer.end();
+            void host.stopReplicatingMachine();
+          }, RESUME_WINDOW_MS);
+          suspendedReplicaRef.current = {
+            writer: kept.writer,
+            position: kept.position,
+            expire,
+          };
+          stopGrants();
+          grantChanged();
+          return;
+        }
         endAttempt();
         dropReplica();
         stopGrants();
         grantChanged();
       };
+      promoteRef.current = async () => {
+        if (!replica || gone || left) return false;
+        try {
+          const sealed = await wire.requestPromotion(PROMOTE_SEAL_TIMEOUT_MS);
+          const deadline = Date.now() + PROMOTE_DRAIN_LIMIT_MS;
+          let hashed = await host.hashReplicaAtSeal(sealed.seq);
+          while (hashed !== null && hashed.status === "refused") {
+            if (Date.now() > deadline || gone || left || !replica) {
+              return false;
+            }
+            host.drainReplicationReplay();
+            await pause(50);
+            hashed = await host.hashReplicaAtSeal(sealed.seq);
+          }
+          if (hashed === null || !replica || gone || left) return false;
+          const report = comparePromotionStateHashes(
+            sealed.hash,
+            hashed.hash as MachineStateHash,
+          );
+          if (report.diverged) return false;
+          adopting = true;
+          await wire.requestAdoption(
+            sealed.takeId,
+            hashed.hash as MachineStateHash,
+            PROMOTE_ADOPT_TIMEOUT_MS,
+          );
+          // The keeper released: the machine is this computer's own from
+          // here, whatever happens to this stint. Adopt before anything can
+          // drop what the person just took.
+          const progress = await host.promoteReplicaMachine();
+          if (progress === null) {
+            throw new Error("this page no longer holds the replica it hashed");
+          }
+          replica = false;
+          live = null;
+          stopMisses?.();
+          stopMisses = null;
+          setReplicating(false);
+          // The machine's status never changes — it was running and still
+          // is — so the roles are flipped by hand: this page leaves the
+          // viewer stint and becomes the user, which serves the reverse
+          // join to the computer that just released.
+          leave();
+          decide(host.getStatus());
+          return true;
+        } catch {
+          adopting = false;
+          return false;
+        }
+      };
       void (async () => {
+        const saved = suspendedReplicaRef.current;
+        if (saved !== null) {
+          suspendedReplicaRef.current = null;
+          clearTimeout(saved.expire);
+          // The machine this page holds is the parked replica of the last
+          // link. Resume its log rather than ask for a machine it already
+          // has; only a refusal costs the checkpoint path below.
+          replica = true;
+          live = { writer: saved.writer, position: saved.position };
+          setJoining(true);
+          const stopWatching = wire.watch(
+            {
+              entries: (entries) => {
+                saved.writer.push(entries);
+                host.drainReplicationReplay();
+              },
+              advanced: (position) => {
+                if (live !== null) live.position = position;
+              },
+              navigated: (path) => {
+                setViewerPath(path);
+              },
+              cursor: (position) => {
+                setViewerCursor(position);
+              },
+              scrolled: (position) => {
+                setViewerScroll(position);
+              },
+              ended: () => {
+                saved.writer.end();
+                if (adopting) return;
+                dropReplica();
+              },
+              diverged: (error) => {
+                saved.writer.end();
+                setFailure(error.message);
+                dropReplica();
+              },
+            },
+            saved.position === null ? {} : { from: saved.position },
+          );
+          const withdraw = new AbortController();
+          attempt = {
+            end: () => {
+              stopWatching();
+              saved.writer.end();
+              withdraw.abort();
+            },
+          };
+          try {
+            // A position of -1 says "I received nothing": a recording that
+            // published nothing agrees and resumes empty, and one that did
+            // publish refuses, which sends this page to the join below.
+            await wire.resume(
+              saved.position === null ? -1 : saved.position.nextSeq - 1,
+              RESUME_TIMEOUT_MS,
+              withdraw.signal,
+            );
+            if (gone || left) return;
+            if (grantRef.current === "join") {
+              stopMisses = host.subscribeReplicationHttpMisses((key) => {
+                wire.reportMiss(key);
+              });
+              setJoining(false);
+              setFailure(null);
+              setReplicating(true);
+              return;
+            }
+            // The grant moved to the mirror while the resume was out; the
+            // grant listener already let the replica go, and the loop below
+            // parks until it is granted again.
+            setJoining(false);
+          } catch {
+            if (gone || left) return;
+            // Refused or unanswered: the ring lost this replica's position,
+            // or the machine went away. The replica cannot continue — let it
+            // go, and join from a checkpoint like a first-time viewer.
+            endAttempt();
+            dropReplica();
+            setJoining(false);
+          }
+        }
         while (!gone && !left) {
           if (grantRef.current !== "join") {
             await new Promise<void>((resolve) => {
@@ -372,6 +700,7 @@ export function useMachineReplication(
           // reach the end of the log on its first clock read.
           const queue = createReplicationLogQueue();
           const writer = new ReplicationLogQueueWriter(queue);
+          live = { writer, position: null };
           // Watching before asking. The user starts recording inside the read
           // and sends decisions from that instant, so a viewer that asked
           // first would miss the ones its own state does not yet cover.
@@ -382,6 +711,9 @@ export function useMachineReplication(
             entries: (entries) => {
               writer.push(entries);
               host.drainReplicationReplay();
+            },
+            advanced: (position) => {
+              if (live?.writer === writer) live.position = position;
             },
             navigated: (path) => {
               setViewerPath(path);
@@ -394,6 +726,7 @@ export function useMachineReplication(
             },
             ended: () => {
               writer.end();
+              if (adopting) return;
               if (!replica) {
                 // The recording ended before this attempt was running on it —
                 // the machine moved again, or it had briefly recorded for an
@@ -492,18 +825,37 @@ export function useMachineReplication(
       const leaving = leaveRole;
       role = "none";
       leaveRole = null;
+      promoteRef.current = null;
       leaving?.();
     };
 
     const decide = (status: MachineStatus) => {
       if (gone || bootingReplica) return;
+      // A parked replica is only worth resuming while it is the machine this
+      // page holds. A person who launched their own demo during the gap
+      // replaced it, and the bookkeeping describes a machine that is gone.
+      const parked = suspendedReplicaRef.current;
+      if (parked !== null && !host.holdsReplica()) {
+        suspendedReplicaRef.current = null;
+        clearTimeout(parked.expire);
+        setReplicating(false);
+        parked.writer.end();
+      }
       // A role lasts as long as the machine it was taken for. A user that no
       // longer holds one has nothing to publish; a viewer whose replica is
       // being replaced is being handed the machine itself.
       if (role !== "none" && status !== "running") leave();
       if (role !== "none") return;
-      if (status === "running") becomeUser();
-      else if (status === "idle") becomeViewer();
+      // A suspended replica reports "running" like any machine, but it is a
+      // copy of the other computer's: this page is still the viewer, and its
+      // first move on the new link is the resume.
+      if (status === "running" && suspendedReplicaRef.current !== null) {
+        becomeViewer();
+      } else if (status === "running") {
+        becomeUser();
+      } else if (status === "idle") {
+        becomeViewer();
+      }
     };
 
     const stopStatus = host.subscribeStatus(decide);
@@ -517,8 +869,10 @@ export function useMachineReplication(
   }, [host, link]);
 
   // The grant stays live without a link: it is this page's policy, and the
-  // person completing a connection sets it before the link exists.
-  if (!link) return { ...IDLE, grant, setGrant };
+  // person completing a connection sets it before the link exists. So does
+  // `replicating`: a parked replica is still the other computer's machine,
+  // and a page that reported otherwise would offer it as this person's own.
+  if (!link) return { ...IDLE, replicating, grant, setGrant };
   return {
     publishing,
     joining,
@@ -526,6 +880,7 @@ export function useMachineReplication(
     failure,
     grant,
     setGrant,
+    promote,
     navigation: { publish: publishNavigation, viewerPath },
     cursor: { publish: publishCursor, viewerCursor },
     scroll: { publish: publishScroll, viewerScroll },

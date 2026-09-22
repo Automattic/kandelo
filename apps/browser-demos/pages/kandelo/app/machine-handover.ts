@@ -79,6 +79,13 @@ export function useMachineHandover(
    * itself and neither following the other.
    */
   replicating: boolean,
+  /**
+   * Take the machine by proof instead of by transfer, when this page runs a
+   * caught-up replica. Resolves true when the machine changed hands; false
+   * sends the take to the checkpoint transfer below, which still works
+   * after a seal.
+   */
+  promote?: () => Promise<boolean>,
 ): MachineHandover {
   const status = useStatus();
   const [taking, setTaking] = React.useState(false);
@@ -169,6 +176,12 @@ export function useMachineHandover(
     setFailure(null);
     void (async () => {
       try {
+        // A replica already holds the machine, milliseconds behind: the
+        // proof — seal, drain, hash, release — is the whole transfer, and
+        // the screen never goes through a boot. Anything that falls
+        // through lands on the checkpoint take, the path every take used
+        // before promotion existed.
+        if (replicating && promote && (await promote())) return;
         const machine = await handover.take(TAKE_TIMEOUT_MS);
         // A descriptor from the peer is another computer's input. Check it
         // the way a shared URL's is checked, before this page boots an image
@@ -190,7 +203,7 @@ export function useMachineHandover(
         setTaking(false);
       }
     })();
-  }, [handover, host]);
+  }, [handover, host, promote, replicating]);
 
   return {
     offering: handover !== null && status === "running" && !replicating,

@@ -70,6 +70,7 @@ export const RUNNABLE_BENCHMARK_SUITES = [
   "mariadb-aria-64",
   "mariadb-innodb",
   "mariadb-innodb-64",
+  "replication-takeover",
 ];
 
 type OptionalResolver = (request: string) => string | null;

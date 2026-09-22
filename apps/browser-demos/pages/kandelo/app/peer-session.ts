@@ -93,6 +93,9 @@ export function usePeerSession(): PeerSession {
     connected.onClose(() => {
       if (linkRef.current !== connected) return;
       linkRef.current = null;
+      // The other side hung up; this side's peer connection is dead but not
+      // closed, and an unclosed one keeps its ICE agent and ports until GC.
+      connected.close();
       setLink(null);
       setStatus("Connection lost.");
     });

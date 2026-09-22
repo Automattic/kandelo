@@ -33,7 +33,7 @@ import type { MachineCheckpoint } from "../../src/migration/checkpoint";
 import {
   compareMachineStateHashes,
   hashMachineCheckpoint,
-} from "../support/state-hash";
+} from "../../src/replication/state-hash";
 
 const TIMEOUTS = { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 };
 

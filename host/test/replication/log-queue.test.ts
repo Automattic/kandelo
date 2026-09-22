@@ -23,7 +23,7 @@ import type { ReplicationLogEntry } from "../../src/replication/log";
 function clockAt(seq: number): ReplicationLogEntry {
   return {
     seq,
-    decision: { kind: "clock", pid: 102, clockId: 0, sec: 1_700_000 + seq, nsec: seq },
+    decision: { kind: "clock", pid: 102, tid: 102, clockId: 0, sec: 1_700_000 + seq, nsec: seq },
   };
 }
 

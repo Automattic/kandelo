@@ -112,7 +112,12 @@ export const App: React.FC = () => {
   // Replication first: a viewer running a replica is still a viewer, and the
   // handover must not offer that replica as a second machine to take.
   const replication = useMachineReplication(host, peer.link);
-  const handover = useMachineHandover(host, peer.link, replication.replicating);
+  const handover = useMachineHandover(
+    host,
+    peer.link,
+    replication.replicating,
+    replication.promote,
+  );
   const names = usePeerNickname(peer.link);
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
@@ -311,13 +316,17 @@ export const App: React.FC = () => {
 
   const isEmpty = surface.status === "idle";
   // Only in a pair. A computer on its own is neither, and one machine with
-  // one person at it needs no word for that.
+  // one person at it needs no word for that. A replica parked by a dropped
+  // link is the exception: the machine here is still the other computer's,
+  // and the word for that stays "viewer".
   const pairRole =
-    peer.link === null
-      ? null
-      : isEmpty || replication.replicating
-        ? "viewer"
-        : "user";
+    replication.replicating
+      ? "viewer"
+      : peer.link === null
+        ? null
+        : isEmpty
+          ? "viewer"
+          : "user";
   // A name only for someone you are watching: on your own dock you know who
   // you are, so the user's badge keeps the role word, and the other person's
   // name replaces only "Viewer". Null falls back to the role words.

@@ -58,6 +58,13 @@ export interface ReplicationMachineTaps {
    * computers never share.
    */
   currentGuestPid(): number;
+  /**
+   * The thread of that process whose syscall this machine is serving. The
+   * same scheduling freedom that separates processes separates the threads
+   * of one, so readings and draws are keyed one level further down; a
+   * process's leader thread answers with the pid itself.
+   */
+  currentGuestTid(): number;
 }
 
 /**
@@ -362,11 +369,20 @@ export function beginReplicationStream(
 ): ReplicationLogRecorder {
   const recorder = createStreamingRecorder(publish);
   io.setTimeProvider(
-    new RecordingTimeProvider(clock, recorder, () => taps.currentGuestPid()),
+    new RecordingTimeProvider(
+      clock,
+      recorder,
+      () => taps.currentGuestPid(),
+      () => taps.currentGuestTid(),
+    ),
   );
   io.setRandomProvider(
-    new RecordingRandomProvider(new HostRandomProvider(), recorder, () =>
-      taps.currentGuestPid()),
+    new RecordingRandomProvider(
+      new HostRandomProvider(),
+      recorder,
+      () => taps.currentGuestPid(),
+      () => taps.currentGuestTid(),
+    ),
   );
   taps.setGlQueryTap(glQueryRecordTap(recorder));
   taps.setAcceptSelectionTap(acceptSelectionRecordTap(recorder));
@@ -455,10 +471,19 @@ export function beginReplicationReplay(
     extendWithin,
   );
   io.setTimeProvider(
-    new ReplayingTimeProvider(clock, reader, () => taps.currentGuestPid()),
+    new ReplayingTimeProvider(
+      clock,
+      reader,
+      () => taps.currentGuestPid(),
+      () => taps.currentGuestTid(),
+    ),
   );
   io.setRandomProvider(
-    new ReplayingRandomProvider(reader, () => taps.currentGuestPid()),
+    new ReplayingRandomProvider(
+      reader,
+      () => taps.currentGuestPid(),
+      () => taps.currentGuestTid(),
+    ),
   );
   taps.setGlQueryTap(glQueryReplayTap(reader));
   taps.setAcceptSelectionTap(acceptSelectionReplayTap(reader));
