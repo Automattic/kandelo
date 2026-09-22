@@ -51,6 +51,7 @@ import {
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
 import {
   materializeBootInputs,
   type BootInputManifest,
@@ -1517,7 +1518,7 @@ async function bootProfile(
         // The service worker mints the machine name and app prefix; the
         // web-preview URL comes from the returned prefix, not a static
         // constant, so this tab addresses its own machine.
-        const { appPrefix } = await setupServiceWorkerFetchBridge(
+        const { name, appPrefix } = await setupServiceWorkerFetchBridge(
           SW_URL,
           SW_SCOPE,
           kernel,
@@ -1540,6 +1541,21 @@ async function bootProfile(
         });
         bridgeSent = true;
         maybeUpdateWebReadiness();
+        // The service worker pushes machine-offline (owning tab closed) and
+        // machine-reconnecting (transient SW restart) to viewer clients. React
+        // to pushes for THIS machine's SW-minted name only, and let the shared
+        // mapping decide whether the pane should change — it enforces the
+        // strict name match, the isCurrent() supersession guard, and preserves
+        // the preview identity while switching status/message.
+        navigator.serviceWorker.addEventListener("message", (event) => {
+          const next = webPreviewForMachineChromeMessage({
+            data: (event as MessageEvent).data,
+            mintedName: name,
+            current: host.getWebPreview(),
+            isCurrent,
+          });
+          if (next !== null) host.setWebPreview(next);
+        });
       } catch (err) {
         if (!isCurrent()) throw err;
         const message = err instanceof Error ? err.message : String(err);
