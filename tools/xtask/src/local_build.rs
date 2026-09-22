@@ -2061,7 +2061,37 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let mut published_generations = None;
     let projection_finalization_error = match publication {
         Err(error) => Some(error),
-        Ok(None) => None,
+        Ok(None) => {
+            // The aggregate build did not fully succeed, so the whole-graph
+            // authority is not committed. Publish a consistent authority for
+            // the packages whose dependency closure DID succeed, so the live
+            // projection never carries a mirror file the authority does not
+            // describe (partial-build consistency), and a demo whose closure
+            // built stays reachable even when an unrelated package fails.
+            let succeeded_package_nodes = results
+                .iter()
+                .filter_map(|result| match result {
+                    NodeRunResultV1::Succeeded { node, .. }
+                        if matches!(node, PlanNodeV1::Package { .. }) =>
+                    {
+                        Some(node.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            finalize_partial_source_only_program_projection(
+                &repo,
+                &registry,
+                &graph,
+                &graph.authority_sha256,
+                &cache_roots,
+                &output_root,
+                &succeeded_package_nodes,
+                &retained_receipts,
+                args.verify_cache,
+            )
+            .err()
+        }
         Ok(Some(publication)) => {
             published_generations = Some(
                 publication
@@ -2575,6 +2605,153 @@ fn finalize_source_only_program_projection(
             // whole-graph re-derivation (`--verify-cache` restores it).
             authority.replace_projection_authority(&candidate)
         }
+    })
+}
+
+/// The maximal set of packages safe to publish from a partial build: a
+/// package qualifies only if it AND every package in its dependency closure
+/// is in `succeeded_with_receipts` (built or cached this run and holding a
+/// retained receipt). A package whose closure is incomplete is excluded, so
+/// the published authority never references a member whose dependency did not
+/// materialize.
+fn publishable_succeeded_package_closure(
+    graph: &PlannedGraphV1,
+    succeeded_with_receipts: &BTreeSet<PlanNodeV1>,
+) -> Result<BTreeSet<PlanNodeV1>, String> {
+    let mut publishable = BTreeSet::new();
+    for node in succeeded_with_receipts {
+        if !matches!(node, PlanNodeV1::Package { .. }) {
+            continue;
+        }
+        let closure = close_graph_selection(graph, vec![node.clone()])?;
+        let closure_ok = closure.keys().all(|member| {
+            !matches!(member, PlanNodeV1::Package { .. })
+                || succeeded_with_receipts.contains(member)
+        });
+        if closure_ok {
+            publishable.insert(node.clone());
+        }
+    }
+    Ok(publishable)
+}
+
+/// Commit a projection authority for the packages whose entire dependency
+/// closure succeeded this run, even when the aggregate build failed on
+/// unrelated packages.
+///
+/// WHY: package build nodes materialize their mirror files into the live
+/// projection incrementally, but the whole-graph authority in
+/// [`finalize_source_only_program_projection`] only commits when *every*
+/// selected package succeeds. A partial build therefore left fresh mirror
+/// files (e.g. a rebuilt `kernel.wasm`) described by a stale authority, and
+/// the read-time member-digest guard failed loud ("member size N, expected
+/// M"). This publishes an authority that matches exactly what is on disk for
+/// the succeeded closure, so a partial build leaves a *consistent*
+/// projection instead of a torn one — and a demo whose closure built (e.g.
+/// SDL2) is reachable even when an unrelated package (gzip/dinit/sdl3)
+/// fails. Packages whose closure did not fully succeed are simply omitted;
+/// a reader resolving one fails loud as genuinely missing, which is honest.
+///
+/// This is an interim consistency fix. The content-addressed generation
+/// model on the resolver "lane R" branches supersedes it (it retracts the
+/// authority an incomplete build invalidated); when that lands this can go.
+#[allow(clippy::too_many_arguments)]
+fn finalize_partial_source_only_program_projection(
+    repo: &Path,
+    registry: &Registry,
+    graph: &PlannedGraphV1,
+    graph_authority_sha256: &str,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    succeeded_package_nodes: &BTreeSet<PlanNodeV1>,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    verify_cache: bool,
+) -> Result<(), String> {
+    // A package is publishable only if it AND every package in its
+    // dependency closure succeeded this run and retained a receipt — so the
+    // authority never references a member whose closure is incomplete.
+    let succeeded_with_receipts = succeeded_package_nodes
+        .iter()
+        .filter(|node| receipts.contains_key(node))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let publishable = publishable_succeeded_package_closure(graph, &succeeded_with_receipts)?;
+    if publishable.is_empty() {
+        // Nothing whose closure fully succeeded — leave the last committed
+        // authority in place rather than publish an empty one.
+        return Ok(());
+    }
+
+    let selected_nodes = publishable
+        .iter()
+        .map(|node| {
+            let PlanNodeV1::Package { name, target_arch } = node else {
+                return Err("internal: publishable set contains a non-package node".to_string());
+            };
+            let arch = parse_node_target_arch(target_arch)
+                .ok_or_else(|| format!("publishable package {name:?} has unsupported arch"))?;
+            Ok(ResolvedDependencyNode {
+                package_name: name.clone(),
+                target_arch: arch,
+            })
+        })
+        .collect::<Result<BTreeSet<_>, String>>()?;
+
+    let projection = source_only_program_package_index_for_nodes(
+        &repo.join("packages/registry"),
+        registry,
+        &selected_nodes,
+        wasm_posix_shared::ABI_VERSION,
+    )?;
+    let root_mirror_nodes = publishable
+        .iter()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, .. } => Some(
+                registry
+                    .load(name)
+                    .map(|manifest| manifest.uses_root_binary_mirror().then_some(node.clone())),
+            ),
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    let subset_receipts = receipts
+        .iter()
+        .filter(|(node, _)| publishable.contains(node))
+        .map(|(node, receipt)| (node.clone(), receipt.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let authority = source_only_program_projection_candidate(
+        projection,
+        graph_authority_sha256,
+        &subset_receipts,
+        &root_mirror_nodes,
+    )?;
+    let bytes = source_only_program_projection_bytes(&authority)?;
+
+    with_source_only_program_projection_lock(output_root, |authority| {
+        for node in &publishable {
+            let PlanNodeV1::Package { name, target_arch } = node else {
+                continue;
+            };
+            let arch = parse_node_target_arch(target_arch)
+                .ok_or_else(|| format!("publishable package {name:?} has unsupported arch"))?;
+            let manifest = registry.load(name)?;
+            let receipt = subset_receipts
+                .get(node)
+                .ok_or_else(|| format!("publishable package {name:?} omitted its receipt"))?;
+            authority.validate_package_receipt(
+                &manifest,
+                registry,
+                cache_roots,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                verify_cache,
+                receipt,
+            )?;
+        }
+        authority.replace_projection_authority(&bytes)
     })
 }
 
@@ -5364,6 +5541,86 @@ mod tests {
             clean_removal_set(&graph, &leaf),
             BTreeSet::from([leaf.clone()])
         );
+    }
+
+    #[test]
+    fn partial_publish_excludes_a_package_whose_dependency_did_not_succeed() {
+        // Interim partial-build consistency (fix B): a package may be
+        // published from a failed aggregate build only when its ENTIRE
+        // dependency closure also succeeded and retained a receipt. Derive
+        // the fixture from the real checked-in graph so it stays honest for
+        // whatever the plan actually contains.
+        let repo = crate::repo_root();
+        let set = repo.join("packages/sets/local-supported.toml");
+        let registry = Registry::from_env(&repo);
+        let graph = load_and_plan(&repo, &set, &registry).unwrap();
+
+        // A package with at least one package dependency, and one such dep.
+        let (pkg, dep) = graph
+            .dependencies
+            .iter()
+            .filter_map(|(node, deps)| {
+                if !matches!(node, PlanNodeV1::Package { .. }) {
+                    return None;
+                }
+                let dep = deps
+                    .iter()
+                    .find(|d| matches!(d, PlanNodeV1::Package { .. }))?;
+                Some((node.clone(), dep.clone()))
+            })
+            .next()
+            .expect("the checked-in graph has a package with a package dependency");
+
+        let closure = close_graph_selection(&graph, vec![pkg.clone()])
+            .unwrap()
+            .into_keys()
+            .filter(|node| matches!(node, PlanNodeV1::Package { .. }))
+            .collect::<BTreeSet<_>>();
+
+        // Whole closure succeeded → the package is publishable.
+        let all_ok = publishable_succeeded_package_closure(&graph, &closure).unwrap();
+        assert!(
+            all_ok.contains(&pkg),
+            "a package whose entire closure succeeded must be publishable"
+        );
+
+        // Drop one dependency → the package (and that dep) are excluded, so
+        // the authority never names a member whose dependency is absent.
+        let mut missing_dep = closure.clone();
+        missing_dep.remove(&dep);
+        let partial = publishable_succeeded_package_closure(&graph, &missing_dep).unwrap();
+        assert!(
+            !partial.contains(&pkg),
+            "a package whose dependency did not succeed must NOT be published"
+        );
+        assert!(
+            !partial.contains(&dep),
+            "the dependency that did not succeed is itself absent"
+        );
+
+        // A leaf package (closure is only itself) publishes on its own.
+        if let Some(leaf) = graph
+            .dependencies
+            .keys()
+            .filter(|node| matches!(node, PlanNodeV1::Package { .. }))
+            .find(|node| {
+                close_graph_selection(&graph, vec![(*node).clone()])
+                    .unwrap()
+                    .keys()
+                    .filter(|m| matches!(m, PlanNodeV1::Package { .. }))
+                    .count()
+                    == 1
+            })
+            .cloned()
+        {
+            let solo = BTreeSet::from([leaf.clone()]);
+            assert!(
+                publishable_succeeded_package_closure(&graph, &solo)
+                    .unwrap()
+                    .contains(&leaf),
+                "a leaf package with no package dependencies publishes on its own"
+            );
+        }
     }
 
     /// Fabricate one compiled `SourceOnlyV1` generation exactly the way the
