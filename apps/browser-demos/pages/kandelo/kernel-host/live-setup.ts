@@ -61,6 +61,7 @@ import {
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
 import {
   materializeBootInputs,
   type BootInputManifest,
@@ -588,8 +589,13 @@ interface WebReadinessState {
   failed: boolean;
 }
 
-const APP_PREFIX = import.meta.env.BASE_URL + "app/";
-const APP_PATH = import.meta.env.BASE_URL + "app";
+// The public URL segment for a booted machine's web surface:
+// <base>/computer/<name>/. Machines are "computers" in the product vocabulary;
+// the per-machine <name> is minted by the service worker at bridge handshake.
+// APP_PREFIX here is only the pre-mint placeholder (used by error states that
+// never mount the iframe); live web previews use the minted /computer/<name>/.
+const APP_PREFIX = import.meta.env.BASE_URL + "computer/";
+const APP_PATH = import.meta.env.BASE_URL + "computer";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const SW_SCOPE = deploymentScopeFromServiceWorkerUrl(
@@ -1525,12 +1531,21 @@ async function bootProfile(
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
+  // The service worker mints this machine's app prefix (/base/computer/<name>/) and
+  // returns it from the bridge handshake. Every web-preview URL must use the
+  // minted value: the bare /computer/ no longer routes to any machine, so the SW
+  // serves it as the Kandelo shell — mounting the whole app inside its own
+  // web-preview iframe and recursing (stacked docks). Until the handshake
+  // returns, this holds the base prefix (only used by error states, which
+  // never mount the iframe).
+  let machineAppPrefix = APP_PREFIX;
   maybeUpdateWebReadiness = () => {
     maybeMarkWebReady(
       host,
       profile,
       seenPorts,
       bridgeSent,
+      machineAppPrefix,
       webReadiness,
       dinitBootTracker,
       tick,
@@ -1600,22 +1615,18 @@ async function bootProfile(
 
     if (profile.init?.web) {
       tick("initializing HTTP bridge...");
-      host.setWebPreview({
-        label: profile.init.web.label,
-        url: APP_PREFIX,
-        status: "starting",
-        message: "Waiting for services",
-      });
       try {
         // Unique id for this machine instance. Scopes the service worker's
         // cookie jar so sessions never share cookies. Temporary instances get a
         // fresh random id per boot; when machines become persistable this is
         // where their durable id would be passed instead.
         const sessionId = crypto.randomUUID();
-        await setupServiceWorkerFetchBridge(
+        // The service worker mints the machine name and app prefix; the
+        // web-preview URL comes from the returned prefix, not a static
+        // constant, so this tab addresses its own machine.
+        const { name, appPrefix } = await setupServiceWorkerFetchBridge(
           SW_URL,
           SW_SCOPE,
-          APP_PREFIX,
           kernel,
           HTTP_PORT,
           sessionId,
@@ -1628,8 +1639,32 @@ async function bootProfile(
           },
         );
         assertCurrent();
+        // Every later web-preview update (readiness "running", probe URL) must
+        // address this machine's minted prefix, not the bare /computer/ constant.
+        machineAppPrefix = appPrefix;
+        host.setWebPreview({
+          label: profile.init.web.label,
+          url: appPrefix,
+          status: "starting",
+          message: "Waiting for services",
+        });
         bridgeSent = true;
         maybeUpdateWebReadiness();
+        // The service worker pushes machine-offline (owning tab closed) and
+        // machine-reconnecting (transient SW restart) to viewer clients. React
+        // to pushes for THIS machine's SW-minted name only, and let the shared
+        // mapping decide whether the pane should change — it enforces the
+        // strict name match, the isCurrent() supersession guard, and preserves
+        // the preview identity while switching status/message.
+        navigator.serviceWorker.addEventListener("message", (event) => {
+          const next = webPreviewForMachineChromeMessage({
+            data: (event as MessageEvent).data,
+            mintedName: name,
+            current: host.getWebPreview(),
+            isCurrent,
+          });
+          if (next !== null) host.setWebPreview(next);
+        });
       } catch (err) {
         if (!isCurrent()) throw err;
         const message = err instanceof Error ? err.message : String(err);
@@ -2304,6 +2339,7 @@ function maybeMarkWebReady(
   profile: LiveProfile,
   seenPorts: Set<number>,
   bridgeSent: boolean,
+  appPrefix: string,
   readiness: WebReadinessState,
   dinitBootTracker: DinitBootStatusTracker,
   tick: (msg: string) => void,
@@ -2324,7 +2360,7 @@ function maybeMarkWebReady(
     if (!isCurrent()) return;
     host.setWebPreview({
       label: web.label,
-      url: APP_PREFIX,
+      url: appPrefix,
       status: "running",
       message: readyMessage,
     });
@@ -2335,7 +2371,7 @@ function maybeMarkWebReady(
     tick("Web preview ready");
     host.setWebPreview({
       label: web.label,
-      url: APP_PREFIX,
+      url: appPrefix,
       status: "running",
       message: readyMessage,
     });
@@ -2343,10 +2379,10 @@ function maybeMarkWebReady(
   }
   if (readiness.probing) return;
   readiness.probing = true;
-  const probeUrl = previewUrlForPath(web.probePath ?? "/");
+  const probeUrl = previewUrlForPath(appPrefix, web.probePath ?? "/");
   host.setWebPreview({
     label: web.label,
-    url: APP_PREFIX,
+    url: appPrefix,
     status: "starting",
     message: web.probePath
       ? "Waiting for application readiness"
@@ -2362,7 +2398,7 @@ function maybeMarkWebReady(
         tick("HTTP preview ready");
         host.setWebPreview({
           label: web.label,
-          url: APP_PREFIX,
+          url: appPrefix,
           status: "running",
           message: "HTTP bridge ready",
         });
@@ -2372,7 +2408,7 @@ function maybeMarkWebReady(
         const message = err instanceof Error ? err.message : String(err);
         host.setWebPreview({
           label: web.label,
-          url: APP_PREFIX,
+          url: appPrefix,
           status: "error",
           message: "HTTP preview did not become ready",
         });
@@ -2409,8 +2445,8 @@ async function waitForHttpPreview(
   throw new Error(lastError || "timed out");
 }
 
-function previewUrlForPath(path: string): string {
-  const root = new URL(APP_PREFIX, window.location.href);
+function previewUrlForPath(appPrefix: string, path: string): string {
+  const root = new URL(appPrefix, window.location.href);
   const normalized = path.startsWith("/") ? path.slice(1) : path;
   return new URL(normalized || ".", root).href;
 }

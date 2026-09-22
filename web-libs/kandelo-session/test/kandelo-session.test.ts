@@ -43,6 +43,7 @@ import {
   HARD_CAPS,
   validateBootDescriptor,
 } from "../src/boot-descriptor";
+import { webPreviewForMachineChromeMessage } from "../src/machine-chrome-message";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -1736,6 +1737,118 @@ describe("LiveKernelHost: surface availability", () => {
     host.setWebPreviewPendingRequests(-1);
 
     expect(host.getWebPreview()?.pendingRequests).toBe(0);
+  });
+});
+
+describe("demo chrome offline/reconnecting message mapping", () => {
+  const MINTED = "happy-teal-otter";
+  const APP_PREFIX = `/kandelo/app/${MINTED}/`;
+  const running = () => true;
+
+  function hostWithRunningPreview(): LiveKernelHost {
+    const host = new LiveKernelHost();
+    host.setWebPreview({
+      label: "WordPress",
+      url: APP_PREFIX,
+      status: "running",
+      message: "HTTP bridge ready",
+    });
+    return host;
+  }
+
+  it("takes this machine's web preview offline on a matching SW push", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).not.toBeNull();
+    host.setWebPreview(next!);
+
+    expect(host.getWebPreview()?.status).toBe("offline");
+    expect(host.getWebPreview()?.message).toMatch(/no longer running/i);
+    // Identity is preserved so the same pane annotates itself offline.
+    expect(host.getWebPreview()?.url).toBe(APP_PREFIX);
+    expect(host.getWebPreview()?.label).toBe("WordPress");
+    // The web surface stays available so the offline banner keeps its pane
+    // mounted instead of the view falling back to syslog/terminal.
+    expect(host.getSurfaceAvailability().web).toBe(true);
+  });
+
+  it("shows reconnecting on a transient service-worker-restart push", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-reconnecting", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).not.toBeNull();
+    host.setWebPreview(next!);
+
+    expect(host.getWebPreview()?.status).toBe("reconnecting");
+    expect(host.getWebPreview()?.message).toMatch(/reconnect/i);
+    expect(host.getSurfaceAvailability().web).toBe(true);
+  });
+
+  it("ignores a push addressed to a different machine", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: "eager-blue-fern" },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).toBeNull();
+    expect(host.getWebPreview()?.status).toBe("running");
+  });
+
+  it("ignores pushes once the boot has been superseded", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: () => false,
+    });
+    expect(next).toBeNull();
+    expect(host.getWebPreview()?.status).toBe("running");
+  });
+
+  it("ignores unrelated or malformed service worker messages", () => {
+    const host = hostWithRunningPreview();
+    for (
+      const data of [
+        { type: "need-bridge", name: MINTED },
+        { type: "machine-offline" },
+        null,
+        "machine-offline",
+      ] as unknown[]
+    ) {
+      expect(
+        webPreviewForMachineChromeMessage({
+          data,
+          mintedName: MINTED,
+          current: host.getWebPreview(),
+          isCurrent: running,
+        }),
+      ).toBeNull();
+    }
+    expect(host.getWebPreview()?.status).toBe("running");
+  });
+
+  it("does nothing when the machine never exposed a web preview", () => {
+    const host = new LiveKernelHost();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).toBeNull();
+    expect(host.getWebPreview()).toBeNull();
   });
 });
 

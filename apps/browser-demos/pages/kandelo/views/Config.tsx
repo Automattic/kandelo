@@ -1,4 +1,4 @@
-// System Config — edit the running machine's boot descriptor.
+// System Config — edit the running computer's boot descriptor.
 //
 // Five tabs: Boot · Mounts · Runtime · Capabilities · Trust. Each tab edits
 // the draft descriptor. Apply calls host.applyBootDescriptor(draft), which
@@ -61,7 +61,7 @@ export const Config: React.FC<ConfigProps> = ({ onApplied }) => {
     <div className="kcfg">
       <div className="kcfg-hdr">
         <h1 className="kcfg-title">System Config</h1>
-        <div className="kcfg-sub">Edit the running machine's boot descriptor. Apply rebuilds the URL and reboots.</div>
+        <div className="kcfg-sub">Edit the running computer's boot descriptor. Apply rebuilds the URL and reboots.</div>
       </div>
       <div className="kcfg-tabs">
         {TABS.map((t) => (

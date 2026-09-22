@@ -519,7 +519,15 @@ export interface KmsDisplayHandle {
   close(): void;
 }
 
-export type WebPreviewStatus = "starting" | "running" | "error";
+export type WebPreviewStatus =
+  | "starting"
+  | "running"
+  | "error"
+  // The machine's owning tab went away (terminal) or its service worker is
+  // restarting (transient). Both keep the web-preview pane mounted so the demo
+  // chrome can annotate the last-known preview rather than silently vanishing.
+  | "offline"
+  | "reconnecting";
 
 export interface WebPreviewState {
   label: string;
@@ -1407,7 +1415,17 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshWebAvailability(): void {
-    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+    // A running preview is available; "offline" and "reconnecting" also keep
+    // the web surface available so the pane stays mounted to show that state
+    // rather than the view silently falling back to syslog/terminal when a
+    // machine's bridge goes away.
+    const status = this.webPreview?.status;
+    this.setSurfaceAvailability({
+      web:
+        status === "running" ||
+        status === "offline" ||
+        status === "reconnecting",
+    });
   }
 
   /**

@@ -105,7 +105,7 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = f
         <div className="kgal-empty">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="kgal-empty">
-          {q ? `No machines match "${q}".` : "Nothing in the gallery yet."}
+          {q ? `No computers match "${q}".` : "Nothing in the gallery yet."}
         </div>
       ) : (
         <div className="kgal-table-shell">
