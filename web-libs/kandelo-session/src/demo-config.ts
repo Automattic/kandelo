@@ -596,6 +596,45 @@ export function resolveDefaultProfileId(
   return ids.length === 1 ? ids[0] : null;
 }
 
+export function resolveDemoRuntime(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoRuntimeConfig {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.runtime !== undefined) {
+    return normalizeRuntime(profile.runtime, `profiles.${profileId}.runtime`);
+  }
+  // A fresh object each call: `features` and `requests` are mutable and a
+  // shared constant would let one caller's edit leak into every machine.
+  return config.runtime === undefined
+    ? { features: [], network: false, requests: {} }
+    : normalizeRuntime(config.runtime, "runtime");
+}
+
+export function resolveDemoInit(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoInitConfig | null {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.init !== undefined) {
+    return normalizeInit(profile.init, `profiles.${profileId}.init`);
+  }
+  return config.init === undefined ? null : normalizeInit(config.init, "init");
+}
+
+export function resolveDemoDisplay(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoDisplayConfig | null {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.display !== undefined) {
+    return normalizeDisplay(profile.display, `profiles.${profileId}.display`);
+  }
+  return config.display === undefined
+    ? null
+    : normalizeDisplay(config.display, "display");
+}
+
 function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);

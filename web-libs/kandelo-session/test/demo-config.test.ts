@@ -6,6 +6,9 @@ import {
   resolveDemoWeb,
   resolveDemoIdentity,
   resolveDefaultProfileId,
+  resolveDemoRuntime,
+  resolveDemoInit,
+  resolveDemoDisplay,
   type KandeloDemoConfig,
 } from "../src/demo-config";
 
@@ -209,5 +212,50 @@ describe("identity, display, and defaultProfile", () => {
     } as unknown as KandeloDemoConfig;
     validateKandeloDemoConfig(config);
     expect(resolveDefaultProfileId(config)).toBeNull();
+  });
+});
+
+describe("resolvers", () => {
+  const config = {
+    version: 1,
+    runtime: { features: ["js-workers"], network: true },
+    profiles: {
+      base: {},
+      override: { runtime: { features: ["kms"] }, init: { target: "nginx" } },
+    },
+  } as unknown as KandeloDemoConfig;
+
+  it("falls back to the top-level runtime block", () => {
+    expect(resolveDemoRuntime(config, "base")).toEqual({
+      features: ["js-workers"],
+      network: true,
+      requests: {},
+    });
+  });
+
+  it("prefers the profile's runtime block", () => {
+    expect(resolveDemoRuntime(config, "override")).toEqual({
+      features: ["kms"],
+      network: false,
+      requests: {},
+    });
+  });
+
+  it("returns an empty runtime for an image with no runtime block", () => {
+    expect(resolveDemoRuntime(withProfile({}), "m")).toEqual({
+      features: [],
+      network: false,
+      requests: {},
+    });
+  });
+
+  it("resolves init only where declared", () => {
+    expect(resolveDemoInit(config, "override")).toEqual({ target: "nginx" });
+    expect(resolveDemoInit(config, "base")).toBeNull();
+  });
+
+  it("resolves null for an unknown profile id", () => {
+    expect(resolveDemoInit(config, "nope")).toBeNull();
+    expect(resolveDemoDisplay(config, "nope")).toBeNull();
   });
 });
