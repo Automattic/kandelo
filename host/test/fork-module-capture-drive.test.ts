@@ -39,6 +39,23 @@ import {
   type Fixture,
 } from "./fork-module-capture-fixture";
 
+/**
+ * Where a test stages the sides vector `fm_parent_begin_capture` reads, and
+ * the child's copy of it: LOW scratch, beside the template ids at 2048, the
+ * same page `openCapture` in the fixture uses.
+ *
+ * NOT inside the responder's mmap range. The responder bump-allocates upward
+ * from `MMAP_FLOOR` and never clears a page, so a vector staged at
+ * `MMAP_FLOOR + 3 * PAGE` survives only as long as exactly three mappings
+ * precede the one the capture takes -- and that count is not this file's to
+ * control. Putting the KFIG sections on the arena added two mappings ahead of
+ * the capture (its directory chunk and its record chunk), and the capture's
+ * own mapping then landed on the vector: side activation 1 read back as 0, a
+ * duplicate of the main activation, and the capture refused with `EINVAL`.
+ */
+const SIDES_SCRATCH = 4096;
+const CHILD_SIDES_SCRATCH = SIDES_SCRATCH + 64;
+
 describe("capture begin, driven through a serviced channel", () => {
   it("allocates its own arena and declares the activation set into it", () => {
     const f = fixture();
@@ -73,7 +90,7 @@ describe("capture begin, driven through a serviced channel", () => {
 
     // The sides list: one `(id, fixedPrefix)` pair, as `fm_parent_begin_capture`
     // reads it.
-    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);
@@ -130,7 +147,7 @@ describe("capture begin, driven through a serviced channel", () => {
     const f = fixture();
     seedTemplateId(f, 0, 2048);
     seedTemplateId(f, 1, 2048);
-    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);
@@ -1130,7 +1147,7 @@ describe("the binding records the module assembles at capture", () => {
       );
     }
 
-    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);
@@ -1320,7 +1337,7 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     seedTemplateId(f, 0, 2048);
     seedTemplateId(f, 1, 2048);
-    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);
@@ -1352,7 +1369,7 @@ describe("the binding records the module assembles at capture", () => {
 
     // The child's side record is the SAME `(id, fixedPrefix)` pair the capture
     // side reads: the host owns the fixed prefix and nothing else about it.
-    const childSides = MMAP_FLOOR + 4 * PAGE;
+    const childSides = CHILD_SIDES_SCRATCH;
     const sideRecord = new DataView(f.memory.buffer);
     sideRecord.setUint32(childSides, 1, true);
     sideRecord.setUint32(childSides + 4, 0, true);
@@ -1430,7 +1447,7 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     seedTemplateId(f, 0, 2048);
     seedTemplateId(f, 1, 2048);
-    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);

@@ -1824,9 +1824,7 @@ mod wasm {
     /// eleven numbers chosen as each store arrives.
     #[allow(dead_code)]
     const REC_KIND_RESUME_ASSIGNMENT: u32 = 1;
-    #[allow(dead_code)]
     const REC_KIND_KFIG: u32 = 2; // imported globals (space 0)
-    #[allow(dead_code)]
     const REC_KIND_KFIT: u32 = 3; // imported tables  (space 1)
     #[allow(dead_code)]
     const REC_KIND_GC_CODEC: u32 = 4;
@@ -2650,35 +2648,42 @@ mod wasm {
     // the surface this lane is trying to shrink. Same reasoning for the identity
     // groups and the provenance below.
     //
-    // Storage: a fixed BSS byte arena plus an index, so it survives the per-fork
-    // bump reset. Overflow is a truthful `E2BIG`; a re-seeded activation is
-    // `EINVAL`.
+    // Storage: one arena record per (activation, space), under `REC_KIND_KFIG`
+    // for globals and `REC_KIND_KFIT` for tables. An identical re-seed is a
+    // no-op, a conflicting one is `EINVAL`, and a section the arena cannot map
+    // fails with `channel_mmap`'s truthful `ENOMEM`/`EAGAIN`.
+    //
+    // WHAT THIS REPLACED, and why the shape changed with the storage: a 64 KiB
+    // static byte pool plus a 128-entry index of `[space, activation_id,
+    // offset, byte_len]` -- 67,584 bytes of BSS subtracted from every
+    // fork-capable thread's mmap window whether the thread ever forked or not.
+    // The offset was an index into a pool that was bump-only within a worker
+    // (`ACT_KFIG_BYTES_USED` only ever moved forward), so a dlopen/dlclose loop
+    // exhausted it and never got anything back, and its two caps answered
+    // `E2BIG` for a boundary the arena does not have. A record has the
+    // activation's lifetime instead: `fm_resume_slots` op 1 drops it with the
+    // rest of the activation's records, and the COW-child scrub in
+    // `set_format_impl` drops them all. That scrub is also why a child can no
+    // longer INHERIT a parent's sections the way the pool once let it: the
+    // Node/browser host re-seeds every activation it replays, and the native
+    // host never seeds this store, so nothing relied on inheriting. The
+    // idempotent re-seed stays, because two seeders in ONE worker still meet
+    // (see `set_activation_imports_impl`).
 
     /// Imported globals -- the KFIG section.
     const IMPORT_SPACE_GLOBAL: u32 = 0;
     /// Imported tables -- the KFIT section.
     const IMPORT_SPACE_TABLE: u32 = 1;
 
-    const ACT_KFIG_BYTES_CAP: usize = 65_536;
-    const ACT_KFIG_MAX_ACTS: usize = 128;
-
-    #[repr(C, align(8))]
-    struct ActKfigBytes(UnsafeCell<[u8; ACT_KFIG_BYTES_CAP]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActKfigBytes {}
-    static ACT_KFIG_BYTES: ActKfigBytes =
-        ActKfigBytes(UnsafeCell::new([0u8; ACT_KFIG_BYTES_CAP]));
-
-    /// Each live entry is `[space, activation_id, offset, byte_len]`.
-    #[repr(C, align(4))]
-    struct ActKfigIndex(UnsafeCell<[[u32; 4]; ACT_KFIG_MAX_ACTS]>);
-    // SAFETY: single-threaded per worker (see HeapCell).
-    unsafe impl Sync for ActKfigIndex {}
-    static ACT_KFIG_INDEX: ActKfigIndex =
-        ActKfigIndex(UnsafeCell::new([[0u32; 4]; ACT_KFIG_MAX_ACTS]));
-
-    static ACT_KFIG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
-    static ACT_KFIG_BYTES_USED: AtomicU32 = AtomicU32::new(0);
+    /// The arena record kind a space's section lives under, or `EINVAL` for a
+    /// space that names neither catalog.
+    fn import_space_record_kind(space: u32) -> Result<u32, Errno> {
+        match space {
+            IMPORT_SPACE_GLOBAL => Ok(REC_KIND_KFIG),
+            IMPORT_SPACE_TABLE => Ok(REC_KIND_KFIT),
+            _ => Err(Errno::EINVAL),
+        }
+    }
 
     fn set_activation_imports_impl(
         space: u32,
@@ -2686,25 +2691,13 @@ mod wasm {
         ptr: u64,
         byte_len: u64,
     ) -> Result<(), Errno> {
-        if space != IMPORT_SPACE_GLOBAL && space != IMPORT_SPACE_TABLE {
-            return Err(Errno::EINVAL);
-        }
+        let kind = import_space_record_kind(space)?;
         let byte_len = usize::try_from(byte_len).map_err(|_| Errno::EINVAL)?;
         let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
         let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        if end > mem_len_bytes() {
-            return Err(Errno::EINVAL); // section runs past the end of memory
-        }
-        // SAFETY: `[start, end)` is inside guest linear memory (checked above);
-        // the base is non-null for any real section offset. An empty section
-        // uses a valid empty slice rather than a raw part at a null base.
-        let incoming: &[u8] = if byte_len == 0 {
-            &[]
-        } else {
-            unsafe {
-                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, byte_len)
-            }
-        };
+        // `EINVAL` when the section runs past the end of memory. An empty
+        // section is a valid empty slice rather than a raw part at a null base.
+        let incoming = guest_bytes(ptr, byte_len)?;
         // DECODE IT NOW and discard the result. A malformed section is the
         // host's bug and belongs at the seed, not at the capture that finally
         // reads it -- by then the fork is mid-flight and the truthful failure
@@ -2715,80 +2708,53 @@ mod wasm {
             fork_codec::imported_tables::decode_imported_tables(incoming)?;
         }
 
-        let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
-        let used = ACT_KFIG_BYTES_USED.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let index = unsafe { &mut *ACT_KFIG_INDEX.0.get() };
-        let arena_ro = unsafe { &*ACT_KFIG_BYTES.0.get() };
-        for entry in index.iter().take(act_count) {
-            if entry[0] == space && entry[1] == activation_id {
-                // IDENTICAL re-seed is a no-op; a CONFLICTING one is `EINVAL`.
-                //
-                // A COW fork child's memory is a clone of its parent's, and this
-                // module's statics live in that memory at `__memory_base` (the
-                // PIC placement). BSS is not re-zeroed when the child
-                // instantiates its own fork-module, so the child sees the
-                // PARENT's seed table -- and its own seeding, which happens
-                // before it instantiates anything, looked like a re-seed and was
-                // refused. That was `errno 22` on 41 test files: every program
-                // whose guest carries a `KFIG`/`KFIT` section and forks.
-                //
-                // Idempotence rather than a reset in `fm_set_format`, where the
-                // other inherited catalogs are cleared, for the reason recorded
-                // beside the GC codec there: a host is free to RE-SEED a child
-                // or to let it INHERIT, and only idempotence is correct under
-                // both. The bytes are the guest module's own custom section, so
-                // a child re-seeding one activation presents the same bytes by
-                // construction. Different bytes under one activation id is the
-                // corruption this check exists for, and stays loud.
-                let at = entry[2] as usize;
-                let stored = arena_ro
-                    .get(at..at + entry[3] as usize)
-                    .ok_or(Errno::EINVAL)?;
-                if stored == incoming {
-                    return Ok(());
-                }
-                return Err(Errno::EINVAL); // conflicting re-seed
-            }
+        if let Some((at, len)) = arena_find(activation_id, kind) {
+            // IDENTICAL re-seed is a no-op; a CONFLICTING one is `EINVAL`.
+            //
+            // Two seeders meet in one worker: `ForkImportIdentity` seeds an
+            // activation when it prepares its instantiation, and a fork child
+            // seeds the same activation earlier still, because it asks for the
+            // activation's import plan before it instantiates anything. Each
+            // knows nothing of the other. (The pool this replaced also had to
+            // absorb a COW child re-seeding over the PARENT's inherited table,
+            // which was `errno 22` on 41 test files; the scrub in
+            // `set_format_impl` now drops the inherited records first, so that
+            // arm is gone, but the in-worker one is not.)
+            //
+            // The bytes are the guest module's own custom section, so a second
+            // seeder presents the same bytes by construction. Different bytes
+            // under one activation id is the corruption this check exists for,
+            // and stays loud.
+            let stored = guest_bytes(at, len)?;
+            return if stored == incoming { Ok(()) } else { Err(Errno::EINVAL) };
         }
-        if act_count >= ACT_KFIG_MAX_ACTS {
-            return Err(Errno::E2BIG);
-        }
-        let next = used.checked_add(byte_len).ok_or(Errno::E2BIG)?;
-        if next > ACT_KFIG_BYTES_CAP {
-            return Err(Errno::E2BIG);
-        }
-        // SAFETY: single-threaded per worker; the range is inside the arena.
-        let arena = unsafe { &mut *ACT_KFIG_BYTES.0.get() };
-        arena[used..next].copy_from_slice(incoming);
-        index[act_count] = [space, activation_id, used as u32, byte_len as u32];
-        ACT_KFIG_ACT_COUNT.store(act_count as u32 + 1, Ordering::Relaxed);
-        ACT_KFIG_BYTES_USED.store(next as u32, Ordering::Relaxed);
+        let at = arena_alloc(activation_id, kind, byte_len)?;
+        // Copied AFTER the allocation, through a view taken after it:
+        // `channel_mmap` grows the shared memory, and `incoming` was a view
+        // taken before that growth.
+        let m = unsafe { mem_mut() };
+        m.copy_within(start..end, at as usize);
         Ok(())
     }
 
     /// One activation's seeded section bytes, or `None` if none was seeded.
+    ///
+    /// A view into the record's payload in guest memory. It is valid until the
+    /// record is released (`fm_resume_slots` op 1, or the COW-child scrub), and
+    /// every caller decodes it into owned values before the next module call.
     fn activation_imports(space: u32, activation_id: u32) -> Option<&'static [u8]> {
-        let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let index = unsafe { &*ACT_KFIG_INDEX.0.get() };
-        let arena = unsafe { &*ACT_KFIG_BYTES.0.get() };
-        index
-            .iter()
-            .take(act_count)
-            .find(|entry| entry[0] == space && entry[1] == activation_id)
-            .map(|entry| {
-                let at = entry[2] as usize;
-                &arena[at..at + entry[3] as usize]
-            })
+        let kind = import_space_record_kind(space).ok()?;
+        let (at, len) = arena_find(activation_id, kind)?;
+        guest_bytes(at, len).ok()
     }
 
     /// Seed one activation's imported-global (KFIG) or imported-table (KFIT)
     /// custom section. `space` is 0 for globals, 1 for tables.
     ///
     /// `EINVAL` for an unknown space, an out-of-range pointer, a malformed
-    /// section, or a re-seed; `E2BIG` past the arena or activation cap. Check
-    /// `fm_last_errno`.
+    /// section, or a CONFLICTING re-seed (an identical one is a no-op);
+    /// `channel_mmap`'s truthful `ENOMEM`/`EAGAIN` when the record cannot be
+    /// mapped. Check `fm_last_errno`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_activation_imports(
         space: u32,

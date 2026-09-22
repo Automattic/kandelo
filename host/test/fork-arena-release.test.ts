@@ -23,13 +23,15 @@ import {
  * the leak the observable exists for. So the `SYS_MUNMAP` tally is asserted
  * beside it: one unmap per chunk released.
  *
- * SCOPE: the first test asserts the EMPTY state -- that the three fields are
- * wired and return 0 rather than the -1 an unclaimed `fm_stats` field answers.
- * A TEST FILE THAT ASSERTS ONLY ZEROS is otherwise indistinguishable from one
- * that has stopped working, which is why the second test drives the counts
- * APART: three fields returning 0 proves nothing about which counter answered
- * which read, because a collision reads as agreement. Task 4 extends this to a
- * real multi-chunk allocation once KFIG sections are arena-backed.
+ * THE ALLOCATION IS A PRODUCTION ONE. The first test seeds two activations'
+ * imported-global (KFIG) sections through `fm_set_activation_imports`, the
+ * entry `ForkImportIdentity` uses, sized so the two records cannot share a
+ * chunk -- and then releases them one at a time through `fm_resume_slots`
+ * op 1, the `dlclose` entry, watching each chunk go back as its last record
+ * leaves it. A TEST FILE THAT ASSERTS ONLY ZEROS is indistinguishable from
+ * one that has stopped working, which is why the second test drives the three
+ * counts APART as well: three fields returning 0 proves nothing about which
+ * counter answered which read, because a collision reads as agreement.
  *
  * THE FIELD NUMBERS ARE PINNED HERE AND IN THE MODULE. 101, 102 and 105 are
  * chosen from the single table in the plan's Global Constraints, not taken as
@@ -44,19 +46,150 @@ import {
  * table, which the const-assert cannot see.
  */
 
-/** The activations the second test drives the counters apart with. */
+/** `fm_set_activation_imports` space for the KFIG section. */
+const SPACE_GLOBAL = 0;
+
+/** The activations the tests seed and release. */
 const ACTIVATION_A = 11;
 const ACTIVATION_B = 12;
 
+/**
+ * How many bytes to seed, DERIVED from the module's own constants.
+ *
+ *     ARENA_CHUNK_BYTES  = 65_536
+ *     ARENA_CHUNK_HEADER = 32     // ONE header size for every chain (Task 1)
+ *     RECORD_HEADER      = 16
+ *
+ * so one chunk holds 65,536 - 32 = 65,504 bytes of records, and a record
+ * costs 16 bytes of header. Two activations at 40,000 payload bytes each
+ * therefore need 2 chunks: 40,016 fits in the first, the second does not
+ * (80,032 > 65,504).
+ *
+ * CAPACITY IS THE CHUNK'S RECORDED `capacity` AT +24, NOT ITS `size`. The
+ * two differ whenever `channel_mmap`'s page round-up exceeds the constant,
+ * which is every chunk in the forced-chunk build. Deriving this number from
+ * `size` here would make the test agree with a bug.
+ */
+const CHUNK_BODY = 65_536 - 32;
+const RECORD_HEADER = 16;
+const PAYLOAD = 40_000;
+const EXPECTED_CHUNKS = 2;
+
+/** Bytes a record of `payload` occupies: header included, rounded to 8. */
+function recordTotal(payload: number): number {
+  return Math.ceil((RECORD_HEADER + payload) / 8) * 8;
+}
+
+/**
+ * A VALID KFIG section of exactly `PAYLOAD` bytes.
+ *
+ * The seed DECODES what it is handed, so the bytes cannot be filler: this is
+ * the real wire format (`crates/fork-codec/src/imported_globals.rs`): a
+ * 16-byte header, then records of `24 + module_len + name_len` bytes, owner
+ * ids nonzero and unique, import ordinals strictly increasing. The record
+ * size is chosen so that a whole number of them fills the payload exactly,
+ * and the builder asserts that rather than trusting the arithmetic.
+ */
+function kfigSection(): Uint8Array {
+  const moduleName = new TextEncoder().encode("env");
+  const NAME_LEN = 7; // "g" + six digits
+  const recordSize = 24 + moduleName.length + NAME_LEN;
+  const body = PAYLOAD - 16;
+  if (body % recordSize !== 0) {
+    throw new Error(`${body} payload bytes is not a whole number of ${recordSize}-byte records`);
+  }
+  const count = body / recordSize;
+  const bytes = new Uint8Array(PAYLOAD);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x4b, 0x46, 0x49, 0x47], 0); // "KFIG"
+  view.setUint16(4, 1, true); // version
+  view.setUint16(6, 16, true); // header size
+  view.setUint32(8, count, true); // record count
+  view.setUint32(12, 0, true); // reserved
+  let at = 16;
+  for (let i = 0; i < count; i += 1) {
+    const name = new TextEncoder().encode(`g${String(i).padStart(6, "0")}`);
+    view.setUint32(at, recordSize, true);
+    view.setUint32(at + 4, i + 1, true); // owner id, nonzero and unique
+    bytes[at + 8] = 1; // i32
+    bytes[at + 9] = 1; // mutable
+    view.setUint16(at + 10, 0, true); // reserved
+    view.setUint32(at + 12, moduleName.length, true);
+    view.setUint32(at + 16, name.length, true);
+    view.setUint32(at + 20, i, true); // import ordinal, strictly increasing
+    bytes.set(moduleName, at + 24);
+    bytes.set(name, at + 24 + moduleName.length);
+    at += recordSize;
+  }
+  return bytes;
+}
+
 describe("arena chunk release", () => {
-  it("wires all three arena observables and starts empty", () => {
+  it("derives the two-records-need-two-chunks arithmetic from the module's constants", () => {
+    // Pinned as its own assertion so a change to a constant fails HERE, with
+    // the arithmetic in the message, rather than as a chunk count one test
+    // down that could be read as an allocator bug.
+    expect(recordTotal(PAYLOAD), "one record fits a chunk").toBeLessThanOrEqual(CHUNK_BODY);
+    expect(
+      EXPECTED_CHUNKS * recordTotal(PAYLOAD),
+      "two records do not fit one chunk",
+    ).toBeGreaterThan(CHUNK_BODY);
+    expect(kfigSection().length, "the section is exactly PAYLOAD bytes").toBe(PAYLOAD);
+  });
+
+  it("maps a chunk per record it seeds and unmaps each one as its last record leaves", () => {
     const x = arenaFixture("arena release");
-    // NOT `toBeFalsy()`. An unclaimed `fm_stats` field answers -1, and -1 is
-    // truthy -- but a `toBe(0)` here fails loudly against a module built
-    // without the field, which is the case this assertion exists to catch.
+    // The EMPTY state first. NOT `toBeFalsy()`: an unclaimed `fm_stats`
+    // field answers -1, and -1 is truthy -- but a `toBe(0)` fails loudly
+    // against a module built without the field, which is the case this
+    // assertion exists to catch.
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(0);
+    const mmapsBefore = x.mmaps();
+    const munmapsBefore = x.munmaps();
+
+    const section = kfigSection();
+    x.seedActivationImports(SPACE_GLOBAL, ACTIVATION_A, section);
+    expect(x.errno(), `seeding activation ${ACTIVATION_A}`).toBe(0);
+    x.seedActivationImports(SPACE_GLOBAL, ACTIVATION_B, section);
+    expect(x.errno(), `seeding activation ${ACTIVATION_B}`).toBe(0);
+
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(EXPECTED_CHUNKS);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(1);
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(2);
+    // The mmap tally is the other half of the seed: a chunk count that rose
+    // without a mapping behind it would be a chain of addresses into nothing.
+    expect(x.mmaps() - mmapsBefore, "one mmap per chunk, directory included").toBe(
+      EXPECTED_CHUNKS + 1,
+    );
+    expect(x.munmaps() - munmapsBefore, "seeding only ever maps").toBe(0);
+
+    // RELEASED ONE AT A TIME, through the dlclose entry. A's record is alone
+    // in the first chunk and B's alone in the second, so each release must
+    // give back exactly its own chunk -- and the directory chunk only with
+    // the last entry. Asserting only the final zero would pass a sweep that
+    // returns everything at the end and nothing in between.
+    expect(x.slots(1, ACTIVATION_A, 0), `releasing activation ${ACTIVATION_A}`).toBe(0);
+    expect(x.errno()).toBe(0);
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "A's chunk gone, B's kept").toBe(
+      EXPECTED_CHUNKS - 1,
+    );
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory still holds B").toBe(1);
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "one entry left").toBe(1);
+    expect(x.munmaps() - munmapsBefore, "A's chunk was actually unmapped").toBe(1);
+
+    expect(x.slots(1, ACTIVATION_B, 0), `releasing activation ${ACTIVATION_B}`).toBe(0);
+    expect(x.errno()).toBe(0);
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(0);
+    // BOTH HALVES: the list says the chunks are gone, and the tally says the
+    // host was asked to take every one of them back -- the records' chunks
+    // plus the directory's.
+    expect(x.munmaps() - munmapsBefore, "one munmap per chunk released").toBe(
+      EXPECTED_CHUNKS + 1,
+    );
   });
 
   it("answers each arena observable from its OWN counter", () => {

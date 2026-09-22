@@ -795,6 +795,13 @@ export interface ArenaFixture {
   /** `fm_set_activation_resume_catalog` with the ordinals staged first. */
   seedActivationCatalog: (activation: number, ordinals: readonly number[]) => void;
   /**
+   * `fm_set_activation_imports` with the section staged first: a KFIG section
+   * for space 0, a KFIT section for space 1. The staging page is one wasm
+   * page, so a section longer than that is refused here rather than silently
+   * overrunning into whatever sits above it.
+   */
+  seedActivationImports: (space: number, activation: number, section: Uint8Array) => void;
+  /**
    * `fm_set_resume_catalog` -- the PROCESS-WIDE seed, which is activation 0's.
    *
    * A different entry from `seedActivationCatalog`, and the difference matters:
@@ -931,6 +938,17 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       (
         x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void
       )(activation, ARENA_STAGING_AT, ordinals.length);
+    },
+    seedActivationImports: (space, activation, section) => {
+      if (section.length > PAGE) {
+        throw new Error(
+          `seedActivationImports: a ${section.length}-byte section overruns the one-page staging area`,
+        );
+      }
+      new Uint8Array(memory.buffer, ARENA_STAGING_AT, section.length).set(section);
+      (
+        x.fm_set_activation_imports as (s: number, a: number, p: number, n: number) => void
+      )(space, activation, ARENA_STAGING_AT, section.length);
     },
     seedProcessCatalog: (ordinals) => {
       const staged = new Uint8Array(ordinals.length * 4);
