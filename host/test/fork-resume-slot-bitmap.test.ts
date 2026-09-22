@@ -120,6 +120,62 @@ describe("resume free-slot bitmap", () => {
     ).toBe(0);
     expect(x.munmaps() - munmapsBefore, "one unmap for the one chunk").toBe(1);
     expect(x.mmaps() - mmapsBefore, "reuse maps nothing new").toBe(1);
+
+    // WHICH SLOTS came back, not just how many chunks it took to hold them.
+    //
+    // THE CHUNK LIFECYCLE ALONE CANNOT SEE A WRONG SLOT NUMBER, and that is
+    // measured rather than assumed: perturbing `resume_unregister_impl` to free
+    // `slot + 1_000_000` AND weakening the bound to `slot == 0` left every
+    // assertion above green. The module mapped a chunk covering slot
+    // 1,000,001, handed those three numbers back on the reuse, emptied the
+    // chunk and unmapped it -- an identical chunk lifecycle over a slot range
+    // the guest's resume table knows nothing about. That is precisely the
+    // silent divergence this task exists to prevent: a wrong `call_indirect`
+    // target, not a trap.
+    //
+    // So the reused numbers are asserted directly, through the one reader that
+    // still answers "which slots does this activation hold" -- the same
+    // whole-activation publish the guest's placement shim consumes. Slots 1, 2
+    // and 3 are the three ACTIVATION_A freed, smallest first, which is the
+    // fourth of the four slot rules.
+    expect(
+      x.publishedSlots(ACTIVATION_B),
+      "the reused slots are the freed ones, smallest first",
+    ).toEqual([1, 2, 3]);
+  });
+
+  it("hands the inherited chunks back on the COW-child scrub", () => {
+    // THE CHUNKS ARE NOT BSS ANY MORE, and that changes what the scrub has to
+    // do. `fm_set_format` used to `.fill(0)` a fixed array, which a COW child
+    // could simply overwrite. A chain of MAPPINGS is inherited through the
+    // memory clone, so clearing `FREE_BITS_HEAD` alone would leak every chunk
+    // the parent took, in a child that may outlive it -- and leak it
+    // INVISIBLY, because the chunk count walks the chain and a cleared root
+    // reads as empty. Hence both halves here: the count AND the unmap.
+    //
+    // The release is also sequenced after the `CHANNEL_BASE` store, because
+    // unmapping syscalls and `channel_base()` answers EINVAL until then.
+    // Moving it back up beside the counter resets would turn every unmap into
+    // a no-op while the count still read zero, which is the same invisible
+    // leak from the other direction -- so the munmap assertion is what holds
+    // that ordering, not a comment.
+    const x = arenaFixture("resume free bitmap scrub");
+    growResumeTable(x, 8);
+    x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
+    expect(x.errno(), "seeding activation A").toBe(0);
+    expect(x.slots(1, ACTIVATION_A, 0), "three slots freed").toBe(3);
+    expect(x.stats(RESUME_FREE_CHUNK_COUNT_FIELD), "one chunk to inherit").toBe(1);
+
+    const munmapsBefore = x.munmaps();
+    x.setFormat();
+    expect(
+      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
+      "the scrub drops the chain",
+    ).toBe(0);
+    expect(
+      x.munmaps() - munmapsBefore,
+      "and UNMAPS it rather than only clearing the root",
+    ).toBe(1);
   });
 
   it("refuses a slot it never handed out rather than dropping the free", () => {

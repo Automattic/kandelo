@@ -716,6 +716,18 @@ export interface ArenaFixture {
   mmaps: () => number;
   /** `fm_resume_slots(op, activation, ordinal)`; op 1 is the dlclose release. */
   slots: (op: number, activation: number, ordinal: number) => number;
+  /**
+   * The SLOT of each `(ordinal, slot)` record `fm_publish_resume_assignment`
+   * publishes for `activation`, in the published order (ascending by ordinal).
+   *
+   * This is how a test reads WHICH slots an activation holds. No `fm_*` entry
+   * answers `(activation, ordinal) -> slot` any more -- `fm_resume_slots` op 0
+   * was deleted with `resume_slot_of` -- so the whole-activation publish is the
+   * only reader, and it is the one the guest's placement shim consumes, which
+   * makes it the right one: a test asserting these numbers is asserting the
+   * numbers the thunks are actually placed at.
+   */
+  publishedSlots: (activation: number) => number[];
   /** Re-run `fm_set_format`, which is the COW-child scrub. */
   setFormat: () => void;
   /** `fm_set_activation_resume_catalog` with the ordinals staged first. */
@@ -776,6 +788,26 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     munmaps: () => new DataView(memory.buffer).getUint32(MUNMAP_COUNTER, true),
     mmaps: () => new DataView(memory.buffer).getUint32(MMAP_COUNTER, true),
     slots: x.fm_resume_slots as ArenaFixture["slots"],
+    publishedSlots: (activation) => {
+      const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
+        activation,
+      );
+      if (packed === -1n) {
+        throw new Error(
+          `fm_publish_resume_assignment failed for activation ${activation} ` +
+            `with errno ${errno()}`,
+        );
+      }
+      const ptr = Number(packed & 0xffffffffn);
+      const count = Number(packed >> 32n);
+      // A fresh view: publishing a large assignment spills to a mapping, and
+      // `channel_mmap` grows the shared memory.
+      const view = new DataView(memory.buffer);
+      const out: number[] = [];
+      // Each record is `[ordinal: u32, slot: u32]`; the slot is at +4.
+      for (let i = 0; i < count; i += 1) out.push(view.getUint32(ptr + i * 8 + 4, true));
+      return out;
+    },
     setFormat,
     seedActivationCatalog: (activation, ordinals) => {
       const staged = new Uint8Array(ordinals.length * 4);
