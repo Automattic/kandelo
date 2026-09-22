@@ -116,6 +116,44 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
     expect(canvas.height).toBe(1080);
   });
 
+  it("requires DRM master at eglCreateContext: a context created before SET_MASTER is a silent no-op window (M2)", () => {
+    // Documents the fix's ordering dependency. The shipped SDL2 KMSDRM
+    // backend acquires DRM master during video init, BEFORE
+    // eglCreateContext (verified with live host instrumentation:
+    // host_kms_set_master fires before host_gl_create_context), so this
+    // window is never entered in practice. But a program that deferred
+    // drmSetMaster until its first frame would create+compile against a
+    // null GL context here, and the later set_fb attach could not
+    // retroactively re-run those compiles — a silent black screen.
+    const canvas = fakeCanvas(1920, 1080);
+    const { kernel, imports } = harness({
+      getKmsCanvas: (crtc: number) => (crtc === 1 ? canvas : undefined),
+      getKmsCrtcIds: () => [1],
+      markKmsCanvasGlOwned: () => {},
+    });
+    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+
+    // Context created while the pid holds neither master nor an FB: the
+    // fix cannot resolve a canvas, so b.gl stays null and every GLES call
+    // (including shader compiles) silently no-ops.
+    imports.env.host_gl_create_context(PID, 1, 0, 0);
+    let b = kernel.gl.get(PID)!;
+    expect(b.gl, "no canvas attachable without master → silent no-op window").toBeNull();
+    expect(b.canvas ?? null, "no canvas attached").toBeNull();
+
+    // Master + FB arriving later DO build the context via the set_fb hook,
+    // but this is too late for shaders already compiled against the null
+    // context — which is exactly why the fix depends on master-first.
+    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_addfb(PID, 10, 100, 1920, 1080, 0x34325258, 7680);
+    imports.env.host_kms_set_fb(PID, 1, 10);
+    b = kernel.gl.get(PID)!;
+    expect(
+      b.gl,
+      "set_fb hook builds the context late; earlier GLES calls were already lost",
+    ).not.toBeNull();
+  });
+
   it("does not mark the canvas GL-owned if getContext('webgl2') returns null", () => {
     // A canvas that cannot yield a WebGL2 context (e.g. a prior 2D
     // acquisition). Marking it GL-owned would disable the 2D-blit pump,
