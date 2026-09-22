@@ -224,27 +224,26 @@ free.
 - `owningClientId` still present but `bridgePort` null (SW restarted) →
   **transient**. `status = "reconnecting"`; recover via `need-bridge`.
 
-**Notification — how viewers find out:**
-- *Proactive push:* on marking an instance offline/reconnecting, the SW
-  messages each `viewerClientId`:
-  `clients.get(id).then(c => c.postMessage({ type: "machine-offline" |
-  "machine-reconnecting", name }))`. Viewers react immediately, even while
-  idle.
-- *Reactive backstop:* any in-flight/subsequent request to a dead machine
-  returns 503 (generalizing `fetchRestoredAppRequest`,
-  `service-worker.js:1517-1533`), covering a missed push (e.g. SW
-  mid-restart).
+**Notification — who owns the UI (decision refined):**
+- *Demo chrome owns the actual offline UI.* When the Kandelo demo UI is
+  present (the normal case — the machine shown in the web-preview pane,
+  `host.setWebPreview(...)`, `live-setup.ts:1511`), the SW pushes
+  `{ type: "machine-offline" | "machine-reconnecting", name }` to each
+  `viewerClientId`, and the demo chrome renders the rich offline /
+  reconnecting overlay from that message — immediately, even while idle.
+- *SW-served 503 page when the demo UI is out of the picture.* When the
+  whole page has been (re)loaded straight onto `/app/<name>/` with no
+  Kandelo chrome around it — a raw shared link, an iframe promoted to
+  top-level, or a full refresh — there is no listener to render an
+  overlay. In that case the SW itself serves a proper **503 HTML page**
+  for requests to an offline (or unknown) machine, generalizing the
+  plain-text 503 in `fetchRestoredAppRequest`
+  (`service-worker.js:1517-1533`). This reactive 503 is also the backstop
+  for a push missed while the SW was mid-restart.
 
-**Viewer-side UI — two homes:**
-- *Host tab / demo chrome:* the web-preview pane
-  (`host.setWebPreview(...)`, `live-setup.ts:1511`) gains offline /
-  reconnecting states driven by the SW message listener.
-- *Raw shared-link viewer (no Kandelo chrome):* inject a tiny **liveness
-  client** into served app HTML, reusing the existing HTML-injection seam
-  (`injectBlobIframeInterceptor`, `service-worker.js:1001-1034`;
-  build-injected like `__BLOB_IFRAME_INTERCEPTOR__`). It listens for
-  `machine-offline`/`machine-reconnecting` and renders an overlay so a
-  bare `/app/<name>/` tab still shows a clear state.
+We do **not** inject a liveness client into served app HTML. The demo
+chrome + the SW 503 page cover both cases; a raw idle viewer learns the
+machine is gone on its next request, which is the truthful boundary.
 
 ## Message protocol changes
 
@@ -275,7 +274,8 @@ free.
 - New: canonical wordlist source + a small name generator, plus SW
   build-injection wiring (alongside the existing `__CORS_PROXY_CONFIG__` /
   `__BLOB_IFRAME_INTERCEPTOR__` injection).
-- New: liveness-client source + its SW build-injection.
+- The SW's offline/unknown-machine 503 becomes a proper HTML page (was
+  plain text at `service-worker.js:1521`). No app-HTML injection is added.
 
 ## Testing plan (Validation contract)
 
@@ -290,25 +290,27 @@ free.
   and Vitest are not sufficient (Validation + Browser contracts). Verify
   with real tabs: (a) two demos in two tabs stay isolated; (b) a
   `/app/<name>/` link opened in a second tab reaches the same machine;
-  (c) closing the host tab shows the viewer an offline overlay
-  proactively; (d) an SW restart shows "reconnecting…" then recovers. Note
-  the Firefox/WebKit Playwright constraints already recorded for this repo.
+  (c) closing the host tab shows the demo chrome an offline overlay
+  proactively; (d) an SW restart shows "reconnecting…" then recovers;
+  (e) loading `/app/<name>/` raw (no chrome) against an offline/unknown
+  machine returns the SW 503 HTML page. Note the Firefox/WebKit Playwright
+  constraints already recorded for this repo.
 - **Parity note** — confirm no `host/src` path regresses; the SW bridge
   protocol is browser-only, so Node parity is unaffected, but the shared
   `http-bridge.ts` framing must be exercised by the host tests above.
 - Manual `./run.sh browser` for the user-visible flows in (a)–(d).
 
-## Open questions / staging
+## Decisions & open questions
 
-1. **Staging:** Phase 1 = registry + minting + clientId-fallback routing +
-   per-instance jar/recovery (delivers isolation and same-scope naming).
-   Phase 2 = cross-client viewing proxy + offline lifecycle + viewer UI.
-   Cross-client viewing largely falls out of "route by name regardless of
-   origin client"; the added Phase-2 work is the offline lifecycle and the
-   liveness client. Land as two reviewable steps or one — TBD with
-   maintainer.
-2. **Wordlist size/source** — pick the list and its home (new
-   `web-libs`/`apps` source). 3×256 is the working assumption.
-3. **Interval reconciliation** — whether to poll `matchAll` on a timer for
-   crash detection, or rely on pagehide + lazy-on-dispatch only. Lean
-   lazy + pagehide first; add a timer only if crash cases prove leaky.
+- **Scope (decided):** ship the whole thing at once — registry + minting +
+  clientId-fallback routing + per-instance jar/recovery + cross-client
+  viewing + offline lifecycle — not phased.
+- **Offline UI ownership (decided):** the demo chrome owns the actual
+  offline/reconnecting UI (via the SW push); the SW serves a 503 HTML page
+  only when no chrome is present (raw link / promoted iframe / full
+  refresh). No liveness client injected into app HTML.
+- **Wordlist size/source (open):** pick the list and its home (new
+  `web-libs`/`apps` source). 3×256 is the working assumption.
+- **Interval reconciliation (open):** whether to poll `matchAll` on a timer
+  for crash detection, or rely on pagehide + lazy-on-dispatch only. Lean
+  lazy + pagehide first; add a timer only if crash cases prove leaky.
