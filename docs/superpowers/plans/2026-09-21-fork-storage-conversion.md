@@ -90,6 +90,60 @@ pattern that is about to be deleted.
 
 ## Global Constraints
 
+> ### THE VFORK-TEARDOWN CONSTRAINT — discovered by bisection 2026-09-22, and it binds every task here
+>
+> **The module must not issue a channel syscall from the vfork child's exit
+> teardown.** The parent is parked in its own vfork syscall on the same
+> channel, and a syscall from the child at that moment kills the guest —
+> SIGSEGV rather than a trap, because the resume index is what places
+> `call_indirect` targets.
+>
+> This was established by bisecting three builds, not inferred:
+>
+> * stubbing the scrub's `munmap` — still red;
+> * stubbing the free's mapping — **green**;
+> * replacing the mapping with a bare `mmap`+`munmap` pair that keeps, links
+>   and writes nothing — **still red**.
+>
+> That last one is the whole finding. It eliminates the chunk, the layout and
+> the memory growth together and leaves only the call site. The reaching path
+> is `worker-main.ts:5269` into `resume_unregister_impl`.
+>
+> **What it means for you.** Before converting a store, ask whether its FREE
+> path can be reached from vfork-child teardown. If it can, that store cannot
+> be arena-backed *at the point it is freed* — allocating there is not slow or
+> risky, it is fatal. The fix shape is to derive what you need at ALLOCATION
+> time, so freeing becomes pure compaction with no storage and no syscall,
+> which is also what Task 1's "compaction IS the decrement" already implies.
+>
+> **Do not discover this per task.** It cost one task a full cycle and a red
+> HEAD. If your store's free path is reachable from teardown, say so in your
+> report before you write code.
+>
+> ### The sweep command, and a claim I withdrew
+>
+> **Use `npx vitest run test/fork- test/vfork-`, and expect 80 files.**
+> Measured with `npx vitest list`: `test/fork-` alone matches **74** files and
+> **none** of the `vfork-` ones, so passing both prefixes is NECESSARY rather
+> than redundant; together they give exactly 80. Eighty-one such `.test.ts`
+> files exist on disk — the two omitted are `fork-arena-cow-scrub` and
+> `fork-arena-lifetime`, skipped entirely pending Task 3.
+>
+> Do NOT use a quoted glob: `npx vitest run "test/fork-*.test.ts"` matches
+> nothing, runs zero files and exits 1, which reads like an ordinary failure.
+>
+> **A withdrawn claim, recorded so nobody re-derives it.** This section briefly
+> said the two-prefix command HANGS, on a measured 45-minute run at 0% CPU.
+> That run happened against a module build that was SIGSEGV-ing guests, and a
+> killed process-worker plausibly leaves the harness waiting forever. "The
+> command hangs" and "a crashing guest hangs the command" need different
+> entries, and only the second is supported. A count of 88 was also wrong: it
+> came from `ls | grep -cE "^(fork|vfork)-"`, which counts helper modules like
+> `fork-module-capture-fixture.ts` that are not test files.
+>
+> If a sweep does hang, suspect your own build before the runner — and note
+> that explicit file subsets completed reliably throughout.
+
 Every task's requirements implicitly include this section.
 
 - **Run host tests from `host/`, never the repo root.** There is no root
