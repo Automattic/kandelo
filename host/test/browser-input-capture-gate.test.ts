@@ -143,10 +143,33 @@ describe("demoSurfaceCaptureGate", () => {
     expect(gate({ type: "pointermove", target: offSurface } as any)).toBe(false);
   });
 
-  it("captures everything when no surface exists yet (avoids dropping input pre-mount)", () => {
+  it("does NOT capture when the demo surface is absent (input goes to the active surface)", () => {
+    // e.g. during boot before the pane mounts, or after switching to
+    // another primary view where the demo surface is not resolvable.
     const body = el();
     const gate = demoSurfaceCaptureGate(() => null, () => body, () => body);
-    expect(gate({ type: "keydown" } as any)).toBe(true);
-    expect(gate({ type: "wheel", target: el() } as any)).toBe(true);
+    expect(gate({ type: "keydown" } as any)).toBe(false);
+    expect(gate({ type: "wheel", target: el() } as any)).toBe(false);
+  });
+
+  it("releases sibling in-<main> surfaces (terminal / Inspector) not inside the demo surface", () => {
+    // I1: the terminal and Inspector are siblings of the demo surface
+    // inside <main>. Scoping to the demo surface (not all of <main>) must
+    // leave them scrollable/typable while the demo runs.
+    const terminalTextarea = el();
+    const inspectorRow = el();
+    const demoSurface = el(); // contains neither the terminal nor Inspector
+    const body = el();
+    const gate = demoSurfaceCaptureGate(() => demoSurface, () => body, () => body);
+    // wheel over the terminal / Inspector → not captured (they scroll).
+    expect(gate({ type: "wheel", target: terminalTextarea } as any)).toBe(false);
+    expect(gate({ type: "wheel", target: inspectorRow } as any)).toBe(false);
+    // keyboard while the terminal is focused → not captured (typing works).
+    const gateFocused = demoSurfaceCaptureGate(
+      () => demoSurface,
+      () => terminalTextarea,
+      () => body,
+    );
+    expect(gateFocused({ type: "keydown" } as any)).toBe(false);
   });
 });

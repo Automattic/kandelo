@@ -10,25 +10,39 @@
  * dialogs, and the rest of the React chrome stop responding while a demo
  * (sdl2, evdev) is active.
  *
- * The Kandelo demo DOM separates the stage from the chrome:
+ * The Kandelo demo DOM nests the demo's own surface inside the machine
+ * primary slot, as a sibling of the terminal and Inspector surfaces, all
+ * inside <main>; the dock and every pop-over render outside <main>:
  *   div.kapp
- *     ├── main.kmain               ← demo stage (canvas / terminal live here)
- *     ├── nav.kdock-shell          ← dock (the "New" button)
- *     └── section.kdock-pane-*      ← the New menu / dialogs (role="dialog")
- * The dock and every pop-over render *outside* `<main>`, so scoping
- * capture to `<main>` is enough to release the chrome.
+ *     ├── main.kmain
+ *     │    └── … kmachine-primary-slot
+ *     │         ├── div.kmodeset-surface   ← sdl2 (its canvas)
+ *     │         ├── div.kshell-surface     ← terminal
+ *     │         └── div.kinternals-surface ← Inspector / syslog
+ *     ├── nav.kdock-shell                  ← dock (the "New" button)
+ *     └── section.kdock-pane-*             ← the New menu / dialogs
+ * so a caller should pass the demo's *own* surface (e.g.
+ * `.kmodeset-surface`), not all of <main>: that releases not just the
+ * out-of-<main> chrome (New menu, dialogs) but also the sibling terminal
+ * and Inspector surfaces, which must stay scrollable/typable while a demo
+ * runs. The demo surface stays mounted while the machine runs, even when
+ * another primary view is shown, so this scoping holds across view
+ * switches.
  *
  * Rules:
  *   - keyboard (keydown/keyup): capture unless focus moved to a control
- *     outside the stage (e.g. a New-menu button or a dialog field). While
- *     the user just watches the demo, `document.activeElement` is the
- *     body (the stage canvas is not focusable), so keys keep flowing to
- *     the demo.
- *   - pointer/wheel: capture only when the event targets the stage, so a
- *     wheel over the New menu scrolls the menu instead of being eaten.
+ *     outside the demo surface (a New-menu button, a dialog field, the
+ *     terminal, the Inspector). While the user just watches the demo,
+ *     `document.activeElement` is the body (the canvas is not focusable),
+ *     so keys keep flowing to the demo.
+ *   - pointer/wheel: capture only when the event targets the demo
+ *     surface, so a wheel over the New menu / terminal / Inspector scrolls
+ *     that surface instead of being eaten.
  *
- * If no stage element exists yet (attach can race the pane mounting),
- * the gate defaults to capturing so early input is not silently dropped.
+ * If no surface element is resolvable (the demo view is not mounted — e.g.
+ * during boot before the pane mounts, or after a switch to another
+ * primary view), the gate does NOT capture, so input goes to whatever
+ * surface is actually active rather than a demo the user isn't looking at.
  */
 export function demoSurfaceCaptureGate(
   getSurface: () => Element | null = () => document.querySelector("main"),
@@ -37,7 +51,7 @@ export function demoSurfaceCaptureGate(
 ): (e: Event) => boolean {
   return (e: Event): boolean => {
     const surface = getSurface();
-    if (!surface) return true;
+    if (!surface) return false;
     if (e.type === "keydown" || e.type === "keyup") {
       const active = getActiveElement();
       if (active === null) return true;

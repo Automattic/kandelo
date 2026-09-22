@@ -1734,13 +1734,16 @@ async function bootProfile(
           const SDL2_FB_H = 1080;
           kernelForSdl2.attachInputSource(
             // Bind to window for global reach, but scope capture to the
-            // demo stage (<main>) so keyboard/wheel over the "New" menu,
-            // dialogs, and the rest of the chrome stay usable while the
-            // playground runs. See demoSurfaceCaptureGate.
+            // playground's own Modeset canvas surface so keyboard/wheel
+            // over the "New" menu, dialogs, and the sibling terminal and
+            // Inspector surfaces stay usable while the playground runs.
+            // See demoSurfaceCaptureGate.
             new BrowserInputSource(window, {
               pointer: false,
               wheel: true,
-              shouldCapture: demoSurfaceCaptureGate(),
+              shouldCapture: demoSurfaceCaptureGate(
+                () => document.querySelector(".kmodeset-surface"),
+              ),
             }),
             { width: SDL2_FB_W, height: SDL2_FB_H },
           );
@@ -1794,10 +1797,13 @@ async function bootProfile(
                   window.innerWidth,
                   window.innerHeight,
                 ),
-              // Scope capture to the demo stage (<main>) so the dock's
-              // "New" menu and dialogs stay scrollable/clickable while the
-              // evdev logger runs. See demoSurfaceCaptureGate.
-              shouldCapture: demoSurfaceCaptureGate(),
+              // evdev is the global-input logger, so it captures across the
+              // whole demo stage (<main>) by design; the gate still releases
+              // the out-of-<main> chrome (the "New" menu, dialogs) so the
+              // dock stays usable while it runs. See demoSurfaceCaptureGate.
+              shouldCapture: demoSurfaceCaptureGate(
+                () => document.querySelector("main"),
+              ),
             }),
             {
               width: window.innerWidth,
