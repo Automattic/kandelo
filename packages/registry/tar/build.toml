@@ -1,4 +1,8 @@
 script_path = "packages/registry/tar/build-tar.sh"
+inputs = [
+  "packages/registry/tar/build-tar.sh",
+  "scripts/package-build-roots.sh",
+]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 2
+commit      = "UNPUBLISHED"
+revision    = 3

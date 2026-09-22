@@ -1,0 +1,28 @@
+<h1>Todo</h1>
+<div class="sub">Served by Ruby <%= RUBY_VERSION %> · Roda <%= Roda::RodaVersion %> · SQLite <%= SQLite3::SQLITE_VERSION %> · <a href="/about">about</a></div>
+
+<form class="add" method="post" action="/todos">
+  <input type="text" name="title" placeholder="What needs doing?" autofocus required>
+  <button type="submit">Add</button>
+</form>
+
+<% if todos.empty? -%>
+  <p class="empty">Nothing here yet — add your first todo above.</p>
+<% else -%>
+  <ul>
+    <% todos.each do |id, title, done, _created| -%>
+      <li class="<%= done.to_i == 1 ? 'done' : '' %>">
+        <form method="post" action="/todos/<%= id %>/toggle">
+          <button type="submit" class="secondary" title="Toggle done">
+            <%= done.to_i == 1 ? '☑' : '☐' %>
+          </button>
+        </form>
+        <span class="title"><%= h(title) %></span>
+        <form method="post" action="/todos/<%= id %>/delete">
+          <button type="submit" class="danger" title="Delete">✕</button>
+        </form>
+      </li>
+    <% end -%>
+  </ul>
+  <div class="count"><%= remaining %> of <%= todos.length %> remaining</div>
+<% end -%>

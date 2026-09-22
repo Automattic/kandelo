@@ -21,7 +21,13 @@
 # `${CI:-}` to skip flaky tests, and musl's `getlogin()` reads
 # `LOGNAME`/`USER` (the os-test getlogin probe expects either a
 # valid login name or NULL+ENOTTY/ENXIO; without LOGNAME it gets
-# NULL+errno=0 and FAILs). PATH is intentionally NOT kept — Nix
+# NULL+errno=0 and FAILs). `KANDELO_SOURCE_CACHE_ROOT` (which
+# SourceOnly build cache to use) and `KANDELO_CACHE_GC_AUTO` (whether
+# a successful local build may garbage-collect that cache) are
+# workflow context, not tools: `./run.sh local-build` re-enters this
+# shell, so without these keeps an isolated-cache or no-auto-GC
+# request would be silently dropped and the build would run against
+# the machine-wide shared cache. PATH is intentionally NOT kept — Nix
 # rebuilds it from the flake so anything that needs to leak from
 # the host raises a "command not found" instead of building wrong.
 #
@@ -113,6 +119,8 @@ nix_develop=(
     --keep GITHUB_EVENT_NAME \
     --keep GITHUB_EVENT_PATH \
     --keep KANDELO_NIX_BIN \
+    --keep KANDELO_SOURCE_CACHE_ROOT \
+    --keep KANDELO_CACHE_GC_AUTO \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \

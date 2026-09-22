@@ -31,6 +31,7 @@ import {
   WasmPosixKernel,
   type KernelPointer,
 } from "./kernel";
+import { resolveIoctlContract } from "./ioctl-contract";
 import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
@@ -115,7 +116,6 @@ import {
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
   HOST_INTERCEPTED_SYSCALLS,
-  IOCTL_REQUESTS,
   OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
@@ -3343,6 +3343,11 @@ export class CentralizedKernelWorker {
       // pid has no canvas bound yet; the kernel-worker's KMS registry
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      // CRTCs with a registered scanout canvas, so the GL auto-attach can
+      // resolve a canvas for a DRM-master pid that creates its GL context
+      // before binding an FB (SDL2's KMSDRM ordering). See
+      // WasmPosixKernel.tryAttachKmsGlCanvas.
+      getKmsCrtcIds: () => [...this.kmsCanvases.keys()],
       markKmsCanvasGlOwned: (crtcId: number) => {
         this.kmsContextMode.set(crtcId, "webgl2");
       },
@@ -11930,7 +11935,7 @@ export class CentralizedKernelWorker {
     }
     if (syscallNr === SYS_IOCTL) {
       const request = Number(BigInt.asUintN(32, rawArgs[1]!));
-      const contract = IOCTL_REQUESTS[request];
+      const contract = resolveIoctlContract(request);
       adjustedArgs[1] = request;
       adjustedArgs[3] = 0;
       adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
@@ -30144,6 +30149,95 @@ export class CentralizedKernelWorker {
         if (!inject) return;
         inject(dx, dy, buttons);
         this.scheduleWakeBlockedRetries(entry);
+      },
+    );
+  }
+
+  /**
+   * Push one evdev record into `/dev/input/event{0,1}` and wake any
+   * process blocked on `sys_read` / `sys_poll` against the device.
+   * The per-OFD ring caps at 1024 records; overflow latches `dropped`
+   * and the next read returns `SYN_DROPPED` (kernel A4/A5). Wake
+   * routing reuses `scheduleWakeBlockedRetries` so the existing
+   * pending-readers tick services event ofds too — same shape as
+   * `injectMouseEvent` for `/dev/input/mice`.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.#runOrDeferKernelEntry(
+      "evdev input and wake",
+      (entry) => {
+        const inject = entry.instance.exports.kernel_input_event as
+          | ((
+              device: number,
+              ev_type: number,
+              code: number,
+              value: number,
+            ) => void)
+          | undefined;
+        if (!inject) return;
+        inject(device, ev_type, code, value);
+        this.scheduleWakeBlockedRetries(entry);
+      },
+    );
+  }
+
+  /**
+   * Push a whole `SYN_REPORT` frame of evdev records in one kernel entry
+   * and wake blocked readers once for the frame. A single pointer move is
+   * three records (REL_X, REL_Y, SYN_REPORT); routing each through
+   * `injectInputEvent` would run three kernel entries and three full
+   * pending-reader wake scans. Batching collapses that to one entry and
+   * one scan — the frame is atomic to the reader anyway (records before a
+   * SYN_REPORT are an incomplete event).
+   */
+  injectInputEventBatch(
+    records: ReadonlyArray<{
+      device: number;
+      ev_type: number;
+      code: number;
+      value: number;
+    }>,
+  ): void {
+    if (records.length === 0) return;
+    this.#runOrDeferKernelEntry(
+      "evdev input batch and wake",
+      (entry) => {
+        const inject = entry.instance.exports.kernel_input_event as
+          | ((
+              device: number,
+              ev_type: number,
+              code: number,
+              value: number,
+            ) => void)
+          | undefined;
+        if (!inject) return;
+        for (const r of records) {
+          inject(r.device, r.ev_type, r.code, r.value);
+        }
+        this.scheduleWakeBlockedRetries(entry);
+      },
+    );
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
+   * `ABS_Y.maximum`. Idempotent; call again on canvas resize.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.#runOrDeferKernelEntry(
+      "evdev canvas dimensions",
+      (entry) => {
+        const set = entry.instance.exports.kernel_set_input_canvas_dims as
+          | ((width: number, height: number) => void)
+          | undefined;
+        if (!set) return;
+        set(width, height);
       },
     );
   }

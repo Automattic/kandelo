@@ -264,6 +264,15 @@ export function createVfsProductDeploymentPlugin(options: {
   if (assetGroupDirectory !== undefined) {
     validateCanonicalPagesAssetGroup(options.map!, assetGroupDirectory);
   }
+  // WHY: a grouped build publishes each product image only inside its asset
+  // group (`<group>/images/...`), never at the ungrouped `products/...` path
+  // the map entry names. A `?url` import of a product image must resolve to
+  // the file the build actually ships; otherwise a page that boots from that
+  // URL (gallery launches pass it as `vfs=`) fetches a missing file.
+  const groupedImagePaths =
+    assetGroupDirectory === undefined
+      ? undefined
+      : groupedProductImagePaths(options.map!, assetGroupDirectory);
   const mirrorRoots = options.mirrorRoots.map(canonicalizeFromExistingAncestor);
   const publicProducts = options.map?.products.map(
     ({ private_path: _privatePath, asset_group, ...entry }) => ({
@@ -314,7 +323,8 @@ export function createVfsProductDeploymentPlugin(options: {
       const productId = id.slice(RESOLVED_PRODUCT_URL.length);
       const product = byId.get(productId);
       if (product === undefined) this.error(`unknown VFS product deployment product ${productId}`);
-      return `export default ${JSON.stringify(`${resolvedBase}${product.path}`)};\n`;
+      const path = groupedImagePaths?.get(productId) ?? product.path;
+      return `export default ${JSON.stringify(`${resolvedBase}${path}`)};\n`;
     },
     writeBundle: {
       order: "post",
@@ -698,6 +708,41 @@ function exactDirectory(value: string, label: string): string {
     throw new Error(`${label} is not a direct directory`);
   }
   return value;
+}
+
+/**
+ * Map each grouped product to the deployment-relative path of its image inside
+ * the asset group, as recorded by the group manifest. The group was already
+ * validated against the map; the image identity is rechecked here so a URL can
+ * never name bytes other than the ones the map authenticates.
+ */
+function groupedProductImagePaths(
+  map: VfsProductDeploymentMapV1,
+  assetGroupDirectory: string,
+): Map<string, string> {
+  const manifest = validateVfsAssetGroupManifest(
+    JSON.parse(readFileSync(join(assetGroupDirectory, "manifest.json"), "utf8")),
+  );
+  const paths = new Map<string, string>();
+  for (const entry of map.products) {
+    if (entry.asset_group === undefined) continue;
+    const product = manifest.products.find(({ id }) => id === entry.id);
+    if (
+      product === undefined ||
+      product.image.bytes !== entry.bytes ||
+      product.image.sha256 !== entry.sha256
+    ) {
+      throw new Error(
+        `VFS asset group image for ${entry.id} differs from the private product map`,
+      );
+    }
+    const groupDirectory = entry.asset_group.path.slice(
+      0,
+      entry.asset_group.path.lastIndexOf("/") + 1,
+    );
+    paths.set(entry.id, `${groupDirectory}${product.image.path}`);
+  }
+  return paths;
 }
 
 export function vfsProductDeploymentPath(

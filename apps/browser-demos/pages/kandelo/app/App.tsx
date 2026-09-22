@@ -11,6 +11,7 @@ import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
 import { navigateToGalleryItemUrl } from "../url-state";
+import { ShareDialog } from "../dialogs/ShareDialog";
 import type {
   BootDescriptor,
   GalleryItem,
@@ -64,10 +65,13 @@ export const App: React.FC = () => {
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
   const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: true });
-  const [demoGuideOpen, setDemoGuideOpen] = React.useState(demoGuide !== null);
+  // The demo guide never auto-opens; the dock's Demo button is the only way
+  // in. Machines with a guide simply have that button enabled.
+  const [demoGuideOpen, setDemoGuideOpen] = React.useState(false);
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -137,7 +141,8 @@ export const App: React.FC = () => {
     const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
     if (autoOpenedDemoGuideKey.current === key) return;
     autoOpenedDemoGuideKey.current = key;
-    setDemoGuideOpen(dockPane === null && demoGuide !== null);
+    // Close a guide left open by the previous machine; never auto-open.
+    setDemoGuideOpen(false);
   }, [demoGuide?.title, desc.id, dockPane]);
 
   React.useEffect(() => {
@@ -343,6 +348,8 @@ export const App: React.FC = () => {
         />
       )}
 
+      {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
+
       <Dock
         activePane={dockPane}
         activeView={dockActiveView}
@@ -355,6 +362,7 @@ export const App: React.FC = () => {
         internalsAvailable={!isEmpty && surface.canUseInternals}
         internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
         themeOpen={themeOpen}
+        shareAvailable={!isEmpty}
         status={surface.status}
         machineTitle={desc.title}
         viewDisabled={{
@@ -366,6 +374,7 @@ export const App: React.FC = () => {
         onToggleGuide={toggleDemoGuide}
         onToggleInternals={toggleInternals}
         onToggleTheme={toggleTheme}
+        onOpenShare={() => setShareOpen(true)}
         onCloseGuide={() => setDemoGuideOpen(false)}
         onCloseInternals={() => setInternalsOpen(false)}
         onCloseTheme={() => setThemeOpen(false)}
