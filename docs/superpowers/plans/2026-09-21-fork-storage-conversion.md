@@ -4003,6 +4003,76 @@ Body: moves zero region bytes; corrects an ordering the spec got backwards;
 
 ## Task 12: The forced-chunk build, and the full suite in both
 
+> **REWRITTEN INPUTS, 2026-09-22, from the read-only review of Tasks 1–7.
+> Read this before the numbered steps; two of them are stale.**
+>
+> **Stale references.** Steps 2 and 3a name `FREE_BITS_PER_CHUNK` and
+> `RESUME_FREE_CHUNK_COUNT_FIELD` (field 103). Both were deleted in Task 3
+> (`a94a22956`, the derived free set); field 103 is UNCLAIMED and stays so.
+> The chain assertion cannot be written as specified. Write it against what
+> exists: field **101** (record chunk count) and **102** (directory chunk
+> count) from Task 1, and **104** (scratch chunk count) once Task 10 lands.
+> The forced-chunk build must show 101 > 1 in a multi-record scenario and
+> 104 > 1 in a scratch-stack scenario; there is no bitmap chain to assert.
+>
+> **This task is THE BATCH.** Per-task testing was suspended after Task 4.
+> Everything below is owed here and nowhere else. Run each, record red/green
+> for the RIGHT reason, restore from pristine copies with `cp` and confirm the
+> build key returns. An item you cannot run is reported as unproven, never
+> as passing.
+>
+> *Task 1:* perturbation (b) against a PRODUCTION store (Task 1 could only
+> probe it; owed to Task 4, and appeared in neither of Task 4's lists).
+> *Task 4:* full 81-file sweep; `surface-budget`; `tsc`; `cargo test -p
+> host-native`; `fork-module-gc-replay` and every file outside its 11-file
+> subset.
+> *Task 5:* Step 3 (red against the old artifact); Step 6 (remove the
+> `REC_KIND_GC_CODEC` exclusion → COW case red with errno 22 — BUT SEE THE
+> RETIREMENT ITEM BELOW FIRST); Step 2's "codec readable via
+> `fm_build_gc_plan` after the scrub" (a proxy was used; run the real one);
+> `./run.sh setup`. Note `fork-identity-capacity` is RED at `6ddf4990a` and
+> fixed at `660e977df` — a bisection must expect it.
+> *Task 6:* Step 6 (`ok_or(EINVAL)` → `Ok(())`: never-seeded assertion red,
+> empty-catalog green); `fork-from-dlopen-side-module-e2e`;
+> `fork-dlopen-replay-e2e`; `cargo test -p host-native` (only `cargo check`
+> ran); the op-0 caller grep over `host/src host/test crates`.
+> *Task 7:* refusal perturbation (truncating `stage()` instead of throwing);
+> capacity-guard perturbation (`128 * 1024` must name `php/intl.so imported
+> globals` at 190,437); Step 1 as written; `fork-module-instance.test.ts`.
+> *Tasks 8–11:* whatever their batch report lists as deferred — append it
+> here verbatim when that report lands.
+> *Never scheduled anywhere until now:* the mechanism probe for WHY a
+> `channel_munmap` is answered from a SIGKILL-contained vfork teardown where
+> a `channel_mmap` parks (measured green once in Task 3, flagged as a concern
+> in three reports, run by nobody). If the batch's fatal-signal test hangs,
+> this is the first suspect and the fix is to defer the sweep, never to
+> re-store anything.
+>
+> **RETIRE the GC-codec COW exclusion (review F1, CONFIRMED).** The scrub
+> keeps the codec by design at `lib.rs:2174-2239`, on the premise that a child
+> inherits it. That premise is false on BOTH hosts: native re-seeds
+> activation 0 after `fm_set_format` on both launch paths (`guest.rs:7824`,
+> `:11330`) and seeds no other activation; Node re-seeds every activation at
+> `worker-main.ts:4860`, and the only codec reader (`decoded_gc_codecs`, via
+> `fm_attach_child` / `fm_build_gc_plan`, first caller `:4935`) runs after
+> it. Keeping the exclusion costs every forked child up to two inherited
+> 64 KiB mappings and rests on a stale premise in three comments. Delete the
+> exclusion, delete the three comments, and prove it: the COW case must stay
+> GREEN with the exclusion gone, on both hosts. If it goes red, the premise
+> was not false and this item is wrong — report that rather than restoring
+> the exclusion silently.
+>
+> **Move the last `MMAP_FLOOR + n * PAGE` staging** (review F6):
+> `fork-module-capture-drive.test.ts:1685,1689` at `+ 8 * PAGE`. Benign today
+> because `fm_set_borrowed_workspace` writes nothing; move it to low scratch
+> anyway, because three of its siblings have already collided and this class
+> should not survive the plan.
+>
+> **Report F4 as a known limit, do not fix here:** `fm_set_format(…,
+> channel_base = 0)` on a module with non-empty chains unlinks every chunk
+> without unmapping (`:1793-1806`, `:4548-4550`) and the counts read 0 — a
+> silent leak, unreachable in production today. Record it; Task 13 decides.
+
 This is the spec's decision 2, and it is not optional: **a conversion whose
 chunk path has not executed is not tested.**
 
@@ -4209,6 +4279,19 @@ the run is its evidence.
 ---
 
 ## Task 13: Measure the result and correct the record
+
+> **ADDED 2026-09-22 (review F3):** `fm_arena_selftest`'s doc block
+> (`lib.rs:2318-2330`) and the three budget `why` entries promise deletion
+> "at the task that converts the resume assignment" — Task 3, which has
+> landed. That promise is now false as written. When you delete the entry
+> (the mandatory step above), rewrite nothing that describes it; when you
+> CANNOT delete it, correct those four places to say Task 13 owns it and
+> why it survived. `forkModuleEntriesWithoutProductionCaller` is the one
+> surface net UP (2 → 3) across Tasks 1–7; it must return to 2 here.
+>
+> **Also decide F4** (from Task 12's report): whether `fm_set_format` with a
+> zero channel base on non-empty chains should refuse, unmap through a
+> remembered base, or stay documented as unreachable.
 
 > **MANDATORY, added 2026-09-22 — delete `fm_arena_selftest` and bank it.**
 >
