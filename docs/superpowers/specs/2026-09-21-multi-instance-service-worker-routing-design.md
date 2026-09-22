@@ -135,13 +135,15 @@ global is simpler and safe. `appPrefix` as a lone global goes away;
   iframe `src`. This reorders `live-setup.ts` slightly: `setWebPreview`'s
   URL is set *after* the handshake returns the minted prefix, not from
   the static `APP_PREFIX` constant (`live-setup.ts:1513`).
-- **Wordlist:** lives in a TS/JSON source of truth and is **injected at
-  SW build time** into `service-worker.js`, exactly like
-  `__CORS_PROXY_CONFIG__` and `__BLOB_IFRAME_INTERCEPTOR__`
-  (`service-worker.js:1010`, `1037`). The SW is a classic script and
-  cannot import modules at runtime. A modest list (e.g. 3×256 words →
-  ~16.7M combinations) makes live collisions negligible; the SW
-  regenerates on the rare hit regardless.
+- **Wordlist:** embedded directly in `service-worker.js` as static data
+  (not build-injected). The SW is a classic script; the wordlist has no
+  deployment variance, and minting must always work — including in the
+  Playwright harness, which serves near-raw worker source. A modest list
+  (three lists of ≥128 words → ≥128³ ≈ 2M combinations) makes live
+  collisions negligible; the SW regenerates on the rare hit regardless.
+  The security-critical validator is tested against real untrusted
+  `/app/<name>/` URLs via Playwright, consistent with how
+  `normalizeScopePath` is validated today.
 
 ### Name is untrusted URL input (Browser And User contract)
 
@@ -271,9 +273,8 @@ machine is gone on its next request, which is the truthful boundary.
 - `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` — set
   web-preview URL from minted prefix; wire offline/reconnecting pane
   states.
-- New: canonical wordlist source + a small name generator, plus SW
-  build-injection wiring (alongside the existing `__CORS_PROXY_CONFIG__` /
-  `__BLOB_IFRAME_INTERCEPTOR__` injection).
+- Wordlist + name generator + validator embedded directly in
+  `service-worker.js` (static data; no build injection).
 - The SW's offline/unknown-machine 503 becomes a proper HTML page (was
   plain text at `service-worker.js:1521`). No app-HTML injection is added.
 
