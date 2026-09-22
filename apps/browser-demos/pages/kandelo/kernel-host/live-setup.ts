@@ -526,8 +526,13 @@ interface WebReadinessState {
   failed: boolean;
 }
 
-const APP_PREFIX = import.meta.env.BASE_URL + "app/";
-const APP_PATH = import.meta.env.BASE_URL + "app";
+// The public URL segment for a booted machine's web surface:
+// <base>/computer/<name>/. Machines are "computers" in the product vocabulary;
+// the per-machine <name> is minted by the service worker at bridge handshake.
+// APP_PREFIX here is only the pre-mint placeholder (used by error states that
+// never mount the iframe); live web previews use the minted /computer/<name>/.
+const APP_PREFIX = import.meta.env.BASE_URL + "computer/";
+const APP_PATH = import.meta.env.BASE_URL + "computer";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const SW_SCOPE = deploymentScopeFromServiceWorkerUrl(
@@ -1434,9 +1439,9 @@ async function bootProfile(
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
-  // The service worker mints this machine's app prefix (/base/app/<name>/) and
+  // The service worker mints this machine's app prefix (/base/computer/<name>/) and
   // returns it from the bridge handshake. Every web-preview URL must use the
-  // minted value: the bare /app/ no longer routes to any machine, so the SW
+  // minted value: the bare /computer/ no longer routes to any machine, so the SW
   // serves it as the Kandelo shell — mounting the whole app inside its own
   // web-preview iframe and recursing (stacked docks). Until the handshake
   // returns, this holds the base prefix (only used by error states, which
@@ -1543,7 +1548,7 @@ async function bootProfile(
         );
         assertCurrent();
         // Every later web-preview update (readiness "running", probe URL) must
-        // address this machine's minted prefix, not the bare /app/ constant.
+        // address this machine's minted prefix, not the bare /computer/ constant.
         machineAppPrefix = appPrefix;
         host.setWebPreview({
           label: profile.init.web.label,

@@ -9,10 +9,10 @@ export type MachineChromeMessageType =
   | "machine-reconnecting";
 
 const OFFLINE_MESSAGE =
-  "This machine is no longer running — its browser tab was closed, so " +
+  "This computer is no longer running — its browser tab was closed, so " +
   "the live web preview is unavailable.";
 const RECONNECTING_MESSAGE =
-  "Reconnecting to this machine after a service worker restart…";
+  "Reconnecting to this computer after a service worker restart…";
 
 const STATUS_FOR_TYPE: Record<
   MachineChromeMessageType,

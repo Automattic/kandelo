@@ -195,7 +195,7 @@ if (typeof window !== "undefined") {
   // --- SW-minted machine names ---
   // The service worker owns machine naming. On init-bridge it mints a
   // three-word name (adjective-color-noun), so every live machine has a
-  // stable, shareable /app/<name>/ URL. The word lists are embedded here as
+  // stable, shareable /computer/<name>/ URL. The word lists are embedded here as
   // static data (not build-injected): the classic worker cannot import a
   // module, minting must always work — including in the Playwright harness
   // that serves near-raw worker source — and the lists have no deployment
@@ -293,7 +293,7 @@ if (typeof window !== "undefined") {
   }
 
   function appPrefixForName(name) {
-    return SCOPE_PATH + "app/" + name + "/";
+    return SCOPE_PATH + "computer/" + name + "/";
   }
 
   function utf8ByteLength(value) {
@@ -469,7 +469,7 @@ if (typeof window !== "undefined") {
       if (!cookie) continue;
       // Prepend app prefix to cookie path so it matches browser-side URLs.
       // WordPress sets paths like "/" or "/wp-admin/" but the browser sees
-      // "/app/" or "/app/wp-admin/".
+      // "/computer/" or "/computer/wp-admin/".
       var prefix = targetAppPrefix.slice(0, -1); // "/app" (or "/base/app")
       if (!cookie.path.startsWith(prefix)) {
         cookie.path = prefix + cookie.path;
@@ -540,7 +540,7 @@ if (typeof window !== "undefined") {
     return BRIDGE_AUTHORITY_KEY + "/" + name;
   }
 
-  // Resolve the "app/"-style authority base once so restart scanning can map a
+  // Resolve the "computer/"-style authority base once so restart scanning can map a
   // cache entry URL back to the machine name it belongs to.
   var authorityBasePathname = new URL(
     BRIDGE_AUTHORITY_KEY + "/",
@@ -910,7 +910,7 @@ if (typeof window !== "undefined") {
           // from the web-preview iframe; mapping it would make the shell's own
           // nameless same-origin GETs get redirected into the guest app and 404
           // against the kernel. The actual viewer (the iframe) is registered via
-          // markViewer when it navigates to /app/<name>/. teardownInstancesOwnedBy
+          // markViewer when it navigates to /computer/<name>/. teardownInstancesOwnedBy
           // and reconcileOwners key off record.owningClientId, not the viewing
           // map, so owner attribution is unaffected.
           instances.set(name, record);
@@ -1215,11 +1215,11 @@ if (typeof window !== "undefined") {
     });
   }
 
-  // Return the machine name if `pathname` addresses SCOPE_PATH + "app/<name>"
-  // or "app/<name>/..." with a validly-formatted (untrusted) name, else null.
-  // The strict format check runs before any registry use.
+  // Return the machine name if `pathname` addresses SCOPE_PATH + "computer/<name>"
+  // or "computer/<name>/..." with a validly-formatted (untrusted) name, else
+  // null. The strict format check runs before any registry use.
   function instanceNameFromPath(pathname) {
-    var base = SCOPE_PATH + "app/";
+    var base = SCOPE_PATH + "computer/";
     if (pathname.indexOf(base) !== 0) return null;
     var rest = pathname.slice(base.length); // "<name>" or "<name>/..."
     var seg = rest.split("/")[0];
@@ -1227,7 +1227,7 @@ if (typeof window !== "undefined") {
   }
 
   function appRootPathFor(record) {
-    return record.appPrefix.slice(0, -1); // "/a/app/<name>"
+    return record.appPrefix.slice(0, -1); // "/a/computer/<name>"
   }
 
   function stripAppPathFor(record, pathname) {
@@ -1271,7 +1271,7 @@ if (typeof window !== "undefined") {
   }
 
   // True only when the request originates from within some machine's app
-  // document (its referer is an /app/<name>/ path).
+  // document (its referer is an /computer/<name>/ path).
   function requestIsFromAppDocument(request) {
     var path = sameOriginRefererPath(request);
     return path !== null && instanceNameFromPath(path) !== null;
@@ -1280,7 +1280,7 @@ if (typeof window !== "undefined") {
   // Register a client as a viewer of `record` ONLY when the request genuinely
   // comes from within an app document: a navigation INTO the app (its resulting
   // document) or a subresource whose referer is an app path. This deliberately
-  // excludes host-page requests to /app/<name>/ — the web-readiness probe and
+  // excludes host-page requests to /computer/<name>/ — the web-readiness probe and
   // the boot's kernel.wasm / VFS fetches all run on the host client, which lives
   // at "/" (or "/?demo="). Registering the host would put it in clientToInstance
   // and then redirect its later nameless boot fetches into a machine's app
@@ -1313,7 +1313,7 @@ if (typeof window !== "undefined") {
   // Map a nameless root-relative path into a machine's app prefix. Strips the
   // deployment scope prefix (if present) before composing the app root, so a
   // "/base/foo" request from a "/base/" deployment becomes
-  // "/base/app/<name>/foo".
+  // "/base/computer/<name>/foo".
   function pathInsideApp(pathname) {
     var scopeRoot = SCOPE_PATH === "/" ? "" : SCOPE_PATH.slice(0, -1);
     if (scopeRoot && pathname === scopeRoot) return "/";
@@ -1515,7 +1515,7 @@ if (typeof window !== "undefined") {
       "<head>\n" +
       "<meta charset=\"utf-8\">\n" +
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
-      "<title>Kandelo machine offline</title>\n" +
+      "<title>Kandelo computer offline</title>\n" +
       "<style>\n" +
       "  :root { color-scheme: light dark; }\n" +
       "  body { margin: 0; min-height: 100vh; display: grid; place-items: center;\n" +
@@ -1529,9 +1529,9 @@ if (typeof window !== "undefined") {
       "</head>\n" +
       "<body>\n" +
       "<main>\n" +
-      "<h1>This Kandelo machine is offline</h1>\n" +
-      "<p>The machine <code>" + safeName + "</code> is not running here.</p>\n" +
-      "<p>Its hosting tab has closed. Open the machine again to start a new one.</p>\n" +
+      "<h1>This Kandelo computer is offline</h1>\n" +
+      "<p>The computer <code>" + safeName + "</code> is not running here.</p>\n" +
+      "<p>Its hosting tab has closed. Open the computer again to start a new one.</p>\n" +
       "</main>\n" +
       "</body>\n" +
       "</html>\n";
@@ -1774,13 +1774,14 @@ if (typeof window !== "undefined") {
       }
     }
 
-    // Defense in depth: any /app/-namespaced request that reached here resolved
-    // to no live machine — a bare /app/, an invalid name, or a stale prefix
-    // from a superseded boot. The app shell never lives under /app/, so never
-    // serve it here: doing so mounts the whole Kandelo app inside a machine's
-    // web-preview iframe, which boots another machine and another /app/ iframe,
-    // recursing the app into itself (stacked docks). Return the truthful 503.
-    var appNamespaceBase = SCOPE_PATH + "app";
+    // Defense in depth: any /computer/-namespaced request that reached here
+    // resolved to no live machine — a bare /computer/, an invalid name, or a
+    // stale prefix from a superseded boot. The app shell never lives under
+    // /computer/, so never serve it here: doing so mounts the whole Kandelo app
+    // inside a machine's web-preview iframe, which boots another machine and
+    // another /computer/ iframe, recursing the app into itself (stacked docks).
+    // Return the truthful 503.
+    var appNamespaceBase = SCOPE_PATH + "computer";
     if (
       url.pathname === appNamespaceBase ||
       url.pathname === appNamespaceBase + "/" ||
@@ -2008,18 +2009,25 @@ if (typeof window !== "undefined") {
     var publicBase = requestUrl.protocol + "//" + requestUrl.host + rootPath + "/";
     var hostPattern = escapeRegExp(requestUrl.host);
     var appPathPattern = escapeRegExp(rootPath.slice(1));
+    // A URL is already under the machine prefix when the prefix is followed by
+    // more path (its slash form), a delimiter that ends the URL token, or end
+    // of text. Matching only "/" or end-of-text re-prefixed a bare prefix like
+    // ".../computer/<name>" (no trailing slash) followed by a quote — which is
+    // exactly WordPress's WP_HOME link — doubling it into
+    // ".../computer/<name>/computer/<name>".
+    var urlEnd = "[?#\"'\\s<>)]";
     var plain = new RegExp(
-      "http://" + hostPattern + "/(?!" + appPathPattern + "(?:/|$))",
+      "http://" + hostPattern + "/(?!" + appPathPattern + "(?:/|$|" + urlEnd + "))",
       "g",
     );
     var escapedAppPathPattern = appPathPattern.replace(/\//g, "\\\\/");
     var escaped = new RegExp(
-      "http:\\\\/\\\\/" + hostPattern + "\\\\/(?!" + escapedAppPathPattern + "(?:\\\\/|$))",
+      "http:\\\\/\\\\/" + hostPattern + "\\\\/(?!" + escapedAppPathPattern + "(?:\\\\/|$|" + urlEnd + "))",
       "g",
     );
     var encodedAppPathPattern = appPathPattern.replace(/\//g, "%2F");
     var encoded = new RegExp(
-      "http%3A%2F%2F" + hostPattern + "%2F(?!" + encodedAppPathPattern + "(?:%2F|$))",
+      "http%3A%2F%2F" + hostPattern + "%2F(?!" + encodedAppPathPattern + "(?:%2F|$|" + urlEnd + "))",
       "gi",
     );
     return text

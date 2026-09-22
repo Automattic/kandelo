@@ -397,7 +397,7 @@ test("mints a validly-formatted machine name and app prefix", async ({ page }) =
   await registerScope(page, "/a/");
   const first = await installBridge(page, SESSION_A, "first");
   expect(first.name).toMatch(/^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}$/);
-  expect(first.appPrefix).toBe(`/a/app/${first.name}/`);
+  expect(first.appPrefix).toBe(`/a/computer/${first.name}/`);
   expect(first.body).toBe("bridge:first");
 });
 
@@ -418,7 +418,7 @@ test("root-relative subresources are attributed to the viewing machine", async (
   await page.goto(`${FIXTURE_ORIGIN}/a/`);
   await registerScope(page, "/a/");
   // The host tab keeps the machine's bridge alive for the whole test. A
-  // separate viewer tab navigates to /app/<name>/ so the SW records its
+  // separate viewer tab navigates to /computer/<name>/ so the SW records its
   // clientId -> name mapping; navigating the host itself would destroy the very
   // bridge port the machine is served over (see task report), so the viewer is
   // a distinct page — matching the real cross-tab design.
@@ -439,15 +439,15 @@ test("root-relative subresources are attributed to the viewing machine", async (
 test("a host-page request to a machine does not make the host a viewer", async ({ page }) => {
   // Regression: the web-readiness probe and the boot's kernel.wasm / VFS fetches
   // run on the HOST client (at "/"), not inside the app iframe. installBridge
-  // itself makes a host request to /a/app/<name>/cookie. If a host request to an
+  // itself makes a host request to /a/computer/<name>/cookie. If a host request to an
   // app path registered the host as a viewer, its later NAMELESS fetches would
   // be 307-redirected into that machine's app prefix — and after an in-place
   // machine switch, into the PREVIOUS machine's now-dead prefix, deadlocking
   // every host fetch (boot hangs forever). The host must never become a viewer:
-  // only navigations INTO /app/<name>/ and subresources with an app referer do.
+  // only navigations INTO /computer/<name>/ and subresources with an app referer do.
   await page.goto(`${FIXTURE_ORIGIN}/a/`);
   await registerScope(page, "/a/");
-  await installBridge(page, SESSION_A, "solo"); // host fetches /a/app/<name>/cookie
+  await installBridge(page, SESSION_A, "solo"); // host fetches /a/computer/<name>/cookie
   const body = await page.evaluate(async () =>
     (await fetch("/a/not-an-app-path", { cache: "no-store" })).text()
   );
@@ -456,29 +456,85 @@ test("a host-page request to a machine does not make the host a viewer", async (
   expect(body).not.toContain("bridge:");
 });
 
+test("a bare machine-prefix link in app HTML is not doubled", async ({ page }) => {
+  // Regression: WordPress emits its home link as the bare prefix
+  // http://host/a/computer/<name> (no trailing slash). The SW URL-rewriter must
+  // treat that as already-prefixed and leave it alone; recognizing only "/" or
+  // end-of-text as the boundary re-prefixed it into
+  // /a/computer/<name>/computer/<name>. A root-relative absolute link that is
+  // NOT yet under the prefix must still be rewritten into the machine.
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const out = await page.evaluate(async () => {
+    const controller = navigator.serviceWorker.controller!;
+    const host = location.host;
+    const keepAlive = window as any;
+    keepAlive.__bridgePorts ??= [];
+    let name = "";
+    const bridge = new MessageChannel();
+    bridge.port1.onmessage = (event: any) => {
+      if (event.data?.type !== "http-request") return;
+      const html =
+        `<!doctype html>` +
+        `<a id="home" href="http://${host}/a/computer/${name}">home</a>` +
+        `<a id="root" href="http://${host}/wp-content/x.css">asset</a>` +
+        `<a id="ok" href="http://${host}/a/computer/${name}/already.css">ok</a>`;
+      bridge.port1.postMessage({
+        type: "http-response",
+        requestId: event.data.requestId,
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        body: new TextEncoder().encode(html),
+      });
+    };
+    bridge.port1.start();
+    const reply = new MessageChannel();
+    const replyData = await new Promise<any>((resolve) => {
+      reply.port1.onmessage = (e: any) => resolve(e.data);
+      reply.port1.start();
+      keepAlive.__bridgePorts.push(bridge.port1, reply.port1);
+      controller.postMessage(
+        { type: "init-bridge", sessionId: "33333333-3333-4333-8333-333333333333" },
+        [bridge.port2, reply.port2],
+      );
+    });
+    name = replyData.name;
+    const res = await fetch(replyData.appPrefix, { cache: "no-store" });
+    return { name: replyData.name, body: await res.text() };
+  });
+  const origin = `http://127.0.0.1:${FIXTURE_PORT}`;
+  // The bare home link stays a single prefix — never doubled.
+  expect(out.body).toContain(`href="${origin}/a/computer/${out.name}"`);
+  expect(out.body).not.toContain(`/a/computer/${out.name}/computer/${out.name}`);
+  // An already-correct deeper link is untouched.
+  expect(out.body).toContain(`href="${origin}/a/computer/${out.name}/already.css"`);
+  // A root-relative absolute link is re-prefixed into this machine.
+  expect(out.body).toContain(`href="${origin}/a/computer/${out.name}/wp-content/x.css"`);
+});
+
 test("an unknown machine name returns a 503 HTML page", async ({ page }) => {
   await page.goto(`${FIXTURE_ORIGIN}/a/`);
   await registerScope(page, "/a/");
-  const res = await fetchResponse(page, "/a/app/happy-teal-otter/");
+  const res = await fetchResponse(page, "/a/computer/happy-teal-otter/");
   expect(res.status).toBe(503);
   // An HTML document, not the plain-text stub.
   expect(res.body).toContain("<!doctype html");
   expect(res.body).toContain("happy-teal-otter");
 });
 
-test("a bare /app/ request returns 503, never the app shell", async ({ page }) => {
-  // Regression: the web-preview iframe once loaded the bare /app/ (a stale
+test("a bare /computer/ request returns 503, never the app shell", async ({ page }) => {
+  // Regression: the web-preview iframe once loaded the bare /computer/ (a stale
   // prefix), and the SW served the Kandelo shell for it, mounting the whole
   // app inside its own preview iframe and recursing (stacked docks). An
-  // /app/-namespaced request that resolves to no machine must be a 503, not a
+  // /computer/-namespaced request that resolves to no machine must be a 503, not a
   // 200 passthrough that could be the shell.
   await page.goto(`${FIXTURE_ORIGIN}/a/`);
   await registerScope(page, "/a/");
-  const bare = await fetchResponse(page, "/a/app/");
+  const bare = await fetchResponse(page, "/a/computer/");
   expect(bare.status).toBe(503);
   expect(bare.body).toContain("<!doctype html");
   // An invalid (non-three-word) name is likewise never served the shell.
-  const invalid = await fetchResponse(page, "/a/app/not-a-valid-name-segment");
+  const invalid = await fetchResponse(page, "/a/computer/not-a-valid-name-segment");
   expect(invalid.status).toBe(503);
 });
 
@@ -722,7 +778,7 @@ test("a restarted SW rejects a bridge-restored whose authority does not match", 
   // not merely by name, so both must be rejected and the machine stays offline.
   await installNamedRestoreResponder(page, [
     { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A_NEXT, label: "wrong-session" },
-    { name: m.name, appPrefix: "/a/app/some-other-name/", sessionId: SESSION_A, label: "wrong-prefix" },
+    { name: m.name, appPrefix: "/a/computer/some-other-name/", sessionId: SESSION_A, label: "wrong-prefix" },
   ]);
   await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
 
@@ -758,34 +814,34 @@ test("restart quarantines malformed or foreign durable authority entries", async
   await seedBridgeAuthority(page, CACHE_A, foreignName, JSON.stringify({
     version: 1,
     revision: 1,
-    appPrefix: "/a/app/some-other-name/",
+    appPrefix: "/a/computer/some-other-name/",
     sessionId: SESSION_A,
     cookies: [],
   }));
   await seedBridgeAuthority(page, CACHE_A, goodName, JSON.stringify({
     version: 1,
     revision: 4,
-    appPrefix: `/a/app/${goodName}/`,
+    appPrefix: `/a/computer/${goodName}/`,
     sessionId: SESSION_A,
-    cookies: [{ name: "seeded", value: "1", path: `/a/app/${goodName}/` }],
+    cookies: [{ name: "seeded", value: "1", path: `/a/computer/${goodName}/` }],
   }));
 
   await installNamedRestoreResponder(page, [
-    { name: goodName, appPrefix: `/a/app/${goodName}/`, sessionId: SESSION_A, label: "good" },
-    { name: foreignName, appPrefix: "/a/app/some-other-name/", sessionId: SESSION_A, label: "foreign" },
+    { name: goodName, appPrefix: `/a/computer/${goodName}/`, sessionId: SESSION_A, label: "good" },
+    { name: foreignName, appPrefix: "/a/computer/some-other-name/", sessionId: SESSION_A, label: "foreign" },
   ]);
   await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
 
   // The malformed and the name/prefix-mismatched entries never become records:
   // their machines report unavailable and never trigger a need-bridge handshake.
-  expect((await fetchResponse(page, `/a/app/${foreignName}/probe`)).status)
+  expect((await fetchResponse(page, `/a/computer/${foreignName}/probe`)).status)
     .toBe(503);
-  expect((await fetchResponse(page, `/a/app/${malformedName}/probe`)).status)
+  expect((await fetchResponse(page, `/a/computer/${malformedName}/probe`)).status)
     .toBe(503);
   expect(await needBridgeCount(page)).toBe(0);
 
   // The well-formed entry restores and replays its seeded jar.
-  expect(await fetchReplayedCookie(page, `/a/app/${goodName}/probe`))
+  expect(await fetchReplayedCookie(page, `/a/computer/${goodName}/probe`))
     .toContain("seeded=1");
 });
 
@@ -803,9 +859,9 @@ test("restart rejects every over-limit or malformed persisted authority field", 
   const validAuthority = (name: string) => ({
     version: BRIDGE_AUTHORITY_VERSION,
     revision: 1,
-    appPrefix: `/a/app/${name}/`,
+    appPrefix: `/a/computer/${name}/`,
     sessionId: SESSION_A,
-    cookies: [{ name: "ok", value: "1", path: `/a/app/${name}/` }],
+    cookies: [{ name: "ok", value: "1", path: `/a/computer/${name}/` }],
   });
 
   const cases: Array<{ name: string; text: string }> = [];
@@ -869,7 +925,7 @@ test("restart rejects every over-limit or malformed persisted authority field", 
 
   for (const invalid of cases) {
     expect.soft(
-      (await fetchResponse(page, `/a/app/${invalid.name}/probe`)).status,
+      (await fetchResponse(page, `/a/computer/${invalid.name}/probe`)).status,
       invalid.name,
     ).toBe(503);
   }
