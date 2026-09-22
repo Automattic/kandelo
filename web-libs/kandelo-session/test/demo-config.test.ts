@@ -3,6 +3,7 @@ import {
   MAX_REQUESTED_MEMORY_PAGES,
   MAX_REQUESTED_WORKERS,
   validateKandeloDemoConfig,
+  resolveDemoWeb,
   type KandeloDemoConfig,
 } from "../src/demo-config";
 
@@ -66,5 +67,69 @@ describe("runtime block", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       runtime: { network: "yes" },
     }))).toThrow(/profiles\.m\.runtime\.network must be a boolean/);
+  });
+});
+
+describe("init and web blocks", () => {
+  it("accepts a service machine", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { target: "nginx" },
+      web: { requiredPorts: [8080], probeHttp: true, probePath: "/wp-admin/" },
+    }))).not.toThrow();
+  });
+
+  it("rejects an empty init target", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { target: "" },
+    }))).toThrow(/profiles\.m\.init\.target must be a non-empty string/);
+  });
+
+  it("rejects an init target that is not a bare service name", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { target: "../../sbin/sh" },
+    }))).toThrow(/profiles\.m\.init\.target must be a bare service name/);
+  });
+
+  // Review Focus 5: two things claiming to be what the machine runs.
+  it("rejects a profile declaring both init and autoCommand", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { target: "nginx" },
+      presentation: {
+        bootPrimary: "syslog",
+        runningPrimary: ["web"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+        autoCommand: "/usr/local/bin/fbdoom",
+      },
+    }))).toThrow(
+      /profiles\.m cannot declare both init\.target and presentation\.autoCommand/,
+    );
+  });
+
+  it("rejects an out-of-range port", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      web: { requiredPorts: [70000] },
+    }))).toThrow(/profiles\.m\.web\.requiredPorts\[0\] must be a TCP port/);
+  });
+
+  it("rejects an empty requiredPorts list", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      web: { requiredPorts: [] },
+    }))).toThrow(/profiles\.m\.web\.requiredPorts must be a non-empty array/);
+  });
+
+  it("rejects a relative probePath", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      web: { requiredPorts: [8080], probePath: "wp-admin" },
+    }))).toThrow(/profiles\.m\.web\.probePath must be absolute/);
+  });
+
+  it("defaults probeHttp to true", () => {
+    const config = withProfile({ web: { requiredPorts: [8080] } });
+    validateKandeloDemoConfig(config);
+    expect(resolveDemoWeb(config, "m")).toEqual({
+      requiredPorts: [8080],
+      probeHttp: true,
+    });
   });
 });

@@ -115,6 +115,28 @@ export const MAX_REQUESTED_MEMORY_PAGES = 16384;
 /** Comfortably above wordpress-mariadb's 24 without permitting worker floods. */
 export const MAX_REQUESTED_WORKERS = 64;
 
+/**
+ * Which init target to bring up. A NAME, not a command vector: the machine's
+ * real init configuration already lives in the image (dinit service files
+ * under /etc/dinit.d, the login session), and this only selects among them.
+ * A profile with no `init` block boots the image's default login session.
+ */
+export interface DemoInitConfig {
+  target: string;
+}
+
+/**
+ * Readiness signalling for the host's web pane. This is presentation, not
+ * init configuration: it tells the UI when to flip from "starting" to
+ * "ready". Ports are declared rather than derived because deriving them
+ * would mean parsing nginx.conf.
+ */
+export interface DemoWebConfig {
+  requiredPorts: number[];
+  probeHttp: boolean;
+  probePath?: string;
+}
+
 export interface DemoGuideConfig {
   title: string;
   summary?: string;
@@ -129,6 +151,8 @@ export interface KandeloDemoProfileConfig {
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
   runtime?: DemoRuntimeConfig;
+  init?: DemoInitConfig;
+  web?: DemoWebConfig;
 }
 
 export interface KandeloDemoConfig {
@@ -138,6 +162,8 @@ export interface KandeloDemoConfig {
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
   runtime?: DemoRuntimeConfig;
+  init?: DemoInitConfig;
+  web?: DemoWebConfig;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
 
@@ -370,6 +396,77 @@ function boundedCount(
   return value;
 }
 
+/** dinit service names, matching /etc/dinit.d/<name> filenames. */
+const INIT_TARGET_RE = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
+
+function normalizeInit(value: unknown, field: string): DemoInitConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  const target = value.target;
+  if (typeof target !== "string" || target.length === 0) {
+    throw new Error(`${field}.target must be a non-empty string`);
+  }
+  if (!INIT_TARGET_RE.test(target)) {
+    throw new Error(
+      `${field}.target must be a bare service name matching /etc/dinit.d/<name>`,
+    );
+  }
+  return { target };
+}
+
+function normalizeWeb(value: unknown, field: string): DemoWebConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  if (!Array.isArray(value.requiredPorts) || value.requiredPorts.length === 0) {
+    throw new Error(`${field}.requiredPorts must be a non-empty array`);
+  }
+  const requiredPorts = value.requiredPorts.map((port, index) => {
+    if (
+      typeof port !== "number"
+      || !Number.isInteger(port)
+      || port < 1
+      || port > 65535
+    ) {
+      throw new Error(`${field}.requiredPorts[${index}] must be a TCP port`);
+    }
+    return port;
+  });
+  if (new Set(requiredPorts).size !== requiredPorts.length) {
+    throw new Error(`${field}.requiredPorts must not contain duplicate ports`);
+  }
+
+  let probeHttp = true;
+  if (value.probeHttp !== undefined) {
+    if (typeof value.probeHttp !== "boolean") {
+      throw new Error(`${field}.probeHttp must be a boolean`);
+    }
+    probeHttp = value.probeHttp;
+  }
+
+  const web: DemoWebConfig = { requiredPorts, probeHttp };
+  if (value.probePath !== undefined) {
+    const probePath = requiredString(value.probePath, `${field}.probePath`);
+    if (!probePath.startsWith("/")) {
+      throw new Error(`${field}.probePath must be absolute`);
+    }
+    web.probePath = probePath;
+  }
+  return web;
+}
+
+export function resolveDemoWeb(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoWebConfig | null {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.web !== undefined) {
+    return normalizeWeb(profile.web, `profiles.${profileId}.web`);
+  }
+  return config.web === undefined ? null : normalizeWeb(config.web, "web");
+}
+
 function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);
@@ -453,6 +550,19 @@ function validateProfileFields(
   }
   if (value.runtime !== undefined) {
     normalizeRuntime(value.runtime, `${field}.runtime`);
+  }
+  if (value.init !== undefined) {
+    normalizeInit(value.init, `${field}.init`);
+    const presentation = value.presentation;
+    if (isRecord(presentation) && presentation.autoCommand !== undefined) {
+      throw new Error(
+        `${field} cannot declare both init.target and presentation.autoCommand`
+          + " — only one thing can be what the machine runs",
+      );
+    }
+  }
+  if (value.web !== undefined) {
+    normalizeWeb(value.web, `${field}.web`);
   }
   normalizeAssets(value.assets, `${field}.assets`);
   if (value.guide !== undefined) {
