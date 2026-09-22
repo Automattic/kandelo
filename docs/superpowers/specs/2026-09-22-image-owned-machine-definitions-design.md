@@ -430,6 +430,9 @@ consent step already required by
 - `ShareDialog`'s emission of the authoring machine's boot block
 - the `?demo=` parameter, `SDL2_FB_W`/`SDL2_FB_H`, and the stale comment
   claiming they match `kms-registry.ts`
+
+The image-URL fragment channel is explicitly **not** deleted; see "Two
+profile channels, both kept".
 - `customVfsProfile`, which ceases to exist as a distinct path
 
 ## Phasing
@@ -519,13 +522,49 @@ still resolves its image and boots the image's declared default profile
 instead of the linked one. For single-profile images that is the same
 machine. For the shell image a `?demo=doom` link lands on `shell`.
 
-There is a second, pre-existing profile channel to decide on: `?vfs=`
-values carry the profile in the *image URL's own fragment*
-(`vfsImageUrlForPreset` sets `url.hash = liveId`, and
-`liveDemoIdForVfsImageUrl` reads it back). This design replaces it with
-an explicit `&profile=`; the fragment channel goes away with the rest of
-the id plumbing, since smuggling a profile inside an image URL is the
-same "special naming" in a less visible place.
+### Two profile channels, both kept
+
+The image URL's own fragment carries a profile:
+`vfsImageUrlForPreset` sets `url.hash = liveId`, and
+`liveDemoIdForVfsImageUrl` reads it back. **This stays**, with
+`&profile=` as an explicit override.
+
+That precedence is already what the code does —
+`normalizeDemoId(demo) ?? fragmentDemo` (`live-setup.ts:2595`), query
+param first, fragment as fallback — so this is documenting and keeping
+existing behavior, not adding a channel.
+
+It is also the right shape rather than a workaround:
+
+- A fragment is a client-side view selector on a resource, not part of
+  its identity. "Which profile of this image" is precisely that. The
+  code already says so: *"Fragments describe launch behavior, not file
+  identity, so they are ignored here"* (`url-state.ts:131`), and
+  `matchTrustedVfsSourceId` strips it via `withoutUrlHash` before
+  comparing.
+- It makes an image URL **self-describing on its own**, which serves the
+  third-party parity goal directly. A stranger can publish
+  `https://cdn/mine.vfs.zst#editor` and that single URL names a machine,
+  instead of having to say "paste this, and also add `&profile=editor`".
+- URL identity is already fragment-safe on both paths
+  (`url-state.ts:150`, `:208`), fragments never reach the network, and
+  Cache API matching excludes them.
+
+An earlier draft of this spec proposed retiring the fragment channel as
+"special naming in a less visible place." That was wrong. The problem
+this work removes is the *app holding a hardcoded id table*, not the
+channel an id travels on. Once profile ids come from the image, a
+fragment-borne id is no more special than a query-borne one.
+
+One rough edge to handle rather than inherit: a hand-written
+`?vfs=https://cdn/shell.vfs.zst#doom` with the `#` left unencoded parses
+as `vfs=…shell.vfs.zst` plus a *page* fragment `#doom`. That is not
+dangerous — `decodeBootDescriptor` returns `null` for anything that is
+not `k1=` (`boot-descriptor.ts:720`) — but the profile is silently
+dropped and the machine boots its default. When the two channels are
+both present and disagree, or when a page fragment is present but is
+not a `k1=` envelope, the host logs it rather than resolving in
+silence.
 
 ## Open questions
 
