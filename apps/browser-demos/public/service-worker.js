@@ -1733,6 +1733,22 @@ if (typeof window !== "undefined") {
       }
     }
 
+    // Defense in depth: any /app/-namespaced request that reached here resolved
+    // to no live machine — a bare /app/, an invalid name, or a stale prefix
+    // from a superseded boot. The app shell never lives under /app/, so never
+    // serve it here: doing so mounts the whole Kandelo app inside a machine's
+    // web-preview iframe, which boots another machine and another /app/ iframe,
+    // recursing the app into itself (stacked docks). Return the truthful 503.
+    var appNamespaceBase = SCOPE_PATH + "app";
+    if (
+      url.pathname === appNamespaceBase ||
+      url.pathname === appNamespaceBase + "/" ||
+      url.pathname.indexOf(appNamespaceBase + "/") === 0
+    ) {
+      event.respondWith(offlineOrUnknownResponse(namedInPath || ""));
+      return;
+    }
+
     // Same-origin requests — pass through but add COI headers
     event.respondWith(fetchWithCoiHeaders(event.request));
   });

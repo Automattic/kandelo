@@ -446,6 +446,22 @@ test("an unknown machine name returns a 503 HTML page", async ({ page }) => {
   expect(res.body).toContain("happy-teal-otter");
 });
 
+test("a bare /app/ request returns 503, never the app shell", async ({ page }) => {
+  // Regression: the web-preview iframe once loaded the bare /app/ (a stale
+  // prefix), and the SW served the Kandelo shell for it, mounting the whole
+  // app inside its own preview iframe and recursing (stacked docks). An
+  // /app/-namespaced request that resolves to no machine must be a 503, not a
+  // 200 passthrough that could be the shell.
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const bare = await fetchResponse(page, "/a/app/");
+  expect(bare.status).toBe(503);
+  expect(bare.body).toContain("<!doctype html");
+  // An invalid (non-three-word) name is likewise never served the shell.
+  const invalid = await fetchResponse(page, "/a/app/not-a-valid-name-segment");
+  expect(invalid.status).toBe(503);
+});
+
 test("closing the host tab pushes machine-offline to viewers", async ({
   context,
 }) => {
