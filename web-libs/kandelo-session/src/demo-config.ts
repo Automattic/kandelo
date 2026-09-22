@@ -77,6 +77,44 @@ export interface DemoIngestConfig {
   onLoad?: DemoIngestOnLoadConfig;
 }
 
+/**
+ * Declared runtime shape of a machine.
+ *
+ * `network` is DESCRIPTIVE ONLY. Nothing gates a socket syscall on it today:
+ * across the repo `tcp-bridge` appears at its producer, a capability-badge
+ * display list, and a type comment, and `caps.network` has no readers. It is
+ * carried so the Config surface can show what a machine claims, and must not
+ * be presented to users as a sandbox control until it actually gates the
+ * guest socket path. See the spec's "Known-inert capability flag".
+ */
+export interface DemoRuntimeConfig {
+  features: DemoRuntimeFeature[];
+  network: boolean;
+  requests: DemoResourceRequests;
+}
+
+export type DemoRuntimeFeature =
+  | "framebuffer"
+  | "kms"
+  | "evdev-input"
+  | "js-workers";
+
+/**
+ * What the image ASKS for. The host clamps each of these to its own policy
+ * before use; these ceilings only reject values no legitimate image would
+ * declare, so a hostile `?vfs=` image cannot request unbounded allocation.
+ */
+export interface DemoResourceRequests {
+  memoryPages?: number;
+  maxWorkers?: number;
+}
+
+/** 16384 pages = 1 GiB, matching the largest legitimate machine today
+ *  (wordpress-mariadb). */
+export const MAX_REQUESTED_MEMORY_PAGES = 16384;
+/** Comfortably above wordpress-mariadb's 24 without permitting worker floods. */
+export const MAX_REQUESTED_WORKERS = 64;
+
 export interface DemoGuideConfig {
   title: string;
   summary?: string;
@@ -90,6 +128,7 @@ export interface KandeloDemoProfileConfig {
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
+  runtime?: DemoRuntimeConfig;
 }
 
 export interface KandeloDemoConfig {
@@ -98,6 +137,7 @@ export interface KandeloDemoConfig {
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
+  runtime?: DemoRuntimeConfig;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
 
@@ -238,6 +278,98 @@ export function resolveDemoIngest(
  *  to buffer an unbounded upload into the VFS. */
 const INGEST_MAX_BYTES_CEILING = 64 * 1024 * 1024;
 
+const RUNTIME_FEATURES = new Set<DemoRuntimeFeature>([
+  "framebuffer",
+  "kms",
+  "evdev-input",
+  "js-workers",
+]);
+
+function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+
+  const features: DemoRuntimeFeature[] = [];
+  if (value.features !== undefined) {
+    if (!Array.isArray(value.features)) {
+      throw new Error(`${field}.features must be an array`);
+    }
+    value.features.forEach((entry, index) => {
+      if (
+        typeof entry !== "string"
+        || !RUNTIME_FEATURES.has(entry as DemoRuntimeFeature)
+      ) {
+        throw new Error(
+          `${field}.features[${index}] must be one of: `
+            + `${Array.from(RUNTIME_FEATURES).join(", ")}`,
+        );
+      }
+      if (features.includes(entry as DemoRuntimeFeature)) {
+        throw new Error(`${field}.features must not contain duplicate features`);
+      }
+      features.push(entry as DemoRuntimeFeature);
+    });
+  }
+
+  let network = false;
+  if (value.network !== undefined) {
+    if (typeof value.network !== "boolean") {
+      throw new Error(`${field}.network must be a boolean`);
+    }
+    network = value.network;
+  }
+
+  return {
+    features,
+    network,
+    requests: normalizeResourceRequests(value.requests, `${field}.requests`),
+  };
+}
+
+function normalizeResourceRequests(
+  value: unknown,
+  field: string,
+): DemoResourceRequests {
+  if (value === undefined) return {};
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  const requests: DemoResourceRequests = {};
+  if (value.memoryPages !== undefined) {
+    requests.memoryPages = boundedCount(
+      value.memoryPages,
+      `${field}.memoryPages`,
+      MAX_REQUESTED_MEMORY_PAGES,
+      "page",
+    );
+  }
+  if (value.maxWorkers !== undefined) {
+    requests.maxWorkers = boundedCount(
+      value.maxWorkers,
+      `${field}.maxWorkers`,
+      MAX_REQUESTED_WORKERS,
+      "worker",
+    );
+  }
+  return requests;
+}
+
+function boundedCount(
+  value: unknown,
+  field: string,
+  ceiling: number,
+  unit: string,
+): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  if (value > ceiling) {
+    throw new Error(`${field} exceeds the ${ceiling}-${unit} ceiling`);
+  }
+  return value;
+}
+
 function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);
@@ -318,6 +450,9 @@ function validateProfileFields(
 ): void {
   if (value.presentation !== undefined) {
     normalizePresentationConfig(value.presentation);
+  }
+  if (value.runtime !== undefined) {
+    normalizeRuntime(value.runtime, `${field}.runtime`);
   }
   normalizeAssets(value.assets, `${field}.assets`);
   if (value.guide !== undefined) {
