@@ -5,6 +5,7 @@ import {
   FORK_MODULE_REQUIRED_EXPORTS,
   instantiateForkModule,
 } from "../src/fork-module-instance";
+import { arenaFixture } from "./fork-module-capture-fixture";
 
 const PAGE = 65536;
 
@@ -85,47 +86,75 @@ describe("instantiateForkModule", () => {
     // php (19026), and node/spidermonkey (16555) all previously EXCEEDED the old
     // 16384 cap and silently fell to the JS continuation twin. A catalog past
     // the raised cap fails loud (`E2BIG`), never silently drops to JS.
+    //
+    // WHY THIS RUNS ON `arenaFixture` AND NOT ON THE BARE INSTANCE ABOVE.
+    // Seeding a catalog REGISTERS it, and registration now allocates the
+    // activation's `(ordinal, slot)` record in the arena — which maps its
+    // chunks with `channel_mmap`. A module whose `fm_set_format` was given no
+    // channel base answers `EINVAL` from `channel_base()` instead, which is the
+    // truthful answer for a module that genuinely cannot own storage. So the
+    // fixture that carries a channel responder is the one that can drive this
+    // path at all; the bare-instance rig above still covers everything that
+    // does not allocate.
+    //
+    // That is a real behaviour change and it reached a real host:
+    // `crates/host-native` passed 0 as `fm_set_format`'s channel-base argument,
+    // so it could not have registered here either. It passes its channel offset
+    // now, like the Node and browser hosts always have.
+    const x = arenaFixture("resume catalog cap");
+    const CAP = 65_536;
+    const E2BIG = 7;
+    // A catalog exceeding the OLD 16384 cap now registers cleanly.
+    x.seedProcessCatalog(Array.from({ length: 20_000 }, (_, i) => i));
+    expect(x.errno(), "20,000 ordinals: past the old cap, inside the new one").toBe(0);
+    // Exactly at the raised cap: still accepted. This is also the largest
+    // assignment the arena is asked for anywhere -- 65,536 records, 512 KiB in
+    // one chunk sized to the request.
+    x.seedProcessCatalog(Array.from({ length: CAP }, (_, i) => i));
+    expect(x.errno(), "exactly at the raised cap").toBe(0);
+    // One past the raised cap: a truthful E2BIG (fail-loud module-capacity
+    // boundary), not a silent JS fallback.
+    x.seedProcessCatalog(Array.from({ length: CAP + 1 }, (_, i) => i));
+    expect(x.errno(), "one past the raised cap").toBe(E2BIG);
+  });
+
+  it("refuses to register a resume catalog when it has no channel to store it in", () => {
+    // THE OTHER HALF OF THE TEST ABOVE, and the reason it had to move. A module
+    // with no syscall channel cannot map a chunk, so it cannot record an
+    // activation's slot assignment -- and the honest answer is the errno, not a
+    // registration that quietly stores nothing and hands the guest slot numbers
+    // no one can free.
+    //
+    // `EINVAL` is `channel_base()`'s refusal for an unseeded `CHANNEL_BASE`,
+    // reached through `arena_map_chunk`. Asserted here so that the day someone
+    // gives the arena a channel-less fallback, this goes red rather than the
+    // fallback going unnoticed.
     const module = loadForkModule32();
     const memory = sharedMemory(256); // 16 MiB
-    const reserveBase = 8 * 1024 * 1024;
     const fm = instantiateForkModule({
       module,
       memory,
       ptrWidth: 4,
-      reserve: () => reserveBase,
+      reserve: () => 8 * 1024 * 1024,
       label: "test",
     });
-    const setFormat = fm.exports.fm_set_format as (
-      ptrWidth: number,
-      fixedPrefix: number,
-    ) => void;
-    const setCatalog = fm.exports.fm_set_resume_catalog as (
-      ptr: number,
-      count: number,
-    ) => void;
-    const lastErrno = fm.exports.fm_last_errno as () => number;
-    setFormat(4, 0);
-    // Stage the ordinals well below the host-reserved region at `reserveBase`.
-    const catalogAddr = 1 * 1024 * 1024; // 1 MiB
-    const seed = (count: number): void => {
-      const view = new DataView(memory.buffer);
-      for (let i = 0; i < count; i++) {
-        view.setUint32(catalogAddr + i * 4, i, true);
-      }
-      setCatalog(catalogAddr, count);
-    };
-    const E2BIG = 7;
-    const CAP = 65_536;
-    // A catalog exceeding the OLD 16384 cap now registers cleanly.
-    seed(20_000);
-    expect(lastErrno()).toBe(0);
-    // Exactly at the raised cap: still accepted.
-    seed(CAP);
-    expect(lastErrno()).toBe(0);
-    // One past the raised cap: a truthful E2BIG (fail-loud module-capacity
-    // boundary), not a silent JS fallback.
-    seed(CAP + 1);
-    expect(lastErrno()).toBe(E2BIG);
+    // Four arguments, not five: no channel base, which is what a caller that
+    // has no channel passes.
+    (fm.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0);
+    expect((fm.exports.fm_last_errno as () => number)()).toBe(0);
+
+    const catalogAddr = 1 * 1024 * 1024; // 1 MiB, well below the module region
+    const view = new DataView(memory.buffer);
+    for (let i = 0; i < 4; i++) view.setUint32(catalogAddr + i * 4, i, true);
+    (fm.exports.fm_set_resume_catalog as (p: number, c: number) => void)(
+      catalogAddr,
+      4,
+    );
+    const EINVAL = 22;
+    expect(
+      (fm.exports.fm_last_errno as () => number)(),
+      "a module with no channel cannot register slots, and says so",
+    ).toBe(EINVAL);
   });
 
   it("exposes the module-owned GC transit table without minting a provider", () => {

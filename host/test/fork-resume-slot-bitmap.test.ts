@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { arenaFixture } from "./fork-module-capture-fixture";
+import {
+  RESUME_FREE_CHUNK_COUNT_FIELD,
+  arenaFixture,
+} from "./fork-module-capture-fixture";
 
 /**
  * WHY THIS EXISTS
@@ -37,60 +40,69 @@ import { arenaFixture } from "./fork-module-capture-fixture";
  * is the reader the guest's own placement shim consumes: asserting these
  * numbers is asserting the numbers the thunks are actually placed at.
  *
- * WHY THE BITMAP IS STILL FIXED BSS -- and it is NOT because the free path
- * cannot map. It was converted to chunks mapped on demand and reverted on that
- * reasoning, and the reasoning was refuted by measurement afterwards: the
- * SIGSEGV was the host use-after-free above, and with that fixed the same
+ * THE BITMAP IS NOW CHUNKS MAPPED ON DEMAND, not fixed BSS. It was converted
+ * once and reverted, on a measurement that the free path could never issue a
+ * channel syscall because a vfork child's exit teardown reaches it while the
+ * parent is parked on the shared channel. That was refuted afterwards: the
+ * SIGSEGV was the host use-after-free above, and with it fixed the same
  * conversion, rebuilt to the same build key, frees from a vfork child's
- * teardown and the guest exits 0. See the note on `RESUME_FREE_WORDS` in the
- * module. The bitmap is fixed BSS here only because nothing has converted it
- * yet.
+ * teardown and the guest exits 0. See the note on `FREE_BITS_HEAD` in the
+ * module.
+ *
+ * So the chunk lifecycle is asserted here BESIDE the slot numbers: a chain
+ * that maps a chunk and never returns it is a leak the numbers cannot see, and
+ * a chunk count alone is blind to a wrong slot NUMBER, which is how an earlier
+ * version of these tests stayed green while the module handed out slots around
+ * 1,000,001.
  */
 
 /** The activations this file drives the bitmap with. */
 const ACTIVATION_A = 21;
 const ACTIVATION_B = 22;
 
-/**
- * Stand in for the guest that normally fills the resume table.
- *
- * `fm_resume_slots` op 1 is the `dlclose` release, and its first pass nulls
- * every one of the activation's table entries with a STRICT `table.set` --
- * strict because a `dlclose` of a registered activation means the thunks were
- * placed, so a slot the table does not have is a real inconsistency and traps
- * rather than being skipped. The module's `__wpk_fork_resume_table` starts at
- * length 1 (slot 0 is the reserved sentinel) and is grown by the guest's
- * `__wpk_fork_place_resume_thunks` shim, which a bare module fixture has none
- * of: the release traps with "table index is out of bounds" before it reaches
- * the bitmap at all.
- *
- * So the table is grown here, to the length the guest would have given it.
- * That is standing in for the guest, not scoping the test down -- the free
- * path under test is reached through the real entry, in its real strict mode,
- * exactly as a `dlclose` reaches it.
- */
-function growResumeTable(x: { x: Record<string, unknown> }, slots: number): void {
-  const table = x.x.__wpk_fork_resume_table as WebAssembly.Table | undefined;
-  expect(table, "the injected module no longer exports its resume table").toBeDefined();
-  table!.grow(slots);
-  expect(table!.length, "the resume table covers the slots about to be nulled")
-    .toBeGreaterThan(slots);
-}
-
 describe("resume free-slot bitmap", () => {
   it("hands a freed slot back to the next activation, smallest first", () => {
     const x = arenaFixture("resume free bitmap");
-    growResumeTable(x, 8);
+    x.growResumeTable(8);
 
     // Three ordinals take slots 1, 2, 3 from RESUME_NEXT_SLOT.
     x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
     expect(x.errno(), "seeding activation A").toBe(0);
     expect(x.publishedSlots(ACTIVATION_A), "a fresh activation numbers from 1")
       .toEqual([1, 2, 3]);
+    // ASCENDING BY ORDINAL, asserted rather than assumed. The store this
+    // replaced compacted by SWAP-REMOVE, so an activation's entries came back
+    // in an order that depended on the worker's `dlclose` history; a
+    // per-activation record is written once in sorted order and has no
+    // ordering to disturb. The published order is what the guest's placement
+    // shim applies, and it has never been asserted anywhere.
+    expect(
+      x.publishedPairs(ACTIVATION_A),
+      "the records are ascending by ordinal",
+    ).toEqual([
+      [10, 1],
+      [20, 2],
+      [30, 3],
+    ]);
 
+    // MEASURED AROUND THE FREE ALONE, and the scoping is deliberate: the
+    // mmap/munmap tallies are the RESPONDER's, so the record arena shares them.
+    // A release MAPS nothing -- `arena_unlink_record`, the chunk sweep and
+    // `arena_release_activation` only unmap -- so every mmap between these two
+    // reads is the bitmap's, and the number is exact rather than a floor.
     const mmapsBefore = x.mmaps();
 
     expect(x.slots(1, ACTIVATION_A, 0), "three slots freed").toBe(3);
+    expect(
+      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
+      "the free mapped a chunk to record itself in",
+    ).toBe(1);
+    expect(x.mmaps() - mmapsBefore, "exactly one, and only for the bitmap").toBe(1);
+
+    // And around the REUSE alone, for the same reason in the other direction:
+    // a registration allocates (two arena chunks here) but unmaps nothing, so
+    // every munmap between these two reads is the bitmap's.
+    const munmapsBefore = x.munmaps();
 
     // THE ASSERTION THAT DISTINGUISHES A WORKING FREE LIST from a bitmap that
     // merely exists: seeding three more ordinals must consume the three freed
@@ -103,16 +115,23 @@ describe("resume free-slot bitmap", () => {
       "the reused slots are the freed ones, smallest first",
     ).toEqual([1, 2, 3]);
 
-    // AND IT COSTS NO MAPPING TODAY. This is a statement about the CURRENT
-    // fixed bitmap, not a warning about a forbidden syscall: the free path
-    // issuing a channel syscall from a vfork child's teardown was measured
-    // harmless once the host use-after-free was fixed. Whoever converts this
-    // store to on-demand storage will break this assertion, and should delete
-    // it rather than design around it.
+    // AND THE CHUNK IT TOOK WENT BACK. The reuse emptied the chunk the free
+    // mapped, and an emptied chunk is unlinked and unmapped rather than held
+    // for the next free -- otherwise the steady state of a process that frees
+    // once and never again is one permanently mapped 64 KiB chunk, which is the
+    // fixed reservation this conversion removes.
+    //
+    // BOTH HALVES. The chunk COUNT is list membership, blind to a chunk that
+    // was unlinked but never unmapped, because `channel_munmap` is best-effort
+    // by design. The munmap tally sees exactly that case and nothing else.
     expect(
-      x.mmaps() - mmapsBefore,
-      "freeing and reusing a slot must issue no syscall",
+      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
+      "the reuse emptied the chunk and handed it back",
     ).toBe(0);
+    expect(
+      x.munmaps() - munmapsBefore,
+      "and unmapped it rather than unlinking it and keeping the mapping",
+    ).toBe(1);
   });
 
   it("gives a COW child distinct slots rather than the parent's stale ones", () => {
@@ -122,12 +141,30 @@ describe("resume free-slot bitmap", () => {
     // and then hand out those same numbers AGAIN as fresh ones. Two ordinals
     // would land on one thunk.
     const x = arenaFixture("resume free bitmap scrub");
-    growResumeTable(x, 8);
+    x.growResumeTable(8);
     x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
     expect(x.errno(), "seeding activation A").toBe(0);
     expect(x.slots(1, ACTIVATION_A, 0), "three slots freed into the bitmap").toBe(3);
 
+    const munmapsBefore = x.munmaps();
+    const held = x.stats(RESUME_FREE_CHUNK_COUNT_FIELD);
+    expect(held, "the free left a chunk for the scrub to return").toBe(1);
+
     x.setFormat();
+
+    // THE CHUNKS GO BACK, and this is the half a cleared root cannot show. The
+    // `.fill(0)` this chain replaced was BSS a COW child could simply
+    // overwrite; a chain of MAPPINGS is inherited through the memory clone, so
+    // clearing the root alone leaks every chunk the parent took -- INVISIBLY,
+    // because the count walks the chain and a cleared root reads as empty.
+    expect(
+      x.stats(RESUME_FREE_CHUNK_COUNT_FIELD),
+      "the scrub emptied the chain",
+    ).toBe(0);
+    expect(
+      x.munmaps() - munmapsBefore,
+      "one unmap per chunk the scrub released",
+    ).toBeGreaterThanOrEqual(held);
 
     x.seedActivationCatalog(ACTIVATION_B, [11, 22, 33, 44, 55]);
     expect(x.errno(), "seeding activation B in the child").toBe(0);
@@ -165,7 +202,7 @@ describe("resume free-slot bitmap", () => {
     const x = arenaFixture("resume free bitmap extent");
     // The release nulls STRICTLY, so the table must cover every slot about to
     // be freed -- slot CAP included, hence a length of CAP + 1.
-    growResumeTable(x, CAP);
+    x.growResumeTable(CAP);
 
     const ordinals = Array.from({ length: CAP }, (_, i) => i);
     x.seedActivationCatalog(ACTIVATION_A, ordinals);

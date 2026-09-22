@@ -630,6 +630,12 @@ export function captureGraph(
 // this one lands first, for exactly that reason.
 export const ARENA_RECORD_CHUNK_COUNT_FIELD = 101;
 export const ARENA_DIRECTORY_CHUNK_COUNT_FIELD = 102;
+/**
+ * The resume free-slot bitmap's chunk-chain length. 103 from the same table,
+ * NOT "the next free index" -- 104 is reserved by a later task of this plan
+ * and 105 is already taken by the directory entry count, which landed first.
+ */
+export const RESUME_FREE_CHUNK_COUNT_FIELD = 103;
 /** Ruling D1-a: LIVE directory entries, one per activation holding a record. */
 export const ARENA_DIRECTORY_ENTRY_COUNT_FIELD = 105;
 
@@ -722,10 +728,44 @@ export interface ArenaFixture {
    * numbers the thunks are actually placed at.
    */
   publishedSlots: (activation: number) => number[];
+  /**
+   * The whole `(ordinal, slot)` record, for the one assertion `publishedSlots`
+   * cannot make: that the pairs come back ASCENDING BY ORDINAL.
+   */
+  publishedPairs: (activation: number) => Array<[number, number]>;
   /** Re-run `fm_set_format`, which is the COW-child scrub. */
   setFormat: () => void;
   /** `fm_set_activation_resume_catalog` with the ordinals staged first. */
   seedActivationCatalog: (activation: number, ordinals: readonly number[]) => void;
+  /**
+   * `fm_set_resume_catalog` -- the PROCESS-WIDE seed, which is activation 0's.
+   *
+   * A different entry from `seedActivationCatalog`, and the difference matters:
+   * activation 0's ordinals reach `resume_register_impl` through
+   * `resume_catalog()` rather than `activation_catalog(0)`, so this is the only
+   * way to drive that arm. `host/src/fork-module-backend.ts` `setup()` calls it
+   * on every worker.
+   */
+  seedProcessCatalog: (ordinals: readonly number[]) => void;
+  /**
+   * Grow the module's resume table to cover `slots`, standing in for the guest.
+   *
+   * `fm_resume_slots` op 1 is the `dlclose` release, and its first pass nulls
+   * every one of the activation's table entries with a STRICT `table.set` --
+   * strict because a `dlclose` of a registered activation means the thunks were
+   * placed, so a slot the table does not have is a real inconsistency and traps
+   * rather than being skipped. The module's `__wpk_fork_resume_table` starts at
+   * length 1 (slot 0 is the reserved sentinel) and is grown by the guest's
+   * `__wpk_fork_place_resume_thunks` shim, which a bare module fixture has none
+   * of: the release traps with "table index is out of bounds" before it reaches
+   * the free bitmap at all.
+   *
+   * So the table is grown here, to the length the guest would have given it.
+   * That is standing in for the guest, not scoping the test down -- the free
+   * path under test is reached through the real entry, in its real strict mode,
+   * exactly as a `dlclose` reaches it.
+   */
+  growResumeTable: (slots: number) => void;
   /** The sticky errno of the most recent export call. */
   errno: () => number;
   /**
@@ -782,6 +822,28 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     munmaps: () => new DataView(memory.buffer).getUint32(MUNMAP_COUNTER, true),
     mmaps: () => new DataView(memory.buffer).getUint32(MMAP_COUNTER, true),
     slots: x.fm_resume_slots as ArenaFixture["slots"],
+    publishedPairs: (activation) => {
+      const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
+        activation,
+      );
+      if (packed === -1n) {
+        throw new Error(
+          `fm_publish_resume_assignment failed for activation ${activation} ` +
+            `with errno ${errno()}`,
+        );
+      }
+      const ptr = Number(packed & 0xffffffffn);
+      const count = Number(packed >> 32n);
+      const view = new DataView(memory.buffer);
+      const out: Array<[number, number]> = [];
+      for (let i = 0; i < count; i += 1) {
+        out.push([
+          view.getUint32(ptr + i * 8, true),
+          view.getUint32(ptr + i * 8 + 4, true),
+        ]);
+      }
+      return out;
+    },
     publishedSlots: (activation) => {
       const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
         activation,
@@ -811,6 +873,23 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       (
         x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void
       )(activation, ARENA_STAGING_AT, ordinals.length);
+    },
+    seedProcessCatalog: (ordinals) => {
+      const staged = new Uint8Array(ordinals.length * 4);
+      const view = new DataView(staged.buffer);
+      ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
+      new Uint8Array(memory.buffer, ARENA_STAGING_AT, staged.length).set(staged);
+      (x.fm_set_resume_catalog as (p: number, c: number) => void)(
+        ARENA_STAGING_AT,
+        ordinals.length,
+      );
+    },
+    growResumeTable: (slots) => {
+      const table = x.__wpk_fork_resume_table as WebAssembly.Table | undefined;
+      if (!table) {
+        throw new Error("the injected module no longer exports its resume table");
+      }
+      if (table.length <= slots) table.grow(slots + 1 - table.length);
     },
     errno,
     selftest: x.fm_arena_selftest as ArenaFixture["selftest"],

@@ -20,33 +20,31 @@ import {
  * serviced channel -- so it is sequenced AFTER `fm_set_format` stores
  * `CHANNEL_BASE`, not before.
  *
- * SKIPPED UNTIL TASK 3. Nothing is on the arena yet, so
- * `ordinalsSpanningTwoChunks` would seed the fixed-BSS catalog and the
- * `toBeGreaterThan(0)` below would fail for a reason that is not a defect.
- * Task 3 Step 6 un-skips it. The scrub itself IS wired in this task --
- * `arena_release_all()` runs today -- so the code this file names exists and
- * only its exercise is deferred.
+ * WHAT IT DRIVES: the resume assignment is on the arena, so seeding an
+ * oversized catalog really does map record and directory chunks, and the scrub
+ * really does have something to hand back.
  */
 
 /** The activation whose records the scrub is asked to return. */
 const ACTIVATION = 5;
 
 /**
- * Enough resume ordinals to need more than one `ARENA_CHUNK_BYTES` chunk.
+ * Enough resume ordinals that the record cannot sit in a default-sized chunk.
  *
  * DERIVED from the module's own constants rather than asserted:
  * `ARENA_CHUNK_BYTES` is 65,536 and `ARENA_CHUNK_HEADER` 32, so a chunk's body
  * is 65,504 bytes; a resume-assignment record costs `RECORD_HEADER` 16 plus
- * four bytes per ordinal. 20,000 ordinals is 80,016 bytes, past one chunk's
- * body and short of two.
+ * EIGHT bytes per ordinal -- an `(ordinal, slot)` pair each, not the four bytes
+ * an earlier draft of this comment said. 20,000 ordinals is 160,016 bytes,
+ * comfortably past one chunk's body, so `arena_map_chunk` sizes a chunk to the
+ * request rather than handing back a default one.
  */
-const ordinalsSpanningTwoChunks = Array.from({ length: 20_000 }, (_, i) => i + 1);
+const ordinalsPastOneChunk = Array.from({ length: 20_000 }, (_, i) => i + 1);
 
 describe("arena COW-child scrub", () => {
-  // UN-SKIP IN TASK 3.
-  it.skip("a second fm_set_format returns every chunk the first one's records held", () => {
+  it("a second fm_set_format returns every chunk the first one's records held", () => {
     const x = arenaFixture("arena cow scrub");
-    x.seedActivationCatalog(ACTIVATION, ordinalsSpanningTwoChunks);
+    x.seedActivationCatalog(ACTIVATION, ordinalsPastOneChunk);
     expect(x.errno(), "seeding the oversized catalog").toBe(0);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD)).toBeGreaterThan(0);
     const before = x.munmaps();

@@ -23,19 +23,13 @@ import {
  * the leak the observable exists for. So the `SYS_MUNMAP` tally is asserted
  * beside it: one unmap per chunk released.
  *
- * SCOPE TODAY: the arena has no store on it yet. It landed with the mechanism,
- * before any conversion, so this file asserts the EMPTY state and the
- * observables' own wiring. Task 4 extends it to a real multi-chunk allocation
- * once KFIG sections are arena-backed. Until then the zeros below ARE the
- * assertion -- specifically that the three fields are wired and return 0
- * rather than the -1 an unclaimed `fm_stats` field answers.
- *
+ * SCOPE: the first test asserts the EMPTY state -- that the three fields are
+ * wired and return 0 rather than the -1 an unclaimed `fm_stats` field answers.
  * A TEST FILE THAT ASSERTS ONLY ZEROS is otherwise indistinguishable from one
- * that has stopped working, which is why that scope is stated here rather than
- * left to be inferred. The second test below drives the counts APART and needs
- * a store on the arena to do it; it is `it.skip` until Task 3 puts the resume
- * assignment on the arena, and Task 3 Step 4 un-skips it alongside
- * `fork-arena-lifetime.test.ts` and `fork-arena-cow-scrub.test.ts`.
+ * that has stopped working, which is why the second test drives the counts
+ * APART: three fields returning 0 proves nothing about which counter answered
+ * which read, because a collision reads as agreement. Task 4 extends this to a
+ * real multi-chunk allocation once KFIG sections are arena-backed.
  *
  * THE FIELD NUMBERS ARE PINNED HERE AND IN THE MODULE. 101, 102 and 105 are
  * chosen from the single table in the plan's Global Constraints, not taken as
@@ -65,16 +59,16 @@ describe("arena chunk release", () => {
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(0);
   });
 
-  // UN-SKIP IN TASK 3, with the resume assignment on the arena. Until then
-  // nothing allocates, so this would assert against an arena that is empty for
-  // a reason unrelated to what it tests.
-  it.skip("answers each arena observable from its OWN counter", () => {
+  it("answers each arena observable from its OWN counter", () => {
     // Three fields returning 0 proves nothing about which counter answered
     // which read -- a collision reads as agreement. So drive the counts APART
     // and require them to differ: one activation with records puts 1 entry in
     // the directory and at least 1 chunk on each chain, and the entry count
     // must track activations while the chunk counts track chunks.
     const x = arenaFixture("arena observables");
+    // The release below nulls the activation's table entries STRICTLY; a bare
+    // module fixture has no guest to have grown the table.
+    x.growResumeTable(8);
     x.seedActivationCatalog(ACTIVATION_A, [1, 2, 3]);
     expect(x.errno(), `seeding activation ${ACTIVATION_A}`).toBe(0);
     x.seedActivationCatalog(ACTIVATION_B, [4, 5, 6]);

@@ -7754,7 +7754,19 @@ fn spawn_guest_thread(
                     // import goes through the OLD direct-passthrough branch
                     // below).
                     if let Some(fmt) = fork_format.as_ref() {
-                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, 0)) {
+                        // THE CHANNEL BASE IS THE FIFTH ARGUMENT, and this host
+                        // used to pass 0. The module needs it to `SYS_MMAP` its
+                        // own storage -- the record arena, the resume-slot
+                        // assignment, the free-slot bitmap, a catalog or a
+                        // published assignment too large for its static floor --
+                        // and `channel_base()` answers EINVAL until it is
+                        // seeded. So every one of those paths failed on this
+                        // host and only on this host, including the ones a real
+                        // php fork reaches (19,026 resume ordinals is past both
+                        // the catalog floor and the publish floor). The Node and
+                        // browser hosts have always passed it
+                        // (`host/src/fork-module-backend.ts` `setup()`).
+                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, layout.channel_offset as u32)) {
                             eprintln!("fm_set_format failed: {e:#}");
                             return;
                         }
@@ -11284,7 +11296,11 @@ fn run_worker_thread(
             )?;
         }
         if let Some(fmt) = fork_format.as_ref() {
-            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, 0))?;
+            // The channel base, for the reason `spawn_guest_thread`'s copy of
+            // this call states: the module maps its own storage through it, and
+            // `channel_base()` answers EINVAL until it is seeded. This thread's
+            // own channel, not the layout's -- a worker thread has its own.
+            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, channel_offset as u32))?;
             let errno = fm.fm_last_errno.call(&mut store, ())?;
             anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
             seed_activation_template_id(&mut store, &fm, guest_mem, &fmt.template_id)?;
