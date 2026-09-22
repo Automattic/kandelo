@@ -155,20 +155,48 @@ pattern that is about to be deleted.
 > came from `ls | grep -cE "^(fork|vfork)-"`, which counts helper modules like
 > `fork-module-capture-fixture.ts` that are not test files.
 >
-> **KNOWN HAZARD, three occurrences by 2026-09-22: the full PARALLEL sweep
-> stalls in `fork-instrument-coverage` against an arena-backed module, while
-> that file passes clean when run ALONE.** Seen twice by the use-after-free
-> fix agent and once by Task 3, each time with that file last emitting and
-> the runner parked at 0% CPU with no summary. Cause not yet established;
-> candidates are a resource four concurrent kernels exhaust now that the arena
-> maps on demand, or something the parallel workers share (`global-setup`
-> regenerates `packages/registry/program-packages.json` on every run). Until
-> it is diagnosed: when a full sweep stalls there, **kill it, run
-> `fork-instrument-coverage` alone, and record both results** — a green solo
-> run plus a stalled parallel run is the finding, not a pass. Do not relaunch
-> the full sweep to see whether it stalls again; it will, and a third hang
-> teaches nothing the first two did not. Whoever diagnoses it should say WHY
-> in this section.
+> **DIAGNOSED 2026-09-22 (Task 3), and it was never
+> `fork-instrument-coverage`.** Three sweeps parked at 0% CPU with no summary
+> against an arena-backed module, each with that file last emitting, and each
+> time it passed clean alone. The reading "the stall is in that file" was
+> wrong in both directions.
+>
+> `fork-instrument-coverage` is simply the SLOWEST file in the set: 498
+> seconds alone, 406 of them in tests. It is therefore always the last thing
+> still emitting, whatever else is wrong — which is what made three readers in
+> a row point at it. In the stalled sweep it had in fact emitted **all 52** of
+> its test lines, exactly what it reports alone (42 passed, 2 expected fail, 8
+> skipped). It had finished.
+>
+> The stall was four OTHER files:
+> `fork-resume-assignment`, `fork-resume-table`,
+> `fork-resume-placement-baseline` and `fork-module-backend-coarse-failures`.
+> Each builds its own fork-module instance and hands `fm_set_format` a channel
+> base that is a real address with **nobody behind it**; two say so in a
+> comment ("Inert in this file: nothing here issues a syscall", "No channel
+> responder / worker thread is needed"), and both were true when written.
+> Seeding a resume catalog REGISTERS it, and once registration allocates
+> arena storage it maps a chunk through that address. `channel_syscall`
+> publishes its request and parks in `memory_atomic_wait32` with NO DEADLINE,
+> so the file does not fail — it hangs, and its vitest worker with it.
+>
+> With `maxWorkers: 4`, three of those files wedged three workers, the fourth
+> stayed queued behind them, and the slow coverage file held the last worker.
+> That is a whole-pool deadlock, and it is why the sweep never reached a
+> summary. **None of the four ever printed a single line**, which is the tell:
+> a file that emits nothing at all is a better suspect than the one that
+> emitted everything.
+>
+> Fixed by giving each of them a responder
+> (`startChannelResponder` in `host/test/fork-module-capture-fixture.ts`). The
+> sweep then completed in 502 seconds: 81 files, 80 passed, only the known
+> `fork-host-import-runtime` baseline failing.
+>
+> **The general rule this leaves behind**, which outlives these four files: a
+> module call that can ALLOCATE must only be made where a channel will answer.
+> A harness with no responder hangs; a process whose channel the kernel has
+> retired hangs too (see the derived free set in `resume_free_set`). Neither
+> reports anything.
 >
 > **If a sweep hangs, read it as a guest crash and bisect, not as a flaky
 > suite.** That is the useful form of this incident: a killed process worker
