@@ -2651,6 +2651,7 @@ cmd_build_browser() {
            [ apps/browser-demos/package-lock.json -nt apps/browser-demos/node_modules ]; then
             npm --prefix apps/browser-demos ci --no-audit --no-fund
         fi
+        echo "==> Building the authenticated VFS asset group..."
         node node_modules/tsx/dist/cli.mjs scripts/build-local-vfs-asset-group.ts \
             "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
         VITE_BASE="$2" npm --prefix apps/browser-demos run build -- \
