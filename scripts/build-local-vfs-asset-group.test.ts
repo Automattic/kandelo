@@ -25,7 +25,10 @@ import {
   buildLocalVfsAssetGroup,
   publishGeneratedTargets,
 } from "./build-local-vfs-asset-group.ts";
-import { loadVfsProductDeploymentMap } from "./vfs-product-deployment.ts";
+import {
+  createVfsProductDeploymentPlugin,
+  loadVfsProductDeploymentMap,
+} from "./vfs-product-deployment.ts";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PRODUCTS = [
@@ -233,6 +236,50 @@ test("derives the closure size from the product images instead of a fixed count"
       ),
     );
     assert.equal(manifest.assets.length, 90);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("resolves product image URL imports to the image the grouped build ships", async () => {
+  // A grouped build copies product images only into the asset group. A page
+  // that boots from an imported image URL (gallery launches pass it as `vfs=`)
+  // must get that shipped file, not the ungrouped `products/...` path, which
+  // does not exist in the output and made the shell demos fail to boot.
+  const fixture = await createFixture();
+  try {
+    await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+      buildLocalVfsAssetGroup({
+        assetGroupDirectory: fixture.outputDirectory,
+        productMapPath: fixture.productMapPath,
+        sourceRoot,
+      }),
+    );
+    const map = loadVfsProductDeploymentMap({
+      mapPath: fixture.productMapPath,
+      sourceRoot,
+    });
+    const plugin = createVfsProductDeploymentPlugin({
+      assetGroupDirectory: fixture.outputDirectory,
+      base: "/",
+      map,
+      mirrorRoots: [],
+    });
+    const load = plugin.load as (this: unknown, id: string) => string | null;
+    const module = load.call(
+      { error: (message: string) => { throw new Error(message); } },
+      "\0kandelo-pages-vfs-product-url:browser-main-shell",
+    );
+    const entry = map.products.find(({ id }) => id === "browser-main-shell")!;
+    const groupDirectory = dirname(entry.asset_group!.path);
+    assert.equal(
+      module,
+      `export default ${JSON.stringify(`/${groupDirectory}/images/shell.vfs.zst`)};\n`,
+    );
+    assert.ok(
+      existsSync(join(fixture.outputDirectory, "images/shell.vfs.zst")),
+      "the resolved URL names a file the group ships",
+    );
   } finally {
     fixture.dispose();
   }
