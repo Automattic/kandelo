@@ -1489,6 +1489,13 @@ build_nginx_php_vfs() {
     bootstrap_target browser-nginx-php
 }
 
+build_ruby_todo_vfs() {
+    # Declared VFS product; the engine resolves ruby and runs
+    # images/vfs/scripts/build-ruby-todo-vfs-image.sh, the ruby-todo-vfs
+    # package's own build script.
+    bootstrap_target browser-ruby-todo
+}
+
 build_texlive() {
     # NOTE: not routed through `bootstrap_target` — `texlive` is an
     # [[exclusions]] entry in local-supported.toml, so `xtask bootstrap
@@ -1826,6 +1833,7 @@ build_target() {
         nginx-vfs)  build_nginx_vfs ;;
         redis-vfs)  build_redis_vfs ;;
         nginx-php-vfs) build_nginx_php_vfs ;;
+        ruby-todo-vfs) build_ruby_todo_vfs ;;
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
@@ -1869,7 +1877,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs ruby-todo-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
