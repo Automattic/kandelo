@@ -39,6 +39,7 @@ import { resolveBinary } from "../src/binary-resolver";
 import { buildForkGuestImports } from "../src/fork-guest-imports";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { artifactGate } from "./support/artifact-gate";
+import { startChannelResponder } from "./fork-module-capture-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -53,12 +54,21 @@ const REPO_ROOT = join(__dirname, "../..");
 const MEMORY_PAGES = 512;
 const MODULE_BASE = 16 * 1024 * 1024;
 /**
- * Inert in this file: nothing here issues a syscall or spills a published
- * buffer to a mapping, and both of those are the only things that read it.
- * `fm_set_format` still wants it, and the guest still imports
- * `__channel_base`, so it has to be a real address rather than zero.
+ * NO LONGER INERT, and the comment that said it was is what made this file
+ * hang. It used to read: "nothing here issues a syscall or spills a published
+ * buffer to a mapping". Seeding a catalog REGISTERS it, and registration now
+ * allocates the activation's `(ordinal, slot)` record in the arena, which maps
+ * its chunks through this address. With nobody behind it, `channel_syscall`
+ * parks in `memory_atomic_wait32` with no deadline -- so the file did not
+ * fail, it hung, and took its vitest worker with it. `startChannelResponder`
+ * puts a responder behind it.
  */
 const CHANNEL_BASE = 12 * 1024 * 1024;
+/**
+ * Where the responder starts handing out mappings: above the staged catalogs
+ * at 20 MiB, inside the 32 MiB this file declares.
+ */
+const MMAP_FLOOR = 24 * 1024 * 1024;
 /** Scratch the ordinal catalogs are staged at, above both regions. */
 const CATALOG_AT = 20 * 1024 * 1024;
 
@@ -99,6 +109,7 @@ function harness(): Harness {
     label: "resume assignment",
   });
   const x = fm.exports as Record<string, unknown>;
+  startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
   // The format resets the catalogs, so it has to come first -- the same
   // ordering `ForkModuleContinuationBackend.setup()` documents.
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);

@@ -120,9 +120,16 @@ export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
  */
 export const CHANNEL_RESPONDER = `
 const { parentPort, workerData } = require("node:worker_threads");
-const { sab, channelBase, floor } = workerData;
+const { sab, channelBase, floor, mmapCounter, munmapCounter } = workerData;
 const i32 = new Int32Array(sab);
 const dv = new DataView(sab);
+// The tallies are OPTIONAL, because their address is not safe everywhere.
+// This fixture keeps them on page 5, which is free in its own layout; a
+// harness whose guest claims that page would have its data overwritten by a
+// counter it never reads. A responder started without them answers the same
+// way and counts nothing.
+const countMmap = typeof mmapCounter === "number";
+const countMunmap = typeof munmapCounter === "number";
 const statusIndex = (channelBase + ${STATUS_OFFSET}) / 4;
 let next = floor;
 let stop = false;
@@ -138,10 +145,10 @@ while (!stop) {
   if (nr === ${SYS_MMAP}) {
     const addr = next;
     next += Math.ceil(size / ${PAGE}) * ${PAGE};
-    dv.setUint32(${MMAP_COUNTER}, dv.getUint32(${MMAP_COUNTER}, true) + 1, true);
+    if (countMmap) dv.setUint32(mmapCounter, dv.getUint32(mmapCounter, true) + 1, true);
     ret = BigInt(addr); errno = 0;
   } else if (nr === ${SYS_MUNMAP}) {
-    dv.setUint32(${MUNMAP_COUNTER}, dv.getUint32(${MUNMAP_COUNTER}, true) + 1, true);
+    if (countMunmap) dv.setUint32(munmapCounter, dv.getUint32(munmapCounter, true) + 1, true);
     ret = 0n; errno = 0;
   }
   dv.setBigInt64(channelBase + ${RETURN_OFFSET}, ret, true);
@@ -150,6 +157,44 @@ while (!stop) {
   Atomics.notify(i32, statusIndex);
 }
 `;
+
+/**
+ * Start a channel responder for a harness that builds its own module instance.
+ *
+ * WHY EVERY RESUME HARNESS NEEDS ONE NOW. Seeding a catalog REGISTERS it, and
+ * registration allocates the activation's `(ordinal, slot)` record in the
+ * arena -- which maps its chunks with `channel_mmap`. Three files seeded
+ * catalogs against a channel base that was a real address with nobody behind
+ * it, on the stated grounds that "nothing here issues a syscall". That stopped
+ * being true, and the failure is the worst kind: `channel_syscall` publishes
+ * its request and parks in `memory_atomic_wait32` with no deadline, so the
+ * test does not fail, it HANGS, and a hung file takes its vitest worker with
+ * it.
+ *
+ * `floor` is where the responder starts handing out addresses. It must sit
+ * above everything the harness has placed -- guest memory, module region,
+ * staged catalogs -- because the responder does not grow the memory and does
+ * not check for overlap.
+ *
+ * The worker is registered for teardown with the fixtures' own, so a caller
+ * that imports this gets the same `afterAll` cleanup.
+ */
+export function startChannelResponder(options: {
+  readonly memory: WebAssembly.Memory;
+  readonly channelBase: number;
+  readonly floor: number;
+}): Worker {
+  const worker = new Worker(CHANNEL_RESPONDER, {
+    eval: true,
+    workerData: {
+      sab: options.memory.buffer,
+      channelBase: options.channelBase,
+      floor: options.floor,
+    },
+  });
+  live.push(worker);
+  return worker;
+}
 
 /**
  * A module exporting one `() -> ()` function, for the no-argument drive band.
@@ -223,7 +268,13 @@ export function fixture(): Fixture {
 
   const worker = new Worker(CHANNEL_RESPONDER, {
     eval: true,
-    workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
+    workerData: {
+      sab: memory.buffer,
+      channelBase: CHANNEL_BASE,
+      floor: MMAP_FLOOR,
+      mmapCounter: MMAP_COUNTER,
+      munmapCounter: MUNMAP_COUNTER,
+    },
   });
   live.push(worker);
 
@@ -799,7 +850,13 @@ export function arenaFixture(label = "arena"): ArenaFixture {
   const x = fm.exports as Record<string, unknown>;
   const worker = new Worker(CHANNEL_RESPONDER, {
     eval: true,
-    workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
+    workerData: {
+      sab: memory.buffer,
+      channelBase: CHANNEL_BASE,
+      floor: MMAP_FLOOR,
+      mmapCounter: MMAP_COUNTER,
+      munmapCounter: MUNMAP_COUNTER,
+    },
   });
   live.push(worker);
   const setFormat = (): void => {

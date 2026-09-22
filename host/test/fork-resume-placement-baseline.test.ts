@@ -65,6 +65,7 @@ import {
   type ForkResumeAssignment,
   type ForkResumeSlots,
 } from "../src/fork-resume-table";
+import { startChannelResponder } from "./fork-module-capture-fixture";
 import { artifactGate } from "./support/artifact-gate";
 import { standInGuest } from "./support/resume-placement-stand-in";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
@@ -111,6 +112,18 @@ const PAGE = 65536;
 const MODULE_BASE = 8 * 1024 * 1024;
 const CHANNEL_BASE = 4 * PAGE;
 const CATALOG_AT = 12 * 1024 * 1024;
+/**
+ * Where the responder starts handing out mappings: above the staged catalogs
+ * at 12 MiB, inside the 16 MiB this harness declares.
+ *
+ * WHY THERE IS A RESPONDER AT ALL. Seeding a catalog REGISTERS it, and
+ * registration allocates the activation's `(ordinal, slot)` record in the
+ * arena, which maps its chunks through `CHANNEL_BASE`. With nobody behind that
+ * address `channel_syscall` parks in `memory_atomic_wait32` with no deadline,
+ * so the file does not fail -- it hangs. The recorded baseline is unaffected:
+ * a responder changes where storage lives, never which slot an ordinal gets.
+ */
+const MMAP_FLOOR = 13 * 1024 * 1024;
 
 /** Activation 0 is the main program; 1 is the side module it dlopens. */
 const MAIN_ACTIVATION = 0;
@@ -188,6 +201,7 @@ function harness(): Harness {
     label: "resume placement baseline",
   });
   const x = fm.exports as Record<string, unknown>;
+  startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
   // The format resets the catalogs, so it has to come first -- the same
   // ordering `ForkModuleContinuationBackend.setup()` documents.
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);

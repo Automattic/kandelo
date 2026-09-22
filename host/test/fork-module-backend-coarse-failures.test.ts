@@ -37,10 +37,16 @@ import {
   ContinuationAllocationError,
   type LinkedFrameFormatDescriptor,
 } from "../src/fork-continuation";
+import { startChannelResponder } from "./fork-module-capture-fixture";
 
 const PAGE = 65536;
 const MiB = 1024 * 1024;
 const CHANNEL_BASE = 2 * MiB;
+/**
+ * Where the responder starts handing out mappings: above the module region the
+ * bump allocator places at 4 MiB, inside the 16 MiB the harness declares.
+ */
+const MMAP_FLOOR = 8 * MiB;
 
 function loadForkModule32(): WebAssembly.Module {
   return new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm")));
@@ -70,18 +76,22 @@ const CATALOG0 = [601, 602];
 
 describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
   it("a coarse seal the module cannot complete throws a TYPED ContinuationAllocationError, not a worker-trapping generic throw", () => {
-    // No channel responder / worker thread is needed: the coarse seal fails at
-    // `build_seal_plan_impl` (no capture open -> EINVAL) BEFORE it ever tries to
-    // channel-mmap the journal-image chunk, so `fm_parent_seal_capture` returns
-    // 0 with `fm_last_errno` set and never blocks on a mmap handshake. This
-    // exercises the exact `sealCaptureAndSerialize` branch that must surface a
-    // typed `ContinuationAllocationError` (the truthful-failure boundary the
-    // deleted fine-grained `finishUnwindAndSerialize` OOM test asserted).
+    // A CHANNEL RESPONDER IS NEEDED, and the comment that said it was not is
+    // what made this file hang. The coarse seal itself still fails at
+    // `build_seal_plan_impl` (no capture open -> EINVAL) before it tries to
+    // channel-mmap the journal-image chunk -- that part is unchanged, and it is
+    // the `sealCaptureAndSerialize` branch under test. What changed is
+    // `backend.setup()` below it: seeding a resume catalog REGISTERS it, and
+    // registration allocates the activation's record in the arena, which maps
+    // through `CHANNEL_BASE`. With nobody behind that address the setup call
+    // parks in `memory_atomic_wait32` with no deadline and the file hangs
+    // rather than failing.
     const memory = new WebAssembly.Memory({
       initial: Math.ceil((16 * MiB) / PAGE),
       maximum: 16384,
       shared: true,
     });
+    startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
     const alloc = bumpAllocator(4 * MiB);
     const fm = instantiateForkModule({
       module: loadForkModule32(),
