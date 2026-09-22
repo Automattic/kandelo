@@ -1,0 +1,30 @@
+kind = "program"
+name = "ruby-todo-vfs"
+version = "0.1.0"
+kernel_abi = 43
+depends_on = [
+  "ruby@4.0.5",
+]
+
+# Composite VFS image for the Ruby + Roda + SQLite todo browser demo. Layered on
+# the resolved shell.vfs.zst, it embeds the Kandelo Ruby build (with the sqlite3
+# gem linked in as a built-in extension), the Ruby standard-library runtime, and
+# a small Roda application served by a minimal Rack server on port 8080. This is
+# an honest example of the Ruby web stack Kandelo supports today — not Rails.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "images/vfs/scripts/build-ruby-todo-vfs-image.sh"
+
+[[outputs]]
+name = "ruby-todo-vfs"
+wasm = "ruby-todo-vfs.vfs.zst"
+# This output is a prebuilt VFS image, not a Wasm executable.
+fork_instrumentation = "disabled"

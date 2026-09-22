@@ -72,6 +72,14 @@ name = "dinit"
 class = "user-software"
 
 [[packages]]
+name = "espeak-ng"
+class = "user-software"
+
+[[packages]]
+name = "evdev-demo"
+class = "user-software"
+
+[[packages]]
 name = "fbdoom"
 class = "user-software"
 
@@ -125,6 +133,10 @@ class = "platform"
 
 [[packages]]
 name = "libcxx"
+class = "platform"
+
+[[packages]]
+name = "libdrm"
 class = "platform"
 
 [[packages]]
@@ -268,6 +280,10 @@ name = "ruby"
 class = "user-software"
 
 [[packages]]
+name = "ruby-todo-vfs"
+class = "browser-product"
+
+[[packages]]
 name = "ruby-browser-bundle"
 class = "browser-product"
 
@@ -278,6 +294,10 @@ class = "test-support"
 [[packages]]
 name = "sdl2"
 class = "platform"
+
+[[packages]]
+name = "sdl2-demo"
+class = "user-software"
 
 [[packages]]
 name = "sdl2-mixer-playwave"
@@ -389,6 +409,11 @@ manifest = "images/vfs/products/browser-nginx.toml"
 id = "browser-nginx-php"
 package = "nginx-php-vfs"
 manifest = "images/vfs/products/browser-nginx-php.toml"
+
+[[products]]
+id = "browser-ruby-todo"
+package = "ruby-todo-vfs"
+manifest = "images/vfs/products/browser-ruby-todo.toml"
 
 [[products]]
 id = "browser-wordpress"

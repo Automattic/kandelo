@@ -56,6 +56,8 @@ import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
+import type { InputEvent, InputSource } from "./input/input-source";
+import { batchBySynReport } from "./input/input-batch";
 
 export type { HttpRequest, HttpResponse };
 
@@ -707,6 +709,75 @@ export class NodeKernelHost {
   }
 
   /**
+   * Push one evdev record into the kernel's `/dev/input/event{0,1}`
+   * ring. Mirrors `BrowserKernel.injectInputEvent`. The Node host
+   * doesn't have a DOM source; tests drive evdev traffic directly
+   * via this entry point.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.sendToWorker({
+      type: "input_event_inject",
+      device,
+      ev_type,
+      code,
+      value,
+    });
+  }
+
+  /**
+   * Push a whole `SYN_REPORT` frame of evdev records to the worker in one
+   * message, so the worker runs a single kernel entry and wake scan for
+   * the frame. Mirrors `BrowserKernel.injectInputEventBatch`.
+   */
+  injectInputEventBatch(records: InputEvent[]): void {
+    if (records.length === 0) return;
+    this.sendToWorker({ type: "input_event_batch_inject", records });
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
+   * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.sendToWorker({ type: "set_input_canvas_dims", width, height });
+  }
+
+  /**
+   * Wire an `InputSource` into the kernel: sets canvas dims, then
+   * starts the source with a dispatch callback that funnels each
+   * emitted record through `injectInputEvent`. Mirrors
+   * `BrowserKernel.attachInputSource` — dual-host parity per
+   * CLAUDE.md §"Two hosts".
+   *
+   * On the Node host the source is typically a `NodeInputSource`
+   * (no-op) so the init path is symmetric with the browser; tests
+   * call `injectInputEvent` directly afterwards.
+   */
+  private attachedInputSource: InputSource | null = null;
+
+  attachInputSource(
+    source: InputSource,
+    dims: { width: number; height: number },
+  ): void {
+    // Stop and replace any previously attached source (dual-host parity with
+    // BrowserKernel); NodeInputSource.stop() is a no-op today, but keeping
+    // the lifecycle symmetric avoids a divergence when a real Node source
+    // (e.g. a TTY capture) is added.
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = source;
+    this.setInputCanvasDims(dims.width, dims.height);
+    source.start(
+      batchBySynReport((records) => this.injectInputEventBatch(records)),
+    );
+  }
+
+  /**
    * Send an HTTP request to a server running inside the kernel and return
    * the parsed response. Bypasses real TCP by using the kernel's injected
    * connection path directly. Prototype API.
@@ -1169,6 +1240,8 @@ export class NodeKernelHost {
 
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = null;
     if (!this.workerStarted) return;
     let gracefulDetachFailure: string | undefined;
     this.kernelWorkerExitExpected = true;

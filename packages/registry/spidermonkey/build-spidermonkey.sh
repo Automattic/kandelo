@@ -67,42 +67,29 @@ fi
 HOST_OS="$(uname -s)"
 MACOS_SDK_DIR="${WASM_POSIX_MACOS_SDK_DIR:-}"
 
-# The dev shell exports a nixpkgs apple-sdk as SDKROOT, and nixpkgs strips
-# libiconv from it because it ships libiconv as its own package. mozbuild
-# links host build scripts with `$HOST_CC -isysroot $SDKROOT -nodefaultlibs`
-# through Apple's /usr/bin/cc, which is not the nix cc-wrapper and so never
-# applies the -L that NIX_LDFLAGS carries. Rust's mozglue-static build script
-# links -liconv, so a host SDK without it fails with
-# `ld64.lld: error: library not found for -liconv`. Select a complete system
-# SDK for the host toolchain instead.
 if [ "$HOST_OS" = "Darwin" ] && [ -z "$MACOS_SDK_DIR" ]; then
-    for SYSTEM_DEVELOPER_DIR in \
-        "/Applications/Xcode.app/Contents/Developer" \
-        "/Library/Developer/CommandLineTools"; do
-        [ -d "$SYSTEM_DEVELOPER_DIR" ] || continue
-
-        # xcrun reports "unable to find sdk" on stdout, not stderr, so an
-        # unchecked capture turns the failure text into the SDK path.
-        SDK_CANDIDATE=""
-        if command -v xcrun >/dev/null 2>&1; then
-            SDK_CANDIDATE="$(DEVELOPER_DIR="$SYSTEM_DEVELOPER_DIR" xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
-        fi
-        if [ -d "$SDK_CANDIDATE" ]; then
-            MACOS_SDK_DIR="$SDK_CANDIDATE"
-            export DEVELOPER_DIR="$SYSTEM_DEVELOPER_DIR"
-            export SDKROOT="$MACOS_SDK_DIR"
-            break
-        fi
-
-        # A Command Line Tools install carries the SDK but xcrun cannot select
-        # it from this developer directory. Leave DEVELOPER_DIR alone, so tools
-        # that already resolve through the dev shell keep working.
-        SDK_CANDIDATE="$SYSTEM_DEVELOPER_DIR/SDKs/MacOSX.sdk"
-        [ -d "$SDK_CANDIDATE" ] || continue
-        MACOS_SDK_DIR="$SDK_CANDIDATE"
+    # Take the macOS SDK the dev shell declares for this build (`macosSdk` in
+    # flake.nix). SpiderMonkey's configure refuses any macOS SDK older than
+    # 15.5, and this nixpkgs pins the shell's default Darwin SDK at 14.4, so
+    # the flake declares a 15.5 one for SpiderMonkey alone.
+    #
+    # This used to prefer /Applications/Xcode.app instead, which is the only
+    # place in the package tree that left the Nix world. That made the build
+    # depend on which Xcode the machine had and on its licence having been
+    # accepted, and it broke outright when Xcode 27 shipped a libSystem.tbd
+    # the pinned LLVM's ld64.lld cannot parse -- see the host-link preflight
+    # further down, which now names that failure instead of letting it appear
+    # as a wall of undefined libc symbols.
+    MACOS_SDK_DIR="${KANDELO_MACOS_SDK_DIR:-}"
+    if [ -n "$MACOS_SDK_DIR" ]; then
         export SDKROOT="$MACOS_SDK_DIR"
-        break
-    done
+        if [ -n "${KANDELO_MACOS_DEVELOPER_DIR:-}" ]; then
+            export DEVELOPER_DIR="$KANDELO_MACOS_DEVELOPER_DIR"
+        fi
+    elif command -v xcrun >/dev/null 2>&1; then
+        # Outside the dev shell, fall back to whatever xcrun resolves.
+        MACOS_SDK_DIR="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    fi
 fi
 
 if [ -n "$MACOS_SDK_DIR" ] && [ ! -d "$MACOS_SDK_DIR" ]; then
@@ -380,12 +367,69 @@ export AR="${WASM_POSIX_TARGET_AR:-wasm32posix-ar}"
 export RANLIB="${WASM_POSIX_TARGET_RANLIB:-wasm32posix-ranlib}"
 export NM="${WASM_POSIX_TARGET_NM:-wasm32posix-nm}"
 export STRIP="${WASM_POSIX_TARGET_STRIP:-wasm32posix-strip}"
-if [ "$HOST_OS" = "Darwin" ]; then
-    export HOST_CC="${HOST_CC:-/usr/bin/cc}"
-    export HOST_CXX="${HOST_CXX:-/usr/bin/c++}"
-else
-    export HOST_CC="${HOST_CC:-cc}"
-    export HOST_CXX="${HOST_CXX:-c++}"
+# One host compiler everywhere: the dev shell's clang. Darwin used to be
+# special-cased to /usr/bin/cc, which required Xcode's command line tools and
+# an accepted Xcode licence for a build that otherwise needs neither.
+export HOST_CC="${HOST_CC:-cc}"
+export HOST_CXX="${HOST_CXX:-c++}"
+
+# Preflight: prove the host linker can link against the chosen macOS SDK
+# BEFORE spending half an hour getting to the first host program.
+#
+# SpiderMonkey's configure picks lld for host programs whenever the host
+# compiler is clang 15 or newer, and that choice cannot be overridden from
+# here: `select_linker_tmpl(host)` in build/moz.configure/toolchain.configure
+# is handed no linker option at all, and configure appends its own
+# `-fuse-ld=lld` AFTER whatever HOST_LDFLAGS carries -- where the last
+# `-fuse-ld` on a clang command line wins. HOST_LD is not a mozbuild variable
+# either. So an SDK the selected linker cannot read is fatal, and the way it
+# surfaces is a screen of "undefined symbol: strcpy" naming neither the SDK
+# nor the linker.
+#
+# `$HOST_CC -fuse-ld=lld -Wl,--version` is configure's own selection test, so
+# asking it first means this check probes lld only when configure will
+# actually choose lld -- a host without lld gets ld64 from both, and no
+# spurious failure from here.
+if [ "$HOST_OS" = "Darwin" ] && $HOST_CC -fuse-ld=lld -Wl,--version >/dev/null 2>&1; then
+    echo "==> Checking the host linker can link against the macOS SDK..."
+    PREFLIGHT_DIR="$OBJ_DIR/.host-link-preflight"
+    rm -rf "$PREFLIGHT_DIR"
+    mkdir -p "$PREFLIGHT_DIR"
+    cat > "$PREFLIGHT_DIR/probe.c" <<'PROBE'
+#include <string.h>
+#include <unistd.h>
+int main(void)
+{
+    int reached = access("/", F_OK);
+    int compared = strncmp("a", "b", 1);
+    return reached + compared;
+}
+PROBE
+    PREFLIGHT_SDK_FLAGS=""
+    if [ -n "$MACOS_SDK_DIR" ]; then
+        PREFLIGHT_SDK_FLAGS="-isysroot $MACOS_SDK_DIR"
+    fi
+    # shellcheck disable=SC2086
+    if ! $HOST_CC $PREFLIGHT_SDK_FLAGS -fuse-ld=lld \
+            -o "$PREFLIGHT_DIR/probe" "$PREFLIGHT_DIR/probe.c" \
+            > "$PREFLIGHT_DIR/log" 2>&1; then
+        {
+            echo "ERROR: the host linker cannot link against the selected macOS SDK."
+            echo "  host compiler: $HOST_CC"
+            echo "  macOS SDK:     ${MACOS_SDK_DIR:-<host compiler default>}"
+            echo "  linker:        lld, which SpiderMonkey's configure selects for"
+            echo "                 host programs and offers no way to override"
+            echo ""
+            sed 's/^/  /' "$PREFLIGHT_DIR/log"
+            echo ""
+            echo "A 'could not load TAPI file ... unknown architecture' failure above"
+            echo "means the SDK is NEWER than the pinned LLVM's ld64.lld can parse."
+            echo "Point KANDELO_MACOS_SDK_DIR ('macosSdk' in flake.nix) at an SDK it"
+            echo "can read, or raise the pinned LLVM."
+        } >&2
+        exit 1
+    fi
+    rm -rf "$PREFLIGHT_DIR"
 fi
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include"
 export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include"
