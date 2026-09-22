@@ -1534,6 +1534,630 @@ mod wasm {
         }
     }
 
+    // -- The shared record arena and its directory -------------------------
+    //
+    // THE LIST LIVES IN THE CHUNKS, for the reason the identity registry above
+    // records: `ALLOC.reset()` runs mid-fork and "only rewinds the bump cursor;
+    // it neither frees nor zeroes the bytes, and the next allocations REUSE
+    // those low addresses". A bump-heap list of chunk addresses would be
+    // clobbered while the chunks it named stayed mapped. That is the concrete
+    // defect that broke the reverted `RESUME_SLOT_INDEX` conversion, and it is
+    // also why `main`'s `ForkModuleStateArena` is only HALF a precedent -- it
+    // keeps a JS-side `this.chunks` array beside the in-chunk pointer, and both
+    // its overflow path and its `release()` read the array.
+    //
+    // TWO DISCIPLINES, chosen by whether a record's address is ever published.
+    //
+    // PAYLOAD RECORDS NEVER MOVE. `activation_catalog()` hands out
+    // `&'static [u32]` into this storage, and three index stores this arena
+    // replaces recorded ABSOLUTE addresses by design. Compacting payloads would
+    // make every one of those a stale address into reused memory -- a wrong
+    // VALUE, not a trap. So a chunk tracks `used` (handed out, MONOTONIC) and
+    // `live` (still owned), a release subtracts from `live` and moves nothing,
+    // and a chunk whose `live` reaches zero is unlinked and unmapped. A
+    // published payload address is then valid for exactly as long as its owning
+    // activation, which is what makes the `'static` honest rather than lucky.
+    //
+    // DIRECTORY ENTRIES ARE COMPACTED, order-preserving copy-down, exactly as
+    // `release_identity_activation` does -- because nothing stores an address
+    // INTO the directory. It is found by walking, never by a cached pointer.
+    //
+    // Chunk layout (EVERY chain in this change), little-endian:
+    //     +0   next: u64    (0 = end of list)
+    //     +8   size: u64    (what was MAPPED, so release unmaps exactly that)
+    //     +16  used: u32    (record chain: body bytes handed out, MONOTONIC,
+    //                        because payload records never move. The directory
+    //                        chain leaves this ZERO: its entries are a dense
+    //                        prefix that compacts, so "handed out" and "still
+    //                        owned" are the same number there and a second
+    //                        tally of one event is a drift bug waiting for the
+    //                        day someone updates only one.)
+    //     +20  live: u32    (record chain: live bytes; directory: live entries)
+    //     +24  chain word   (record + directory chains: `capacity`, the usable
+    //                        body bytes -- see `arena_map_chunk`.)
+    //     +32  body
+    //
+    // ONE HEADER SIZE, 32 BYTES, FOR ALL OF THEM. A chain that sized its mapping
+    // with one header and addressed its body with another would overrun by the
+    // difference, and on the oversized path -- which the forced-chunk build
+    // makes the common path -- that lands in the last bytes of a live record.
+    //
+    // Record layout inside a record chunk:
+    //     +0   next_in_activation: u64  (0 = end of this activation's records)
+    //     +8   kind: u32
+    //     +12  byte_len: u32
+    //     +16  payload
+    //
+    // Directory entry (fixed 16 bytes):
+    //     +0   activation_id: u64
+    //     +8   records_head: u64
+    const ARENA_CHUNK_BYTES: u64 = 65_536;
+    const ARENA_CHUNK_HEADER: u64 = 32;
+    const RECORD_HEADER: u64 = 16;
+    const DIRECTORY_ENTRY_BYTES: u64 = 16;
+
+    /// Record kinds. One per (store, space) pair; a directory entry names an
+    /// activation, and the activation's records are distinguished by kind.
+    ///
+    /// ALL ELEVEN ARE DECLARED HERE, in one place, although this task converts
+    /// none of them: a kind number reused between two stores would make one
+    /// store's `arena_find` answer with the other's payload, which is a wrong
+    /// value rather than an error. The same reasoning the `fm_stats` field
+    /// table below is built on, and the same reason it is a table rather than
+    /// eleven numbers chosen as each store arrives.
+    #[allow(dead_code)]
+    const REC_KIND_RESUME_ASSIGNMENT: u32 = 1;
+    #[allow(dead_code)]
+    const REC_KIND_KFIG: u32 = 2; // imported globals (space 0)
+    #[allow(dead_code)]
+    const REC_KIND_KFIT: u32 = 3; // imported tables  (space 1)
+    #[allow(dead_code)]
+    const REC_KIND_GC_CODEC: u32 = 4;
+    #[allow(dead_code)]
+    const REC_KIND_EXN_TAGS: u32 = 5;
+    #[allow(dead_code)]
+    const REC_KIND_RESUME_CATALOG: u32 = 6;
+    #[allow(dead_code)]
+    const REC_KIND_PROVENANCE: u32 = 7;
+    #[allow(dead_code)]
+    const REC_KIND_TABLE_STATE_OWNER: u32 = 8;
+    #[allow(dead_code)]
+    const REC_KIND_TEMPLATE_ID: u32 = 9;
+    #[allow(dead_code)]
+    const REC_KIND_FUNC_CATALOG_BASE: u32 = 10;
+    #[allow(dead_code)]
+    const REC_KIND_STATIC_ROOT_BASE: u32 = 11;
+
+    /// First chunk of the record chain, or 0 before anything is allocated.
+    static RECORD_HEAD: AtomicU64 = AtomicU64::new(0);
+    /// First chunk of the directory chain, or 0 before any activation owns a
+    /// record.
+    static DIRECTORY_HEAD: AtomicU64 = AtomicU64::new(0);
+
+
+    /// A ONE-ENTRY MEMO, not a sorted index. `func_catalog_base` runs per
+    /// funcref reference during replay and `table_state_owned` per guest import
+    /// call, and consecutive lookups in replay are overwhelmingly the same
+    /// activation.
+    ///
+    /// The spec designed a directory "sorted by construction, searched in
+    /// O(log n)", with an `EINVAL` on an append not strictly greater than the
+    /// last. That invariant is held by a DIFFERENT component than the one
+    /// relying on it -- `claimActivationId` accepts a caller-supplied
+    /// `replayActivationId` -- and its violation is a silent "not found" for a
+    /// live activation. A sorted insert across a CHUNKED directory also needs a
+    /// cascading shift between chunks that only the forced-chunk build would
+    /// ever exercise. A memo buys the hot path O(1) with no ordering invariant
+    /// to hold and no guard whose failure is silent.
+    ///
+    /// Invalidated on every release, because a memo that survives one is the
+    /// stale pointer this whole design exists to prevent.
+    static DIRECTORY_MEMO_ACT: AtomicU32 = AtomicU32::new(u32::MAX);
+    static DIRECTORY_MEMO_AT: AtomicU64 = AtomicU64::new(0);
+
+    // Every accessor re-derives `mem_mut()` rather than holding a slice across
+    // calls, for the reason the identity accessors above give: `channel_mmap`
+    // GROWS the shared linear memory, which invalidates any view taken before
+    // it.
+    fn arena_u32(addr: u64) -> u32 {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        u32::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]])
+    }
+
+    fn arena_set_u32(addr: u64, value: u32) {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        m[i..i + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn arena_u64(addr: u64) -> u64 {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&m[i..i + 8]);
+        u64::from_le_bytes(b)
+    }
+
+    fn arena_set_u64(addr: u64, value: u64) {
+        let m = unsafe { mem_mut() };
+        let i = addr as usize;
+        m[i..i + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// Bytes a record of `byte_len` occupies, header included and rounded to 8.
+    ///
+    /// Rounded so every record starts 8-aligned: the accessors above copy bytes
+    /// and do not require it, but a body cursor that drifts off alignment makes
+    /// every later address arithmetic harder to check by eye for no saving.
+    fn arena_record_total(byte_len: u64) -> u64 {
+        (RECORD_HEADER + byte_len).div_ceil(8) * 8
+    }
+
+    /// Map a fresh chunk of at least `want` usable bytes and link it at the TAIL
+    /// of `head`'s chain. Returns the chunk address.
+    ///
+    /// AT LEAST, not exactly: a record larger than `ARENA_CHUNK_BYTES` gets a
+    /// chunk sized to hold it. That path is NOT only a forced-build curiosity --
+    /// php seeds 19,026 resume ordinals, which is 76,104 bytes, so it runs on
+    /// every real php process start.
+    fn arena_map_chunk(head: &AtomicU64, want: u64) -> Result<u64, Errno> {
+        // CAPACITY COMES FROM THE REQUEST, NOT FROM THE MAPPING, and the two are
+        // different numbers: `channel_mmap` rounds up to a 64 KiB wasm page, so a
+        // chunk asked for `ARENA_CHUNK_BYTES = 4_096` is still MAPPED at 65,536.
+        // An allocator that read its remaining room out of `size` would hand out
+        // 65,504 bytes from a chunk the constant says holds 4,064 -- and the
+        // forced-chunk build, whose single knob is `ARENA_CHUNK_BYTES`, would
+        // then chain nothing while reporting green, which is the exact "tested
+        // nothing, passed everything" shape that build exists to prevent. The
+        // identity registry above makes the same distinction:
+        // `IDENTITY_ENTRIES_PER_CHUNK` is derived from its constant, never from
+        // a mapping.
+        //
+        // `size` stays in the header for one job only: unmapping exactly what
+        // was mapped.
+        let usable = core::cmp::max(ARENA_CHUNK_BYTES, ARENA_CHUNK_HEADER + want);
+        let size = page_round_up(usable);
+        let capacity = usable - ARENA_CHUNK_HEADER;
+        let base = channel_base()?;
+        let fresh = channel_mmap(base, size)?;
+        arena_set_u64(fresh, 0); // next
+        arena_set_u64(fresh + 8, size); // size, for the unmap
+        arena_set_u32(fresh + 16, 0); // used (body bytes handed out)
+        arena_set_u32(fresh + 20, 0); // live
+        arena_set_u64(fresh + 24, capacity); // what `arena_alloc` may hand out
+        let mut tail = 0u64;
+        let mut chunk = head.load(Ordering::Relaxed);
+        while chunk != 0 {
+            tail = chunk;
+            chunk = arena_u64(chunk);
+        }
+        if tail == 0 {
+            head.store(fresh, Ordering::Relaxed);
+        } else {
+            arena_set_u64(tail, fresh);
+        }
+        Ok(fresh)
+    }
+
+    /// Unlink `chunk` from `head`'s chain, given its predecessor, and hand its
+    /// mapping back.
+    ///
+    /// Best-effort on the munmap, like `release_identity_activation`: a munmap
+    /// hiccup must not fail an otherwise-complete `dlclose`. That is exactly why
+    /// the chunk COUNTS below cannot be the only observable -- an unlinked,
+    /// never-unmapped chunk reads as released -- and why the tests assert the
+    /// `SYS_MUNMAP` tally beside them.
+    fn arena_unlink_chunk(head: &AtomicU64, previous: u64, chunk: u64, base: u64) {
+        let next = arena_u64(chunk);
+        if previous == 0 {
+            head.store(next, Ordering::Relaxed);
+        } else {
+            arena_set_u64(previous, next);
+        }
+        if base != 0 {
+            let _ = channel_munmap(base, chunk, arena_u64(chunk + 8));
+        }
+    }
+
+    /// Clear the one-entry memo. Called by both release paths, because a memo
+    /// that survives a release is the stale pointer this design exists to
+    /// prevent.
+    fn arena_forget_memo() {
+        DIRECTORY_MEMO_ACT.store(u32::MAX, Ordering::Relaxed);
+        DIRECTORY_MEMO_AT.store(0, Ordering::Relaxed);
+    }
+
+    /// Address of `activation_id`'s directory entry, or 0.
+    fn arena_directory_find(activation_id: u32) -> u64 {
+        if DIRECTORY_MEMO_ACT.load(Ordering::Relaxed) == activation_id {
+            return DIRECTORY_MEMO_AT.load(Ordering::Relaxed);
+        }
+        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            let live = arena_u32(chunk + 20);
+            for index in 0..live {
+                let at = chunk + ARENA_CHUNK_HEADER + u64::from(index) * DIRECTORY_ENTRY_BYTES;
+                if arena_u64(at) == u64::from(activation_id) {
+                    DIRECTORY_MEMO_ACT.store(activation_id, Ordering::Relaxed);
+                    DIRECTORY_MEMO_AT.store(at, Ordering::Relaxed);
+                    return at;
+                }
+            }
+            chunk = arena_u64(chunk);
+        }
+        0
+    }
+
+    /// `activation_id`'s directory entry, appending one if it has none.
+    fn arena_directory_entry(activation_id: u32) -> Result<u64, Errno> {
+        let existing = arena_directory_find(activation_id);
+        if existing != 0 {
+            return Ok(existing);
+        }
+        // Appended at the tail of the first chunk with room, like the identity
+        // registry: entries stay a dense prefix per chunk, so a release can
+        // compact them with an order-preserving copy-down.
+        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
+        let mut target = 0u64;
+        while chunk != 0 {
+            let capacity = arena_u64(chunk + 24);
+            let live = u64::from(arena_u32(chunk + 20));
+            if (live + 1) * DIRECTORY_ENTRY_BYTES <= capacity {
+                target = chunk;
+                break;
+            }
+            chunk = arena_u64(chunk);
+        }
+        if target == 0 {
+            target = arena_map_chunk(&DIRECTORY_HEAD, DIRECTORY_ENTRY_BYTES)?;
+        }
+        let live = arena_u32(target + 20);
+        let at = target + ARENA_CHUNK_HEADER + u64::from(live) * DIRECTORY_ENTRY_BYTES;
+        arena_set_u64(at, u64::from(activation_id));
+        arena_set_u64(at + 8, 0); // records_head
+        arena_set_u32(target + 20, live + 1);
+        DIRECTORY_MEMO_ACT.store(activation_id, Ordering::Relaxed);
+        DIRECTORY_MEMO_AT.store(at, Ordering::Relaxed);
+        Ok(at)
+    }
+
+    /// The chunk whose body contains `record`, or 0 if no chunk does.
+    ///
+    /// Walked rather than stored in the record header, because `RECORD_HEADER`
+    /// is 16 bytes and every field in it is spoken for. The chain is a handful
+    /// of chunks in every measured workload, and this runs once per record at
+    /// release, never on a lookup.
+    fn arena_chunk_of(record: u64) -> u64 {
+        let mut chunk = RECORD_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            let body = chunk + ARENA_CHUNK_HEADER;
+            if record >= body && record < body + arena_u64(chunk + 24) {
+                return chunk;
+            }
+            chunk = arena_u64(chunk);
+        }
+        0
+    }
+
+    /// Write a record for `(activation_id, kind)` and link it at the head of
+    /// that activation's record chain. Returns the PAYLOAD address.
+    ///
+    /// No duplicate check: `arena_alloc` makes one, and `arena_extend`
+    /// deliberately holds two records of one kind for the length of its copy.
+    fn arena_insert_record(
+        activation_id: u32,
+        kind: u32,
+        byte_len: u64,
+    ) -> Result<u64, Errno> {
+        let total = arena_record_total(byte_len);
+        // THE ENTRY FIRST. It can map a directory chunk, and mapping GROWS the
+        // shared memory; doing it after the record chunk is chosen would leave
+        // a chosen address to re-derive. Addresses survive a growth (the
+        // mapping is not moved), but the ordering keeps that from being
+        // something a reader has to know.
+        let entry = arena_directory_entry(activation_id)?;
+
+        let mut chunk = RECORD_HEAD.load(Ordering::Relaxed);
+        let mut target = 0u64;
+        while chunk != 0 {
+            let capacity = arena_u64(chunk + 24);
+            let used = u64::from(arena_u32(chunk + 16));
+            if capacity - used >= total {
+                target = chunk;
+                break;
+            }
+            chunk = arena_u64(chunk);
+        }
+        if target == 0 {
+            target = arena_map_chunk(&RECORD_HEAD, total)?;
+        }
+
+        let used = arena_u32(target + 16);
+        let record = target + ARENA_CHUNK_HEADER + u64::from(used);
+        // ZEROED, because a caller that writes only part of its payload would
+        // otherwise read whatever the mapping happened to carry. A fresh
+        // `SYS_MMAP` is zero, but a chunk being reused within this module is
+        // not necessarily -- `used` is monotonic, so this is a region no live
+        // record occupies, not a region nothing ever wrote.
+        {
+            let m = unsafe { mem_mut() };
+            let from = record as usize;
+            m[from..from + total as usize].fill(0);
+        }
+        arena_set_u64(record, arena_u64(entry + 8)); // next_in_activation
+        arena_set_u32(record + 8, kind);
+        arena_set_u32(record + 12, byte_len as u32);
+        arena_set_u64(entry + 8, record);
+        arena_set_u32(target + 16, used + total as u32);
+        arena_set_u32(target + 20, arena_u32(target + 20) + total as u32);
+        Ok(record + RECORD_HEADER)
+    }
+
+    /// Unlink one record from `activation_id`'s chain and return its bytes to
+    /// the owning chunk's `live`. The chunk is NOT unmapped here: that is
+    /// `arena_sweep_record_chunks`' job, so a release that drops several
+    /// records sweeps once.
+    fn arena_unlink_record(entry: u64, record: u64) {
+        let mut previous = 0u64;
+        let mut at = arena_u64(entry + 8);
+        while at != 0 {
+            let next = arena_u64(at);
+            if at == record {
+                if previous == 0 {
+                    arena_set_u64(entry + 8, next);
+                } else {
+                    arena_set_u64(previous, next);
+                }
+                let total = arena_record_total(u64::from(arena_u32(at + 12))) as u32;
+                let chunk = arena_chunk_of(at);
+                if chunk != 0 {
+                    let live = arena_u32(chunk + 20);
+                    arena_set_u32(chunk + 20, live.saturating_sub(total));
+                }
+                return;
+            }
+            previous = at;
+            at = next;
+        }
+    }
+
+    /// Unmap every record chunk that no longer holds a live byte.
+    fn arena_sweep_record_chunks(base: u64) {
+        let mut previous = 0u64;
+        let mut chunk = RECORD_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            let next = arena_u64(chunk);
+            if arena_u32(chunk + 20) == 0 {
+                arena_unlink_chunk(&RECORD_HEAD, previous, chunk, base);
+            } else {
+                previous = chunk;
+            }
+            chunk = next;
+        }
+    }
+
+    /// Allocate `byte_len` bytes owned by `(activation_id, kind)`, returning the
+    /// PAYLOAD address in guest linear memory. The bytes are zeroed.
+    /// `EINVAL` if `(activation_id, kind)` already has a record.
+    ///
+    /// **Capacity comes from the chunk's recorded `capacity` at +24, NEVER from
+    /// its `size`.** `size` is what was MAPPED, and `channel_mmap` rounds up to
+    /// a 64 KiB wasm page; `capacity` is what the constant says a chunk holds.
+    // FIRST CALLER: Task 3, which puts the resume assignment on the arena. This
+    // task builds the mechanism and converts nothing, so the only thing that
+    // reaches this today is a test through a converted store -- of which there
+    // are none yet.
+    #[allow(dead_code)]
+    fn arena_alloc(activation_id: u32, kind: u32, byte_len: usize) -> Result<u64, Errno> {
+        if arena_find(activation_id, kind).is_some() {
+            return Err(Errno::EINVAL);
+        }
+        arena_insert_record(activation_id, kind, byte_len as u64)
+    }
+
+    /// The payload address and byte length for `(activation_id, kind)`, or
+    /// `None`.
+    #[allow(dead_code)] // FIRST CALLER: Task 3.
+    fn arena_find(activation_id: u32, kind: u32) -> Option<(u64, usize)> {
+        let entry = arena_directory_find(activation_id);
+        if entry == 0 {
+            return None;
+        }
+        let mut record = arena_u64(entry + 8);
+        while record != 0 {
+            if arena_u32(record + 8) == kind {
+                return Some((
+                    record + RECORD_HEADER,
+                    arena_u32(record + 12) as usize,
+                ));
+            }
+            record = arena_u64(record);
+        }
+        None
+    }
+
+    /// Grow an existing record by re-allocating and copying. Used only by the
+    /// stores that append one fixed-size entry at a time (Task 8).
+    ///
+    /// THE NEW RECORD IS WRITTEN BEFORE THE OLD ONE IS DROPPED, and the order
+    /// matters: dropping first could take the old chunk's `live` to zero, and a
+    /// swept chunk is unmapped -- so the copy would read bytes the host has
+    /// taken back.
+    #[allow(dead_code)] // FIRST CALLER: Task 8.
+    fn arena_extend(
+        activation_id: u32,
+        kind: u32,
+        extra_bytes: usize,
+    ) -> Result<u64, Errno> {
+        let (old_payload, old_len) = arena_find(activation_id, kind).ok_or(Errno::EINVAL)?;
+        let fresh = arena_insert_record(
+            activation_id,
+            kind,
+            (old_len + extra_bytes) as u64,
+        )?;
+        {
+            let m = unsafe { mem_mut() };
+            let from = old_payload as usize;
+            let to = fresh as usize;
+            m.copy_within(from..from + old_len, to);
+        }
+        arena_unlink_record(
+            arena_directory_find(activation_id),
+            old_payload - RECORD_HEADER,
+        );
+        Ok(fresh)
+    }
+
+    /// Drop every record `activation_id` owns and its directory entry, freeing
+    /// chunks that empty. Called from `fm_resume_slots` op 1.
+    fn arena_release_activation(activation_id: u32) {
+        let base = channel_base().unwrap_or(0);
+        let entry = arena_directory_find(activation_id);
+        if entry == 0 {
+            return;
+        }
+        // Return every record's bytes to its chunk. The chain is walked once
+        // and dropped whole rather than through `arena_unlink_record`, which
+        // re-walks from the head per record.
+        let mut record = arena_u64(entry + 8);
+        while record != 0 {
+            let next = arena_u64(record);
+            let total = arena_record_total(u64::from(arena_u32(record + 12))) as u32;
+            let chunk = arena_chunk_of(record);
+            if chunk != 0 {
+                let live = arena_u32(chunk + 20);
+                arena_set_u32(chunk + 20, live.saturating_sub(total));
+            }
+            record = next;
+        }
+        arena_set_u64(entry + 8, 0);
+
+        // THE DIRECTORY ENTRY GOES, and it is compacted out rather than
+        // tombstoned: nothing stores an address INTO the directory, so an
+        // order-preserving copy-down is safe here where it would be fatal among
+        // the payload records. `release_identity_activation` does the same.
+        //
+        // The memo is dropped first, because the copy-down can move the entry
+        // it names.
+        arena_forget_memo();
+        let mut previous = 0u64;
+        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            let next = arena_u64(chunk);
+            let live = arena_u32(chunk + 20);
+            let mut kept = 0u32;
+            for index in 0..live {
+                let from = chunk + ARENA_CHUNK_HEADER + u64::from(index) * DIRECTORY_ENTRY_BYTES;
+                if arena_u64(from) == u64::from(activation_id) {
+                    continue;
+                }
+                if kept != index {
+                    let to = chunk + ARENA_CHUNK_HEADER + u64::from(kept) * DIRECTORY_ENTRY_BYTES;
+                    arena_set_u64(to, arena_u64(from));
+                    arena_set_u64(to + 8, arena_u64(from + 8));
+                }
+                kept += 1;
+            }
+            arena_set_u32(chunk + 20, kept);
+            if kept == 0 {
+                arena_unlink_chunk(&DIRECTORY_HEAD, previous, chunk, base);
+            } else {
+                previous = chunk;
+            }
+            chunk = next;
+        }
+
+        arena_sweep_record_chunks(base);
+    }
+
+    /// Drop EVERY record and unmap every chunk. Called from the COW-child scrub
+    /// in `set_format_impl`, after `CHANNEL_BASE` is stored.
+    fn arena_release_all() {
+        let base = channel_base().unwrap_or(0);
+        for head in [&RECORD_HEAD, &DIRECTORY_HEAD] {
+            let mut chunk = head.load(Ordering::Relaxed);
+            while chunk != 0 {
+                let next = arena_u64(chunk);
+                if base != 0 {
+                    let _ = channel_munmap(base, chunk, arena_u64(chunk + 8));
+                }
+                chunk = next;
+            }
+            head.store(0, Ordering::Relaxed);
+        }
+        arena_forget_memo();
+    }
+
+    /// How many chunks the record chain holds. Zero means nothing is mapped.
+    ///
+    /// WHAT IT OBSERVES, EXACTLY: list membership, the same boundary
+    /// `identity_chunk_count` states. A chunk that is unlinked but never
+    /// unmapped reads as zero here, so `host/test/fork-arena-release.test.ts`
+    /// asserts the `SYS_MUNMAP` tally beside it. Both halves, or neither is a
+    /// guard.
+    fn arena_record_chunk_count() -> u32 {
+        let mut count = 0u32;
+        let mut chunk = RECORD_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            count += 1;
+            chunk = arena_u64(chunk);
+        }
+        count
+    }
+
+    /// How many chunks the directory chain holds.
+    fn arena_directory_chunk_count() -> u32 {
+        let mut count = 0u32;
+        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            count += 1;
+            chunk = arena_u64(chunk);
+        }
+        count
+    }
+
+    /// LIVE directory entries -- one per activation with any record.
+    ///
+    /// RULING D1-a: the directory's 64-activation revisit trigger is a RUNTIME
+    /// FACT, not an instruction to whoever writes this code. A "stop and report
+    /// if any fixture exceeds 64" note binds one implementer, at authoring
+    /// time, for the fixtures they happened to run -- which is the
+    /// guard-whose-failure-is-silent that D1 rejects in the spec's
+    /// sorted-directory design. So the live count is exported as `fm_stats`
+    /// field 105 and any host can read it at any moment.
+    ///
+    /// D1-a ALSO ASKED FOR AN EMIT-ONCE DIAGNOSTIC FROM INSIDE THE MODULE, and
+    /// this module has nowhere to emit from. A scan on 2026-09-21 found no
+    /// `module_log`, `host_log`, `diag` or direct-write facility: this is a
+    /// `no_std` PIC side module whose only outward paths are syscalls through
+    /// the channel, `fm_stats` and `fm_last_errno`. Inventing a host-visible
+    /// reporting channel inside a storage conversion would be a different
+    /// change with a different contract, so the field carries the bound alone
+    /// and the LOUDNESS lives in the host, in
+    /// `host/test/fork-module-capture-fixture.ts`'s
+    /// `assertDirectoryWithinWalkBound` -- which is also where the 64 itself is
+    /// written, once, rather than in a module constant nothing here reads. The
+    /// accepted consequence, stated there too: it fires when a test runs, not
+    /// inside a browser production run.
+    ///
+    /// WALKED, not a maintained `AtomicU32`. The plan specified a counter the
+    /// two release paths decrement; a counter beside the dense prefixes that
+    /// already hold the answer is a SECOND TALLY of one event, and the day
+    /// someone adds a release path that updates only one is the day field 105
+    /// reports a plausible number that is not the truth. The two chunk counts
+    /// above are walks for the same reason, and this runs only when a host
+    /// reads `fm_stats`.
+    fn arena_directory_entry_count() -> u32 {
+        let mut count = 0u32;
+        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
+        while chunk != 0 {
+            count += arena_u32(chunk + 20);
+            chunk = arena_u64(chunk);
+        }
+        count
+    }
+
     // -- Imported-global provenance (host-resolved) -------------------------
     //
     // The one thing about an imported global the module cannot determine. Two
@@ -3869,6 +4493,18 @@ mod wasm {
         ARCHIVE_CONTROL.store(archive_control_addr, Ordering::Relaxed);
         ARCHIVE_OWNER.store(table_owner, Ordering::Relaxed);
         CHANNEL_BASE.store(channel_base, Ordering::Relaxed);
+        // The record arena and its directory are MAPPINGS the COW child
+        // inherited through the memory clone, not static BSS it can simply
+        // overwrite like the counters above. Zeroing a root without unmapping
+        // leaks every chunk the parent took, in a child that may outlive it.
+        //
+        // RELEASED HERE rather than beside the counter resets about thirty
+        // lines up, and the ordering is the whole point: the release SYSCALLS,
+        // and `channel_base()` answers `EINVAL` until the store immediately
+        // above. Moving this up would silently turn every unmap into a no-op
+        // and leave the roots cleared -- a leak that no counter could see,
+        // because the roots would read as empty.
+        arena_release_all();
         ARCHIVE_APPLIED[0].store(0, Ordering::Relaxed);
         ARCHIVE_APPLIED[1].store(0, Ordering::Relaxed);
         // THE PHASE ITSELF is inherited too, and it is the worst of them.
@@ -11248,6 +11884,53 @@ mod wasm {
     /// rather than merely described here.
     const IDENTITY_CHUNK_COUNT_FIELD: u32 = 100;
 
+    /// The record arena's chunk-chain length.
+    const ARENA_RECORD_CHUNK_COUNT_FIELD: u32 = 101;
+    /// The directory's chunk-chain length.
+    const ARENA_DIRECTORY_CHUNK_COUNT_FIELD: u32 = 102;
+    /// Ruling D1-a. 105, not 103: 103 and 104 are claimed by later tasks of the
+    /// storage-conversion plan, and this number is chosen from that plan's one
+    /// table rather than from whatever is free when this code is written.
+    const ARENA_DIRECTORY_ENTRY_COUNT_FIELD: u32 = 105;
+
+    /// EVERY high `fm_stats` field this module answers, in one place.
+    ///
+    /// A high field is answered by an `if field == K` compare placed BEFORE the
+    /// reference table, so two arms sharing a number is NOT a compile error
+    /// where it is written: the second arm is dead and the first answers both
+    /// reads with a plausible number from the wrong source. That is the failure
+    /// the comment on `IDENTITY_CHUNK_COUNT_FIELD` exists to prevent, and a
+    /// comment cannot enforce it. This table can. Every later task that adds a
+    /// field ADDS IT HERE in the same edit.
+    ///
+    /// What it CANNOT see is a field that drifts DOWN into the reference
+    /// table's contiguous index space, because that space's length is a host
+    /// constant. `host/test/fork-module-backend.test.ts` holds that half.
+    const FM_STATS_HIGH_FIELDS: [u32; 4] = [
+        IDENTITY_CHUNK_COUNT_FIELD,        // 100, already shipped
+        ARENA_RECORD_CHUNK_COUNT_FIELD,    // 101
+        ARENA_DIRECTORY_CHUNK_COUNT_FIELD, // 102
+        ARENA_DIRECTORY_ENTRY_COUNT_FIELD, // 105
+    ];
+    const _: () = {
+        let mut i = 0;
+        while i < FM_STATS_HIGH_FIELDS.len() {
+            assert!(
+                FM_STATS_HIGH_FIELDS[i] >= IDENTITY_CHUNK_COUNT_FIELD,
+                "an fm_stats field below the high band can shadow the reference table",
+            );
+            let mut j = i + 1;
+            while j < FM_STATS_HIGH_FIELDS.len() {
+                assert!(
+                    FM_STATS_HIGH_FIELDS[i] != FM_STATS_HIGH_FIELDS[j],
+                    "two fm_stats fields share a number; the second arm is dead",
+                );
+                j += 1;
+            }
+            i += 1;
+        }
+    };
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_stats(field: u32) -> i64 {
         // The identity chunk list's live length. A fixed array could not leak;
@@ -11262,6 +11945,25 @@ mod wasm {
         // One equality test against a constant generates no `br_table`.
         if field == IDENTITY_CHUNK_COUNT_FIELD {
             return identity_chunk_count() as i64;
+        }
+        // The record arena's three observables, for the same reason and in the
+        // same shape: each is WALKED rather than loaded from an `AtomicU64`, so
+        // none of them can join the reference table, and each number comes from
+        // `FM_STATS_HIGH_FIELDS` above rather than from "the next free index".
+        //
+        // WHAT THEY OBSERVE: the first two are list membership, which is blind
+        // to a chunk that was unlinked but never unmapped -- `channel_munmap`
+        // is best-effort by design. `host/test/fork-arena-release.test.ts` and
+        // `host/test/fork-arena-cow-scrub.test.ts` assert the `SYS_MUNMAP`
+        // tally beside them; both halves, or neither is a guard.
+        if field == ARENA_RECORD_CHUNK_COUNT_FIELD {
+            return arena_record_chunk_count() as i64;
+        }
+        if field == ARENA_DIRECTORY_CHUNK_COUNT_FIELD {
+            return arena_directory_chunk_count() as i64;
+        }
+        if field == ARENA_DIRECTORY_ENTRY_COUNT_FIELD {
+            return arena_directory_entry_count() as i64;
         }
         // Index a table of references rather than `match`-ing over the eleven
         // atomic loads directly: a `match field { 0 => A.load(), 1 => B.load(),
@@ -11324,6 +12026,13 @@ mod wasm {
                     // moment, no second `fm_*` entry to say the same thing.
                     // Chunks that lose their last entry are munmap'd here.
                     release_identity_activation(activation);
+                    // And its arena records, for the same reason and at the
+                    // same moment: one signal, one moment, no second `fm_*`
+                    // entry to say the same thing. This drops the activation's
+                    // directory entry as well, so a later re-seed of the same
+                    // id is a fresh allocation rather than the `EINVAL` an
+                    // orphaned entry would make it.
+                    arena_release_activation(activation);
                     set_ok();
                     freed as i32
                 }

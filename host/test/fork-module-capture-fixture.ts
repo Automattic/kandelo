@@ -582,3 +582,171 @@ export function captureGraph(
   expect(root, "and leaves an arena root").toBeGreaterThan(0);
   return { root, recipes, aggregateRecipes };
 }
+
+// -- The record arena and its directory ---------------------------------
+//
+// The storage conversion replaces fixed-BSS stores with chunked,
+// activation-keyed records. A fixed array could not leak; a chunk list can,
+// so the arena carries three observables and this file is where every test
+// reads them from -- one spelling of each field number, rather than one per
+// test file.
+//
+// THE NUMBERS ARE CHOSEN FROM THE PLAN'S ONE TABLE, never as "the next free
+// index". `fm_stats` answers a high field from an `if field == K` compare
+// placed BEFORE its reference table, so two arms sharing a number is not a
+// compile error where it is written: the second arm is dead and the first
+// answers both reads with a plausible number from the wrong source. 105 sits
+// above 103 and 104 -- reserved by later tasks of the same plan -- although
+// this one lands first, for exactly that reason.
+export const ARENA_RECORD_CHUNK_COUNT_FIELD = 101;
+export const ARENA_DIRECTORY_CHUNK_COUNT_FIELD = 102;
+/** Ruling D1-a: LIVE directory entries, one per activation holding a record. */
+export const ARENA_DIRECTORY_ENTRY_COUNT_FIELD = 105;
+
+/**
+ * RULING D1-a. The directory is a LINEAR WALK plus a one-entry memo, chosen
+ * over the spec's sorted O(log n) design because the invariant that design
+ * needs is held by a different component than the one relying on it
+ * (`claimActivationId` accepts a caller-supplied `replayActivationId`, so the
+ * "strictly greater than the last" append rule is not the directory's to
+ * enforce, and its violation would be a silent "not found" for a live
+ * activation). That choice is good for tens of activations and the measured
+ * maximum in this suite is 7.
+ *
+ * "Stop and report if any fixture exceeds 64" binds one implementer, at
+ * authoring time, for the fixtures they happened to run -- which is the
+ * guard-whose-failure-is-silent the deviation rejects in the spec's own
+ * design. So the module COUNTS (`fm_stats` field 105) and this FAILS.
+ *
+ * ACCEPTED CONSEQUENCE: this fires when a test runs, not inside a browser
+ * production run. The module is `no_std` with no diagnostic channel to be loud
+ * through -- a grep for one on 2026-09-21 found none -- and adding one is a
+ * separate change this plan does not attempt.
+ */
+export const DIRECTORY_WALK_REVISIT_AT = 64;
+
+/**
+ * The comparison and the message, SEPARATED FROM THE MODULE that produces the
+ * count -- so the guard can be proven capable of failing without driving 65
+ * real activations through a fixture. `host/test/fork-arena-release.test.ts`
+ * drives it directly at 64 and 65.
+ */
+export function assertDirectoryWithinWalkBound(live: number): void {
+  expect(
+    live,
+    `the arena directory holds ${live} live activations, past the ` +
+      `${DIRECTORY_WALK_REVISIT_AT} the linear-walk-plus-memo directory was ` +
+      `chosen for (plan deviation D1, ruling D1-a).\n` +
+      `  This is a PERFORMANCE signal, not a correctness failure: nothing is ` +
+      `wrong with the run that produced it.\n` +
+      `  Past ${DIRECTORY_WALK_REVISIT_AT} the spec's sorted O(log n) ` +
+      `directory is worth revisiting, and that is the MAINTAINER'S CALL. ` +
+      `Report the count and the fixture that produced it; do not raise this ` +
+      `bound to make the suite green.`,
+  ).toBeLessThanOrEqual(DIRECTORY_WALK_REVISIT_AT);
+}
+
+/** Read field 105 off a live module and hold it to the D1-a bound. */
+export function expectDirectoryWithinWalkBound(read: (field: number) => number): void {
+  const live = read(ARENA_DIRECTORY_ENTRY_COUNT_FIELD);
+  // -1 means the module does not answer this field at all, which is a
+  // different failure and belongs to the field pin in
+  // `host/test/fork-module-backend.test.ts`, not here.
+  if (live < 0) return;
+  assertDirectoryWithinWalkBound(live);
+}
+
+/**
+ * A fork-module instance with a SERVICED channel and nothing else.
+ *
+ * `fixture()` above builds the whole capture-drive rig -- guest double, drive
+ * table, fourteen slots. The arena tests need none of it: they publish
+ * records, release them, and read three counters. Same shape as
+ * `host/test/fork-identity-release.test.ts`, which predates this helper and is
+ * left where it is rather than rewritten onto it.
+ *
+ * The channel is not optional: arena storage is on demand, so an allocation
+ * issues `SYS_MMAP` through the channel and a module without a responder
+ * answers `EINVAL` instead of storing anything.
+ */
+export interface ArenaFixture {
+  x: Record<string, unknown>;
+  memory: WebAssembly.Memory;
+  /** Read an `fm_stats` field. */
+  stats: (field: number) => number;
+  /** The responder's running `SYS_MUNMAP` tally, read out of shared memory. */
+  munmaps: () => number;
+  /** `fm_resume_slots(op, activation, ordinal)`; op 1 is the dlclose release. */
+  slots: (op: number, activation: number, ordinal: number) => number;
+  /** Re-run `fm_set_format`, which is the COW-child scrub. */
+  setFormat: () => void;
+  /** `fm_set_activation_resume_catalog` with the ordinals staged first. */
+  seedActivationCatalog: (activation: number, ordinals: readonly number[]) => void;
+  /** The sticky errno of the most recent export call. */
+  errno: () => number;
+}
+
+/**
+ * Where `seedActivationCatalog` stages its ordinals: page 6, between the
+ * munmap counter (page 5) and `MODULE_BASE` (8 MiB), and far below
+ * `MMAP_FLOOR`, so nothing the responder hands out can overlap it.
+ */
+export const ARENA_STAGING_AT = 6 * PAGE;
+
+const liveArenaFixtures: ArenaFixture[] = [];
+
+export function arenaFixture(label = "arena"): ArenaFixture {
+  const memory = new WebAssembly.Memory({
+    initial: 256,
+    maximum: 16384,
+    shared: true,
+  });
+  const fm = instantiateForkModule({
+    module: new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm"))),
+    memory,
+    ptrWidth: 4,
+    reserve: () => MODULE_BASE,
+    label,
+  });
+  const x = fm.exports as Record<string, unknown>;
+  const worker = new Worker(CHANNEL_RESPONDER, {
+    eval: true,
+    workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
+  });
+  live.push(worker);
+  const setFormat = (): void => {
+    (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+  };
+  setFormat();
+  const errno = (): number => (x.fm_last_errno as () => number)();
+  const f: ArenaFixture = {
+    x,
+    memory,
+    stats: (field) => Number((x.fm_stats as (n: number) => bigint)(field)),
+    // A fresh view each read: `channel_mmap` GROWS the shared memory, and a
+    // `DataView` taken before a growth is not guaranteed to survive it.
+    munmaps: () => new DataView(memory.buffer).getUint32(MUNMAP_COUNTER, true),
+    slots: x.fm_resume_slots as ArenaFixture["slots"],
+    setFormat,
+    seedActivationCatalog: (activation, ordinals) => {
+      const staged = new Uint8Array(ordinals.length * 4);
+      const view = new DataView(staged.buffer);
+      ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
+      new Uint8Array(memory.buffer, ARENA_STAGING_AT, staged.length).set(staged);
+      (
+        x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void
+      )(activation, ARENA_STAGING_AT, ordinals.length);
+    },
+    errno,
+  };
+  liveArenaFixtures.push(f);
+  return f;
+}
+
+// RULING D1-a's loudness, on the hook every arena fixture already goes
+// through. `live`'s `afterAll` above is the one teardown this file owns, and a
+// fixture cannot be created without being registered here -- so no test has to
+// remember to check the bound.
+afterAll(() => {
+  for (const f of liveArenaFixtures) expectDirectoryWithinWalkBound(f.stats);
+});

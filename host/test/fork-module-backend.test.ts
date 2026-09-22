@@ -55,6 +55,39 @@ describe("fork-module backend constants", () => {
     ).toBeGreaterThanOrEqual(FORK_MODULE_STATS.length);
   });
 
+  it("keeps every high fm_stats field clear of the stats table and of each other", () => {
+    // Same reasoning as the identity-chunk-count pin above, for the fields the
+    // storage conversion adds. `fm_stats` answers each from an `if` that runs
+    // BEFORE the reference table, so a number reused between two of them is
+    // not a compile error: the second arm is dead and the first answers both
+    // reads. The module carries a const-assert (`FM_STATS_HIGH_FIELDS`) that
+    // catches a reuse at BUILD time; this catches a field that drifts DOWN
+    // into the table's contiguous index space, which the const-assert cannot
+    // see because that space's length is a HOST constant.
+    //
+    // Later tasks of the same plan add their constant's name to this array in
+    // the same commit that adds the field.
+    const fields = [
+      "ARENA_RECORD_CHUNK_COUNT_FIELD",
+      "ARENA_DIRECTORY_CHUNK_COUNT_FIELD",
+      "ARENA_DIRECTORY_ENTRY_COUNT_FIELD",
+    ].map((name) => {
+      const match = new RegExp(`const ${name}: u32 = ([0-9_]+);`).exec(moduleSource);
+      expect(match, `the module no longer names ${name}`).not.toBeNull();
+      return [name, Number(match![1].replace(/_/g, ""))] as const;
+    });
+    for (const [name, value] of fields) {
+      expect(
+        value,
+        `${name} must stay above the stats table`,
+      ).toBeGreaterThanOrEqual(FORK_MODULE_STATS.length);
+    }
+    expect(
+      new Set(fields.map(([, v]) => v)).size,
+      "two fields share a number",
+    ).toBe(fields.length);
+  });
+
   it("matches the module's resume-catalog capacity", () => {
     // The module sizes a static `[u32; CAP]` arena from this. A host that staged
     // more than the cap would write past the end of that arena.
