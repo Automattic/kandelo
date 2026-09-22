@@ -260,26 +260,46 @@ effectiveBoot.argv : profile.init.argv` (`:1646-1647`) — so a descriptor
 supplied by the caller replaces what the machine runs as pid 1,
 including its uid.
 
-This is **not reachable from a URL today**: the initial descriptor comes
-from `descriptorForBootQuery`, and a `#k1=` fragment contributes only
-`boot.inputs` and `boot.parameters` (`:752-767`) — `ShareDialog` emits
-exactly those two and nothing else. It is a *latent* hole that this
-design would activate, because unifying first-party and third-party
-paths makes descriptor-carried boot identity the natural next thing a
-link would carry. Closing it now costs no existing feature.
+This **is reachable from URL-carried state today**, through the
+paste-a-link path rather than page load. At page load a `#k1=` fragment
+contributes only `boot.inputs` and `boot.parameters` (`:752-767`). But
+`app/NewMachinePane.tsx:34-39` and `views/EmptyState.tsx:44-50` take a
+pasted URL or fragment, `decodeBootDescriptor` it, and hand the **whole
+decoded descriptor** to `applyBootDescriptor` → `startBoot` → the
+`effectiveBoot` merge. `validateBootDescriptor` checks `boot.argv`'s
+shape only (`boot-descriptor.ts:643`), not policy. So a pasted link can
+choose what runs as the machine's init, and as which uid.
 
-The rule, and the distinction the current single merge does not make:
+Blast radius is the visitor's own ephemeral tab, the same bound the
+auto-run script rule rests on, so this is a design defect to close
+rather than an incident. But it is exactly "boot-time init from outside
+the image," and it is live.
 
-- **URL-carried state may never supply boot identity.** A link may carry
-  `boot.inputs` and `boot.parameters` (its script) and nothing else.
-  A descriptor arriving from a URL with a `boot.argv` is rejected
-  loudly, not merged.
-- **An explicit in-app user action may.** The Config pane's editable
-  argv field (`views/Config.tsx:132` → `applyBootDescriptor`) stays: a
-  person modifying the ephemeral machine in front of them is not
-  "outside the image supplying init." That path must be separated from
-  the URL path rather than sharing one `effectiveBoot` merge, so the
-  provenance of an override is explicit in the code.
+**The rule, with no exception: nothing outside the image supplies boot
+identity.** Not a pasted link, not a query parameter, not the app. A
+link may carry which image to boot (`mounts`) and its script
+(`boot.inputs`, `boot.parameters`); `argv`, `cwd`, `uid`, `gid`, and
+`env` come from the image.
+
+There is no in-app override to preserve. `views/Config.tsx` exposes
+editable `argv`/`cwd`/`uid`/`gid`/`env` fields, but the file has **no
+importers** — it is unreferenced dead UI, in the same state
+`ShareDialog` and `LiveUrlBar` were in before the script-links work
+wired them up. Users cannot tweak boot argv today, and this design does
+not start letting them.
+
+### Incoming boot identity is ignored, not rejected
+
+Rejecting a descriptor that carries `boot.argv` would break every link
+already shared: `ShareDialog` builds its payload as
+`{...baseDescriptor, boot: {...baseDescriptor.boot, inputs, parameters}}`,
+so the spread carries the authoring machine's full boot block —
+`argv`, `cwd`, `env`, `uid`, `gid` — into every link it has ever
+produced.
+
+So incoming boot identity is **ignored with a visible log line**, not
+rejected, and `ShareDialog` stops emitting it. Ignoring keeps existing
+links booting; the log line keeps the drop truthful rather than silent.
 
 ### Host-clamped requests
 
@@ -394,8 +414,13 @@ consent step already required by
   image whose programs the host injects at boot is not self-describing
 - `programUrl`, the `dinit.wasm?url` import, and the init-binary staging
   fetch at `live-setup.ts:1436-1443`
-- the unconditional `effectiveBoot` merge, replaced by a split that
-  distinguishes URL-carried state from explicit in-app overrides
+- the `effectiveBoot` merge of caller-supplied boot identity, replaced
+  by reading `argv`/`cwd`/`uid`/`gid`/`env` from the image only
+- `descriptorFromGalleryItem`'s `boot.argv` assignment, since roster
+  entries carry membership only and no boot command
+- the editable boot fields in `views/Config.tsx` (dead UI with no
+  importers) and `ShareDialog`'s emission of the authoring machine's
+  boot block
 - `customVfsProfile`, which ceases to exist as a distinct path
 
 ## Phasing
@@ -478,6 +503,7 @@ none should be made without benchmark evidence.
    the wild.
 4. Is `sdl2`'s absence from `pages-vfs-product-gallery.json` intentional
    (not yet shipped to Pages), or the drift it appears to be?
-5. Does the Config pane keep its editable boot-argv field as an explicit
-   in-app override, or does "init comes from the image" apply with no
-   exception at all, making that field read-only?
+5. `views/Config.tsx` is dead UI whose Boot tab edits init identity this
+   design forbids. Delete the file, or keep it and make the Boot tab
+   read-only, given its other four tabs (Mounts, Runtime, Capabilities,
+   Trust) may still be wanted later?
