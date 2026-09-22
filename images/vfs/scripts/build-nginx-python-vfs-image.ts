@@ -86,7 +86,7 @@ http {
     server {
         listen 8080;
         server_name localhost;
-        root /srv/notes/static;
+        root /var/www/notes/static;
         index index.html;
 
         location / {
@@ -168,7 +168,7 @@ export async function buildNginxPythonVfsImage(
   ensureDirRecursive(fs, `/usr/lib/${PYTHON_STDLIB}`);
   ensureDirRecursive(fs, "/usr/share/licenses/cpython");
   ensureDirRecursive(fs, "/etc/nginx");
-  ensureDirRecursive(fs, "/srv/notes");
+  ensureDirRecursive(fs, "/var/www/notes");
   ensureDirRecursive(fs, "/var/lib/notes");
   ensureDirRecursive(fs, "/var/log");
   ensureDirRecursive(fs, "/tmp/nginx_client_temp");
@@ -192,13 +192,13 @@ export async function buildNginxPythonVfsImage(
   );
 
   // The Python app (app.py, schema.sql, seed.sql, static/index.html).
-  const appCount = copyTreeSorted(fs, APP_DIR, "/srv/notes");
+  const appCount = copyTreeSorted(fs, APP_DIR, "/var/www/notes");
 
   // nginx config.
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
 
   // Make the app tree and its writable data dir owned by the demo user.
-  fs.chown("/srv/notes", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/notes", DEMO_UID, DEMO_GID);
   fs.chown("/var/lib/notes", DEMO_UID, DEMO_GID);
   fs.chmod("/var/lib/notes", 0o755);
 
@@ -207,7 +207,7 @@ export async function buildNginxPythonVfsImage(
     {
       name: "notes-app",
       type: "process",
-      command: "/usr/bin/python3 /srv/notes/app.py",
+      command: "/usr/bin/python3 /var/www/notes/app.py",
       logfile: "/var/log/notes-app.log",
       restart: false,
     },

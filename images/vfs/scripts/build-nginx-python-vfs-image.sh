@@ -35,8 +35,17 @@ RUNTIME_ROOT="$WORK_DIR/python-runtime"
 rm -rf "$RUNTIME_ROOT"; mkdir -p "$RUNTIME_ROOT"
 unzip -q "$PYTHON_RUNTIME" -d "$RUNTIME_ROOT"
 
+# tsx's IPC channel binds a unix-domain socket under TMPDIR. The resolver's
+# own WASM_POSIX_DEP_WORK_DIR embeds a long content-hash cache key, and that
+# combined path can exceed the ~104-byte sockaddr_un limit on macOS, failing
+# with EINVAL. Give tsx a short, dedicated TMPDIR instead (same fix as
+# sibling build-nginx-php-vfs-image.sh).
+NGINX_PYTHON_VFS_TSX_TMP="$(mktemp -d /tmp/kandelo-nginx-python-vfs.XXXXXX)"
+trap 'rm -rf -- "$NGINX_PYTHON_VFS_TSX_TMP"' EXIT
+
 KANDELO_PYTHON_RUNTIME_ROOT="$RUNTIME_ROOT" \
 KANDELO_PYTHON_WASM="$PYTHON_WASM" \
+TMPDIR="$NGINX_PYTHON_VFS_TSX_TMP" \
   npx tsx "$SCRIPT_DIR/build-nginx-python-vfs-image.ts" "$VFS"
 
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced" >&2; exit 1; }
