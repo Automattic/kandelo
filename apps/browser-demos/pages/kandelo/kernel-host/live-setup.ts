@@ -8,6 +8,7 @@ import {
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
+import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
 import sdl2PlasmaFragSrc from "../../../../../programs/sdl2/presets/image/plasma.frag?raw";
 import sdl2AudioBarsFragSrc from "../../../../../programs/sdl2/presets/image/audio_bars.frag?raw";
 import sdl2TunnelwispFragSrc from "../../../../../programs/sdl2/presets/image/tunnelwisp.frag?raw";
@@ -1732,7 +1733,15 @@ async function bootProfile(
           const SDL2_FB_W = 1920;
           const SDL2_FB_H = 1080;
           kernelForSdl2.attachInputSource(
-            new BrowserInputSource(window, { pointer: false, wheel: true }),
+            // Bind to window for global reach, but scope capture to the
+            // demo stage (<main>) so keyboard/wheel over the "New" menu,
+            // dialogs, and the rest of the chrome stay usable while the
+            // playground runs. See demoSurfaceCaptureGate.
+            new BrowserInputSource(window, {
+              pointer: false,
+              wheel: true,
+              shouldCapture: demoSurfaceCaptureGate(),
+            }),
             { width: SDL2_FB_W, height: SDL2_FB_H },
           );
           tick("running sdl2...");
@@ -1785,6 +1794,10 @@ async function bootProfile(
                   window.innerWidth,
                   window.innerHeight,
                 ),
+              // Scope capture to the demo stage (<main>) so the dock's
+              // "New" menu and dialogs stay scrollable/clickable while the
+              // evdev logger runs. See demoSurfaceCaptureGate.
+              shouldCapture: demoSurfaceCaptureGate(),
             }),
             {
               width: window.innerWidth,

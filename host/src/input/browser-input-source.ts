@@ -67,6 +67,13 @@ export class BrowserInputSource implements InputSource {
    * @param opts.onResize  Invoked on window resize so the caller can
    *   re-publish the canvas dims to the kernel (EVIOCGABS maxima). Rides the
    *   `bindings` list, so stop() removes it — no leaked resize listener.
+   * @param opts.shouldCapture  Consulted at the top of every handler. When
+   *   it returns `false` the event is left entirely to the browser — no
+   *   `preventDefault`, no evdev emission — so the surrounding app chrome
+   *   (the "New" menu, dialogs, scrollable panels) stays usable while a
+   *   demo runs. Bind to `window` for global reach, then scope capture to
+   *   the demo stage here (see `demoSurfaceCaptureGate`). Defaults to
+   *   always capturing, preserving the original global behavior.
    */
   constructor(
     private target: EventTarget = window,
@@ -74,8 +81,15 @@ export class BrowserInputSource implements InputSource {
       pointer?: boolean;
       wheel?: boolean;
       onResize?: () => void;
+      shouldCapture?: (e: Event) => boolean;
     } = {},
   ) {}
+
+  /** Whether this event should be captured for the demo (vs. left to the
+   *  browser so the app chrome keeps working). */
+  private shouldCapture(e: Event): boolean {
+    return this.opts.shouldCapture ? this.opts.shouldCapture(e) : true;
+  }
 
   start(dispatch: (ev: InputEvent) => void): void {
     this.dispatch = dispatch;
@@ -156,6 +170,7 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
+    if (!this.shouldCapture(e)) return;
     const key = codeToKey(e.code);
     if (key === null) return;
     e.preventDefault();
@@ -164,6 +179,7 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onKeyUp(e: KeyboardEvent): void {
+    if (!this.shouldCapture(e)) return;
     const key = codeToKey(e.code);
     if (key === null) return;
     e.preventDefault();
@@ -172,6 +188,14 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onPointerMove(e: PointerEvent): void {
+    if (!this.shouldCapture(e)) {
+      // Drop the absolute baseline so re-entering the stage re-derives it
+      // from the first in-stage move rather than reporting a phantom jump
+      // across the region the pointer traversed off-stage.
+      this.lastAbsX = null;
+      this.lastAbsY = null;
+      return;
+    }
     if (document.pointerLockElement) {
       if (e.movementX !== 0) this.emit(1, EV_REL, REL_X, e.movementX);
       if (e.movementY !== 0) this.emit(1, EV_REL, REL_Y, e.movementY);
@@ -195,6 +219,7 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onPointerDown(e: PointerEvent): void {
+    if (!this.shouldCapture(e)) return;
     const btn = pointerButton(e);
     if (btn === null) return;
     this.emit(1, EV_KEY, btn, 1);
@@ -202,6 +227,7 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onPointerUp(e: PointerEvent): void {
+    if (!this.shouldCapture(e)) return;
     const btn = pointerButton(e);
     if (btn === null) return;
     this.emit(1, EV_KEY, btn, 0);
@@ -209,6 +235,7 @@ export class BrowserInputSource implements InputSource {
   }
 
   private onWheel(e: WheelEvent): void {
+    if (!this.shouldCapture(e)) return;
     e.preventDefault();
     // Browser deltaMode quanta, normalised to ~1 detent per physical notch:
     //   0 = PIXEL (Chromium ±100/±120, Safari ±1–10 per notch) → ÷120
