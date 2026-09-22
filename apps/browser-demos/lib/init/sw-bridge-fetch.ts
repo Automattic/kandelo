@@ -98,6 +98,17 @@ export async function setupServiceWorkerFetchBridge(
       );
       options?.debugLog?.("Bridge restored after service worker restart");
     });
+
+    // Announce this machine's departure when the hosting tab goes away, so the
+    // SW can immediately mark it offline and push machine-offline to any viewer
+    // tabs instead of waiting for lazy owner reconciliation on a later request.
+    // pagehide (not unload) fires reliably on bfcache and mobile tab teardown.
+    window.addEventListener("pagehide", () => {
+      navigator.serviceWorker.controller?.postMessage({
+        type: "instance-closing",
+        name,
+      });
+    });
   }
 
   return { bridge, name, appPrefix };

@@ -436,6 +436,58 @@ test("root-relative subresources are attributed to the viewing machine", async (
   }
 });
 
+test("an unknown machine name returns a 503 HTML page", async ({ page }) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const res = await fetchResponse(page, "/a/app/happy-teal-otter/");
+  expect(res.status).toBe(503);
+  // An HTML document, not the plain-text stub.
+  expect(res.body).toContain("<");
+  expect(res.body).toContain("happy-teal-otter");
+});
+
+test("closing the host tab pushes machine-offline to viewers", async ({
+  context,
+}) => {
+  const host = await context.newPage();
+  await host.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(host, "/a/");
+  const m = await installBridge(host, SESSION_A, "solo");
+
+  const viewer = await context.newPage();
+  await viewer.goto(`${FIXTURE_ORIGIN}${m.appPrefix}`);
+  // Attach the listener and confirm it is installed before the host announces
+  // it is closing, so the machine-offline push cannot race ahead of the
+  // viewer's subscription.
+  await viewer.evaluate((name) => {
+    (window as typeof window & { __offline?: Promise<string> }).__offline =
+      new Promise<string>((resolve) => {
+        navigator.serviceWorker.addEventListener("message", (event) => {
+          const data = (event as MessageEvent).data;
+          if (data?.type === "machine-offline" && data.name === name) {
+            resolve("offline");
+          }
+        });
+      });
+  }, m.name);
+
+  // Drive the real host->SW instance-closing message the pagehide listener
+  // sends when the owning tab goes away.
+  await host.evaluate(() =>
+    navigator.serviceWorker.controller!.postMessage({
+      type: "instance-closing",
+      name: (window as typeof window & { __lastInstanceName?: string })
+        .__lastInstanceName,
+    })
+  );
+
+  expect(
+    await viewer.evaluate(() =>
+      (window as typeof window & { __offline?: Promise<string> }).__offline!
+    ),
+  ).toBe("offline");
+});
+
 test("cookie jars are isolated per machine", async ({ page }) => {
   await page.goto(`${FIXTURE_ORIGIN}/a/`);
   await registerScope(page, "/a/");
@@ -888,6 +940,9 @@ async function installBridge(
       keepAlive.__bridgePorts.push(bridge.port1, reply.port1);
       controller.postMessage({ type: "init-bridge", sessionId: session }, [bridge.port2, reply.port2]);
     });
+    // Expose the SW-minted name so the offline test can drive the real
+    // instance-closing message the host page's pagehide listener would send.
+    keepAlive.__lastInstanceName = replyData.name;
     const appPrefix: string = replyData.appPrefix;
     const response = await fetch(`${appPrefix}cookie`, { cache: "no-store" });
     return { reply: replyData, name: replyData.name, appPrefix, body: await response.text() };

@@ -727,6 +727,86 @@ if (typeof window !== "undefined") {
     });
   }
 
+  // --- Offline lifecycle (Task 3) ---
+  // Push a machine-lifecycle signal to every tab that is viewing this machine.
+  // A dead client id simply resolves to no client and is skipped.
+  function notifyViewers(record, type) {
+    record.viewerClientIds.forEach(function (id) {
+      self.clients.get(id).then(function (client) {
+        if (client) client.postMessage({ type: type, name: record.name });
+      }).catch(function () {});
+    });
+  }
+
+  // Terminal offline: the owning tab is gone for good. Retire the machine from
+  // the live registry, tell viewers, and garbage-collect its per-name durable
+  // authority so a terminated machine does not leak a persisted entry across
+  // reloads. Dropping durableAuthority first turns any in-flight persist for
+  // this record into a no-op (persistBridgeAuthority requires a matching
+  // durableAuthority), and the GC delete is serialized behind the record's
+  // pending mutations so a slower authority write cannot land after the delete.
+  function markInstanceOffline(record) {
+    record.status = "offline";
+    record.bridgePort = null;
+    record.durableAuthority = null;
+    notifyViewers(record, "machine-offline");
+    instances.delete(record.name);
+    clientToInstance.forEach(function (name, cid) {
+      if (name === record.name) clientToInstance.delete(cid);
+    });
+    // Use the same "/" key separator writeBridgeAuthority uses (see
+    // bridgeAuthorityKeyFor); the brief's ":" form is not a valid Cache Storage
+    // URL and would never match the persisted entry.
+    enqueueRecordMutation(record, function () {
+      return caches.open(BRIDGE_CACHE).then(function (cache) {
+        return cache.delete(bridgeAuthorityKeyFor(record.name));
+      });
+    }).catch(function () {});
+  }
+
+  // Lazy crash detection: a host tab that crashes never sends instance-closing,
+  // so on the next request compare each record's owning client against the live
+  // window clients. An owner that was known (owningClientId set) but is no
+  // longer a window client is terminally gone. A durable-restored record
+  // (owningClientId null) is never terminated here — its owner is unknown, not
+  // proven gone, so it stays reconnecting/offline-reachable until a future
+  // close GCs it. Concurrent requests share one matchAll via the coalesced
+  // promise so a subresource burst does not fan out into many matchAll calls.
+  var reconcileOwnersPromise = null;
+  function reconcileOwners() {
+    if (reconcileOwnersPromise) return reconcileOwnersPromise;
+    reconcileOwnersPromise = self.clients.matchAll({ type: "window" }).then(
+      function (wins) {
+        var live = new Set(wins.map(function (w) { return w.id; }));
+        instances.forEach(function (record) {
+          if (record.owningClientId && !live.has(record.owningClientId)) {
+            markInstanceOffline(record);
+          }
+        });
+      },
+    ).catch(function () {}).then(function () {
+      reconcileOwnersPromise = null;
+    });
+    return reconcileOwnersPromise;
+  }
+
+  // Classify a failed bridge restore: the need-bridge handshake produced no
+  // live port. If the machine's known owner is gone, the machine is terminally
+  // offline; otherwise the owner (or an unknown durable-restored owner) may
+  // still return, so keep it reconnecting and tell viewers it is reconnecting.
+  function classifyFailedRestore(record) {
+    return self.clients.matchAll({ type: "window" }).then(function (wins) {
+      var ownerGone = record.owningClientId &&
+        !wins.some(function (w) { return w.id === record.owningClientId; });
+      if (ownerGone) {
+        markInstanceOffline(record);
+      } else {
+        record.status = "reconnecting";
+        notifyViewers(record, "machine-reconnecting");
+      }
+    });
+  }
+
   // --- Bridge port setup (per instance) ---
   // http-response/http-error resolve the global pendingRequests map; the owning
   // record just records which port is live. (Task 2 wraps this in a durable
@@ -859,6 +939,19 @@ if (typeof window !== "undefined") {
           });
         }),
       );
+    } else if (msg && msg.type === "instance-closing") {
+      // A host tab announces (via pagehide) that it is going away. Only the tab
+      // that owns a machine may retire it: postMessage is untrusted input, so a
+      // viewer's forged instance-closing must not be able to take down another
+      // tab's machine. Validate the name shape, then require the sender to be
+      // the recorded owning client before marking the machine offline.
+      if (isValidInstanceName(msg.name)) {
+        var closing = instances.get(msg.name);
+        var senderId = event.source && event.source.id;
+        if (closing && senderId && closing.owningClientId === senderId) {
+          markInstanceOffline(closing);
+        }
+      }
     }
   });
 
@@ -1144,6 +1237,15 @@ if (typeof window !== "undefined") {
   // Record that `event`'s client(s) are viewing this machine, so nameless
   // root-relative subresources they emit can be attributed back to it. This
   // generalizes the former single-instance appClientIds set.
+  //
+  // This maps clientId -> name unconditionally for any resolved record,
+  // including the outer shell's own client. That is safe because the shell tab
+  // never issues a named app fetch (app/<name>/...) from its own client — its
+  // only role is to host the bridge and answer need-bridge; the app documents
+  // that do issue named fetches live in the iframe/viewer clients. Task 1
+  // dropped the old shell readiness-probe guard on this assumption, so if a
+  // future shell ever fetched a named URL from its own client it would be
+  // recorded as a viewer of that machine (and receive offline pushes for it).
   function markViewer(record, event) {
     if (event.clientId) {
       clientToInstance.set(event.clientId, record.name);
@@ -1347,21 +1449,57 @@ if (typeof window !== "undefined") {
     });
   }
 
-  // A well-formed but unknown or offline machine resolves to no instance. Task
-  // 3 upgrades this to a shared 503 HTML page; the spec makes offline/unknown a
-  // 503, so Task 1 serves a plain-text 503 with the isolation headers.
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // A well-formed but unknown or offline machine resolves to no live instance.
+  // Both cases are the same real boundary to a viewer — the machine is not
+  // running here — so both get one 503 HTML page naming the machine. 503 (not
+  // 404) keeps this consistent with the rest of the bridge: the name is a valid
+  // route, the machine behind it is just unavailable. The isolation headers let
+  // the page render inside the cross-origin-isolated app frame. `name` is always
+  // a validated instance name ([a-z-]), but it is escaped anyway so this stays
+  // safe if a future caller passes untrusted text.
   function offlineOrUnknownResponse(name) {
-    return new Response(
-      "Kandelo machine " + name + " is unavailable — please reload the page",
-      {
-        status: 503,
-        headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          "Cross-Origin-Embedder-Policy": "require-corp",
-          "Cross-Origin-Resource-Policy": "same-origin",
-        },
+    var safeName = escapeHtml(name);
+    var html = "<!doctype html>\n" +
+      "<html lang=\"en\">\n" +
+      "<head>\n" +
+      "<meta charset=\"utf-8\">\n" +
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
+      "<title>Kandelo machine offline</title>\n" +
+      "<style>\n" +
+      "  :root { color-scheme: light dark; }\n" +
+      "  body { margin: 0; min-height: 100vh; display: grid; place-items: center;\n" +
+      "    font: 16px/1.5 system-ui, sans-serif; background: Canvas; color: CanvasText; }\n" +
+      "  main { max-width: 32rem; padding: 2rem; text-align: center; }\n" +
+      "  h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }\n" +
+      "  code { background: color-mix(in srgb, CanvasText 12%, transparent);\n" +
+      "    padding: 0.1rem 0.35rem; border-radius: 0.25rem; }\n" +
+      "  p { margin: 0.5rem 0 0; }\n" +
+      "</style>\n" +
+      "</head>\n" +
+      "<body>\n" +
+      "<main>\n" +
+      "<h1>This Kandelo machine is offline</h1>\n" +
+      "<p>The machine <code>" + safeName + "</code> is not running here.</p>\n" +
+      "<p>Its hosting tab has closed. Open the machine again to start a new one.</p>\n" +
+      "</main>\n" +
+      "</body>\n" +
+      "</html>\n";
+    return new Response(html, {
+      status: 503,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin",
       },
-    );
+    });
   }
 
   // --- Per-instance bridge restoration ---
@@ -1377,7 +1515,10 @@ if (typeof window !== "undefined") {
     record.bridgeRestorePromise = requestBridgeFromClient(record).then(
       function (result) {
         record.bridgeRestorePromise = null;
-        return result;
+        if (result && record.bridgePort) return true;
+        // No live port arrived: decide terminal offline vs transient
+        // reconnecting from the owner's presence before reporting failure.
+        return classifyFailedRestore(record).then(function () { return false; });
       },
     ).catch(function () {
       record.bridgeRestorePromise = null;
@@ -1558,6 +1699,11 @@ if (typeof window !== "undefined") {
     var namedInPath = instanceNameFromPath(url.pathname);
     if (namedInPath) {
       event.respondWith(appPrefixReady.then(function () {
+        // Lazy crash detection: reconcile owners before dispatch so a host tab
+        // that crashed without sending instance-closing is retired on this
+        // request and its viewers get a machine-offline push + the 503 page.
+        return reconcileOwners();
+      }).then(function () {
         var record = instances.get(namedInPath) || null;
         if (!record) return offlineOrUnknownResponse(namedInPath);
         markViewer(record, event);
