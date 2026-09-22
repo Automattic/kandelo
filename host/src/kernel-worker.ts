@@ -3343,6 +3343,11 @@ export class CentralizedKernelWorker {
       // pid has no canvas bound yet; the kernel-worker's KMS registry
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      // CRTCs with a registered scanout canvas, so the GL auto-attach can
+      // resolve a canvas for a DRM-master pid that creates its GL context
+      // before binding an FB (SDL2's KMSDRM ordering). See
+      // WasmPosixKernel.tryAttachKmsGlCanvas.
+      getKmsCrtcIds: () => [...this.kmsCanvases.keys()],
       markKmsCanvasGlOwned: (crtcId: number) => {
         this.kmsContextMode.set(crtcId, "webgl2");
       },
