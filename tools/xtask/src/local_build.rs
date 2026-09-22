@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -406,7 +406,7 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
 /// fast). Setting `KANDELO_SOURCE_CACHE_ROOT` to an absolute path gives a
 /// worktree its own isolated cache instead; leaving it unset shares the
 /// machine-wide default. See `docs/agent-guidance/packages-and-builds.md`.
-fn default_source_cache_root() -> Result<PathBuf, String> {
+pub(crate) fn default_source_cache_root() -> Result<PathBuf, String> {
     resolve_source_cache_root(
         std::env::var_os("KANDELO_SOURCE_CACHE_ROOT"),
         std::env::var_os("HOME"),
@@ -604,12 +604,94 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
     let libc_a = sysroot_path.join("lib/libc.a");
     if libc_a.is_file() {
         let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
-        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])
+        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
     } else if arch == "wasm32posix" {
-        run_repo_script(repo, "scripts/build-musl.sh", &[])
+        run_repo_script(repo, "scripts/build-musl.sh", &[])?;
     } else {
-        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])
+        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])?;
     }
+    verify_sysroot_abi_headers(repo, &sysroot_path, arch)
+}
+
+/// Fail loud if a sysroot is missing — or holds stale copies of — the generated
+/// Kandelo ABI headers (`include/bits/kandelo_*.h`).
+///
+/// `dump-abi` regenerates these headers into `libc/musl-overlay/include/bits/`
+/// as the authoritative ABI surface, and `build-musl.sh` /
+/// `install-overlay-headers.sh` copy them into the sysroot. If a package build
+/// ever runs against a sysroot that lacks them (e.g. a half-installed or stale
+/// sysroot after an ABI change — `install-overlay-headers.sh` deletes the
+/// `kandelo_*.h` set before re-copying it), the SDK cc cannot even compile the
+/// autoconf conftests: `<limits.h>` pulls in `bits/kandelo_limits.h` and the
+/// channel-syscall glue pulls in `bits/kandelo_channel_scalars.h`. Every
+/// configure link/compile probe then fails for that reason and is recorded as
+/// "function absent", so e.g. gnulib's freading/fseterr modules fall back to a
+/// FILE-struct path that has no musl branch and emit a baffling
+/// `#error "Please port gnulib ... to your platform!"` far from the real cause.
+///
+/// Surface the incomplete sysroot as the truthful failure it is, before any
+/// package consumes it. This mirrors the sysroot to its overlay: the two must
+/// carry byte-identical `kandelo_*.h`, so this catches both a missing header
+/// and a stale one left behind by a skipped re-sync.
+fn verify_sysroot_abi_headers(repo: &Path, sysroot_path: &Path, arch: &str) -> Result<(), String> {
+    let overlay_bits = repo.join("libc/musl-overlay/include/bits");
+    let sysroot_bits = sysroot_path.join("include/bits");
+    let entries = match fs::read_dir(&overlay_bits) {
+        Ok(entries) => entries,
+        // No authoritative overlay bits dir means there is nothing to mirror;
+        // a missing overlay is a source-tree problem, not a sysroot one.
+        Err(_) => return Ok(()),
+    };
+    let mut missing = Vec::new();
+    let mut stale = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "verify sysroot ABI headers: reading {}: {error}",
+                overlay_bits.display()
+            )
+        })?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !(name_str.starts_with("kandelo_") && name_str.ends_with(".h")) {
+            continue;
+        }
+        let overlay_file = overlay_bits.join(&name);
+        let overlay_bytes = fs::read(&overlay_file).map_err(|error| {
+            format!(
+                "verify sysroot ABI headers: reading {}: {error}",
+                overlay_file.display()
+            )
+        })?;
+        match fs::read(sysroot_bits.join(&name)) {
+            Err(_) => missing.push(name_str.into_owned()),
+            Ok(bytes) if bytes != overlay_bytes => stale.push(name_str.into_owned()),
+            Ok(_) => {}
+        }
+    }
+    if missing.is_empty() && stale.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    stale.sort();
+    let mut detail = String::new();
+    if !missing.is_empty() {
+        detail.push_str(&format!("\n  missing: {}", missing.join(", ")));
+    }
+    if !stale.is_empty() {
+        detail.push_str(&format!("\n  stale (differ from overlay): {}", stale.join(", ")));
+    }
+    let arch_flag = if arch == "wasm32posix" {
+        String::new()
+    } else {
+        format!(" --arch {arch}")
+    };
+    Err(format!(
+        "sysroot {sysroot} is missing or has stale generated Kandelo ABI headers under include/bits/.{detail}\n\
+         The SDK cc cannot compile autoconf conftests against this sysroot (e.g. <limits.h> includes bits/kandelo_limits.h, and the channel-syscall glue includes bits/kandelo_channel_scalars.h), so package configure probes silently misreport libc functions as absent and builds fail with confusing downstream errors (e.g. gnulib \"Please port ... to your platform!\").\n\
+         Rebuild the sysroot with `scripts/build-musl.sh{arch_flag}` under scripts/dev-shell.sh; a stale sysroot must be rebuilt through the normal path, not consumed as-is.",
+        sysroot = sysroot_path.display(),
+    ))
 }
 
 /// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
@@ -1237,8 +1319,12 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
     let node = resolve_clean_target(&graph, &target)?;
     let removal = clean_removal_set(&graph, &node);
 
-    let compiled_cache_root =
-        plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?.compiled;
+    let planned_cache =
+        plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?;
+    #[cfg(unix)]
+    let _cache_use =
+        crate::cache_gc::CacheUseLock::acquire_shared_if_present(&planned_cache.base, "clean")?;
+    let compiled_cache_root = planned_cache.compiled;
     let output_root = repo.join("local-binaries/source-only-v1");
 
     let mut removed_paths = Vec::new();
@@ -1831,19 +1917,29 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // Sealed package builds run tools from the root node_modules but never
     // install them; provision the locked tree here, before any node runs.
     crate::root_js_deps::ensure_root_js_dependencies(&repo)?;
-    generate_vfs_product_catalog(&repo)?;
-    generate_program_package_index(&repo)?;
+    report_phase("Generating the VFS product catalog and program index", || {
+        generate_vfs_product_catalog(&repo)?;
+        generate_program_package_index(&repo)
+    })?;
     let set = resolve_repo_file(&repo, &args.set, "supported set")?;
     let set = fs::canonicalize(&set)
         .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
     let registry = fixed_registry(&repo);
-    let graph = load_and_plan(&repo, &set, &registry)?;
+    let graph = report_phase("Planning the build graph", || {
+        load_and_plan(&repo, &set, &registry)
+    })?;
     let selected = select_graph_dependencies(&graph, &args.products)?;
 
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
     validate_run_roots(&repo, &set, &planned_cache.base, &output_intended)?;
     let cache_roots = materialize_planned_source_only_cache_roots(&planned_cache)?;
+    // Held for the whole run, children included: `cache-gc` cannot remove a
+    // generation while any build holds this, so an entry admitted here cannot
+    // vanish before the run is done with it.
+    #[cfg(unix)]
+    let cache_use =
+        crate::cache_gc::CacheUseLock::acquire_shared(&cache_roots.base, "local-build")?;
     fs::create_dir_all(&output_intended).map_err(|error| {
         format!(
             "create local-build output root {}: {error}",
@@ -1897,7 +1993,9 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let skip_receipts = if args.rebuild || args.verify_cache {
         BTreeMap::new()
     } else {
-        compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
+        report_phase("Checking cached packages", || {
+            compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
+        })
     };
     let skip_receipts = Arc::new(skip_receipts);
     let results = execute_graph_with_events(
@@ -2030,6 +2128,12 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // disk. Leave it in place instead of re-deriving and re-publishing it.
     // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
     let eligible = package_projection_is_eligible(&selected, &results);
+    let publication_started = if eligible {
+        eprintln!("==> Finalizing {}...", output_root.display());
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let publication = if eligible {
         carry_forward_published_nodes(
             &registry,
@@ -2045,6 +2149,10 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     } else {
         Ok(None)
     };
+    // The compiled generations the published projection depends on --
+    // programs and the libraries under them -- recorded as this checkout's
+    // live root once publication succeeds.
+    let mut published_generations = None;
     let projection_finalization_error = match publication {
         Err(error) => Some(error),
         Ok(None) => {
@@ -2079,6 +2187,22 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             .err()
         }
         Ok(Some(publication)) => {
+            published_generations = Some(
+                publication
+                    .receipts
+                    .iter()
+                    .filter_map(|(node, receipt)| match node {
+                        PlanNodeV1::Package { name, target_arch } => {
+                            Some(crate::cache_gc::LiveRootGenerationV1 {
+                                name: name.clone(),
+                                target_arch: target_arch.clone(),
+                                cache_key_sha256: receipt.cache_key_sha256.clone(),
+                            })
+                        }
+                        PlanNodeV1::Product { .. } => None,
+                    })
+                    .collect::<BTreeSet<_>>(),
+            );
             let projection_up_to_date = expected_receipt_nodes
                 .iter()
                 .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
@@ -2112,6 +2236,9 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             }
         }
     };
+    if let Some(started) = publication_started {
+        report_phase_elapsed("Finalizing", started);
+    }
     if let Some(error) = &projection_finalization_error {
         if !aggregate_failed {
             eprintln!("{}", render_projection_failure_banner(color));
@@ -2145,6 +2272,31 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     } else {
         AggregateOutcomeV1::Failed
     };
+    #[cfg(unix)]
+    {
+        if projection_finalization_error.is_none() {
+            if let Some(generations) = published_generations {
+                // Written while still holding the cache, so no collection
+                // can run between this run's last use and the record.
+                if let Err(error) = crate::cache_gc::record_live_root(
+                    &cache_roots.base,
+                    &repo,
+                    &output_root,
+                    generations,
+                ) {
+                    eprintln!("local-build warning: record cache root: {error}");
+                }
+            }
+        }
+        // The collection needs the exclusive lock, which this process's own
+        // shared hold would block.
+        drop(cache_use);
+        if outcome == AggregateOutcomeV1::Succeeded {
+            crate::cache_gc::auto_collect_after_build(&cache_roots.base);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = published_generations;
     let result = LocalBuildRunResultV1 {
         schema: 1,
         policy: LOCAL_SUPPORTED_POLICY.to_string(),
@@ -2840,6 +2992,24 @@ fn write_node_result_no_replace(path: &Path, result: &NodeExecutionResultV1) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Announce a long-running engine phase on stderr and, when it takes a second
+/// or more, how long it took, so a run never sits silent for minutes between
+/// the scheduler's per-node lines.
+fn report_phase<T>(label: &str, phase: impl FnOnce() -> T) -> T {
+    eprintln!("==> {label}...");
+    let started = std::time::Instant::now();
+    let result = phase();
+    report_phase_elapsed(label, started);
+    result
+}
+
+fn report_phase_elapsed(label: &str, started: std::time::Instant) {
+    let elapsed = started.elapsed();
+    if elapsed.as_secs() >= 1 {
+        eprintln!("    {label} took {:.1}s", elapsed.as_secs_f64());
+    }
+}
+
 fn run_child_process(
     repo: &Path,
     set: &Path,
@@ -2895,23 +3065,56 @@ fn run_child_process(
     if verify_cache {
         command.arg("--verify-cache");
     }
-    let output = command
-        .output()
+    // Stream the child's output as it is produced rather than after it exits:
+    // a package build can run for minutes, and holding its log until the end
+    // makes the whole run look stalled. Both streams go to our stderr, because
+    // our stdout is the machine-readable result channel.
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("spawn local-build child {}: {error}", node_label(node)))?;
-    forward_child_output(node, &output.stdout);
-    forward_child_output(node, &output.stderr);
+    let label = node_label(node);
+    let forwarders = [
+        child.stdout.take().map(|stream| forward_child_output(label.clone(), stream)),
+        child.stderr.take().map(|stream| forward_child_output(label.clone(), stream)),
+    ];
+    let status = child
+        .wait()
+        .map_err(|error| format!("wait for local-build child {label}: {error}"))?;
+    for forwarder in forwarders.into_iter().flatten() {
+        // A forwarder only fails if writing our own stderr fails; the child's
+        // result below is still authoritative.
+        let _ = forwarder.join();
+    }
     let bytes = read_stable_regular_file(result_json, 64 * 1024, "local-build child result")?;
-    let exit_code = output.status.code();
+    let exit_code = status.code();
     validate_child_result(node, receipt_required, exit_code, &bytes)
 }
 
-fn forward_child_output(node: &PlanNodeV1, bytes: &[u8]) {
-    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        eprint!("[{}] {}", node_label(node), String::from_utf8_lossy(line));
-        if !line.ends_with(b"\n") {
-            eprintln!();
+/// Copy one child output stream to stderr line by line, prefixing each line
+/// with the node label. Each line is written under the stderr lock so lines
+/// from concurrently running nodes interleave whole, never mid-line.
+fn forward_child_output(
+    label: String,
+    stream: impl Read + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stream);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match std::io::BufRead::read_until(&mut reader, b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&line);
+                    let text = text.strip_suffix('\n').unwrap_or(&text);
+                    let mut stderr = std::io::stderr().lock();
+                    let _ = writeln!(stderr, "[{label}] {text}");
+                }
+            }
         }
-    }
+    })
 }
 
 fn render_scheduler_event(event: SchedulerEventV1, color: bool, aggregate_failed: &mut bool) {
@@ -5166,6 +5369,51 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn verify_sysroot_abi_headers_gates_missing_and_stale_headers() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let sysroot = temp.path().join("sysroot");
+        let overlay_bits = repo.join("libc/musl-overlay/include/bits");
+        let sysroot_bits = sysroot.join("include/bits");
+
+        write(&overlay_bits.join("kandelo_limits.h"), "#define KANDELO_LIMIT 1\n");
+        write(
+            &overlay_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 2\n",
+        );
+        // A non-kandelo bits header must be ignored by the mirror check.
+        write(&overlay_bits.join("alltypes.h"), "typedef int wasm_marker;\n");
+
+        // Complete, byte-identical sysroot -> Ok.
+        write(&sysroot_bits.join("kandelo_limits.h"), "#define KANDELO_LIMIT 1\n");
+        write(
+            &sysroot_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 2\n",
+        );
+        verify_sysroot_abi_headers(&repo, &sysroot, "wasm32posix")
+            .expect("complete, current sysroot headers must pass");
+
+        // Stale copy (content drifted from the overlay) -> loud failure.
+        write(
+            &sysroot_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 999\n",
+        );
+        let stale = verify_sysroot_abi_headers(&repo, &sysroot, "wasm32posix")
+            .expect_err("a stale ABI header must fail loud");
+        assert!(stale.contains("kandelo_channel_scalars.h"), "{stale}");
+        assert!(stale.contains("stale"), "{stale}");
+
+        // Missing header -> loud failure naming it, with rebuild guidance and
+        // the wasm64 arch flag threaded through.
+        fs::remove_file(sysroot_bits.join("kandelo_channel_scalars.h")).unwrap();
+        let missing = verify_sysroot_abi_headers(&repo, &sysroot, "wasm64posix")
+            .expect_err("a missing ABI header must fail loud");
+        assert!(missing.contains("kandelo_channel_scalars.h"), "{missing}");
+        assert!(missing.contains("missing"), "{missing}");
+        assert!(missing.contains("build-musl.sh --arch wasm64posix"), "{missing}");
     }
 
     #[test]

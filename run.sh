@@ -7,8 +7,12 @@
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh local-build [--json] Build all local SourceOnly VFS products
+#   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
+#                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
+#   ./run.sh build-browser [--base /p/] [--out DIR]
+#                                 Build the deployable static browser app
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
@@ -30,6 +34,9 @@
 #                                 worktrees. Set it to isolate a worktree whose
 #                                 in-progress change alters cached artifact
 #                                 bytes. See docs/package-management.md.
+#   KANDELO_CACHE_GC_AUTO         Set to 0 to stop a successful local build
+#                                 from garbage-collecting the SourceOnly cache
+#                                 (at most once a day). See `./run.sh cache-gc`.
 #
 set -euo pipefail
 
@@ -143,7 +150,7 @@ fi
 export WASM_POSIX_USE_PR_STAGING=$USE_PR_STAGING
 
 case "${1:-}" in
-    browser|prepare-browser)
+    browser|prepare-browser|build-browser)
         if [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
             [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] ||
             [ "$USE_PR_STAGING" -eq 1 ] ||
@@ -2392,6 +2399,20 @@ cmd_rebuild() {
     info "Rebuild complete"
 }
 
+# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE]` —
+# garbage-collect the SourceOnly build cache this checkout uses
+# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). A dry run
+# unless --apply; the policy and its safety rules live in `xtask cache-gc`
+# (tools/xtask/src/cache_gc.rs) and docs/package-management.md.
+cmd_cache_gc() {
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "cache-gc: could not build xtask"
+        exit 1
+    }
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" cache-gc "$@"
+}
+
 cmd_local_build() {
     local emit_json=0
     if [ "${1:-}" = "--json" ]; then
@@ -2599,6 +2620,81 @@ cmd_prepare_browser() {
     info "Local SourceOnly browser assets are ready"
 }
 
+# Build the deployable static browser app: the local SourceOnly products, the
+# authenticated VFS asset group, and a production Vite build bound to one
+# absolute URL prefix (`--base`, default `/`). The output directory is the
+# complete site to upload; see docs/browser-support.md
+# "Directory-scoped production hosting" for the hosting rules.
+cmd_build_browser() {
+    local base="/"
+    local out="$REPO_ROOT/apps/browser-demos/dist"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --base) [ $# -ge 2 ] || { err "--base requires a value"; exit 2; }
+                    base="$2"; shift 2 ;;
+            --base=*) base="${1#--base=}"; shift ;;
+            --out)  [ $# -ge 2 ] || { err "--out requires a directory"; exit 2; }
+                    out="$2"; shift 2 ;;
+            --out=*) out="${1#--out=}"; shift ;;
+            *)
+                err "Usage: $0 build-browser [--base /prefix/] [--out DIR]"
+                exit 2
+                ;;
+        esac
+    done
+    case "$base" in
+        /*/|/) ;;
+        *) err "--base must be an absolute URL path that starts and ends with '/', got '$base'"; exit 2 ;;
+    esac
+    case "$out" in
+        /*) ;;
+        *) out="$PWD/$out" ;;
+    esac
+
+    cmd_prepare_browser
+
+    # The private product map names local paths and must never be published,
+    # so it and the group it authenticates live under local-binaries/, never
+    # under the output directory.
+    step "Building production browser app for $base"
+    # dev-shell.sh does not forward arbitrary caller environment, so the
+    # inner script takes the repo root, base, and output as arguments.
+    bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+        set -euo pipefail
+        cd "$1"
+        export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+        export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+        export KANDELO_PAGES_PRODUCT_MAP="$PWD/local-binaries/pages-vfs-products.private.json"
+        export KANDELO_PAGES_VFS_ASSET_GROUP_DIR="$PWD/local-binaries/vfs-group"
+        if [ ! -d apps/browser-demos/node_modules ] ||
+           [ apps/browser-demos/package-lock.json -nt apps/browser-demos/node_modules ]; then
+            npm --prefix apps/browser-demos ci --no-audit --no-fund
+        fi
+        echo "==> Building the authenticated VFS asset group..."
+        node node_modules/tsx/dist/cli.mjs scripts/build-local-vfs-asset-group.ts \
+            "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
+        VITE_BASE="$2" npm --prefix apps/browser-demos run build -- \
+            --outDir "$3" --emptyOutDir
+    ' build-browser "$REPO_ROOT" "$base" "$out"
+
+    # Fail loudly on an incomplete site rather than letting it be uploaded.
+    local missing=0 required
+    for required in index.html service-worker.js vfs-groups; do
+        if [ ! -e "$out/$required" ]; then
+            err "build-browser: $out/$required is missing"
+            missing=1
+        fi
+    done
+    if [ -e "$out/pages-vfs-products.private.json" ]; then
+        err "build-browser: the private product map leaked into $out"
+        missing=1
+    fi
+    [ "$missing" -eq 0 ] || exit 1
+
+    info "Browser app built: $out"
+    info "Upload the contents of that directory so it is served at exactly $base"
+}
+
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
 
@@ -2747,6 +2843,8 @@ cmd_list() {
     echo "  ./run.sh local-build                Build all seven local VFS products"
     echo "                                        and their package dependencies"
     echo "  ./run.sh local-build --json         Emit the canonical machine result"
+    echo "  ./run.sh cache-gc                   Show what cache GC would remove (dry run)"
+    echo "  ./run.sh cache-gc --apply           Remove unused SourceOnly cache entries"
     echo ""
     echo "${BOLD}Build targets:${RESET}"
     # kernel/sysroot/sysroot64/sdk/host/rootfs status below is inlined
@@ -2840,6 +2938,8 @@ cmd_list() {
     echo "${BOLD}Browser:${RESET}"
     echo "  ./run.sh prepare-browser             Build local SourceOnly browser assets"
     echo "  ./run.sh browser                     Build locally and start the Vite dev server"
+    echo "  ./run.sh build-browser [--base /p/] [--out DIR]"
+    echo "                                       Build the deployable app (default: / into apps/browser-demos/dist)"
     echo ""
     echo "${BOLD}Test suites:${RESET}"
     echo "  ./run.sh test                        Run default suites (cargo + vitest + libc + posix)"
@@ -2864,8 +2964,10 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     local-build) cmd_local_build "${@:2}" ;;
+    cache-gc) cmd_cache_gc "${@:2}" ;;
     setup)    cmd_setup "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
+    build-browser) cmd_build_browser "${@:2}" ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;
