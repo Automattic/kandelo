@@ -90,66 +90,45 @@ pattern that is about to be deleted.
 
 ## Global Constraints
 
-> ### THE VFORK-TEARDOWN CONSTRAINT — discovered by bisection 2026-09-22, and it binds every task here
+> ### THE VFORK-TEARDOWN CONSTRAINT IS REFUTED — it was a bug, and it is fixed
 >
-> **The module must not issue a channel syscall from the vfork child's exit
-> teardown.** The parent is parked in its own vfork syscall on the same
-> channel, and a syscall from the child at that moment kills the guest —
-> SIGSEGV rather than a trap, because the resume index is what places
-> `call_indirect` targets.
+> This section previously recorded, as a platform law, that the module must not
+> issue a channel syscall from the vfork child's exit teardown. **That is not
+> true.** It was a symptom of a use-after-free, now fixed in `47f2decea`.
 >
-> This was established by bisecting three builds, not inferred:
+> **The defect:** the borrowed vfork child unmapped its own fork-module region
+> as soon as its replay finished — to avoid leaking ~5.4 MiB into the parked
+> parent — and then kept calling into that module. Not two callers as first
+> diagnosed but **five**: the worker tail's proof-of-use block makes six
+> `fm_stats` reads (a borrowed vfork child *is* `isForkChild: true`), and any
+> later `kernel_fork` calls `fm_phase()`, whose `PHASE` is a module static in
+> the freed BSS. Measured: the watermark's address falls inside the freed range
+> and afterwards reads 0, which no writer in the module can produce.
 >
-> * stubbing the scrub's `munmap` — still red;
-> * stubbing the free's mapping — **green**;
-> * replacing the mapping with a bare `mmap`+`munmap` pair that keeps, links
->   and writes nothing — **still red**.
+> **The refutation is an experiment, not an argument.** The reverted arena
+> conversion was reproduced bit-for-bit (build key `866a61cd…`) and applied on
+> top of the fix: `vfork-lifecycle-guest` 6 passed, `fork-resume-slot-bitmap`
+> 3 passed, `fork-instrument-coverage` 42 passed including `P-08 vfork child
+> exit resumes the parent`. The child's first `free_bits_mark` performs a
+> `channel_mmap` **while the parent is parked on the shared channel** — the
+> exact mechanism the "constraint" named — and nothing crashes.
 >
-> That last one is the whole finding. It eliminates the chunk, the layout and
-> the memory growth together and leaves only the call site. The reaching path
-> is `worker-main.ts:5269` into `resume_unregister_impl`.
+> **So: do not design around this.** A store's free path may allocate. If you
+> inherited a brief saying otherwise, that brief is stale.
 >
-> **What it means for you.** Before converting a store, ask whether its FREE
-> path can be reached from vfork-child teardown. If it can, that store cannot
-> be arena-backed *at the point it is freed* — allocating there is not slow or
-> risky, it is fatal. The fix shape is to derive what you need at ALLOCATION
-> time, so freeing becomes pure compaction with no storage and no syscall,
-> which is also what Task 1's "compaction IS the decrement" already implies.
+> **What IS still true, and is the durable lesson:** the bisection that
+> produced the false law was sound in every step. Three builds, correctly
+> interpreted, and the conclusion was still one layer too high — it named the
+> syscall because the syscall was the loudest thing in the window, when
+> *everything* in that window was touching freed memory. A clean bisection
+> tells you where, not why, and "where" is only the answer if you already know
+> the layer.
 >
-> **Do not discover this per task.** It cost one task a full cycle and a red
-> HEAD. If your store's free path is reachable from teardown, say so in your
-> report before you write code.
->
-> ### ⚠ THIS "CONSTRAINT" IS PROBABLY A BUG SYMPTOM — do not treat it as a law
->
-> A later investigation found a **live use-after-free in the same window**, and
-> it may be the whole explanation for the bisection above.
->
-> `host/src/worker-main.ts:4122-4132` has the borrowed vfork child
-> `channel_munmap` **its own fork-module region** as soon as its replay
-> finishes, to avoid leaking ~5.4 MiB into the parked parent. Then `:5268`
-> `forkModule().abort()` and `:5269` `resumeTable.clear()` call that module
-> again — **through memory already handed back to the kernel.**
->
-> Measured, pid 104: the watermark's address 14,354,292 sits inside the freed
-> range [14,352,384, 18,153,472), and after the munmap it reads **0** — a value
-> no writer can produce (`set_format_impl` stores 1, `resume_allocate_slot`
-> stores `slot+1 ≥ 2`). The clobber is partial: the 768 KiB index survives, the
-> early statics do not. Only the child that then attempts nested fork / vfork /
-> `pthread_create` fails; the others munmap identically and are not correct,
-> merely **unreused**.
->
-> So "the module must not issue a channel syscall from teardown" may not be a
-> property of vfork at all — it may be that *everything* in that window touches
-> freed memory, and a syscall is simply the loudest way to notice.
->
-> **What this means for you:** the ordering hazard above is real and worth
-> respecting until the use-after-free is closed. But **do not design around it
-> as permanent**, and do not cite it as a reason a store cannot be converted.
-> Once the teardown is fixed — by moving the pair ahead of the munmap, the
-> munmap after it, or asking whether the borrowed child needs `abort()` and
-> `clear()` at all, since its module state dies with the region — this must be
-> **re-measured**, not assumed to have survived.
+> **Still open, and it belongs to whoever re-lands the conversion:** the arena
+> conversion is not yet re-landable — `fork-module-instance` fails
+> `expected 22 to be +0` in a channel-less unit context. That is a real defect
+> and it is undiagnosed. The reverted conversion is preserved as a marked
+> appendix in Task 2's report.
 >
 > ### The sweep command, and a claim I withdrew
 >
