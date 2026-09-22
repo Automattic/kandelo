@@ -120,6 +120,37 @@ pattern that is about to be deleted.
 > HEAD. If your store's free path is reachable from teardown, say so in your
 > report before you write code.
 >
+> ### ⚠ THIS "CONSTRAINT" IS PROBABLY A BUG SYMPTOM — do not treat it as a law
+>
+> A later investigation found a **live use-after-free in the same window**, and
+> it may be the whole explanation for the bisection above.
+>
+> `host/src/worker-main.ts:4122-4132` has the borrowed vfork child
+> `channel_munmap` **its own fork-module region** as soon as its replay
+> finishes, to avoid leaking ~5.4 MiB into the parked parent. Then `:5268`
+> `forkModule().abort()` and `:5269` `resumeTable.clear()` call that module
+> again — **through memory already handed back to the kernel.**
+>
+> Measured, pid 104: the watermark's address 14,354,292 sits inside the freed
+> range [14,352,384, 18,153,472), and after the munmap it reads **0** — a value
+> no writer can produce (`set_format_impl` stores 1, `resume_allocate_slot`
+> stores `slot+1 ≥ 2`). The clobber is partial: the 768 KiB index survives, the
+> early statics do not. Only the child that then attempts nested fork / vfork /
+> `pthread_create` fails; the others munmap identically and are not correct,
+> merely **unreused**.
+>
+> So "the module must not issue a channel syscall from teardown" may not be a
+> property of vfork at all — it may be that *everything* in that window touches
+> freed memory, and a syscall is simply the loudest way to notice.
+>
+> **What this means for you:** the ordering hazard above is real and worth
+> respecting until the use-after-free is closed. But **do not design around it
+> as permanent**, and do not cite it as a reason a store cannot be converted.
+> Once the teardown is fixed — by moving the pair ahead of the munmap, the
+> munmap after it, or asking whether the borrowed child needs `abort()` and
+> `clear()` at all, since its module state dies with the region — this must be
+> **re-measured**, not assumed to have survived.
+>
 > ### The sweep command, and a claim I withdrew
 >
 > **Use `npx vitest run test/fork- test/vfork-`, and expect 81 files.** A real
