@@ -171,18 +171,53 @@ and `ingest`:
                 "packages": ["dinit@local", "nginx@local", "..."] },
   "runtime":  { "features": [], "network": true,
                 "requests": { "memoryPages": 16384, "maxWorkers": 24 } },
-  "init":     { "argv": ["/sbin/dinit","--container","-p","/tmp/dinitctl","nginx"],
-                "cwd": "/root", "uid": 0, "gid": 0, "env": { "...": "..." } },
-  "web":      { "requiredPorts": [8080, 9000],
-                "requiredServices": ["..."], "probeHttp": true,
+  "init":     { "target": "nginx" },
+  "web":      { "requiredPorts": [8080, 9000], "probeHttp": true,
                 "probePath": "/..." }
 }
 ```
 
-A profile with no `init` block boots the image's shell session; `shell`
-carries the env/cwd/uid/gid that `SHELL_PROFILES` holds today, which is
-how the Node machine's `npm_config_*` environment stops being an
-app-side constant.
+### demo.json selects; the image configures
+
+`init` names a **target**, not a command vector. The machine's actual
+init configuration already lives in the image in standard locations, and
+`demo.json`'s only job is choosing which one to bring up.
+
+This is not a simplification for its own sake — the duplication is
+already in the tree. `addDinitInit` bakes `/sbin/dinit`,
+`/sbin/dinitctl`, `/etc/dinit.d/boot`, and `/etc/dinit.d/<name>` into
+every service image (`images/vfs/scripts/dinit-image-helpers.ts:388-440`).
+Consequences:
+
+- **`init.argv` is a target selector in disguise.** All four service
+  profiles share one `DINIT_NGINX_ARGV`; they differ only by which
+  service is the container target and which image they run in.
+- **`REQUIRED_DINIT_SERVICES` duplicates the image.**
+  `/etc/dinit.d/boot` is a dependency aggregator naming every service,
+  so the readiness service list (`dinit-boot-status.ts:13`) is a
+  hand-maintained copy of something the image already states. Derive it
+  from the image; delete the table.
+- **Process identity and environment are already POSIX-shaped.** dinit
+  services carry their own uid and env per service; `/usr/bin/login -p
+  -f maker` establishes shell identity (already what
+  `images/vfs/products/browser-main-shell.toml` declares); and
+  `/etc/profile.d` is already in use by the node image
+  (`build-node-zip.ts:68`). So `SHELL_PROFILES`, `NODE_SHELL_ENV`, and
+  `INIT_ENV_PROFILES` move into the image's own profile scripts, not
+  into `demo.json`.
+
+A profile with no `init` block boots the image's default login session.
+
+What stays in `demo.json` is selection and presentation: which target,
+which panes, which guide, what the listing shows. What moves into the
+image is configuration: service definitions, environment, identity.
+A third-party image then configures init the ordinary way rather than
+learning a Kandelo-browser-specific JSON dialect.
+
+`web.requiredPorts`, `probeHttp`, and `probePath` stay in `demo.json`
+deliberately: they tell the *host UI* when to flip the web pane to
+ready. That is a presentation concern, not init configuration, and
+deriving ports would mean parsing `nginx.conf`.
 
 The image also declares `defaultProfile`, replacing
 `DEFAULT_DEMO_FOR_VFS_IMAGE`.
@@ -198,18 +233,25 @@ The machine's init — argv, env, cwd, uid, gid, and the init program's
 bytes — comes from the image and from nowhere else. Two paths violate
 this today and both are closed by this work.
 
-**The init binary is fetched from the page origin.**
-`live-setup.ts:140` imports `dinit.wasm?url` from the repo binary graph,
-and `:1436-1443` fetches it and `writeVfsBinary`s it into the image at
-`profile.init.argv[0]` during staging. The platform already knows this
-is wrong: it is suppressed whenever `CANONICAL_PAGES_VFS_LOADER` is
-defined (`:1004`, `:1035`, `:1088-1090`), with the comment "Canonical
-Pages products own their complete executable closure just like an
-explicit VFS descriptor does." This work makes that unconditional —
-`dinit` ships in the image, `programUrl` and the staging fetch are
-deleted. An image whose init binary the host injects at boot is not
-self-describing, and cannot be booted by a third party from `?vfs=`
-alone.
+**The init binary is fetched from the page origin, over one the image
+already has.** `live-setup.ts:140` imports `dinit.wasm?url` from the repo
+binary graph, and `:1436-1443` fetches it and `writeVfsBinary`s it into
+the image at `profile.init.argv[0]` during staging — but
+`addDinitInit` already baked `/sbin/dinit` into that image at build time
+(`dinit-image-helpers.ts:423`, `installDinitBinariesUnlessInherited`).
+So this is not merely init arriving from outside the image; it is a
+page-origin binary silently overwriting the one the image shipped,
+which is precisely the stale-artifact class the ABI contract says must
+fail loudly rather than be papered over.
+
+The platform already half-knows this: the fetch is suppressed whenever
+`CANONICAL_PAGES_VFS_LOADER` is defined (`:1004`, `:1035`,
+`:1088-1090`), with the comment "Canonical Pages products own their
+complete executable closure just like an explicit VFS descriptor does."
+This work makes that unconditional — `programUrl` and the staging fetch
+are deleted outright. An image whose init binary the host injects at
+boot is not self-describing and cannot be booted by a third party from
+`?vfs=` alone.
 
 **A caller-supplied descriptor can replace init argv.**
 `effectiveBoot` spreads `requestedDescriptor.boot` over the profile's
@@ -343,7 +385,10 @@ consent step already required by
 - `PRESET_LIBRARY` and `presets.ts` as the "reviewed preset authority"
 - `builtinDemoGuide`, `builtinDemoPresentation`, `builtinDemoAssets`
 - `SHELL_PROFILES`, `INIT_ENV_PROFILES`, `NODE_SHELL_ENV`, and the
-  per-profile env constants
+  per-profile env constants — these move into the image's own
+  `/etc/profile.d` and dinit service definitions, not into `demo.json`
+- `REQUIRED_DINIT_SERVICES` (`dinit-boot-status.ts:13`), derived instead
+  from the image's `/etc/dinit.d/boot` dependency list
 - `stageSdl2Runtime`, `stageEspeakRuntime`, `stageEvdevDemo` — their
   binaries and shader presets move into the image builder, since an
   image whose programs the host injects at boot is not self-describing
@@ -367,6 +412,13 @@ app's id tables are deleted only once nothing reads them.
    `images/vfs/scripts/kandelo-demo-guides.ts` (a nine-line re-export of
    the app module) so build-time content and runtime fallback stop
    sharing one file.
+
+2b. **Init configuration into the image.** Move the app's shell and
+   service environments into `/etc/profile.d` and dinit service
+   definitions, so `demo.json`'s `init` block reduces to a target name.
+   This precedes the app cutover deliberately: baking an `init.argv`
+   into nine tracked files and migrating it afterwards would ship the
+   wrong schema shape to any third party who adopts it first.
 3. **Binaries into images.** Bake `sdl2`, `evdev_demo`, `espeak-ng` plus
    shader presets into the shell image, and `dinit` into every image
    whose profile declares it as init; delete the three staging functions
