@@ -3,7 +3,6 @@ description = "Core server stack packages and libraries for Kandelo CI."
 
 packages = [
   "kernel",
-  "userspace",
   "nginx",
   "php",
   "sqlite",

@@ -316,12 +316,16 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
 /**
  * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
  *
- * Lookup order for `@kernel-wasm` (first hit wins):
- *   1. `<repoRoot>/local-binaries/kernel.wasm` — populated by `bash build.sh`.
- *   2. `<repoRoot>/binaries/kernel.wasm` — populated by `./run.sh fetch`.
+ * `@kernel-wasm` resolves through the same authoritative path as every other
+ * host consumer: the SourceOnly-v1 projection when
+ * `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` is configured, otherwise
+ * `tryResolveBinary("kernel.wasm")` (the shared resolver's ordered
+ * `local-binaries/source-only-v1` → `local-binaries` → `binaries` →
+ * installed-package tiers). There is no legacy fallback path; a missing
+ * kernel fails loudly instead.
  *
  * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs` (built by
- * mkrootfs during `bash build.sh`).
+ * mkrootfs during `./run.sh setup`).
  *
  * Resolution is deferred until import time so pages that don't consume
  * these aliases can run without a kernel build present. Pages that do
@@ -350,11 +354,8 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
               configuredSourceOnlyRoot,
           );
         }
-        const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
-        const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
         this.error(
-          "kernel.wasm not found, or every candidate is stale. Run `bash build.sh` from the repo root.\n" +
-            `  Looked at: ${local}\n  Looked at: ${fetched}`,
+          "kernel.wasm not found. Build it with ./run.sh setup (or cargo xtask bootstrap kernel).",
         );
       }
       if (pathPart === ROOTFS) {

@@ -29,6 +29,23 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+# Reproducibility: NetHack's host makedefs bakes the build date/time into
+# include/date.h — BUILD_DATE, BUILD_TIME, VERSION_ID ("... last build <when>")
+# and the copyright banner all derive from it. makedefs uses the wall clock
+# unless it is compiled with REPRODUCIBLE_BUILD, in which case it takes the date
+# from SOURCE_DATE_EPOCH instead (see util/makedefs.c do_date()). We enable
+# REPRODUCIBLE_BUILD on the util build below.
+#
+# makedefs sanity-checks SOURCE_DATE_EPOCH and rejects anything before 3.6.0's
+# release (7-Dec-2015) or >24h in the future, reverting to the wall clock. The
+# local-build engine sets SOURCE_DATE_EPOCH to 315532800 (1980-01-01, the
+# ZIP/DOS epoch floor), which predates that window — so honor the engine's value
+# when it is acceptable, but bump it to a fixed valid instant when it is too old
+# (or unset). Either way both builds embed the same date. 1704067200 =
+# 2024-01-01T00:00:00Z; the floor below is 2015-12-07T00:00:00Z.
+if [ "${SOURCE_DATE_EPOCH:-0}" -lt 1449446400 ]; then
+    export SOURCE_DATE_EPOCH=1704067200
+fi
 SRC_DIR="$WORK_DIR/nethack-src"
 BIN_DIR="$WORK_DIR/bin"
 RUNTIME_DIR="$WORK_DIR/runtime"
@@ -409,6 +426,19 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
 
     echo "# wasm32posix patch" >> "$SRC_MAKEFILE"
     rm -f "$SRC_MAKEFILE.bak"
+fi
+
+# --- Patch util/Makefile to compile makedefs with REPRODUCIBLE_BUILD ---
+#
+# makedefs only honors SOURCE_DATE_EPOCH (exported above) when built with
+# REPRODUCIBLE_BUILD. Enabling it via include/config.h did not reach makedefs's
+# compile in practice, so append it to the util Makefile's CFLAGS directly.
+# `+=` at the end is the last assignment make sees, so it survives any earlier
+# `CFLAGS=` in the hints-generated Makefile.
+UTIL_MAKEFILE="util/Makefile"
+if [ -f "$UTIL_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$UTIL_MAKEFILE"; then
+    echo "==> Patching util/Makefile (REPRODUCIBLE_BUILD)..."
+    printf '\nCFLAGS+=-DREPRODUCIBLE_BUILD\n# wasm32posix patch\n' >> "$UTIL_MAKEFILE"
 fi
 
 # --- Phase 1: host build of util tools + data generation ---

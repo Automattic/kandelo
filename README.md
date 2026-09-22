@@ -24,6 +24,7 @@ Real, unmodified software compiled to WebAssembly:
 | Vim | 9.1 | Full editor with ncurses terminal UI |
 | NetHack | 3.6.7 | Classic roguelike with curses UI |
 | fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
+| espeak-ng | 1.52 | Speech synthesis; plays through upstream pcaudiolib's OSS backend on `/dev/dsp` |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
 | SpiderMonkey | 140 ESR | JavaScript engine backing the Node.js-compatible runtime with Intl, SharedArrayBuffer, worker_threads, and npm package installs. |
@@ -274,9 +275,21 @@ unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
-Production output is bound to the absolute prefix selected at build time. Once
-the SourceOnly projection above exists, produce its authenticated VFS group and
-build separate distributions for `/a/` and `/candidate-b/`:
+To build the deployable static site, run:
+
+```bash
+./run.sh build-browser                      # site root, e.g. https://kandelo.dev/
+./run.sh build-browser --base /kandelo/ --out build/kandelo   # under a prefix
+```
+
+It runs the local build, produces the authenticated VFS asset group, runs the
+production Vite build, and checks the result. Upload the contents of the
+output directory (default `apps/browser-demos/dist/`) so it is served at
+exactly the chosen base.
+
+Production output is bound to the absolute prefix selected at build time. The
+equivalent manual steps, here building separate distributions for `/a/` and
+`/candidate-b/`, are:
 
 ```bash
 scripts/dev-shell.sh bash -lc '
@@ -349,6 +362,7 @@ bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
 bash packages/registry/curl/build-curl.sh           # curl
 bash packages/registry/netcat/build-netcat.sh        # GNU Netcat 0.7.1
 bash packages/registry/make/build-make.sh           # GNU make
+bash packages/registry/espeak-ng/build-espeak-ng.sh # espeak-ng 1.52
 ```
 
 See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own software.
@@ -378,7 +392,6 @@ scripts/run-sortix-tests.sh --all
 crates/
   shared/            Shared types (Errno, syscall numbers, flags, channel layout)
   kernel/            Kernel implementation (syscalls, fd table, signals, pipes, sockets, PTY)
-  userspace/         User-space stub library
 host/
   src/               TypeScript host runtime shared by Node.js and browser hosts
     node-kernel-host.ts / node-kernel-worker-entry.ts

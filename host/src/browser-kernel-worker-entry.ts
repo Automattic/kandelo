@@ -1510,6 +1510,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       cwd: msg.cwd,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     workerCreationAttempted = true;
@@ -2054,6 +2055,7 @@ async function handleVfork(
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     childWorker = new DeferredWorkerHandle(() => {
@@ -2426,6 +2428,7 @@ async function handleOrdinaryFork(
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2795,6 +2798,7 @@ async function handleExec(
         env: envp,
         ptrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+        kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
       };
 
       replacementWorker = new DeferredWorkerHandle(() => {
@@ -3177,6 +3181,7 @@ async function handlePosixSpawn(
       env: envp,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     newWorker = new DeferredWorkerHandle(
@@ -3394,6 +3399,7 @@ async function handleClone(
     tlsAllocAddr: alloc.tlsAllocAddr,
     ptrWidth: processInfo.ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
   };
 
   threadWorker = new DeferredWorkerHandle(
@@ -4461,6 +4467,15 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "fb_release_generation_ack":
       acknowledgeMainFramebufferRelease(msg.requestId);
+      break;
+    case "input_event_inject":
+      kernelWorker.injectInputEvent(msg.device, msg.ev_type, msg.code, msg.value);
+      break;
+    case "input_event_batch_inject":
+      kernelWorker.injectInputEventBatch(msg.records);
+      break;
+    case "set_input_canvas_dims":
+      kernelWorker.setInputCanvasDims(msg.width, msg.height);
       break;
     default: {
       // Every typed MainToKernelMessage must have a case above. Browser

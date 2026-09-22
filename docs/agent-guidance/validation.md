@@ -20,7 +20,7 @@ Core validation surface:
 
 | Suite | Command | Primary evidence for |
 |---|---|---|
-| Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, userspace, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
+| Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
 | Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
@@ -92,7 +92,11 @@ part of the task. Build or fetch what is missing:
    scripts/dev-shell.sh bash scripts/build-musl.sh
    ```
 3. **Node dependencies** — `node_modules` are per-checkout, and both the repo
-   root (the conformance runners load `tsx` from root) and `host/` are needed:
+   root (the conformance runners load `tsx` from root) and `host/` are needed.
+   `./run.sh setup` and `./run.sh local-build` already run the root `npm ci`
+   when root `node_modules/` is missing or out of sync with
+   `package-lock.json` (sealed package builds such as rootfs and shell run
+   `node_modules/tsx` but never install it themselves); `host/` is separate:
    ```bash
    npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
    (cd host && npm ci)

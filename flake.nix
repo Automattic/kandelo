@@ -167,6 +167,13 @@
             # coreutils.wasm running inside Kandelo — help2man only
             # reformats already-faithful text into troff.
             pkgs.help2man
+            # libfaketime provides `faketime`, which the determinism check
+            # (scripts/check-determinism.sh → xtask check-determinism) uses to
+            # run its two builds under distinct wall clocks. Without it the two
+            # builds still differ by a few real seconds, but that weaker clock
+            # variation can miss timestamp-embedding non-determinism; faketime
+            # forces a large, deterministic clock skew so those gaps surface.
+            pkgs.libfaketime
             # Mozilla CA bundle — Nix's curl is built against
             # cacert and looks up its bundle via SSL_CERT_FILE /
             # NIX_SSL_CERT_FILE / GIT_SSL_CAINFO. Pure-shell
@@ -219,6 +226,25 @@
             # host prefixes.
             pkgs.xcbuild
         ];
+
+        # A macOS SDK for the ONE build that needs a newer one than the dev
+        # shell's default. SpiderMonkey's configure refuses any macOS SDK
+        # older than 15.5 (`mac_sdk_min_version()` in
+        # build/moz.configure/toolchain.configure), and this nixpkgs pins the
+        # default Darwin SDK at 14.4 -- so before this existed, the recipe
+        # reached outside Nix for /Applications/Xcode.app instead, which is
+        # how it came to depend on whichever Xcode the machine happened to
+        # have. Exposed as an environment variable rather than added to
+        # devShellPackages on purpose: putting it in the package set would
+        # move SDKROOT for every host-side compile in the shell (perl's
+        # miniperl, MariaDB's host tools, every configure probe) from 14.4 to
+        # 15.5, and nothing but SpiderMonkey needs that.
+        #
+        # 15.5 and not the newest available: the failure this replaced was a
+        # too-NEW SDK (see packages/registry/spidermonkey/build-spidermonkey.sh),
+        # so the oldest version Mozilla accepts is the safest point to sit.
+        macosSdk = pkgs.lib.optionalString pkgs.stdenv.isDarwin
+          "${pkgs.apple-sdk_15}";
       in {
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
@@ -243,6 +269,14 @@
             export RANLIB="$LLVM_BIN/llvm-ranlib"
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
+            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+            # The newer-than-default macOS SDK described at `macosSdk` above.
+            # Only the SpiderMonkey recipe reads these; the shell's own
+            # SDKROOT/DEVELOPER_DIR stay on the nixpkgs default so no other
+            # host-side build changes SDK underneath it.
+            export KANDELO_MACOS_DEVELOPER_DIR="${macosSdk}"
+            export KANDELO_MACOS_SDK_DIR="${macosSdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+            ''}
             # CA bundle for HTTPS — pure-shell strips the user's
             # SSL_CERT_FILE; without an explicit re-export, every
             # `curl https://…` returns exit 77 ("Problem with the

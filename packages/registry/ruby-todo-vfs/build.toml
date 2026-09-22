@@ -1,0 +1,22 @@
+script_path = "images/vfs/scripts/build-ruby-todo-vfs-image.sh"
+inputs = [
+  "images/vfs/scripts/build-ruby-todo-vfs-image.sh",
+  "images/vfs/scripts/build-ruby-todo-vfs-image.ts",
+  "images/vfs/scripts/staged-product-inputs.ts",
+  "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/vfs/scripts/kandelo-demo-config.ts",
+  "images/vfs/scripts/package-shell-vfs-build.ts",
+  "images/vfs/scripts/shell-lazy-archives.ts",
+  "images/vfs/scripts/source-rootfs-shell-overlay.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/ruby-todo-app",
+  "images/rootfs/etc/services",
+  "host/src",
+  "web-libs/kandelo-session/src/demo-config.ts",
+  "web-libs/kandelo-session/src/experimental-terminal-session.ts",
+  "web-libs/kandelo-session/src/vfs-capacity.ts",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 6

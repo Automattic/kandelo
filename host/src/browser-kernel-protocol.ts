@@ -13,6 +13,7 @@ import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { InputEvent } from "./input/input-source";
 import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
@@ -301,6 +302,47 @@ export interface MouseInjectMessage {
 }
 
 /**
+ * Main-thread → kernel-worker evdev injection. The main thread's
+ * `BrowserInputSource` translates DOM events to evdev records and
+ * forwards them here; the worker calls
+ * `CentralizedKernelWorker.injectInputEvent` which routes the record
+ * through the kernel's fan-out (`kernel_input_event` → `push_event`)
+ * to `/dev/input/event{0,1}` and wakes any blocked reader.
+ */
+export interface InputEventInjectMessage {
+  type: "input_event_inject";
+  device: 0 | 1;
+  ev_type: number;
+  code: number;
+  value: number;
+}
+
+/**
+ * Main-thread → kernel-worker batched evdev injection. One `SYN_REPORT`
+ * frame's worth of records crosses in a single message so the worker runs
+ * one kernel entry and one pending-reader wake scan for the whole frame
+ * instead of one per record. `attachInputSource` produces these via
+ * `batchBySynReport`; `injectInputEvent` remains for single-record paths.
+ */
+export interface InputEventBatchInjectMessage {
+  type: "input_event_batch_inject";
+  records: InputEvent[];
+}
+
+/**
+ * Main-thread → kernel-worker canvas-dims update. Tells the kernel
+ * the current host canvas dimensions so EVIOCGABS on
+ * `/dev/input/event1` reports the right `ABS_X.maximum` /
+ * `ABS_Y.maximum`. Sent at boot once the canvas exists; resend on
+ * canvas resize.
+ */
+export interface SetInputCanvasDimsMessage {
+  type: "set_input_canvas_dims";
+  width: number;
+  height: number;
+}
+
+/**
  * Main-thread → kernel-worker audio drain request. The main thread's
  * AudioContext scheduler ticks every ~50 ms, asks the kernel ring for
  * up to `maxBytes` of PCM samples, and feeds them to a chained
@@ -451,6 +493,9 @@ export type MainToKernelMessage =
   | GetKernelMemoryPagesRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
+  | InputEventInjectMessage
+  | InputEventBatchInjectMessage
+  | SetInputCanvasDimsMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

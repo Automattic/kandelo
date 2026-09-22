@@ -18,7 +18,7 @@
  *
  * Usage: tsx generate-coreutils-man.ts <coreutils.wasm> <capture-dir>
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
 
@@ -44,27 +44,43 @@ const TOOLS = [
   "chroot", "cksum", "install", "kill", "runcon", "tail",
 ];
 
-async function capture(bin: string, tool: string, flag: string): Promise<string> {
+async function capture(
+  bin: string,
+  tool: string,
+  flag: string,
+  kernelWasmBytes: Uint8Array,
+  rootfsImage: Uint8Array,
+): Promise<string> {
   const { stdout } = await runCentralizedProgram({
     programPath: bin,
     argv: [tool, flag],
     env: ["PATH=/usr/bin:/bin", "POSIXLY_CORRECT=1"],
+    // Boot with the explicitly-provided (declared-dependency) kernel and
+    // base rootfs, so this build-time kernel boot does not depend on the
+    // source-only program projection, which is not finalized mid-build.
+    kernelWasmBytes,
+    rootfsImage,
   });
   return stdout;
 }
 
 async function main() {
-  const [bin, outDir] = process.argv.slice(2);
-  if (!bin || !outDir) {
-    console.error("usage: generate-coreutils-man.ts <coreutils.wasm> <capture-dir>");
+  const [bin, outDir, kernelPath, rootfsPath] = process.argv.slice(2);
+  if (!bin || !outDir || !kernelPath || !rootfsPath) {
+    console.error(
+      "usage: generate-coreutils-man.ts <coreutils.wasm> <capture-dir>" +
+        " <kernel.wasm> <rootfs.vfs>",
+    );
     process.exit(2);
   }
+  const kernelWasmBytes = readFileSync(kernelPath);
+  const rootfsImage = readFileSync(rootfsPath);
   mkdirSync(outDir, { recursive: true });
   const uniq = Array.from(new Set(TOOLS)).sort();
   const skipped: string[] = [];
   for (const tool of uniq) {
-    const help = await capture(bin, tool, "--help");
-    const version = await capture(bin, tool, "--version");
+    const help = await capture(bin, tool, "--help", kernelWasmBytes, rootfsImage);
+    const version = await capture(bin, tool, "--version", kernelWasmBytes, rootfsImage);
     if (!help.trim()) {
       console.error(`skip ${tool}: empty --help from Kandelo`);
       skipped.push(tool);

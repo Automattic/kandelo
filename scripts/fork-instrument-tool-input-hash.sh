@@ -12,7 +12,9 @@ fork_instrument_tool_input_hash() {
         cd "$repo_root"
         {
             for relative_path in Cargo.toml Cargo.lock rust-toolchain.toml \
+                .cargo/config.toml \
                 scripts/build-fork-instrument-tool.sh \
+                scripts/run-wasm-fork-instrument.sh \
                 scripts/fork-instrument-tool-input-hash.sh; do
                 if [ -f "$relative_path" ]; then
                     printf '%s\n' "$relative_path"

@@ -43,6 +43,49 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+The persistent SourceOnly build cache lives at
+`$HOME/.cache/kandelo/source-only` and is **shared across every worktree on
+the machine** by default. This is deliberate: the cache is content-addressed,
+so identical inputs are built once and reused everywhere, which is what keeps a
+fresh `git worktree` fast instead of a from-scratch rebuild. Set
+`KANDELO_SOURCE_CACHE_ROOT` to an absolute path to give a worktree its own
+isolated cache instead; leave it unset to share. Both build front doors honor
+it and must agree — the Rust default (`default_source_cache_root` in
+`tools/xtask/src/local_build.rs`) and the shell runner
+(`scripts/run-local-build.sh`). Reach for isolation only when an in-progress
+change alters the *bytes* a cache key maps to — e.g. a change to the
+build-stamp or artifact format — so that a worktree on the new format does not
+contend with worktrees on the old one at the same content-addressed key.
+Concurrency itself is already safe (the store stages into a per-pid temp
+directory and publishes with an atomic, non-replacing `rename(2)`), so the
+shared default never risks corruption; the override is about avoiding churn,
+not preventing races. Do not reach for it as a routine default — a
+per-worktree cache discards the cross-worktree reuse the shared cache exists
+to provide.
+
+Because the cache is shared, per-checkout maintenance must stay scoped to the
+checkout's own keys. `xtask clean <target>` (behind `./run.sh clean` and
+`./run.sh rebuild`) removes only the generation stored under the cache key
+this checkout's inputs currently resolve to, for the target and its
+reverse-dependency cascade, plus this checkout's mirrored outputs under
+`local-binaries/source-only-v1`. Generations of the same package under other
+keys were built from other inputs, usually another worktree's, and are left
+in place; deleting them would silently force that worktree to rebuild the
+package and everything built on it.
+
+Stale generations are reclaimed only by cache garbage collection, never by a
+per-checkout command: `./run.sh cache-gc` (a dry run unless `--apply`) and
+the automatic collection a successful local build runs at most once a day.
+It removes a generation only when no live checkout root names its key and it
+has gone unused past the age limit, and it skips while any build holds the
+cache lock. Do not hand-delete cache entries or add another sweeper: every
+build that uses the cache must hold `cache_gc::CacheUseLock` for as long as it
+can read a generation, or collection can remove an entry underneath it. Run
+destructive collection against the shared cache only when the user asks;
+test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
+`KANDELO_CACHE_GC_AUTO=0` when a build must not collect. See
+[Cache garbage collection](../package-management.md#cache-garbage-collection).
+
 ## Line editing for REPL CLIs
 
 A command-line program with an interactive REPL — a read-eval-print loop that

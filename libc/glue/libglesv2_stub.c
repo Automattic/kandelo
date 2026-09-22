@@ -67,6 +67,29 @@ static uint8_t *reserve(size_t bytes) {
 
 #define EMIT_END() g_cursor = _c;
 
+/* Max u32 names that fit one `{u16 op, u16 payload_len, u32 n, u32
+ * names[n]}` record: the payload_len header is 16-bit, so
+ * 4 + n*4 <= 0xFFFF, i.e. n <= (0xFFFF - 4) / 4 = 16382. */
+#define WPK_GL_NAMES_PER_RECORD ((GLsizei)((0xFFFFu - 4u) / 4u))
+
+/* Emit an op carrying `{u32 n, u32 names[n]}`, split across as many
+ * records as needed so each record's payload length fits the 16-bit TLV
+ * header. Without this an n >= 16383 call truncates the length field and
+ * desyncs the host command-stream decoder (glTexImage2D guards its own
+ * length the same way). Each chunk is a self-contained record, so the
+ * host's per-record dispatch handles the split identically to one call. */
+static void emit_name_array(uint16_t op, GLsizei n, const GLuint *names) {
+    for (GLsizei i = 0; i < n; ) {
+        GLsizei chunk = n - i;
+        if (chunk > WPK_GL_NAMES_PER_RECORD) chunk = WPK_GL_NAMES_PER_RECORD;
+        EMIT_BEGIN(op, 4u + (uint32_t)chunk * 4u)
+        w_u32(&_c, (uint32_t)chunk);
+        for (GLsizei j = 0; j < chunk; j++) w_u32(&_c, names[i + j]);
+        EMIT_END()
+        i += chunk;
+    }
+}
+
 /* ----- state -------------------------------------------------------- */
 
 void glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
@@ -104,14 +127,10 @@ static uint32_t g_next_program = 1;
 
 void glGenBuffers(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
-    /* Payload: u32 n, u32 names[n]. */
-    EMIT_BEGIN(OP_GEN_BUFFERS, 4u + (uint32_t)n * 4u)
-    w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) {
-        out[i] = g_next_buffer++;
-        w_u32(&_c, out[i]);
-    }
-    EMIT_END()
+    /* Payload: u32 n, u32 names[n] — assign names, then emit in
+     * u16-length-safe chunks. */
+    for (GLsizei i = 0; i < n; i++) out[i] = g_next_buffer++;
+    emit_name_array(OP_GEN_BUFFERS, n, out);
 }
 
 void glBindBuffer(GLenum target, GLuint buf) {
@@ -123,7 +142,17 @@ void glBindBuffer(GLenum target, GLuint buf) {
 
 void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
     if (size < 0) return;
-    /* Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage. */
+    /* Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage.
+     *
+     * LIMIT: the whole payload rides one TLV record whose length header
+     * is 16-bit, so a single upload is capped at 0xFFFF - 12 = 65523
+     * bytes. Larger uploads truncate the header and the host rejects the
+     * submit (loud, not silent — but not graceful). Unlike the name-array
+     * ops this cannot be chunked, since one BufferData is a contiguous
+     * store; lifting it needs a record-format change (u32 length) or an
+     * allocate-then-BufferSubData streaming protocol. See finding #3 on
+     * PR #709. The sdl2 demo's buffers are well under the cap, so this is
+     * latent today. */
     uint32_t dlen = (uint32_t)size;
     EMIT_BEGIN(OP_BUFFER_DATA, 12u + dlen)
     w_u32(&_c, (uint32_t)target);
@@ -315,21 +344,13 @@ static uint32_t g_next_framebuffer = 1;
 
 void glGenTextures(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
-    EMIT_BEGIN(OP_GEN_TEXTURES, 4u + (uint32_t)n * 4u)
-    w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) {
-        out[i] = g_next_texture++;
-        w_u32(&_c, out[i]);
-    }
-    EMIT_END()
+    for (GLsizei i = 0; i < n; i++) out[i] = g_next_texture++;
+    emit_name_array(OP_GEN_TEXTURES, n, out);
 }
 
 void glDeleteTextures(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
-    EMIT_BEGIN(OP_DELETE_TEXTURES, 4u + (uint32_t)n * 4u)
-    w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
-    EMIT_END()
+    emit_name_array(OP_DELETE_TEXTURES, n, names);
 }
 
 void glBindTexture(GLenum target, GLuint tex) {
@@ -345,15 +366,47 @@ void glActiveTexture(GLenum unit) {
     EMIT_END()
 }
 
-/* Pavel's pipeline only allocates render-target textures (data == NULL):
- * the fragment shaders write each texture's contents. The upload path
- * (data != NULL) needs per-(format,type) byte-size logic; extend when a
- * demo actually needs to upload pixel data from C. */
+/* Bytes-per-pixel for the GL (format,type) pairs we know how to
+ * marshal. Returns 0 for unknown combos so glTexImage2D / glTexSubImage2D
+ * drops the upload rather than emit a garbled record. Extend when a
+ * demo needs a new combo. */
+static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
+    if (type == GL_UNSIGNED_BYTE) {
+        switch (format) {
+            case GL_ALPHA:           return 1;
+            case GL_LUMINANCE:       return 1;
+            case GL_LUMINANCE_ALPHA: return 2;
+            case GL_RGB:             return 3;
+            case GL_RGBA:            return 4;
+            default: break;
+        }
+    } else if (type == GL_UNSIGNED_SHORT_5_6_5
+            || type == GL_UNSIGNED_SHORT_4_4_4_4
+            || type == GL_UNSIGNED_SHORT_5_5_5_1) {
+        return 2;
+    }
+    return 0;
+}
+
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
-    if (data != NULL) return;
-    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36)
+    uint32_t dlen = 0;
+    if (data != NULL && width > 0 && height > 0) {
+        uint32_t bpp = bytes_per_pixel(format, type);
+        if (bpp > 0) {
+            dlen = (uint32_t) width * (uint32_t) height * bpp;
+        }
+    }
+    /* The TLV payload-length field is u16, so the largest single-call
+     * upload that fits is 0xFFFF - 36 (header fields) ≈ 65499 bytes.
+     * The caller is responsible for sizing textures to fit; this guard
+     * just prevents the encoder from writing a truncated record. */
+    if (dlen > 0xFFFFu - 36u) {
+        dlen = 0;
+        data = NULL;
+    }
+    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u + dlen)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
     w_i32(&_c, internalFormat);
@@ -362,7 +415,11 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     w_i32(&_c, border);
     w_u32(&_c, (uint32_t)format);
     w_u32(&_c, (uint32_t)type);
-    w_u32(&_c, 0u);   /* dataLen */
+    w_u32(&_c, dlen);
+    if (dlen > 0 && data != NULL) {
+        memcpy(_c, data, dlen);
+        _c += dlen;
+    }
     EMIT_END()
 }
 
@@ -372,6 +429,18 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
     w_u32(&_c, (uint32_t)pname);
     w_i32(&_c, param);
     EMIT_END()
+}
+
+void glPixelStorei(GLenum pname, GLint param) {
+    EMIT_BEGIN(OP_PIXEL_STOREI, 8)
+    w_u32(&_c, (uint32_t)pname);
+    w_i32(&_c, param);
+    EMIT_END()
+}
+
+void glDeleteBuffers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    emit_name_array(OP_DELETE_BUFFERS, n, names);
 }
 
 /* ----- uniforms ----------------------------------------------------- */
@@ -411,13 +480,8 @@ void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
 
 void glGenFramebuffers(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
-    EMIT_BEGIN(OP_GEN_FRAMEBUFFERS, 4u + (uint32_t)n * 4u)
-    w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) {
-        out[i] = g_next_framebuffer++;
-        w_u32(&_c, out[i]);
-    }
-    EMIT_END()
+    for (GLsizei i = 0; i < n; i++) out[i] = g_next_framebuffer++;
+    emit_name_array(OP_GEN_FRAMEBUFFERS, n, out);
 }
 
 void glBindFramebuffer(GLenum target, GLuint fb) {

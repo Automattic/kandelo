@@ -53,7 +53,7 @@ xz2 = "0.1"
 # substring out of `<tool> --version` output. `regex` is a default-
 # featured, well-cached crate; no non-default features needed.
 regex = "1"
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
 # Used by source_extract + build_deps integration tests for ergonomic
