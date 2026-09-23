@@ -27,7 +27,7 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
   await openInternals(page);
   await expect
     .poll(() => syslogText(page), { timeout: 90_000 })
-    // The image's `presentation.autoCommand` is what launches this machine's
+    // The image's `init.shellCommand` is what launches this machine's
     // program now, so the host logs the command it ran rather than an
     // app-side demo name.
     .toMatch(/running \/usr\/local\/bin\/sdl2/);
