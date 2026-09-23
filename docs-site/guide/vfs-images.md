@@ -155,47 +155,83 @@ Images consumed by the Kandelo UI can include:
 This file lets the image declare presentation preferences, guide actions,
 companion HTML, assets, automatic commands, an optional fixed-path file
 ingest, and whether the demo wants an on-screen touch control overlay on
-coarse-pointer devices (`presentation.touchControls`). Build scripts in
-this repo write it with:
+coarse-pointer devices (`presentation.touchControls`).
+
+The file is not generated at build time. Commit the JSON next to the
+package that owns the image, list it in `TRACKED_DEMO_CONFIG_SOURCES`
+(`images/vfs/scripts/tracked-demo-config.ts`), and have the build script
+copy it in verbatim:
 
 ```ts
-writeKandeloDemoConfig(fs, {
-  version: 1,
-  profiles: {
-    "my-demo": {
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      },
-      guide: {
-        title: "My demo",
-        groups: [
-          {
-            title: "Try it",
-            actions: [
-              {
-                id: "run-version",
-                label: "Show version",
-                kind: "terminal.run",
-                payload: "my-program --version",
-              },
-            ],
-          },
-        ],
-      },
-      ingest: {
-        accept: [".rom"],
-        targetPath: "/inputs/game.rom",
-        maxBytes: 8 * 1024 * 1024,
-        label: "Load ROM",
-        onLoad: { restart: "emulator /inputs/game.rom" },
-      },
-    },
-  },
-});
+writeTrackedDemoConfig(fs, "packages/registry/my-image/my-demo.json");
 ```
+
+`writeTrackedDemoConfig` writes the reviewed file byte-for-byte, so the
+bytes you review are the bytes that ship. The tracked file looks like this:
+
+```json
+{
+  "version": 1,
+  "defaultProfile": "my-demo",
+  "profiles": {
+    "my-demo": {
+      "identity": {
+        "title": "My demo",
+        "summary": "What this machine is, in one line.",
+        "accent": "#3858e9",
+        "glyph": "my"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["terminal", "syslog"],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "My demo",
+        "groups": [
+          {
+            "title": "Try it",
+            "actions": [
+              {
+                "id": "run-version",
+                "label": "Show version",
+                "kind": "terminal.run",
+                "payload": "my-program --version"
+              }
+            ]
+          }
+        ]
+      },
+      "ingest": {
+        "accept": [".rom"],
+        "targetPath": "/inputs/game.rom",
+        "maxBytes": 8388608,
+        "label": "Load ROM",
+        "onLoad": { "restart": "emulator /inputs/game.rom" }
+      }
+    }
+  }
+}
+```
+
+A profile may also declare:
+
+- `identity` — `title`, `summary`, `accent` (`#rrggbb`), `glyph` (1–4
+  characters), and optionally `base` and `packages`.
+- `runtime` — `features` (`framebuffer`, `kms`, `evdev-input`,
+  `js-workers`), a descriptive `network` flag, and `requests`
+  (`memoryPages`, `maxWorkers`), which the host clamps to its own policy.
+- `init` — `target`, a bare dinit service name matching `/etc/dinit.d/<name>`.
+  A profile cannot declare both `init.target` and
+  `presentation.autoCommand`.
+- `web` — `requiredPorts`, `probeHttp` (defaults to true), and an optional
+  plain absolute `probePath`.
+- `display` — `minWidth`/`minHeight`, the smallest usable surface.
+- `defaultProfile`, at the top level — which profile a bare `?vfs=` URL boots.
+
+These blocks are validated and carried in the image today; the Kandelo
+browser app does not read them yet.
 
 If metadata changes for a package-backed image, bump that package's `build.toml` `revision` so published archives rebuild.
 

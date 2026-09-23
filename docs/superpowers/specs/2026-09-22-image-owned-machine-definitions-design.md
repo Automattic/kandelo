@@ -71,7 +71,9 @@ them behind image metadata that falls back to them.
 - Its bytes come from a **tracked source file copied verbatim** into
   the image, generalizing the existing
   `packages/registry/shell/source-rootfs-shell-demo.json` pattern.
-  Tracked source and baked artifact are byte-identical and checked.
+  For a single-source image, tracked source and baked artifact are
+  byte-identical. Composed images are an explicit exception; see
+  "Authority and artifact flow".
 - URL shape is `?vfs=<image>` plus an optional generic profile
   selector; the image declares its own default profile, so `?vfs=`
   alone boots something well-defined.
@@ -94,7 +96,37 @@ worktree has zero `.vfs.zst` files; the listing must still render.
 
 Boot reads only the baked `demo.json`. The aggregated listing never
 feeds the boot path, so the two cannot disagree in a way that changes
-what runs. A build check asserts baked bytes equal tracked bytes.
+what runs.
+
+### Byte-identity, and the one exception
+
+For a **single-source image** — every image except the source-rootfs shell
+image — the baked `/etc/kandelo/demo.json` is a byte-for-byte copy of one
+tracked file, and a build check can assert that directly.
+
+The **source-rootfs shell image is composed**, and cannot satisfy
+byte-identity. Its `demo.json` is a deterministic merge of two tracked
+files:
+
+```
+packages/registry/shell/source-rootfs-shell-demo.json          (package-owned base)
+packages/registry/shell/source-rootfs-shell-demo-profiles.json (image-owned overlay)
+        |
+        +-- composeSourceRootfsDemoConfig --> /etc/kandelo/demo.json
+```
+
+The composed output is a superset of both inputs, so no single tracked
+file's bytes are ever baked for it. The property that holds instead is
+**deterministic re-derivation**: the merge is a pure function of two
+reviewed files, the overlay may declare only `version` and `profiles`
+(the builder rejects any other top-level key), and an overlay profile
+that also exists in the base must match it structurally. Every byte of
+the composed result is therefore traceable to a reviewed source.
+
+A baked-equals-tracked check must apply the byte comparison to
+single-source images only, and must not report success for a composed
+image it cannot compare. That check is not implemented yet; see the
+known gap recorded in the Plan 1 file.
 
 ### Why not the product TOML
 
@@ -382,8 +414,9 @@ configured command") rather than silently dropping the image's command.
 First-party and third-party images use one schema and one code path,
 but carry different trust:
 
-- A first-party `demo.json` is reviewed in-repo and byte-checked against
-  the baked artifact.
+- A first-party `demo.json` is reviewed in-repo, and for a single-source
+  image it is byte-identical to the baked artifact (see "Byte-identity,
+  and the one exception").
 - A third-party `demo.json` is untrusted input, exactly like a `#k1=`
   fragment. It is size-capped and validated (already true via
   `MAX_KANDELO_DEMO_CONFIG_BYTES` and `validateKandeloDemoConfig`), its
@@ -442,8 +475,12 @@ and its validation exist before any consumer depends on them, and so the
 app's id tables are deleted only once nothing reads them.
 
 1. **Schema + validation.** Extend `demo-config.ts` with `identity`,
-   `runtime`, `init`, `web`, `defaultProfile`. Add the
-   tracked-source-equals-baked-bytes check. No consumers yet.
+   `runtime`, `init`, `web`, `defaultProfile`. Add a checker over the
+   tracked sources. No consumers yet. The
+   tracked-source-equals-baked-bytes comparison does NOT land here: no
+   image is built in Phase 1 and the comparison needs TypeScript-only
+   image helpers; it moves to Phase 2, and applies to single-source
+   images only.
 2. **Tracked sources.** Convert all nine builders from programmatic
    `writeKandeloDemoConfig({...})` to verbatim tracked JSON. Retire
    `images/vfs/scripts/kandelo-demo-guides.ts` (a nine-line re-export of

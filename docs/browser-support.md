@@ -684,13 +684,44 @@ preferences with the image instead of hardcoding them in the page loader.
 }
 ```
 
-Use `writeKandeloDemoConfig()` from
-`images/vfs/scripts/kandelo-demo-config.ts` in VFS build scripts. Images
-without this file still boot with Kandelo's generic presentation defaults, but
-the Kandelo app does not carry demo-specific presentation fallbacks.
+The tracked JSON file **is** the artifact. A VFS build script never
+constructs this object in TypeScript: it calls `writeTrackedDemoConfig(fs,
+"packages/registry/<image>/<name>-demo.json")` from
+`images/vfs/scripts/tracked-demo-config.ts`, which copies the reviewed file
+byte-for-byte to `/etc/kandelo/demo.json`. Every tracked source is listed in
+`TRACKED_DEMO_CONFIG_SOURCES` in that same module, and
+`scripts/check-image-demo-config.mjs` validates all of them. Images without
+this file still boot with Kandelo's generic presentation defaults, but the
+Kandelo app does not carry demo-specific presentation fallbacks.
 Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
+
+Alongside `presentation`, `assets`, `guide`, and `ingest`, a profile (or the
+top level, as a fallback for every profile) may declare these blocks. They
+are validated today and carried in the image; the browser app does not read
+them yet, and the cutover that makes it read them is separate work.
+
+- `identity` — what a listing shows for this profile: `title`, `summary`,
+  `accent` (`#rrggbb`), `glyph` (1–4 characters), and optionally `base` (the
+  base image reference) and `packages` (a list of package specs, at most 64).
+- `runtime` — what the machine needs: `features` (any of `framebuffer`,
+  `kms`, `evdev-input`, `js-workers`), `network` (descriptive only; nothing
+  gates a socket syscall on it today), and `requests`
+  (`memoryPages`, `maxWorkers`) which the host clamps to its own policy.
+- `init` — `target`, a bare dinit service name matching `/etc/dinit.d/<name>`.
+  It selects among init configurations the image already carries; it is not a
+  command vector. A profile cannot declare both `init.target` and
+  `presentation.autoCommand`, at either level, because both answer "what does
+  this machine run".
+- `web` — readiness signalling for the web pane: `requiredPorts` (non-empty,
+  at most 64), `probeHttp` (defaults to true), and an optional `probePath`
+  that must be a plain absolute path.
+- `display` — `minWidth`/`minHeight`, the smallest surface the machine
+  expects to be usable at. A floor the machine states, not a size it imposes.
+- `defaultProfile` (top level only) — which profile a bare `?vfs=` URL boots.
+  An image with exactly one profile needs no declaration; an image with
+  several must name one.
 
 A profile may also declare one fixed-path file-ingest capability. The current
 Kandelo browser UI presents it on the framebuffer surface as a file picker and
@@ -723,11 +754,18 @@ capability; the loader does not infer one from a package or profile name.
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a
-malformed unselected profile cannot hide behind the current URL. Producers
-that already have a reviewed canonical JSON file may copy those exact bytes;
-the package-built main shell uses
-`packages/registry/shell/source-rootfs-shell-demo.json` as its single reviewed
-source.
+malformed unselected profile cannot hide behind the current URL. Every
+first-party image bakes a reviewed tracked file verbatim, so the baked bytes
+and the tracked bytes are identical.
+
+The source-rootfs shell image is the one documented exception. Its
+`/etc/kandelo/demo.json` is a deterministic merge of two tracked files —
+`packages/registry/shell/source-rootfs-shell-demo.json` (the package-owned
+base) and `packages/registry/shell/source-rootfs-shell-demo-profiles.json`
+(the image-owned profile overlay) — so the baked bytes are a superset of
+either one. The overlay may declare only `version` and `profiles`; the
+builder rejects any other top-level key, because composition takes every
+other field from the base and would otherwise discard it silently.
 
 VFS images do not need to serialize placeholder device nodes. Both Node and
 browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
@@ -916,7 +954,11 @@ lazy formats do not gain compatibility shims.
 
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
-3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
+3. If the image is consumed by Kandelo, add a tracked
+   `packages/registry/<image>/<name>-demo.json`, list it in
+   `TRACKED_DEMO_CONFIG_SOURCES`, and bake it with
+   `writeTrackedDemoConfig(fs, "<that path>")` from
+   `images/vfs/scripts/tracked-demo-config.ts`
 4. If the image is consumed by the Kandelo UI, expose it through a gallery
    manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst`
    image and await `restoreVerifiedVfsImage()` before inspecting or booting it

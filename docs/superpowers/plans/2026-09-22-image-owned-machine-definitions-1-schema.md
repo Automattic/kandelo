@@ -1599,8 +1599,34 @@ rejects keys within edit distance 2 of a known one."
 - Every image builder writes `/etc/kandelo/demo.json` by copying a tracked file; no builder constructs config objects in TypeScript.
 - The browser app is unmodified and `./run.sh browser` behaves exactly as before — Plan 1 ships data, not behavior.
 
+## Known gap: baked-equals-tracked is not checked
+
+Task 8's checker validates every tracked demo-config source. It does NOT
+open a built image and compare the baked `/etc/kandelo/demo.json` bytes
+against the tracked source, and its docblock now says so plainly.
+
+Why it did not land here:
+
+- The checker is a plain `.mjs` that `run.sh` invokes with bare `node`.
+  Reading a file out of a `.vfs.zst` needs `MemoryFileSystem.fromImage`
+  from `host/src/vfs`, which is TypeScript and cannot be imported from an
+  unbundled `.mjs`. Re-deriving the image's shared-buffer layout in the
+  checker would be a second, silently divergent copy of a platform format.
+- There is no machine-readable tracked-source-to-image mapping. It exists
+  only as the argument to each `writeTrackedDemoConfig(...)` call site.
+- Plan 1 builds no images, so the check would have nothing to compare in
+  this plan's own validation anyway.
+
+Moved to **Plan 2**, where images are built. When it is implemented it must
+apply to single-source images only and must not report success for the
+source-rootfs shell image, whose `demo.json` is a deterministic merge of two
+tracked files. The spec's "Byte-identity, and the one exception" records
+that boundary.
+
 ## Not in this plan
 
 - Moving shell/service environments into `/etc/profile.d` and dinit service files, and baking sdl2, evdev, espeak, and dinit binaries into images. That is Plan 2, and until it lands the tracked `init.target` values describe a target the app does not yet use.
+- Giving `ruby-todo` its working directory back. `live-setup.ts:436-446` boots it as pid 1 with `cwd: "/var/lib/todo"`; the tracked `ruby-todo-demo.json` demotes that to a shell `autoCommand` with no `cwd`, because this plan's `init` block is a dinit service NAME and Ruby has no service file yet. Plan 2 owns init configuration (`/etc/profile.d`, dinit services) and must give `cwd` a home — either a dinit service for the Roda server or a documented place for a working directory in the schema. Until then `ruby-todo` would start in `/` after a cutover.
+- Moving `TRACKED_DEMO_CONFIG_SOURCES` out of `images/vfs/scripts/tracked-demo-config.ts`. That module imports `node:fs`, so Plan 3's browser-side gallery cannot bundle it. Real, but Plan 3 is what introduces a browser consumer, so Plan 3 owns splitting the path list away from the Node-only loader.
 - Deleting `LIVE_DEMO_SPECS`, `PRESET_LIBRARY`, `VFS_SOURCES`, `builtinDemo*`, `Config.tsx`, or `?demo=`; the roster; the availability model; the Playwright migration; the checker inversion. All Plan 3.
 - Making `caps.network` enforcing. Named as a follow-up in the spec, deliberately not this work.
