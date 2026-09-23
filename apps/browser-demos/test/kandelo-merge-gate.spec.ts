@@ -1,6 +1,10 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 import { runTerminalCommand } from "./support/terminal-command";
-import { gotoMachineOrSkip } from "./support/kandelo-machine";
+import {
+  gotoInPreview,
+  gotoMachineOrSkip,
+  machineAppPrefix,
+} from "./support/kandelo-machine";
 
 type BrowserDiagnostics = {
   console: string[];
@@ -268,6 +272,10 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
       );
     }
 
+    // "Log in as admin" is a guide ACTION the image declares in its own
+    // demo.json, so it lives in the demo guide panel — which no longer opens
+    // by itself (same reason waitForReady has to open it).
+    await ensureGuideOpen(page);
     await page.getByRole("button", { name: /Log in as admin/i }).click();
 
     await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
@@ -439,12 +447,21 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   test.setTimeout(300_000);
 
   await gotoMachineOrSkip(page, "nginx-php");
-  await page.waitForSelector('iframe[title="nginx + PHP"]', { timeout: 180_000 });
+  const appPrefix = await machineAppPrefix(page, "nginx + PHP");
+  const frame = webFrame(page, "nginx + PHP");
 
-  await expect(webFrame(page, "nginx + PHP").locator("body")).toContainText(
-    "PHP-FPM on WebAssembly",
-    { timeout: 180_000 },
-  );
+  // This demo's landing page is Adminer, auto-connected to the SQLite database
+  // PHP-FPM seeds on the first request — reaching the seeded tables already
+  // proves the FastCGI stack served a dynamic page.
+  await expect(frame.locator("body")).toContainText("authors", {
+    timeout: 180_000,
+  });
+  // The phpinfo-style status page exercises the same stack on a second
+  // request, through the app prefix this machine's bridge minted.
+  await gotoInPreview(frame, appPrefix, "info.php");
+  await expect(frame.locator("body")).toContainText("PHP-FPM on WebAssembly", {
+    timeout: 180_000,
+  });
 
   await openTerminalDrawer(page);
   await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);

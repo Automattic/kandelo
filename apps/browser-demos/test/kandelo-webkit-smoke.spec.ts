@@ -5,7 +5,16 @@ async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
 }
 
+async function ensureGuideOpen(page: Page) {
+  // The demo guide no longer auto-opens; open it from the dock on first use.
+  if (await page.locator("aside.kdemo").count()) return;
+  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
+  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
+}
+
 async function waitForReady(page: Page, timeout = 180_000) {
+  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
+  await ensureGuideOpen(page);
   await expect
     .poll(() => page.evaluate(() => document.body.innerText), { timeout })
     .toContain("Ready");
@@ -17,9 +26,20 @@ async function waitForPrompt(page: Page, timeout = 120_000) {
     .toContain("kandelo$");
 }
 
+async function dismissDockPopover(page: Page) {
+  // Opening the demo guide raises a full-screen dismiss layer that swallows
+  // pointer events (a real user's next click merely closes the popover).
+  // Close it so the click below reaches the terminal surface.
+  const layer = page.locator(".kdock-popover-dismiss-layer");
+  if (await layer.count()) {
+    await layer.first().click({ force: true }).catch(() => {});
+  }
+}
+
 async function runTerminalLine(page: Page, command: string) {
   // WHY: this smoke intentionally tests raw WebKit input plus a persistent
   // parent-shell prompt; callers split success tokens so echo cannot match.
+  await dismissDockPopover(page);
   await page.locator(".kshell-host").first().click();
   const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
   if (await terminalInput.count()) {
