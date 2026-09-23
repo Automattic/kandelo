@@ -21,6 +21,7 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
+import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const programBinary = tryResolveBinary("programs/cube_pyramid.wasm") ?? "";
@@ -164,12 +165,14 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             kernel.gl.attachCanvas(childPid, fakeCanvas);
 
             const forkBufAddr = continuation.forkBufAddr;
+            // Every process in this harness places its channel at the same
+            // offset, so the parent's control prefix sits where the child's
+            // does.
             const childReferenceInit = referenceOwners.fork(
               parentForkPid,
               childPid,
               parentMemory,
-              ptrWidth,
-              forkBufAddr,
+              childChannelOffset - FORK_SAVE_BUFFER_SIZE,
             );
             const forkReplay = new ForkReplayGateCoordinator(
               `DRI cube fork child pid=${childPid}`,
@@ -191,7 +194,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             };
 
             const childWorker = workerAdapter.createWorker(childInit);
-            referenceOwners.attach(childPid, childWorker);
             workers.set(childPid, childWorker);
             childWorker.on("error", () => {
               referenceOwners.release(childPid);
@@ -305,7 +307,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       };
 
       const mainWorker = workerAdapter.createWorker(initData);
-      referenceOwners.attach(parentPid, mainWorker);
       workers.set(parentPid, mainWorker);
 
       const timer = setTimeout(() => {

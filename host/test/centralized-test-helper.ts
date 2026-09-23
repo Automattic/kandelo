@@ -32,10 +32,6 @@ import {
   writeVfsBinary,
 } from "../src/vfs/image-helpers";
 import {
-  ForkHostImportOwnerRuntime,
-  type ForkHostImportOwnerWorker,
-} from "../src/fork-host-import-runtime";
-import {
   ForkExternrefProcessOwner,
   readCapturedExternrefHandover,
 } from "../src/fork-externref-process-owner";
@@ -230,19 +226,6 @@ export interface RunProgramOptions {
     ppid?: number;
     exitStatus?: number;
   }) => void;
-  /**
-   * Phase 6 D6.5: register owner-side fork host-import handlers (e.g. a
-   * broker-backed `env.get_ext` / `env.check_ext`) before any Worker is created,
-   * so a test-provided HOST externref becomes broker-tracked and survives a real
-   * fork through the `wpk_fork_host` / `host_resolve_externref` seam. Supplying
-   * this forces main-thread mode (the test helper owns the
-   * `ForkHostImportOwnerRuntime` there) and makes the child fork Worker's
-   * `fork_module_references` proof-of-use surface on
-   * `RunProgramResult.hostDiagnostics`, mirroring the Node/browser worker
-   * entries. The registrar runs once, before the process main Worker, while the
-   * catalog is still unsealed.
-   */
-  forkHostImportRegistrar?: (owner: ForkHostImportOwnerRuntime) => void;
 }
 
 export interface RunProgramResult {
@@ -352,7 +335,7 @@ function centralizedForkModuleFields(
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
-  if (options.io || options.onKernelReady || options.forkHostImportRegistrar) {
+  if (options.io || options.onKernelReady) {
     return runOnMainThread(options);
   }
   return runInWorkerThread(options);
@@ -625,14 +608,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const processPtrWidths = new Map<number, 4 | 8>();
   const forkReplayContexts = new Map<number, ForkReplayContext>();
   const externrefProcessOwner = new ForkExternrefProcessOwner();
-  const forkHostImportOwnerRuntime =
-    new ForkHostImportOwnerRuntime(externrefProcessOwner);
-  // Phase 6 D6.5: let a test register broker-backed owner host imports (e.g.
-  // `env.get_ext` / `env.check_ext`) while the catalog is still unsealed, before
-  // any Worker is created. This is how a genuine HOST externref becomes
-  // broker-tracked so it survives a real fork through the `host_resolve_externref`
-  // seam.
-  options.forkHostImportRegistrar?.(forkHostImportOwnerRuntime);
   // Capture the co-resident fork-module's per-kind reference proof-of-use posted
   // by a fork CHILD Worker. This is informational success telemetry, not a host
   // problem, so it is surfaced on `forkModuleDiagnostics` (mirroring the
@@ -674,7 +649,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     });
   };
   const externrefGenerations = new Map<number, ForkExternrefGeneration>();
-  const processForkHostImports = new Map<number, ForkHostImportOwnerWorker>();
   let mainThreadForkCount: bigint | undefined;
   let spawnScratchCapacity: number | undefined;
   let kernelMemoryPages: number | undefined;
@@ -720,8 +694,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   };
 
   const releaseProcessReferenceOwner = (releasePid: number): void => {
-    processForkHostImports.get(releasePid)?.close();
-    processForkHostImports.delete(releasePid);
     const generation = externrefGenerations.get(releasePid);
     if (generation) {
       externrefProcessOwner.releaseGeneration(generation);
@@ -775,20 +747,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
         const childGeneration = externrefProcessOwner.startGeneration(childPid);
         let childWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
-        const childForkHostImports = forkHostImportOwnerRuntime.createWorker({
-          pid: childPid,
-          generationId: childGeneration.id,
-          authorizeSender: () => {
-            if (
-              workers.get(childPid) !== childWorker
-              || externrefGenerations.get(childPid) !== childGeneration
-            ) {
-              throw new Error(
-                `stale centralized-test host-import sender for spawn pid=${childPid}`,
-              );
-            }
-          },
-        });
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
@@ -801,21 +759,18 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           env: envp,
           ptrWidth: childPtrWidth,
           externrefGenerationId: childGeneration.id,
-          forkHostImports: childForkHostImports.init,
           ...centralizedForkModuleFields(childPtrWidth),
         };
 
         try {
           childWorker = workerAdapter.createWorker(childInitData);
         } catch (error) {
-          childForkHostImports.close();
           externrefProcessOwner.releaseGeneration(childGeneration);
           kernelWorker.deactivateProcess(childPid);
           throw error;
         }
         workers.set(childPid, childWorker);
         externrefGenerations.set(childPid, childGeneration);
-        processForkHostImports.set(childPid, childForkHostImports);
         processProgramBytes.set(childPid, program.programBytes);
         processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
@@ -840,8 +795,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           const message = msg as WorkerToHostMessage;
           if (message.type === "error" && message.pid === childPid) {
             finalizeSpawnWorkerError(message.message);
-          } else if (message.type === "fork_host_import") {
-            childForkHostImports.dispatch(message.wake);
           } else if (message.type === "exit" && message.pid === childPid) {
             childWorkerQuiesced.add(childPid);
             reapChildWorkerIfReady(childPid);
@@ -920,21 +873,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ).generation;
         let childWorker:
           ReturnType<NodeWorkerAdapter["createWorker"]>;
-        const childForkHostImports = forkHostImportOwnerRuntime.createWorker({
-          pid: childPid,
-          generationId: childGeneration.id,
-          authorizeSender: () => {
-            if (
-              workers.get(childPid) !== childWorker
-              || externrefGenerations.get(childPid) !== childGeneration
-            ) {
-              throw new Error(
-                `stale centralized-test host-import sender for pid=${childPid}`,
-              );
-            }
-          },
-        });
-
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
@@ -950,20 +888,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           forkChildThreadArgPtr: forkReplayContext?.argPtr,
           ptrWidth: parentPtrWidth,
           externrefGenerationId: childGeneration.id,
-          forkHostImports: childForkHostImports.init,
           ...centralizedForkModuleFields(parentPtrWidth),
         };
 
         try {
           childWorker = workerAdapter.createWorker(childInitData);
         } catch (error) {
-          childForkHostImports.close();
           externrefProcessOwner.releaseGeneration(childGeneration);
           throw error;
         }
         workers.set(childPid, childWorker);
         externrefGenerations.set(childPid, childGeneration);
-        processForkHostImports.set(childPid, childForkHostImports);
         processProgramBytes.set(childPid, parentProgram);
         processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
@@ -994,8 +929,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           const m = msg as WorkerToHostMessage;
           if (m.type === "error" && m.pid === childPid) {
             finalizeChildWorkerError(m.message);
-          } else if (m.type === "fork_host_import") {
-            childForkHostImports.dispatch(m.wake);
           } else if (
             m.type === "fork_module_references" &&
             m.pid === childPid
@@ -1082,7 +1015,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         }
         let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
         let replacementGeneration: ForkExternrefGeneration | undefined;
-        let replacementForkHostImports: ForkHostImportOwnerWorker | undefined;
         let launchPlanState: "ready" | "discarded" | "started" = "ready";
         return {
           onCommitFailure: () => {
@@ -1118,8 +1050,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               }
 
               const oldWorker = workers.get(execPid);
-              processForkHostImports.get(execPid)?.close();
-              processForkHostImports.delete(execPid);
               if (oldWorker) {
                 await oldWorker.terminate().catch(() => {});
                 workers.delete(execPid);
@@ -1147,23 +1077,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processPtrWidths.set(execPid, newPtrWidth);
               forkReplayContexts.delete(execPid);
 
-              replacementForkHostImports =
-                forkHostImportOwnerRuntime.createWorker({
-                  pid: execPid,
-                  generationId: replacementGeneration.id,
-                  authorizeSender: () => {
-                    if (
-                      !replacementWorker
-                      || workers.get(execPid) !== replacementWorker
-                      || externrefGenerations.get(execPid)
-                        !== replacementGeneration
-                    ) {
-                      throw new Error(
-                        `stale centralized-test host-import sender for exec pid=${execPid}`,
-                      );
-                    }
-                  },
-                });
               const initData: CentralizedWorkerInitMessage = {
                 type: "centralized_init",
                 pid: execPid,
@@ -1176,21 +1089,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 env: envp,
                 ptrWidth: newPtrWidth,
                 externrefGenerationId: replacementGeneration.id,
-                forkHostImports: replacementForkHostImports.init,
                 ...centralizedForkModuleFields(newPtrWidth),
               };
 
               replacementWorker = workerAdapter.createWorker(initData);
               workers.set(execPid, replacementWorker);
-              processForkHostImports.set(execPid, replacementForkHostImports);
               replacementWorker.on("error", (err: Error) => {
                 console.error(`[exec] worker error for pid ${execPid}:`, err);
               });
               replacementWorker.on("message", (msg: unknown) => {
                 const m = msg as WorkerToHostMessage;
-                if (m.type === "fork_host_import") {
-                  replacementForkHostImports?.dispatch(m.wake);
-                } else if (m.type === "exit" && m.pid === execPid) {
+                if (m.type === "exit" && m.pid === execPid) {
                   childWorkerQuiesced.add(execPid);
                   reapChildWorkerIfReady(execPid);
                 }
@@ -1198,7 +1107,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               kernelWorker.finishProcessExecHandoff(execPid);
               return 0;
             } catch (err) {
-              replacementForkHostImports?.close();
               try { kernelWorker.prepareProcessForExec(execPid); } catch { /* best-effort */ }
               if (replacementWorker && workers.get(execPid) !== replacementWorker) {
                 await replacementWorker.terminate().catch(() => {});
@@ -1258,22 +1166,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           );
         }
         let threadWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
-        let threadWorkerLive = true;
-        const threadForkHostImports = forkHostImportOwnerRuntime.createWorker({
-          pid: clonePid,
-          generationId: processGeneration.id,
-          authorizeSender: () => {
-            if (
-              !threadWorkerLive
-              || externrefGenerations.get(clonePid) !== processGeneration
-            ) {
-              throw new Error(
-                `stale centralized-test pthread host-import sender `
-                + `for pid=${clonePid} tid=${tid}`,
-              );
-            }
-          },
-        });
 
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",
@@ -1293,7 +1185,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           tlsAllocAddr: alloc.tlsAllocAddr,
           ptrWidth: clonePtrWidth,
           externrefGenerationId: processGeneration.id,
-          forkHostImports: threadForkHostImports.init,
           // Phase 6 D7b: ship the fork-module to a pthread so a fork issued from
           // it unwinds through the module (parent side of a fork-from-thread),
           // mirroring the process-worker init above.
@@ -1303,25 +1194,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         try {
           threadWorker = workerAdapter.createWorker(threadInitData);
         } catch (error) {
-          threadWorkerLive = false;
-          threadForkHostImports.close();
           releaseSlot();
           throw error;
         }
         threadWorker.on("message", (msg: unknown) => {
           const m = msg as WorkerToHostMessage;
           if (m.type === "thread_exit") {
-            threadWorkerLive = false;
-            threadForkHostImports.close();
             releaseSlot();
             threadWorker.terminate().catch(() => {});
-          } else if (m.type === "fork_host_import") {
-            threadForkHostImports.dispatch(m.wake);
           }
         });
         threadWorker.on("error", () => {
-          threadWorkerLive = false;
-          threadForkHostImports.close();
           kernelWorker.notifyThreadExit(clonePid, tid);
           kernelWorker.removeChannel(clonePid, alloc.channelOffset);
           releaseSlot();
@@ -1420,20 +1303,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const mainGeneration = externrefProcessOwner.startGeneration(pid);
   externrefGenerations.set(pid, mainGeneration);
   let mainWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
-  const mainForkHostImports = forkHostImportOwnerRuntime.createWorker({
-    pid,
-    generationId: mainGeneration.id,
-    authorizeSender: () => {
-      if (
-        workers.get(pid) !== mainWorker
-        || externrefGenerations.get(pid) !== mainGeneration
-      ) {
-        throw new Error(
-          `stale centralized-test host-import sender for pid=${pid}`,
-        );
-      }
-    },
-  });
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid,
@@ -1445,20 +1314,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     argv: options.argv ?? [options.programPath],
     ptrWidth,
     externrefGenerationId: mainGeneration.id,
-    forkHostImports: mainForkHostImports.init,
     ...centralizedForkModuleFields(ptrWidth),
   };
 
   try {
     mainWorker = workerAdapter.createWorker(initData);
   } catch (error) {
-    mainForkHostImports.close();
     externrefProcessOwner.releaseGeneration(mainGeneration);
     externrefGenerations.delete(pid);
     throw error;
   }
   workers.set(pid, mainWorker);
-  processForkHostImports.set(pid, mainForkHostImports);
 
   if (options.onStarted) {
     await options.onStarted(kernelWorker, pid);
@@ -1490,8 +1356,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       for (const [, w] of workers) w.terminate().catch(() => {});
       releaseProcessReferenceOwner(pid);
       rejectExit(new Error(m.message));
-    } else if (m.type === "fork_host_import") {
-      mainForkHostImports.dispatch(m.wake);
     } else if (m.type === "fork_module_references" && m.pid === pid) {
       recordForkModuleReferences(pid, m);
     } else if (

@@ -145,7 +145,6 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
-    referenceOwners.attach(pid, mainWorker);
     mainWorker.on("error", rejectOk);
     mainWorker.on("message", (raw: unknown) => {
       const message = raw as WorkerToHostMessage;

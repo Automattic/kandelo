@@ -232,7 +232,7 @@ fixture here, the source is hand-written WAT
 SDK's clang/LLVM 21 toolchain (`__funcref`-qualified pointer types parse but
 reproducibly ICE the compiler on every realistic use tried), matching the
 Node/browser hosts' own reason for hand-writing `host/test/fixtures/
-funcref-local-fork-fresh-worker.wat` / `externref-local-fork-fresh-worker.wat`.
+funcref-local-fork-fresh-worker.wat`.
 `native_fork_refs.wat`'s own doc comment has the full design (what each
 reference kind proves, exit-code table) and current status (assembles and
 instruments cleanly; the RUN currently traps during CAPTURE on native's

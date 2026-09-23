@@ -70,13 +70,11 @@ host/test/fork-dlopen-replay-e2e.test.ts	prepared-product
 host/test/fork-early-reference-provider.test.ts	source-only
 host/test/fork-exception-provider.test.ts	source-only
 host/test/fork-externref-host-parity.test.ts	source-only
-host/test/fork-externref-import-mailbox.test.ts	source-only
 host/test/fork-externref-process-owner.test.ts	source-only
 host/test/fork-from-dlopen-side-module-e2e.test.ts	prepared-product
 host/test/fork-from-thread.test.ts	prepared-product
 host/test/fork-function-catalog.test.ts	source-only
 host/test/fork-gc-codec.test.ts	source-only
-host/test/fork-host-import-runtime.test.ts	source-only
 host/test/fork-imported-globals.test.ts	source-only
 host/test/fork-instrument-coverage.test.ts	prepared-product
 host/test/fork-mechanism-trace.test.ts	source-only
@@ -94,7 +92,6 @@ host/test/fork-resume-catalog.test.ts	source-only
 host/test/fork-save-buffer-overrun.test.ts	source-only
 host/test/fork-static-root-catalog.test.ts	source-only
 host/test/fork-unwind-transport.test.ts	source-only
-host/test/fork-worker-import-exceptions.test.ts	source-only
 host/test/framebuffer-browser-controls.test.ts	source-only
 host/test/framebuffer-integration.test.ts	prepared-product
 host/test/framebuffer-registry.test.ts	source-only
@@ -113,6 +110,7 @@ host/test/host-owned-process-reap.test.ts	prepared-product
 host/test/host-process-pointer-width.test.ts	source-only
 host/test/ifhwaddr.test.ts	prepared-product
 host/test/image-owned-runtime-urls.test.ts	source-only
+host/test/import-trap-guard.test.ts	source-only
 host/test/in-kernel-http-bounds.test.ts	source-only
 host/test/in-kernel-http.test.ts	prepared-product
 host/test/interactive-stdin.test.ts	prepared-product

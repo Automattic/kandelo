@@ -1,17 +1,18 @@
 /**
- * Process-independent ownership for opaque `externref` values.
+ * Process-generation bookkeeping for opaque `externref` handles.
  *
  * WebAssembly treats an externref as an opaque identity. A fork child runs in
  * a fresh Worker, so copying a JavaScript object into that Worker is neither
- * generally possible nor identity preserving. The host instead keeps the real
- * value behind a stable handle and gives every Worker one canonical token for
- * that handle. Host-import adapters can route token-bearing calls back to the
- * owner without putting JavaScript heap objects in the Wasm continuation.
+ * generally possible nor identity preserving.
  *
- * This file deliberately owns only identity and lifetime. Dispatching a
- * particular host import remains the responsibility of that import's adapter;
- * the adapter resolves handles through the broker rather than receiving a
- * best-effort structured clone.
+ * Nothing registers a host value with this broker any more: the cross-worker
+ * host-import transport that did so was deleted (stage E1 of removing host
+ * externrefs across fork) because no production import ever used it. Every
+ * generation's handle set is therefore empty in production, and a fork that
+ * carries a raw host externref fails at capture, where the worker has no
+ * handle to name it by. What remains -- generations, the fork grant, and the
+ * worker-local token cache -- is what stage E2 replaces with an EOPNOTSUPP
+ * refusal on every host.
  */
 
 const GENERATION_TOKEN = Symbol("kandelo.fork.externref-generation");
@@ -41,18 +42,9 @@ export interface ForkExternrefGeneration {
 export interface ForkExternrefLease {
   readonly generation: ForkExternrefGeneration;
   readonly handleCount: number;
-  release(): void;
-}
-
-export interface ForkExternrefBrokerOptions {
-  /** Test seam; production handles use the complete nonzero-u32 wire space. */
-  readonly maxHandle?: number;
-  /** Test seam; production generations use the complete nonzero-u32 space. */
-  readonly maxGeneration?: number;
 }
 
 interface BrokerEntry {
-  value: unknown;
   holders: Set<BrokerGenerationState>;
 }
 
@@ -64,7 +56,6 @@ interface BrokerForkLeaseState {
 
 interface BrokerGenerationState {
   readonly token: ForkExternrefGeneration;
-  readonly directHandles: Set<number>;
   readonly forkHandleCounts: Map<number, number>;
   readonly handles: Set<number>;
   readonly forkLeases: Set<BrokerForkLeaseState>;
@@ -89,52 +80,19 @@ function assertWireLimit(value: number, name: string): void {
   }
 }
 
-class BrokerForkExternrefLease implements ForkExternrefLease {
-  readonly handleCount: number;
-
-  constructor(
-    readonly generation: ForkExternrefGeneration,
-    state: BrokerForkLeaseState,
-    private readonly releaseState: () => void,
-  ) {
-    // Do not duplicate the potentially large handle set merely for
-    // diagnostics; the broker-owned lease state is its sole lifetime owner.
-    this.handleCount = state.handles.size;
-  }
-
-  release(): void {
-    this.releaseState();
-  }
-}
-
 /**
- * Kernel-side owner for real JavaScript values.
+ * Kernel-side owner of externref process generations.
  *
  * Ownership is deliberately generation-scoped and set-valued. Ten globals or
- * graph edges that alias one externref require one strong owner entry, not ten
- * reference counts. Separate successful fork transactions retain independent
- * leases so rolling one transaction back cannot revoke another transaction or
- * a host import's direct registration.
+ * graph edges that alias one externref require one owner entry, not ten
+ * reference counts.
  */
 export class ForkExternrefBroker {
-  private nextHandle = 1;
   private nextGeneration = 1;
   private readonly entries = new Map<number, BrokerEntry>();
-  private readonly objectHandles = new WeakMap<object, number>();
-  private readonly primitiveHandles = new Map<unknown, number>();
-  private readonly numberHandles = new Map<bigint, number>();
   private readonly generations =
     new WeakMap<ForkExternrefGeneration, BrokerGenerationState>();
   private readonly currentGenerations = new Map<number, BrokerGenerationState>();
-  private readonly maxHandle: number;
-  private readonly maxGeneration: number;
-
-  constructor(options: ForkExternrefBrokerOptions = {}) {
-    this.maxHandle = options.maxHandle ?? MAX_WIRE_ID;
-    this.maxGeneration = options.maxGeneration ?? MAX_WIRE_ID;
-    assertWireLimit(this.maxHandle, "externref broker maxHandle");
-    assertWireLimit(this.maxGeneration, "externref broker maxGeneration");
-  }
 
   /**
    * Begin one exact process-image lifetime.
@@ -145,7 +103,7 @@ export class ForkExternrefBroker {
    */
   createGeneration(pid: number): ForkExternrefGeneration {
     assertProcessId(pid);
-    if (this.nextGeneration > this.maxGeneration) {
+    if (this.nextGeneration > MAX_WIRE_ID) {
       throw new RangeError("externref generation space exhausted");
     }
     const id = this.nextGeneration++;
@@ -156,7 +114,6 @@ export class ForkExternrefBroker {
     });
     const state: BrokerGenerationState = {
       token,
-      directHandles: new Set(),
       forkHandleCounts: new Map(),
       handles: new Set(),
       forkLeases: new Set(),
@@ -168,54 +125,6 @@ export class ForkExternrefBroker {
     this.generations.set(token, state);
     this.currentGenerations.set(pid, state);
     return token;
-  }
-
-  register(generation: ForkExternrefGeneration, value: unknown): number {
-    const state = this.requireActiveGeneration(generation);
-    const known = this.lookupValueHandle(value);
-    if (known !== undefined) {
-      const entry = this.requireEntry(known);
-      this.acquireDirect(state, known, entry);
-      return known;
-    }
-
-    if (this.nextHandle > this.maxHandle) {
-      throw new RangeError("externref handle space exhausted");
-    }
-    // Reserve monotonically before publishing any map entry. Even a failed
-    // publication leaves a gap rather than making a stale wire handle alias a
-    // future value.
-    const handle = this.nextHandle++;
-    const entry: BrokerEntry = {
-      value,
-      holders: new Set(),
-    };
-    this.entries.set(handle, entry);
-    try {
-      this.rememberValueHandle(value, handle);
-      state.directHandles.add(handle);
-      state.handles.add(handle);
-      entry.holders.add(state);
-    } catch (error) {
-      state.directHandles.delete(handle);
-      state.handles.delete(handle);
-      entry.holders.delete(state);
-      this.forget(handle, value);
-      throw error;
-    }
-    return handle;
-  }
-
-  /**
-   * Grant a directly managed handle to a generation.
-   *
-   * Repeated acquisition is idempotent because aliases share the generation's
-   * one direct lease.
-   */
-  acquire(generation: ForkExternrefGeneration, handle: number): void {
-    const state = this.requireActiveGeneration(generation);
-    assertHandle(handle);
-    this.acquireDirect(state, handle, this.requireEntry(handle));
   }
 
   /**
@@ -300,28 +209,10 @@ export class ForkExternrefBroker {
       }
       throw error;
     }
-    return new BrokerForkExternrefLease(
-      child.token,
-      leaseState,
-      () => this.releaseForkLease(leaseState),
-    );
-  }
-
-  /** Release one generation's direct (non-fork-transaction) lease. */
-  release(generation: ForkExternrefGeneration, handle: number): void {
-    const state = this.requireActiveGeneration(generation);
-    assertHandle(handle);
-    const entry = this.requireEntry(handle);
-    if (!state.directHandles.has(handle)) {
-      throw new Error(
-        `externref generation ${state.token.id} for pid ${state.token.pid} `
-        + `has no direct lease for handle ${handle}`,
-      );
-    }
-    state.directHandles.delete(handle);
-    if ((state.forkHandleCounts.get(handle) ?? 0) === 0) {
-      this.removeGenerationHandle(state, handle, entry);
-    }
+    return Object.freeze({
+      generation: child.token,
+      handleCount: leaseState.handles.size,
+    });
   }
 
   /** Retire every handle and lease owned by one exact execution generation. */
@@ -330,146 +221,6 @@ export class ForkExternrefBroker {
     if (state.status !== "active") return false;
     this.closeGeneration(state, "released");
     return true;
-  }
-
-  /**
-   * Validate one generation-scoped capability and return its opaque value.
-   *
-   * Host adapters must call this at dispatch time; possession of a numeric
-   * handle or a PID alone is not authority.
-   */
-  authorize(generation: ForkExternrefGeneration, handle: number): unknown {
-    const state = this.requireActiveGeneration(generation);
-    assertHandle(handle);
-    const entry = this.requireEntry(handle);
-    if (!state.handles.has(handle) || !entry.holders.has(state)) {
-      throw new Error(
-        `externref generation ${state.token.id} for pid ${state.token.pid} `
-        + `is not authorized for handle ${handle}`,
-      );
-    }
-    return entry.value;
-  }
-
-  /** Compatibility name for adapters that previously resolved PID ownership. */
-  resolve(generation: ForkExternrefGeneration, handle: number): unknown {
-    return this.authorize(generation, handle);
-  }
-
-  /**
-   * Permanently retire a handle after an explicit host-resource close.
-   *
-   * Every generation loses authorization, and registering the same JS value
-   * later receives a fresh monotonically larger handle. The monotonic allocator
-   * itself is the tombstone set: any issued-but-absent number is retired.
-   */
-  tombstone(generation: ForkExternrefGeneration, handle: number): void {
-    const owner = this.requireActiveGeneration(generation);
-    assertHandle(handle);
-    const entry = this.requireEntry(handle);
-    if (!owner.handles.has(handle) || !entry.holders.has(owner)) {
-      throw new Error(
-        `externref generation ${owner.token.id} for pid ${owner.token.pid} `
-        + `cannot tombstone unowned handle ${handle}`,
-      );
-    }
-
-    for (const holder of [...entry.holders]) {
-      holder.directHandles.delete(handle);
-      holder.forkHandleCounts.delete(handle);
-      holder.handles.delete(handle);
-      for (const lease of holder.forkLeases) lease.handles.delete(handle);
-    }
-    entry.holders.clear();
-    this.forget(handle, entry.value);
-  }
-
-  /** Set ownership is observable as either zero or one, never graph aliases. */
-  holderCount(
-    handle: number,
-    generation: ForkExternrefGeneration,
-  ): 0 | 1 {
-    assertHandle(handle);
-    const state = this.generationState(generation);
-    if (state.status !== "active") return 0;
-    const entry = this.entries.get(handle);
-    return state.handles.has(handle) && entry?.holders.has(state) ? 1 : 0;
-  }
-
-  private releaseForkLease(lease: BrokerForkLeaseState): void {
-    if (lease.released) {
-      throw new Error("externref fork lease is already released");
-    }
-    const generation = lease.generation;
-    this.requireActiveGeneration(generation.token);
-
-    // Verify the whole lease before removing anything. Lifecycle corruption
-    // must not release a valid prefix and retain the rest.
-    const entries = new Map<number, BrokerEntry>();
-    for (const handle of lease.handles) {
-      const entry = this.requireEntry(handle);
-      const count = generation.forkHandleCounts.get(handle) ?? 0;
-      if (
-        count <= 0
-        || !generation.handles.has(handle)
-        || !entry.holders.has(generation)
-      ) {
-        throw new Error(
-          `externref generation ${generation.token.id} no longer owns `
-          + `fork lease handle ${handle}`,
-        );
-      }
-      entries.set(handle, entry);
-    }
-
-    for (const handle of lease.handles) {
-      const entry = entries.get(handle)!;
-      const count = generation.forkHandleCounts.get(handle)!;
-      if (count === 1) {
-        generation.forkHandleCounts.delete(handle);
-        if (!generation.directHandles.has(handle)) {
-          this.removeGenerationHandle(generation, handle, entry);
-        }
-      } else {
-        generation.forkHandleCounts.set(handle, count - 1);
-      }
-    }
-    lease.handles.clear();
-    lease.released = true;
-    generation.forkLeases.delete(lease);
-  }
-
-  private acquireDirect(
-    generation: BrokerGenerationState,
-    handle: number,
-    entry: BrokerEntry,
-  ): void {
-    if (generation.directHandles.has(handle)) return;
-    const addedOwnership = !generation.handles.has(handle);
-    generation.directHandles.add(handle);
-    try {
-      if (addedOwnership) {
-        generation.handles.add(handle);
-        entry.holders.add(generation);
-      }
-    } catch (error) {
-      generation.directHandles.delete(handle);
-      if (addedOwnership) {
-        generation.handles.delete(handle);
-        entry.holders.delete(generation);
-      }
-      throw error;
-    }
-  }
-
-  private removeGenerationHandle(
-    generation: BrokerGenerationState,
-    handle: number,
-    entry: BrokerEntry,
-  ): void {
-    generation.handles.delete(handle);
-    entry.holders.delete(generation);
-    if (entry.holders.size === 0) this.forget(handle, entry.value);
   }
 
   private closeGeneration(
@@ -486,13 +237,12 @@ export class ForkExternrefBroker {
       lease.released = true;
     }
     generation.forkLeases.clear();
-    generation.directHandles.clear();
     generation.forkHandleCounts.clear();
     for (const handle of generation.handles) {
       const entry = this.entries.get(handle);
       if (!entry) continue;
       entry.holders.delete(generation);
-      if (entry.holders.size === 0) this.forget(handle, entry.value);
+      if (entry.holders.size === 0) this.entries.delete(handle);
     }
     generation.handles.clear();
   }
@@ -530,54 +280,8 @@ export class ForkExternrefBroker {
   private requireEntry(handle: number): BrokerEntry {
     const entry = this.entries.get(handle);
     if (entry) return entry;
-    if (handle < this.nextHandle) {
-      throw new Error(`retired externref handle ${handle}`);
-    }
     throw new Error(`unknown externref handle ${handle}`);
   }
-
-  private lookupValueHandle(value: unknown): number | undefined {
-    if ((typeof value === "object" && value !== null) || typeof value === "function") {
-      return this.objectHandles.get(value as object);
-    }
-    if (typeof value === "number") {
-      return this.numberHandles.get(exactNumberBits(value));
-    }
-    return this.primitiveHandles.get(value);
-  }
-
-  private rememberValueHandle(value: unknown, handle: number): void {
-    if ((typeof value === "object" && value !== null) || typeof value === "function") {
-      this.objectHandles.set(value as object, handle);
-    } else if (typeof value === "number") {
-      this.numberHandles.set(exactNumberBits(value), handle);
-    } else {
-      this.primitiveHandles.set(value, handle);
-    }
-  }
-
-  private forget(handle: number, value: unknown): void {
-    this.entries.delete(handle);
-    if ((typeof value === "object" && value !== null) || typeof value === "function") {
-      // WeakMap has no conditional delete. Deleting is safe because a handle
-      // is removed only after every process holder released the strong entry.
-      this.objectHandles.delete(value as object);
-    } else if (typeof value === "number") {
-      const bits = exactNumberBits(value);
-      if (this.numberHandles.get(bits) === handle) {
-        this.numberHandles.delete(bits);
-      }
-    } else if (this.primitiveHandles.get(value) === handle) {
-      this.primitiveHandles.delete(value);
-    }
-  }
-}
-
-function exactNumberBits(value: number): bigint {
-  const bytes = new ArrayBuffer(Float64Array.BYTES_PER_ELEMENT);
-  const view = new DataView(bytes);
-  view.setFloat64(0, value, true);
-  return view.getBigUint64(0, true);
 }
 
 /**
@@ -631,50 +335,5 @@ export class ForkExternrefTokenCache {
     // Weak references do not own the tokens; clearing merely forgets canonical
     // lookup entries at exec/process teardown.
     this.tokens.clear();
-  }
-}
-
-/**
- * Worker-facing recipe provider for externrefs already adapted by the process
- * owner.
- *
- * Host imports that create opaque values must register them with the
- * process-wide owner and return this Worker's canonical token. Consequently
- * the continuation encoder never needs to clone or inspect the real value.
- */
-export class ForkExternrefTokenRecipeProvider {
-  constructor(
-    private readonly tokens: ForkExternrefTokenCache,
-    /**
-     * Late owner adoption for an exact Worker-local value that has never
-     * needed to cross a process boundary before this fork.
-     */
-    private readonly normalizeUnclaimed?: (
-      value: unknown,
-    ) => ForkExternrefToken,
-  ) {}
-
-  capture(value: unknown): number {
-    let handle = this.tokens.encode(value);
-    if (handle === null && this.normalizeUnclaimed) {
-      // WHY: the transaction separately retains `value` for parent replay.
-      // Only the fresh-child recipe uses this canonical owner token.
-      handle = this.tokens.encode(this.normalizeUnclaimed(value));
-    }
-    if (handle === null) {
-      throw new Error(
-        "externref reached fork without passing through the process reference owner",
-      );
-    }
-    return handle;
-  }
-
-  materialize(handle: number): ForkExternrefToken {
-    return this.tokens.materialize(handle);
-  }
-
-  tryEncode(value: unknown): number | undefined {
-    const handle = this.tokens.encode(value);
-    return handle === null ? undefined : handle;
   }
 }

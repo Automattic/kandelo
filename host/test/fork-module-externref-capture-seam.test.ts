@@ -12,14 +12,13 @@
 // to life in a child; the other says which handle names a live value so a
 // parent can record it.
 //
-// WHY THIS TEST IS HERE RATHER THAN IN A FORKING PROGRAM. The refusal is still
-// real -- a reference the broker never minted answers 0 and is still refused --
-// but no guest program can reach it any more: every externref crossing the
-// import mailbox is registered for wire and arrives as a broker token, so a
-// guest cannot hold a reference the host does not own. The e2e that used to
-// assert the refusal now asserts the capability that replaced it
-// (`externref-gated-fork-module-worker.test.ts`). This asserts the refusal one
-// level down, where it can still be reached.
+// WHY THIS TEST IS HERE RATHER THAN IN A FORKING PROGRAM. The refusal is
+// real -- a reference the broker never minted answers 0 and is refused. Since
+// the cross-worker host-import transport was removed, nothing mints broker
+// handles for host values, so every raw host externref takes this path. The
+// forking end-to-end tests that exercised the transport were deleted with it;
+// stage E2 makes such a fork fail with EOPNOTSUPP on every host and will carry
+// its own end-to-end test. This asserts the refusal at the seam itself.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";

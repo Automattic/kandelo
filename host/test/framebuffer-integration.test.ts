@@ -144,7 +144,6 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
-    referenceOwners.attach(pid, mainWorker);
     mainWorker.on("error", (error) => rejectOk(error));
     mainWorker.on("message", (raw: unknown) => {
       const message = raw as WorkerToHostMessage;

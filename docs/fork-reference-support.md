@@ -13,13 +13,14 @@ over convenient illusion").
 During `fork()`, the host and kernel reconstruct the child's live
 program state, including every Wasm reference reachable from the
 forking activation: table entries, globals, locals, and exception
-payloads. Every reference kind Wasm can express — `null`, `funcref`,
-`exnref`, `externref`, typed Wasm-GC (`struct`/`array`/`i31`), and
-static-root references — is reconstructed, on every host (native,
-Node, and browser). One narrow residual case (an anyref-lineage value
-with no recoverable production-site identity) remains an explicit,
-loud, unsupported boundary rather than something silently patched
-together by host JS; see "One remaining gated boundary" below.
+payloads. `null`, `funcref`, `exnref`, typed Wasm-GC
+(`struct`/`array`/`i31`), and static-root references are
+reconstructed. A **raw host `externref`** — an opaque JavaScript (or
+native host) object handed to the guest by a host import — is **not**
+supported across fork: that is a deliberate platform boundary, not a
+gap to paper over. See "Host externrefs are not carried across fork"
+below for the decision, the current behaviour, and the remaining
+work.
 
 ## Supported across fork
 
@@ -39,24 +40,11 @@ together by host JS; see "One remaining gated boundary" below.
   supported reference kinds above; see `docs/fork-instrumentation.md`
   for how reconstruction fits into the broader replay design.
 
-## Supported across fork (externref, GC, static-root)
+## Supported across fork (GC, static-root)
 
-`externref`, typed Wasm-GC (`struct`/`array`/`i31`), and static-root
-references are also reconstructed across fork, on every host (native,
-Node, and browser):
+Typed Wasm-GC (`struct`/`array`/`i31`) and static-root references are
+also reconstructed across fork:
 
-- **A plain host externref with recorded provenance.** Every
-  externref-returning host-import call site is wrapped by
-  `wasm-fork-instrument` (`crates/fork-instrument/src/externref_provenance.rs`)
-  to record `(value -> handle)` at the exact moment the import produces
-  the value — the only sound moment to observe that association. Fork
-  capture (the anyref-transit `gc_lookup`/`GC_LOOKUP` seam; native:
-  `crates/host-native/src/guest.rs`, Node/browser:
-  `ForkReferenceTransaction.lookupGcSlot` in
-  `host/src/fork-reference-transaction.ts`) looks the value up in that
-  provenance record — never mints a handle by inspecting an
-  already-live value — and interns it as a real `externref` recipe
-  node on a hit.
 - **Static roots.** An immutable Wasm-GC global/local/table entry
   reachable from module-level `elem`/`global` initializers is recorded
   by a harvest-time reverse index (`ForkStaticRootCatalog`/
@@ -70,54 +58,66 @@ Node, and browser):
   node, restored in the child via the injected codec's
   allocate/fill drive.
 
-The Node/browser and native hosts share the same capture-time
-layering: dedup, then static-root, then externref-provenance, then a
-genuine miss recurses into real struct/array/i31 construction instead
-of gating. See
+See
 `docs/plans/2026-09-05-n1-nodebrowser-reference-parity-grounding.md`
 for the Node/browser parity work and its test coverage.
 
-### One remaining gated boundary
+## Host externrefs are not carried across fork
 
-A single case still gates cleanly with `EOPNOTSUPP`
-(`ForkReferenceUnsupportedError`, errno 95;
-`host/src/fork-reference-unsupported.ts`), on every host: an
-anyref-lineage value that is **not** a dedup hit, **not** a static
-root, and **not** a plain externref with recorded provenance — i.e. a
-Wasm-GC-internalized value produced by `any.convert_extern` with no
-production-site provenance to recover (a `call_indirect`/`call_ref`
-landing on an externref-returning host import that the instrumenter's
-static pass could not identify, or a genuinely engine-internalized
-value). Fabricating a handle for this case would be the unsound
-capture-time reverse lookup this design deliberately avoids, so it
-gates instead of mis-capturing. This is detected on the **parent**
-side during capture, before any child is spawned; in the default
-configuration (`WASM_POSIX_FORK_MODULE` unset) it surfaces as a clean
-fork-abort (`beginAbortReplay`) with no crash and no partially
-constructed child.
+**Decision.** Fork keeps Wasm-GC and static-root reference support but
+does not carry raw host externrefs. A fork child runs in a fresh
+Worker (or a fresh native instance), so a host object cannot be copied
+into it with its identity intact; the only way to "carry" one is to
+leave the real object with a host-side owner and route every use of it
+back across workers. A host capability a guest needs belongs behind a
+kernel object — a file descriptor or a device — which fork already
+duplicates with POSIX semantics, not behind a JavaScript object
+smuggled between workers. The package census below found no package
+that carries an externref across fork, so the boundary costs no real
+workload.
+
+**Cross-worker host-object imports were removed (stage E1,
+2026-09-23).** The Node/browser host used to wire a "host-import
+mailbox" into every process and pthread Worker: a shared-memory
+transport that forwarded an externref-bearing host-import call to an
+owner in the kernel Worker, which kept the real object and handed the
+guest a per-worker token. Production never registered a single import
+on it — the only caller of its registration API was a test helper —
+so it was deleted along with the tests that exercised it through that
+helper. What survives from it is unrelated to externrefs: each guest
+function import is still wrapped so that a nested Wasm trap crossing a
+JavaScript import frame stays a trap (`host/src/import-trap-guard.ts`).
+
+**Current behaviour, before stage E2.** On Node and browser, a fork
+whose captured state includes a raw host externref fails at capture.
+The co-resident fork module asks the host which handle names the value
+(`__wpk_fork_host_externref_handle`); nothing registers host values
+with the host's externref broker any more, so the answer is always
+"none", and the module refuses to invent a recipe, recording
+`EOPNOTSUPP` (pinned by
+`host/test/fork-module-externref-capture-seam.test.ts`). Inventing a
+recipe would decode in the child to something that was never the
+parent's. What the forking program then observes is not yet pinned by
+an end-to-end test on the JS hosts. A Wasm-GC-internalized host
+externref (`any.convert_extern`) is still a host externref and takes
+the same path.
+
+**Stage E2 (planned).** Make a fork that carries a host externref fail
+with `EOPNOTSUPP` from `fork()` on every host, with an end-to-end test,
+and remove the remaining handle broker, worker-local token cache, and
+captured-externref handover that no longer have anything to carry.
 
 ## Known gaps and residuals
 
-- **Module-mode abort for the one remaining gated case — VERIFIED
-  (Path B P4, 2026-09-07).** With `WASM_POSIX_FORK_MODULE=1` set (an
-  opt-in mode, not the default), the one still-gated case above now
-  aborts cleanly through the co-resident fork module's OWN
-  continuation-journal abort path (`beginAbortReplay` ->
-  `beginModuleAbortReplay` -> `fm_begin_abort`), not the JS
-  reconstruction engine that P6 deletes. This is proven end to end on
-  V8 by `host/test/externref-gated-fork-module-worker.test.ts` — the
-  Node/V8 mate of native's
-  `crates/host-native/src/lib.rs::smoke_fork_gated_externref_parent_
-  survives`. Under `forkModuleEnabled: true`, a live host externref
-  minted via `call_indirect` (so the provenance-wrapper pass records
-  nothing and it reaches the gate) forked across `kernel_fork`
-  returns exactly `-EOPNOTSUPP`, spawns no child, leaves the parent's
-  own externref identity intact, completes within a bounded
-  wall-clock budget (guarding the gate-hang regression against a ~30s
-  pump cap), and reports a nonzero co-resident-module committed-frame
-  count (the positive proof the module — not a silent JS fallback —
-  drove the abort). The earlier "module-mode abort-replay deferred to
-  M8" limitation is closed for this residual case.
+- **No end-to-end JS-host test of a host-externref fork today.** The
+  V8 end-to-end tests for this boundary
+  (`externref-gated-fork-module-worker.test.ts`, and
+  `externref-fork-module-worker.test.ts` for the carried case) minted
+  their host externref through the removed cross-worker host-import
+  transport, so they were deleted with it in stage E1. The native
+  mate, `crates/host-native/src/lib.rs::smoke_fork_gated_externref_parent_
+  survives`, was not changed by stage E1. Stage E2's end-to-end
+  `EOPNOTSUPP` test is the replacement.
 - **Exception-carried reference payloads reconstruct on the module path
   (Path B P5b, 2026-09-07).** An exception (guest `catch_ref` or a raw
   host `JSTag` exception) whose caught recipe carries a reference payload
@@ -141,13 +141,6 @@ constructed child.
   real package produces a reference-carrying exception across a fork.
   Native was unaffected: its capture path (`crates/host-native/src/guest.rs`)
   calls the shared builder directly and never carried the JS-nodes bound.
-- **A host-import-returned externref that is not object-shaped has no
-  handle to record.** The provenance table is keyed by JS object
-  identity (`WeakMap`); a hypothetical future host import that returns
-  a primitive (number/string/boolean) as an externref has no key to
-  register against. No current or near-term host import does this
-  (checked against `host/src/fork-externref-import-mailbox.ts`'s
-  import descriptor shapes); native has the identical limitation.
 
 ## Package-level validation
 

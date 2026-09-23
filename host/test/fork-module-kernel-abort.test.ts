@@ -3,8 +3,7 @@
 //
 // `worker-main.ts`'s parent-fork run loop has TWO callers of
 // `processContinuation.beginAbortReplay(errno)`: the capture-side gated
-// -reference-kind guard (proven end to end by
-// `externref-fork-module-worker.test.ts`'s flag-on test), and the
+// -reference-kind guard, and the
 // `childPid < 0` branch below it -- reached when capture succeeds cleanly but
 // the REAL kernel/host then rejects launching the child. This test drives
 // that second caller with a genuine (not mocked, not injected at the JS

@@ -118,7 +118,7 @@ import { readForkResumeCatalog } from "./fork-resume-catalog";
 import {
   ForkExternrefTokenCache,
 } from "./fork-reference-broker";
-import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
+import { guardFunctionImport, guardImportObject } from "./import-trap-guard";
 import {
   ForkImportIdentity,
   type ForkWasmImports,
@@ -1169,7 +1169,7 @@ export function buildDlopenImports(
     firstIndex: number,
     length: number,
   ) => void,
-  hostImportRuntime?: ForkHostImportWorkerRuntime,
+  routeFunctionImport?: typeof guardFunctionImport,
   workerIdentity = 1,
   memoryOwnership: "copied" | "borrowed" = "copied",
   plannerModule?: WebAssembly.Module,
@@ -1865,12 +1865,7 @@ export function buildDlopenImports(
           onTableMutation?.(mutated, firstIndex, length);
           tableMutationPending = true;
         },
-        ...(hostImportRuntime
-          ? {
-              routeFunctionImport: (imported, implementation) =>
-                hostImportRuntime.routeFunction(imported, implementation),
-            }
-          : {}),
+        ...(routeFunctionImport ? { routeFunctionImport } : {}),
       },
       {
         pointerWidth: ptrWidth,
@@ -3178,7 +3173,6 @@ export async function centralizedWorkerMain(
   port: MessagePort,
   initData: CentralizedWorkerInitMessage,
 ): Promise<void> {
-  let processHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
     const ptrWidth = initData.ptrWidth ?? 4;
@@ -3537,13 +3531,9 @@ export async function centralizedWorkerMain(
       // engine-floor seam can close over it; also owned by the JS reference path
       // (the still-JS `__wpk_fork_ref_decode_externref` materializes the SAME
       // idempotent token, so the module and JS agree on identity).
-      if (
-        initData.forkHostImports === undefined ||
-        initData.externrefGenerationId === undefined
-      ) {
+      if (initData.externrefGenerationId === undefined) {
         throw new Error(
-          `pid=${pid}: ABI ${ABI_VERSION} fork artifact requires its process owner ` +
-            "host-import mailbox and externref generation",
+          `pid=${pid}: ABI ${ABI_VERSION} fork artifact requires its externref generation`,
         );
       }
       const externrefTokens = new ForkExternrefTokenCache(
@@ -3768,18 +3758,6 @@ export async function centralizedWorkerMain(
       const mainTemplateId = computeForkModuleTemplateId(programBytes);
       let processInstance: WebAssembly.Instance | null = null;
 
-      processHostImportRuntime = new ForkHostImportWorkerRuntime(
-        initData.forkHostImports,
-        pid,
-        initData.externrefGenerationId,
-        externrefTokens,
-        (wake) => {
-          port.postMessage({
-            type: "fork_host_import",
-            wake,
-          } satisfies WorkerToHostMessage);
-        },
-      );
       // WHAT USED TO BE HERE: a `ForkExternrefTokenRecipeProvider`, constructed
       // and never read. Its constructor only stores its two arguments, so this
       // was a value nobody asked for -- capture reaches the broker token
@@ -4276,7 +4254,7 @@ export async function centralizedWorkerMain(
         (table, firstIndex, length) => {
           forkTables.markTableMutation(table, firstIndex, length);
         },
-        processHostImportRuntime,
+        guardFunctionImport,
         pid,
         forkMemoryOwnership,
         initData.dylinkModuleModule,
@@ -4597,10 +4575,7 @@ export async function centralizedWorkerMain(
         },
         forkEnvImports,
       );
-      const routedImportObject = processHostImportRuntime.routeImportObject(
-        programBytes,
-        importObject,
-      );
+      const routedImportObject = guardImportObject(programBytes, importObject);
       const reconstructedMainImports = importedStatePlanner
         ? importedStatePlanner.importsForActivation(
             0,
@@ -5200,7 +5175,6 @@ export async function centralizedWorkerMain(
       resumeTable.clear();
       releaseProcessForkArchiveReader();
       externrefTokens.clear();
-      processHostImportRuntime.clear();
       port.postMessage({
         type: "exit",
         pid,
@@ -5312,7 +5286,6 @@ export async function centralizedWorkerMain(
       } satisfies WorkerToHostMessage);
     }
   } catch (err) {
-    processHostImportRuntime?.clear();
     if (err instanceof ExecRetirement) {
       port.postMessage({
         type: "exec_retired",
@@ -6136,7 +6109,6 @@ export async function centralizedThreadWorkerMain(
   // Visible to the worker-tail teardown, which runs outside the block the
   // registry is built in.
   let threadTableReplication: ProcessTableReplicationOwner | null = null;
-  let threadHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
   let threadExternrefTokens: ForkExternrefTokenCache | null = null;
   let processDlopenLock: Int32Array | undefined;
   let processDlopenOwner: Int32Array | undefined;
@@ -6219,29 +6191,14 @@ export async function centralizedThreadWorkerMain(
 
     const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
     if (hasForkInstrumentation) {
-      if (
-        initData.forkHostImports === undefined ||
-        initData.externrefGenerationId === undefined
-      ) {
+      if (initData.externrefGenerationId === undefined) {
         throw new Error(
-          `pid=${pid} tid=${tid}: ABI ${ABI_VERSION} fork artifact requires its process ` +
-            "owner host-import mailbox and externref generation",
+          `pid=${pid} tid=${tid}: ABI ${ABI_VERSION} fork artifact requires its ` +
+            "externref generation",
         );
       }
       threadExternrefTokens = new ForkExternrefTokenCache(
         initData.externrefGenerationId,
-      );
-      threadHostImportRuntime = new ForkHostImportWorkerRuntime(
-        initData.forkHostImports,
-        pid,
-        initData.externrefGenerationId,
-        threadExternrefTokens,
-        (wake) => {
-          port.postMessage({
-            type: "fork_host_import",
-            wake,
-          } satisfies WorkerToHostMessage);
-        },
       );
     }
     const threadForkCapabilityClaim = readForkInstrumentCapabilityClaim(module);
@@ -6354,7 +6311,7 @@ export async function centralizedThreadWorkerMain(
       {
         // M2: wire the same `resolve_externref` body as the process/parent
         // path (using this pthread's own externref token cache, established
-        // above alongside `threadHostImportRuntime`). The pthread-parent
+        // above). The pthread-parent
         // module never actually reconstructs references (that happens on the
         // fork CHILD side, in the process worker's module instance) — it only
         // drives the frame/KFRE journal — so this seam is expected to stay
@@ -6714,7 +6671,7 @@ export async function centralizedThreadWorkerMain(
       (table, firstIndex, length) => {
         threadForkTables.markTableMutation(table, firstIndex, length);
       },
-      threadHostImportRuntime ?? undefined,
+      hasForkInstrumentation ? guardFunctionImport : undefined,
       tid,
       "copied",
       initData.dylinkModuleModule,
@@ -6832,11 +6789,8 @@ export async function centralizedThreadWorkerMain(
       },
       threadForkEnvImports,
     );
-    const routedThreadImportObject = threadHostImportRuntime
-      ? threadHostImportRuntime.routeImportObject(
-          initData.programBytes,
-          importObject,
-        )
+    const routedThreadImportObject = hasForkInstrumentation
+      ? guardImportObject(initData.programBytes, importObject)
       : importObject;
     const threadMainImportedState =
       threadImportedStateCapture?.prepareActivation(
@@ -7066,7 +7020,6 @@ export async function centralizedThreadWorkerMain(
     // execution exit cannot strand the process-wide writer lock.
     releasePthreadForkLock();
     threadExternrefTokens?.clear();
-    threadHostImportRuntime?.clear();
 
     // A normal return has not passed through libc's noreturn kernel_exit
     // import, so publish SYS_EXIT here. When kernel_exit already ran it sent
@@ -7110,7 +7063,6 @@ export async function centralizedThreadWorkerMain(
     // The module holds them now and reclaims them with its bump heap on the
     // next fork, so there is no host-side transaction left to unwind.
     threadExternrefTokens?.clear();
-    threadHostImportRuntime?.clear();
     if (err instanceof ExecRetirement) {
       port.postMessage({
         type: "exec_retired",

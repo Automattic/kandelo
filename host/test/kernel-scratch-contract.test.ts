@@ -1172,10 +1172,10 @@ const auditAllowances: AuditAllowance[] = [
     why: "The fork transit provider has no imports or linear memory and owns only the process worker's temporary externref table.",
   },
   {
-    key: "host/src/fork-worker-import-exceptions.ts::buildFatalTrap::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(bytes))",
+    key: "host/src/import-trap-guard.ts::buildFatalTrap::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(bytes))",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    why: "This closed import-free helper has no memory and exposes only the unconditional trap used for Worker exception semantics.",
+    why: "This closed import-free helper has no memory and exposes only the unconditional trap that keeps a nested Wasm trap a trap across a JavaScript import frame.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: 16384n, shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',

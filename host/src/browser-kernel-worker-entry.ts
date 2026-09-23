@@ -75,10 +75,6 @@ import {
 } from "./fork-replay-gate";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
-import {
-  ForkHostImportOwnerRuntime,
-  type ForkHostImportOwnerWorker,
-} from "./fork-host-import-runtime";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -434,7 +430,6 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
 });
 const {
   allocateProcessGeneration,
-  bindForkHostImports,
   configureRootfsOverlayFromImage,
   createInitProcessMemoryAllocator,
   destroyGenerationAccountingComplete,
@@ -446,8 +441,6 @@ const {
   completeVforkGenerationTeardown,
   handleExec,
   externrefProcessOwner,
-  forkHostImportOwnerRuntime,
-  forkHostImportsByWorker,
   processes,
   processGenerationDetaches,
   processMemoryCreators,
@@ -470,7 +463,6 @@ const {
   awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
-  dispatchForkHostImport,
   containVforkAddressSpace,
   finishProcessExit,
   finishVforkDisposition,

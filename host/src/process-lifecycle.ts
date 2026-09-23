@@ -82,11 +82,6 @@ import {
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
-import type { ForkExternrefImportWake } from "./fork-externref-import-mailbox";
-import {
-  ForkHostImportOwnerRuntime,
-  type ForkHostImportOwnerWorker,
-} from "./fork-host-import-runtime";
 import {
   ForkExternrefProcessOwner,
   readCapturedExternrefHandover,
@@ -777,14 +772,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   /** Exact broker authority for each PID's current Wasm image. */
   const externrefProcessOwner = new ForkExternrefProcessOwner();
 
-  /** Owner registry issuing this realm's fork host-import workers. */
-  const forkHostImportOwnerRuntime =
-    new ForkHostImportOwnerRuntime(externrefProcessOwner);
-
-  /** Owner registry for the fork host-import protocol, keyed by worker. */
-  const forkHostImportsByWorker =
-    new WeakMap<object, ForkHostImportOwnerWorker>();
-
   const vforkLifetimes = new VforkLifetimeCoordinator<Info>();
 
   const vmInterruptTimers = new VmInterruptTimerManager<Info>((pid) =>
@@ -955,29 +942,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     return materializeThreadSlot(memory, slotAddr, ptrWidth);
   }
 
-  function bindForkHostImports(
-    worker: object,
-    owner: ForkHostImportOwnerWorker,
-  ): void {
-    forkHostImportsByWorker.set(worker, owner);
-  }
-
-  function dispatchForkHostImport(
-    worker: object,
-    message: { wake: ForkExternrefImportWake },
-  ): void {
-    const owner = forkHostImportsByWorker.get(worker);
-    if (!owner || !owner.dispatch(message.wake)) {
-      reportHostDiagnostic({
-        pid: message.wake.pid,
-        source: "fork host-import protocol",
-        message:
-          `[kernel-worker] ignored stale or unbound fork host-import wake `
-          + `pid=${message.wake.pid} sender=${message.wake.senderId}`,
-      }, "warn");
-    }
-  }
-
   /**
    * Run one exact process-generation detach transaction through the ledger.
    *
@@ -1106,7 +1070,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     settleMs = 0,
   ): Promise<void> {
     intentionallyTerminated.add(worker as object);
-    forkHostImportsByWorker.get(worker as object)?.close();
     const teardown = (async () => {
       await worker.terminate().catch(() => {});
       if (settleMs > 0) await delay(settleMs);
@@ -2034,7 +1997,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let createdWorker: W | undefined;
     let createdGeneration: Info | undefined;
     let createdExternrefGeneration: ForkExternrefGeneration | undefined;
-    let createdForkHostImports: ForkHostImportOwnerWorker | undefined;
     const kernelWorker = host.kernel();
     try {
       releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
@@ -2128,22 +2090,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
       const externrefGeneration = externrefProcessOwner.startGeneration(pid);
       createdExternrefGeneration = externrefGeneration;
-      let worker: W;
-      const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-        pid,
-        generationId: externrefGeneration.id,
-        authorizeSender: () => {
-          const current = processes.get(pid);
-          if (
-            !current
-            || current.worker !== worker
-            || current.externrefGeneration !== externrefGeneration
-          ) {
-            throw new Error(`stale fork host-import sender for pid=${pid}`);
-          }
-        },
-      });
-      createdForkHostImports = forkHostImports;
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid,
@@ -2153,7 +2099,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         channelOffset,
         secureExec,
         externrefGenerationId: externrefGeneration.id,
-        forkHostImports: forkHostImports.init,
         env: launchEnv,
         argv: msg.argv,
         cwd: msg.cwd,
@@ -2167,9 +2112,8 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       // A constructor may expose Memory to a partially created worker before
       // it throws, so any failure from this point uses forced retirement.
       workerCreationAttempted = true;
-      worker = host.createProcessWorker(initData);
+      const worker = host.createProcessWorker(initData);
       createdWorker = worker;
-      bindForkHostImports(worker, forkHostImports);
       createdGeneration = {
         generation: allocateProcessGeneration(),
         memory,
@@ -2194,11 +2138,9 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       createdMemoryLease = undefined;
       createdPid = undefined;
       createdExternrefGeneration = undefined;
-      createdForkHostImports = undefined;
 
       respond(msg.requestId, pid);
     } catch (e) {
-      createdForkHostImports?.close();
       if (createdExternrefGeneration) {
         externrefProcessOwner.releaseGeneration(createdExternrefGeneration);
       }
@@ -2326,7 +2268,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let lifecycleTeardownStarted = false;
     let childGeneration: Info | undefined;
     let externrefGeneration: ForkExternrefGeneration | undefined;
-    let forkHostImports: ForkHostImportOwnerWorker | undefined;
     try {
       // The kernel already created the child Process via kernel_spawn_process.
       // Treat every subsequent host attachment as one rollback-capable
@@ -2342,25 +2283,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
       externrefGeneration = externrefProcessOwner.startGeneration(childPid);
       const processExternrefGeneration = externrefGeneration;
-      const processForkHostImports = forkHostImportOwnerRuntime
-        .createWorker({
-          pid: childPid,
-          generationId: processExternrefGeneration.id,
-          authorizeSender: () => {
-            const current = processes.get(childPid);
-            if (
-              !newWorker
-              || !current
-              || current.worker !== newWorker
-              || current.externrefGeneration !== processExternrefGeneration
-            ) {
-              throw new Error(
-                `stale fork host-import sender for spawn pid=${childPid}`,
-              );
-            }
-          },
-        });
-      forkHostImports = processForkHostImports;
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid: childPid,
@@ -2370,7 +2292,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         channelOffset,
         secureExec,
         externrefGenerationId: processExternrefGeneration.id,
-        forkHostImports: processForkHostImports.init,
         argv,
         env: envp,
         ptrWidth,
@@ -2382,7 +2303,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
       newWorker = host.createDeferredProcessWorker(initData, "spawn");
       const worker = newWorker;
-      bindForkHostImports(worker, processForkHostImports);
       childGeneration = {
         generation: allocateProcessGeneration(),
         memory,
@@ -2417,7 +2337,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             worker.start();
           },
           () => {
-            processForkHostImports.close();
             void worker.terminate();
           },
         ),
@@ -2428,7 +2347,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         );
       }
       if (startDisposition === "dead") {
-        processForkHostImports.close();
         await terminateTrackedWorker(worker);
         processes.get(childPid)?.workerQuiescence.settle();
         const signal = await retryKernelEntryResult(
@@ -2446,7 +2364,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     } catch (error) {
       if (lifecycleTeardownStarted) throw error;
       if (newWorker) await terminateTrackedWorker(newWorker);
-      forkHostImports?.close();
       if (externrefGeneration) {
         externrefProcessOwner.releaseGeneration(externrefGeneration);
       }
@@ -2541,7 +2458,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let lifecycleTeardownStarted = false;
     let childGeneration: Info | undefined;
     let childExternrefGeneration: ForkExternrefGeneration | undefined;
-    let childForkHostImports: ForkHostImportOwnerWorker | undefined;
     const forkReplay = new ForkReplayGateCoordinator(
       `fork child pid=${childPid}`,
     );
@@ -2619,23 +2535,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         );
       childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };
-      const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-        pid: childPid,
-        generationId: externrefGrant.generation.id,
-        authorizeSender: () => {
-          const current = processes.get(childPid);
-          if (
-            !current
-            || current.worker !== launchedWorker
-            || current.externrefGeneration !== externrefGrant.generation
-          ) {
-            throw new Error(
-              `stale fork host-import sender for child pid=${childPid}`,
-            );
-          }
-        },
-      });
-      childForkHostImports = forkHostImports;
       const childInitData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid: childPid,
@@ -2645,7 +2544,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         channelOffset: childChannelOffset,
         secureExec: kernelWorker.processSecureExec(childPid),
         externrefGenerationId: externrefGrant.generation.id,
-        forkHostImports: forkHostImports.init,
         isForkChild: true,
         forkMode: mode,
         forkBufAddr,
@@ -2670,7 +2568,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       childWorker = host.createDeferredProcessWorker(childInitData, "fork");
       const worker = childWorker;
       launchedWorker = worker;
-      bindForkHostImports(worker, forkHostImports);
       childGeneration = {
         generation: allocateProcessGeneration(),
         memory: childMemory,
@@ -2717,7 +2614,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
                 `Fork child ${childPid} launch was cancelled before replay readiness`,
               ),
             );
-            forkHostImports.close();
             void launchedWorker.terminate();
           },
         ),
@@ -2731,7 +2627,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         forkReplay.cancel(
           new Error(`Fork child ${childPid} exited before Worker launch`),
         );
-        forkHostImports.close();
         await terminateTrackedWorker(worker);
         processes.get(childPid)?.workerQuiescence.settle();
         const signal = await retryKernelEntryResult(
@@ -2765,7 +2660,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     } catch (error) {
       if (lifecycleTeardownStarted) throw error;
       forkReplay.cancel(error);
-      childForkHostImports?.close();
       if (childWorker) await terminateTrackedWorker(childWorker);
       if (childExternrefGeneration) {
         externrefProcessOwner.releaseGeneration(childExternrefGeneration);
@@ -2954,23 +2848,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
     let threadWorker: W & { start(): boolean };
     let threadEntry: ThreadWorkerRecord<Info["worker"]>;
-    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-      pid,
-      generationId: processInfo.externrefGeneration.id,
-      authorizeSender: () => {
-        const entries = threadWorkers.get(pid);
-        if (
-          !belongsToCurrentProcessImage()
-          || !threadEntry
-          || threadEntry.worker !== threadWorker
-          || !entries?.includes(threadEntry)
-        ) {
-          throw new Error(
-            `stale fork host-import sender for pid=${pid} tid=${tid}`,
-          );
-        }
-      },
-    });
     const threadInitData: CentralizedThreadInitMessage = {
       type: "centralized_thread_init",
       pid,
@@ -2982,7 +2859,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       channelOffset: alloc.channelOffset,
       secureExec: processInfo.secureExec,
       externrefGenerationId: processInfo.externrefGeneration.id,
-      forkHostImports: forkHostImports.init,
       // Phase 6 D7b: ship the same co-resident fork-module decision the process
       // worker receives, so a fork issued FROM this pthread unwinds through the
       // module (the parent side of a fork-from-thread).
@@ -3000,7 +2876,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     };
 
     threadWorker = host.createThreadWorker(threadInitData);
-    bindForkHostImports(threadWorker, forkHostImports);
     if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
     threadEntry = {
       worker: threadWorker,
@@ -3114,8 +2989,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         if (isCurrentThreadGeneration() && m.pid === pid) {
           handleVmInterruptTimer(m, pid, processInfo);
         }
-      } else if (m.type === "fork_host_import") {
-        dispatchForkHostImport(threadWorker, m);
       } else if (m.type === "fork_module_frames" && m.pid === pid) {
         // Phase 6 D7b: forward the pthread PARENT worker's fork-module proof-of-use
         // (the parent side of a fork-from-thread). The process-worker handler above
@@ -3142,7 +3015,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           memory,
           () => { threadWorker.start(); },
           () => {
-            forkHostImports.close();
             void threadWorker.terminate();
           },
           () => {
@@ -3322,7 +3194,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let childWorker: (W & { start(): boolean }) | undefined;
     let childGeneration: Info | undefined;
     let childExternrefGeneration: ForkExternrefGeneration | undefined;
-    let childForkHostImports: ForkHostImportOwnerWorker | undefined;
     let registered = false;
     let lifetimeStarted = false;
     let lifetime: VforkLifetime<Info> | undefined;
@@ -3381,23 +3252,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         );
       childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };
-      const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-        pid: childPid,
-        generationId: externrefGrant.generation.id,
-        authorizeSender: () => {
-          const current = processes.get(childPid);
-          if (
-            !current
-            || current.worker !== launchedWorker
-            || current.externrefGeneration !== externrefGrant.generation
-          ) {
-            throw new Error(
-              `stale fork host-import sender for vfork child pid=${childPid}`,
-            );
-          }
-        },
-      });
-      childForkHostImports = forkHostImports;
       const childInitData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid: childPid,
@@ -3407,7 +3261,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         channelOffset: childChannelOffset,
         secureExec: kernelWorker.processSecureExec(childPid),
         externrefGenerationId: externrefGrant.generation.id,
-        forkHostImports: forkHostImports.init,
         isForkChild: true,
         forkMode: PROCESS_FORK_MODE_VFORK,
         forkMemoryOwnership: "borrowed",
@@ -3436,7 +3289,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
       childWorker = host.createDeferredProcessWorker(childInitData, "vfork");
       launchedWorker = childWorker;
-      bindForkHostImports(childWorker, forkHostImports);
       childGeneration = {
         generation: allocateProcessGeneration(),
         memory: parentMemory,
@@ -3526,7 +3378,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             forkReplay.cancel(
               new Error(`Vfork child ${childPid} launch was cancelled`),
             );
-            forkHostImports.close();
             void launchedWorker.terminate();
           },
         ),
@@ -3540,7 +3391,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         forkReplay.cancel(
           new Error(`Vfork child ${childPid} exited before Worker launch`),
         );
-        forkHostImports.close();
         await terminateTrackedWorker(childWorker);
         childGeneration.workerQuiescence.settle();
         const signal = await retryKernelEntryResult(
@@ -3625,7 +3475,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       }
 
       forkReplay.cancel(error);
-      childForkHostImports?.close();
       if (childWorker) await terminateTrackedWorker(childWorker);
       if (childExternrefGeneration) {
         externrefProcessOwner.releaseGeneration(childExternrefGeneration);
@@ -3753,7 +3602,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     }
     let replacementWorker: (W & { start(): boolean }) | undefined;
     let replacementExternrefGeneration: ForkExternrefGeneration | undefined;
-    let replacementForkHostImports: ForkHostImportOwnerWorker | undefined;
     let launchPlanState: "ready" | "discarded" | "started" = "ready";
     const onCommitFailure = (commitResult?: number): void => {
       if (launchPlanState !== "ready") return;
@@ -3891,24 +3739,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           layout: newLayout,
         } = prepared;
         const newChannelOffset = newLayout.channelOffset;
-        replacementForkHostImports = forkHostImportOwnerRuntime.createWorker({
-          pid,
-          generationId: replacementExternrefGeneration.id,
-          authorizeSender: () => {
-            const current = processes.get(pid);
-            if (
-              !replacementWorker
-              || !current
-              || current.worker !== replacementWorker
-              || current.externrefGeneration !== replacementExternrefGeneration
-            ) {
-              throw new Error(
-                `stale fork host-import sender for exec pid=${pid}`,
-              );
-            }
-          },
-        });
-
         const initData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid,
@@ -3918,7 +3748,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           channelOffset: newChannelOffset,
           secureExec,
           externrefGenerationId: replacementExternrefGeneration.id,
-          forkHostImports: replacementForkHostImports.init,
           argv: launchArgv,
           env: envp,
           ptrWidth: newPtrWidth,
@@ -3946,7 +3775,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           env: envp,
         });
         replacementRegistered = true;
-        bindForkHostImports(replacementWorker, replacementForkHostImports);
 
         // Clear thread module cache — new program binary is different
         threadModuleCache.delete(pid);
@@ -4013,7 +3841,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
               }
             },
             () => {
-              replacementForkHostImports?.close();
               void replacementWorker?.terminate();
             },
             (error) => {
@@ -4057,7 +3884,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           );
         }
         if (startDisposition === "dead") {
-          replacementForkHostImports.close();
           // `startProcessWorkerWhenRunnable` proved the replacement Worker was
           // never started. Where termination is an ownership fence, taking it
           // is the proof; where it is not, publishing the equivalent fence
@@ -4093,7 +3919,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         kernelWorker.finishProcessExecHandoff(pid);
         return 0;
       } catch (err) {
-        replacementForkHostImports?.close();
         if (replacementExternrefGeneration) {
           externrefProcessOwner.releaseGeneration(
             replacementExternrefGeneration,
@@ -4501,8 +4326,8 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    *
    * Both entries' listeners carried the same ~85-line dispatch: the ownership
    * fences (`memory_quiescent`, `exec_retired`), the VM interrupt timer, the
-   * fork host-import protocol, the fork-module region record, and the four
-   * fork-module proof-of-use channels. None of that is a host difference and
+   * fork-module region record, and the four fork-module proof-of-use
+   * channels. None of that is a host difference and
    * it is handled here.
    *
    * What is NOT shared is what a host does about a dead worker, and that is
@@ -4553,8 +4378,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     }
     if (message.type === "vm_interrupt_timer" && message.pid === pid) {
       handleVmInterruptTimer(message, pid, process);
-    } else if (message.type === "fork_host_import") {
-      dispatchForkHostImport(worker, message);
     } else if (message.type === "fork_module_frames" && message.pid === pid) {
       // Forward the co-resident fork-module's proof-of-use (Phase 6 D5): a
       // nonzero frame count confirms the qualifying fork ran its continuation
@@ -4733,15 +4556,12 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
   return {
     allocateProcessGeneration,
-    bindForkHostImports,
     configureRootfsOverlayFromImage,
     createInitProcessMemoryAllocator,
     destroyGenerationAccountingComplete,
     dispatchProcessWorkerMessage,
     drainBlockedProcessesForDestroy,
     externrefProcessOwner,
-    forkHostImportOwnerRuntime,
-    forkHostImportsByWorker,
     handleClone,
     handleExec,
     handleExit,
@@ -4769,7 +4589,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     awaitFinalizedProcessTeardown,
     createFreshProcessMemory,
     detachExactProcessGeneration,
-    dispatchForkHostImport,
     containVforkAddressSpace,
     finishProcessExit,
     finishVforkDisposition,

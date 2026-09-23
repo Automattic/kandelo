@@ -96,10 +96,6 @@ import {
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import {
-  ForkHostImportOwnerRuntime,
-  type ForkHostImportOwnerWorker,
-} from "./fork-host-import-runtime";
-import {
   acquireForkMemoryClone,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
@@ -515,7 +511,6 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
 });
 const {
   allocateProcessGeneration,
-  bindForkHostImports,
   configureRootfsOverlayFromImage,
   createInitProcessMemoryAllocator,
   destroyGenerationAccountingComplete,
@@ -527,8 +522,6 @@ const {
   completeVforkGenerationTeardown,
   handleExec,
   externrefProcessOwner,
-  forkHostImportOwnerRuntime,
-  forkHostImportsByWorker,
   processes,
   processGenerationDetaches,
   processMemoryCreators,
@@ -550,7 +543,6 @@ const {
   awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
-  dispatchForkHostImport,
   containVforkAddressSpace,
   finishProcessExit,
   finishVforkDisposition,
@@ -1003,7 +995,6 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   if (threads) {
     for (const t of threads) {
       intentionallyTerminated.add(t.worker as object);
-      forkHostImportsByWorker.get(t.worker as object)?.close();
       await t.worker.terminate().catch(() => {});
       try {
         kernelWorker.notifyThreadExit(pid, t.tid);
@@ -1114,7 +1105,6 @@ async function performDestroy() {
   for (const threads of threadWorkers.values()) {
     for (const t of threads) {
       intentionallyTerminated.add(t.worker as object);
-      forkHostImportsByWorker.get(t.worker as object)?.close();
       t.worker.terminate().catch(() => {});
     }
   }

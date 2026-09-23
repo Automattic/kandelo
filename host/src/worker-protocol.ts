@@ -1,9 +1,3 @@
-import type {
-  ForkHostImportWorkerInit,
-} from "./fork-host-import-runtime";
-import type {
-  ForkExternrefImportWake,
-} from "./fork-externref-import-mailbox";
 import type { ProcessForkMode } from "./generated/abi";
 
 export type ForkMemoryOwnership = "copied" | "borrowed";
@@ -75,18 +69,12 @@ export interface CentralizedWorkerInitMessage {
   secureExec: boolean;
   /**
    * Exact process-image generation issued by the kernel-side externref owner.
-   * Workers use this scalar only when routing token-bearing host imports; the
+   * Workers use this scalar only to stamp their externref token cache; the
    * broker capability and real JavaScript values never cross the Worker edge.
    * Optional only for direct non-fork harnesses; an instrumented artifact must
-   * reject launch unless this and `forkHostImports` are both present.
+   * reject launch unless it is present.
    */
   externrefGenerationId?: number;
-  /**
-   * One fixed owner-import mailbox for this Worker. Side modules reuse it.
-   * Optional only for direct non-fork test harnesses that do not create a
-   * durable process owner; production Node/browser launch paths always set it.
-   */
-  forkHostImports?: ForkHostImportWorkerInit;
   /** Optional env vars to set up in the program */
   env?: string[];
   /** Optional argv */
@@ -187,8 +175,6 @@ export interface CentralizedThreadInitMessage {
    * Optional only for direct non-fork harnesses.
    */
   externrefGenerationId?: number;
-  /** Distinct pthread mailbox; side modules in this pthread reuse it. */
-  forkHostImports?: ForkHostImportWorkerInit;
   /**
    * Phase 6 D7b: the pre-compiled `fork-module` matching this process's pointer
    * width, forwarded exactly as for the process worker. A fork issued FROM this
@@ -251,8 +237,7 @@ export type WorkerToHostMessage =
   | ForkAbortedMessage
   | ForkModuleChildFramesMessage
   | ForkModuleReferencesMessage
-  | ForkModuleRegionMessage
-  | ForkHostImportWakeMessage;
+  | ForkModuleRegionMessage;
 
 /**
  * The co-resident fork-module region a process worker placed in its shared
@@ -438,12 +423,6 @@ export interface VmInterruptTimerMessage {
   timedOutPtr: number;
   vmInterruptPtr: number;
   seconds: number;
-}
-
-export interface ForkHostImportWakeMessage {
-  type: "fork_host_import";
-  /** Contains scalar identity/sequence fields only; the SAB moved at init. */
-  wake: ForkExternrefImportWake;
 }
 
 export interface ExecReplyMessage {

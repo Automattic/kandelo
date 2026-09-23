@@ -30,7 +30,7 @@
  *
  * - `kernel.ts` needs the artifact's pointer width to build the import object
  *   **before the kernel module is compiled**;
- * - `worker-main.ts`, `dylink.ts`, `fork-host-import-runtime.ts` and
+ * - `worker-main.ts`, `dylink.ts`, `import-trap-guard.ts` and
  *   `wasm-module-reflection.ts` run in the process worker, which holds no
  *   kernel instance;
  * - `binary-resolver.ts` validates `kernel.wasm` itself, before any kernel

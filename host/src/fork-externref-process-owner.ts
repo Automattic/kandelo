@@ -2,9 +2,6 @@ import {
   ForkExternrefBroker,
   type ForkExternrefGeneration,
 } from "./fork-reference-broker";
-import {
-  unwrapForkWorkerExceptionCapability,
-} from "./fork-worker-exception-capability";
 
 /**
  * Where the parent leaves the externref handles its capture interned, in the
@@ -95,9 +92,10 @@ export interface ForkExternrefForkGrant {
 /**
  * Kernel-Worker owner for opaque host references across process lifetimes.
  *
- * Process and pthread Workers receive only `generation.id` plus Worker-local
- * handle tokens. Real JavaScript values stay in this owner and are reached by
- * host-import adapters through `registerForWire` / `authorizeForWire`.
+ * Process and pthread Workers receive only `generation.id`, which stamps their
+ * Worker-local handle tokens. No host import registers a real JavaScript value
+ * here any more (the cross-worker host-import transport was removed), so a
+ * generation's handle set is empty in production.
  *
  * This is intentionally independent of activation-frame layout: fork leases
  * are acquired from the process-wide reference-recipe record already copied
@@ -205,42 +203,6 @@ export class ForkExternrefProcessOwner {
     return this.broker.releaseGeneration(generation);
   }
 
-  generationId(generation: ForkExternrefGeneration): number {
-    this.requireCurrent(generation);
-    return generation.id;
-  }
-
-  /**
-   * Owner-side endpoint for an externref-producing host import.
-   *
-   * The adapter executes in this Realm, registers the real value here, and
-   * returns only the u32 handle to the process Worker.
-   */
-  registerForWire(
-    pid: number,
-    generationId: number,
-    value: unknown,
-  ): number {
-    return this.broker.register(
-      this.requireWireGeneration(pid, generationId),
-      value,
-    );
-  }
-
-  /** Resolve an externref-consuming host import under exact image authority. */
-  authorizeForWire(
-    pid: number,
-    generationId: number,
-    handle: number,
-  ): unknown {
-    return unwrapForkWorkerExceptionCapability(
-      this.broker.authorize(
-        this.requireWireGeneration(pid, generationId),
-        handle,
-      ),
-    );
-  }
-
   private requireCurrent(
     generation: ForkExternrefGeneration,
   ): ForkExternrefGeneration {
@@ -248,28 +210,6 @@ export class ForkExternrefProcessOwner {
       throw new Error(
         `stale externref process generation ${generation.id} `
         + `for pid ${generation.pid}`,
-      );
-    }
-    return generation;
-  }
-
-  private requireWireGeneration(
-    pid: number,
-    generationId: number,
-  ): ForkExternrefGeneration {
-    if (
-      !Number.isInteger(generationId)
-      || generationId <= 0
-      || generationId > 0xffff_ffff
-    ) {
-      throw new RangeError(
-        `invalid externref process generation id ${generationId}`,
-      );
-    }
-    const generation = this.current.get(pid);
-    if (!generation || generation.id !== generationId) {
-      throw new Error(
-        `stale externref process generation ${generationId} for pid ${pid}`,
       );
     }
     return generation;

@@ -156,7 +156,6 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
-    referenceOwners.attach(pid, mainWorker);
     const rejectWorker = (error: Error): void => {
       rejectReady(error);
       rejectExit(error);
