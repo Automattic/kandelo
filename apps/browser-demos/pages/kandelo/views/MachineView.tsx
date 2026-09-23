@@ -52,7 +52,12 @@ export function useMachineSurfaceController(): MachineSurfaceController {
   const webPreview = useWebPreview();
   const availability = React.useMemo<SurfaceAvailability>(() => ({
     ...rawAvailability,
-    web: rawAvailability.web && webPreview?.status === "running",
+    // Keep the web surface mounted while a machine is offline/reconnecting so
+    // its pane can show that state instead of the view falling back elsewhere.
+    web: rawAvailability.web &&
+      (webPreview?.status === "running" ||
+        webPreview?.status === "offline" ||
+        webPreview?.status === "reconnecting"),
   }), [rawAvailability, webPreview?.status]);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");

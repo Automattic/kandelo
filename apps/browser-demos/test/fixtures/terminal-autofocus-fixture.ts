@@ -38,6 +38,12 @@ export function mountDelayedPtyShell(
     },
     getStatus: () => "running",
     subscribeStatus: () => () => {},
+    // Shell reads the web preview to decide whether a loopback URL printed in
+    // the terminal is reachable. This fixture has no machine behind it, so
+    // report no preview rather than omitting the methods — a partial double
+    // makes the component throw instead of failing the assertion under test.
+    getWebPreview: () => null,
+    subscribeWebPreview: () => () => {},
   } as unknown as KernelHost;
 
   const root = ReactDOM.createRoot(container);

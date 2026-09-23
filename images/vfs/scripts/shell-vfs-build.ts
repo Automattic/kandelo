@@ -447,7 +447,6 @@ export function populateShellEnvironment(
     populateShellOverlay(fs);
   } else {
     populateSystem(fs);
-    populateDash(fs, resolveArtifact);
     if (opts.eagerBinaries) populateBash(fs, resolveArtifact);
     if (!opts.eagerBinaries) populateLazyBinaries(fs, resolveArtifact);
     populateCoreutilsSymlinks(fs);
@@ -503,17 +502,11 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
 
 // ── Shell binaries ──────────────────────────────────────────────
 
-function populateDash(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  const dashBytes = readFileSync(resolveArtifact("programs/dash.wasm", "dash"));
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes));
-  symlink(fs, "/bin/dash", "/bin/sh");
-  symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
-}
-
+/**
+ * bash is the only shell the images ship: the interactive login shell and
+ * also `/bin/sh`, which is what `system()`, `popen()` and a `#!/bin/sh`
+ * script exec. bash honors POSIX mode when invoked as `sh`.
+ */
 function populateBash(
   fs: MemoryFileSystem,
   resolveArtifact: ShellLazyArchiveResolver,
@@ -521,6 +514,8 @@ function populateBash(
   const bashBytes = readFileSync(resolveArtifact("programs/bash.wasm", "bash"));
   writeVfsBinary(fs, "/usr/bin/bash", new Uint8Array(bashBytes));
   symlink(fs, "/usr/bin/bash", "/bin/bash");
+  symlink(fs, "/usr/bin/bash", "/bin/sh");
+  symlink(fs, "/usr/bin/bash", "/usr/bin/sh");
 }
 
 function populateCoreutilsSymlinks(fs: MemoryFileSystem): void {

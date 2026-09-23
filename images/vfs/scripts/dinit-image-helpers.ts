@@ -226,13 +226,13 @@ function renderService(svc: DinitService): string {
  * they fail with [emerg] before doing anything useful.
  */
 const ETC_PASSWD = [
-  "root:x:0:0:root:/root:/bin/sh",
+  "root:x:0:0:root:/root:/bin/bash",
   "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
   "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
   "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
   "redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin",
   "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
-  "maker:x:1000:1000:maker:/home/maker:/bin/sh",
+  "maker:x:1000:1000:maker:/home/maker:/bin/bash",
   "",
 ].join("\n");
 

@@ -945,6 +945,18 @@ arguments are present; only the private copy becomes owner-writable. Under the
 Default policy, the helper retains its existing caller-verified-directory
 precedence and URL/SHA download-and-verify fallback.
 
+**GNU redirector fallback.** `ftpmirror.gnu.org` is a redirector: it answers
+each request with a redirect to one mirror chosen for the client, and it keeps
+choosing that mirror even while the mirror is down. Retries restart from the
+declared URL, so they cannot escape a dead mirror. When a `source.url` on
+`ftpmirror.gnu.org` fails after its retry budget, both download paths (the
+`kandelo_package_stage_verified_source` shell helper and the Rust resolver's
+archive fetcher) try the canonical origin `https://ftp.gnu.org/gnu/<path>`
+once, with one leading `gnu/` path segment stripped the way the redirector
+strips it. The declared `sha256` still governs what is accepted, and the
+fallback is announced on stderr. No other host gets an invented fallback: a
+dead non-GNU origin fails after its retry budget.
+
 Known migration gap: 29 Archive-provider recipes in the current local build
 set still use their legacy recipe-owned download path instead of the
 SourceOnlyV1 source handoff. The directed acyclic graph (DAG) and compiled

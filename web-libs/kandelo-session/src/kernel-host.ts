@@ -519,7 +519,15 @@ export interface KmsDisplayHandle {
   close(): void;
 }
 
-export type WebPreviewStatus = "starting" | "running" | "error";
+export type WebPreviewStatus =
+  | "starting"
+  | "running"
+  | "error"
+  // The machine's owning tab went away (terminal) or its service worker is
+  // restarting (transient). Both keep the web-preview pane mounted so the demo
+  // chrome can annotate the last-known preview rather than silently vanishing.
+  | "offline"
+  | "reconnecting";
 
 export interface WebPreviewState {
   label: string;
@@ -527,6 +535,14 @@ export interface WebPreviewState {
   status: WebPreviewStatus;
   message?: string;
   pendingRequests?: number;
+  /**
+   * The in-machine TCP port that `url` forwards to through the service-worker
+   * HTTP bridge. Consumers that have to decide whether a loopback URL the
+   * machine printed is reachable from the page need this: the bridge forwards
+   * exactly this one port, so `http://localhost:<port>/` is reachable only
+   * when `<port>` matches.
+   */
+  port?: number;
 }
 
 // ── Presentation intent ──────────────────────────────────────────────────
@@ -1407,7 +1423,17 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshWebAvailability(): void {
-    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+    // A running preview is available; "offline" and "reconnecting" also keep
+    // the web surface available so the pane stays mounted to show that state
+    // rather than the view silently falling back to syslog/terminal when a
+    // machine's bridge goes away.
+    const status = this.webPreview?.status;
+    this.setSurfaceAvailability({
+      web:
+        status === "running" ||
+        status === "offline" ||
+        status === "reconnecting",
+    });
   }
 
   /**
