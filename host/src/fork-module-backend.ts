@@ -462,6 +462,18 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Open this fork's reference-capture builder (`fm_capture_begin`).
+   *
+   * The first module call of a capture fork, issued before the guest unwinds:
+   * it is the fork's single bump-heap reset point, and it seeds the capture
+   * graph (recipe 0 is the canonical null). It reports no errno, so there is
+   * nothing to check.
+   */
+  captureBegin(): void {
+    (this.exports.fm_capture_begin as () => void)();
+  }
+
+  /**
    * Open this fork's capture: register the activations, publish each one's arena
    * root, and drive every guest `wpk_fork_unwind_begin` — one module call.
    *
@@ -470,8 +482,9 @@ export class ForkModuleContinuationBackend {
    * contract, which is what `crates/host-native` still does.
    *
    * Returns activation 0's module-buffer anchor, which the host publishes as the
-   * process launch root. A side activation's anchor is read back separately;
-   * this entry returns only the first because its result is a single value.
+   * process launch root. A side activation's anchor never reaches the host: the
+   * module records every activation's root in the continuation manifest it
+   * writes into the arena at seal.
    */
   parentBeginCapture(
     channelBase: number,
@@ -723,9 +736,9 @@ export class ForkModuleContinuationBackend {
   }
 
   // WHAT USED TO BE HERE: `moduleStateArenaRoot`, which read
-  // `fm_module_state_arena` operation 0 so the host could tell the exception
-  // broker which arena's graph answers "who owns this recipe" -- the module's
-  // own root first, the inherited one as a fallback. The module makes that
+  // `fm_module_state_arena` operation 0 (an entry since deleted) so the host
+  // could tell the exception broker which arena's graph answers "who owns this
+  // recipe" -- the module's own root first, the inherited one as a fallback. The module makes that
   // choice itself now: it remembers the root of its most recent replay, which
   // is the same arena by construction. Its last caller went with the broker
   // (census 192), and a method the host keeps for nobody is host surface.

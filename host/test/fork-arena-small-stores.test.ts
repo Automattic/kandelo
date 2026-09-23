@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   ARENA_DIRECTORY_CHUNK_COUNT_FIELD,
-  ARENA_OP_ALLOC,
   arenaChunkBytesFromSource,
   ARENA_RECORD_CHUNK_COUNT_FIELD,
   arenaFixture,
@@ -41,9 +40,6 @@ import {
 const EINVAL = 22;
 const SPACE_GLOBAL = 0;
 
-/** A record kind no store uses, for `fm_arena_selftest`'s filler record. */
-const FILLER_KIND = 99;
-
 /**
  * The list's growth, DERIVED from the module's constants so the assertions
  * below are arithmetic rather than observation:
@@ -64,8 +60,11 @@ const FILLER_KIND = 99;
  *     56, 96, 176, 336, 656, 1_296, 2_576 (push 160), 5_136 (push 320),
  *     10_256 (push 640), 20_496 (push 1_280), 40_976 (push 2_560), ...
  *
- * With a 60,000-byte filler record already in chunk 1 (60,016 with its
- * header), chunk 1 has 5,488 bytes left. The first seven list sizes sum to
+ * The filler is a seeded resume catalog of 4,998 ordinals, which the module
+ * keeps as TWO records in chunk 1: the catalog itself (16 + 4 * 4,998 =
+ * 20,008 bytes) and the slot assignment registration writes beside it
+ * (16 + 8 * 4,998 = 40,000). That is 60,008 bytes, so chunk 1 has 5,496
+ * left. The first seven list sizes sum to
  * 56 + 96 + 176 + 336 + 656 + 1,296 + 2,576 = 5,192 and fit; the eighth
  * (5,136, at push 320) does not, so it takes chunk 2. Chunk 1 keeps the
  * filler and is NOT swept. In chunk 2: 5,136 + 10,256 + 20,496 = 35,888
@@ -80,7 +79,7 @@ const FILLER_KIND = 99;
  * 640). The numbers above were then read off the module with a probe that
  * printed the record's `byte_len` at each push.
  */
-const FILLER_BYTES = 60_000;
+const FILLER_ORDINALS = 4_998;
 const PUSH_THAT_CROSSES = 320;
 const PUSH_THAT_SWEEPS = 2_560;
 
@@ -152,13 +151,15 @@ describe("the five small per-activation stores", () => {
     "returns a chunk an extend empties while a sibling's chunk stays live (default-build derivation)",
     () => {
     const x = arenaFixture("small stores: cross-chunk extend");
-    // The sibling: one record that pins chunk 1 for the whole test. The
-    // test-only selftest entry is the one way to allocate a record of a
-    // chosen size; it is deleted by the task that retires it, at which point
-    // this becomes a seeded resume catalog of 15,000 ordinals.
-    const filler = x.selftest(ARENA_OP_ALLOC, ACTIVATION_FILLER, FILLER_KIND, FILLER_BYTES);
-    expect(x.errno(), "the filler allocates").toBe(0);
-    expect(filler, "and has an address").toBeGreaterThan(0n);
+    // The sibling: records that pin chunk 1 for the whole test, seeded
+    // through the production resume-catalog entry. The release at the end
+    // nulls every slot it registered, so the table must cover them.
+    x.growResumeTable(FILLER_ORDINALS + 1);
+    x.seedActivationCatalog(
+      ACTIVATION_FILLER,
+      Array.from({ length: FILLER_ORDINALS }, (_, i) => i + 1),
+    );
+    expect(x.errno(), "the filler seeds").toBe(0);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "one chunk").toBe(1);
     const munmapsAtStart = x.munmaps();
 
@@ -251,7 +252,10 @@ describe("the five small per-activation stores", () => {
     x.seedImportProvenance(SPACE_GLOBAL, A, 5, 200, 0, 0n);
     expect(x.errno(), "an undefined kind").toBe(EINVAL);
 
-    // The two base maps: seeded once per worker; a re-seed is refused.
+    // The two base maps: seeded once per worker; a re-seed is refused. The
+    // refusal is the record arena's own: `arena_alloc` refuses a second
+    // record for one `(activation, kind)`, and both maps store one record per
+    // activation.
     x.seedCatalogBase(A, 100);
     expect(x.errno()).toBe(0);
     x.seedCatalogBase(A, 200);

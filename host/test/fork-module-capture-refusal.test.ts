@@ -29,7 +29,6 @@ import {
   PHASE_ABORT_REPLAY,
   PHASE_IDLE,
   PHASE_SEALED_PARENT,
-  RETIRED_INTERN_KIND_EXTERNREF,
   fixture,
   openCapture,
   saveSlotThunk,
@@ -37,7 +36,6 @@ import {
   type Fixture,
 } from "./fork-module-capture-fixture";
 
-const EINVAL = 22;
 const EOPNOTSUPP = 95;
 
 /** Bind activation 0's abort-replay slots, which `openCapture` leaves unbound. */
@@ -105,15 +103,5 @@ describe("the fork module refuses a raw host externref at capture", () => {
     seal(f);
     expect(f.errno(), "a capture with no host object seals").toBe(0);
     expect(phase(f)).toBe(PHASE_SEALED_PARENT);
-  });
-
-  it("refuses the retired host-externref intern kind", () => {
-    const f = fixture();
-    openCapture(f);
-    const intern = f.x.fm_capture_intern as (k: number, a: number, b: number) => number;
-    // A well-formed broker handle, and still no recipe: nothing may name a
-    // host externref in a capture graph.
-    expect(intern(RETIRED_INTERN_KIND_EXTERNREF, 9, 0)).toBe(-1);
-    expect(f.errno()).toBe(EINVAL);
   });
 });

@@ -1947,9 +1947,6 @@ mod wasm {
     /// **Capacity comes from the chunk's recorded `capacity` at +24, NEVER from
     /// its `size`.** `size` is what was MAPPED, and `channel_mmap` rounds up to
     /// a 64 KiB wasm page; `capacity` is what the constant says a chunk holds.
-    // `resume_register_impl` is its first production caller; `fm_arena_selftest`,
-    // the test-only entry at the end of this block, drives the paths that
-    // caller does not reach and is deleted by the task that retires it.
     fn arena_alloc(activation_id: u32, kind: u32, byte_len: usize) -> Result<u64, Errno> {
         if arena_find(activation_id, kind).is_some() {
             return Err(Errno::EINVAL);
@@ -2292,76 +2289,6 @@ mod wasm {
             chunk = arena_u64(chunk);
         }
         count
-    }
-
-    /// Drive the record arena directly, so a committed test can allocate.
-    ///
-    /// # WHY THIS EXISTS, AND WHEN IT MUST BE DELETED
-    ///
-    /// THIS IS TEST-ONLY SURFACE AND IT IS A DEBT, not a feature. It is here
-    /// because the arena landed as a mechanism with no store on it: every
-    /// allocation path -- `arena_map_chunk`, `arena_alloc`,
-    /// `arena_insert_record`, the chunk chaining, and `arena_release_all`
-    /// against a NON-EMPTY chain -- would otherwise have zero live coverage,
-    /// and a suite whose guards were only ever demonstrated by a scaffold that
-    /// was then deleted is a suite that goes green on a broken arena.
-    ///
-    /// The concrete defect it exists to catch: transpose the `fm_stats` arms
-    /// so field 101 answers `arena_directory_chunk_count()` and 102 answers
-    /// `arena_record_chunk_count()`. Both read 0 in the empty state, the
-    /// `FM_STATS_HIGH_FIELDS` const-assert sees only the numbers and not the
-    /// sources, and every later task then builds its chunk-count evidence on a
-    /// transposed pair. Driving the two counts APART is the only thing that
-    /// catches it, and driving them apart requires allocating.
-    ///
-    /// **DELETE THIS ENTRY, AND GIVE ITS THREE SURFACE-BUDGET CEILINGS BACK,
-    /// as soon as a real store is on the arena** -- that is the task that
-    /// converts the resume assignment, after which
-    /// `host/test/fork-arena-release.test.ts` can allocate through
-    /// `fm_set_activation_resume_catalog`, a genuine production entry, and
-    /// this becomes redundant. The raise is recorded in
-    /// `docs/surface-budget.json` with that give-back named, in the same shape
-    /// the `fm_publish_resume_assignment` raise used.
-    ///
-    /// It deliberately does NOT wrap release: `arena_release_activation` is
-    /// driven through `fm_resume_slots` op 1 and `arena_release_all` through a
-    /// second `fm_set_format`, both real production entries. Only the
-    /// allocating half is unreachable, so only the allocating half is wrapped.
-    ///
-    ///   * op 0 -- `arena_alloc(activation, kind, bytes)`, returning the
-    ///     payload address.
-    ///   * op 1 -- `arena_find(activation, kind)`, returning
-    ///     `(byte_len << 32) | payload` (count high, pointer low, as
-    ///     `fm_publish_resume_assignment` does), or -1 with `ENOENT` when the
-    ///     record is absent.
-    ///   * op 2 -- `arena_extend(activation, kind, bytes)`, returning the new
-    ///     payload address.
-    ///
-    /// -1 with the reason in `fm_last_errno` on any failure.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_arena_selftest(op: u32, activation: u32, kind: u32, bytes: u32) -> i64 {
-        let result = match op {
-            0 => arena_alloc(activation, kind, bytes as usize),
-            1 => match arena_find(activation, kind) {
-                Some((payload, len)) => {
-                    set_ok();
-                    return ((len as i64) << 32) | payload as i64;
-                }
-                None => Err(Errno::ENOENT),
-            },
-            2 => arena_extend(activation, kind, bytes as usize),
-            _ => Err(Errno::EINVAL),
-        };
-        match result {
-            Ok(payload) => {
-                set_ok();
-                payload as i64
-            }
-            Err(errno) => {
-                set_err(errno);
-                -1
-            }
-        }
     }
 
     // -- Imported-global provenance (host-resolved) -------------------------
@@ -3487,9 +3414,10 @@ mod wasm {
     /// begins with `decode_reference_transaction_from_arena`, which reads the
     /// `KFRS` sections and the `KFRV` manifest out of the arena's records. The
     /// only thing that ever wrote them was the JavaScript capture session's
-    /// `sealInto`, draining `fm_capture_serialize` into `arena.appendRecord` --
-    /// and that stopped running when the seal moved into this module. The
-    /// serializer stayed; its only caller went. So a module-sealed arena has
+    /// `sealInto`, draining the module's capture serializer into
+    /// `arena.appendRecord` -- and that stopped running when the seal moved
+    /// into this module. The serializer export stayed (it has since been
+    /// deleted); its only caller went. So a module-sealed arena has
     /// carried no reference transaction since, and every child install would
     /// have failed on the first record it looked for.
     ///
@@ -4282,7 +4210,7 @@ mod wasm {
     // true fork start (`fm_capture_begin`), because the guest encodes references
     // BOTH before and after `fm_begin_unwind`; resetting again in
     // `fm_begin_unwind` would reclaim the live builder mid-fork. So the builder
-    // survives capture, seal, and the parent's own `fm_capture_vector_get` replay
+    // survives capture, seal, and the parent's own `capture_vector_get` replay
     // reads (no further reset occurs on the parent path).
     static CAPTURE_ARMED: AtomicU32 = AtomicU32::new(0);
 
@@ -4368,23 +4296,6 @@ mod wasm {
         }
         Ok(slot.as_mut().unwrap())
     }
-
-    // Owns the serialized KFRV/KFRS record stream `fm_capture_serialize` emits so
-    // the pointer it returns stays valid while the host drains the records into
-    // its module-state arena (mirrors `DRIVE_PLAN`'s rooting of the drive plan).
-    struct CaptureSerializedCell(UnsafeCell<Option<Vec<u8>>>);
-    // SAFETY: single-threaded per worker (see `Bump`).
-    unsafe impl Sync for CaptureSerializedCell {}
-    static CAPTURE_SERIALIZED: CaptureSerializedCell = CaptureSerializedCell(UnsafeCell::new(None));
-
-    // Monotonic count of reference coordinates the module has INTERNED into the
-    // shared capture builder since worker start (Path B P3). Proof-of-use mirror
-    // of `REFERENCES_RECONSTRUCTED` for the CAPTURE (parent/encode) side: after a
-    // flag-on fork routes capture through the module this has advanced past its
-    // pre-fork value; a silent fallback to the TypeScript capture graph leaves it
-    // unchanged. Bumped once per successful intern/claim/define/gated-placeholder.
-    // Never resets.
-    static CAPTURE_INTERNED: AtomicU64 = AtomicU64::new(0);
 
     // The i32 sentinels `fm_funcref_ordinal` returns to the injected wasm shim.
     // A NON-NEGATIVE value is a catalog ordinal for `table.get`; `NULL_ORDINAL`
@@ -5105,7 +5016,6 @@ mod wasm {
         CAPTURE_ARMED.store(0, Ordering::Relaxed);
         // SAFETY: single-threaded per worker; only one fork drives these at a time.
         unsafe {
-            abandon_resident(&mut *CAPTURE_SERIALIZED.0.get());
             abandon_resident(&mut *DRIVE_PLAN.0.get());
         }
         // Bump-backed like the two above. Reading a plan built before the reset
@@ -5401,14 +5311,6 @@ mod wasm {
                 channel_base,
                 chunks: Vec::new(),
             }
-        }
-
-        /// How many chunks this allocator has mapped and not yet released.
-        ///
-        /// Zero means it owns nothing to free -- either it never allocated, or
-        /// it is a `new_channel(0)` allocator that cannot.
-        fn release_count(&self) -> usize {
-            self.chunks.len()
         }
 
         /// Best-effort release of every chunk this allocator mapped. Called after
@@ -5813,9 +5715,10 @@ mod wasm {
     /// added to the SAME capture (`add_activation_unwind_impl`). A single-activation
     /// fork passes `sides_count == 0`. Returns activation 0's module-buffer anchor
     /// (0 on failure; check `fm_last_errno`) — the host publishes it as the process
-    /// launch root and records `forkBufAddr`. The host reads each side activation's
-    /// anchor back via `fm_activation_module_buffer` for the activation-continuation
-    /// manifest. A guest reconstruction failure traps inside the shim exactly as it
+    /// launch root and records `forkBufAddr`. Each side activation's anchor goes
+    /// into the activation-continuation manifest the module writes at seal
+    /// (`write_activation_continuations`). A guest reconstruction failure traps
+    /// inside the shim exactly as it
     /// did under the host loop; a create/plan-build failure is a truthful errno.
     fn begin_capture_impl(
         channel_base: u64,
@@ -5846,9 +5749,10 @@ mod wasm {
         //
         // A nonzero `arena_root` keeps the old contract, so `crates/host-native`
         // is unaffected and the two hosts can differ while the JS side moves.
-        // The host reads the allocated root back with `fm_module_state_arena(0)`
-        // rather than it being returned here, because this entry's return value
-        // is already activation 0's module-buffer anchor.
+        // The host reads the allocated root back from activation 0's
+        // continuation prefix (`write_module_state_root` below;
+        // `readForkModuleStateRoot` on the host) rather than it being returned
+        // here, because this entry's return value is already that anchor.
         // Whether the MODULE owns this arena. It decides who declares the
         // activation set below: a host that supplies its own root also writes
         // its own `Module` records, and the module writing a second set would
@@ -5998,17 +5902,6 @@ mod wasm {
         write_imported_global_bindings()?;
         write_imported_table_bindings()?;
         Ok(root0)
-    }
-
-    /// Read one activation's module-buffer anchor (its continuation root) from the
-    /// current fork's state. The host reads a side activation's anchor back after
-    /// `fm_parent_begin_capture` (which returns only activation 0's) for the
-    /// activation-continuation manifest. `EINVAL` if no fork is open or the
-    /// activation is not registered.
-    fn activation_module_buffer_impl(activation_id: u32) -> Result<u64, Errno> {
-        let st = state().as_ref().ok_or(Errno::EINVAL)?;
-        let act = st.activations.get(&activation_id).ok_or(Errno::EINVAL)?;
-        Ok(act.module_buffer)
     }
 
     fn reserve_impl(activation_id: u32, size: u64) -> Result<u64, Errno> {
@@ -7483,7 +7376,7 @@ mod wasm {
         // it here means the two workers instantiate identically and one less
         // thing can be wired wrong.
         if answering_from_capture() {
-            let recipe = fm_capture_vector_get(ordinal, index);
+            let recipe = capture_vector_get(ordinal, index);
             if recipe < 0 {
                 // Same contract as the feed path below: the guest ABI has no
                 // failure value here, so an unreadable vector is a trap rather
@@ -8624,8 +8517,10 @@ mod wasm {
     /// each activation's `wpk_fork_unwind_begin` into `__wpk_fork_drive_table` at
     /// `fm_drive_table_base(activation) + DRIVE_SLOT_UNWIND_BEGIN` before calling
     /// this (the ref-typed table bind is a host floor). Returns activation 0's
-    /// module-buffer anchor (0 on failure; check `fm_last_errno`); side anchors are
-    /// read back via `fm_activation_module_buffer`. A guest reconstruction failure
+    /// module-buffer anchor (0 on failure; check `fm_last_errno`); a side
+    /// activation's anchor stays in the module, which records every
+    /// activation's root in the continuation manifest it writes at seal
+    /// (`write_activation_continuations`). A guest reconstruction failure
     /// traps inside the shim exactly as it did under the host loop; a create /
     /// plan-build failure is a truthful errno.
     #[unsafe(no_mangle)]
@@ -8672,25 +8567,6 @@ mod wasm {
                 // module frees exactly what the module mapped.
                 let _ = abort_impl();
                 enter_phase(PHASE_IDLE);
-                set_err(errno);
-                0
-            }
-        }
-    }
-
-    /// Read one activation's module-buffer anchor (its continuation root) from the
-    /// current fork's state. The host reads a side activation's anchor back after
-    /// `fm_parent_begin_capture` (which returns only activation 0's) to build the
-    /// activation-continuation manifest. Returns 0 on failure (check
-    /// `fm_last_errno`): no fork open, or the activation is not registered.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_activation_module_buffer(activation_id: u32) -> usize {
-        match activation_module_buffer_impl(activation_id) {
-            Ok(module_buffer) => {
-                set_ok();
-                module_buffer as usize
-            }
-            Err(errno) => {
                 set_err(errno);
                 0
             }
@@ -8786,17 +8662,15 @@ mod wasm {
     // `>= 1` (id 0 is the canonical null the builder seeds); every ID-returning
     // export returns `-1` on failure with the reason in `fm_last_errno`.
 
-    /// GC aggregate kind discriminants `fm_capture_define_gc` accepts. Mirror the
-    /// host's `defineGc` kind argument (struct=1, array=2) plus exnref=3.
+    /// GC aggregate kind discriminants `__wpk_fork_ref_gc_define` accepts
+    /// (struct=1, array=2). An exception is defined by
+    /// `__wpk_fork_ref_exn_define`, which needs no kind.
     const CAPTURE_KIND_STRUCT: u32 = 1;
     const CAPTURE_KIND_ARRAY: u32 = 2;
-    const CAPTURE_KIND_EXNREF: u32 = 3;
 
-    /// `fm_capture_intern`'s leaf-reference discriminants. These select which
-    /// `ReferenceGraphBuilder::intern_*` the one entry dispatches to; they are a
-    /// SEPARATE numbering from the `CAPTURE_KIND_*` aggregate kinds above, which
-    /// `fm_capture_define_gc` uses. Mirrored by `FORK_INTERN_KIND_*` in
-    /// `host/src/fork-reference-capture-module.ts`.
+    /// `capture_intern`'s leaf-reference discriminants. These select which
+    /// `ReferenceGraphBuilder::intern_*` it dispatches to; they are a SEPARATE
+    /// numbering from the `CAPTURE_KIND_*` aggregate kinds above.
     const INTERN_KIND_FUNCREF: u32 = 1;
     // 2 was INTERN_KIND_EXTERNREF (a host-externref broker handle), retired in
     // externref stage E2: a fork does not carry a raw host externref, so nothing
@@ -8804,7 +8678,8 @@ mod wasm {
     const INTERN_KIND_I31: u32 = 3;
     const INTERN_KIND_STATIC_ROOT: u32 = 4;
 
-    /// Fixed header of one record in the `fm_capture_serialize` record stream:
+    /// Fixed header of one record in the serialized KFRV/KFRS record stream the
+    /// seal drains into the arena:
     /// `u16 kind, u16 reserved, u32 activation_id, u32 owner_id, u32 payload_len`.
     const CAPTURE_RECORD_HEADER: usize = 16;
 
@@ -8849,7 +8724,7 @@ mod wasm {
     }
 
     /// Fold a builder `Result<u32>` into the ID-return convention: on success set
-    /// errno OK, bump the capture proof-of-use counter, and return the id (a
+    /// errno OK and return the id (a
     /// recipe id or vector handle/ordinal); on failure record the errno and
     /// return `-1`. A recipe id that would not fit in `i32` is a truthful
     /// `EINVAL` rather than a value the host would misread as an error.
@@ -8857,7 +8732,6 @@ mod wasm {
         match result {
             Ok(id) if id <= i32::MAX as u32 => {
                 set_ok();
-                CAPTURE_INTERNED.fetch_add(1, Ordering::Relaxed);
                 id as i32
             }
             Ok(_) => {
@@ -8877,7 +8751,6 @@ mod wasm {
         match result {
             Ok(()) => {
                 set_ok();
-                CAPTURE_INTERNED.fetch_add(1, Ordering::Relaxed);
                 0
             }
             Err(e) => {
@@ -8934,7 +8807,7 @@ mod wasm {
     /// The injected `__wpk_fork_ref_encode_funcref` scan finds which catalog slot
     /// holds the funcref it was handed, and this turns that slot into the
     /// `(activation, ordinal)` coordinate the graph records. The split is the one
-    /// `fm_capture_intern`'s doc already describes -- the host resolves identity,
+    /// `capture_intern`'s doc already describes -- the host resolves identity,
     /// the module owns the recipe -- except that with
     /// `__wpk_fork_host_func_identity` the SCAN is the module's too, and the host
     /// answers only "are these the same function?".
@@ -8977,7 +8850,7 @@ mod wasm {
             return 0;
         }
         let (activation, base) = owner.unwrap_or((0, 0));
-        capture_recipe_publishable(fm_capture_intern(
+        capture_recipe_publishable(capture_intern(
             INTERN_KIND_STATIC_ROOT,
             activation,
             slot - base,
@@ -9002,7 +8875,7 @@ mod wasm {
             set_err(Errno::EINVAL);
             return -1;
         }
-        fm_capture_intern(INTERN_KIND_FUNCREF, activation, slot - base)
+        capture_intern(INTERN_KIND_FUNCREF, activation, slot - base)
     }
 
     /// A funcref the scan could not find in the merged catalog.
@@ -9027,24 +8900,16 @@ mod wasm {
     /// | `INTERN_KIND_I31` (3) | `i31ref` | signed 31-bit payload, bit-cast to `u32` | must be 0 |
     /// | `INTERN_KIND_STATIC_ROOT` (4) | statically-rooted reference | catalog activation | catalog ordinal |
     ///
-    /// This ONE entry replaces the four per-type exports
-    /// `fm_capture_intern_{funcref,externref,i31,static_root}` (the externref
-    /// kind has since been retired). They expressed a
-    /// single concept — "intern a leaf reference at a coordinate the host already
-    /// resolved" — as four exports with four host-side marshalling wrappers, which
-    /// is the per-type-variant multiplication the fork transport is large because
-    /// of. The same fold already happened one export over: `fm_decoded_node_field`
-    /// replaced three same-signature accessors.
-    ///
-    /// The host resolves every coordinate with its per-host identity floor (the
-    /// funcref catalog) BEFORE calling. The module never sees a live reference, only scalars.
+    /// Internal, not an export: the production callers are
+    /// `fm_funcref_slot_to_recipe` and `fm_static_root_recipe`, which the
+    /// injected scans call once they have resolved a catalog slot. An i31 is
+    /// interned by `__wpk_fork_ref_gc_i31` directly. It was an export while a
+    /// host TypeScript capture adapter interned leaves itself; nothing does now
+    /// (fork test-only removal, 2026-09-23).
     ///
     /// An unknown `kind`, or a non-zero `b` where the table says it must be 0, is
-    /// `EINVAL` and `-1`. The `b` check is not pedantry: it is what stops a caller
-    /// that passes `(I31, activation, ordinal)` — funcref argument order, wrong
-    /// kind — from silently interning the activation id as an i31 payload.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern(kind: u32, a: u32, b: u32) -> i32 {
+    /// `EINVAL` and `-1`.
+    fn capture_intern(kind: u32, a: u32, b: u32) -> i32 {
         let g = match capture_builder() {
             Ok(g) => g,
             Err(e) => {
@@ -9108,122 +8973,6 @@ mod wasm {
         }
     }
 
-    /// Claim a fresh graph identity for a GC value before its fields are known,
-    /// returning the placeholder recipe id. The host publishes the id first, then
-    /// recurses into the value's fields (closing cycles), then completes it with
-    /// `fm_capture_define_gc`. Mirrors native's `gc_claim` body.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_claim_gc() -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.claim_gc()),
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// Reserve a self-contained placeholder leaf for a GATED capture kind (a
-    /// value the fork cannot carry). Returns
-    /// a fresh distinct recipe id; the host keeps the live value beside it so the
-    /// PARENT's own abort-replay hands the exact value back. Mirrors native's
-    /// `gated_placeholder`. The soundness gate itself (`EOPNOTSUPP`, no child) is
-    /// the host's decision; this only keeps the sealed graph canonical.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_gated_placeholder() -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.push_gated_placeholder()),
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// Complete a claimed struct/array/exnref placeholder into its final
-    /// aggregate recipe. `scalar_ptr`/`scalar_len` is the COMBINED scalar span in
-    /// guest linear memory (constructor-provenance seed bytes then the live field
-    /// snapshot) the host already assembled. `reference_vector_ordinal` names the
-    /// module-interned field/element vector; the edge vector is assembled here
-    /// exactly as native's `gc_define` does — provenance recipe ids first, then
-    /// that field vector — so the host never re-reads the vector it just interned.
-    /// `has_provenance != 0` records a `GcProvenance` for validation (its ids,
-    /// read from `prov_ptr`/`prov_count`, must name existing recipes and are the
-    /// prepended edges). Returns `0` or `-1`.
-    #[allow(clippy::too_many_arguments)]
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_define_gc(
-        recipe_id: u32,
-        activation: u32,
-        type_ordinal: u32,
-        layout_id: u32,
-        kind: u32,
-        scalar_ptr: usize,
-        scalar_len: usize,
-        reference_vector_ordinal: u32,
-        has_provenance: u32,
-        prov_ptr: usize,
-        prov_count: usize,
-    ) -> i32 {
-        let kind_enum = match kind {
-            CAPTURE_KIND_STRUCT => AggregateKind::Struct,
-            CAPTURE_KIND_ARRAY => AggregateKind::Array,
-            CAPTURE_KIND_EXNREF => AggregateKind::Exnref,
-            _ => {
-                set_err(Errno::EINVAL);
-                return -1;
-            }
-        };
-        let assembled = (|| -> Result<(), Errno> {
-            let scalars = read_capture_bytes(scalar_ptr, scalar_len)?;
-            let prov_ids = if has_provenance != 0 {
-                read_capture_u32_array(prov_ptr, prov_count)?
-            } else {
-                Vec::new()
-            };
-            let g = capture_builder()?;
-            // Assemble edges = provenance ids ++ the interned field vector,
-            // mirroring native's `gc_define`. Ordinal 0 is the canonical empty
-            // vector (no field edges).
-            let field_vector = g
-                .vectors()
-                .get(reference_vector_ordinal as usize)
-                .ok_or(Errno::EINVAL)?
-                .clone();
-            let mut edges = prov_ids.clone();
-            edges.extend_from_slice(&field_vector);
-            let provenance = if has_provenance != 0 {
-                Some(GcProvenance {
-                    reference_ids: prov_ids,
-                })
-            } else {
-                None
-            };
-            g.define_gc(
-                recipe_id,
-                activation,
-                type_ordinal,
-                layout_id,
-                kind_enum,
-                &scalars,
-                &edges,
-                provenance,
-            )
-        })();
-        capture_ok_void(assembled)
-    }
-
-    /// Read entry `index` of interned reference vector `ordinal` from the RESIDENT
-    /// capture builder (the graph `fm_capture_*` is still building/has built this
-    /// fork), returning the recipe id or `-1` on out-of-bounds. This is the
-    /// PARENT's own post-fork replay read: after the parent seals, its frame
-    /// rewind asks which recipe ids each frame's reference vector holds so it can
-    /// hand back the ORIGINAL live values (kept host-side in `capturedValues`, and
-    /// in the module-owned transit table). Unlike `__wpk_fork_ref_vector_get` — which
-    /// reads a DECODED transaction a child reconstructs from the wire — this reads
-    /// the live capture builder directly, so the parent never re-decodes its own
-    /// graph and never reconstructs (its live references keep their identity by
-    /// construction). Requires an active capture session.
     /// The KFMS geometry for this guest's pointer width. Derived, never
     /// host-supplied: the chunk header size is a pure function of the width.
     fn module_state_format() -> Result<ModuleStateFormat, Errno> {
@@ -9559,7 +9308,8 @@ mod wasm {
     ///
     /// # Why loud rather than a gated placeholder
     ///
-    /// `fm_capture_gated_placeholder` is the designed mechanism for a value with
+    /// A gated placeholder (`ReferenceGraphBuilder::push_gated_placeholder`) is
+    /// the designed mechanism for a value with
     /// no recoverable provenance, but its contract is that the HOST notices and
     /// gates the fork -- and no signal for that is exported (`fm_stats` has no
     /// gated counter). A placeholder here would therefore be silent: the child
@@ -9567,7 +9317,7 @@ mod wasm {
     /// nothing would say so. Returning a poisoned recipe instead makes the
     /// failure structural. The value is not a valid recipe id, so any edge
     /// naming it is rejected by `define_gc`'s bounds check and by
-    /// `fm_capture_validate`, and the capture cannot seal.
+    /// the seal's graph validation, and the capture cannot seal.
     ///
     /// That is a real restriction -- a fork cannot be taken while a foreign
     /// exception is live -- and it is stated as one rather than hidden. It is
@@ -10408,7 +10158,7 @@ mod wasm {
     ///
     /// The guest ABI returns nothing, so a failure latches in `fm_last_errno`
     /// and the claimed-but-undefined placeholder it leaves is what
-    /// `fm_capture_validate` refuses to seal.
+    /// the seal's graph validation refuses to seal.
     #[allow(clippy::too_many_arguments)]
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_gc_define(
@@ -10527,7 +10277,7 @@ mod wasm {
     /// `__wpk_fork_ref_exn_lookup`. `slot` is accepted and ignored.
     ///
     /// A claimed recipe that is never defined is refused by
-    /// `fm_capture_validate`, so a dropped `exn_define` cannot seal.
+    /// the seal's graph validation, so a dropped `exn_define` cannot seal.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_exn_claim(_slot: u32) -> i32 {
         match capture_builder() {
@@ -10552,7 +10302,7 @@ mod wasm {
     ///
     /// The guest ABI returns NOTHING, so a failure cannot be reported at the
     /// call. It is latched in `fm_last_errno`, and the claimed-but-undefined
-    /// placeholder it leaves behind is what `fm_capture_validate` refuses to
+    /// placeholder it leaves behind is what the seal's graph validation refuses to
     /// seal ("a claimed GC identity was never defined"). That is the guard
     /// which makes a void return safe: a dropped `define` cannot reach a child
     /// as a silently missing exception payload, it stops the seal instead.
@@ -10916,8 +10666,18 @@ mod wasm {
         }
     }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_vector_get(ordinal: u32, index: u32) -> i32 {
+    /// Read entry `index` of interned reference vector `ordinal` from the RESIDENT
+    /// capture builder (the graph this fork is still building, or has built),
+    /// returning the recipe id or `-1` on out-of-bounds. This is the PARENT's
+    /// own post-fork replay read, reached through `__wpk_fork_ref_vector_get`
+    /// while `answering_from_capture()`: its frame rewind asks which recipe ids
+    /// each frame's reference vector holds so it can hand back the ORIGINAL live
+    /// values (in the module-owned transit table). Unlike the decoded-feed path
+    /// -- which reads a transaction a child reconstructs from the wire -- this
+    /// reads the live capture builder directly, so the parent never re-decodes
+    /// its own graph and never reconstructs (its live references keep their
+    /// identity by construction). Requires an active capture session.
+    fn capture_vector_get(ordinal: u32, index: u32) -> i32 {
         let Some(g) = capture_state().as_ref() else {
             set_err(Errno::EINVAL);
             return -1;
@@ -10936,107 +10696,6 @@ mod wasm {
                 -1
             }
         }
-    }
-
-    /// Validate the built graph as a canonical, sealable capture (no pending GC
-    /// placeholder, no open vector, every edge names an existing recipe). Returns
-    /// `0` or `-1`. `fm_capture_serialize` validates too; this lets the host gate
-    /// early, mirroring the TS `validateCanonicalCapture`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_validate() -> i32 {
-        // Create-if-armed: an empty capture (no references) is still a valid
-        // null-only graph the host may seal.
-        match capture_builder() {
-            Ok(g) => match g.validate() {
-                Ok(()) => {
-                    set_ok();
-                    0
-                }
-                Err(e) => {
-                    set_err(e);
-                    -1
-                }
-            },
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// Serialize the built graph into a module-owned KFRV/KFRS record stream and
-    /// return its guest address (0 on failure; reason in `fm_last_errno`).
-    /// The stream is a sequence of records, each `CAPTURE_RECORD_HEADER` bytes
-    /// (`u16 kind, u16 reserved, u32 activation_id, u32 owner_id, u32 payload_len`)
-    /// followed by `payload_len` payload bytes, in the exact emit order of the
-    /// shared `ReferenceSegmentsWriter` (five KFRS sections then the KFRV
-    /// manifest). The host drains each record into its module-state arena via
-    /// `appendRecord({kind, activationId, ownerId, payload})` — the same records
-    /// the TS `appendSegmentedForkReferenceTransaction` emitted, now from the ONE
-    /// shared writer. `fm_capture_serialized_len` reports the stream length.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_serialize(owner_id: u32, segment_data_bytes: usize) -> usize {
-        let built = (|| -> Result<Vec<u8>, Errno> {
-            let g = capture_builder()?;
-            let writer = ReferenceSegmentsWriter::new(owner_id, segment_data_bytes)?;
-            let mut stream: Vec<u8> = Vec::new();
-            let mut sink =
-                |kind: u16, activation_id: u32, owner: u32, payload: &[u8]| -> Result<(), Errno> {
-                    let len = u32::try_from(payload.len()).map_err(|_| Errno::EINVAL)?;
-                    stream.extend_from_slice(&kind.to_le_bytes());
-                    stream.extend_from_slice(&0u16.to_le_bytes());
-                    stream.extend_from_slice(&activation_id.to_le_bytes());
-                    stream.extend_from_slice(&owner.to_le_bytes());
-                    stream.extend_from_slice(&len.to_le_bytes());
-                    stream.extend_from_slice(payload);
-                    Ok(())
-                };
-            writer.write(&mut sink, g)?;
-            Ok(stream)
-        })();
-        match built {
-            Ok(stream) => {
-                let ptr = stream.as_ptr() as usize;
-                // SAFETY: single-threaded per worker; root the bytes so the
-                // returned pointer stays valid while the host drains the records.
-                unsafe {
-                    *CAPTURE_SERIALIZED.0.get() = Some(stream);
-                }
-                set_ok();
-                ptr
-            }
-            Err(e) => {
-                set_err(e);
-                0
-            }
-        }
-    }
-
-    /// The byte length of the record stream `fm_capture_serialize` last produced,
-    /// or 0 if none is live. The header of each record is `CAPTURE_RECORD_HEADER`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_serialized_len() -> usize {
-        // SAFETY: single-threaded per worker.
-        match unsafe { &*CAPTURE_SERIALIZED.0.get() } {
-            Some(stream) => stream.len(),
-            None => 0,
-        }
-    }
-
-    /// The record-stream header size (bytes) preceding each record's payload.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_record_header_size() -> i32 {
-        CAPTURE_RECORD_HEADER as i32
-    }
-
-    /// Monotonic count of coordinates the module has interned into the shared
-    /// capture builder since worker start (Path B P3). Proof-of-use for the
-    /// CAPTURE flip: a value greater than its pre-fork reading proves the parent
-    /// routed reference capture through the ONE shared builder; a silent fallback
-    /// to the TypeScript capture graph leaves it unchanged. Never resets.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_interned() -> i64 {
-        CAPTURE_INTERNED.load(Ordering::Relaxed) as i64
     }
 
     // -- Module-owned wire-graph decode + scan + restore exports (orchestration
@@ -11654,108 +11313,6 @@ mod wasm {
     /// answer would be an undercount rather than an error, which is the worst
     /// kind. Answers `EBUSY` and `-1` off-phase, `EINVAL` and `-1` for an
     /// unknown field.
-    /// The module-state (KFMS) arena, by operation:
-    ///
-    /// - `0` ROOT    — the arena root address, or `0` when there is none.
-    /// - `1` ADOPT   — adopt the arena at `arg` (a child taking over the
-    ///                 parent's inherited records). Returns `0`.
-    /// - `2` RELEASE — `munmap` every arena chunk THIS module mapped. Returns
-    ///                 how many were released.
-    /// - `3` OWNED   — `1` when this module mapped the chunks and may free
-    ///                 them, `0` when the arena was adopted or absent.
-    ///
-    /// One field-indexed entry rather than four exports, the shape `fm_stats`
-    /// established. The surface budget drives this population toward five, so a
-    /// port that needs four operations should cost one entry.
-    ///
-    /// **This is the module half of the arena port** (census sections 132 and
-    /// 133) and it is deliberately the half that changes nothing yet. The host's
-    /// `ForkModuleStateArena` still owns the live path. What section 133 found
-    /// is that the two cannot be switched a method at a time: the module
-    /// ALLOCATES the KFMS chunks (through `__wpk_fork_module_state_record_`
-    /// `reserve`) and the host FREES them, having rediscovered the addresses by
-    /// walking the linked chunk list in guest memory from the root. If both
-    /// sides free, a fork double-munmaps; if neither does, it leaks the arena.
-    /// So RELEASE exists here, tested, and stays uncalled until the host's
-    /// `release()` goes away in the same change.
-    ///
-    /// OWNED is what makes that switch checkable rather than hopeful, and it is
-    /// also the borrowed case for free: a vfork child's arena allocator is
-    /// `new_channel(0)`, which maps nothing, so it owns nothing and releases
-    /// nothing — which is exactly what the host's `detachBorrowed` does by
-    /// hand. The distinction the host draws with an `ownership` field falls out
-    /// of which allocator the child was built with.
-    ///
-    /// Answers `-1` with `EINVAL` for an unknown operation or a refused adopt.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_module_state_arena(op: u32, arg: usize) -> i64 {
-        // No `op > 3` pre-check. It would be a guard no test can show failing:
-        // in every configuration a test can reach, an unknown op is already
-        // refused by one of the two matches below, so removing the pre-check
-        // changes nothing observable. What it WOULD do is let a catch-all arm
-        // mis-dispatch op 4 as OWNED once module state exists -- so the arms are
-        // exhaustive instead, and unknown ops are refused in exactly one way.
-        let Some(module) = state().as_mut() else {
-            // No module state means no fork has begun unwinding in this worker,
-            // so there is genuinely no arena. For the two QUERIES that is the
-            // truthful answer, not a default -- the same reasoning `fm_phase`
-            // uses for answering IDLE before any activation exists. ADOPT and
-            // RELEASE mutate, and a mutation against state that does not exist
-            // is a caller error rather than a no-op.
-            return match op {
-                0 | 3 => {
-                    set_ok();
-                    0
-                }
-                _ => {
-                    set_err(Errno::EINVAL);
-                    -1
-                }
-            };
-        };
-        match op {
-            0 => match i64::try_from(module.module_state.root()) {
-                Ok(root) => {
-                    set_ok();
-                    root
-                }
-                Err(_) => {
-                    set_err(Errno::EINVAL);
-                    -1
-                }
-            },
-            1 => match module.module_state.adopt(arg as u64) {
-                Ok(()) => {
-                    set_ok();
-                    0
-                }
-                Err(e) => {
-                    set_err(e);
-                    -1
-                }
-            },
-            2 => {
-                let released = module.module_state_chunks.release_count();
-                module.module_state_chunks.release_all();
-                set_ok();
-                released as i64
-            }
-            3 => {
-                // Adopted means another process mapped these chunks; absent
-                // means nobody did. Only a list this module built is safe to
-                // free, which is the whole point of asking.
-                let owned = !module.module_state.is_adopted()
-                    && module.module_state_chunks.release_count() > 0;
-                set_ok();
-                if owned { 1 } else { 0 }
-            }
-            _ => {
-                set_err(Errno::EINVAL);
-                -1
-            }
-        }
-    }
-
     fn set_borrowed_workspace_impl(base: usize, bytes: usize) -> Result<(), Errno> {
         if base == 0 || bytes == 0 {
             return Err(Errno::EINVAL);

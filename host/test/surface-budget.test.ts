@@ -312,18 +312,11 @@ const MEASURED: Record<string, () => number> = {
   // its measurement, the platform half is unstarted. One ceiling over both
   // mixes a finished population with an empty one and cannot be read — the same
   // reason `forkModuleEntryPoints` was split into three.
-  // The glob catches the module-facing files by name; `fork-reference-capture-module`
-  // is module-facing too -- "a thin, stateful wrapper over the `fm_capture_*`
-  // exports of ONE resident fork-module instance" -- and is named here because
-  // its filename does not start with `fork-module-`. Leaving it to the
-  // `fork-*.ts` sweep would file it under `forkRestoredHostFloor`, a surface
-  // defined as process lifecycle, cross-worker transport or memory placement
-  // RATHER THAN capture/replay logic, which it is.
-  forkTypeScript: () =>
-    codeLineCount([
-      "host/src/fork-module-*.ts",
-      "host/src/fork-reference-capture-module.ts",
-    ]),
+  // The glob catches the module-facing files by name. It also named
+  // `fork-reference-capture-module.ts`, a wrapper over the `fm_capture_*`
+  // exports whose filename did not start with `fork-module-`, until the fork
+  // test-only removal folded its one live call into the backend (2026-09-23).
+  forkTypeScript: () => codeLineCount(["host/src/fork-module-*.ts"]),
   // The thin layer this lane AUTHORS, listed file by file rather than globbed.
   //
   // A glob over `host/src/fork-*.ts` used to define this, which was right while
@@ -354,7 +347,6 @@ const MEASURED: Record<string, () => number> = {
     codeLineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]) -
     codeLineCount([
       "host/src/fork-module-*.ts",
-      "host/src/fork-reference-capture-module.ts",
       "host/src/fork-guest-imports.ts",
       "host/src/fork-mechanism-trace.ts",
       "host/src/fork-table-state-owners.ts",

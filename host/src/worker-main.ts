@@ -95,7 +95,6 @@ import {
   type ForkModuleInstance,
   instantiateForkModule,
 } from "./fork-module-instance";
-import { ForkReferenceCaptureModule } from "./fork-reference-capture-module";
 import {
   type ForkBorrowedReplayWorkspace,
   type ForkModuleStat,
@@ -2916,7 +2915,8 @@ function createProcessTableReplicationOwner(options: {
   // old root purely to free its chunks. The module maps those chunks and frees
   // them when the next capture reclaims its chunk list, so attaching one here
   // was the host freeing memory it never mapped -- the ownership split census
-  // 133 named, and the reason `fm_module_state_arena` grew RELEASE and OWNED.
+  // 133 named, and the reason `fm_module_state_arena` (since deleted) grew
+  // RELEASE and OWNED.
   const replica = new DylinkForkTableReplica(
     options.dlopen.archiveGeneration,
     options.dlopen.loader,
@@ -3812,26 +3812,6 @@ export async function centralizedWorkerMain(
       // scope) so the attach block can seed the co-resident fork-module's exnref
       // tag-validity admission gate. Null until a fork child computes them.
       let childExceptionCodecBytes: Map<number, Uint8Array> | null = null;
-      // Path B P3: route this worker's next fork's reference CAPTURE through the
-      // co-resident module's shared builder (the module is the SOLE capture
-      // graph). The parent reads its own vectors back from the resident builder
-      // (`fm_capture_vector_get`) during its post-fork replay; leaf values still
-      // come from `capturedValues` / the transit table (originals), so the
-      // parent's live-reference identity is preserved. Non-module forks (flag
-      // off) keep the JS capture graph.
-      // Kept as a local as well: the JS capture session used to OPEN this
-      // builder at every fork (`beginCapture`) and seal it into the arena. The
-      // session is gone, the module does the sealing, and the open is the half
-      // that still has to be issued from here -- it is documented as the first
-      // module call of a capture fork, before the guest unwinds, because it is
-      // the fork's single bump-heap reset point.
-      const processCaptureModule = forkModuleInstance
-        ? new ForkReferenceCaptureModule(
-          forkModuleInstance.exports,
-          memory,
-          `pid=${pid}: fork reference capture module`,
-        )
-        : null;
       let processDlopenSupport: DlopenSupport | null = null;
       let processForkArchiveReaderHeld = false;
       const tableGenerationOffset =
@@ -4104,7 +4084,12 @@ export async function centralizedWorkerMain(
           // seeded template ids. And it ran each activation's `moduleState.save()`,
           // which is the `DRIVE_OP_MODULE_STATE_SAVE` step in the module's own
           // plan. Keeping it would have meant two save walks into two arenas.
-          processCaptureModule?.begin();
+          // The first module call of a capture fork, before the guest
+          // unwinds: the fork's single bump-heap reset point, and the open of
+          // the module's capture graph. The backend is absent only once a
+          // borrowed child has handed its module region back, and then the
+          // `forkModule()` below fails loud before any capture.
+          forkModuleBackend?.captureBegin();
           // The capture is about to ask which slot holds a statically
           // initialised reference, so the merged table has to hold them now.
           forkMergedStaticRoots.fill();
@@ -6144,7 +6129,6 @@ export async function centralizedThreadWorkerMain(
     );
     let threadImportedStateCapture: ForkImportIdentity | null = null;
     let threadForkActivations: ForkActivations | null = null;
-    let threadCaptureModule: ForkReferenceCaptureModule | null = null;
     const threadResumeTable = new ForkResumeTable(
       `pid=${pid} tid=${tid}: fork resume table`,
     );
@@ -6281,16 +6265,6 @@ export async function centralizedThreadWorkerMain(
           backend,
           `pid=${pid} tid=${tid}: imported activation state`,
           threadTableStateOwners,
-        );
-        // Path-A A4 parity: route this pthread worker's peer-table CAPTURE
-        // through the co-resident module (the process path does this at
-        // `setCaptureModule` above). Peer-table replication is module-only now,
-        // so a pthread that publishes a full table checkpoint needs the capture
-        // module just as the process parent does.
-        threadCaptureModule = new ForkReferenceCaptureModule(
-          threadForkModuleInstance.exports,
-          memory,
-          `pid=${pid} tid=${tid}: fork reference capture module`,
         );
       }
     }
@@ -6448,7 +6422,7 @@ export async function centralizedThreadWorkerMain(
         }
 
         try {
-          threadCaptureModule?.begin();
+          threadForkModuleBackend?.captureBegin();
           publishThreadLaunchRoot(0);
           publishThreadLaunchRoot(
             threadForkModule().parentBeginCapture(

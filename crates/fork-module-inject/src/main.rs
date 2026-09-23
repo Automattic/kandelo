@@ -1305,8 +1305,9 @@ fn inject_transit_grow(module: &mut Module) -> Result<()> {
 ///
 /// # Why this is injected rather than Rust
 ///
-/// The Rust side already has the interesting half — `fm_capture_claim_gc`
-/// allocates a fresh identity in `fork_codec::ReferenceGraphBuilder`. What it
+/// The Rust side already has the interesting half — `fm_gc_identity_claim`
+/// allocates a fresh identity in `fork_codec::ReferenceGraphBuilder` and binds
+/// it to the value's host identity. What it
 /// cannot do is the other half: `fork-instrument` publishes the claimed value
 /// into the transit table at `recipe + 1` on the instruction AFTER this returns,
 /// so the table has to be big enough first, and Rust emits no `table.grow`.
@@ -1330,7 +1331,9 @@ fn inject_transit_grow(module: &mut Module) -> Result<()> {
 /// (func (export "__wpk_fork_ref_gc_claim") (param $slot i32) (result i32)
 ///   (local $recipe i32)
 ///   (if (local.get $slot) (then (unreachable)))          ;; contract violation
-///   (local.set $recipe (call $fm_capture_claim_gc))
+///   (local.set $recipe
+///     (call $fm_gc_identity_claim
+///       (call $__wpk_fork_host_ref_identity (table.get $transit (local.get $slot)))))
 ///   (if (i32.lt_s (local.get $recipe) (i32.const 0))
 ///     (then (return (local.get $recipe))))               ;; propagate the errno
 ///   (if (i32.lt_s (call $fm_transit_grow

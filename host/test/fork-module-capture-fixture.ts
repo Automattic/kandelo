@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FAITHFUL_GUEST_BYTES } from "./fork-module-faithful-guest";
+import { readForkModuleStateRoot } from "../src/fork-guest-sections";
 
 /**
  * The first test that reaches `begin_capture_impl`.
@@ -55,10 +56,6 @@ export const DRIVE_SLOT_REWIND_END = 8;
 export const DRIVE_SLOT_ABORT_END = 9;
 export const DRIVE_SLOT_UNWIND_BEGIN = 10;
 export const DRIVE_SLOT_MODULE_STATE_SAVE = 13;
-
-// `fm_module_state_arena` operations.
-export const ARENA_ROOT = 0;
-export const ARENA_OWNED = 3;
 
 /** `fm_phase` values, from the PHASE_* constants in crates/fork-module. */
 export const PHASE_IDLE = 0;
@@ -231,12 +228,30 @@ const NOP_MODULE_BYTES = new Uint8Array([
 ]);
 
 export interface Fixture {
+  /**
+   * The module's exports, with `fm_parent_begin_capture` wrapped to remember
+   * the continuation anchor it returns (see `root`).
+   */
   x: Record<string, unknown>;
   instance: ReturnType<typeof instantiateForkModule>;
   memory: WebAssembly.Memory;
   errno: () => number;
-  arena: (op: number, arg?: number) => number;
+  /**
+   * The module-state (KFMS) arena root of the LAST capture opened through
+   * `x.fm_parent_begin_capture`, or 0 if it failed or none was opened.
+   *
+   * Read the way production reads it: `fm_parent_begin_capture` returns
+   * activation 0's continuation anchor, and the module writes the arena root
+   * into that anchor's prefix, where a fork child's worker reads it
+   * (`readForkModuleStateRoot`). There is no module entry that answers it.
+   */
+  root: () => number;
   worker: Worker;
+}
+
+/** The KFMS arena root a capture's continuation anchor names; see `Fixture.root`. */
+export function moduleStateRootAt(f: Fixture, anchor: number): number {
+  return anchor === 0 ? 0 : readForkModuleStateRoot(f.memory, anchor, 4);
 }
 
 const live: Worker[] = [];
@@ -272,7 +287,16 @@ export function fixture(): Fixture {
     reserve: () => MODULE_BASE,
     label: "capture drive",
   });
-  const x = fm.exports as Record<string, unknown>;
+  const raw = fm.exports as Record<string, unknown>;
+  let lastAnchor = 0;
+  const beginCapture = raw.fm_parent_begin_capture as (...a: number[]) => number;
+  const x: Record<string, unknown> = {
+    ...raw,
+    fm_parent_begin_capture: (...args: number[]): number => {
+      lastAnchor = beginCapture(...args);
+      return lastAnchor;
+    },
+  };
 
   // Callable stubs for the slots the capture plan drives. Both are `(i32) -> ()`
   // on wasm32, so the guest double's recorded-call exports stand in for the
@@ -331,18 +355,18 @@ export function fixture(): Fixture {
     table.set(base + slot, nop as never);
   }
 
-  const call = x.fm_module_state_arena as (o: number, a: number) => bigint;
   // Ruling D1-a: this rig holds activations, so it is the one that most needs
   // the directory bound checked at teardown.
   liveStatsReaders.push((field) => Number((x.fm_stats as (n: number) => bigint)(field)));
-  return {
+  const f: Fixture = {
     x,
     instance: fm,
     memory,
     errno: () => (x.fm_last_errno as () => number)(),
-    arena: (op, arg = 0) => Number(call(op, arg)),
+    root: () => moduleStateRootAt(f, lastAnchor),
     worker,
   };
+  return f;
 }
 
 /**
@@ -465,13 +489,14 @@ export function childInstance(
 }
 
 
-/** `fm_capture_intern` kinds, mirrored from the module's `INTERN_KIND_*`. */
-export const INTERN_KIND_FUNCREF = 1;
 /**
- * The retired host-externref kind (externref stage E2). The module refuses it
- * with EINVAL; exported only so a test can assert that refusal.
+ * Leaf kinds a capture helper below accepts. The numbers mirror the module's
+ * internal `INTERN_KIND_*` so a leaf reads the same everywhere, but no module
+ * entry takes them any more: each kind is interned through the production
+ * capture entry the guest's generated code (or the injected scan) reaches for
+ * that kind -- see `internLeaf`.
  */
-export const RETIRED_INTERN_KIND_EXTERNREF = 2;
+export const INTERN_KIND_FUNCREF = 1;
 export const INTERN_KIND_I31 = 3;
 export const INTERN_KIND_STATIC_ROOT = 4;
 
@@ -495,8 +520,13 @@ export interface CaptureOptions {
  * Activation 0 is always present. A side activation reaches the module as an
  * `(id, fixedPrefix)` u32 pair in the sides vector `fm_parent_begin_capture`
  * reads -- the same 8-byte record the child seed reads back.
+ *
+ * Returns the activations whose module-state save the capture drove, in the
+ * order it drove them: the observable that a capture really was
+ * multi-activation, rather than one that merely named a side activation in a
+ * recipe.
  */
-export function openCapture(f: Fixture, sides: readonly number[] = []): void {
+export function openCapture(f: Fixture, sides: readonly number[] = []): number[] {
   seedTemplateId(f, 0, 2048);
   expect(f.errno(), "template id for activation 0").toBe(0);
   sides.forEach((activation, index) => {
@@ -517,15 +547,21 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): void {
     seedEmptyResumeCatalog(f.x, activation);
   });
 
+  const saved: number[] = [];
   for (const activation of [0, ...sides]) {
     const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
     const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
     if (f.instance.driveTable.length < needed) {
       f.instance.driveTable.grow(needed - f.instance.driveTable.length);
     }
-    for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
-      f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
-    }
+    f.instance.driveTable.set(
+      base + DRIVE_SLOT_MODULE_STATE_SAVE,
+      saveSlotThunk((id) => saved.push(id)) as never,
+    );
+    f.instance.driveTable.set(
+      base + DRIVE_SLOT_UNWIND_BEGIN,
+      saveSlotThunk(() => {}) as never,
+    );
     f.instance.driveTable.set(
       base + DRIVE_SLOT_UNWIND_END,
       voidSlotThunk(() => {}) as never,
@@ -553,6 +589,76 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): void {
     sides.length,
   );
   expect(f.errno(), "the capture opens").toBe(0);
+  return saved;
+}
+
+/**
+ * The stride between activations' slices of the merged funcref and
+ * static-root catalogs, when a capture names more than one activation.
+ */
+const CATALOG_STRIDE = 1 << 16;
+
+/**
+ * Seed the merged-catalog bases a multi-activation capture needs, the way a
+ * dlopen host seeds them: activation `a`'s slice starts at `a * STRIDE`.
+ *
+ * A single-activation capture seeds nothing, which is the production worker
+ * that never dlopened: the module then maps a slot to activation 0 directly.
+ */
+function seedCatalogBases(
+  f: Fixture,
+  leaves: readonly (readonly [kind: number, a: number, b: number])[],
+): void {
+  for (const [kind, seed] of [
+    [INTERN_KIND_FUNCREF, "fm_set_activation_catalog_base"],
+    [INTERN_KIND_STATIC_ROOT, "fm_set_activation_static_root_base"],
+  ] as const) {
+    const activations = new Set(
+      leaves.filter(([k]) => k === kind).map(([, activation]) => activation),
+    );
+    if ([...activations].every((activation) => activation === 0)) continue;
+    activations.add(0);
+    for (const activation of activations) {
+      (f.x[seed] as (a: number, base: number) => void)(
+        activation,
+        activation * CATALOG_STRIDE,
+      );
+      expect(f.errno(), `${seed}(${activation})`).toBe(0);
+    }
+  }
+}
+
+/**
+ * Intern one leaf through the PRODUCTION entry for its kind, returning its
+ * recipe id:
+ *
+ *   * a funcref through `fm_funcref_slot_to_recipe`, the helper the injected
+ *     `__wpk_fork_ref_encode_funcref` scan calls with the merged-catalog slot
+ *     it found;
+ *   * a static root through `fm_static_root_recipe`, which the injected
+ *     `__wpk_fork_ref_gc_lookup` scan calls the same way;
+ *   * an i31 through `__wpk_fork_ref_gc_i31`, which the guest's generated
+ *     codec calls with the payload.
+ *
+ * The `(activation, ordinal)` a test names becomes the slot
+ * `base(activation) + ordinal` of the bases `seedCatalogBases` laid out.
+ */
+function internLeaf(
+  f: Fixture,
+  [kind, a, b]: readonly [kind: number, a: number, b: number],
+): number {
+  const multi = (activation: number): number =>
+    activation * CATALOG_STRIDE + b;
+  switch (kind) {
+    case INTERN_KIND_FUNCREF:
+      return (f.x.fm_funcref_slot_to_recipe as (slot: number) => number)(multi(a));
+    case INTERN_KIND_STATIC_ROOT:
+      return (f.x.fm_static_root_recipe as (slot: number) => number)(multi(a));
+    case INTERN_KIND_I31:
+      return (f.x.__wpk_fork_ref_gc_i31 as (payload: number) => number)(a | 0);
+    default:
+      throw new Error(`no production capture entry for leaf kind ${kind}`);
+  }
 }
 
 /**
@@ -572,23 +678,23 @@ export function captureArena(
   f: Fixture,
   interned: readonly (readonly [kind: number, a: number, b: number])[],
   options: CaptureOptions = {},
-): { root: number; recipes: number[] } {
-  openCapture(f, options.sideActivations ?? []);
-  const intern = f.x.fm_capture_intern as (k: number, a: number, b: number) => number;
-  const recipes = interned.map(([kind, a, b]) => {
-    const id = intern(kind, a, b);
-    expect(f.errno(), `intern kind ${kind}`).toBe(0);
-    expect(id, `intern kind ${kind} returns a recipe`).toBeGreaterThan(0);
+): { root: number; recipes: number[]; saved: number[] } {
+  seedCatalogBases(f, interned);
+  const saved = openCapture(f, options.sideActivations ?? []);
+  const recipes = interned.map((leaf) => {
+    const id = internLeaf(f, leaf);
+    expect(f.errno(), `intern kind ${leaf[0]}`).toBe(0);
+    expect(id, `intern kind ${leaf[0]} returns a recipe`).toBeGreaterThan(0);
     return id;
   });
   (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
   expect(f.errno(), "the capture seals").toBe(0);
-  const root = f.arena(ARENA_ROOT);
+  const root = f.root();
   expect(root, "and leaves an arena root").toBeGreaterThan(0);
-  return { root, recipes };
+  return { root, recipes, saved };
 }
 
-/** `fm_capture_define_gc` aggregate kinds, from the module's `CAPTURE_KIND_*`. */
+/** Aggregate kinds, from the module's `CAPTURE_KIND_*`. */
 export const CAPTURE_KIND_STRUCT = 1;
 export const CAPTURE_KIND_ARRAY = 2;
 export const CAPTURE_KIND_EXNREF = 3;
@@ -620,9 +726,18 @@ export interface CapturedAggregate {
  *
  * The aggregate half is why this exists rather than the tests each building an
  * arena: struct/array/exnref recipes are claimed, then completed with a scalar
- * span and an interned edge VECTOR, and getting that order wrong produces a
- * graph the module accepts and the child rebuilds wrong. Driving the module's
- * own entries means the test cannot get it wrong in a way production would not.
+ * span and their edges, and getting that order wrong produces a graph the
+ * module accepts and the child rebuilds wrong. Driving the module's own
+ * guest-facing entries means the test cannot get it wrong in a way production
+ * would not:
+ *
+ *   * a struct or array is claimed through `fm_gc_identity_claim`, the helper
+ *     the injected `__wpk_fork_ref_gc_claim` calls with the value's host
+ *     identity; its edges go into a `__wpk_fork_ref_vector_*` vector, and it is
+ *     completed by `__wpk_fork_ref_gc_define`;
+ *   * an exnref is claimed through `__wpk_fork_ref_exn_claim` and completed by
+ *     `__wpk_fork_ref_exn_define`, which takes its edges as a plain recipe-id
+ *     array, as the guest's exception codec stages them.
  *
  * Returns the sealed root, the leaf recipe ids in the order they were interned,
  * and the aggregate recipe ids in theirs.
@@ -634,18 +749,25 @@ export interface CapturedAggregate {
  */
 const SCALAR_SCRATCH = 16384;
 
+/**
+ * A distinct host identity per claimed aggregate, as the host's identity
+ * oracle issues. Process-wide in this file so two captures in one worker can
+ * never re-claim an identity -- which the module refuses, correctly.
+ */
+let nextAggregateIdentity = 0x4000_0000;
+
 export function captureGraph(
   f: Fixture,
   leaves: readonly (readonly [kind: number, a: number, b: number])[],
   aggregates: readonly CapturedAggregate[] = [],
   options: CaptureOptions & { readonly scalarStagingBase?: number } = {},
 ): { root: number; recipes: number[]; aggregateRecipes: number[] } {
+  seedCatalogBases(f, leaves);
   openCapture(f, options.sideActivations ?? []);
 
-  const intern = f.x.fm_capture_intern as (k: number, a: number, b: number) => number;
-  const recipes = leaves.map(([kind, a, b]) => {
-    const id = intern(kind, a, b);
-    expect(f.errno(), `intern kind ${kind}`).toBe(0);
+  const recipes = leaves.map((leaf) => {
+    const id = internLeaf(f, leaf);
+    expect(f.errno(), `intern kind ${leaf[0]}`).toBe(0);
     return id;
   });
 
@@ -658,15 +780,26 @@ export function captureGraph(
   // as the sides vector in `fork-module-capture-drive.test.ts` and the codec
   // in `fork-module-gc-replay.test.ts`.
   let scalarAt = options.scalarStagingBase ?? SCALAR_SCRATCH;
+  const stage = (bytes: Uint8Array): number => {
+    if (bytes.length === 0) return 0;
+    const at = scalarAt;
+    new Uint8Array(f.memory.buffer, at, bytes.length).set(bytes);
+    scalarAt += (bytes.length + 15) & ~15;
+    return at;
+  };
 
-  // CLAIM every aggregate before building any edge vector. A recipe id has to
-  // exist before an edge can name it, so a struct<->array CYCLE -- the shape the
+  // CLAIM every aggregate before building any edge. A recipe id has to exist
+  // before an edge can name it, so a struct<->array CYCLE -- the shape the
   // drive order exists to handle -- is only expressible if the claims come
   // first. Within one aggregate the order is still vector, then define: a
   // define completes a claim, and the builder refuses a vector opened inside
   // one.
-  const aggregateRecipes = aggregates.map(() => {
-    const id = (f.x.fm_capture_claim_gc as () => number)();
+  const aggregateRecipes = aggregates.map((aggregate) => {
+    const id = aggregate.kind === CAPTURE_KIND_EXNREF
+      ? (f.x.__wpk_fork_ref_exn_claim as (slot: number) => number)(0)
+      : (f.x.fm_gc_identity_claim as (identity: number) => number)(
+        nextAggregateIdentity++,
+      );
     expect(f.errno(), "claim").toBe(0);
     return id;
   });
@@ -676,6 +809,28 @@ export function captureGraph(
     const edges = typeof aggregate.edges === "function"
       ? aggregate.edges({ leaves: recipes, aggregates: aggregateRecipes })
       : aggregate.edges ?? [];
+    const scalars = aggregate.scalars ?? new Uint8Array(0);
+
+    if (aggregate.kind === CAPTURE_KIND_EXNREF) {
+      const scalarPtr = stage(scalars);
+      const references = new Uint8Array(edges.length * 4);
+      edges.forEach((edge, i) =>
+        new DataView(references.buffer).setUint32(i * 4, edge, true));
+      const referencePtr = stage(references);
+      (f.x.__wpk_fork_ref_exn_define as (...a: number[]) => void)(
+        id,
+        aggregate.activation,
+        aggregate.typeOrdinal,
+        aggregate.layoutId ?? 0,
+        scalarPtr,
+        scalars.length,
+        referencePtr,
+        edges.length,
+      );
+      expect(f.errno(), `define exnref ${id}`).toBe(0);
+      return;
+    }
+
     const handle = (f.x.__wpk_fork_ref_vector_begin as (n: number) => number)(
       edges.length,
     );
@@ -691,14 +846,8 @@ export function captureGraph(
     expect(f.errno(), "vector finish").toBe(0);
     expect(ordinal, "and it interns to a durable ordinal").toBeGreaterThanOrEqual(0);
 
-    const scalars = aggregate.scalars ?? new Uint8Array(0);
-    let scalarPtr = 0;
-    if (scalars.length > 0) {
-      scalarPtr = scalarAt;
-      new Uint8Array(f.memory.buffer, scalarPtr, scalars.length).set(scalars);
-      scalarAt += (scalars.length + 15) & ~15;
-    }
-    (f.x.fm_capture_define_gc as (...a: number[]) => number)(
+    const scalarPtr = stage(scalars);
+    (f.x.__wpk_fork_ref_gc_define as (...a: number[]) => void)(
       id,
       aggregate.activation,
       aggregate.typeOrdinal,
@@ -707,16 +856,13 @@ export function captureGraph(
       scalarPtr,
       scalars.length,
       ordinal,
-      0,
-      0,
-      0,
     );
     expect(f.errno(), `define kind ${aggregate.kind}`).toBe(0);
   });
 
   (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
   expect(f.errno(), "the capture seals").toBe(0);
-  const root = f.arena(ARENA_ROOT);
+  const root = f.root();
   expect(root, "and leaves an arena root").toBeGreaterThan(0);
   return { root, recipes, aggregateRecipes };
 }
@@ -926,13 +1072,6 @@ export interface ArenaFixture {
   /** The sticky errno of the most recent export call. */
   errno: () => number;
   /**
-   * `fm_arena_selftest(op, activation, kind, bytes)` -- the test-only entry
-   * that drives the arena's allocating half. See its doc comment in the
-   * module: it is a debt, and the task that converts the resume assignment
-   * deletes it.
-   */
-  selftest: (op: number, activation: number, kind: number, bytes: number) => bigint;
-  /**
    * The guest entries `__wpk_fork_ref_scratch_reserve(len) -> ptr` and
    * `__wpk_fork_ref_scratch_release(ptr, len)`, called directly on the module
    * instance. They are guest IMPORTS the module exports for the host to wire,
@@ -973,11 +1112,6 @@ export function arenaChunkBytesFromSource(): number {
   }
   return Number(match[1].replace(/_/g, ""));
 }
-
-/** `fm_arena_selftest` ops. */
-export const ARENA_OP_ALLOC = 0;
-export const ARENA_OP_FIND = 1;
-export const ARENA_OP_EXTEND = 2;
 
 /**
  * Where `seedActivationCatalog` stages its ordinals: page 6, between the
@@ -1169,7 +1303,6 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       f.slots(1, WARM_ACTIVATION, 0);
       if (errno() !== 0) throw new Error(`warmHeap: release failed with errno ${errno()}`);
     },
-    selftest: x.fm_arena_selftest as ArenaFixture["selftest"],
     scratchReserve: (len) =>
       (x.__wpk_fork_ref_scratch_reserve as (n: number) => number)(len),
     scratchRelease: (ptr, len) =>

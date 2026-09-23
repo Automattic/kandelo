@@ -2,18 +2,22 @@
 // (Path B P3 — the module-owned encode graph over the shared
 // `fork_codec::ReferenceGraphBuilder`).
 //
-// This proves, in a real production WebAssembly engine (Node's V8 — the same
-// engine the Node and browser process workers run), that the `fm_capture_*`
-// exports correctly drive the SHARED Rust capture builder from a host: they
-// intern each reference kind by resolved COORDINATE, dedup, claim/define GC
-// aggregates by reading scalar/edge spans out of linear memory, build reference
-// vectors, gate a canonical placeholder for the no-provenance path, validate the
-// canonical capture, and serialize the graph into the KFRV/KFRS record stream
-// the host drains into its module-state arena. The builder's own round-trip
-// against the decoder is proven in-crate (`fork-codec`
-// reference_segments_writer tests, 431 passing); this harness proves the WASM
-// EXPORT surface + memory reads + record-stream framing + proof-of-use counter
-// on the actual engine, which no host-triple Rust test can.
+// It exercises the module's GUEST-facing capture entries (`__wpk_fork_ref_*`,
+// `__wpk_fork_module_state_*`) and the host entries the injected scans call in
+// a real WebAssembly engine.
+//
+// NOT RUNNABLE AS IT STANDS. It traps at the first capture begin, because
+// opening a capture now maps its arena through the guest syscall channel and
+// nothing here services it; that was already true before the fork test-only
+// removal (2026-09-23). That removal deleted the host-only `fm_capture_*`
+// exports this harness was first written against (intern, claim, define,
+// validate, serialize, the serialized-length and header-size readers, the
+// interned counter and the gated placeholder) together with the sections that
+// tested only them; the surviving sections seed through the guest-facing
+// entries instead. The capture builder's own logic is tested in-crate
+// (`fork-codec` reference_graph_builder / reference_segments_writer), and the
+// module's capture path end to end by the host/test `fork-module-*` suites,
+// which run a channel responder.
 //
 // Run: node crates/fork-module/tests/harness-capture.mjs <path-to-fork_module.wasm>
 
@@ -30,16 +34,8 @@ if (!wasmPath) {
 const PAGE = 65536;
 const EINVAL = 22;
 
-// Shared-ABI constants mirrored from crates/shared/src/lib.rs (the module and
-// this harness both read the same authoritative values).
-const OWNER_ID = 1; // WPK_FORK_REFERENCE_TRANSACTION_OWNER
-const RECORD_KIND_MANIFEST = 2; // ..._RECORD_KIND_REFERENCE_RECIPE (carries KFRV)
-const RECORD_KIND_SEGMENT = 12; // ..._RECORD_KIND_REFERENCE_RECIPE_SEGMENT (KFRS)
-const SEGMENT_WINDOW = 1 << 16; // per-segment copy window (single segment/section)
-
-// GC aggregate kinds fm_capture_define_gc accepts.
+// GC aggregate kinds __wpk_fork_ref_gc_define accepts.
 const KIND_STRUCT = 1;
-const KIND_ARRAY = 2;
 
 // -- Host memory layout (mirrors the production worker / harness.mjs) ----------
 const MODULE_BASE = 32 * 1024 * 1024; // __memory_base
@@ -50,7 +46,7 @@ const STACK_TOP = STACK_LOW + STACK_SIZE;
 const TABLE_BASE = 0;
 const RECONCILE_TABLE_SLOTS = 4096;
 // A scratch region in the low (guest-proxied) area for the argument arrays this
-// harness hands to fm_capture_define_gc. Well below MODULE_BASE, so it never
+// harness hands to the define entries. Well below MODULE_BASE, so it never
 // collides with the module's own data / BSS / stack.
 const SCRATCH_BASE = 1 * 1024 * 1024;
 
@@ -113,16 +109,8 @@ const module = new WebAssembly.Module(bytes);
 const exportNames = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
 for (const name of [
   "fm_capture_begin",
-  "fm_capture_intern",
-  "fm_capture_claim_gc",
-  "fm_capture_gated_placeholder",
-  "fm_capture_define_gc",
-  "fm_capture_validate",
-  "fm_capture_serialize",
-  "fm_capture_serialized_len",
-  "fm_capture_record_header_size",
-  "fm_capture_interned",
   "fm_last_errno",
+  "__wpk_fork_ref_exn_claim",
   "__wpk_fork_ref_exn_define",
   "__wpk_fork_ref_vector_begin",
   "__wpk_fork_ref_vector_append",
@@ -164,246 +152,6 @@ function lastErrno() {
   return x.fm_last_errno();
 }
 
-// -- Parse the record stream fm_capture_serialize produced --------------------
-//
-// Each record is a 16-byte header (u16 kind, u16 reserved, u32 activationId,
-// u32 ownerId, u32 payloadLen) followed by payloadLen bytes. The header size is
-// self-reported by the module so this stays in lockstep with it.
-function drainRecords() {
-  const ptr = x.fm_capture_serialize(OWNER_ID, SEGMENT_WINDOW);
-  assert.ok(ptr !== 0, `fm_capture_serialize failed, errno=${lastErrno()}`);
-  assert.equal(lastErrno(), 0, "serialize sets errno OK");
-  const len = x.fm_capture_serialized_len();
-  assert.ok(len > 0, "serialized stream is non-empty");
-  const header = x.fm_capture_record_header_size();
-  assert.equal(header, 16, "record header is 16 bytes");
-  const view = dv();
-  const bytesOut = [];
-  const records = [];
-  let off = ptr;
-  const end = ptr + len;
-  while (off < end) {
-    const kind = view.getUint16(off, true);
-    const activationId = view.getUint32(off + 4, true);
-    const ownerId = view.getUint32(off + 8, true);
-    const payloadLen = view.getUint32(off + 12, true);
-    const payloadStart = off + header;
-    const payload = u8().slice(payloadStart, payloadStart + payloadLen);
-    records.push({ kind, activationId, ownerId, payloadLen, payload });
-    off = payloadStart + payloadLen;
-  }
-  assert.equal(off, end, "record stream is exactly consumed");
-  // Serialize once more into a raw copy for determinism comparison.
-  const raw = u8().slice(ptr, ptr + len);
-  bytesOut.push(...raw);
-  return { records, raw };
-}
-
-function ascii(bytes) {
-  return String.fromCharCode(...bytes.slice(0, 4));
-}
-
-// ============================================================================
-// 1. A comprehensive graph: every intern kind, a struct<->array cycle sharing an
-//    aliased i31 leaf, funcref/static-root leaves, and a shared/deduped vector.
-// ============================================================================
-x.fm_capture_begin();
-assert.equal(lastErrno(), 0, "begin sets errno OK");
-// `fm_capture_intern`'s leaf-kind discriminants (mirror the module's
-// INTERN_KIND_*, and host/src/fork-reference-capture-module.ts's
-// FORK_INTERN_KIND_*).
-const K_FUNCREF = 1;
-// 2 was the host-externref kind, retired in externref stage E2: a fork does not
-// carry a raw host externref, so nothing interns one (asserted in section 4).
-const K_RETIRED_EXTERNREF = 2;
-const K_I31 = 3;
-const K_STATIC_ROOT = 4;
-
-const before = x.fm_capture_interned();
-
-// Claim the two aggregates first so a field edge can close the cycle.
-const sId = x.fm_capture_claim_gc(); // 1: struct
-const aId = x.fm_capture_claim_gc(); // 2: array
-const fId = x.fm_capture_intern(K_FUNCREF, 10, 20); // 3
-const xId = x.fm_capture_intern(K_I31, 99, 0); // 4
-const iId = x.fm_capture_intern(K_I31, -5, 0); // 5
-const rId = x.fm_capture_intern(K_STATIC_ROOT, 3, 7); // 6
-const leafId = x.fm_capture_intern(K_I31, 0x3fffffff, 0); // 7 aliased leaf
-assert.deepEqual([sId, aId, fId, xId, iId, rId, leafId], [1, 2, 3, 4, 5, 6, 7]);
-
-// Dedup by coordinate: the same funcref coordinate / i31 value / static-root
-// coordinate resolve to the SAME recipe id.
-assert.equal(x.fm_capture_intern(K_I31, 99, 0), xId, "i31 dedups by value (99)");
-assert.equal(x.fm_capture_intern(K_FUNCREF, 10, 20), fId, "funcref dedups by coord");
-assert.equal(x.fm_capture_intern(K_I31, -5, 0), iId, "i31 dedups by value");
-assert.equal(x.fm_capture_intern(K_STATIC_ROOT, 3, 7), rId, "static root dedups");
-
-// Build the field vectors first (the module reads them internally at define).
-function buildVector(ids) {
-  // The GUEST path is the only vector builder the module exposes: begin
-  // declares how many appends will follow, and finish refuses to intern a
-  // vector whose appends did not match that count. There is deliberately no
-  // unguarded `fm_capture_*_vector` twin -- a second builder without the
-  // count discipline could intern a SHORT vector, and the child would then
-  // reconstruct a frame with references silently missing.
-  const h = x.__wpk_fork_ref_vector_begin(ids.length);
-  assert.ok(h >= 0, `vector_begin errno=${lastErrno()}`);
-  for (const id of ids) {
-    x.__wpk_fork_ref_vector_append(h, id);
-  }
-  const ordinal = x.__wpk_fork_ref_vector_finish(h);
-  assert.ok(ordinal >= 1, `vector_finish errno=${lastErrno()}`);
-  return ordinal;
-}
-// struct 1 -> array 2 (cycle), leaf 7 (alias); scalars read from memory.
-const structFields = buildVector([aId, leafId]);
-writeBytes(SCRATCH_BASE, [0x78, 0x56, 0x34, 0x12]);
-assert.equal(
-  x.fm_capture_define_gc(
-    sId, 7 /*act*/, 2 /*type*/, 12 /*layout*/, KIND_STRUCT,
-    SCRATCH_BASE, 4, structFields, 0 /*no prov*/, 0, 0,
-  ),
-  0,
-  `define struct failed errno=${lastErrno()}`,
-);
-// array 2 -> struct 1 (cycle), leaf 7 (alias).
-const arrayFields = buildVector([sId, leafId]);
-writeBytes(SCRATCH_BASE + 64, [0xaa, 0xbb]);
-assert.equal(
-  x.fm_capture_define_gc(
-    aId, 7, 3, 13, KIND_ARRAY, SCRATCH_BASE + 64, 2, arrayFields, 0, 0, 0,
-  ),
-  0,
-  `define array failed errno=${lastErrno()}`,
-);
-
-// A shared/deduped vector: two identical builds return the same ordinal.
-const o1 = buildVector([fId, xId, iId]);
-const o2 = buildVector([fId, xId, iId]);
-assert.equal(o1, o2, "identical vectors dedup to one ordinal");
-const o3 = buildVector([sId, aId]);
-assert.notEqual(o1, o3, "distinct vectors take distinct ordinals");
-// Reading the resident builder's vectors back (the parent's own replay read).
-assert.equal(x.fm_capture_vector_get(o1, 0), fId, "vector_get reads the builder");
-assert.equal(x.fm_capture_vector_get(o3, 1), aId, "vector_get reads the builder");
-
-// Proof-of-use: the module interned every one of the above through the shared
-// builder (each successful op bumps the counter).
-assert.ok(
-  x.fm_capture_interned() > before,
-  "capture proof-of-use counter advanced through the shared builder",
-);
-
-assert.equal(x.fm_capture_validate(), 0, `validate failed errno=${lastErrno()}`);
-
-const first = drainRecords();
-// The stream ends with the KFRV manifest record; the preceding records are KFRS
-// segments, one section each at this window (nodes/edges/scalars/vec-index/vec).
-const manifest = first.records[first.records.length - 1];
-assert.equal(manifest.kind, RECORD_KIND_MANIFEST, "last record is the manifest");
-assert.equal(manifest.ownerId, OWNER_ID, "manifest carries the transaction owner");
-assert.equal(ascii(manifest.payload), "KFRV", "manifest payload is KFRV");
-const segments = first.records.filter((r) => r.kind === RECORD_KIND_SEGMENT);
-assert.ok(segments.length >= 1, "at least one KFRS segment emitted");
-for (const seg of segments) {
-  assert.equal(ascii(seg.payload), "KFRS", "segment payload is KFRS");
-}
-// The struct scalar bytes we wrote into memory must appear in the serialized
-// SCALARS section — direct proof fm_capture_define_gc read guest memory.
-const streamBytes = Buffer.from(first.raw);
-assert.ok(
-  streamBytes.includes(Buffer.from([0x78, 0x56, 0x34, 0x12])),
-  "struct scalar payload read from memory reached the serialized stream",
-);
-
-// Determinism: rebuilding the identical graph serializes byte-for-byte the same.
-x.fm_capture_begin();
-x.fm_capture_claim_gc(); // 1
-x.fm_capture_claim_gc(); // 2
-x.fm_capture_intern(K_FUNCREF, 10, 20); // 3
-x.fm_capture_intern(K_I31, 99, 0); // 4
-x.fm_capture_intern(K_I31, -5, 0); // 5
-x.fm_capture_intern(K_STATIC_ROOT, 3, 7); // 6
-x.fm_capture_intern(K_I31, 0x3fffffff, 0); // 7
-const sf2 = buildVector([2, 7]); // ordinal 1
-writeBytes(SCRATCH_BASE, [0x78, 0x56, 0x34, 0x12]);
-x.fm_capture_define_gc(1, 7, 2, 12, KIND_STRUCT, SCRATCH_BASE, 4, sf2, 0, 0, 0);
-const af2 = buildVector([1, 7]); // ordinal 2
-writeBytes(SCRATCH_BASE + 64, [0xaa, 0xbb]);
-x.fm_capture_define_gc(2, 7, 3, 13, KIND_ARRAY, SCRATCH_BASE + 64, 2, af2, 0, 0, 0);
-buildVector([3, 4, 5]);
-buildVector([3, 4, 5]);
-buildVector([1, 2]);
-assert.equal(x.fm_capture_validate(), 0, "second build validates");
-const second = drainRecords();
-assert.deepEqual(second.raw, first.raw, "capture serialization is deterministic");
-
-// ============================================================================
-// 2. The GATED path (soundness gate parity): a value with no recoverable
-//    production-site provenance reserves a DISTINCT canonical placeholder leaf,
-//    keeping the graph canonical and one-to-one with the host's captured-value
-//    side table. Each gated placeholder is its own recipe id.
-// ============================================================================
-x.fm_capture_begin();
-const g1 = x.fm_capture_gated_placeholder();
-const g2 = x.fm_capture_gated_placeholder();
-assert.deepEqual([g1, g2], [1, 2], "each gated value gets a distinct recipe id");
-assert.equal(x.fm_capture_validate(), 0, "a graph of gated leaves is canonical");
-const gated = drainRecords();
-assert.equal(
-  gated.records[gated.records.length - 1].kind,
-  RECORD_KIND_MANIFEST,
-  "gated capture still seals a manifest (discarded unread by the aborting fork)",
-);
-
-// ============================================================================
-// 3. Truthful failure: a session with an un-completed GC claim is NOT canonical;
-//    validate and serialize must fail cleanly with EINVAL, never a wrong graph.
-// ============================================================================
-x.fm_capture_begin();
-x.fm_capture_claim_gc(); // 1: claimed but never defined
-assert.equal(x.fm_capture_validate(), -1, "pending GC claim is not canonical");
-assert.equal(lastErrno(), EINVAL, "validate reports EINVAL for a pending claim");
-assert.equal(
-  x.fm_capture_serialize(OWNER_ID, SEGMENT_WINDOW),
-  0,
-  "serialize refuses a non-canonical graph",
-);
-assert.equal(lastErrno(), EINVAL, "serialize reports EINVAL for a pending claim");
-
-// ============================================================================
-// 4. Truthful failure: the retired host-externref kind is EINVAL, never a
-//    recipe -- a well-formed handle included.
-// ============================================================================
-x.fm_capture_begin();
-assert.equal(
-  x.fm_capture_intern(K_RETIRED_EXTERNREF, 99, 0),
-  -1,
-  "the retired externref kind is rejected",
-);
-assert.equal(lastErrno(), EINVAL, "the retired externref kind reports EINVAL");
-
-// The kind-discriminated entry's own admission checks. `fm_capture_intern`
-// replaced four per-type exports, so the argument-shape errors those four made
-// impossible by construction are now runtime errors, and they have to be loud.
-assert.equal(x.fm_capture_intern(0, 1, 0), -1, "kind 0 is rejected");
-assert.equal(x.fm_capture_intern(5, 1, 0), -1, "kind past the last discriminant is rejected");
-assert.equal(
-  x.fm_capture_intern(0xffffffff >>> 0, 1, 0),
-  -1,
-  "a garbage kind is rejected, not silently treated as a funcref",
-);
-// The `b must be 0` rule for the one-argument kind. Without it, a caller that
-// passed funcref argument ORDER with the i31 kind -- (I31, activation,
-// ordinal) -- would silently intern the activation id as an i31 payload and
-// capture the wrong reference.
-assert.equal(
-  x.fm_capture_intern(K_I31, -5, 7),
-  -1,
-  "i31 with a non-zero second argument is rejected",
-);
-assert.equal(lastErrno(), EINVAL, "a non-zero second argument reports EINVAL");
-
 // ---------------------------------------------------------------------------
 // The GUEST-facing reference-vector surface (env.__wpk_fork_ref_vector_*).
 //
@@ -420,8 +168,8 @@ x.fm_capture_begin();
 {
   const h = x.__wpk_fork_ref_vector_begin(2);
   assert.ok(h >= 0, "vector_begin returns a handle");
-  const a = x.fm_capture_intern(K_I31, 11, 0);
-  const b = x.fm_capture_intern(K_I31, 22, 0);
+  const a = x.__wpk_fork_ref_gc_i31(11);
+  const b = x.__wpk_fork_ref_gc_i31(22);
   x.__wpk_fork_ref_vector_append(h, a);
   x.__wpk_fork_ref_vector_append(h, b);
   const ordinal = x.__wpk_fork_ref_vector_finish(h);
@@ -431,7 +179,7 @@ x.fm_capture_begin();
 {
   // Declared 2, appended 1: must fail rather than intern a short vector.
   const h = x.__wpk_fork_ref_vector_begin(2);
-  x.__wpk_fork_ref_vector_append(h, x.fm_capture_intern(K_I31, 33, 0));
+  x.__wpk_fork_ref_vector_append(h, x.__wpk_fork_ref_gc_i31(33));
   assert.equal(
     x.__wpk_fork_ref_vector_finish(h),
     -1,
@@ -447,7 +195,7 @@ x.fm_capture_begin();
     -1,
     "a nested vector_begin is rejected, not silently mis-counted",
   );
-  x.__wpk_fork_ref_vector_append(h, x.fm_capture_intern(K_I31, 44, 0));
+  x.__wpk_fork_ref_vector_append(h, x.__wpk_fork_ref_gc_i31(44));
   assert.ok(x.__wpk_fork_ref_vector_finish(h) >= 0, "the open vector still finishes");
   assert.equal(
     x.__wpk_fork_ref_vector_finish(h),
@@ -463,11 +211,6 @@ x.fm_capture_begin();
   assert.ok(a >= 1, "gc_i31 interns and returns a recipe id");
   assert.equal(x.__wpk_fork_ref_gc_i31(-7), a, "gc_i31 dedups by payload");
   assert.notEqual(x.__wpk_fork_ref_gc_i31(-8), a, "a different payload is a different recipe");
-  assert.equal(
-    x.__wpk_fork_ref_gc_i31(-7),
-    x.fm_capture_intern(K_I31, -7, 0),
-    "gc_i31 shares the recipe space with the host-facing intern entry",
-  );
 }
 
 // The injected anyref-table growth primitive (`fm_transit_grow`).
@@ -789,49 +532,22 @@ function i31Minter() {
   const REFS = SCRATCH_BASE + 320;
 
   x.fm_capture_begin();
-  const payloadA = x.fm_capture_intern(K_I31, 11, 0); // 1
-  const payloadB = x.fm_capture_intern(K_I31, 55, 0); // 2
-  const exn = x.fm_capture_claim_gc(); // 3
+  const payloadA = x.__wpk_fork_ref_gc_i31(11); // 1
+  const payloadB = x.__wpk_fork_ref_gc_i31(55); // 2
+  const exn = x.__wpk_fork_ref_exn_claim(0); // 3
   assert.deepEqual([payloadA, payloadB, exn], [1, 2, 3], "exception fixture ids");
 
   writeBytes(SCALARS, [0xde, 0xad, 0xbe, 0xef]);
   writeU32Array(REFS, [payloadA, payloadB]);
   x.__wpk_fork_ref_exn_define(exn, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, REFS, 2);
   assert.equal(lastErrno(), 0, "exn_define latched no error");
-  assert.equal(x.fm_capture_validate(), 0, `exn graph validates errno=${lastErrno()}`);
-
-  // Proof it read GUEST MEMORY rather than inventing a payload: the scalar
-  // bytes we wrote must survive into the serialized stream.
-  const stream = Buffer.from(drainRecords().raw);
-  assert.ok(
-    stream.includes(Buffer.from([0xde, 0xad, 0xbe, 0xef])),
-    "exception scalar payload read from guest memory reached the stream",
-  );
 
   // -- Perturbation: an edge naming a recipe that does not exist -------------
   x.fm_capture_begin();
-  const orphan = x.fm_capture_claim_gc();
+  const orphan = x.__wpk_fork_ref_exn_claim(0);
   writeU32Array(REFS, [99]);
   x.__wpk_fork_ref_exn_define(orphan, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, REFS, 1);
   assert.equal(lastErrno(), EINVAL, "an edge naming a missing recipe is EINVAL");
-  assert.notEqual(
-    x.fm_capture_validate(),
-    0,
-    "and the rejected define leaves a placeholder the seal refuses",
-  );
-
-  // -- Perturbation: the define never happens at all -------------------------
-  //
-  // This is the guard that makes the void return safe. Without it a dropped
-  // define would seal cleanly and the child would rebuild an exception whose
-  // payload silently vanished.
-  x.fm_capture_begin();
-  x.fm_capture_claim_gc();
-  assert.notEqual(
-    x.fm_capture_validate(),
-    0,
-    "a claimed exception that is never defined blocks the seal",
-  );
 
   // -- Perturbation: defining a recipe that was never claimed ----------------
   x.fm_capture_begin();
@@ -840,11 +556,11 @@ function i31Minter() {
 
   // -- Perturbation: a staging span outside guest memory ---------------------
   x.fm_capture_begin();
-  const oob = x.fm_capture_claim_gc();
+  const oob = x.__wpk_fork_ref_exn_claim(0);
   x.__wpk_fork_ref_exn_define(oob, ACT, TYPE_ORDINAL, LAYOUT, 0xfffffff0, 4, REFS, 0);
   assert.equal(lastErrno(), EINVAL, "a scalar span outside guest memory is EINVAL");
   x.fm_capture_begin();
-  const oob2 = x.fm_capture_claim_gc();
+  const oob2 = x.__wpk_fork_ref_exn_claim(0);
   x.__wpk_fork_ref_exn_define(oob2, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, 0xfffffff0, 2);
   assert.equal(lastErrno(), EINVAL, "a reference span outside guest memory is EINVAL");
 }
@@ -1006,7 +722,7 @@ function i31Minter() {
   const REFS = SCRATCH_BASE + 576;
 
   x.fm_capture_begin();
-  const payload = x.fm_capture_intern(K_I31, 77, 0); // 1
+  const payload = x.__wpk_fork_ref_gc_i31(77); // 1
   assert.equal(payload, 1, "payload leaf interned");
 
   // Lookup never hits, so the guest always proceeds to claim.
@@ -1033,26 +749,6 @@ function i31Minter() {
   assert.equal(lastErrno(), 0, `exn_define(first) errno=${lastErrno()}`);
   x.__wpk_fork_ref_exn_define(second, ACT, 4, 21, SCALARS, 4, REFS, 1);
   assert.equal(lastErrno(), 0, `exn_define(second) errno=${lastErrno()}`);
-
-  assert.equal(x.fm_capture_validate(), 0, `exn graph validates errno=${lastErrno()}`);
-
-  // Proof the shared payload really is one node: the graph holds the two
-  // exception recipes plus ONE payload leaf, not two.
-  const stream = Buffer.from(drainRecords().raw);
-  assert.ok(
-    stream.includes(Buffer.from([0x11, 0x22, 0x33, 0x44])),
-    "exception scalars reached the serialized stream",
-  );
-
-  // A claimed exception that is never defined still blocks the seal -- the
-  // fresh-recipe path must not weaken that.
-  x.fm_capture_begin();
-  x.__wpk_fork_ref_exn_claim(0);
-  assert.notEqual(
-    x.fm_capture_validate(),
-    0,
-    "a claimed exception never defined blocks the seal",
-  );
 }
 
 // ============================================================================
@@ -1087,11 +783,6 @@ function i31Minter() {
     lastErrno(),
     0,
     "an edge naming the refused recipe is rejected at define",
-  );
-  assert.notEqual(
-    x.fm_capture_validate(),
-    0,
-    "and the capture cannot seal",
   );
 }
 
@@ -1132,7 +823,7 @@ function i31Minter() {
   x.fm_capture_begin();
   // Recipe 1: what the stub codec will claim every witness encodes to, so the
   // provenance edge names a node that exists.
-  assert.equal(x.fm_capture_intern(K_I31, 5, 0), 1, "witness stand-in is recipe 1");
+  assert.equal(x.__wpk_fork_ref_gc_i31(5), 1, "witness stand-in is recipe 1");
 
   // Record a witness for layout 21, ordinal 0, exactly as a constructor wrapper
   // would: begin, stage the seed in transit, ref, end.
@@ -1147,7 +838,7 @@ function i31Minter() {
   assert.equal(lastErrno(), 0, "provenance transaction closed");
 
   const before = encodeCalls();
-  const node = x.fm_capture_claim_gc();
+  const node = x.__wpk_fork_ref_exn_claim(0);
   const fields = buildVector([1]);
   writeBytes(SCRATCH_BASE + 768, [0xaa, 0xbb, 0xcc, 0xdd]);
   x.__wpk_fork_ref_gc_define(
@@ -1159,20 +850,18 @@ function i31Minter() {
     1,
     "the module drove the guest codec exactly once to intern the witness",
   );
-  assert.equal(x.fm_capture_validate(), 0, `graph validates errno=${lastErrno()}`);
 
   // The witness is CACHED: a second object of the same layout reuses the recipe
   // rather than re-encoding. Proven by clearing the drive slot first -- a
   // re-encode would now call a null table entry and trap.
   driveTable.set(ACT * 13 + DRIVE_SLOT_GC_ENCODE, null);
-  const second = x.fm_capture_claim_gc();
+  const second = x.__wpk_fork_ref_exn_claim(0);
   const fields2 = buildVector([1]);
   x.__wpk_fork_ref_gc_define(
     second, ACT, 2, LAYOUT, KIND_STRUCT, SCRATCH_BASE + 768, 4, fields2,
   );
   assert.equal(lastErrno(), 0, "a second object of the layout reuses the witness recipe");
   assert.equal(encodeCalls() - before, 1, "and does NOT drive the codec again");
-  assert.equal(x.fm_capture_validate(), 0, "the graph still validates");
 
   // -- capture_layout drives the guest's TYPE-TEST probe ---------------------
   //
@@ -1207,7 +896,7 @@ function i31Minter() {
 
   // A layout that recorded no witness needs no encode at all, which is the
   // ordinary case: most layouts have no mutable non-null internal field.
-  const plain = x.fm_capture_claim_gc();
+  const plain = x.__wpk_fork_ref_exn_claim(0);
   const fields3 = buildVector([1]);
   x.__wpk_fork_ref_gc_define(
     plain, ACT, 2, 99, KIND_STRUCT, SCRATCH_BASE + 768, 4, fields3,
@@ -1286,7 +975,7 @@ function i31Minter() {
   driveTable.set(4 * SLOTS + ENC, enc4.exports.encode);
 
   x.fm_capture_begin();
-  assert.equal(x.fm_capture_intern(K_I31, 9, 0), 1, "routed value's recipe");
+  assert.equal(x.__wpk_fork_ref_gc_i31(9), 1, "routed value's recipe");
 
   // Seed two activation codecs so the broker has a registry to walk. The bytes
   // are the committed gc-codec fixture, which both activations can share.
@@ -1702,8 +1391,8 @@ function i31Minter() {
   // shared catalog with it, so a scan would find it at a slot no base covers --
   // which is the refusal working, not a match.
   const alpha = x.fm_stats;
-  const beta = x.fm_capture_interned;
-  const uncatalogued = x.fm_capture_claim_gc;
+  const beta = x.fm_journal_image_len;
+  const uncatalogued = x.fm_funcref_uncatalogued;
 
   x.fm_set_format(4, 0, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format seeded");
@@ -1811,7 +1500,7 @@ function i31Minter() {
   // traps the module inside its own archive decoder -- which is how this test
   // first failed.
   const UNCATALOGUED_SLOT = 100;
-  const uncatalogued = x.fm_capture_gated_placeholder;
+  const uncatalogued = x.fm_funcref_uncatalogued;
   indirect.set(UNCATALOGUED_SLOT, uncatalogued);
   assert.ok(
     Number(x.__wpk_fork_module_state_table_mutation_begin()) >= 0,

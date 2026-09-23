@@ -107,7 +107,7 @@ describe("fork-module multi-activation funcref reconstruction (Phase 6 D7a.1b)",
     ] as const;
 
     // The PARENT opens a capture with a SIDE activation and interns the graph.
-    const { root, recipes } = captureArena(
+    const { root, recipes, saved } = captureArena(
       f,
       graph.map(
         ([activation, ordinal]) =>
@@ -117,19 +117,15 @@ describe("fork-module multi-activation funcref reconstruction (Phase 6 D7a.1b)",
     );
     expect(recipes).toHaveLength(graph.length);
 
-    // The capture really was dlopen-shaped: TWO activations, each with its own
-    // continuation anchor in the sealed fork's state. Without this the test
-    // would pass against a single-activation capture that merely RECORDED
-    // activation 1 as a coordinate -- the graph would be identical, and the
-    // side module's presence would be an assertion nothing made.
-    const anchor = f.x.fm_activation_module_buffer as (a: number) => number;
-    const anchorA = anchor(ACTIVATION_A);
-    expect(f.errno(), "activation A is registered").toBe(0);
-    const anchorB = anchor(ACTIVATION_B);
-    expect(f.errno(), "activation B is registered").toBe(0);
-    expect(anchorA, "and A has a frame chain").toBeGreaterThan(0);
-    expect(anchorB, "and B has its OWN, not A's").toBeGreaterThan(0);
-    expect(anchorB).not.toBe(anchorA);
+    // The capture really was dlopen-shaped: the module drove the module-state
+    // save of BOTH activations. Without this the test would pass against a
+    // single-activation capture that merely RECORDED activation 1 as a
+    // coordinate -- the graph would be identical, and the side module's
+    // presence would be an assertion nothing made.
+    expect(
+      [...saved].sort(),
+      "each activation's module state was saved into the capture",
+    ).toEqual([ACTIVATION_A, ACTIVATION_B]);
 
     // Match a real dlopen fork's catalog sizes: activation 0's main-module
     // catalog is large (80 funcref slots), the side module's is small (6).
