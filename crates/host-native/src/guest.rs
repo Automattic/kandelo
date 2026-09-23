@@ -6725,10 +6725,24 @@ pub(crate) fn compute_fork_module_region(layout: &ProcessLayout) -> anyhow::Resu
         "fork-module region ({min_region_bytes} bytes) does not fit under max_addr ({region_end})"
     );
     // Place the region so it ends exactly at `region_end`, aligning its base
-    // DOWN to the module's required alignment (this can only grow the
-    // region slightly, never shrink it below `min_region_bytes`, and never
-    // push the base below 0 given the `ensure!` above).
-    let memory_base = (region_end - min_region_bytes) / mem_align * mem_align;
+    // DOWN (this can only grow the region slightly, never shrink it below
+    // `min_region_bytes`, and never push the base below 0 given the `ensure!`
+    // above).
+    //
+    // TO 16 BYTES AT LEAST, not merely to the module's own `mem_align`. The
+    // base is where the module's data lands, and `mem_align` is what THAT
+    // needs; but this base is also where a vfork BORROWED child's region ENDS
+    // (`compute_vfork_borrowed_region` sets the child's `max_addr` to it), so
+    // it is the child module's STACK TOP as well, and the shadow stack pointer
+    // must be 16-byte aligned regardless of how the module's data happens to
+    // be. The storage conversion deleted the last 16-aligned static (the
+    // 64 KiB scratch cell), `dylink.0` dropped to an 8-byte `mem_align`, and
+    // this base fell to 8-aligned -- which the `stack_top % 16` check below
+    // then refused for EVERY fork-module process launch, because every one
+    // reserves its borrowed-child region up front. The module's alignment
+    // was never the stack's requirement; it only happened to satisfy it.
+    let base_align = mem_align.max(16);
+    let memory_base = (region_end - min_region_bytes) / base_align * base_align;
     let region_bytes = region_end - memory_base;
     let stack_top = memory_base + region_bytes;
     anyhow::ensure!(
