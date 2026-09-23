@@ -69,6 +69,17 @@ export const PRESET_LIBRARY: Preset[] = [
     estimatedUrlBytes: 944,
   },
   {
+    id: "nginx-python",
+    title: "nginx + Python",
+    summary: "nginx reverse-proxying to a Python (wsgiref) JSON API over SQLite.",
+    base: SHELL_BASE,
+    packages: ["dinit@local", "nginx@local", "cpython@local", "bash@local", "coreutils@local"],
+    accent: "#4b8bbe",
+    glyph: "py",
+    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
+    estimatedUrlBytes: 944,
+  },
+  {
     id: "ruby-todo",
     title: "Ruby + Roda todo",
     summary: "A Roda web app on Ruby 4 with a SQLite database, served on :8080. Not Rails.",

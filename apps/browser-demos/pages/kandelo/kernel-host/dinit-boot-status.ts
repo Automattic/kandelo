@@ -13,6 +13,7 @@ export type DinitServiceCompletion = {
 export const REQUIRED_DINIT_SERVICES = {
   nginx: ["nginx"],
   "nginx-php": ["php-fpm", "nginx"],
+  "nginx-python": ["notes-app", "nginx"],
   "wordpress-sqlite": [
     "wp-config-init",
     "smtp-capture",

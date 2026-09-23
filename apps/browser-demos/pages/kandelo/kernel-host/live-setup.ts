@@ -192,6 +192,20 @@ const OPTIONAL_BINARY_URLS = {
       import: "default",
     },
   ),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/sdl2.wasm", {
     query: "?url", import: "default",
   }),
@@ -265,7 +279,7 @@ class BootSuperseded extends Error {
 }
 
 type LiveVfsImage =
-  "shell" | "node" | "nginx" | "nginx-php" | "wordpress" | "lamp" | "ruby-todo";
+  "shell" | "node" | "nginx" | "nginx-php" | "nginx-python" | "wordpress" | "lamp" | "ruby-todo";
 
 type PagesVfsProductId =
   | "platform-rootfs"
@@ -273,6 +287,7 @@ type PagesVfsProductId =
   | "browser-node"
   | "browser-nginx"
   | "browser-nginx-php"
+  | "browser-nginx-python"
   | "browser-wordpress"
   | "browser-lamp"
   | "browser-ruby-todo";
@@ -288,7 +303,7 @@ type LiveVfsSource =
   };
 
 type ShellProfile = "default" | "node";
-type InitEnvProfile = "service" | "wordpress";
+type InitEnvProfile = "service" | "python-service" | "wordpress";
 
 interface LiveDemoSpec {
   image: LiveVfsImage;
@@ -337,6 +352,15 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
       "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
     ],
   },
+  "nginx-python": {
+    kind: "optional-binary",
+    label: "nginx-python-vfs.vfs.zst",
+    productId: "browser-nginx-python",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    ],
+  },
   wordpress: {
     kind: "optional-demo",
     image: "wordpress",
@@ -367,6 +391,7 @@ const LIVE_DEMO_IDS = [
   "node",
   "nginx",
   "nginx-php",
+  "nginx-python",
   "ruby-todo",
   "wordpress-sqlite",
   "wordpress-mariadb",
@@ -425,6 +450,21 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       web: {
         requiredPorts: [HTTP_PORT],
         requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-php"]],
+      },
+    },
+  },
+  "nginx-python": {
+    image: "nginx-python",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    network: true,
+    init: {
+      argv: DINIT_NGINX_ARGV,
+      env: "python-service",
+      programUrl: dinitWasmUrl,
+      maxWorkers: 12,
+      web: {
+        requiredPorts: [HTTP_PORT],
+        requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-python"]],
       },
     },
   },
@@ -507,6 +547,8 @@ const DEFAULT_DEMO_FOR_VFS_IMAGE: Record<LiveVfsImage, LiveDemoId> = {
   node: "node",
   nginx: "nginx",
   "nginx-php": "nginx-php",
+  "nginx-python": "nginx-python",
+  "ruby-todo": "ruby-todo",
   wordpress: "wordpress-sqlite",
   lamp: "wordpress-mariadb",
 };
@@ -521,6 +563,7 @@ const DEMO_ALIASES: Record<string, LiveDemoId> = {
 const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
   "nginx",
   "nginx-php",
+  "nginx-python",
   "wordpress-sqlite",
   "wordpress-mariadb",
 ]);
@@ -686,6 +729,18 @@ const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
   service: () => SERVICE_ENV,
+  // WHY: the interpreter must see the same PYTHONHOME/PYTHONDONTWRITEBYTECODE
+  // contract declared for this product in
+  // images/vfs/products/browser-nginx-python.toml's [boot.env]. Without it,
+  // first-run stdlib imports compile *and write* bytecode caches for every
+  // module wsgiref pulls in, which is real extra depth the browser's fixed
+  // (non-configurable) worker JS stack does not have the headroom Node's
+  // worker gets from nodeWorkerStackSizeMb().
+  "python-service": () => [
+    ...SERVICE_ENV,
+    "PYTHONHOME=/usr",
+    "PYTHONDONTWRITEBYTECODE=1",
+  ],
   wordpress: () => [
     ...SERVICE_ENV,
     `WP_APP_PATH=${APP_PATH}`,
@@ -2487,6 +2542,7 @@ function descriptorBootIdentity(
   const serviceIds = new Set([
     "nginx",
     "nginx-php",
+    "nginx-python",
     "wordpress-sqlite",
     "wordpress-mariadb",
   ]);

@@ -1398,7 +1398,9 @@ build_shell_vfs() {
 
     # Declared VFS product (packages/sets/local-supported.toml); the engine
     # resolves the "shell" package closure and validates it against
-    # images/vfs/products/browser-main-shell.toml.
+    # images/vfs/products/browser-main-shell.toml, whose declared builder is
+    # packages/registry/shell/build-shell.sh (also the shell package's own
+    # build script).
     bootstrap_target browser-main-shell
 }
 
@@ -1487,6 +1489,13 @@ build_nginx_php_vfs() {
     # runs images/vfs/scripts/build-nginx-php-vfs-image.sh (unchanged
     # script), which is also the nginx-php-vfs package's own build script.
     bootstrap_target browser-nginx-php
+}
+
+build_nginx_python_vfs() {
+    # Declared VFS product; the engine resolves shell/nginx/cpython/dinit and
+    # runs images/vfs/scripts/build-nginx-python-vfs-image.sh (unchanged
+    # script), which is also the nginx-python-vfs package's own build script.
+    bootstrap_target browser-nginx-python
 }
 
 build_ruby_todo_vfs() {
@@ -1833,6 +1842,7 @@ build_target() {
         nginx-vfs)  build_nginx_vfs ;;
         redis-vfs)  build_redis_vfs ;;
         nginx-php-vfs) build_nginx_php_vfs ;;
+        nginx-python-vfs) build_nginx_python_vfs ;;
         ruby-todo-vfs) build_ruby_todo_vfs ;;
         bc)         build_bc ;;
         file)       build_file ;;
@@ -1877,7 +1887,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs ruby-todo-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs ruby-todo-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1920,6 +1930,7 @@ build_all() {
     build_php
     build_php_fpm
     build_nginx_php_vfs
+    build_nginx_python_vfs
     build_mariadb
     build_mariadb_vfs
     build_redis

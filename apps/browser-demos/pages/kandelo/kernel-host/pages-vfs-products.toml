@@ -22,6 +22,10 @@ id = "browser-nginx-php"
 load = "lazy"
 
 [[products]]
+id = "browser-nginx-python"
+load = "lazy"
+
+[[products]]
 id = "browser-ruby-todo"
 load = "lazy"
 

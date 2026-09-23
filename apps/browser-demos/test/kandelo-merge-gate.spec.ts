@@ -9,6 +9,16 @@ type BrowserDiagnostics = {
 
 const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
 const MAX_LOG_LINES = 160;
+// The plain shell demo's login boot env sets PS1 to the literal `kandelo$ `
+// (images/vfs/products/browser-main-shell.toml), but PR #1403 ("Ship bash as
+// the only shell") made bash the login shell for every dinit-service demo's
+// terminal drawer (nginx, nginx-php, nginx-python) without a PS1 override, so
+// those terminals fall back to bash's compiled-in default prompt, which
+// includes the running bash's version. Confirmed against a real chromium run
+// of the nginx demo terminal: the received prompt text is exactly
+// `kandelo-bash-5.2$ `. Match both forms with one shared pattern instead of
+// pinning to a specific bash version.
+const KANDELO_PROMPT = /kandelo(?:-bash-[0-9.]+)?\$ ?/;
 const sourceRootfsExpectation =
   process.env.KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL;
 if (sourceRootfsExpectation !== undefined && sourceRootfsExpectation !== "1") {
@@ -300,7 +310,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   // Input typed before bash's first prompt is legitimately discarded by the
   // boot chain's startup typeahead flush (tcflush), so wait for the prompt
   // like the other terminal tests do.
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
 
   await runGuideScript(
     page,
@@ -421,7 +431,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
   await runTerminalCommand(
     page,
     "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
@@ -454,12 +464,109 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
   await runTerminalCommand(
     page,
     "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
       "printf 'KANDELO_NGINX_PHP_TERMINAL_OK\\n'",
     "KANDELO_NGINX_PHP_TERMINAL_OK",
+  );
+});
+
+// Evidence for the nginx-python-vfs product: nginx reverse-proxies the
+// static Notes API page and its live /api/* JSON endpoints to a Python
+// (wsgiref) app over SQLite, all inside the same Kandelo machine. This is
+// the browser counterpart to the Node-host
+// "nginx-python-vfs-node-startup" test in node-host-counterparts.spec.ts,
+// and is the evidence test named by images/vfs/products/browser-nginx-python
+// .toml's [evidence.browser].
+test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the Notes API through the web preview", async ({ page }) => {
+  // PARTIALLY-CLOSED BROWSER PLATFORM GAP. notes-app's startup
+  // (`python3 /var/www/notes/app.py`) imports a large slice of the stdlib
+  // (wsgiref -> http.server -> ... -> email.quoprimime). On first import
+  // CPython used to compile each of those modules from *source* — a deeply
+  // recursive pass (tokenizer -> parser -> AST -> symtable -> code generator).
+  // Inside the browser's dedicated kernel Worker — whose V8 stack is a fixed,
+  // small default because the `new Worker()` API exposes no stack-size knob —
+  // that recursion, amplified by the fork-instrument transport trampoline
+  // (__wpk_fork_unwind_transport_indirect_0_*) that wraps each fork-reaching
+  // guest indirect call, threw "RangeError: Maximum call stack size exceeded"
+  // and took the whole kernel worker (not just the one process) down, so dinit
+  // lost notes-app and nginx together and every /api/* request returned
+  // nginx's HTML error page instead of JSON. The Node host survives because
+  // NodeKernelHost gives its worker a 32 MB stack (nodeWorkerStackSizeMb() in
+  // host/src/worker-adapter.ts); the browser has no equivalent knob (confirmed:
+  // even chromium --js-flags=--stack-size does not enlarge a Worker's stack).
+  //
+  // FIXED (build-time bytecode prewarm): the nginx-python image builder now
+  // precompiles the stdlib and the app to .pyc at build time
+  // (images/vfs/scripts/python-bytecode-prewarm.ts) using the Kandelo CPython
+  // under the kernel, with unchecked-hash invalidation so import uses the baked
+  // bytecode verbatim. At runtime the browser loads bytecode via marshal
+  // instead of compiling from source, which removes the deepest recursion and
+  // is verified by syscall trace (import opens the baked .pyc, no compile).
+  //
+  // ALSO FIXED alongside it: the browser "nginx-python" service boot and the
+  // Node serve-python.ts were not actually setting PYTHONDONTWRITEBYTECODE /
+  // PYTHONHOME despite images/vfs/products/browser-nginx-python.toml's
+  // [boot.env] declaring them; live-setup.ts's "python-service" init-env
+  // profile and serve-python.ts now do.
+  //
+  // BROWSER OVERFLOW GAP CLOSED by fork PR #1402 (spill switch-dispatch locals
+  // to a shadow-stack scratch frame). Measured on Node with
+  // KANDELO_NODE_WORKER_STACK_SIZE_MB: the fork-instrumented stdlib import
+  // chain now needs ~0.3 MB of worker stack (PASS at 0.3, OVERFLOW at 0.27),
+  // down from the pre-#1402 ~0.82 MB, landing at the no-fork ~0.27 MB baseline.
+  // In a real chromium Worker the Notes API now works end to end: the static
+  // page renders, GET /api/notes returns the seeded rows, and POST creates a
+  // row (verified 2026-09-22 on this merge).
+  test.setTimeout(300_000);
+
+  await gotoOrSkip(page, "/?demo=nginx-python");
+  await page.waitForSelector('iframe[title="nginx + Python"]', { timeout: 180_000 });
+
+  const frame = webFrame(page, "nginx + Python");
+  await expect(frame.locator("body")).toContainText(
+    "Python Notes API on Kandelo",
+    { timeout: 180_000 },
+  );
+  await expect(frame.locator("body")).toContainText("wsgiref", { timeout: 30_000 });
+
+  // "GET /api/notes" button: the seeded rows must already be present. nginx
+  // (static page) comes up before notes-app finishes its first Python stdlib
+  // import, so a single early click can hit nginx's proxy error page. Re-click
+  // until the live JSON answers.
+  await expect(async () => {
+    await frame.locator("#load").click();
+    await expect(frame.locator("#out")).toContainText("Welcome to Kandelo", {
+      timeout: 5_000,
+    });
+  }).toPass({ timeout: 180_000 });
+  const seeded = await frame.locator("#out").evaluate((node) =>
+    JSON.parse(node.textContent ?? "[]"),
+  );
+  expect(Array.isArray(seeded)).toBe(true);
+  expect(seeded.length).toBeGreaterThanOrEqual(2);
+
+  // "POST a note" button: the live API must accept writes and echo a
+  // created row with an assigned id.
+  await frame.locator("#add").click();
+  await expect(frame.locator("#out")).toContainText("From the browser", {
+    timeout: 60_000,
+  });
+  const created = await frame.locator("#out").evaluate((node) =>
+    JSON.parse(node.textContent ?? "{}"),
+  );
+  expect(created).toMatchObject({ title: "From the browser" });
+  expect(typeof created.id).toBe("number");
+
+  await openTerminalDrawer(page);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
+  await runTerminalCommand(
+    page,
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
+      "printf 'KANDELO_NGINX_PYTHON_TERMINAL_OK\\n'",
+    "KANDELO_NGINX_PYTHON_TERMINAL_OK",
   );
 });
 

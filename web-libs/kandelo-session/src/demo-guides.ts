@@ -50,6 +50,16 @@ ls -l /var/www/data && head -c 16 /var/www/data/demo.db; echo
 echo "--- service processes ---"
 lsof | grep -E 'nginx|php-fpm' | head -60 || true`;
 
+const nginxPythonScript = `curl -i http://127.0.0.1:8080/ | head -40
+echo "--- list notes (JSON via Python) ---"
+curl -s http://127.0.0.1:8080/api/notes
+echo
+echo "--- create a note ---"
+curl -s -X POST http://127.0.0.1:8080/api/notes \\
+  -H 'Content-Type: application/json' \\
+  -d '{"title":"Hello","body":"from curl"}'
+echo`;
+
 export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
   switch (profileId) {
     case "shell":
@@ -60,6 +70,8 @@ export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
       return nginxGuide();
     case "nginx-php":
       return nginxPhpGuide();
+    case "nginx-python":
+      return nginxPythonGuide();
     case "wordpress":
     case "wordpress-sqlite":
     case "wordpress-mariadb":
@@ -77,6 +89,7 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
       return genericDemoPresentation("terminal");
     case "nginx":
     case "nginx-php":
+    case "nginx-python":
     case "wordpress":
     case "wordpress-sqlite":
     case "wordpress-mariadb":
@@ -211,6 +224,26 @@ export function nginxPhpGuide(): DemoGuideConfig {
       title: "Service check",
       language: "sh",
       initialText: nginxPhpScript,
+    },
+  );
+}
+
+export function nginxPythonGuide(): DemoGuideConfig {
+  return scriptGuide(
+    "nginx + Python demo",
+    "Call a real Python (wsgiref) JSON API over SQLite, proxied by nginx.",
+    [
+      actionGroup("Service", [
+        action("curl-home", "Fetch page", "Fetch the static page through nginx.", "terminal.run", "curl -i http://127.0.0.1:8080/ | head -40"),
+        action("list-notes", "List notes", "GET the JSON notes list from Python.", "terminal.run", "curl -s http://127.0.0.1:8080/api/notes; echo"),
+        action("create-note", "Create note", "POST a new note as JSON.", "terminal.run", "curl -s -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -d '{\"title\":\"Hello\",\"body\":\"from curl\"}'; echo"),
+        action("py-version", "Python", "Print the Python version.", "terminal.run", "PYTHONHOME=/usr /usr/bin/python3 --version"),
+      ]),
+    ],
+    {
+      title: "Service check",
+      language: "sh",
+      initialText: nginxPythonScript,
     },
   );
 }
