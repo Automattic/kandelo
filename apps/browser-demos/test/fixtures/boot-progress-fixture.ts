@@ -5,6 +5,11 @@
 import * as React from "react";
 import * as ReactDOM from "react-dom/client";
 
+// Load the page's real stylesheets so the bar under test has the dimensions
+// a user actually sees; an unstyled bar is a zero-height div.
+import "../../pages/kandelo/tokens.css";
+import "../../pages/kandelo/styles.css";
+
 import { KernelHostProvider } from "../../pages/kandelo/kernel-host/react";
 import { Shell } from "../../pages/kandelo/panes/Shell";
 import {
