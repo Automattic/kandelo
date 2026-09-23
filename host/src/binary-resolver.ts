@@ -294,7 +294,14 @@ function binaryCandidateTiers(): BinaryCandidateTier[] {
         label: "source-only-v1",
         root: sourceOnlyRoot,
         identity: "source-only-generation",
-        allowRegularFileClosure: false,
+        // The engine writes real files here, not links into a shared cache,
+        // so this tier would otherwise be refused for every multi-artifact
+        // package the moment `pinPackageClosureIdentity` saw regular files.
+        // Its identity is not the directory shape: it is the projection
+        // authority in `.kandelo/`, which binds each member to a package,
+        // cache key and sha256. `pinPackageClosureIdentity` checks exactly
+        // that for this tier — see its `source-only-generation` branch.
+        allowRegularFileClosure: true,
         candidatesFor(relPath: string): string[] {
           return [join(sourceOnlyRoot, applyDefaultArch(relPath))];
         },
@@ -1461,6 +1468,22 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
   if (root === null) {
     throw new Error("Source-only projection requested outside source-only-v1");
   }
+  return readSourceOnlyProjectionAt(root);
+}
+
+/**
+ * Parse the SourceOnly projection authority that lives inside `root`.
+ *
+ * Split out from `readSourceOnlyProjection` so the ambient
+ * `source-only-generation` candidate tier can authenticate a package closure
+ * out of the generation it is already offering, without asserting the
+ * `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` *policy*. Those are different
+ * claims: the policy says "serve nothing that is not in this projection",
+ * which is the browser build's hermetic contract; the tier only needs "these
+ * exact bytes belong to this package generation", which the same authority
+ * answers. `root` must already be the canonical generation root.
+ */
+function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
   const metadataRoot = join(root, ".kandelo");
   try {
     const metadata = lstatSync(metadataRoot);
@@ -3112,6 +3135,88 @@ interface RejectedPackageClosure {
  * can be atomically replaced after validation, changing what those strings
  * name before a caller reads them.
  */
+/**
+ * Pin a package closure inside the local SourceOnly generation.
+ *
+ * The generation holds regular files, so the directory shape proves nothing.
+ * Its authority is `.kandelo/source-only-program-projection-v1.json`, which
+ * names each member's owning package, that package's cache key, and the
+ * member's sha256. Validating through it is the same check
+ * `resolveSourceOnlyBinary` performs under the hermetic browser policy — one
+ * owning node for the whole closure, then per-member digest and
+ * artifact-policy verification — so the tier is accepted on the strength of
+ * the producer's receipt rather than on the file being where it was expected.
+ */
+function pinSourceOnlyGenerationClosure(
+  tier: BinaryCandidateTier,
+  selected: readonly string[],
+  members: readonly ProgramPackageClosureMember[],
+): PinnedPackageClosure | RejectedPackageClosure {
+  let loaded: LoadedSourceOnlyProjection;
+  try {
+    loaded = readSourceOnlyProjectionAt(tier.root);
+  } catch (error) {
+    return {
+      failure: `source-only projection is unusable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const owner = loaded.ownerByMirrorPath.get(members[0]!.relPath);
+  if (!owner) {
+    return {
+      failure: `source-only projection does not own ${members[0]!.relPath}`,
+    };
+  }
+  // One projection node owns the whole closure, exactly as one canonical
+  // generation owns a symlink closure. A member the projection attributes to
+  // a different package would mix two generations' bytes under one identity.
+  for (const member of members) {
+    if (loaded.ownerByMirrorPath.get(member.relPath) !== owner) {
+      return {
+        failure:
+          "declared members are not one source-only package projection node",
+      };
+    }
+  }
+  if (owner.packageName !== members[0]!.packageName) {
+    return {
+      failure: `source-only projection attributes ${members[0]!.relPath} to ${
+        JSON.stringify(owner.packageName)
+      }, not ${JSON.stringify(members[0]!.packageName)}`,
+    };
+  }
+  let validated: Map<string, string>;
+  try {
+    validated = validateSourceOnlyNode(loaded, owner);
+  } catch (error) {
+    return {
+      failure: `source-only package member is invalid: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const pinnedPaths: string[] = [];
+  for (let index = 0; index < members.length; index++) {
+    const resolved = validated.get(members[index]!.relPath);
+    if (resolved === undefined) {
+      return {
+        failure: `source-only package closure omitted ${members[index]!.relPath}`,
+      };
+    }
+    // The tier offered `selected[index]`; the projection validated its own
+    // mirror path. They must be the same file, or the closure that was
+    // checked is not the closure the caller would read.
+    if (realpathSync(resolved) !== realpathSync(selected[index]!)) {
+      return {
+        failure: `source-only projection validated a different file for ${members[index]!.relPath}`,
+      };
+    }
+    pinnedPaths.push(resolved);
+  }
+  return { paths: pinnedPaths };
+}
+
 function pinPackageClosureIdentity(
   tier: BinaryCandidateTier,
   selected: readonly string[],
@@ -3146,6 +3251,9 @@ function pinPackageClosureIdentity(
         return {
           failure: "a mutable source-checkout wasm tree is not an installed package identity",
         };
+      }
+      if (tier.identity === "source-only-generation") {
+        return pinSourceOnlyGenerationClosure(tier, selected, members);
       }
       const packageName = members[0]!.packageName;
       const projectionIdentity = members[0]!.projectionIdentity;
