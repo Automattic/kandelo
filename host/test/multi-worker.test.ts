@@ -480,6 +480,49 @@ describe("CentralizedKernelWorker Process Management", () => {
     });
   });
 
+  it("rejects a vfork whose capture opened more than a page of scratch with EAGAIN", async () => {
+    // THE SCRATCH BRANCH of the gate above, which the prefix case never
+    // reaches. It was UNREACHABLE until the fork-module's scratch stack became
+    // a chain: the old 64 KiB static cell trapped the parent on the first
+    // frame that did not fit, so no capture could ever report more than a
+    // page here. Now a capture that opens more than a page seals and reports
+    // its true high-water (`fork-scratch-chain.test.ts` pins that half), and
+    // the kernel refuses the vfork with EAGAIN before allocating a child --
+    // accepted as the truthful failure over a trapped parent. Node/browser
+    // only: `crates/host-native` has neither a producer nor a consumer of
+    // this number (its `handle_fork` reads only the mode word).
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channelOffset = WASM_PAGE_SIZE;
+    publishMainForkContinuation(memory, channelOffset);
+    const kernelForkProcess = vi.fn(() => 106);
+    const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onFork },
+      kernelExports: { kernel_fork_process: kernelForkProcess },
+    });
+    registerLifecycleProcess(harness, parentPid, memory, channelOffset);
+
+    writePendingSyscall(
+      memory,
+      channelOffset,
+      HOST_INTERCEPTED_SYSCALLS.SYS_VFORK,
+      [128, WASM_PAGE_SIZE + 1],
+    );
+    await waitForMailboxCompletion(memory, channelOffset);
+
+    expect(kernelForkProcess).not.toHaveBeenCalled();
+    expect(onFork).not.toHaveBeenCalled();
+    expect(readMailboxResult(memory, channelOffset)).toEqual({
+      value: -1,
+      errno: 11,
+    });
+  });
+
   it("carries the exact pthread continuation anchor into the fork launch", async () => {
     const parentPid = 77;
     const childPid = 102;

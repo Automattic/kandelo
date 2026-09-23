@@ -6,6 +6,7 @@ import {
   ARENA_DIRECTORY_CHUNK_COUNT_FIELD,
   ARENA_DIRECTORY_ENTRY_COUNT_FIELD,
   ARENA_RECORD_CHUNK_COUNT_FIELD,
+  arenaChunkBytesFromSource,
   arenaFixture,
   assertDirectoryWithinWalkBound,
 } from "./fork-module-capture-fixture";
@@ -58,21 +59,27 @@ const ACTIVATION_B = 12;
 /**
  * How many bytes to seed, DERIVED from the module's own constants.
  *
- *     ARENA_CHUNK_BYTES  = 65_536
+ *     ARENA_CHUNK_BYTES  = 65_536 in the default build (read from the source
+ *                          the artifact was built from, so the forced-chunk
+ *                          build's 4_096 reaches this file too)
  *     ARENA_CHUNK_HEADER = 32     // ONE header size for every chain (Task 1)
  *     RECORD_HEADER      = 16
  *
- * so one chunk holds 65,536 - 32 = 65,504 bytes of records, and a record
- * costs 16 bytes of header. Two activations at 40,000 payload bytes each
- * therefore need 2 chunks: 40,016 fits in the first, the second does not
- * (80,032 > 65,504).
+ * so a default chunk holds 65,536 - 32 = 65,504 bytes of records, and a
+ * record costs 16 bytes of header. Two activations at 40,000 payload bytes
+ * each therefore need 2 chunks: 40,016 fits in the first, the second does not
+ * (80,032 > 65,504). In the FORCED build a 40,016-byte record is larger than
+ * a 4,064-byte body, so each takes an oversized chunk sized to itself -- two
+ * chunks by a different route, and MORE THAN ONE either way, which is the
+ * claim the forced build exists to make good on.
  *
  * CAPACITY IS THE CHUNK'S RECORDED `capacity` AT +24, NOT ITS `size`. The
  * two differ whenever `channel_mmap`'s page round-up exceeds the constant,
  * which is every chunk in the forced-chunk build. Deriving this number from
  * `size` here would make the test agree with a bug.
  */
-const CHUNK_BODY = 65_536 - 32;
+const ARENA_CHUNK_BYTES = arenaChunkBytesFromSource();
+const CHUNK_BODY = ARENA_CHUNK_BYTES - 32;
 const RECORD_HEADER = 16;
 const PAYLOAD = 40_000;
 const EXPECTED_CHUNKS = 2;
@@ -130,8 +137,12 @@ describe("arena chunk release", () => {
   it("derives the two-records-need-two-chunks arithmetic from the module's constants", () => {
     // Pinned as its own assertion so a change to a constant fails HERE, with
     // the arithmetic in the message, rather than as a chunk count one test
-    // down that could be read as an allocator bug.
-    expect(recordTotal(PAYLOAD), "one record fits a chunk").toBeLessThanOrEqual(CHUNK_BODY);
+    // down that could be read as an allocator bug. In the forced build one
+    // record does NOT fit a default body and is oversized instead; the second
+    // assertion holds in both builds and is the one the chunk count rests on.
+    if (ARENA_CHUNK_BYTES === 65_536) {
+      expect(recordTotal(PAYLOAD), "one record fits a chunk").toBeLessThanOrEqual(CHUNK_BODY);
+    }
     expect(
       EXPECTED_CHUNKS * recordTotal(PAYLOAD),
       "two records do not fit one chunk",
@@ -148,6 +159,9 @@ describe("arena chunk release", () => {
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(0);
+    // The heap's retained chunk is mapped BEFORE the baseline, so the tallies
+    // below count the arena and only the arena (see `warmHeap`).
+    x.warmHeap();
     const mmapsBefore = x.mmaps();
     const munmapsBefore = x.munmaps();
 
@@ -157,6 +171,13 @@ describe("arena chunk release", () => {
     x.seedActivationImports(SPACE_GLOBAL, ACTIVATION_B, section);
     expect(x.errno(), `seeding activation ${ACTIVATION_B}`).toBe(0);
 
+    // In the default build one chunk holds 65,504 bytes, so the two
+    // 40,000-byte KFIG sections take 2 chunks; in the forced build a chunk
+    // holds 4,064, so each section is its own oversized chunk. Either way
+    // MORE THAN ONE CHUNK EXISTS -- the claim the forced build is here to
+    // make good on, asserted by the module's own count rather than by a flag.
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "the record arena chained")
+      .toBeGreaterThan(1);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(EXPECTED_CHUNKS);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(1);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(2);
@@ -281,6 +302,7 @@ describe("GC-codec and exception-tag records", () => {
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(0);
+    x.warmHeap(); // the codec decode allocates on the bump; see `warmHeap`
     const mmapsBefore = x.mmaps();
     const munmapsBefore = x.munmaps();
 
@@ -318,52 +340,62 @@ describe("GC-codec and exception-tag records", () => {
     expect(x.munmaps() - munmapsBefore, "one munmap per chunk released").toBe(2);
   });
 
-  it("the COW-child scrub keeps the GC codec and drops everything else", () => {
-    // THE INHERITED-CODEC CASE. `arena_release_all` keeps `REC_KIND_GC_CODEC`
-    // because the native host was written to inherit the parent's codec on a
-    // COW child rather than re-seed it; a scrub that dropped the record broke
-    // `fm_build_gc_plan` with errno 22 for every GC / static-root fork on that
-    // host. No entry reads a codec back directly, so the record's survival
-    // is observed two ways: the chunk that holds it is NOT unmapped, and a
-    // CONFLICTING re-seed after the scrub is still refused with 22 -- which it
-    // can only be if the stored bytes are still there to differ from. A
-    // dropped record would accept the empty section as a first seed.
+  it("the COW-child scrub drops the GC codec with everything else, and the child's re-seed is a first seed", () => {
+    // THE RETIRED INHERITED-CODEC CASE. `arena_release_all` once KEPT
+    // `REC_KIND_GC_CODEC` on the premise that the native host inherited the
+    // parent's codec on a COW child rather than re-seeding it. That premise
+    // was false on both hosts (native re-seeds activation 0 after
+    // `fm_set_format` on both launch paths; Node re-seeds every replayed
+    // activation before anything reads a codec), and keeping the record cost
+    // every child up to two inherited 64 KiB mappings. So the scrub is a
+    // blind sweep: every chunk goes back, and the child's seed of the SAME
+    // codec is accepted as a first seed. No entry reads a codec back
+    // directly, so "the codec is gone" is observed the way its survival used
+    // to be: a re-seed of a DIFFERENT (empty) section is ACCEPTED where,
+    // before the scrub, it was refused with 22 against the stored bytes.
     const x = arenaFixture("arena codec cow scrub");
+    x.warmHeap(); // the codec decode allocates on the bump; see `warmHeap`
     x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
     expect(x.errno(), "seeding the GC codec").toBe(0);
     x.seedActivationExceptionCodec(ACTIVATION_A, EXCEPTION_CODEC);
     expect(x.errno(), "seeding A's exception codec").toBe(0);
     x.seedActivationExceptionCodec(ACTIVATION_TAGS_ONLY, EXCEPTION_CODEC);
     expect(x.errno(), "seeding a tags-only activation").toBe(0);
+    x.seedActivationGcCodec(ACTIVATION_A, new Uint8Array(0));
+    expect(x.errno(), "before the scrub a conflicting re-seed is refused").toBe(22);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "two activations").toBe(2);
-    const mmapsBefore = x.mmaps();
+    const held =
+      x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD) + x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD);
+    expect(held, "one record chunk and one directory chunk").toBe(2);
     const munmapsBefore = x.munmaps();
 
     x.setFormat(); // the COW-child scrub
 
-    // The tags-only activation is gone with its only record; A survives on
-    // its codec alone. Both chunks still hold something, so nothing is
-    // returned.
-    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "only the codec's owner").toBe(1);
-    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "the codec's chunk stays").toBe(1);
-    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "the directory stays").toBe(1);
-    expect(x.munmaps() - munmapsBefore, "the scrub unmapped nothing").toBe(0);
+    // Everything is gone, and the mappings went back with it. BOTH HALVES:
+    // the counts walk the chains, so an unlinked-but-mapped chunk reads as
+    // zero there and only the tally sees it.
+    expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "no activation survives").toBe(0);
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "no record chunk survives").toBe(0);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "no directory chunk survives").toBe(0);
+    expect(x.munmaps() - munmapsBefore, "one unmap per chunk the parent held").toBe(held);
 
-    // The codec is still THERE: the Node/browser host's identical re-seed is
-    // a no-op, and a conflicting one is refused against the stored bytes.
+    // The child re-seeds, as both hosts do. Its identical seed is a FIRST
+    // seed now (it maps afresh), and a subsequent conflicting one is refused
+    // against the bytes the child itself stored -- proof that the child's
+    // seed, not an inherited record, is what the module holds.
+    const mmapsBefore = x.mmaps();
     x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
-    expect(x.errno(), "the child's identical re-seed").toBe(0);
+    expect(x.errno(), "the child's re-seed is accepted as a first seed").toBe(0);
+    expect(x.mmaps() - mmapsBefore, "and it maps afresh: nothing was inherited").toBeGreaterThan(0);
     x.seedActivationGcCodec(ACTIVATION_A, new Uint8Array(0));
-    expect(x.errno(), "a conflicting re-seed is refused: the codec survived").toBe(22);
+    expect(x.errno(), "a conflicting re-seed is refused against the child's own seed").toBe(22);
     // The control: the same empty section is a legitimate FIRST seed for an
     // activation that has none, so the 22 above is a comparison, not a rule.
     x.seedActivationGcCodec(ACTIVATION_FRESH, new Uint8Array(0));
     expect(x.errno(), "an empty first seed is accepted").toBe(0);
-    // And the exception tags did NOT survive: the child re-seeds them, and its
-    // seed is a first seed again -- a DIFFERENT set is accepted where before
-    // the scrub it was refused.
+    // The exception tags were dropped the same way: a DIFFERENT set is a
+    // first seed where before the scrub it was refused.
     x.seedActivationExceptionCodec(ACTIVATION_A, new Uint8Array(0));
     expect(x.errno(), "A's tags were dropped, so an empty seed is a first seed").toBe(0);
-    expect(x.mmaps() - mmapsBefore, "all of that fit the surviving chunk").toBe(0);
   });
 });

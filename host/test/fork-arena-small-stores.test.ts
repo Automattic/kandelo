@@ -127,8 +127,16 @@ describe("the five small per-activation stores", () => {
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
     // Both halves: the counts walk the chain and cannot see a chunk that was
-    // unlinked but never unmapped, so the tally is held beside them.
-    expect(x.mmaps(), "everything mapped was unmapped").toBe(x.munmaps());
+    // unlinked but never unmapped, so the tally is held beside them. ONE
+    // mapping is retained by design and is not the arena's: the bump heap's
+    // chunk, mapped by the first seed (the catalog is copied onto the bump)
+    // and kept by a durable instance so the next fork does not pay to map it
+    // again (`fork-bump-heap.test.ts`). Three hundred cycles of small
+    // allocations with no reset between them stay inside that one chunk.
+    expect(
+      x.mmaps() - x.munmaps(),
+      "everything mapped was unmapped, except the heap's one retained chunk",
+    ).toBe(1);
   });
 
   it("returns a chunk an extend empties while a sibling's chunk stays live", () => {

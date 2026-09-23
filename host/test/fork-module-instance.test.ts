@@ -104,6 +104,15 @@ describe("instantiateForkModule", () => {
     // so it could not have registered here either. It passes its channel offset
     // now, like the Node and browser hosts always have.
     const x = arenaFixture("resume catalog size");
+    // THE RESPONDER NEVER REUSES AN ADDRESS and never grows the memory: it
+    // bump-allocates upward from its floor in the fixture's 16 MiB. The three
+    // seeds below map three assignment records (160 KiB, 512 KiB, 512 KiB,
+    // each page-rounded) plus the arena's chunks -- and, since the bump heap
+    // lost its static floor, its 1 MiB chunks come through the same window.
+    // Without more room the publish's own bound (`end > mem_len_bytes()`)
+    // answers a truthful ENOMEM for a rig limit, so the memory is grown here.
+    // A property of the test rig, not of the module: a kernel reuses pages.
+    x.memory.grow(128); // 8 MiB
     const OLD_CAP = 65_536;
     // A catalog exceeding the OLDEST cap registers cleanly.
     x.seedActivationCatalog(0, Array.from({ length: 20_000 }, (_, i) => i));

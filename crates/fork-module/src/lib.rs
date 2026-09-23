@@ -2210,92 +2210,42 @@ mod wasm {
         arena_sweep_record_chunks(base);
     }
 
-    /// Drop every record BUT THE GC CODECS, and unmap every chunk that empties.
-    /// Called from the COW-child scrub in `set_format_impl`, after
-    /// `CHANNEL_BASE` is stored.
+    /// Drop EVERY record and unmap EVERY chunk of both chains. Called from the
+    /// COW-child scrub in `set_format_impl`, after `CHANNEL_BASE` is stored.
     ///
-    /// # Why one kind survives the scrub
+    /// # No kind survives the scrub
     ///
-    /// `REC_KIND_GC_CODEC` is deliberately kept. The Node/browser host
-    /// re-seeds every activation's GC codec on a COW child (`worker-main.ts`'s
-    /// per-activation `setActivationGcCodec`), but the native host was written
-    /// to rely on INHERITING the parent's already-seeded codec through the
-    /// memory clone instead, and a blanket reset of the codec store on
-    /// `fm_set_format` once destroyed that inherited codec and broke
-    /// `fm_build_gc_plan` with `errno 22` for every GC / static-root fork on
-    /// that host. When the codec was static BSS the scrub simply left its
-    /// counters alone; now that it is a record, leaving it alone means walking
-    /// the directory rather than unmapping every chunk blind. The kept record
-    /// is then what `set_activation_gc_codec_impl`'s identical-re-seed no-op
-    /// answers from, so a re-seeding host and an inheriting host converge on
-    /// the same codec, exactly as before.
+    /// `REC_KIND_GC_CODEC` used to be kept here, on the recorded premise that
+    /// the native host relied on INHERITING the parent's codec through the
+    /// memory clone. That premise was false on both hosts by the time it was
+    /// written down: `crates/host-native/src/guest.rs` re-seeds activation 0's
+    /// codec after `fm_set_format` on both of its launch paths and seeds no
+    /// other activation, and the Node/browser host re-seeds every replayed
+    /// activation (`worker-main.ts`'s per-activation `setActivationGcCodec`)
+    /// before the first reader of a stored codec (`decoded_gc_codecs`, via
+    /// `fm_attach_child` / `fm_build_gc_plan`) can run. Nothing reads a codec
+    /// between the scrub and the re-seed, so a kept record served no one --
+    /// and cost every forked child up to two inherited 64 KiB mappings whose
+    /// live content was a few hundred bytes, carried down every lineage.
     ///
-    /// `crates/host-native/src/guest.rs` now re-seeds the codec after
-    /// `fm_set_format` on both of its launch paths, which would make this
-    /// exclusion unnecessary -- but retiring it is a native-host behaviour
-    /// change on a path the storage conversion does not otherwise touch, and
-    /// it is reported as a follow-up rather than bundled here.
-    ///
-    /// A kept chunk is a mapping the child inherited and keeps, which is what
-    /// the static floor (inside the same shared linear memory) amounted to.
+    /// So the scrub is a blind sweep again: every directory chunk and every
+    /// record chunk is unlinked and returned, in the order the chains hold
+    /// them. A child's first seed of any kind is a FIRST seed. The identical
+    /// re-seed no-op in `set_activation_gc_codec_impl` stays, because two
+    /// seeders can still meet in ONE worker (the instantiation-time seed and
+    /// a fork child's earlier plan request), not because a child inherits.
     fn arena_release_all() {
         let base = channel_base().unwrap_or(0);
-        // The memo first: the copy-down below can move the entry it names.
         arena_forget_memo();
-        let mut previous = 0u64;
-        let mut chunk = DIRECTORY_HEAD.load(Ordering::Relaxed);
-        while chunk != 0 {
-            let next = arena_u64(chunk);
-            let live = arena_u32(chunk + 20);
-            let mut kept = 0u32;
-            for index in 0..live {
-                let from = chunk + ARENA_CHUNK_HEADER + u64::from(index) * DIRECTORY_ENTRY_BYTES;
-                // Relink this activation's chain to the kept records only,
-                // returning every other record's bytes to its chunk.
-                let mut survivors_head = 0u64;
-                let mut survivors_tail = 0u64;
-                let mut record = arena_u64(from + 8);
-                while record != 0 {
-                    let following = arena_u64(record);
-                    if arena_u32(record + 8) == REC_KIND_GC_CODEC {
-                        arena_set_u64(record, 0);
-                        if survivors_tail == 0 {
-                            survivors_head = record;
-                        } else {
-                            arena_set_u64(survivors_tail, record);
-                        }
-                        survivors_tail = record;
-                    } else {
-                        let total =
-                            arena_record_total(u64::from(arena_u32(record + 12))) as u32;
-                        let owner = arena_chunk_of(record);
-                        if owner != 0 {
-                            let owner_live = arena_u32(owner + 20);
-                            arena_set_u32(owner + 20, owner_live.saturating_sub(total));
-                        }
-                    }
-                    record = following;
-                }
-                if survivors_head == 0 {
-                    continue; // nothing kept: the entry is compacted out
-                }
-                arena_set_u64(from + 8, survivors_head);
-                if kept != index {
-                    let to = chunk + ARENA_CHUNK_HEADER + u64::from(kept) * DIRECTORY_ENTRY_BYTES;
-                    arena_set_u64(to, arena_u64(from));
-                    arena_set_u64(to + 8, arena_u64(from + 8));
-                }
-                kept += 1;
+        for head in [&DIRECTORY_HEAD, &RECORD_HEAD] {
+            let mut chunk = head.load(Ordering::Relaxed);
+            while chunk != 0 {
+                // The header is in the chunk: read `next` BEFORE the unmap.
+                let next = arena_u64(chunk);
+                arena_unlink_chunk(head, 0, chunk, base);
+                chunk = next;
             }
-            arena_set_u32(chunk + 20, kept);
-            if kept == 0 {
-                arena_unlink_chunk(&DIRECTORY_HEAD, previous, chunk, base);
-            } else {
-                previous = chunk;
-            }
-            chunk = next;
         }
-        arena_sweep_record_chunks(base);
     }
 
     /// How many chunks the record chain holds. Zero means nothing is mapped.
@@ -2818,9 +2768,12 @@ mod wasm {
         });
         if let Some((at, _)) = arena_find(activation_id, REC_KIND_TEMPLATE_ID) {
             // Idempotent on an identical re-seed, for the reason recorded in
-            // `set_activation_imports_impl`: a host is free to RE-SEED a COW
-            // child or to let it inherit, and it re-seeds with the SAME
-            // template id, because the id is a hash of the same module's
+            // `set_activation_imports_impl`: a host MUST re-seed a COW child
+            // (the scrub in `set_format_impl` drops this record with every
+            // other kind, so a child that "let it inherit" would reach
+            // `fm_parent_seal_capture` with no template and be refused), and
+            // the host that seeds before it knows whether it is a child seeds
+            // the SAME id twice, because the id is a hash of the same module's
             // bytes. A DIFFERENT id under one activation is two modules
             // claiming one coordinate, which is what this refuses.
             let m = unsafe { mem_mut() };
@@ -3038,8 +2991,9 @@ mod wasm {
     // record has the activation's lifetime instead. The floor's two caps
     // (`E2BIG` for a 65th activation or a full floor) went with it.
     //
-    // THE COW-CHILD SCRUB KEEPS THIS KIND, and only this kind. See
-    // `arena_release_all` for the inherited-codec reason.
+    // THE COW-CHILD SCRUB DROPS THIS KIND like every other: both hosts re-seed
+    // the codec after `fm_set_format`, so a child's seed is a first seed. See
+    // `arena_release_all` for why the exclusion it once had was retired.
 
     // The `hostExceptionOwner` the host computed (the smallest activation that
     // declared an exception descriptor), used to remap a host-exception exnref's
@@ -4535,11 +4489,10 @@ mod wasm {
         //     reset on this line; the counters went with the arrays. (Two of
         //     them -- the template ids and the provenance -- were never reset
         //     at all, which is why a `dlopen`/`dlclose` loop exhausted them.)
-        //     One kind survives the release: the GC codec, for the native-host
-        //     reason `arena_release_all` records, with
-        //     `set_activation_gc_codec_impl`'s identical-re-seed no-op as the
-        //     path a re-seeding host lands on. The child re-seeds everything
-        //     else after this call, and both hosts do.
+        //     NO kind survives the release: the child re-seeds everything
+        //     after this call, and both hosts do -- including the GC codec,
+        //     which once had an exclusion here on a premise `arena_release_all`
+        //     records as false.
         //   * THE RECORDS ARE MAPPINGS the child inherited through the memory
         //     clone, not BSS it can store over, which is why the release sits
         //     AFTER the `CHANNEL_BASE` store below rather than here -- it
@@ -5131,8 +5084,16 @@ mod wasm {
     static BORROWED_PREFIX_BYTES: AtomicUsize = AtomicUsize::new(0);
     static BORROWED_PREFIX_CURSOR: AtomicUsize = AtomicUsize::new(0);
 
+    /// A frame is at least ONE 16-byte unit. A zero-length reserve on an empty
+    /// chain would otherwise map a chunk with no frame in it, breaking the
+    /// "current chunk is never empty" invariant the release trap relies on: a
+    /// nested reserve/release would then pop that chunk and the outer release
+    /// would trap at `cur == 0`. Every emission site floors its length at 1
+    /// already, so this is unreachable from generated code; the floor here
+    /// makes the module hold its own invariant rather than borrow the guest's.
+    /// Reserve and release both go through this, so they agree on the frame.
     fn scratch_align(len: usize) -> usize {
-        (len.wrapping_add(15)) & !15
+        (len.max(1).wrapping_add(15)) & !15
     }
 
     /// Clear a resident bump-backed static WITHOUT running its `Drop`.
@@ -5205,11 +5166,14 @@ mod wasm {
         // Bump-backed like the two above. Reading a plan built before the reset
         // would read bytes the next allocation has overwritten.
         abandon_resident(import_plan());
-        // The captured externref set is bump-backed too. Abandoned HERE, at the
-        // one site every reset point reaches, rather than only where a capture
-        // begins: `fm_capture_begin` resets the bump before `begin_capture_impl`
-        // runs, and a push arriving between the two through a buffer that
-        // survived this reset would write into memory the builder now owns.
+        // The captured externref set is bump-backed too, and it is abandoned
+        // here for the same class invariant every resident above obeys: NO
+        // bump-backed value survives any reset point. (An earlier comment here
+        // named a push arriving between `fm_capture_begin`'s reset and
+        // `begin_capture_impl`; on both hosts those two calls are adjacent
+        // with no guest execution between them, and the interns arrive during
+        // the unwind drive at the END of `begin_capture_impl`, so that window
+        // cannot open. The call stays for the invariant, not for the window.)
         reset_captured_externrefs();
         ALLOC.reset();
     }

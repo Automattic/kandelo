@@ -842,6 +842,22 @@ export interface ArenaFixture {
   publishedPairs: (activation: number) => Array<[number, number]>;
   /** Re-run `fm_set_format`, which is the COW-child scrub. */
   setFormat: () => void;
+  /**
+   * Map the bump heap's first chunk and leave the arena exactly as it was.
+   *
+   * The bump heap has no static floor: the FIRST allocating call in an
+   * instance maps a 1 MiB chunk through the channel, and a durable instance
+   * retains it. Every seed path allocates on the bump (a catalog is copied,
+   * a section is decoded), so a test that takes an `mmaps()` baseline and
+   * then seeds sees ONE more mapping than the arena chunks it is counting.
+   * This seeds a one-ordinal catalog on a spare activation and releases it
+   * through the `dlclose` entry, so the heap chunk is mapped and retained
+   * while the record and directory chunks that seed took are returned; a
+   * baseline taken AFTER this counts the arena and only the arena. The
+   * alternative -- loosening "one mmap per chunk" to "at least" -- would
+   * blind the tally to exactly the unlinked-but-mapped chunk it exists to see.
+   */
+  warmHeap: () => void;
   /** `fm_set_activation_resume_catalog` with the ordinals staged first. */
   seedActivationCatalog: (activation: number, ordinals: readonly number[]) => void;
   /**
@@ -935,6 +951,30 @@ export interface ArenaFixture {
    * reach without a drive table. It reaches `reset_bump_heap` unconditionally.
    */
   driveBumpReset: () => void;
+}
+
+/**
+ * `ARENA_CHUNK_BYTES` as the module was BUILT with, read from the source the
+ * build used rather than told to the test which build it is in.
+ *
+ * The forced-chunk build (`ARENA_CHUNK_BYTES = 4_096`, the storage plan's
+ * decision 2) exists to make every chain cross a chunk boundary in tests that
+ * never cross one at the default 65,536. A test that wants to assert the
+ * crossing in the forced build and name its reason for standing down in the
+ * default one derives its expectation from this number; the host never sees
+ * the constant, so the source is the only place it can be read. The
+ * `--verify-fresh` stamp is what ties the staged artifact to this source.
+ */
+export function arenaChunkBytesFromSource(): number {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "..", "crates", "fork-module", "src", "lib.rs"),
+    "utf8",
+  );
+  const match = /const ARENA_CHUNK_BYTES: u64 = ([0-9_]+);/.exec(source);
+  if (!match) {
+    throw new Error("crates/fork-module/src/lib.rs no longer names ARENA_CHUNK_BYTES");
+  }
+  return Number(match[1].replace(/_/g, ""));
 }
 
 /** `fm_arena_selftest` ops. */
@@ -1123,6 +1163,16 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       if (table.length <= slots) table.grow(slots + 1 - table.length);
     },
     errno,
+    warmHeap: () => {
+      // Activation 0xfffe is claimed by no test; the table must cover the one
+      // slot the release nulls (strict `table.set`, see `growResumeTable`).
+      const WARM_ACTIVATION = 0xfffe;
+      f.growResumeTable(2);
+      f.seedActivationCatalog(WARM_ACTIVATION, [1]);
+      if (errno() !== 0) throw new Error(`warmHeap: seeding failed with errno ${errno()}`);
+      f.slots(1, WARM_ACTIVATION, 0);
+      if (errno() !== 0) throw new Error(`warmHeap: release failed with errno ${errno()}`);
+    },
     selftest: x.fm_arena_selftest as ArenaFixture["selftest"],
     scratchReserve: (len) =>
       (x.__wpk_fork_ref_scratch_reserve as (n: number) => number)(len),

@@ -26,8 +26,21 @@ import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
+import { startChannelResponder } from "./fork-module-capture-fixture";
 
 const EOPNOTSUPP = 95;
+/** The channel base `fm_set_format` is handed: page 4, below the module. */
+const CHANNEL_BASE = 4 * 65536;
+/**
+ * Where the responder hands out mappings from: above the module region at
+ * 8 MiB (about 1.4 MiB) in a 16 MiB memory. WHY THERE IS A RESPONDER AT ALL:
+ * interning a reference pushes onto a bump-backed set, and the bump heap has
+ * no static floor any more -- its first allocation maps a chunk through this
+ * channel, and `channel_syscall` parks in `memory_atomic_wait32` with no
+ * deadline when nobody answers. This file hung the whole fork sweep that way
+ * once. A harness that makes an ALLOCATING module call must have a responder.
+ */
+const MMAP_FLOOR = 12 * 1024 * 1024;
 /** The staging slot `fork-instrument`'s codec encodes from. */
 const CAPTURE_TRANSIT_SLOT = 0;
 
@@ -68,7 +81,8 @@ function staged(
     },
   });
   const x = fm.exports as unknown as CaptureExports;
-  x.fm_set_format(4, 0, 0, 0, 4 * 65536);
+  startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
+  x.fm_set_format(4, 0, 0, 0, CHANNEL_BASE);
   expect(x.fm_last_errno(), "the format seeds").toBe(0);
   // A capture must be OPEN for a recipe to be interned into anything.
   x.fm_capture_begin();

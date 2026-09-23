@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { WASM_PAGE_SIZE } from "../src/constants";
 import {
+  CHANNEL_BASE,
   SCRATCH_CHUNK_COUNT_FIELD,
+  arenaChunkBytesFromSource,
   arenaFixture,
+  fixture,
+  seedTemplateId,
 } from "./fork-module-capture-fixture";
 
 /**
@@ -142,5 +147,94 @@ describe("guest-facing scratch chain", () => {
 
     expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "the child inherits no chunks").toBe(0);
     expect(x.munmaps() - before, "one unmap per inherited chunk").toBe(chunksHeld);
+  });
+
+  // THE FORCED-CHUNK BUILD'S CROSSING. Two 3,000-byte frames share one
+  // 65,504-byte body in the default build and cannot share a 4,064-byte one,
+  // so this crossing is unreachable at the default `ARENA_CHUNK_BYTES` and
+  // routine at the forced 4,096. The test reads the constant from the source
+  // the artifact was built from rather than being told which build it is in,
+  // and stands down BY NAME in the default build instead of being quietly
+  // weakened: the 40,000-byte frames above chain in both builds, but by the
+  // oversized path, which is a different code path from a frame that fits a
+  // chunk and still lands at the base of a fresh one.
+  const SMALL_FRAME = 3_000;
+  const BUILT_CHUNK_BODY = arenaChunkBytesFromSource() - 32;
+  it.skipIf(BUILT_CHUNK_BODY >= 2 * SMALL_FRAME)(
+    "chains two frames that would share a default chunk (forced-chunk build only)",
+    () => {
+      const x = arenaFixture("scratch chain forced crossing");
+      const a = x.scratchReserve(SMALL_FRAME);
+      expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "one chunk").toBe(1);
+      const b = x.scratchReserve(SMALL_FRAME);
+      expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "the scratch chain chained").toBeGreaterThan(1);
+      expect(Math.abs(b - a), "frames do not overlap").toBeGreaterThanOrEqual(SMALL_FRAME);
+      const before = x.munmaps();
+      x.scratchRelease(b, SMALL_FRAME);
+      x.scratchRelease(a, SMALL_FRAME);
+      expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD)).toBe(0);
+      expect(x.munmaps() - before, "one unmap per emptied chunk").toBe(2);
+    },
+  );
+
+  it("floors a zero-length frame at one unit, so the chain never holds an empty chunk", () => {
+    // `scratch_align(0)` used to be 0: a zero-length reserve on an empty
+    // chain mapped a chunk with NO frame in it, a nested reserve/release then
+    // found `top == need` and popped that chunk, and the outer release
+    // trapped at `cur == 0`. Every emission site floors its length at 1, so
+    // no generated code reaches this; the module now holds its own invariant
+    // instead of borrowing the guest's. Reserve and release share the floor,
+    // so the release still names the top frame.
+    const x = arenaFixture("scratch chain zero-length");
+    const outer = x.scratchReserve(0);
+    expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "the frame occupies a chunk").toBe(1);
+    const inner = x.scratchReserve(64);
+    expect(inner - outer, "the zero-length frame is one 16-byte unit").toBe(16);
+    x.scratchRelease(inner, 64);
+    expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "the outer frame keeps the chunk").toBe(1);
+    expect(() => x.scratchRelease(outer, 0), "the outer release names its frame").not.toThrow();
+    expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "and returns the chunk").toBe(0);
+  });
+
+  it("seals a capture whose scratch exceeded a page and reports the true high-water", () => {
+    // THE NEWLY REACHABLE VFORK REFUSAL, module half. The old 64 KiB static
+    // cell TRAPPED the parent on the first frame that did not fit, so the
+    // kernel's vfork admission gate -- `scratchBytes > WASM_PAGE_SIZE` refuses
+    // with EAGAIN (`kernel-worker.ts`, `process-lifecycle.ts`) -- could never
+    // be reached with a number above a page. The chained stack seals instead
+    // and reports what the capture actually opened, and the kernel refuses
+    // THAT number truthfully; `host/test/multi-worker.test.ts` pins the
+    // kernel half. Accepted as the truthful failure: a refused vfork over a
+    // trapped parent.
+    //
+    // NODE/BROWSER ONLY. `crates/host-native` routes the scratch imports to
+    // a host-owned fixed page, never imports `fm_borrowed_replay_workspace`,
+    // and its `handle_fork` reads only the mode word, so there is neither a
+    // producer nor a consumer of this number there -- a pre-existing
+    // host-parity boundary in the capture-side scratch path, older than the
+    // chained stack, closed by routing native's scratch imports to the module
+    // rather than by inventing a native gate.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "the capture opens").toBe(0);
+    const reserve = f.x.__wpk_fork_ref_scratch_reserve as (n: number) => number;
+    const release = f.x.__wpk_fork_ref_scratch_release as (p: number, n: number) => void;
+    const a = reserve(FRAME);
+    const b = reserve(FRAME);
+    expect(2 * FRAME, "two frames open at once exceed a wasm page").toBeGreaterThan(WASM_PAGE_SIZE);
+    release(b, FRAME);
+    release(a, FRAME);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "the parent seals rather than trapping").toBe(0);
+    const reported = Number(
+      (f.x.fm_borrowed_replay_workspace as (field: number) => bigint)(1),
+    );
+    expect(f.errno(), "field 1 is the scratch high-water").toBe(0);
+    expect(reported, "the reported scratch is what the capture opened").toBe(2 * FRAME);
+    expect(reported, "and it is the number the kernel gate refuses").toBeGreaterThan(
+      WASM_PAGE_SIZE,
+    );
   });
 });
