@@ -85,11 +85,18 @@ they are the deliverable.
 5. The plan's 17-page endpoint is not reachable by storage work; the 1 MiB
    shadow stack now dominates 12:1. Task 13's record says so.
 6. Pre-existing, not this branch's: `fork-host-import-runtime` stays on
-   the expected-failures baseline because the wasm-artifact reader
-   (`wa_read_facts`) rejects `shared` reference types and canonicalizes
-   `(ref null extern)` to `externref`; two of its eight cases assert the
-   exact form. Fix belongs in `crates/wasm-artifact` or the test's
-   expectation, whichever contract the maintainer wants.
+   the expected-failures baseline for two TEST defects, not a reader gap.
+   Case "retains complete ... import types" encodes `0x63 0x65 0x00`, a
+   shared prefix on a CONCRETE type index; the shared-everything-threads
+   binary grammar only allows `0x65` before an abstract heap type
+   (`heaptype ::= 0x65 ht:absheaptype`), so wasmparser correctly rejects
+   the fixture. Case "parses exact artifact signatures" asserts the reader
+   returns `(ref null extern)` verbatim, but `facts.rs` documents that it
+   canonicalizes to `externref` because wasmparser does not preserve the
+   spelling. Fix both in the test; the reader is right. No shipping
+   runtime implements shared reference types today (V8 flag-only, no
+   Firefox/Safari signal, wasmtime "unimplemented"), so nothing Kandelo
+   runs can produce them.
 
 ## PENDING at writing (filled in when the batch lands)
 
