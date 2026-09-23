@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ARENA_DIRECTORY_CHUNK_COUNT_FIELD,
   ARENA_OP_ALLOC,
+  arenaChunkBytesFromSource,
   ARENA_RECORD_CHUNK_COUNT_FIELD,
   arenaFixture,
 } from "./fork-module-capture-fixture";
@@ -139,7 +140,17 @@ describe("the five small per-activation stores", () => {
     ).toBe(1);
   });
 
-  it("returns a chunk an extend empties while a sibling's chunk stays live", () => {
+  // THE DERIVATION ABOVE IS WRITTEN FOR THE DEFAULT CONSTANT. In the
+  // forced-chunk build (`ARENA_CHUNK_BYTES = 4_096`) the filler is an
+  // oversized chunk with no room beside it and every list size that fits a
+  // 4,064-byte body lands elsewhere, so the push numbers above do not
+  // describe that build. The test stands down BY NAME there rather than
+  // being weakened: the forced build's own crossing proofs are the record
+  // arena's "chained" assertion in `fork-arena-release.test.ts` and the
+  // small-frame crossing in `fork-scratch-chain.test.ts`.
+  it.skipIf(arenaChunkBytesFromSource() !== 65_536)(
+    "returns a chunk an extend empties while a sibling's chunk stays live (default-build derivation)",
+    () => {
     const x = arenaFixture("small stores: cross-chunk extend");
     // The sibling: one record that pins chunk 1 for the whole test. The
     // test-only selftest entry is the one way to allocate a record of a
@@ -199,7 +210,8 @@ describe("the five small per-activation stores", () => {
     expect(x.errno(), "releasing the filler").toBe(0);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD)).toBe(0);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD)).toBe(0);
-  });
+    },
+  );
 
   it("keeps each store's own refusal semantics, which differ on purpose", () => {
     const x = arenaFixture("small stores: refusals");

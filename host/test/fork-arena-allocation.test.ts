@@ -7,6 +7,7 @@ import {
   ARENA_OP_EXTEND,
   ARENA_OP_FIND,
   ARENA_RECORD_CHUNK_COUNT_FIELD,
+  arenaChunkBytesFromSource,
   arenaFixture,
 } from "./fork-module-capture-fixture";
 
@@ -241,10 +242,17 @@ describe("arena allocation", () => {
     x.selftest(ARENA_OP_ALLOC, ACTIVATION_B, KIND_GC_CODEC, 64);
     expect(x.errno()).toBe(0);
 
+    // B's 80-byte record (64 + a 16-byte header) shares A's second chunk in
+    // the default build, where an oversized chunk still has 25,488 bytes of
+    // room; in the forced-chunk build an oversized chunk is exactly its one
+    // record, so B takes a chunk of its own. Derived, not observed.
+    const roomBesideOversized =
+      Math.max(arenaChunkBytesFromSource(), 32 + OVERSIZED_PAYLOAD + 16) - 32 - (OVERSIZED_PAYLOAD + 16);
+    const expectedRecordChunks = roomBesideOversized >= 80 ? 2 : 3;
     const held =
       x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD) +
       x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD);
-    expect(held, "two record chunks and one directory chunk").toBe(3);
+    expect(held, "the record chunks and one directory chunk").toBe(expectedRecordChunks + 1);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "two activations").toBe(2);
     const before = x.munmaps();
 

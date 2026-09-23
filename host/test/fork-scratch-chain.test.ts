@@ -37,6 +37,8 @@ import {
 // frames of 40,000 cannot share one and the second takes a fresh chunk.
 const CHUNK_BODY = 65_536 - 32;
 const FRAME = 40_000;
+/** The constant the artifact was BUILT with (see `arenaChunkBytesFromSource`). */
+const BUILT_CHUNK_BYTES = arenaChunkBytesFromSource();
 
 describe("guest-facing scratch chain", () => {
   it("reserves and releases across a chunk boundary", () => {
@@ -73,8 +75,21 @@ describe("guest-facing scratch chain", () => {
     const b = x.scratchReserve(FRAME);
     x.scratchRelease(b, FRAME);
     const c = x.scratchReserve(1_024);
-    expect(c, "cut above A, not on it").toBe(a + FRAME);
-    expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "in A's chunk").toBe(1);
+    // Where C lands depends on the BUILT chunk size: A's chunk holds
+    // `max(ARENA_CHUNK_BYTES, header + FRAME) - header` bytes, which in the
+    // default build leaves 25,504 above A and in the forced-chunk build is
+    // exactly FRAME -- an oversized chunk sized to its one frame -- so C must
+    // take a fresh chunk there. Either way the frozen `top` decides, and
+    // either way C is never cut ON A.
+    const roomAboveA = Math.max(BUILT_CHUNK_BYTES, 32 + FRAME) - 32 - FRAME;
+    if (roomAboveA >= 1_024) {
+      expect(c, "cut above A, not on it").toBe(a + FRAME);
+      expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "in A's chunk").toBe(1);
+    } else {
+      expect(c, "a fresh chunk, since A's is exactly its frame").not.toBe(a + FRAME);
+      expect(Math.abs(c - a), "and it does not overlap A").toBeGreaterThanOrEqual(FRAME);
+      expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD), "two chunks").toBe(2);
+    }
     x.scratchRelease(c, 1_024);
     x.scratchRelease(a, FRAME);
     expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD)).toBe(0);
@@ -159,7 +174,7 @@ describe("guest-facing scratch chain", () => {
   // oversized path, which is a different code path from a frame that fits a
   // chunk and still lands at the base of a fresh one.
   const SMALL_FRAME = 3_000;
-  const BUILT_CHUNK_BODY = arenaChunkBytesFromSource() - 32;
+  const BUILT_CHUNK_BODY = BUILT_CHUNK_BYTES - 32;
   it.skipIf(BUILT_CHUNK_BODY >= 2 * SMALL_FRAME)(
     "chains two frames that would share a default chunk (forced-chunk build only)",
     () => {
