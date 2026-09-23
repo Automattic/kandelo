@@ -103,7 +103,6 @@ import {
   demoIdFromVfsImageUrl,
   matchTrustedVfsSourceId,
   normalizeVfsImageUrl,
-  profileIdFromVfsImageUrl,
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
 } from "../url-state";
@@ -483,15 +482,8 @@ interface LiveProfile {
    *  the thing the caller should fix. */
   requestedProfileSource:
     | "&profile="
-    | "the image URL fragment"
     | "the boot descriptor"
     | null;
-  /**
-   * Both profile channels as they arrived: `&profile=` and the `#fragment`
-   * on the `?vfs=` URL. Kept so a disagreement can be logged instead of
-   * resolved in silence.
-   */
-  profileChannels: { query: string | null; fragment: string | null };
   /** Resolved product id when the image is one this deployment ships. */
   productId: GalleryProductId | null;
   vfsUrl: string;
@@ -884,8 +876,7 @@ async function descriptorForBootQuery(
   const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl)
     ?? await defaultVfsImageUrl();
   const base = provisionalDescriptor(normalizedVfsUrl);
-  const fragmentProfile = profileIdFromVfsImageUrl(normalizedVfsUrl);
-  const selected = nonEmptyId(profileId) ?? fragmentProfile;
+  const selected = nonEmptyId(profileId);
   return descriptorWithVfsImageUrl(base, normalizedVfsUrl, {
     id: selected ?? demoIdFromVfsImageUrl(normalizedVfsUrl),
     title: titleFromVfsImageUrl(normalizedVfsUrl),
@@ -896,7 +887,10 @@ async function descriptorForBootQuery(
 /**
  * With no `?vfs=` at all, boot the first machine on the curated roster. The
  * app picks a ROSTER POSITION, not a machine: what that entry is comes from
- * its product's own image.
+ * its product's own image. The roster's first entry's declared profile
+ * (`shell`) matches the shell image's own `defaultProfile`, so no profile id
+ * needs to travel with this URL — the image's own declared default resolves
+ * it identically to `&profile=` naming it explicitly.
  */
 async function defaultVfsImageUrl(): Promise<string> {
   const entry = GALLERY_ROSTER.entries[0];
@@ -908,9 +902,7 @@ async function defaultVfsImageUrl(): Promise<string> {
       }`,
     );
   }
-  const url = new URL(await resolveVfsProductUrl(source), location.href);
-  url.hash = entry.profile;
-  return url.href;
+  return await resolveVfsProductUrl(source);
 }
 
 /**
@@ -955,7 +947,6 @@ function profileForDescriptor(
   queryProfileId: string | null,
 ): LiveProfile {
   const vfsUrl = vfsImageUrlFromDescriptor(desc) ?? "";
-  const fragmentProfileId = vfsUrl ? profileIdFromVfsImageUrl(vfsUrl) : null;
   // A descriptor applied in place carries its profile as its id. Ignore the
   // id when it is only the placeholder `descriptorForBootQuery` derived from
   // the image FILENAME — that is not a profile anybody asked for, and
@@ -964,18 +955,14 @@ function profileForDescriptor(
   const descriptorProfileId = vfsUrl && desc.id === demoIdFromVfsImageUrl(vfsUrl)
     ? null
     : nonEmptyId(desc.id);
-  const requestedProfileId = queryProfileId ?? fragmentProfileId
-    ?? descriptorProfileId;
+  const requestedProfileId = queryProfileId ?? descriptorProfileId;
   return {
     requestedProfileId,
     requestedProfileSource: queryProfileId !== null
       ? "&profile="
-      : fragmentProfileId !== null
-      ? "the image URL fragment"
       : descriptorProfileId !== null
       ? "the boot descriptor"
       : null,
-    profileChannels: { query: queryProfileId, fragment: fragmentProfileId },
     // Which product (if any) these bytes are is resolved asynchronously in
     // `bootProfile`, because matching a URL to a product may have to activate
     // a Pages product to learn its URL. Until then the host assumes the
@@ -1044,7 +1031,6 @@ function profileForCandidateEvidence(
   return {
     requestedProfileId: profileId,
     requestedProfileSource: null,
-    profileChannels: { query: null, fragment: null },
     productId,
     vfsUrl: evidence.vfs.url,
     vfsSource: undefined,
@@ -1058,23 +1044,13 @@ function profileForCandidateEvidence(
 
 /**
  * Which profile of the image to boot, per the spec's resolution order:
- * `&profile=`, else the `#fragment` on the image URL, else the image's own
- * `defaultProfile`. An id the image does not declare is a loud failure.
+ * `&profile=`, else the image's own `defaultProfile`. An id the image does
+ * not declare is a loud failure.
  */
 function resolveImageProfileId(
   config: KandeloDemoConfig,
   profile: LiveProfile,
-  tick: (msg: string) => void,
 ): string {
-  const { query, fragment } = profile.profileChannels;
-  if (query !== null && fragment !== null && query !== fragment) {
-    // Both channels are legitimate (see the spec's "Two profile channels,
-    // both kept"), so the override wins — but say so rather than dropping
-    // the loser in silence.
-    tick(
-      `&profile=${query} overrides the image URL fragment #${fragment}`,
-    );
-  }
   const declared = declaredProfileIds(config);
   const requested = profile.requestedProfileId;
   if (requested !== null) {
@@ -1506,7 +1482,7 @@ async function bootProfile(
   }
   const machine = imageMachine(
     imageConfig,
-    resolveImageProfileId(imageConfig, profile, tick),
+    resolveImageProfileId(imageConfig, profile),
   );
   const profileId = machine.profileId;
   const machineTitle = machine.identity?.title
@@ -2534,7 +2510,7 @@ function galleryItemForRosterEntry(entry: RosterEntry): GalleryItem | null {
   const bootCommand = (init === null ? null : initLaunchForMachine(init))?.argv
     ?? DEFAULT_LOGIN_SESSION_ARGV;
   const eagerUrl = source !== undefined && source.kind === "url"
-    ? vfsImageUrlWithProfile(source.url, entry.profile)
+    ? new URL(source.url, location.href).href
     : undefined;
   const item: GalleryItem = {
     id: entry.profile,
@@ -2557,10 +2533,7 @@ function galleryItemForRosterEntry(entry: RosterEntry): GalleryItem | null {
             ?? `product ${JSON.stringify(entry.product)} cannot be launched here`,
         );
       }
-      return vfsImageUrlWithProfile(
-        await resolveVfsProductUrl(source),
-        entry.profile,
-      );
+      return new URL(await resolveVfsProductUrl(source), location.href).href;
     };
   }
   return item;
@@ -2615,18 +2588,6 @@ function localProductBuildCommand(source: VfsProductSource): string | undefined 
   return source.kind === "optional-demo"
     ? "./run.sh fetch"
     : "./run.sh build programs";
-}
-
-/**
- * The image URL carries its profile in the FRAGMENT, so a single URL names a
- * machine. Fragments are a client-side view selector, never part of file
- * identity — `matchTrustedVfsSourceId` strips it, and it never reaches the
- * network or the Cache API key.
- */
-function vfsImageUrlWithProfile(rawUrl: string, profileId: string): string {
-  const url = new URL(rawUrl, location.href);
-  url.hash = profileId;
-  return url.href;
 }
 
 /** Resolve a product's image URL through whichever channel serves it here. */

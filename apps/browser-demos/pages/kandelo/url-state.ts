@@ -28,8 +28,9 @@ const VFS_IMAGE_QUERY_ALIASES = [
 
 export interface KandeloBootQuery {
   vfsImageUrl: string | null;
-  /** `&profile=` only. The image URL's own `#fragment` is the other channel,
-   *  read from `vfsImageUrl` where its precedence is decided. */
+  /** `&profile=` — the only channel that selects which machine inside the
+   *  image to boot. A `?vfs=` URL's own `#fragment` is not read as a profile
+   *  id; it plays no role in machine selection. */
   profileId: string | null;
 }
 
@@ -50,29 +51,6 @@ export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery
   };
 }
 
-/**
- * The profile an image URL names in its own fragment, e.g.
- * `https://cdn/shell.vfs.zst#doom`.
- *
- * A fragment is a client-side view selector on a resource, not part of its
- * identity, and "which profile of this image" is exactly that — which is why
- * URL identity here is already fragment-safe (see `matchTrustedVfsSourceId`).
- * Keeping this channel is what makes a third party's single image URL
- * self-describing, with no second parameter to paste alongside it.
- */
-export function profileIdFromVfsImageUrl(
-  vfsImageUrl: string,
-  baseHref = currentHref(),
-): string | null {
-  try {
-    return nonEmpty(
-      decodeURIComponent(new URL(vfsImageUrl, baseHref).hash.slice(1)),
-    );
-  } catch {
-    return null;
-  }
-}
-
 export function galleryItemUrl(
   item: GalleryItem,
   href = currentHref(),
@@ -89,10 +67,9 @@ export function galleryItemUrl(
   url.hash = "";
   if (item.vfsImageUrl) {
     // WHY: the exact image URL identifies the bytes and their resource limit,
-    // while the profile selects which machine inside them to boot. The image
-    // URL already carries that profile in its own fragment; `&profile=` is
-    // written too so the selection is visible in the address bar and survives
-    // a hand-edited link that drops the fragment.
+    // while `&profile=` selects which machine inside them to boot. This is
+    // the ONLY channel that carries the profile id — the image URL itself
+    // never gets a fragment appended.
     url.searchParams.set(VFS_IMAGE_QUERY_PARAM, item.vfsImageUrl);
     url.searchParams.set(PROFILE_QUERY_PARAM, item.id);
   }
@@ -174,8 +151,10 @@ export function normalizeVfsImageUrl(
 /**
  * Match a URL to one exact trusted VFS source.
  *
- * Fragments describe launch behavior, not file identity, so they are ignored
- * here. Unmatched, duplicated, ambiguous, and unresolvable sources fail closed.
+ * A fragment is never part of a resource's identity, so a stray one on a
+ * hand-written `?vfs=` URL (the app itself never writes one any more) is
+ * ignored here rather than defeating the match. Unmatched, duplicated,
+ * ambiguous, and unresolvable sources fail closed.
  */
 export async function matchTrustedVfsSourceId<SourceId extends string>(
   vfsImageUrl: string,

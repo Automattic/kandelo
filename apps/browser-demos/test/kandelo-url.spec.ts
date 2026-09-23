@@ -30,12 +30,14 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
 
   await expect
     .poll(() => new URL(page.url()).searchParams.get("vfs"))
-    .toContain("/shell.vfs.zst#node");
+    .toContain("/shell.vfs.zst");
   const url = new URL(page.url());
   // The machine is named by the profile the IMAGE declares, not by an app-side
-  // id: `&profile=` and the image URL's own fragment carry it, and the removed
-  // `?demo=` must not come back.
+  // id: `&profile=` carries it. The image URL itself never carries a
+  // fragment, and the removed `?demo=` must not come back.
   expect(url.searchParams.get("profile")).toBe("node");
+  expect(url.searchParams.get("vfs")).not.toContain("#");
+  expect(url.searchParams.get("vfs")).not.toContain("%23");
   expect(url.searchParams.get("demo")).toBeNull();
   // WHY: selecting a VFS updates the URL before the replacement machine has
   // finished its service-worker reload and VFS assembly. Assert the stable
@@ -55,7 +57,6 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
     const {
       descriptorWithVfsImageUrl,
       galleryItemUrl,
-      profileIdFromVfsImageUrl,
       readKandeloBootQuery,
       vfsImageUrlFromDescriptor,
     } = await import("/pages/kandelo/url-state.ts");
@@ -97,14 +98,14 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
     return {
       href,
       parsed: readKandeloBootQuery("?demo=site&vfs=https%3A%2F%2Fcdn.example.invalid%2Fsite.vfs.zst"),
-      profileChannels: {
-        queryOverridesFragment: readKandeloBootQuery(
+      // `&profile=` is the ONLY channel now: a fragment on the image URL is
+      // never read as a profile id, whether or not `&profile=` is also
+      // present.
+      singleChannel: {
+        queryWithFragmentPresent: readKandeloBootQuery(
           `?vfs=${fragmentImage}&profile=shell`,
         ),
-        fragmentOnly: readKandeloBootQuery(`?vfs=${fragmentImage}`),
-        fragmentProfile: profileIdFromVfsImageUrl(
-          "https://cdn.example.invalid/site.vfs.zst#doom",
-        ),
+        fragmentAloneIsNotAProfile: readKandeloBootQuery(`?vfs=${fragmentImage}`),
       },
       localRefUrl: vfsImageUrlFromDescriptor(descriptor),
       relativeRefUrl: vfsImageUrlFromDescriptor(withRelativeVfs),
@@ -118,18 +119,23 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   expect(url.searchParams.get("profile")).toBe("site");
   expect(url.searchParams.get("demo")).toBeNull();
   expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/site.vfs.zst");
+  // The app never stamps a fragment on an image URL it generates.
+  expect(url.searchParams.get("vfs")).not.toContain("#");
+  expect(url.searchParams.get("vfs")).not.toContain("%23");
   // A surviving `?demo=` in the wild is IGNORED, not rejected: the link still
   // resolves its image and boots that image's declared default profile.
   expect(result.parsed).toEqual({
     vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst",
     profileId: null,
   });
-  expect(result.profileChannels).toEqual({
-    // `&profile=` wins over the image URL's fragment, and the fragment alone
-    // is enough when no query parameter names a profile.
-    queryOverridesFragment: { vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst#doom", profileId: "shell" },
-    fragmentOnly: { vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst#doom", profileId: null },
-    fragmentProfile: "doom",
+  expect(result.singleChannel).toEqual({
+    // `&profile=` is read regardless of what fragment the image URL happens
+    // to carry.
+    queryWithFragmentPresent: { vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst#doom", profileId: "shell" },
+    // With no `&profile=`, the image URL's `#doom` fragment is NOT read as a
+    // profile id: this is the one boot machine loses if it only carries a
+    // fragment, by design.
+    fragmentAloneIsNotAProfile: { vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst#doom", profileId: null },
   });
   expect(result.localRefUrl).toBeNull();
   expect(result.relativeRefUrl).toBe(result.expectedRelativeRefUrl);

@@ -216,11 +216,14 @@ Seed it from `PRESET_LIBRARY`'s current order, including `sdl2` (which is delibe
 - Consumes: B1's roster, Plan 1's `resolveDemoIdentity` / `resolveDemoRuntime` / `resolveDemoInit` / `resolveDemoWeb` / `resolveDemoDisplay` / `resolveDefaultProfileId`, A4's `readDinitBootTargets`.
 - Produces: the boot path that Task B3 finishes gutting.
 
-Resolution order for which profile boots:
+Resolution order for which profile boots (superseded 2026-09-23: the
+fragment channel below was removed outright, both writing and reading it;
+`&profile=` is now the only channel — see the spec's "One profile channel:
+`&profile=`, not two (2026-09-23 revision)"):
 1. `&profile=<id>` if present — an id matching no profile in the image is a **loud error**, not a fallback (Review Focus 3).
-2. else the fragment on the `?vfs=` URL (`#<profile>`) — this channel stays; see the spec's "Two profile channels, both kept".
+2. ~~else the fragment on the `?vfs=` URL (`#<profile>`) — this channel stays; see the spec's "Two profile channels, both kept".~~
 3. else the image's `defaultProfile`.
-4. If both channels are present and disagree, log it rather than resolving silently.
+4. ~~If both channels are present and disagree, log it rather than resolving silently.~~
 
 **Review Focus 5 lives here:** an image with absent or malformed `demo.json` reached via `?vfs=` must fail loudly with the real reason. `customVfsProfile` is gone, so nothing synthesizes a fallback machine.
 

@@ -604,8 +604,8 @@ consent step already required by
 - the `?demo=` parameter, `SDL2_FB_W`/`SDL2_FB_H`, and the stale comment
   claiming they match `kms-registry.ts`
 
-The image-URL fragment channel is explicitly **not** deleted; see "Two
-profile channels, both kept".
+The image-URL fragment channel is deleted too, as a later revision; see
+"One profile channel: `&profile=`, not two (2026-09-23 revision)".
 - `customVfsProfile`, which ceases to exist as a distinct path
 
 ## Phasing
@@ -699,51 +699,67 @@ still resolves its image and boots the image's declared default profile
 instead of the linked one. For single-profile images that is the same
 machine. For the shell image a `?demo=doom` link lands on `shell`.
 
-### Two profile channels, both kept
+### One profile channel: `&profile=`, not two (2026-09-23 revision)
 
-The image URL's own fragment carries a profile:
-`vfsImageUrlForPreset` sets `url.hash = liveId`, and
-`liveDemoIdForVfsImageUrl` reads it back. **This stays**, with
-`&profile=` as an explicit override.
+This spec originally kept two profile channels: `&profile=` on the page
+URL, and a fragment on the image URL itself (e.g.
+`?vfs=https://cdn/shell.vfs.zst%23doom`), with the query parameter
+winning when both were present and disagreed. The maintainer has since
+decided that was wrong, and the fragment channel is removed entirely —
+both writing it and reading it. `&profile=` is now the only channel a
+profile id ever travels on.
 
-That precedence is already what the code does —
-`normalizeDemoId(demo) ?? fragmentDemo` (`live-setup.ts:2595`), query
-param first, fragment as fallback — so this is documenting and keeping
-existing behavior, not adding a channel.
+**Why the earlier reasoning does not survive contact with the
+implementation.** The case for keeping the fragment channel was that it
+made a bare image URL "self-describing on its own": a stranger could
+publish `https://cdn/mine.vfs.zst#editor` and that single URL would name
+a machine, with no second parameter to paste alongside it. That
+scenario never materialized, because `galleryItemUrl()` and every other
+place the app builds a `?vfs=` link write **both** parts of the pair —
+the fragment on the image URL *and* `&profile=` — every time, for every
+machine, including ones that need no disambiguation at all. No URL the
+app has ever produced relies on the fragment alone; the "just the image
+URL" case the self-describing argument was written for is not a shape
+that exists anywhere in the product. A stranger hand-authoring a
+fragment-only link was always free to write `&profile=` instead, at no
+cost in readability, and every generated link already demonstrates that
+form. With the self-describing case absent in practice, the second
+channel bought nothing but had a real, ongoing cost: it doubled the
+percent-encoded, unreadable representation of the same id in every
+address bar (`?vfs=https%3A%2F%2F...%2Fshell.vfs.zst%23doom&profile=doom`),
+and it required the precedence rule, the disagreement-logging dmesg
+line, and the "page fragment vs. image fragment" rough edge this
+section used to describe — all machinery to arbitrate between two
+copies of one fact that were never allowed to differ in anything the
+app itself generated.
 
-It is also the right shape rather than a workaround:
+**What changed.** `vfsImageUrlWithProfile()` (formerly
+`vfsImageUrlForPreset`) and its call sites are gone, so no image URL the
+app generates carries a fragment. `profileIdFromVfsImageUrl()` (formerly
+`liveDemoIdForVfsImageUrl`) is gone, so a fragment on a `?vfs=` URL is
+never read as a profile id, whether or not `&profile=` is also present.
+The precedence rule and its dmesg line are gone too — there is exactly
+one channel, so there is nothing left to arbitrate or report a
+disagreement about. `matchTrustedVfsSourceId` still ignores any
+fragment when matching a `?vfs=` URL to a trusted source, but that is
+ordinary URL-identity hygiene (a fragment is never part of a resource's
+identity), not a remnant of the profile channel.
 
-- A fragment is a client-side view selector on a resource, not part of
-  its identity. "Which profile of this image" is precisely that. The
-  code already says so: *"Fragments describe launch behavior, not file
-  identity, so they are ignored here"* (`url-state.ts:131`), and
-  `matchTrustedVfsSourceId` strips it via `withoutUrlHash` before
-  comparing.
-- It makes an image URL **self-describing on its own**, which serves the
-  third-party parity goal directly. A stranger can publish
-  `https://cdn/mine.vfs.zst#editor` and that single URL names a machine,
-  instead of having to say "paste this, and also add `&profile=editor`".
-- URL identity is already fragment-safe on both paths
-  (`url-state.ts:150`, `:208`), fragments never reach the network, and
-  Cache API matching excludes them.
-
-An earlier draft of this spec proposed retiring the fragment channel as
-"special naming in a less visible place." That was wrong. The problem
-this work removes is the *app holding a hardcoded id table*, not the
-channel an id travels on. Once profile ids come from the image, a
-fragment-borne id is no more special than a query-borne one.
-
-One rough edge to handle rather than inherit: a hand-written
-`?vfs=https://cdn/shell.vfs.zst#doom` with the `#` left unencoded parses
-as `vfs=…shell.vfs.zst` plus a *page* fragment `#doom`. That is not
-dangerous — `decodeBootDescriptor` returns `null` for anything that is
-not `k1=` (`boot-descriptor.ts:720`) — but the profile is silently
-dropped and the machine boots its default. When the two channels are
-both present and disagree, or when a page fragment is present but is
-not a `k1=` envelope, the host logs it rather than resolving in
-silence.
+**The accepted cost.** `origin/main` wrote `url.hash = liveId` on image
+URLs alongside the already-removed `?demo=` parameter. A link shared
+from the live site before this change therefore looks like
+`?demo=doom&vfs=https://cdn/shell.vfs.zst%23doom`. After this change, a
+visitor opening that link keeps the right image but loses the machine
+selection: the app boots the image's declared `defaultProfile` instead
+of the one the fragment named. For the shell image — which carries
+`shell`, `doom`, `modeset`, `sdl2`, `evdev`, and `espeak` — a `doom` link
+of that shape now boots plain `shell`. This is a deliberate, accepted
+regression for already-shared links, not something a compatibility read
+path should paper over: the fix for a stale link is to re-share it, now
+that `&profile=` is the only channel.
 
 ## Open questions
 
-None. `docs/browser-support.md:608` documents `?demo=<id>#k1=<payload>`
-as the shared-link form and must be updated by phase 5.
+None. `docs/browser-support.md`'s "Selecting a machine" section
+documents `?vfs=<image>&profile=<id>` as the sole selection form and has
+been updated to drop the fragment channel.

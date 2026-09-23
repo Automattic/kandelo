@@ -688,27 +688,40 @@ alone is therefore enough to boot a first-party machine or a stranger's image,
 and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
-`doom`, `modeset`, `sdl2`, `evdev`, and `espeak` — so two channels select one:
+`doom`, `modeset`, `sdl2`, `evdev`, and `espeak` — so one channel selects one:
 
 1. `&profile=<id>` on the page URL.
-2. else the fragment on the image URL itself, e.g.
-   `?vfs=https://cdn/shell.vfs.zst%23doom`. A fragment is a client-side view
-   selector on a resource, not part of its identity, so URL identity and Cache
-   API matching ignore it. This is what lets a third party publish one
-   self-describing URL instead of "paste this, and also add `&profile=`".
-3. else the image's own `defaultProfile`.
+2. else the image's own `defaultProfile`.
+
+`&profile=` is the *only* channel a profile id travels on. A fragment on the
+`?vfs=` image URL itself (e.g. `?vfs=https://cdn/shell.vfs.zst%23doom`) is
+never read as a profile id, and the app never writes one: `galleryItemUrl`
+and every other link the app generates carry `&profile=` alone, with no
+fragment appended to the image URL. (URL-identity matching still ignores any
+fragment a hand-written `?vfs=` URL happens to carry — a fragment is never
+part of a resource's identity — but that is ordinary URL hygiene, not a second
+profile channel.)
 
 An id no profile in the image declares is a **loud boot error** naming the
-profiles the image does declare — never a silent fall back to its default.
-When both channels are present and disagree, the query parameter wins and the
-boot log says so. An image with no `/etc/kandelo/demo.json`, or a malformed
-one, fails the boot with that reason; nothing synthesizes a fallback machine.
+profiles the image does declare — never a silent fall back to its default. An
+image with no `/etc/kandelo/demo.json`, or a malformed one, fails the boot
+with that reason; nothing synthesizes a fallback machine.
 
 The older `?demo=<id>` parameter is **removed**. It named one of a dozen ids
 the app held, which is exactly what image-owned machine definitions delete. It
 is ignored rather than rejected, so links in the wild degrade instead of
 breaking: `galleryItemUrl` has always written `?vfs=` alongside it, so such a
 link still resolves its image and boots that image's declared default profile.
+
+A link shared before the fragment channel was removed may look like
+`?demo=doom&vfs=https://cdn/shell.vfs.zst%23doom`: the now-dead `?demo=` and
+the now-ignored image-URL fragment both named `doom`. Opening that link today
+still resolves the `?vfs=` image, but — since neither `?demo=` nor the
+fragment is read — boots the image's declared `defaultProfile` instead of the
+profile either of them named. For the shell image that means such a link now
+boots plain `shell`, not `doom`. This is an accepted, deliberate cost of
+removing the second channel, not a bug: re-sharing the link with `&profile=`
+produces a URL that keeps working.
 
 Each built-in VFS image has one trusted source and resource identity. The
 loader verifies that the URL exactly matches the current built-in image before

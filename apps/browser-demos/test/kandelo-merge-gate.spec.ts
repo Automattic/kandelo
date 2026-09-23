@@ -227,21 +227,18 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
       })
       .getByRole("button", { name: "Launch" })
       .click();
-    // Launch writes both profile channels: the image URL carries the profile
-    // in its own fragment, and `&profile=` repeats it so the selection stays
-    // visible in the address bar and survives a hand-edited link.
+    // Launch writes `&profile=` — the only channel that selects which machine
+    // inside the image to boot. The image URL itself carries no fragment.
     await expect
       .poll(
         () => new URL(page.url()).searchParams.get("profile"),
         { timeout: 60_000 },
       )
       .toBe(demo);
-    await expect
-      .poll(
-        () => new URL(page.url()).searchParams.get("vfs"),
-        { timeout: 60_000 },
-      )
-      .toContain(`#${demo}`);
+    const vfsParam = new URL(page.url()).searchParams.get("vfs");
+    expect(vfsParam).not.toBeNull();
+    expect(vfsParam).not.toContain("#");
+    expect(vfsParam).not.toContain("%23");
     expect(new URL(page.url()).searchParams.get("demo")).toBeNull();
     await expect(page.locator(".kdock-status-title")).toHaveText(title, {
       timeout: 60_000,
