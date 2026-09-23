@@ -121,7 +121,6 @@ import {
 } from "./fork-import-identity";
 import { ForkActivations, forkActivationCatalogSink } from "./fork-activations";
 import { ForkTableStateOwners } from "./fork-table-state-owners";
-import { ForkMergedFunctionCatalog } from "./fork-merged-catalog";
 import { ForkTables } from "./fork-tables";
 import { ForkChildImports } from "./fork-child-imports";
 import {
@@ -783,9 +782,17 @@ interface ProcessDylinkActivationOwnerOptions {
  * Bind every instrumented side-module instance to the one process
  * continuation transaction.
  *
- * Activation IDs are monotonic in a parent and copied verbatim through the
- * dlopen replay archive. They are coordinates in KFMS recipes and replay
- * events, not reusable loader handles.
+ * Activation IDs are coordinates in KFMS recipes and replay events, copied
+ * verbatim through the dlopen replay archive, and they are NOT REUSED yet.
+ * The fork module has 64 per-activation entries, so a process's 63rd side
+ * activation fails its `dlopen` loudly however few libraries are open. A
+ * `dlclose` is still local to the closing Worker: a peer thread keeps its
+ * replica of the closed library, and reusing its id there made that peer
+ * hang instead of failing. Reuse returns when closes propagate to other
+ * threads -- docs/superpowers/plans/2026-09-23-fork-test-only-removal.md,
+ * T4 item 2. The id stays here rather than in `crates/dylink`: it is claimed
+ * before the loader instantiates anything and is also chosen by fork-child
+ * and pthread replay, so moving it is a loader-protocol change of its own.
  */
 function createProcessDylinkActivationOwner(
   options: ProcessDylinkActivationOwnerOptions,
@@ -812,13 +819,7 @@ function createProcessDylinkActivationOwner(
       );
     }
     claimed.add(activationId);
-    if (activationId >= nextActivationId) {
-      if (activationId === 0xffff_ffff) {
-        nextActivationId = 0x1_0000_0000;
-      } else {
-        nextActivationId = activationId + 1;
-      }
-    }
+    nextActivationId = Math.max(nextActivationId, activationId + 1);
     return activationId;
   };
 
@@ -1042,13 +1043,15 @@ function createProcessDylinkActivationOwner(
           released = true;
           let failure: unknown;
           try {
-            if (registered) {
-              try {
-                options.resumeTable.unregisterActivation(activationId);
-                options.activations?.forget(activationId);
-              } catch (error) {
-                failure = error;
-              }
+            // One module release either way -- the activation's slots,
+            // records and table ranges. A `dlopen` that failed part way has
+            // seeds but no placed thunks. The id is not given back (see the
+            // function comment).
+            try {
+              if (registered) options.activations?.forget(activationId);
+              else options.forkModuleFrameFlip?.backend.releaseResumeSlots(activationId, true);
+            } catch (error) {
+              failure = error;
             }
             if (!importedStateRegistered && importedStatePreparation) {
               try {
@@ -3742,14 +3745,23 @@ export async function centralizedWorkerMain(
       );
       // The module's imported merged static-root table, which CAPTURE reads to
       // recognise a statically initialised reference and REPLAY reads to
-      // reconstruct one. Filled per fork and cleared after, so it never pins a
-      // root; see the class for why that matters.
+      // reconstruct one. Filled per fork; a child nulls it after its drive, a
+      // parent does not yet (see the class).
       const forkMergedStaticRoots = new ForkMergedStaticRoots(
         forkModuleInstance!.staticRootCatalog,
-        (activationId, base) =>
+        (activationId, length) =>
           requireForkModuleBackend(forkModuleBackend, pid)
-            .setActivationStaticRootBase(activationId, base),
-        `pid=${pid}: merged static roots`,
+            .placeActivationStaticRoots(activationId, length),
+      );
+      const forkActivations = new ForkActivations(
+        requireForkModuleBackend(forkModuleBackend, pid),
+        `pid=${pid}: fork activations`,
+        forkActivationCatalogSink({
+          module: requireForkModuleBackend(forkModuleBackend, pid),
+          functionCatalog: forkModuleInstance!.functionCatalog,
+          mergedStaticRoots: forkMergedStaticRoots,
+          owners: processTableStateOwners,
+        }),
       );
       // The host's table facts: which physical table a coordinate names, and
       // which coordinate a mutated table is. The module owns the dirty journal
@@ -3767,23 +3779,9 @@ export async function centralizedWorkerMain(
                 ) => void
             )(ownerId, firstPage, pageCount),
         },
+        processTableStateOwners,
+        () => forkActivations.ordered(),
         `pid=${pid}: fork tables`,
-      );
-      const forkActivations = new ForkActivations(
-        requireForkModuleBackend(forkModuleBackend, pid),
-        `pid=${pid}: fork activations`,
-        forkActivationCatalogSink({
-          tables: forkTables,
-          // Filled as activations register, on the PARENT as well as the child
-          // -- see `ForkMergedFunctionCatalog` for why both.
-          merged: new ForkMergedFunctionCatalog(
-            forkModuleInstance!.functionCatalog,
-            requireForkModuleBackend(forkModuleBackend, pid),
-            `pid=${pid}: merged function catalog`,
-          ),
-          mergedStaticRoots: forkMergedStaticRoots,
-          owners: processTableStateOwners,
-        }),
       );
       const importedStateCapture = new ForkImportIdentity(
         requireForkModuleBackend(forkModuleBackend, pid),
@@ -4005,7 +4003,7 @@ export async function centralizedWorkerMain(
               FORK_MODULE_STATS.map((name) => [name, Number(forkModule().stat(name))]),
             ) as Record<ForkModuleStat, number>;
             forkModule().abort();
-            resumeTable.clear();
+            forkActivations.clear();
             continuationMunmap(
               memory,
               channelOffset,
@@ -4092,7 +4090,7 @@ export async function centralizedWorkerMain(
           forkModuleBackend?.captureBegin();
           // The capture is about to ask which slot holds a statically
           // initialised reference, so the merged table has to hold them now.
-          forkMergedStaticRoots.fill();
+          forkMergedStaticRoots.fill(forkActivations.ordered());
           publishProcessLaunchRoot(0);
           publishProcessLaunchRoot(
             forkModule().parentBeginCapture(
@@ -4547,7 +4545,7 @@ export async function centralizedWorkerMain(
           forkActivations.bootstrap(0);
         } catch (error) {
           processTableReplication.abortActiveMutations();
-          resumeTable.unregisterActivation(0);
+          forkActivations.forget(0);
           throw error;
         }
       }
@@ -4736,13 +4734,13 @@ export async function centralizedWorkerMain(
           // activation. A stale premise, held in a comment, under an
           // arithmetic that depended on it. Census 201.
           //
-          // `fill()` copies every registered activation's catalog at the bases
-          // the module was told, which is what the PARENT path has always
+          // `fill()` copies every live activation's catalog at the base the
+          // module answers for it, which is what the PARENT path has always
           // done at capture-begin. It pins more than the referenced ordinals
           // for the duration of the fork; the roots are strong references in
-          // the guest's own harvest buffer either way, and `clear()` drops
-          // them when the fork finishes.
-          forkMergedStaticRoots.fill();
+          // the guest's own harvest buffer either way, and the install below
+          // nulls them once the drive has run.
+          forkMergedStaticRoots.fill(sortedActivations);
         }
         // ONE install call for both child shapes. A COW child and a vfork
         // BORROWED child share an identical plan in the module; the only
@@ -5076,7 +5074,7 @@ export async function centralizedWorkerMain(
       // backend here means there is nothing left to abort -- not that the
       // abort was skipped. `clear()` walks an already-empty membership set.
       if (forkModuleBackend) forkModule().abort();
-      resumeTable.clear();
+      forkActivations.clear();
       releaseProcessForkArchiveReader();
       port.postMessage({
         type: "exit",
@@ -6104,6 +6102,16 @@ export async function centralizedThreadWorkerMain(
     // The host thread arena is gone for the reason the process one is: the
     // module maps the KFMS chunks and frees them, so nothing here allocates or
     // releases a chunk it never owned.
+    // One election per physical table for this replica, shared by the imported
+    // identity capture and by the activation record's table registration -- two
+    // separate owner sets would let two coordinates both believe they own one
+    // table's sparse state.
+    const threadTableStateOwners = new ForkTableStateOwners(
+      (activationId, ownerId, owns) =>
+        requireForkModuleBackend(threadForkModuleBackend, pid)
+          .setActivationTableStateOwner(activationId, ownerId, owns),
+    );
+    let threadForkActivations: ForkActivations | null = null;
     const threadForkTables = new ForkTables(
       {
         markTablePages: (ownerId, firstPage, pageCount) =>
@@ -6116,19 +6124,11 @@ export async function centralizedThreadWorkerMain(
               ) => void
           )(ownerId, firstPage, pageCount),
       },
+      threadTableStateOwners,
+      () => threadForkActivations?.ordered() ?? [],
       `pid=${pid} tid=${tid}: fork tables`,
     );
-    // One election per physical table for this replica, shared by the imported
-    // identity capture and by the activation record's table registration -- two
-    // separate owner sets would let two coordinates both believe they own one
-    // table's sparse state.
-    const threadTableStateOwners = new ForkTableStateOwners(
-      (activationId, ownerId, owns) =>
-        requireForkModuleBackend(threadForkModuleBackend, pid)
-          .setActivationTableStateOwner(activationId, ownerId, owns),
-    );
     let threadImportedStateCapture: ForkImportIdentity | null = null;
-    let threadForkActivations: ForkActivations | null = null;
     const threadResumeTable = new ForkResumeTable(
       `pid=${pid} tid=${tid}: fork resume table`,
     );
@@ -6242,20 +6242,14 @@ export async function centralizedThreadWorkerMain(
           backend,
           `pid=${pid} tid=${tid}: fork activations`,
           forkActivationCatalogSink({
-            tables: threadForkTables,
-            merged: new ForkMergedFunctionCatalog(
-              threadForkModuleInstance.functionCatalog,
-              backend,
-              `pid=${pid} tid=${tid}: merged function catalog`,
-            ),
+            module: backend,
+            functionCatalog: threadForkModuleInstance.functionCatalog,
             // A pthread replica runs its OWN module instance, so its merged
-            // static-root table is its own too. It is filled per fork like
-            // the process one, by the fork path that opens the capture.
+            // static-root table is its own too.
             mergedStaticRoots: new ForkMergedStaticRoots(
               threadForkModuleInstance.staticRootCatalog,
-              (activationId, base) =>
-                backend.setActivationStaticRootBase(activationId, base),
-              `pid=${pid} tid=${tid}: merged static roots`,
+              (activationId, length) =>
+                backend.placeActivationStaticRoots(activationId, length),
             ),
             owners: threadTableStateOwners,
           }),
@@ -6687,7 +6681,6 @@ export async function centralizedThreadWorkerMain(
         threadBootstrap();
       } catch (error) {
         threadTableReplication?.abortActiveMutations();
-        threadResumeTable.unregisterActivation(0);
         threadForkActivations?.forget(0);
         throw error;
       }

@@ -235,6 +235,15 @@ mod wasm {
         /// trapping on it. See `resume_null_via_injector`.
         fn __wpk_fork_resume_null(slot: u32, lenient: u32);
 
+        /// Null `len` slots from `base` of one of the three per-activation
+        /// ranges this module places in imported tables: `table` 0 is the
+        /// merged function catalog, 1 the merged static-root catalog, 2 the
+        /// drive table. A `table.fill` with a null, clamped to `table.size`:
+        /// a range the host never grew the table to holds nothing. Injector-
+        /// rewritten into a local thunk, for the reason `__wpk_fork_resume_null`
+        /// is -- writing a null is not holding a reference.
+        fn __wpk_fork_table_null(table: u32, base: u32, len: u32);
+
         /// `memory.atomic.wait32(addr, expected, timeout_ns) -> i32`.
         /// Returns 0 "ok", 1 "not-equal", 2 "timed-out". `-1` timeout waits
         /// forever. Injector-rewritten into a local thunk.
@@ -809,8 +818,8 @@ mod wasm {
     /// parent reported only that its child had died.
     ///
     /// Whether an activation was registered is a question the HOST already
-    /// answers: `ForkResumeTable.unregisterActivation` refuses one it never
-    /// placed thunks for, by name. Answering it a second time here was the same
+    /// answers: `ForkActivations.forget` refuses one it does not have, by
+    /// name. Answering it a second time here was the same
     /// duplication this lane has been removing everywhere else, and this one
     /// had a wrong answer in it.
     ///
@@ -1258,9 +1267,8 @@ mod wasm {
     // D6.1 imported ONE funcref catalog table and required every funcref to name
     // a single activation (`sole_funcref_activation`). D7a.1b lifts that: the host
     // lays every activation's function catalog into ONE merged imported table,
-    // each activation at a distinct BASE, and seeds the module the
-    // `activation_id -> base` map once per worker via
-    // `fm_set_activation_catalog_base`. `funcref_ordinal_impl` then returns the
+    // each activation at a distinct BASE the module places with
+    // `fm_place_activation_catalog`. `funcref_ordinal_impl` then returns the
     // GLOBAL slot `base(module_activation) + function_ordinal`, so a funcref
     // minted in activation A but held by activation B's frame resolves against
     // A's catalog slice — the coordinate the RECIPE names, never the caller. A
@@ -1268,11 +1276,12 @@ mod wasm {
     // table with per-activation bases is the mechanism.
     //
     // Like the resume catalogs, the map is an arena record per activation
-    // (`REC_KIND_FUNC_CATALOG_BASE`, one `u32`), so it survives the per-fork
-    // bump-heap reset and is released with its activation. The map stays
-    // EMPTY for a single-activation worker (the host seeds no base), and
+    // (`REC_KIND_FUNC_CATALOG_BASE`, `base` and `len`), so it survives the
+    // per-fork bump-heap reset and is released with its activation, which is
+    // what lets a later placement take the range again. The map stays EMPTY
+    // for a single-activation worker that places nothing, and
     // `funcref_ordinal_impl` then defaults `base = 0` — byte-identical to the
-    // D6.1 raw-ordinal mapping. A re-seeded activation is a truthful `EINVAL`.
+    // D6.1 raw-ordinal mapping. A re-placed activation is a truthful `EINVAL`.
 
     // -- Global identity groups (host-resolved) -----------------------------
     //
@@ -2785,14 +2794,38 @@ mod wasm {
         0
     }
 
-    fn set_activation_catalog_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
-        // A re-seeded activation is refused (each is seeded once per worker),
-        // matching the once-per-worker `fm_set_activation_resume_catalog`
-        // contract of old: `arena_alloc` answers `EINVAL` for a second record
-        // of one kind, which is exactly that refusal.
-        let at = arena_alloc(activation_id, REC_KIND_FUNC_CATALOG_BASE, 4)?;
+    /// Place `activation_id`'s catalog of `len` entries in one merged table and
+    /// return its base: the lowest gap between the ranges live activations
+    /// hold, so a range `dlclose` gave back is taken again rather than the
+    /// table growing by one catalog per `dlopen`.
+    ///
+    /// `kind` names the table: the funcref catalog or the static-root catalog.
+    /// Placing an activation again with the SAME length answers the range it
+    /// already holds, which is how a host asks where a catalog is without
+    /// keeping a copy of the answer (the static-root fill does, once per fork);
+    /// a different length is `EINVAL`, two catalogs claiming one activation.
+    /// The range is held until the release drops the record.
+    fn place_catalog_impl(kind: u32, activation_id: u32, len: u32) -> Result<u32, Errno> {
+        if let Some((at, _)) = arena_find(activation_id, kind) {
+            return if arena_u32(at + 4) == len { Ok(arena_u32(at)) } else { Err(Errno::EINVAL) };
+        }
+        let mut taken: Vec<(u32, u32)> = Vec::new();
+        for_each_catalog_range(kind, |_, base, extent| taken.push((base, extent)));
+        taken.sort_unstable();
+        let mut base = 0u32;
+        for (start, extent) in taken {
+            if start.saturating_sub(base) >= len {
+                break;
+            }
+            base = base.max(start.checked_add(extent).ok_or(Errno::E2BIG)?);
+        }
+        if base.checked_add(len).is_none_or(|end| end > i32::MAX as u32) {
+            return Err(Errno::E2BIG);
+        }
+        let at = arena_alloc(activation_id, kind, 8)?;
         arena_set_u32(at, base);
-        Ok(())
+        arena_set_u32(at + 4, len);
+        Ok(base)
     }
 
     /// The seeded merged-catalog base for `activation_id`, or `None` if the host
@@ -2811,10 +2844,27 @@ mod wasm {
         !arena_has_kind(REC_KIND_FUNC_CATALOG_BASE)
     }
 
-    /// Visit every seeded `(activation, base)` pair of `kind` -- the two
-    /// catalog-base maps -- for the slot-to-owner elections below.
-    fn for_each_catalog_base(kind: u32, mut visit: impl FnMut(u32, u32)) {
-        arena_for_each_record(kind, |activation, at, _| visit(activation, arena_u32(at)));
+    /// Visit every placed `(activation, base, len)` range of `kind` -- the two
+    /// merged catalogs -- for placement and the slot-to-owner elections below.
+    fn for_each_catalog_range(kind: u32, mut visit: impl FnMut(u32, u32, u32)) {
+        arena_for_each_record(kind, |activation, at, _| {
+            visit(activation, arena_u32(at), arena_u32(at + 4))
+        });
+    }
+
+    /// The activation whose placed range of `kind` holds `slot`, and that
+    /// range's base. `Err(())` when ranges are placed but none holds the slot;
+    /// `Ok(None)` when nothing is placed, the single-activation worker.
+    fn catalog_slot_owner(kind: u32, slot: u32) -> Result<Option<(u32, u32)>, ()> {
+        let mut seeded = false;
+        let mut owner = None;
+        for_each_catalog_range(kind, |activation, base, len| {
+            seeded = true;
+            if slot >= base && slot - base < len {
+                owner = Some((activation, base));
+            }
+        });
+        if seeded && owner.is_none() { Err(()) } else { Ok(owner) }
     }
 
     // -- Per-activation static-root catalog bases (the static-root binder) ------
@@ -2822,24 +2872,16 @@ mod wasm {
     // Exactly the funcref merged-catalog mechanism, for static roots. The host
     // lays every activation's instantiation-time static-root catalog into ONE
     // merged imported anyref table (`env.__wpk_fork_static_root_catalog`), each
-    // activation at a distinct BASE, and seeds the `activation_id -> base` map
-    // once per worker via `fm_set_activation_static_root_base`.
+    // activation at a distinct BASE the module places with
+    // `fm_place_activation_static_roots`.
     // `static_root_slot_impl` then returns the GLOBAL catalog index
     // `base(module_activation) + static_root_ordinal`, so a static root minted in
     // activation A but held by activation B's frame resolves against A's catalog
     // slice — the coordinate the RECIPE names, never the caller. The map stays
     // EMPTY for a single-activation worker, and `static_root_slot_impl` then
     // defaults `base = 0` — byte-identical to the raw-ordinal mapping. One
-    // arena record per activation (`REC_KIND_STATIC_ROOT_BASE`, one `u32`),
-    // released with it, exactly like the funcref map above.
-
-    fn set_activation_static_root_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
-        // A re-seeded activation is refused: `arena_alloc`'s `EINVAL` for a
-        // second record of one kind, as for the funcref map above.
-        let at = arena_alloc(activation_id, REC_KIND_STATIC_ROOT_BASE, 4)?;
-        arena_set_u32(at, base);
-        Ok(())
-    }
+    // arena record per activation (`REC_KIND_STATIC_ROOT_BASE`, `base` and
+    // `len`), released with it, exactly like the funcref map above.
 
     /// The seeded merged-catalog base for `activation_id`, or `None` if the host
     /// seeded no static-root base for it.
@@ -8054,44 +8096,48 @@ mod wasm {
         }
     }
 
-    /// Seed ONE activation's function-catalog BASE for this worker (Phase 6
-    /// D7a.1b — the merged-catalog mechanism): the host lays every activation's
-    /// funcref catalog into ONE merged `__wpk_fork_function_catalog` table, with
-    /// `activation_id`'s catalog occupying slots `[base, base + len)`.
-    /// `fm_funcref_ordinal` then returns the GLOBAL slot
-    /// `base(module_activation) + function_ordinal` for the injected funcref shim
-    /// to `table.get`, so a funcref minted in one activation but held by another's
-    /// frame resolves against its OWN activation's slice. Called ONCE per
-    /// activation per worker (like `fm_set_activation_resume_catalog`), before any
-    /// fork drives reference reconstruction. A SINGLE-activation worker seeds no
-    /// base at all; `fm_funcref_ordinal` then defaults `base = 0`, byte-identical
-    /// to the D6.1 raw-ordinal mapping. Too many activations fail with `E2BIG`; a
-    /// re-seeded activation fails with `EINVAL` (check `fm_last_errno`).
+    /// Place ONE activation's function catalog of `len` entries in this
+    /// worker's merged `__wpk_fork_function_catalog` table (Phase 6 D7a.1b — the
+    /// merged-catalog mechanism) and return its base; the host copies the
+    /// catalog into `[base, base + len)`. `fm_funcref_ordinal` then returns the
+    /// GLOBAL slot `base(module_activation) + function_ordinal` for the injected
+    /// funcref shim to `table.get`, so a funcref minted in one activation but
+    /// held by another's frame resolves against its OWN activation's slice.
+    ///
+    /// The module decides the base -- the lowest gap the live activations leave
+    /// -- because it also frees the range: `fm_resume_slots` op 1 drops the
+    /// record, and the next placement takes the range again. A host that chose
+    /// bases itself grew the table by one catalog per `dlopen`, forever.
+    /// Called ONCE per activation per worker, before any fork drives reference
+    /// reconstruction. Returns -1 with `fm_last_errno`: `EINVAL` for an
+    /// activation already placed, `E2BIG` past an `i32` index, or the arena's
+    /// truthful mapping errno.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_catalog_base(activation_id: u32, base: u32) {
-        match set_activation_catalog_base_impl(activation_id, base) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
+    pub extern "C" fn fm_place_activation_catalog(activation_id: u32, len: u32) -> i32 {
+        place_catalog(REC_KIND_FUNC_CATALOG_BASE, activation_id, len)
     }
 
-    /// Seed ONE activation's static-root catalog BASE for this worker (the
-    /// static-root binder — the funcref merged-catalog mechanism, for static
-    /// roots): the host lays every activation's instantiation-time static-root
-    /// catalog into ONE merged `env.__wpk_fork_static_root_catalog` anyref table,
-    /// with `activation_id`'s catalog occupying slots `[base, base + len)`.
-    /// `fm_static_root_slot` then returns the GLOBAL slot
-    /// `base(module_activation) + static_root_ordinal` for the injected drive shim
-    /// to `table.get`. Called ONCE per activation per worker, before any fork
-    /// drives reference reconstruction. A SINGLE-activation worker seeds no base at
-    /// all; `fm_static_root_slot` then defaults `base = 0`. Too many activations
-    /// fail with `E2BIG`; a re-seeded activation fails with `EINVAL` (check
-    /// `fm_last_errno`).
+    /// Place ONE activation's static-root catalog of `len` entries in this
+    /// worker's merged `env.__wpk_fork_static_root_catalog` anyref table and
+    /// return its base, exactly as `fm_place_activation_catalog` does for
+    /// funcrefs. `fm_static_root_slot` then returns the GLOBAL slot
+    /// `base(module_activation) + static_root_ordinal` for the injected drive
+    /// shim to `table.get`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_static_root_base(activation_id: u32, base: u32) {
-        match set_activation_static_root_base_impl(activation_id, base) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
+    pub extern "C" fn fm_place_activation_static_roots(activation_id: u32, len: u32) -> i32 {
+        place_catalog(REC_KIND_STATIC_ROOT_BASE, activation_id, len)
+    }
+
+    fn place_catalog(kind: u32, activation_id: u32, len: u32) -> i32 {
+        match place_catalog_impl(kind, activation_id, len) {
+            Ok(base) => {
+                set_ok();
+                base as i32
+            }
+            Err(errno) => {
+                set_err(errno);
+                -1
+            }
         }
     }
 
@@ -8843,9 +8889,9 @@ mod wasm {
     /// graph records -- so the CHILD reconstructs the reference its own
     /// instantiation already made, instead of a structural copy beside it.
     ///
-    /// The owning activation is the one with the LARGEST base not above `slot`,
-    /// the same partition `fm_funcref_slot_to_recipe` inverts, and the same
-    /// default: a worker that seeded no base at all is the single-activation
+    /// The owning activation is the one whose placed range holds `slot`, the
+    /// same partition `fm_funcref_slot_to_recipe` inverts, and the same
+    /// default: a worker that placed no range at all is the single-activation
     /// case, where activation 0 owns everything.
     ///
     /// Returns 0 -- "not a static root", the answer `gc_lookup` gives for a
@@ -8856,17 +8902,9 @@ mod wasm {
     /// structural check.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_static_root_recipe(slot: u32) -> i32 {
-        let mut seeded = false;
-        let mut owner: Option<(u32, u32)> = None;
-        for_each_catalog_base(REC_KIND_STATIC_ROOT_BASE, |activation, base| {
-            seeded = true;
-            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
-                owner = Some((activation, base));
-            }
-        });
-        if seeded && owner.is_none() {
+        let Ok(owner) = catalog_slot_owner(REC_KIND_STATIC_ROOT_BASE, slot) else {
             return 0;
-        }
+        };
         let (activation, base) = owner.unwrap_or((0, 0));
         capture_recipe_publishable(capture_intern(
             INTERN_KIND_STATIC_ROOT,
@@ -8877,22 +8915,15 @@ mod wasm {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_funcref_slot_to_recipe(slot: u32) -> i32 {
-        let mut seeded = false;
-        let mut owner: Option<(u32, u32)> = None;
-        for_each_catalog_base(REC_KIND_FUNC_CATALOG_BASE, |activation, base| {
-            seeded = true;
-            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
-                owner = Some((activation, base));
-            }
-        });
-        let (activation, base) = owner.unwrap_or((0, 0));
-        if seeded && owner.is_none() {
-            // Bases were seeded but none covers this slot, so the catalog and the
-            // scan disagree about the table's shape. Guessing activation 0 here
-            // would record a recipe that decodes to another activation's function.
+        let Ok(owner) = catalog_slot_owner(REC_KIND_FUNC_CATALOG_BASE, slot) else {
+            // Ranges were placed but none covers this slot, so the catalog and
+            // the scan disagree about the table's shape. Guessing activation 0
+            // here would record a recipe that decodes to another activation's
+            // function.
             set_err(Errno::EINVAL);
             return -1;
-        }
+        };
+        let (activation, base) = owner.unwrap_or((0, 0));
         capture_intern(INTERN_KIND_FUNCREF, activation, slot - base)
     }
 
@@ -9939,25 +9970,13 @@ mod wasm {
     fn catalog_slot_coordinate(
         slot: u32,
     ) -> Result<fork_codec::dylink_archive::DylinkTableFunction, Errno> {
-        let mut seeded = false;
-        let mut owner: Option<(u32, u32)> = None;
-        for_each_catalog_base(REC_KIND_FUNC_CATALOG_BASE, |activation, base| {
-            seeded = true;
-            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
-                owner = Some((activation, base));
-            }
-        });
-        match owner {
-            Some((activation, base)) => Ok(fork_codec::dylink_archive::DylinkTableFunction {
-                activation_id: activation,
-                ordinal: slot - base,
-            }),
-            None if !seeded => Ok(fork_codec::dylink_archive::DylinkTableFunction {
-                activation_id: 0,
-                ordinal: slot,
-            }),
-            None => Err(Errno::EINVAL),
-        }
+        let (activation_id, base) = catalog_slot_owner(REC_KIND_FUNC_CATALOG_BASE, slot)
+            .map_err(|()| Errno::EINVAL)?
+            .unwrap_or((0, 0));
+        Ok(fork_codec::dylink_archive::DylinkTableFunction {
+            activation_id,
+            ordinal: slot - base,
+        })
     }
 
     /// Guest-facing `env.__wpk_fork_module_state_table_mutation_abort()`.
@@ -11603,10 +11622,35 @@ mod wasm {
         }
     }
 
-    /// Release one activation's worker-lifetime resume slots.
+    /// Null what `activation` holds in the imported tables: its merged
+    /// function-catalog and static-root ranges, and its drive-table stride.
+    ///
+    /// The module placed the two ranges and numbers the stride, so it is the
+    /// one that knows what to clear; the host used to keep a copy of each range
+    /// only so that it could. Nothing here needs the table's contents, only
+    /// `table.fill` with a null, which the injected thunk performs.
+    fn release_activation_tables(activation: u32) {
+        for (table, kind) in [(0, REC_KIND_FUNC_CATALOG_BASE), (1, REC_KIND_STATIC_ROOT_BASE)] {
+            if let Some((at, _)) = arena_find(activation, kind) {
+                // SAFETY: after injection a local thunk doing one clamped
+                // `table.fill` of a null on a module-imported table.
+                unsafe { __wpk_fork_table_null(table, arena_u32(at), arena_u32(at + 4)) }
+            }
+        }
+        let drive = drive_plan::drive_table_base(activation);
+        // SAFETY: as above.
+        unsafe { __wpk_fork_table_null(2, drive, drive_plan::DRIVE_SLOTS_PER_ACTIVATION) }
+    }
+
+    /// Release one activation's worker-lifetime resume slots, and with them
+    /// every record the module keeps for it and every slot it holds in the
+    /// imported tables, so the host can reuse its id.
     ///
     ///   * op 1 -- release `activation`'s slots for reuse (`ordinal` ignored),
     ///     returning how many were freed. The host calls this on `dlclose`.
+    ///   * op 2 -- the same for an activation whose resume thunks were never
+    ///     placed: a `dlopen` that failed after its seeds. Its slots may lie
+    ///     past the end of the resume table, so they are nulled leniently.
     ///
     /// Slots are assigned when the host SEEDS the catalog
     /// (`fm_set_activation_resume_catalog`), which is
@@ -11622,14 +11666,19 @@ mod wasm {
     /// against by that name and shape
     /// (`docs/superpowers/plans/2026-09-21-fork-storage-conversion.md`), and
     /// because a release variant is the kind of thing that lands in an op
-    /// space. It is now a constant every caller passes, which is surface worth
-    /// noticing rather than surface worth keeping quiet about.
+    /// space -- op 2 is one.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_resume_slots(op: u32, activation: u32, ordinal: u32) -> i32 {
         let _ = ordinal;
         match op {
-            1 => match resume_unregister_impl(activation, false) {
+            1 | 2 => match resume_unregister_impl(activation, op == 2) {
                 Ok(freed) => {
+                    // Its slots in the three imported tables, while the
+                    // records that say where they are still exist. A closed
+                    // library's functions left there stay reachable -- pinned,
+                    // found by the encode scan, driven through a drive slot --
+                    // until a later activation happens to overwrite them.
+                    release_activation_tables(activation);
                     // The same dlclose that retires this activation's resume
                     // slots retires its identity entries: one signal, one
                     // moment, no second `fm_*` entry to say the same thing.

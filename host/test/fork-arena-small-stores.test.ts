@@ -107,10 +107,12 @@ describe("the five small per-activation stores", () => {
       expect(x.errno(), `template id for activation ${act}`).toBe(0);
       x.seedTableStateOwner(act, 1, true);
       expect(x.errno(), `table-state owner for activation ${act}`).toBe(0);
-      x.seedCatalogBase(act, act * 16);
-      expect(x.errno(), `catalog base for activation ${act}`).toBe(0);
-      x.seedStaticRootBase(act, act * 4);
-      expect(x.errno(), `static-root base for activation ${act}`).toBe(0);
+      // Each placement takes the range the previous cycle's release gave back,
+      // so 300 open/close cycles leave both merged tables one catalog long.
+      expect(x.placeCatalog(act, 16), `catalog for activation ${act}`).toBe(0);
+      expect(x.errno(), `catalog for activation ${act}`).toBe(0);
+      expect(x.placeStaticRoots(act, 4), `static roots for activation ${act}`).toBe(0);
+      expect(x.errno(), `static roots for activation ${act}`).toBe(0);
       x.seedImportProvenance(
         SPACE_GLOBAL,
         act,
@@ -252,18 +254,20 @@ describe("the five small per-activation stores", () => {
     x.seedImportProvenance(SPACE_GLOBAL, A, 5, 200, 0, 0n);
     expect(x.errno(), "an undefined kind").toBe(EINVAL);
 
-    // The two base maps: seeded once per worker; a re-seed is refused. The
-    // refusal is the record arena's own: `arena_alloc` refuses a second
-    // record for one `(activation, kind)`, and both maps store one record per
-    // activation.
-    x.seedCatalogBase(A, 100);
+    // The two catalog placements: once per activation until its release.
+    // Asked again with the same length, the module answers the range it
+    // placed -- that is how a host finds a base without keeping a copy of it
+    // -- and a different length is two catalogs claiming one activation.
+    const placed = x.placeCatalog(A, 100);
     expect(x.errno()).toBe(0);
-    x.seedCatalogBase(A, 200);
-    expect(x.errno(), "catalog base re-seed").toBe(EINVAL);
-    x.seedStaticRootBase(A, 10);
+    expect(x.placeCatalog(A, 100), "the same catalog, asked again").toBe(placed);
     expect(x.errno()).toBe(0);
-    x.seedStaticRootBase(A, 20);
-    expect(x.errno(), "static-root base re-seed").toBe(EINVAL);
+    expect(x.placeCatalog(A, 200), "catalog re-placement").toBe(-1);
+    expect(x.errno(), "catalog re-placement").toBe(EINVAL);
+    x.placeStaticRoots(A, 10);
+    expect(x.errno()).toBe(0);
+    expect(x.placeStaticRoots(A, 20), "static-root re-placement").toBe(-1);
+    expect(x.errno(), "static-root re-placement").toBe(EINVAL);
   });
 
   it("drops all five in the COW-child scrub so the child can re-seed", () => {
@@ -275,8 +279,8 @@ describe("the five small per-activation stores", () => {
     const A = 4;
     x.seedTemplateId(A, 0x11);
     x.seedTableStateOwner(A, 9, true);
-    x.seedCatalogBase(A, 64);
-    x.seedStaticRootBase(A, 8);
+    x.placeCatalog(A, 64);
+    x.placeStaticRoots(A, 8);
     x.seedImportProvenance(SPACE_GLOBAL, A, 0, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 7n);
     expect(x.errno()).toBe(0);
     const before = x.munmaps();
@@ -289,9 +293,9 @@ describe("the five small per-activation stores", () => {
     // Re-seeds that were refused before the scrub are accepted after it.
     x.seedTemplateId(A, 0x22);
     expect(x.errno(), "a different template id after the scrub").toBe(0);
-    x.seedCatalogBase(A, 65);
-    expect(x.errno(), "a different catalog base after the scrub").toBe(0);
-    x.seedStaticRootBase(A, 9);
-    expect(x.errno(), "a different static-root base after the scrub").toBe(0);
+    x.placeCatalog(A, 65);
+    expect(x.errno(), "a catalog placed again after the scrub").toBe(0);
+    x.placeStaticRoots(A, 9);
+    expect(x.errno(), "static roots placed again after the scrub").toBe(0);
   });
 });

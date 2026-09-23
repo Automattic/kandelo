@@ -152,6 +152,9 @@ const TRANSIT_GROW_THUNK_IMPORT: &str = "__wpk_fork_transit_grow";
 /// Rewritten below into a local `table.set $resume (ref.null func)`; see
 /// `inject_resume_null_thunk`.
 const RESUME_NULL_THUNK_IMPORT: &str = "__wpk_fork_resume_null";
+/// Placeholder the fork module declares for nulling one activation's range of
+/// an imported table at release; see `inject_table_null_thunk`.
+const TABLE_NULL_THUNK_IMPORT: &str = "__wpk_fork_table_null";
 
 /// The host's funcref identity oracle: a stable integer per distinct function.
 ///
@@ -1174,6 +1177,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_table_apply into a thunk")?;
     inject_resume_null_thunk(&mut module)
         .context("rewriting __wpk_fork_resume_null into a thunk")?;
+    inject_table_null_thunk(&mut module)
+        .context("rewriting __wpk_fork_table_null into a thunk")?;
     inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;
     inject_activation_trampolines(&mut module)
         .context("emitting the per-activation frame trampolines")?;
@@ -1936,6 +1941,81 @@ fn inject_resume_null_thunk(module: &mut Module) -> Result<()> {
     Ok(())
 }
 
+/// Rewrite the release placeholder into a local, clamped `table.fill` with a
+/// null over one of the three imported tables whose per-activation ranges the
+/// module places: `table` 0 is the merged function catalog, 1 the merged
+/// static-root catalog, 2 the drive table.
+///
+/// The module frees those ranges when an activation is released (`dlclose`),
+/// and a freed range left holding the closed library's references keeps them
+/// alive and reachable -- the encode scan finds its functions, a drive slot
+/// still calls into it -- until another activation overwrites them. The host
+/// used to keep a copy of every range just so it could clear it. Clearing is
+/// writing a null, which is not holding a reference, so it is the module's,
+/// exactly as `inject_resume_null_thunk` made the resume table's.
+///
+/// ```wat
+/// (func (param $table i32) (param $base i32) (param $len i32)
+///   ;; once per table, selected by $table:
+///   (if (i32.lt_u (local.get $base) (table.size $t))
+///     (then (table.fill $t (local.get $base) (ref.null)
+///             (min (local.get $len) (i32.sub (table.size $t) (local.get $base)))))))
+/// ```
+///
+/// CLAMPED rather than trapping, because a range the host never grew the
+/// table to holds nothing: a `dlopen` that failed before its drive bind, or a
+/// static-root table no fork ever filled.
+fn inject_table_null_thunk(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, TABLE_NULL_THUNK_IMPORT) else {
+        return Ok(());
+    };
+    let tables = [
+        (imported_table(module, FUNCTION_CATALOG_IMPORT)?, RefType::FUNCREF),
+        (imported_table(module, STATIC_ROOT_CATALOG_IMPORT)?, RefType::ANYREF),
+        (imported_table(module, DRIVE_TABLE_IMPORT)?, RefType::FUNCREF),
+    ];
+    for (table, _) in tables {
+        if module.tables.get(table).table64 {
+            bail!("a table {TABLE_NULL_THUNK_IMPORT} clears is 64-bit; the thunk indexes with i32");
+        }
+    }
+    let room = module.locals.add(ValType::I32);
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let (which, base, len) = (args[0], args[1], args[2]);
+            for (index, (table, null)) in tables.into_iter().enumerate() {
+                body.local_get(which)
+                    .i32_const(index as i32)
+                    .binop(BinaryOp::I32Eq)
+                    .local_get(base)
+                    .table_size(table)
+                    .binop(BinaryOp::I32LtU)
+                    .binop(BinaryOp::I32And)
+                    .if_else(
+                        None,
+                        |fill| {
+                            fill.table_size(table)
+                                .local_get(base)
+                                .binop(BinaryOp::I32Sub)
+                                .local_set(room)
+                                .local_get(base)
+                                .ref_null(null)
+                                .local_get(len)
+                                .local_get(room)
+                                .local_get(len)
+                                .local_get(room)
+                                .binop(BinaryOp::I32LtU)
+                                .select(Some(ValType::I32))
+                                .table_fill(table);
+                        },
+                        |_| {},
+                    );
+            }
+        })
+        .with_context(|| format!("rewriting {TABLE_NULL_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
 fn inject_gc_provenance_ref(module: &mut Module) -> Result<()> {
     if module
         .exports
@@ -2600,6 +2680,38 @@ mod tests {
             0,
             "fm_drive_execute must have no host-externref transit branch"
         );
+    }
+
+    #[test]
+    fn the_release_thunk_fills_each_placed_table_with_null() {
+        let mut module = fixture_module();
+        inject(&mut module).expect("inject __wpk_fork_ref_decode_funcref");
+        inject_drive_execute(&mut module).expect("inject fm_drive_execute");
+        let ty = module.types.add(&[ValType::I32; 3], &[]);
+        let (func, _) = module.add_import_func(IMPORT_MODULE, TABLE_NULL_THUNK_IMPORT, ty);
+        inject_table_null_thunk(&mut module).expect("the release thunk injects");
+
+        let walrus::FunctionKind::Local(local) = &module.funcs.get(func).kind else {
+            panic!("{TABLE_NULL_THUNK_IMPORT} is still an import");
+        };
+        let mut filled = Vec::new();
+        for (instr, _) in &local.block(local.entry_block()).instrs {
+            if let walrus::ir::Instr::IfElse(branch) = instr {
+                for (inner, _) in &local.block(branch.consequent).instrs {
+                    if let walrus::ir::Instr::TableFill(fill) = inner {
+                        filled.push(fill.table);
+                    }
+                }
+            }
+        }
+        let expected: Vec<_> = [FUNCTION_CATALOG_IMPORT, STATIC_ROOT_CATALOG_IMPORT, DRIVE_TABLE_IMPORT]
+            .into_iter()
+            .map(|name| imported_table(&module, name).expect("imported table"))
+            .collect();
+        assert_eq!(filled, expected, "selector 0, 1 and 2 must fill the catalog, static roots and drive table");
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&module.emit_wasm())
+            .expect("the injected release thunk validates");
     }
 
     #[test]

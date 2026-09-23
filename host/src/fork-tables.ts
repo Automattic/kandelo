@@ -18,12 +18,21 @@
  * module's (`__wpk_fork_module_state_table_dirty_mark`), which this calls as an
  * ordinary export -- the module serves the same function to the guest, so the
  * host marking a mutation and a guest marking one land in one set.
+ *
+ * Nor is any record of the activations. This kept three -- each activation's
+ * funcref catalog, each coordinate's table, and every table's coordinates --
+ * all copies of what registration already had, and none released at `dlclose`.
+ * The catalogs and tables are read from the live instances in
+ * `ForkActivations`, and a table's coordinate from the ONE owner election in
+ * `ForkTableStateOwners`, which is the only part that must be remembered
+ * (object identity) and which is released with its activation.
  */
 
 import type {
   DylinkTablePatch,
   DylinkTablePatchRun,
 } from "./dylink-planner-wire";
+import { type ForkActivation, forkActivationTables } from "./fork-activations";
 import { WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT } from "./generated/abi";
 
 /**
@@ -39,11 +48,6 @@ export interface ForkTableDirtySink {
   markTablePages(ownerId: number, firstPage: bigint, pageCount: bigint): void;
 }
 
-interface Coordinate {
-  readonly activationId: number;
-  readonly ownerId: number;
-}
-
 function checkedIndex(value: number | bigint, what: string): bigint {
   const index = typeof value === "bigint" ? value : BigInt(value);
   if (index < 0n || index > (1n << 64n) - 1n) {
@@ -56,33 +60,15 @@ function checkedIndex(value: number | bigint, what: string): bigint {
 }
 
 export class ForkTables {
-  /** Every coordinate a physical table is registered under, kept sorted. */
-  private readonly byTable = new WeakMap<WebAssembly.Table, Coordinate[]>();
-  private readonly byCoordinate = new Map<string, WebAssembly.Table>();
-  /** Each activation's own funcref catalog, for identity both ways. */
-  private readonly catalogs = new Map<number, WebAssembly.Table>();
-
   constructor(
     private readonly dirty: ForkTableDirtySink,
+    private readonly owners: {
+      canonical(table: WebAssembly.Table): { ownerId: number } | undefined;
+    },
+    /** The live activations, ascending by id. */
+    private readonly activations: () => readonly ForkActivation[],
     private readonly label: string,
   ) {}
-
-  /** Remember one activation's funcref catalog, for patch encode and decode. */
-  registerCatalog(activationId: number, catalog: WebAssembly.Table): void {
-    this.catalogs.set(activationId, catalog);
-  }
-
-  /** Register one `(activation, owner)` coordinate against its table. */
-  register(activationId: number, ownerId: number, table: WebAssembly.Table): void {
-    const key = `${activationId}:${ownerId}`;
-    this.byCoordinate.set(key, table);
-    const coordinates = this.byTable.get(table) ?? [];
-    if (!coordinates.some((c) => c.activationId === activationId && c.ownerId === ownerId)) {
-      coordinates.push({ activationId, ownerId });
-      coordinates.sort((l, r) => l.activationId - r.activationId || l.ownerId - r.ownerId);
-      this.byTable.set(table, coordinates);
-    }
-  }
 
   /**
    * Record that the host mutated `[firstIndex, firstIndex + length)` of a
@@ -101,8 +87,8 @@ export class ForkTables {
     if (!(table instanceof WebAssembly.Table)) {
       throw new TypeError(`${this.label}: mutation target is not a Table`);
     }
-    const coordinates = this.byTable.get(table);
-    if (!coordinates || coordinates.length === 0) {
+    const canonical = this.owners.canonical(table);
+    if (!canonical) {
       throw new Error(
         `${this.label}: host mutated a Table outside the registered fork catalogs`,
       );
@@ -117,7 +103,7 @@ export class ForkTables {
     const shift = BigInt(WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT);
     const firstPage = firstIndex >> shift;
     const pageCount = ((end - 1n) >> shift) - firstPage + 1n;
-    this.dirty.markTablePages(coordinates[0]!.ownerId, firstPage, pageCount);
+    this.dirty.markTablePages(canonical.ownerId, firstPage, pageCount);
   }
 
   /**
@@ -250,9 +236,8 @@ export class ForkTables {
   private encodeFunction(
     value: CallableFunction,
   ): { activationId: number; ordinal: number } | null {
-    for (const [activationId, catalog] of [...this.catalogs].sort(
-      ([left], [right]) => left - right,
-    )) {
+    for (const activation of this.activations()) {
+      const catalog = this.catalog(activation);
       for (let ordinal = 0; ordinal < catalog.length; ordinal += 1) {
         let entry: unknown;
         try {
@@ -260,21 +245,21 @@ export class ForkTables {
         } catch {
           continue;
         }
-        if (entry === value) return { activationId, ordinal };
+        if (entry === value) return { activationId: activation.activationId, ordinal };
       }
     }
     return null;
   }
 
   private decodeFunction(activationId: number, ordinal: number): CallableFunction {
-    const catalog = this.catalogs.get(activationId);
-    if (!catalog) {
+    const activation = this.activations().find((a) => a.activationId === activationId);
+    if (!activation) {
       throw new Error(
         `${this.label}: table patch names activation ${activationId}, which has `
           + `no registered function catalog`,
       );
     }
-    const value = catalog.get(ordinal);
+    const value = this.catalog(activation).get(ordinal);
     if (typeof value !== "function") {
       throw new Error(
         `${this.label}: catalog ${activationId}:${ordinal} holds no function`,
@@ -283,8 +268,15 @@ export class ForkTables {
     return value as CallableFunction;
   }
 
+  /** An activation's own funcref catalog, which `ForkActivations` checked at registration. */
+  private catalog(activation: ForkActivation): WebAssembly.Table {
+    return activation.instance.exports.__wpk_fork_function_catalog as WebAssembly.Table;
+  }
+
   private requireTable(activationId: number, ownerId: number): WebAssembly.Table {
-    const table = this.byCoordinate.get(`${activationId}:${ownerId}`);
+    const activation = this.activations().find((a) => a.activationId === activationId);
+    const table = activation
+      && forkActivationTables(activation, this.label).find(([owner]) => owner === ownerId)?.[1];
     if (!table) {
       throw new Error(
         `${this.label}: no table is registered at ${activationId}:${ownerId}`,

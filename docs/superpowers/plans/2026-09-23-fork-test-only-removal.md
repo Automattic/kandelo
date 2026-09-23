@@ -104,8 +104,56 @@ Delete (verify each against the tree at the time; E1/E2 may have taken some):
 2. dlclose leaves stale host state: `ForkTables`, `ForkTableStateOwners`
    (`releaseActivation` never called), the merged function catalog and
    `ForkMergedStaticRoots.registered` keep a closed activation.
+
+   DONE 2026-09-23 for the closing Worker, EXCEPT id reuse. `dlclose` now
+   releases through the module (`fm_resume_slots` op 1; op 2 for a dlopen
+   that failed part way), which also nulls the activation's merged-catalog,
+   static-root and drive-table slots through the injected
+   `__wpk_fork_table_null`; the module places both catalogs (lowest free
+   gap, `fm_place_activation_catalog` / `fm_place_activation_static_roots`,
+   same length answers the held range), so a closed library's ranges are
+   reused by the next `dlopen` even under a new id. The host copies were
+   deleted, not released: the merged catalog class, `ForkTables`' three
+   maps, `ForkResumeTable`'s membership set, `ForkImportIdentity`'s seeded
+   set, `ForkMergedStaticRoots`' base map. What stays host: the
+   table-identity election (released by `ForkActivations.forget`) and the
+   live instance references. Tests: host/test/fork-dlclose-activation.test.ts,
+   host/test/fork-activation-release.test.ts.
+
+   ID REUSE IS HELD BACK (maintainer ruling, 2026-09-23). Activation ids
+   stay monotonic, so a process's 63rd side activation fails its `dlopen`
+   ("activation 64 is outside the module's table of 64 activations"),
+   however few libraries are open -- a documented platform limit, tested as
+   a loud `dlopen` failure. Reuse was implemented and worked for one Worker
+   (200 open/close cycles, then fork), but it turned the peer-thread case
+   below from a fast loud failure into a silent hang: with lowest-free
+   reuse the peer probe (6 cycles) finished round 1, and round 2 -- the
+   main thread's `dlopen` taking the id the peer still held -- hung until
+   the 50 s harness timeout with nothing reported (not root-caused; it is
+   in the archive reconcile path). Truthful failure over silent hang.
+   Re-enabling it is one change in `claimActivationId` (take the lowest id
+   not held) once (a)-(c) below land, so a closed id is free in every
+   Worker before it is handed out again.
+
+   NOT DONE, by decision (after the table-replication work): making a
+   `dlclose` visible to the OTHER Workers of the process. Reproduction:
+   a pthread peer that has adopted a library the main thread then closes,
+   followed by a main-thread `dlopen` of another library (the peer probe in
+   the stage scratchpad, `zz-probe-reuse.test.ts`). It fails at the base
+   commit, and again with monotonic ids, with `dl_step: ...: replay table
+   already at 20, past parent base 16`: the peer's replica still holds the
+   closed library's table slots, so its table is longer than the layout the
+   new library was planned against. It needs (a) the process archive to
+   record the unload once the last reference in the process goes, as a
+   generation the peers reconcile; (b) each peer's reconcile to run the
+   same unregister a local `dlclose` runs (module release, election
+   release, table slots), so table layouts converge; and (c) the id
+   allocator to treat an id as free only when no live Worker still holds
+   it.
 3. `ForkMergedStaticRoots.clear()` is never called in production, so every
-   fork pins the previous fork's static roots.
+   fork pins the previous fork's static roots. (2026-09-23: the uncalled
+   `clear()` was deleted with the class's base map; the pinning stands, and
+   a fix now belongs in the module, which knows every placed range.)
 4. Possible: a static-root import in a fork child may bind null (read before
    `fill()`); and the module's dirty set is keyed on owner alone, so owner 1 of
    activation 0 and owner 1 of a side activation share a slot.

@@ -33,16 +33,12 @@
  *
  * # What it still owns
  *
- * A lifetime record, and two guards that need it:
- *
- *  - WHICH ACTIVATIONS ARE REGISTERED. A host question: the module answers
- *    "holds no slots" both for an activation that was never seeded and for one
- *    whose catalog is legitimately empty, and reading the second as the first
- *    cost a real fork (`libneeded-provider.so`). It cannot ride on the publish
- *    call either -- that is issued again after every fork, by design, so a
- *    "refuse a second publish" rule would refuse the ordinary case.
- *  - THE MODULE AND ITS TABLE AS ONE FACT, because a slot is an index into
- *    that table and the two are unusable apart.
+ * The module and its table as ONE fact, because a slot is an index into that
+ * table and the two are unusable apart. Nothing else: it used to keep the set
+ * of registered activations too, which `ForkActivations` already is, and to
+ * release them, which is `ForkActivations.forget` -- one module call that
+ * frees an activation's slots along with everything else the module holds
+ * for it.
  *
  * # NO `Table.set` SURVIVES HERE, and the argument that kept the last one
  *
@@ -53,10 +49,11 @@
  * table, and the injector already emits table primitives into it for exactly
  * this reason, so an emitted `table.set $resume (ref.null func)` now runs from
  * inside `resume_unregister_impl` -- reached by the `fm_resume_slots` op-1
- * release this class was already issuing, and by nothing else, because the
- * release is the only moment the nulling ever happened while it was here. The
- * recorded slot list went with it, along with the `slots` field of
- * `ForkResumeAssignment` and `slotsOf()`.
+ * release (issued by `ForkActivations.forget` now), because the release is
+ * the only moment the nulling ever happened while it was here. The recorded
+ * slot list went with it, along with the `slots` field of
+ * `ForkResumeAssignment` and `slotsOf()`. The merged catalogs and the drive
+ * table followed the same argument on 2026-09-23 (`__wpk_fork_table_null`).
  *
  * This is the SECOND time that exact "cannot hold a funcref, therefore host"
  * argument has been wrong about this one table. The first was the table
@@ -78,10 +75,9 @@ export interface ForkResumeAssignment {
   readonly count: number;
 }
 
-/** What this needs from the co-resident module: the assignment, and its release. */
+/** What this needs from the co-resident module: the assignment. */
 export interface ForkResumeSlots {
   publishResumeAssignment(activationId: number): ForkResumeAssignment;
-  releaseResumeSlots(activationId: number): number;
 }
 
 /**
@@ -106,15 +102,6 @@ const PLACE_RESUME_THUNKS = "__wpk_fork_place_resume_thunks";
 const RESUME_CATALOG = "__wpk_fork_resume_catalog";
 
 export class ForkResumeTable {
-  /**
-   * The registered activations, and nothing about them.
-   *
-   * This was a `Map` to each activation's slot list -- a copy of the module's
-   * own `RESUME_SLOT_INDEX`, kept solely so `unregisterActivation` could null
-   * those entries. The module nulls them itself now, so the only fact left on
-   * this side is membership.
-   */
-  private readonly registered = new Set<number>();
   /**
    * The numbering and the table it indexes, as ONE thing.
    *
@@ -158,13 +145,10 @@ export class ForkResumeTable {
    *
    * # What the host does here, and why each is not the guest's
    *
-   * It refuses a double registration, because whether an activation is
-   * registered is a HOST lifetime question -- the module answers "holds no
-   * slots" for an activation that was never seeded AND for one whose catalog
-   * is legitimately empty, which is the `libneeded-provider.so` case that cost
-   * a real fork. It records membership and nothing else: which SLOTS an
-   * activation holds is the module's own record, and this side used to keep a
-   * copy of it only so it could null them on `dlclose`.
+   * Whether an activation is registered is not asked here: `ForkActivations`
+   * holds the live set, and the module answers "holds no slots" both for an
+   * activation never seeded and for one whose catalog is legitimately empty
+   * (`libneeded-provider.so`), so it cannot be asked either.
    *
    * `instance` is the guest being registered. It is available at all three
    * call sites (`host/src/worker-main.ts:1031`, `:4656`, `:6962`), all of
@@ -180,11 +164,6 @@ export class ForkResumeTable {
   ): void {
     if (!Number.isInteger(activationId) || activationId < 0) {
       throw new RangeError(`${this.label}: invalid activation id ${activationId}`);
-    }
-    if (this.registered.has(activationId)) {
-      throw new Error(
-        `${this.label}: activation ${activationId} is already registered`,
-      );
     }
     const place = instance.exports[PLACE_RESUME_THUNKS] as
       | ((pairs: number, count: number) => number)
@@ -227,48 +206,6 @@ export class ForkResumeTable {
     // a shim that does nothing, either: the table simply stays empty at those
     // slots, which is the failure being visible rather than papered over.
     place(ptr, count);
-    this.registered.add(activationId);
-  }
-
-  /**
-   * Release an activation's slots for reuse.
-   *
-   * ONE CALL. The module nulls every entry this activation holds and only then
-   * frees any of them, inside a single entry, so there is no window anywhere
-   * in which a freed slot still holds a live thunk -- and no ordering for this
-   * side to get right.
-   *
-   * The membership record is dropped AFTER the module has released, not
-   * before. If the release fails -- the module traps its `table.set` when the
-   * guest's placement shim never grew the table far enough -- the two sides
-   * still agree that this activation is live, and the caller can retry. Doing
-   * it first would leave an activation unregistered here and still assigned
-   * there, which is unrecoverable and looks like success on the second
-   * attempt.
-   */
-  unregisterActivation(activationId: number): void {
-    if (!this.registered.has(activationId)) {
-      throw new Error(
-        `${this.label}: activation ${activationId} is not registered`,
-      );
-    }
-    this.require().slots.releaseResumeSlots(activationId);
-    this.registered.delete(activationId);
-  }
-
-  /**
-   * Release every activation, highest id first.
-   *
-   * The ORDER is this side's choice and nothing downstream reads it: the
-   * module frees into a bitmap, which is order-independent. It mirrors reverse
-   * load order, which is the order a process tears down its libraries in.
-   */
-  clear(): void {
-    for (const activationId of [...this.registered].sort(
-      (left, right) => right - left,
-    )) {
-      this.unregisterActivation(activationId);
-    }
   }
 
   private require(): { slots: ForkResumeSlots; table: WebAssembly.Table } {

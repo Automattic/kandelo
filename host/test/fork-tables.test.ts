@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { ForkTableStateOwners } from "../src/fork-table-state-owners";
 import { ForkTables } from "../src/fork-tables";
 import type { DylinkTablePatch } from "../src/dylink-planner-wire";
 
@@ -35,9 +36,18 @@ function table(length: number): WebAssembly.Table {
   return new WebAssembly.Table({ element: "anyfunc", initial: length });
 }
 
+/**
+ * A `ForkTables` over live activations and the real owner election, which is
+ * where it reads everything it used to keep a copy of: each activation's
+ * catalog and tables are its instance's exports, and a table's canonical
+ * coordinate is the election's.
+ */
 function build() {
   const marks: [number, bigint, bigint][] = [];
-  const tables = new ForkTables(
+  const exports = new Map<number, Record<string, unknown>>();
+  const owners = new ForkTableStateOwners(() => {});
+  const of = (id: number) => exports.get(id) ?? exports.set(id, {}).get(id)!;
+  const forkTables = new ForkTables(
     {
       markTablePages: (owner, first, count) => {
         // The real export takes `u64` pages, so anything but a BigInt throws
@@ -48,8 +58,26 @@ function build() {
         marks.push([owner, first, count]);
       },
     },
+    owners,
+    () =>
+      [...exports.keys()].sort((l, r) => l - r).map((activationId) => ({
+        activationId,
+        instance: { exports: of(activationId) } as unknown as WebAssembly.Instance,
+        fixedPrefixSize: 0,
+        templateId: new Uint8Array(32),
+      })),
     "test fork tables",
   );
+  const tables = Object.assign(forkTables, {
+    /** What registration publishes: the table export, and its election. */
+    register(activationId: number, ownerId: number, t: WebAssembly.Table): void {
+      of(activationId)[`__wpk_fork_table_${ownerId}`] = t;
+      owners.register(activationId, ownerId, t);
+    },
+    registerCatalog(activationId: number, catalog: WebAssembly.Table): void {
+      of(activationId).__wpk_fork_function_catalog = catalog;
+    },
+  });
   return { tables, marks };
 }
 

@@ -599,8 +599,9 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): number[]
 const CATALOG_STRIDE = 1 << 16;
 
 /**
- * Seed the merged-catalog bases a multi-activation capture needs, the way a
- * dlopen host seeds them: activation `a`'s slice starts at `a * STRIDE`.
+ * Place the merged catalogs a multi-activation capture needs, the way a
+ * dlopen host does, so that activation `a`'s slice starts at `a * STRIDE`:
+ * ascending, each sized to reach the next one's base.
  *
  * A single-activation capture seeds nothing, which is the production worker
  * that never dlopened: the module then maps a slot to activation 0 directly.
@@ -609,22 +610,25 @@ function seedCatalogBases(
   f: Fixture,
   leaves: readonly (readonly [kind: number, a: number, b: number])[],
 ): void {
-  for (const [kind, seed] of [
-    [INTERN_KIND_FUNCREF, "fm_set_activation_catalog_base"],
-    [INTERN_KIND_STATIC_ROOT, "fm_set_activation_static_root_base"],
+  for (const [kind, place] of [
+    [INTERN_KIND_FUNCREF, "fm_place_activation_catalog"],
+    [INTERN_KIND_STATIC_ROOT, "fm_place_activation_static_roots"],
   ] as const) {
     const activations = new Set(
       leaves.filter(([k]) => k === kind).map(([, activation]) => activation),
     );
     if ([...activations].every((activation) => activation === 0)) continue;
     activations.add(0);
-    for (const activation of activations) {
-      (f.x[seed] as (a: number, base: number) => void)(
+    const sorted = [...activations].sort((l, r) => l - r);
+    sorted.forEach((activation, index) => {
+      const next = sorted[index + 1] ?? activation + 1;
+      const base = (f.x[place] as (a: number, len: number) => number)(
         activation,
-        activation * CATALOG_STRIDE,
+        (next - activation) * CATALOG_STRIDE,
       );
-      expect(f.errno(), `${seed}(${activation})`).toBe(0);
-    }
+      expect(f.errno(), `${place}(${activation})`).toBe(0);
+      expect(base, `${place}(${activation})`).toBe(activation * CATALOG_STRIDE);
+    });
   }
 }
 
@@ -1037,10 +1041,10 @@ export interface ArenaFixture {
    * primary activation.
    */
   tableStateOwned: (activation: number, owner: number) => number;
-  /** `fm_set_activation_catalog_base(activation, base)`. */
-  seedCatalogBase: (activation: number, base: number) => void;
-  /** `fm_set_activation_static_root_base(activation, base)`. */
-  seedStaticRootBase: (activation: number, base: number) => void;
+  /** `fm_place_activation_catalog(activation, len)`, the base it placed. */
+  placeCatalog: (activation: number, length: number) => number;
+  /** `fm_place_activation_static_roots(activation, len)`, the base it placed. */
+  placeStaticRoots: (activation: number, length: number) => number;
   /** `fm_set_import_provenance(space, consumer, ordinal, kind, group, rawBits)`. */
   seedImportProvenance: (
     space: number,
@@ -1264,15 +1268,13 @@ export function arenaFixture(label = "arena"): ArenaFixture {
         activation,
         owner,
       ),
-    seedCatalogBase: (activation, base) => {
-      (x.fm_set_activation_catalog_base as (a: number, b: number) => void)(activation, base);
-    },
-    seedStaticRootBase: (activation, base) => {
-      (x.fm_set_activation_static_root_base as (a: number, b: number) => void)(
+    placeCatalog: (activation, length) =>
+      (x.fm_place_activation_catalog as (a: number, n: number) => number)(activation, length),
+    placeStaticRoots: (activation, length) =>
+      (x.fm_place_activation_static_roots as (a: number, n: number) => number)(
         activation,
-        base,
-      );
-    },
+        length,
+      ),
     seedImportProvenance: (space, consumer, ordinal, kind, group, rawBits) => {
       (
         x.fm_set_import_provenance as (

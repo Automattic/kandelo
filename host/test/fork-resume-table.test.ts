@@ -38,9 +38,8 @@ import { standInGuest } from "./support/resume-placement-stand-in";
  * `registerActivation` no longer writes the table. It publishes the module's
  * decision and hands the guest its own `(ptr, count)`; the guest's emitted
  * `__wpk_fork_place_resume_thunks` does the copying. So what is under test
- * here is the module's NUMBERING and the host's remaining lifetime record --
- * which activations are registered, which slots each holds, and what
- * `dlclose` nulls.
+ * here is the module's NUMBERING -- which slots each activation holds, and
+ * what `dlclose` nulls.
  *
  * That the host writes NOTHING is asserted directly, by "places NOTHING
  * itself when the guest's shim does nothing". Every other case here would
@@ -130,19 +129,6 @@ function harness(): Harness {
         count: Number(packed >> 32n),
       };
     },
-    releaseResumeSlots: (activationId) => {
-      const freed = (x.fm_resume_slots as (o: number, a: number, r: number) => number)(
-        1,
-        activationId,
-        0,
-      );
-      if (freed < 0) {
-        throw new Error(
-          `activation ${activationId} had no slots to release (errno ${errno()})`,
-        );
-      }
-      return freed;
-    },
   };
 
   const table = new ForkResumeTable("resume slots");
@@ -165,6 +151,21 @@ function harness(): Harness {
   };
 
   return { table, seed, errno, resumeTable, memory, exports: x };
+}
+
+/**
+ * `dlclose`: the one module release `ForkActivations.forget` issues, which
+ * frees the activation's slots with everything else the module holds for it.
+ */
+function release(h: Harness, activationId: number): void {
+  const freed = (h.exports.fm_resume_slots as (o: number, a: number, r: number) => number)(
+    1,
+    activationId,
+    0,
+  );
+  if (freed < 0) {
+    throw new Error(`releasing activation ${activationId} failed (errno ${h.errno()})`);
+  }
 }
 
 /**
@@ -281,7 +282,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     const h = harness();
     register(h, 0, [0, 1]);
     register(h, 1, [0, 1]);
-    h.table.unregisterActivation(0);
+    release(h, 0);
     register(h, 2, [0, 1]);
     expect(slotsOf(h, 2)).toEqual([1, 2]);
     expect(slotsOf(h, 1)).toEqual([3, 4]);
@@ -303,7 +304,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     const h = harness();
     register(h, 0, [0, 1]);
     expect(h.table.resumeTable.get(1)).not.toBeNull();
-    h.table.unregisterActivation(0);
+    release(h, 0);
     expect(h.table.resumeTable.get(1)).toBeNull();
     expect(h.table.resumeTable.get(2)).toBeNull();
   });
@@ -371,7 +372,8 @@ describe("ForkResumeTable, numbered by the module", () => {
       ordinal: number,
     ) => number;
     const EINVAL = 22;
-    for (const op of [0, 2, 0xffff_ffff]) {
+    // Op 2 is the lenient release of a `dlopen` that failed part way.
+    for (const op of [0, 3, 0xffff_ffff]) {
       expect(slots(op, 0, 0), `op ${op}`).toBe(-1);
       expect(h.errno(), `errno after op ${op}`).toBe(EINVAL);
     }
@@ -489,14 +491,14 @@ describe("ForkResumeTable, numbered by the module", () => {
     // anything" into a silent no-op. The trap arrives as an exception at the
     // release call, exactly as the host's own `Table.set` threw a `RangeError`
     // before this moved.
-    expect(() => h.table.unregisterActivation(0)).toThrow();
+    expect(() => release(h, 0)).toThrow();
     // NOTHING WAS HALF-RELEASED. The module nulls every slot before it frees
     // any, so a trap in the nulling pass leaves the assignment intact -- and
-    // this side drops its membership record only after the module returns, so
-    // both still agree the activation is live and a retry is possible rather
-    // than an unrecoverable "not registered".
+    // `ForkActivations.forget` drops its record only after the module returns,
+    // so both still agree the activation is live and a retry is possible
+    // rather than an unrecoverable "not registered".
     expect(slotsOf(h, 0)).toEqual([1, 2]);
-    expect(() => h.table.unregisterActivation(0)).toThrow();
+    expect(() => release(h, 0)).toThrow();
   });
 
   it("registers and releases an activation with NO resume targets", () => {
@@ -510,16 +512,13 @@ describe("ForkResumeTable, numbered by the module", () => {
     // exit 8.
     //
     // Whether an activation was registered is the HOST's question, answered by
-    // `unregisterActivation` refusing one it never placed thunks for. Asking it
-    // again in the module was a second opinion with a wrong answer in it.
+    // `ForkActivations.forget` refusing one it does not have. Asking it again
+    // in the module was a second opinion with a wrong answer in it.
     const h = harness();
     register(h, 0, [0, 1]);
     register(h, 1, []); // seeds an empty catalog, publishes (0, 0)
     expect(slotsOf(h, 1)).toEqual([]);
-    expect(() => h.table.unregisterActivation(1)).not.toThrow();
-    // And the host still refuses one it never registered, which is where that
-    // question belongs.
-    expect(() => h.table.unregisterActivation(7)).toThrow(/is not registered/);
+    expect(() => release(h, 1)).not.toThrow();
     // The numbering is undisturbed: an activation holding nothing frees
     // nothing, so the next one does not silently move up.
     register(h, 2, [0]);
@@ -545,7 +544,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     register(h, 0, [0, 1]); // main program: slots 1, 2
     register(h, 1, [0]);    // dlopen A:     slot 3
     register(h, 2, [0, 1]); // dlopen B:     slots 4, 5
-    h.table.unregisterActivation(1); // dlclose A, freeing 3
+    release(h, 1); // dlclose A, freeing 3
     register(h, 3, [0, 1]); // dlopen C:     slot 3 (reused), then 6
 
     expect(slotsOf(h, 0)).toEqual([1, 2]);

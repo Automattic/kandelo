@@ -4,8 +4,8 @@
 // The single-activation analogue is `fork-module-funcref-replay.test.ts` (D6.1),
 // which resolves every funcref against ONE catalog. D7a.1b removes that
 // restriction with a MERGED, activation-namespaced catalog: the host lays each
-// activation's function catalog at a distinct BASE inside one imported table and
-// seeds the module the per-activation base via `fm_set_activation_catalog_base`.
+// activation's function catalog at a distinct BASE inside one imported table, the
+// base the module places with `fm_place_activation_catalog`.
 // `fm_funcref_ordinal` then returns the GLOBAL slot
 // `base(module_activation) + function_ordinal`, and the injected
 // `__wpk_fork_ref_decode_funcref` shim `table.get`s that slot.
@@ -80,7 +80,7 @@ function catalogTable(base: number, count: number): WebAssembly.Table {
 }
 
 interface ForkModuleRefExports {
-  fm_set_activation_catalog_base: (activationId: number, base: number) => void;
+  fm_place_activation_catalog: (activationId: number, length: number) => number;
   fm_begin_reference_replay: (root: number, pid: number) => void;
   fm_stats: (field: number) => bigint;
   fm_last_errno: () => number;
@@ -131,13 +131,18 @@ describe("fork-module multi-activation funcref reconstruction (Phase 6 D7a.1b)",
     // catalog is large (80 funcref slots), the side module's is small (6).
     const catalogA = catalogTable(1000, 80);
     const catalogB = catalogTable(2000, 6);
-    const BASE_A = 0;
-    const BASE_B = catalogA.length;
 
-    // The CHILD's merged, activation-namespaced catalog: A at slots
-    // [0, 80), B at [80, 86). Filling it is the host's job -- the module is
-    // instantiated before its guests and cannot import their exports.
+    // The CHILD's merged, activation-namespaced catalog: the module places A
+    // at slots [0, 80) and B at [80, 86). Filling it is the host's job -- the
+    // module is instantiated before its guests and cannot import their
+    // exports.
     const child = childInstance(f, { label: "multi-funcref-replay-child" });
+    const x = child.exports as unknown as ForkModuleRefExports;
+    const BASE_A = x.fm_place_activation_catalog(ACTIVATION_A, catalogA.length);
+    expect(x.fm_last_errno(), "activation A's catalog is placed").toBe(0);
+    const BASE_B = x.fm_place_activation_catalog(ACTIVATION_B, catalogB.length);
+    expect(x.fm_last_errno(), "activation B's catalog is placed").toBe(0);
+    expect([BASE_A, BASE_B]).toEqual([0, catalogA.length]);
     const merged = child.functionCatalog;
     const span = BASE_B + catalogB.length;
     if (merged.length < span) merged.grow(span - merged.length);
@@ -147,13 +152,6 @@ describe("fork-module multi-activation funcref reconstruction (Phase 6 D7a.1b)",
     for (let i = 0; i < catalogB.length; i += 1) {
       merged.set(BASE_B + i, catalogB.get(i));
     }
-    const x = child.exports as unknown as ForkModuleRefExports;
-
-    // Seed each activation's catalog base (the merged-catalog mechanism).
-    x.fm_set_activation_catalog_base(ACTIVATION_A, BASE_A);
-    expect(x.fm_last_errno(), "activation A's base seeds").toBe(0);
-    x.fm_set_activation_catalog_base(ACTIVATION_B, BASE_B);
-    expect(x.fm_last_errno(), "activation B's base seeds").toBe(0);
 
     const before = x.fm_stats(REFERENCES_RECONSTRUCTED);
 

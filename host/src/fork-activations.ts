@@ -57,10 +57,11 @@ export interface ForkSideActivation {
   readonly fixedPrefix: number;
 }
 
-/** The module entry registration publishes through. */
+/** The module entries registration publishes through, and release. */
 export interface ForkActivationDriveSink {
   bindActivationDrive(activationId: number, exports: Record<string, unknown>): void;
   setActivationTemplateId(activationId: number, templateId: Uint8Array): void;
+  releaseResumeSlots(activationId: number): number;
 }
 
 /**
@@ -76,10 +77,12 @@ export interface ForkActivationCatalogSink {
   registerCatalog(activationId: number, catalog: WebAssembly.Table): void;
   registerStaticRoots(activationId: number, catalog: WebAssembly.Table): void;
   registerTable(activationId: number, ownerId: number, table: WebAssembly.Table): void;
+  /** The one release the host makes: its table-identity election. */
+  releaseTables(activationId: number, tables: readonly WebAssembly.Table[]): void;
 }
 
 /**
- * The one sink every worker builds, from the four records it keeps.
+ * The one sink every worker builds.
  *
  * A process worker and a pthread replica each run their OWN fork-module
  * instance and therefore their own catalogs, tables and owner election -- but
@@ -87,31 +90,69 @@ export interface ForkActivationCatalogSink {
  * came to have no sink at all (a dlopen there registered no table, and the
  * first host table mutation failed with "host mutated a Table outside the
  * registered fork catalogs").
+ *
+ * THE MERGED FUNCTION CATALOG is the table the module imported at init: the
+ * module is instantiated BEFORE its guests, so it cannot import a guest's
+ * `__wpk_fork_function_catalog`, and the host copies each activation's catalog
+ * into the range the MODULE places it at (the lowest gap live activations
+ * leave). Copying keeps funcref identity, which the module's encode scan
+ * compares, and it is filled on every worker because that scan serves the
+ * parent too. The module also clears the range when the activation is
+ * released, so nothing here remembers where it went.
  */
 export function forkActivationCatalogSink(records: {
-  tables: {
-    registerCatalog(activationId: number, catalog: WebAssembly.Table): void;
-    register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
-  };
-  merged: { take(activationId: number, catalog: WebAssembly.Table): void };
+  module: { placeActivationCatalog(activationId: number, length: number): number };
+  functionCatalog: WebAssembly.Table;
   mergedStaticRoots: { take(activationId: number, catalog: WebAssembly.Table): void };
   owners: {
     register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
+    releaseActivation(activationId: number, tables: readonly WebAssembly.Table[]): void;
   };
 }): ForkActivationCatalogSink {
   return {
     registerCatalog: (activationId, catalog) => {
-      records.tables.registerCatalog(activationId, catalog);
-      records.merged.take(activationId, catalog);
+      const mirror = records.functionCatalog;
+      const base = records.module.placeActivationCatalog(activationId, catalog.length);
+      if (mirror.length < base + catalog.length) mirror.grow(base + catalog.length - mirror.length);
+      for (let slot = 0; slot < catalog.length; slot += 1) mirror.set(base + slot, catalog.get(slot));
     },
     registerStaticRoots: (activationId, catalog) => {
       records.mergedStaticRoots.take(activationId, catalog);
     },
     registerTable: (activationId, ownerId, table) => {
-      records.tables.register(activationId, ownerId, table);
       records.owners.register(activationId, ownerId, table);
     },
+    releaseTables: (activationId, tables) => {
+      records.owners.releaseActivation(activationId, tables);
+    },
   };
+}
+
+/**
+ * `__wpk_fork_table_N`: an activation's private tables, one export each.
+ *
+ * The suffix is the owner ordinal, and a malformed one is a build bug rather
+ * than a table to skip -- skipping would silently drop a table from every
+ * mutation journal it should appear in. Read from the instance each time it is
+ * needed rather than recorded, so a released activation leaves no copy.
+ */
+export function forkActivationTables(
+  activation: ForkActivation,
+  label: string,
+): Array<[ownerId: number, table: WebAssembly.Table]> {
+  const tables: Array<[number, WebAssembly.Table]> = [];
+  for (const [name, value] of Object.entries(activation.instance.exports)) {
+    if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
+    const suffix = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
+    if (!/^[1-9][0-9]*$/.test(suffix) || !Number.isSafeInteger(Number(suffix))) {
+      throw new Error(`${label}: malformed table catalog export ${name}`);
+    }
+    if (!(value instanceof WebAssembly.Table)) {
+      throw new Error(`${label}: table catalog ${name} is not a Table`);
+    }
+    tables.push([Number(suffix), value]);
+  }
+  return tables;
 }
 
 export class ForkActivations {
@@ -154,15 +195,40 @@ export class ForkActivations {
   }
 
   /**
-   * Forget an activation whose registration did not complete.
+   * Release a closed activation, so nothing of it outlives `dlclose`.
    *
-   * A delete, and nothing else. What the coordinator's `unregisterActivation`
-   * unwound -- reference tables, journals, prepared state -- belongs to the
-   * module, which discards it with the capture rather than per activation.
+   * The MODULE releases everything it holds -- resume slots, records, identity
+   * entries, and its ranges of the merged catalogs and the drive table -- in
+   * one `fm_resume_slots` op 1. What is left for the host is what only it has:
+   * the table-identity election (wasm has no `table.eq`), and its references to
+   * the instance, dropped here so the library can be collected.
+   *
+   * The module goes first: if its release fails, the activation is still live
+   * on both sides and the caller can retry.
    */
   forget(activationId: number): void {
-    if (!this.live.delete(activationId)) {
+    const activation = this.live.get(activationId);
+    if (!activation) {
       throw new Error(`${this.label}: activation ${activationId} is not registered`);
+    }
+    this.drive.releaseResumeSlots(activationId);
+    this.catalogs?.releaseTables(
+      activationId,
+      forkActivationTables(activation, this.label).map(([, table]) => table),
+    );
+    this.live.delete(activationId);
+    this.bootstrapped.delete(activationId);
+  }
+
+  /**
+   * Release every activation from the module, highest id first, as a process
+   * tears its libraries down. The table election is not re-run: nothing
+   * mutates a table after this.
+   */
+  clear(): void {
+    for (const { activationId } of [...this.ordered()].reverse()) {
+      this.drive.releaseResumeSlots(activationId);
+      this.live.delete(activationId);
     }
   }
 
@@ -203,21 +269,8 @@ export class ForkActivations {
     }
     this.catalogs.registerStaticRoots(activation.activationId, staticRoots);
 
-    // `__wpk_fork_table_N`: this activation's private tables, one export each.
-    // The suffix is the owner ordinal, and a malformed one is a build bug
-    // rather than a table to skip -- skipping would silently drop a table from
-    // every mutation journal it should appear in.
-    for (const [name, value] of Object.entries(exports)) {
-      if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
-      const suffix = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
-      const ownerId = Number(suffix);
-      if (!/^[1-9][0-9]*$/.test(suffix) || !Number.isSafeInteger(ownerId)) {
-        throw new Error(`${this.label}: malformed table catalog export ${name}`);
-      }
-      if (!(value instanceof WebAssembly.Table)) {
-        throw new Error(`${this.label}: table catalog ${name} is not a Table`);
-      }
-      this.catalogs.registerTable(activation.activationId, ownerId, value);
+    for (const [ownerId, table] of forkActivationTables(activation, this.label)) {
+      this.catalogs.registerTable(activation.activationId, ownerId, table);
     }
   }
 

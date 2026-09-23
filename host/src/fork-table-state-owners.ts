@@ -85,6 +85,15 @@ export class ForkTableStateOwners {
     this.elect(seen);
   }
 
+  /**
+   * The coordinate that writes `table`'s sparse state, which is also the one a
+   * host mutation of it is journaled under (`ForkTables`). One election, read
+   * by both, so the two can never name different writers.
+   */
+  canonical(table: WebAssembly.Table): Coordinate | undefined {
+    return this.byTable.get(table)?.[0];
+  }
+
   /** Forget every coordinate an unregistering activation contributed. */
   releaseActivation(activationId: number, tables: readonly WebAssembly.Table[]): void {
     for (const table of tables) {

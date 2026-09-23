@@ -6275,12 +6275,13 @@ pub struct ForkModule {
     /// Seed the whole-arena reference graph for this fork
     /// (`module_state_root`, `pid`); `fm_last_errno` reports failure.
     pub fm_begin_reference_replay: wasmtime::TypedFunc<(u32, u32), ()>,
-    /// Seed activation `activation_id`'s funcref-catalog merge base (only
-    /// needed for >1 activation; unused by Task 1's single-activation path).
-    pub fm_set_activation_catalog_base: wasmtime::TypedFunc<(u32, u32), ()>,
-    /// Seed activation `activation_id`'s static-root-catalog merge base
-    /// (only needed for >1 static-root activation).
-    pub fm_set_activation_static_root_base: wasmtime::TypedFunc<(u32, u32), ()>,
+    /// Place activation `activation_id`'s funcref catalog of `len` entries in
+    /// the merged table and return its base (only needed for >1 activation;
+    /// unused by Task 1's single-activation path).
+    pub fm_place_activation_catalog: wasmtime::TypedFunc<(u32, u32), i32>,
+    /// The same for its static-root catalog (only needed for >1 static-root
+    /// activation).
+    pub fm_place_activation_static_roots: wasmtime::TypedFunc<(u32, u32), i32>,
     /// Seed activation `activation_id`'s raw `kandelo.wpk_fork.gc_codec`
     /// section bytes (`ptr`, `byte_len`, both guest byte offsets/lengths).
     pub fm_set_activation_gc_codec: wasmtime::TypedFunc<(u32, u32, u32), ()>,
@@ -6839,8 +6840,8 @@ pub(crate) fn instantiate_fork_module(
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
         fm_begin_reference_replay: fm_func!("fm_begin_reference_replay": (u32, u32) => ()),
-        fm_set_activation_catalog_base: fm_func!("fm_set_activation_catalog_base": (u32, u32) => ()),
-        fm_set_activation_static_root_base: fm_func!("fm_set_activation_static_root_base": (u32, u32) => ()),
+        fm_place_activation_catalog: fm_func!("fm_place_activation_catalog": (u32, u32) => i32),
+        fm_place_activation_static_roots: fm_func!("fm_place_activation_static_roots": (u32, u32) => i32),
         fm_set_activation_gc_codec: fm_func!("fm_set_activation_gc_codec": (u32, u32, u32) => ()),
         fm_set_activation_template_id: fm_func!("fm_set_activation_template_id": (u32, u32) => ()),
         fm_build_gc_plan: fm_func!("fm_build_gc_plan": u32 => u32),
@@ -9047,8 +9048,8 @@ fn spawn_guest_thread(
         // reference-carrying tables from THIS GUEST's own exports, now that
         // `instance` exists — mirrors `host/src/worker-main.ts:4780-4874,
         // 4915-4982`. Single-activation only (base 0 default; a >1-
-        // activation program would additionally need `fm_set_activation_
-        // catalog_base`/`fm_set_activation_static_root_base` — deferred, see
+        // activation program would additionally need `fm_place_activation_
+        // catalog`/`fm_place_activation_static_roots` — deferred, see
         // this file's "N1-I5 Task 1" section doc comment). Every export is
         // looked up optionally: a guest that never captures a reference
         // still unconditionally declares these names (fork-instrumentation

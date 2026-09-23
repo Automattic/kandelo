@@ -319,12 +319,13 @@ export class ForkModuleContinuationBackend {
     this.call("fm_set_activation_template_id", activationId, at);
   }
 
-  setActivationCatalogBase(activationId: number, base: number): void {
-    this.call("fm_set_activation_catalog_base", activationId, base);
+  /** Where the module places (or placed) a catalog in its merged table. */
+  placeActivationCatalog(activationId: number, length: number): number {
+    return this.call("fm_place_activation_catalog", activationId, length);
   }
 
-  setActivationStaticRootBase(activationId: number, base: number): void {
-    this.call("fm_set_activation_static_root_base", activationId, base);
+  placeActivationStaticRoots(activationId: number, length: number): number {
+    return this.call("fm_place_activation_static_roots", activationId, length);
   }
 
   /**
@@ -789,9 +790,14 @@ export class ForkModuleContinuationBackend {
     return { ptr: Number(packed & 0xffff_ffffn), count: Number(packed >> 32n) };
   }
 
-  /** Release an activation's resume slots for reuse. Returns how many. */
-  releaseResumeSlots(activationId: number): number {
-    return this.call("fm_resume_slots", 1, activationId, 0);
+  /**
+   * Release everything the module holds for an activation -- resume slots,
+   * records, table ranges -- so its id can be reused. `unplaced` for one whose
+   * thunks were never placed (a `dlopen` that failed part way). Returns how
+   * many resume slots were freed.
+   */
+  releaseResumeSlots(activationId: number, unplaced = false): number {
+    return this.call("fm_resume_slots", unplaced ? 2 : 1, activationId, 0);
   }
 
   // WHAT USED TO BE HERE: `decodedNodeCount` and `decodedNodeOrdinal`. Their

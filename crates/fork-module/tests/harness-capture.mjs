@@ -1403,8 +1403,9 @@ function i31Minter() {
   catalog.grow(2, null);
   catalog.set(base + 0, alpha);
   catalog.set(base + 1, beta);
-  x.fm_set_activation_catalog_base(5, base);
-  assert.equal(lastErrno(), 0, "activation 5's catalog base is seeded");
+  assert.equal(x.fm_place_activation_catalog(4, base), 0, "activation 4 holds the slots already filled");
+  assert.equal(x.fm_place_activation_catalog(5, 2), base, "activation 5's catalog is placed after them");
+  assert.equal(lastErrno(), 0, "activation 5's catalog is placed");
 
   // A null funcref is recipe 0 -- the graph's "no reference", not a failure, and
   // asking the host to identify null would make it invent an answer.
@@ -1435,10 +1436,10 @@ function i31Minter() {
     "encoding a function agrees with asking for its slot directly",
   );
 
-  // A slot BELOW every seeded base is refused rather than attributed to
+  // A slot NO placed range holds is refused rather than attributed to
   // activation 0, which would record a recipe naming another activation's
   // function.
-  assert.equal(x.fm_funcref_slot_to_recipe(0), -1, "a slot under every base is refused");
+  assert.equal(x.fm_funcref_slot_to_recipe(base + 2), -1, "a slot past every range is refused");
   assert.equal(lastErrno(), EINVAL, "and the reason is EINVAL");
 
   // A function the loader never catalogued is REFUSED. Inventing a coordinate

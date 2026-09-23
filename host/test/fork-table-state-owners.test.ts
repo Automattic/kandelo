@@ -145,6 +145,22 @@ describe("ForkTableStateOwners", () => {
     expect(seen).toEqual([[2, 6, true]]);
   });
 
+  it("publishes ownership again for a library that reuses a closed id", () => {
+    // `dlopen` reuses a `dlclose`d id, and the module's release drops every
+    // election result it served for that id, so it answers "not owned" until
+    // told otherwise. If this side still remembered publishing "owned" for
+    // the coordinate, it would never say so again, and the new library's
+    // table would have no sparse-state writer. The release is what forgets.
+    const published: string[] = [];
+    const owners = new ForkTableStateOwners((a, o, owned) => void published.push(`${a}:${o}=${owned}`));
+    const closed = table();
+    owners.register(3, 1, closed);
+    owners.releaseActivation(3, [closed]);
+    owners.register(3, 1, table());
+    expect(published).toEqual(["3:1=true", "3:1=true"]);
+    expect(owners.canonical(closed), "the closed table has no coordinate").toBeUndefined();
+  });
+
   it("rejects an activation id that is not a non-negative integer", () => {
     const { owners } = electing();
     const t = table();

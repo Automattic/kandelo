@@ -338,7 +338,6 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-child-references.ts",
       "host/src/fork-guest-sections.ts",
       "host/src/fork-tables.ts",
-      "host/src/fork-merged-catalog.ts",
     ]),
   // Host floor restored from the attic: everything the `fork-*.ts` sweep took by
   // FILENAME that turned out to be process lifecycle, cross-worker transport or
@@ -358,7 +357,6 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-child-references.ts",
       "host/src/fork-guest-sections.ts",
       "host/src/fork-tables.ts",
-      "host/src/fork-merged-catalog.ts",
     ]),
   workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
   workerMainForkTypeScript: () => workerMainForkLines(),

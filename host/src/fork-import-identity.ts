@@ -133,8 +133,6 @@ export class ForkImportIdentity {
   private readonly groups = new WeakMap<object, number>();
   private nextGroup = 1;
   private readonly preparing = new Set<number>();
-  /** Activations whose sections this worker has already published. */
-  private readonly seeded = new Set<number>();
 
   /**
    * `tables` is the OTHER election over the same objects, and it is deliberately
@@ -220,18 +218,18 @@ export class ForkImportIdentity {
   }
 
   /**
-   * Publish an activation's `KFIG`/`KFIT` sections to the module, once.
+   * Publish an activation's `KFIG`/`KFIT` sections to the module.
    *
-   * Idempotent because two callers need it at different moments and neither
-   * knows about the other: `prepareActivation` seeds at instantiation, and a
-   * fork CHILD seeds earlier still -- the module cannot plan an activation's
-   * imports without its sections, and the child asks for that plan before it
-   * instantiates anything (census 175). The module refuses a re-seed with
-   * `EINVAL`, so the second caller has to be the one that does nothing.
+   * Two callers need it at different moments and neither knows about the
+   * other: `prepareActivation` seeds at instantiation, and a fork CHILD seeds
+   * earlier still -- the module cannot plan an activation's imports without
+   * its sections, and the child asks for that plan before it instantiates
+   * anything (census 175). The MODULE makes the second seed a no-op: it
+   * compares the bytes and refuses only different ones. This used to keep a
+   * set of seeded ids to skip the call, which outlived `dlclose` and would make
+   * a library at a reused id skip its seed.
    */
   seedActivationSections(activationId: number, module: WebAssembly.Module): void {
-    if (this.seeded.has(activationId)) return;
-    this.seeded.add(activationId);
     for (const [space, section] of SECTIONS) {
       const [bytes] = WebAssembly.Module.customSections(module, section);
       if (bytes) {
