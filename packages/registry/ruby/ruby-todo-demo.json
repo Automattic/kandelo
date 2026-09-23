@@ -20,6 +20,13 @@
           "maxWorkers": 12
         }
       },
+      "init": {
+        "program": "/usr/bin/ruby",
+        "args": [
+          "/var/lib/todo/server.rb"
+        ],
+        "cwd": "/var/lib/todo"
+      },
       "web": {
         "requiredPorts": [
           8080

@@ -13,7 +13,11 @@
  *   /usr/bin/ruby              — the Kandelo Ruby build (sqlite3 gem linked in)
  *   /usr/lib/ruby/4.0.0/**     — Ruby standard library + the sqlite3 gem lib
  *   /var/lib/todo/**           — the Roda app (app.rb, server.rb, views/, vendor/)
- *   /etc/dinit.d/todo          — dinit service running the Rack server on :8080
+ *
+ * No dinit tree — the Ruby server is booted directly as pid 1 (see the
+ * `init.program` boot in ruby-todo-demo.json / demo-config.ts). One
+ * long-running process doesn't need a service manager, and dinit is ~2.4 MB
+ * this image deliberately skips.
  *
  * Not Rails — see docs/superpowers/specs/2026-09-21-browser-ruby-todo-design.md.
  *

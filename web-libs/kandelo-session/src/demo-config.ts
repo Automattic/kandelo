@@ -132,14 +132,32 @@ export const MAX_REQUESTED_MEMORY_PAGES = 16384;
 export const MAX_REQUESTED_WORKERS = 64;
 
 /**
- * Which init target to bring up. A NAME, not a command vector: the machine's
- * real init configuration already lives in the image (dinit service files
- * under /etc/dinit.d, the login session), and this only selects among them.
- * A profile with no `init` block boots the image's default login session.
+ * How to bring the machine's init process up. A profile with no `init` block
+ * boots the image's default login session.
+ *
+ * Two mutually exclusive shapes:
+ *
+ * - `{ target }` — a NAME, not a command vector: dinit is already running
+ *   the image's real init configuration (service files under
+ *   /etc/dinit.d), and this only selects which dinit target to bring up.
+ *   This is the shape every dinit-based service demo (nginx, nginx-php, the
+ *   wordpress-* family) uses — they all happen to share one launcher
+ *   (`dinit --container <target>`).
+ * - `{ program, args, cwd? }` — exec a program from the image directly as
+ *   pid 1, no service manager involved. Booting a program directly as init
+ *   is a legitimate POSIX shape; not every machine needs or wants a service
+ *   manager (see images/vfs/products/browser-ruby-todo.toml, which
+ *   deliberately excludes dinit to stay lean for one long-running process).
+ *   `program` must be an absolute, normalized path — validated the same way
+ *   as `ingest.targetPath` — but this does NOT weaken the "boot identity is
+ *   never URL-carried" trust rule: the path names a program that must
+ *   already exist inside the image, which is exactly as image-owned as a
+ *   dinit target name. What that rule forbids is a *command vector*
+ *   supplied by the boot descriptor/URL, not a reference to image content.
  */
-export interface DemoInitConfig {
-  target: string;
-}
+export type DemoInitConfig =
+  | { target: string }
+  | { program: string; args: string[]; cwd?: string };
 
 /**
  * Readiness signalling for the host's web pane. This is presentation, not
@@ -479,14 +497,63 @@ function boundedCount(
 /** dinit service names, matching /etc/dinit.d/<name> filenames. */
 const INIT_TARGET_RE = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
+/**
+ * An absolute, normalized, NUL-free guest path — no `.`/`..` segments, no
+ * trailing slash tricks. Shared by `init.program`/`init.cwd` and
+ * `ingest.targetPath`: both name a fixed location inside the image, and a
+ * traversal in either would escape the author's intended target even though
+ * no user input reaches either field.
+ */
+function validateAbsoluteNormalizedPath(path: string, field: string): void {
+  if (!path.startsWith("/")) {
+    throw new Error(`${field} must be absolute`);
+  }
+  const pathSegments = path.split("/").slice(1);
+  if (
+    pathSegments.length === 0
+    || pathSegments.some(
+      (segment) => segment === "" || segment === "." || segment === "..",
+    )
+    || path.includes("\0")
+  ) {
+    throw new Error(`${field} must be a normalized file path`);
+  }
+}
+
 function normalizeInit(value: unknown, field: string): DemoInitConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);
   }
-  const target = value.target;
-  if (typeof target !== "string" || target.length === 0) {
-    throw new Error(`${field}.target must be a non-empty string`);
+  if (value.target !== undefined && value.program !== undefined) {
+    throw new Error(
+      `${field} cannot declare both target and program`
+        + " — only one thing can be pid 1",
+    );
   }
+  if (value.program !== undefined) {
+    const program = requiredString(value.program, `${field}.program`);
+    validateAbsoluteNormalizedPath(program, `${field}.program`);
+
+    let args: string[] = [];
+    if (value.args !== undefined) {
+      if (!Array.isArray(value.args)) {
+        throw new Error(`${field}.args must be an array`);
+      }
+      args = value.args.map((arg, index) =>
+        requiredString(arg, `${field}.args[${index}]`)
+      );
+    }
+
+    const init: DemoInitConfig = { program, args };
+    if (value.cwd !== undefined) {
+      const cwd = requiredString(value.cwd, `${field}.cwd`);
+      validateAbsoluteNormalizedPath(cwd, `${field}.cwd`);
+      init.cwd = cwd;
+    }
+    return init;
+  }
+
+  const target = requiredString(value.target, `${field}.target`);
   if (!INIT_TARGET_RE.test(target)) {
     throw new Error(
       `${field}.target must be a bare service name matching /etc/dinit.d/<name>`,
@@ -773,21 +840,9 @@ function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   }
 
   const targetPath = requiredString(value.targetPath, `${field}.targetPath`);
-  if (!targetPath.startsWith("/")) {
-    throw new Error(`${field}.targetPath must be absolute`);
-  }
   // The write goes to this exact path, so a traversal here would escape the
   // author's intended destination even though no user input reaches it.
-  const pathSegments = targetPath.split("/").slice(1);
-  if (
-    pathSegments.length === 0
-    || pathSegments.some(
-      (segment) => segment === "" || segment === "." || segment === "..",
-    )
-    || targetPath.includes("\0")
-  ) {
-    throw new Error(`${field}.targetPath must be a normalized file path`);
-  }
+  validateAbsoluteNormalizedPath(targetPath, `${field}.targetPath`);
 
   const maxBytes = value.maxBytes;
   if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes <= 0) {

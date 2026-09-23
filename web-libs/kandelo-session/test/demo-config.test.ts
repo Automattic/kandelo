@@ -101,6 +101,52 @@ describe("init and web blocks", () => {
     }))).toThrow(/profiles\.m\.init\.target must be a bare service name/);
   });
 
+  // A machine can boot a program from the image directly as pid 1 instead
+  // of naming a dinit target — e.g. ruby-todo, which deliberately ships no
+  // dinit tree at all (see images/vfs/products/browser-ruby-todo.toml).
+  it("accepts a direct-program init with no dinit tree", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: {
+        program: "/usr/bin/ruby",
+        args: ["/var/lib/todo/server.rb"],
+        cwd: "/var/lib/todo",
+      },
+      web: { requiredPorts: [8080] },
+    }))).not.toThrow();
+  });
+
+  it("resolves a direct-program init, defaulting args to an empty array", () => {
+    expect(resolveDemoInit(withProfile({
+      init: { program: "/usr/bin/ruby" },
+    }), "m")).toEqual({ program: "/usr/bin/ruby", args: [] });
+  });
+
+  it("rejects a non-absolute init program", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { program: "usr/bin/ruby" },
+    }))).toThrow(/profiles\.m\.init\.program must be absolute/);
+  });
+
+  it("rejects a traversal in an init program path", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { program: "/usr/bin/../../etc/passwd" },
+    }))).toThrow(/profiles\.m\.init\.program must be a normalized file path/);
+  });
+
+  it("rejects a non-absolute init cwd", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { program: "/usr/bin/ruby", cwd: "var/lib/todo" },
+    }))).toThrow(/profiles\.m\.init\.cwd must be absolute/);
+  });
+
+  it("rejects init declaring both a target and a program", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { target: "nginx", program: "/usr/bin/ruby" },
+    }))).toThrow(
+      /profiles\.m\.init cannot declare both target and program/,
+    );
+  });
+
   // Review Focus 5: two things claiming to be what the machine runs.
   it("rejects a profile declaring both init and autoCommand", () => {
     expect(() => validateKandeloDemoConfig(withProfile({

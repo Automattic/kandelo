@@ -211,40 +211,84 @@ and `ingest`:
 
 ### demo.json selects; the image configures
 
-`init` names a **target**, not a command vector. The machine's actual
-init configuration already lives in the image in standard locations, and
-`demo.json`'s only job is choosing which one to bring up.
+`init` names what already exists inside the image — never a command
+vector supplied from outside it. `demo.json`'s job is choosing which
+image-owned thing to bring up, not describing how to run it. Two shapes
+say this, because "run something inside a service manager" and "boot
+one program directly" are both legitimate POSIX ways for a machine to
+start:
+
+- **`{ target }`** — a **target**, not a command vector. The image's
+  real init configuration already lives at `/etc/dinit.d/<name>`, and
+  this only selects which dinit target to bring up. This is the shape
+  every dinit-based service demo uses (nginx, nginx-php, the
+  wordpress-* family) — they happen to share one launcher,
+  `dinit --container <target>`, and differ only in which target and
+  which image.
+- **`{ program, args?, cwd? }`** — exec a program from the image
+  directly as pid 1, no service manager involved. `program` must be an
+  absolute, normalized path (validated the same way as
+  `ingest.targetPath`), and it is validated against the image the same
+  way: it names something that must already exist inside the image,
+  never bytes or a path carried by a boot descriptor/URL. This is why
+  it does not weaken the "boot identity is never URL-carried" trust
+  rule — a program path is exactly as image-owned as a dinit target
+  name; what the rule forbids is a command vector supplied from
+  *outside* the image, not a reference to image content.
+
+  This shape exists because dinit is not free: it is ~2.4 MB of service
+  manager, real for a lean image with one long-running process and no
+  supervision need. `images/vfs/products/browser-ruby-todo.toml`
+  deliberately ships no dinit tree at all
+  (`images/vfs/scripts/build-ruby-todo-vfs-image.ts`) and boots its
+  Ruby server directly as init. Forcing that image to grow a dinit tree
+  and a one-service target just to satisfy a "name a target" schema
+  shape would be the tail wagging the dog. The two shapes are mutually
+  exclusive — declaring both in one `init` block is a validation error.
 
 This is not a simplification for its own sake — the duplication is
 already in the tree. `addDinitInit` bakes `/sbin/dinit`,
 `/sbin/dinitctl`, `/etc/dinit.d/boot`, and `/etc/dinit.d/<name>` into
-every service image (`images/vfs/scripts/dinit-image-helpers.ts:388-440`).
-Consequences:
+every dinit-based service image
+(`images/vfs/scripts/dinit-image-helpers.ts:388-440`). Consequences:
 
-- **`init.argv` is a target selector in disguise.** All four service
-  profiles share one `DINIT_NGINX_ARGV`; they differ only by which
-  service is the container target and which image they run in.
+- **`init.argv` is a target selector in disguise, for the four dinit
+  demos.** nginx, nginx-php, wordpress-sqlite, and wordpress-mariadb
+  share one `DINIT_NGINX_ARGV`; they differ only by which service is
+  the container target and which image they run in. ruby-todo is the
+  exception this generalization missed on the first pass: it has
+  always booted a program directly, never a dinit target, which is why
+  it needed the second `init` shape rather than being forced into the
+  first.
 - **`REQUIRED_DINIT_SERVICES` duplicates the image.**
   `/etc/dinit.d/boot` is a dependency aggregator naming every service,
-  so the readiness service list (`dinit-boot-status.ts:13`) is a
-  hand-maintained copy of something the image already states. Derive it
-  from the image; delete the table.
+  so the readiness service list (`dinit-boot-status.ts:13`) was a
+  hand-maintained copy of something the image already states.
+  `readDinitBootTargets` (`web-libs/kandelo-session/src/dinit-boot-targets.ts`)
+  derives it from the image instead.
 - **Process identity and environment are already POSIX-shaped.** dinit
-  services carry their own uid and env per service; `/usr/bin/login -p
-  -f maker` establishes shell identity (already what
+  services carry their own uid and env per service (a shared
+  `env-file` at `/etc/dinit.d/env`, see `dinit-image-helpers.ts`);
+  `/usr/bin/login -p -f maker` establishes shell identity (already what
   `images/vfs/products/browser-main-shell.toml` declares); and
   `/etc/profile.d` is already in use by the node image
-  (`build-node-zip.ts:68`). So `SHELL_PROFILES`, `NODE_SHELL_ENV`, and
-  `INIT_ENV_PROFILES` move into the image's own profile scripts, not
-  into `demo.json`.
+  (`build-node-zip.ts:68`) and now the base shell image too
+  (`shell-lazy-archives.ts`'s `registerDemoShellProfile`). So
+  `SHELL_PROFILES`, `NODE_SHELL_ENV`, `SERVICE_ENV`, and
+  `INIT_ENV_PROFILES` moved into the image's own profile scripts and
+  dinit env-files, not into `demo.json`. The one exception is
+  WordPress's `WP_APP_PATH`/`WP_PROTO`: those are computed from the
+  page's own deployment prefix and protocol at boot time, so no image
+  artifact baked ahead of time can know them — they stay host-supplied.
 
 A profile with no `init` block boots the image's default login session.
 
-What stays in `demo.json` is selection and presentation: which target,
-which panes, which guide, what the listing shows. What moves into the
-image is configuration: service definitions, environment, identity.
-A third-party image then configures init the ordinary way rather than
-learning a Kandelo-browser-specific JSON dialect.
+What stays in `demo.json` is selection and presentation: which target
+or program, which panes, which guide, what the listing shows. What
+moves into the image is configuration: service definitions,
+environment, identity. A third-party image then configures init the
+ordinary way — either a real dinit tree, or a direct pid-1 program —
+rather than learning a Kandelo-browser-specific JSON dialect.
 
 `web.requiredPorts`, `probeHttp`, and `probePath` stay in `demo.json`
 deliberately: they tell the *host UI* when to flip the web pane to
