@@ -66,6 +66,7 @@ mod remote_fetch;
 mod root_js_deps;
 mod source_archive_cache;
 mod source_extract;
+mod stamp_abi_contract;
 mod update_pkg_manifest;
 mod util;
 
@@ -94,6 +95,7 @@ fn main() -> ExitCode {
         "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
         "archive-extract-member" => archive_extract_member::run(rest),
+        "stamp-abi-contract" => stamp_abi_contract::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "local-build" => local_build::run(rest),
         "check-determinism" => determinism_check::run(rest),

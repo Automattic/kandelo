@@ -164,3 +164,7 @@ programs/sdl2/third_party/inconsolata_ttf.h
 # Durable Nix GC root for the dev shell closure (scripts/dev-shell.sh);
 # prevents background GC from evicting build tools mid-build.
 /.nix-dev-shell/
+
+# Rust guest fixture build outputs (wasm is already ignored globally).
+programs/rust/*/target/
+programs/rust/*/Cargo.lock
