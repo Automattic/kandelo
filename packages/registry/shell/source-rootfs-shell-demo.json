@@ -1,7 +1,14 @@
 {
   "version": 1,
+  "defaultProfile": "shell",
   "profiles": {
     "shell": {
+      "identity": {
+        "title": "Bare shell",
+        "summary": "Bash, dash, coreutils, and the full utility set from the shell image.",
+        "accent": "#3858e9",
+        "glyph": "sh"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["terminal", "syslog"],
@@ -37,6 +44,30 @@
           "language": "bash",
           "initialText": "printf '%s\\n' \"Hello from a Kandelo guided script\"\nprintf 'cwd: '; pwd"
         }
+      }
+    },
+    "sdl2": {
+      "identity": {
+        "title": "SDL2 GLSL playground",
+        "summary": "SDL2 GLSL shader playground: a live-coding editor (left) beside a GLES2 fragment shader rendered on a 1920×1080 /dev/dri/card0 surface (right), auto-recompiling 250 ms after you stop typing. F1/F2 switch between the image and sound shader, Ctrl+L cycles presets, Ctrl+S persists, ESC quits.",
+        "accent": "#9c27b0",
+        "glyph": "S"
+      }
+    },
+    "evdev": {
+      "identity": {
+        "title": "Evdev input log",
+        "summary": "Keystrokes + pointer motion captured from the DOM and replayed through /dev/input/event{0,1}.",
+        "accent": "#7e57c2",
+        "glyph": "E"
+      }
+    },
+    "espeak": {
+      "identity": {
+        "title": "OSS - Espeak-NG",
+        "summary": "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's OSS backend.",
+        "accent": "#f48fb1",
+        "glyph": "T"
       }
     }
   }

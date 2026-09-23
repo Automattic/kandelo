@@ -3,6 +3,12 @@
   "defaultProfile": "doom",
   "profiles": {
     "doom": {
+      "identity": {
+        "title": "fbDOOM",
+        "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
+        "accent": "#b5301c",
+        "glyph": "D"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
@@ -31,6 +37,12 @@
       }
     },
     "modeset": {
+      "identity": {
+        "title": "DRM/KMS fluid sim",
+        "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
+        "accent": "#4f8fd6",
+        "glyph": "K"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["kms", "terminal", "syslog"],
