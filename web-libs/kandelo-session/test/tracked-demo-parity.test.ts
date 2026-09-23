@@ -14,8 +14,17 @@ import { PRESET_LIBRARY } from "../../../apps/browser-demos/pages/kandelo/preset
  * yet, so a transcription slip would otherwise surface as a regression during
  * the Plan 3 cutover. Delete this file in Plan 3 together with PRESET_LIBRARY.
  */
-function identityFromTrackedSources(): Map<string, { title: string; summary: string; accent: string; glyph: string }> {
-  const out = new Map<string, { title: string; summary: string; accent: string; glyph: string }>();
+interface TrackedIdentity {
+  title: string;
+  summary: string;
+  accent: string;
+  glyph: string;
+  base?: string;
+  packages?: string[];
+}
+
+function identityFromTrackedSources(): Map<string, TrackedIdentity> {
+  const out = new Map<string, TrackedIdentity>();
   for (const relPath of TRACKED_DEMO_CONFIG_SOURCES) {
     const config = parseKandeloDemoConfig(
       readFileSync(join(findRepoRoot(), relPath), "utf8"),
@@ -29,6 +38,8 @@ function identityFromTrackedSources(): Map<string, { title: string; summary: str
           summary: identity.summary,
           accent: identity.accent,
           glyph: identity.glyph,
+          base: identity.base,
+          packages: identity.packages,
         });
       }
     }
@@ -44,11 +55,16 @@ describe("tracked identity matches the app's preset table", () => {
     (id, preset) => {
       const entry = tracked.get(id);
       expect(entry, `no tracked identity for profile ${id}`).toBeDefined();
+      // `base` embeds ABI_VERSION, so this assertion is also what makes an
+      // ABI bump fail loudly here instead of shipping a stale base string in
+      // every tracked image config.
       expect(entry).toEqual({
         title: preset.title,
         summary: preset.summary,
         accent: preset.accent.toLowerCase(),
         glyph: preset.glyph,
+        base: preset.base,
+        packages: preset.packages,
       });
     },
   );

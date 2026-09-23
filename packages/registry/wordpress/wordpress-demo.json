@@ -7,7 +7,17 @@
         "title": "WordPress SQLite",
         "summary": "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
         "accent": "#21759b",
-        "glyph": "wp"
+        "glyph": "wp",
+        "base": "kandelo:shell@abi43",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "wordpress@local",
+          "sqlite@local",
+          "bash@local",
+          "coreutils@local"
+        ]
       },
       "runtime": {
         "network": true,
@@ -33,9 +43,43 @@
         ],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "WordPress demo",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
       }
     },
     "wordpress": {
+      "identity": {
+        "title": "WordPress SQLite",
+        "summary": "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
+        "accent": "#21759b",
+        "glyph": "wp",
+        "base": "kandelo:shell@abi43",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "wordpress@local",
+          "sqlite@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
       "runtime": {
         "network": true,
         "requests": {
@@ -60,6 +104,24 @@
         ],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "WordPress demo",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
       }
     }
   }

@@ -7,7 +7,15 @@
         "title": "nginx + PHP",
         "summary": "Adminer database manager: nginx → FastCGI → PHP-FPM, backed by SQLite.",
         "accent": "#6b63a6",
-        "glyph": "php"
+        "glyph": "php",
+        "base": "kandelo:shell@abi43",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "bash@local",
+          "coreutils@local"
+        ]
       },
       "runtime": {
         "network": true,

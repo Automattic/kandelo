@@ -117,6 +117,25 @@ describe("init and web blocks", () => {
     );
   });
 
+  // Review finding: the same-level check cannot see this. Both blocks fall
+  // back to the top level independently, so a profile-level init plus a
+  // top-level autoCommand resolves to two answers for "what runs here".
+  it("rejects a profile init.target under a top-level autoCommand", () => {
+    expect(() => validateKandeloDemoConfig({
+      version: 1,
+      presentation: {
+        bootPrimary: "syslog",
+        runningPrimary: ["web"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+        autoCommand: "/usr/local/bin/fbdoom",
+      },
+      profiles: { m: { init: { target: "nginx" } } },
+    } as unknown as KandeloDemoConfig)).toThrow(
+      /profiles\.m resolves both init\.target and presentation\.autoCommand/,
+    );
+  });
+
   it("rejects an out-of-range port", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       web: { requiredPorts: [70000] },
@@ -133,6 +152,37 @@ describe("init and web blocks", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       web: { requiredPorts: [8080], probePath: "wp-admin" },
     }))).toThrow(/profiles\.m\.web\.probePath must be absolute/);
+  });
+
+  // Review finding: previewUrlForPath resolves probePath against the page
+  // origin, and "//evil.example" is a protocol-relative URL, not a path.
+  it("rejects a protocol-relative probePath", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      web: { requiredPorts: [8080], probePath: "//evil.example/x" },
+    }))).toThrow(/must not start with "\/\/"/);
+  });
+
+  it.each([
+    "/ready?x=1",
+    "/ready#frag",
+    "/ready\\x",
+    "/ready\0x",
+  ])("rejects a probePath containing a URL metacharacter: %j", (probePath: string) => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      web: { requiredPorts: [8080], probePath },
+    }))).toThrow(/must be a plain path/);
+  });
+
+  it("rejects an over-long probePath", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      web: { requiredPorts: [8080], probePath: `/${"a".repeat(512)}` },
+    }))).toThrow(/probePath must be at most 512 characters/);
+  });
+
+  it("rejects an unbounded requiredPorts list", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      web: { requiredPorts: Array.from({ length: 65 }, (_, i) => i + 1) },
+    }))).toThrow(/requiredPorts must list at most 64 ports/);
   });
 
   it("defaults probeHttp to true", () => {
@@ -169,6 +219,35 @@ describe("identity, display, and defaultProfile", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       identity: { title: "T", summary: "S", accent: "#b5301c", glyph: "DOOMY" },
     }))).toThrow(/profiles\.m\.identity\.glyph must be 1 to 4 characters/);
+  });
+
+  // Review finding: title and summary were capped while base and each
+  // packages entry were unbounded, so the two fields the gallery renders as
+  // a list could carry arbitrarily long strings.
+  it("rejects an overlong base", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      identity: {
+        title: "T",
+        summary: "S",
+        accent: "#b5301c",
+        glyph: "D",
+        base: "k".repeat(129),
+      },
+    }))).toThrow(/profiles\.m\.identity\.base must be at most 128 characters/);
+  });
+
+  it("rejects an overlong package entry", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      identity: {
+        title: "T",
+        summary: "S",
+        accent: "#b5301c",
+        glyph: "D",
+        packages: ["ok@local", "p".repeat(129)],
+      },
+    }))).toThrow(
+      /profiles\.m\.identity\.packages\[1\] must be at most 128 characters/,
+    );
   });
 
   // Review Focus 4: a machine must not be able to wedge the UI.
@@ -285,10 +364,36 @@ describe("tracked demo-config sources", () => {
       .toBeLessThanOrEqual(MAX_KANDELO_DEMO_CONFIG_BYTES);
   });
 
-  it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s declares a resolvable default", (relPath) => {
+  /**
+   * The shell image's profile overlay is not an image config: it is merged
+   * into the base before anything is baked, and the composed result takes
+   * `defaultProfile` from the base. An overlay is never independently
+   * bootable, so requiring it to name a default would force a value that
+   * composition throws away — and the builder now rejects any top-level
+   * overlay key other than `version` and `profiles`.
+   */
+  const COMPOSED_ONLY_SOURCES = new Set<string>([
+    "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
+  ]);
+
+  it.each(
+    TRACKED_DEMO_CONFIG_SOURCES.filter(
+      (relPath) => !COMPOSED_ONLY_SOURCES.has(relPath),
+    ),
+  )("%s declares a resolvable default", (relPath) => {
     const config = parseKandeloDemoConfig(
       readFileSync(join(findRepoRoot(), relPath), "utf8"),
     )!;
     expect(resolveDefaultProfileId(config)).not.toBeNull();
   });
+
+  it.each([...COMPOSED_ONLY_SOURCES])(
+    "%s declares only profiles, so composition owns the default",
+    (relPath) => {
+      const config = parseKandeloDemoConfig(
+        readFileSync(join(findRepoRoot(), relPath), "utf8"),
+      )!;
+      expect(Object.keys(config).sort()).toEqual(["profiles", "version"]);
+    },
+  );
 });

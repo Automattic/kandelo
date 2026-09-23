@@ -1,13 +1,24 @@
 {
   "version": 1,
-  "defaultProfile": "doom",
   "profiles": {
     "doom": {
       "identity": {
         "title": "fbDOOM",
         "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
         "accent": "#b5301c",
-        "glyph": "D"
+        "glyph": "D",
+        "base": "kandelo:shell@abi43",
+        "packages": [
+          "fbdoom@local",
+          "doom-shareware@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -41,7 +52,18 @@
         "title": "DRM/KMS fluid sim",
         "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
         "accent": "#4f8fd6",
-        "glyph": "K"
+        "glyph": "K",
+        "base": "kandelo:shell@abi43",
+        "packages": [
+          "modeset@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
       },
       "presentation": {
         "bootPrimary": "syslog",

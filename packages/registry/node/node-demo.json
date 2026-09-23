@@ -7,7 +7,15 @@
         "title": "Node.js",
         "summary": "SpiderMonkey-backed Node.js compatibility runtime with npm staged as /usr/bin/node.",
         "accent": "#43853d",
-        "glyph": "js"
+        "glyph": "js",
+        "base": "kandelo:shell@abi43",
+        "packages": [
+          "node@local",
+          "node-vfs@local",
+          "npm@10.9.2",
+          "bash@local",
+          "coreutils@local"
+        ]
       },
       "runtime": {
         "features": [

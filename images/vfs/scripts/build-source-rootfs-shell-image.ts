@@ -157,13 +157,20 @@ export function composeSourceRootfsDemoConfig(
     profileOverlayPath,
     "source-rootfs demo profile overlay",
   );
-  if (
-    overlay.presentation !== undefined ||
-    overlay.assets !== undefined ||
-    overlay.guide !== undefined
-  ) {
+  // Composition merges `profiles` and takes every other top-level field
+  // verbatim from the base, so anything else the overlay declares is silently
+  // discarded. Reject by ALLOW-LIST rather than by naming the block keys: an
+  // enumeration of known blocks rots the moment KandeloDemoConfig grows a key
+  // (it already missed `identity`, `runtime`, `init`, `web`, `display`, and
+  // `defaultProfile`), and a rotted guard is worse than none because it reads
+  // as protection.
+  const strayOverlayKeys = Object.keys(overlay)
+    .filter((key) => key !== "version" && key !== "profiles")
+    .sort();
+  if (strayOverlayKeys.length > 0) {
     throw new Error(
-      "source-rootfs demo profile overlay must contain only named profiles",
+      "source-rootfs demo profile overlay must contain only named profiles, "
+        + `but declares: ${strayOverlayKeys.join(", ")}`,
     );
   }
   const baseProfiles = base.profiles ?? {};

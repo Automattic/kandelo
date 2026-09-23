@@ -7,7 +7,11 @@
         "title": "Ruby + Roda todo",
         "summary": "A Roda web app on Ruby 4 with a SQLite database, served on :8080. Not Rails.",
         "accent": "#b31217",
-        "glyph": "rb"
+        "glyph": "rb",
+        "base": "kandelo:shell@abi43",
+        "packages": [
+          "ruby@local"
+        ]
       },
       "runtime": {
         "network": true,
