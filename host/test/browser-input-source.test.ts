@@ -325,3 +325,67 @@ describe("BrowserInputSource", () => {
     expect(recorded).toEqual([]);
   });
 });
+
+/**
+ * A target that remembers the exact `options` each listener was registered
+ * and de-registered with. `removeEventListener` matches on the capture flag,
+ * so "registered with capture, removed without" is a real leak the plain
+ * FakeTarget above cannot see.
+ */
+class OptionRecordingTarget implements EventTarget {
+  readonly added: Array<[string, EventListener, unknown]> = [];
+  readonly removed: Array<[string, EventListener, unknown]> = [];
+  addEventListener(
+    name: string,
+    l: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    if (typeof l !== "function") return;
+    this.added.push([name, l, options]);
+  }
+  removeEventListener(
+    name: string,
+    l: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ): void {
+    if (typeof l !== "function") return;
+    this.removed.push([name, l, options]);
+  }
+  dispatchEvent(_e: Event): boolean {
+    return true;
+  }
+}
+
+describe("BrowserInputSource — listener registration", () => {
+  it("binds the keyboard in the capture phase and removes it the same way", () => {
+    const target = new OptionRecordingTarget();
+    const doc = Object.assign(new OptionRecordingTarget(), {
+      pointerLockElement: null,
+    });
+    vi.stubGlobal("document", doc);
+    const src = new BrowserInputSource(target as unknown as EventTarget);
+    src.start(() => {});
+
+    // A focused widget can stopPropagation() a bubbling keydown — xterm.js
+    // does exactly that for every key it handles — so the demo's global
+    // input capture has to see the event before any target handler runs.
+    for (const name of ["keydown", "keyup"]) {
+      const entry = target.added.find(([n]) => n === name);
+      expect(entry, `${name} must be bound`).toBeDefined();
+      expect(entry![2], `${name} must bind in the capture phase`).toEqual({
+        capture: true,
+      });
+    }
+
+    src.stop();
+    for (const [name, listener, options] of target.added) {
+      expect(
+        target.removed.some(
+          ([n, l, o]) => n === name && l === listener && o === options,
+        ),
+        `${name} must be removed with the options it was added with`,
+      ).toBe(true);
+    }
+    vi.unstubAllGlobals();
+  });
+});
