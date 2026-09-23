@@ -1,6 +1,8 @@
+import { observePreviewRequest } from "../panes/preview-progress";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { setWebMcpRuntime } from "../webmcp/runtime";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
@@ -932,6 +934,7 @@ export async function createLiveHost(
     // WHY: detach while this activation still owns the previous generation.
     // If we await teardown first, a newer boot can attach its kernel and this
     // superseded activation would detach that newer generation on resume.
+    setWebMcpRuntime(h, null);
     h.detachKernel();
     if (previousKernel) {
       await previousKernel.destroy().catch(() => {});
@@ -962,6 +965,7 @@ export async function createLiveHost(
       await settleAfterBootResourcesReleased();
       if (err instanceof BootSuperseded || seq !== bootSeq) return;
       currentKernel = null;
+      setWebMcpRuntime(h, null);
       h.detachKernel();
       showBootError(h, descriptor, err, bootStartedAt);
     }
@@ -1665,6 +1669,7 @@ async function bootProfile(
     await kernel.initFromImage(kernelInitOptions);
     assertCurrent();
     host.attachKernel(kernel);
+    setWebMcpRuntime(host, kernel);
     host.setTerminalSessionPolicy(
       experimentalTerminalSessionPolicy(terminalSession),
     );
@@ -1688,6 +1693,7 @@ async function bootProfile(
           sessionId,
           {
             timeoutMs: 90_000,
+            onRequestStart: (request) => isCurrent() ? observePreviewRequest(host, request.url) : undefined,
             debugLog: (line) => tick(line),
             onPendingRequests: (count) => {
               if (isCurrent()) host.setWebPreviewPendingRequests(count);
@@ -1981,6 +1987,7 @@ async function bootProfile(
     return kernel;
   } catch (err) {
     if (kernel) {
+      if (isCurrent()) setWebMcpRuntime(host, null);
       await kernel.destroy().catch(() => {});
     }
     throw err;

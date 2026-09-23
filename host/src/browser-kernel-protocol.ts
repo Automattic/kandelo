@@ -105,7 +105,16 @@ export interface InitMessage {
   };
 }
 
+export interface OwnedJobMessage {
+  type: "read_owned_job" | "cancel_owned_job";
+  requestId: number;
+  jobId: string;
+  offset?: number;
+  limit?: number;
+}
+
 export interface SpawnMessage {
+  ownedJob?: { id: string; timeoutMs: number };
   type: "spawn";
   requestId: number;
   programPath?: string;
@@ -147,6 +156,12 @@ export interface ReadVfsFileMessage {
   includeMode?: boolean;
 }
 
+export interface ListVfsDirectoryMessage {
+  type: "list_vfs_directory";
+  requestId: number;
+  path: string;
+}
+
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
   requestId: number;
@@ -154,6 +169,7 @@ export interface WriteVfsFileMessage {
   path: string;
   data: Uint8Array;
   mode: number;
+  exclusive?: boolean;
 }
 
 export interface UnlinkVfsFileMessage {
@@ -464,8 +480,10 @@ export interface FbReleaseGenerationAckMessage {
 
 export type MainToKernelMessage =
   | InitMessage
+  | OwnedJobMessage
   | SpawnMessage
   | TerminateProcessMessage
+  | ListVfsDirectoryMessage
   | ReadVfsFileMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage

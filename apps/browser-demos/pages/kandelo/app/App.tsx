@@ -2,6 +2,7 @@
 // switches machine views and opens exploratory panes for gallery and overlays.
 
 import * as React from "react";
+import { flushSync } from "react-dom";
 import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
@@ -19,6 +20,8 @@ import type {
   MachineAudioState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
+import { useWebMcp } from "../webmcp/use-webmcp";
+import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
@@ -81,6 +84,7 @@ export const App: React.FC = () => {
   const [audioState, setAudioState] = React.useState<MachineAudioState>(() => host.getAudioState());
   const [audioError, setAudioError] = React.useState<string | null>(null);
   const nextTerminalIndex = React.useRef(2);
+  const webMcpPreview = React.useRef<DisplayHandle | null>(null);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
 
   const desc = host.getBootDescriptor();
@@ -199,36 +203,61 @@ export const App: React.FC = () => {
     });
   }, [host, closeDockPane]);
 
-  const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
-    void (async () => {
-      let vfsImageUrl = item.vfsImageUrl;
-      if (!vfsImageUrl && item.resolveVfsImageUrl) {
-        try {
-          vfsImageUrl = await item.resolveVfsImageUrl();
-        } catch (err) {
-          // Applying the descriptor below lets the host surface the same
-          // missing-artifact error through its normal boot diagnostics.
-          console.warn("resolveVfsImageUrl failed:", err);
-        }
+  const launchGalleryItem = React.useCallback(async (item: GalleryItem) => {
+    let vfsImageUrl = item.vfsImageUrl;
+    if (!vfsImageUrl && item.resolveVfsImageUrl) {
+      try {
+        vfsImageUrl = await item.resolveVfsImageUrl();
+      } catch (err) {
+        // Applying the descriptor below lets the host surface the same
+        // missing-artifact error through its normal boot diagnostics.
+        console.warn("resolveVfsImageUrl failed:", err);
       }
-      if (vfsImageUrl) {
-        navigateToGalleryItemUrl({ ...item, vfsImageUrl });
-        return;
-      }
+    }
+    if (vfsImageUrl) {
+      navigateToGalleryItemUrl({ ...item, vfsImageUrl });
+      return;
+    }
 
-      const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
-      await host.applyBootDescriptor(next);
-      closeDockPane();
-    })().catch((err) => {
-      console.warn("applyBootDescriptor failed:", err);
-    });
+    const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
+    await host.applyBootDescriptor(next);
+    closeDockPane();
   }, [host, closeDockPane]);
 
-  const onAddTerminal = React.useCallback(() => {
+  const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
+    void launchGalleryItem(item).catch((err) => console.warn("applyBootDescriptor failed:", err));
+  }, [launchGalleryItem]);
+
+  const createTerminal = React.useCallback((activate: boolean) => {
     const terminal = createShellTerminal(nextTerminalIndex.current++);
     setTerminals((prev) => [...prev, terminal]);
-    setActiveTerminalId(terminal.id);
+    if (activate) setActiveTerminalId(terminal.id);
+    return terminal;
   }, []);
+
+  const onAddTerminal = React.useCallback(() => { createTerminal(true); }, [createTerminal]);
+
+  useWebMcp({
+    host, terminals, activeTerminalId,
+    createTerminal: (activate) => {
+      let terminal!: ShellTerminal;
+      flushSync(() => {
+        terminal = createTerminal(activate);
+        if (activate) selectMachineView("terminal");
+      });
+      return terminal;
+    },
+    selectTerminal: (id) => {
+      flushSync(() => { setActiveTerminalId(id); selectMachineView("terminal"); });
+    },
+    launch: launchGalleryItem,
+    navigatePreview: (path) => {
+      if (!webMcpPreview.current) return false;
+      webMcpPreview.current.navigate(path);
+      selectMachineView("demo");
+      return true;
+    },
+  });
 
   const onRemoveTerminalId = React.useCallback((id: string) => {
     const removedIndex = terminals.findIndex((terminal) => terminal.id === id);
@@ -302,6 +331,7 @@ export const App: React.FC = () => {
           />
         ) : (
           <MachineView
+            webMcpPreviewRef={webMcpPreview}
             surface={surface}
             demoGuideOpen={demoGuideOpen}
             onDemoGuideOpenChange={setDemoGuideOpen}

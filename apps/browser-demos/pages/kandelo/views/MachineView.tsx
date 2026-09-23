@@ -163,6 +163,7 @@ export function useMachineSurfaceController(): MachineSurfaceController {
 }
 
 export interface MachineViewProps {
+  webMcpPreviewRef?: React.RefObject<DisplayHandle | null>;
   surface: MachineSurfaceController;
   demoGuideOpen: boolean;
   onDemoGuideOpenChange: (open: boolean) => void;
@@ -177,6 +178,7 @@ export interface MachineViewProps {
 
 export const MachineView: React.FC<MachineViewProps> = ({
   surface,
+  webMcpPreviewRef,
   demoGuideOpen,
   onDemoGuideOpenChange,
   onDemoDockControlsChange,
@@ -188,7 +190,8 @@ export const MachineView: React.FC<MachineViewProps> = ({
   onAddTerminal,
 }) => {
   const demoGuide = useDemoGuide();
-  const displayRef = React.useRef<DisplayHandle | null>(null);
+  const localDisplayRef = React.useRef<DisplayHandle | null>(null);
+  const displayRef = webMcpPreviewRef ?? localDisplayRef;
   const {
     activePrimary,
     demoSurface,

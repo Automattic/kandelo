@@ -1,3 +1,4 @@
+import type { OwnedJobs } from "./owned-jobs";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
  * web worker via MessagePort. The kernel worker owns the Wasm instance
@@ -656,6 +657,7 @@ export class BrowserKernel {
     programPath: string,
     argv: string[],
     options?: {
+      ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
       uid?: number;
@@ -670,6 +672,7 @@ export class BrowserKernel {
     const spawnStartedBeforeExitSequence = this.exitSequence;
     const pid = await this.request(requestId, {
       type: "spawn",
+      ownedJob: options?.ownedJob,
       requestId,
       programPath,
       argv,
@@ -1224,6 +1227,18 @@ export class BrowserKernel {
     if (resolver) resolver.resolve(status);
   }
 
+  /** Read bounded output and observed termination of a worker-owned command family. */
+  async readOwnedJob(jobId: string, offset?: number, limit?: number, cancel = false): Promise<ReturnType<OwnedJobs['read']>> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as ReturnType<OwnedJobs['read']>;
+  }
+
+  /** List a guest directory without exposing the live filesystem to the main thread. */
+  async listDirectoryFromVfs(path: string): Promise<Array<{ name: string; type: string; ino: number }>> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, { type: "list_vfs_directory", requestId, path }) as Array<{ name: string; type: string; ino: number }>;
+  }
+
   /**
    * Read a file out of the kernel-owned VFS from the main thread. Returns the
    * bytes, or `null` if the path does not exist / is not readable. This is the
@@ -1266,11 +1281,13 @@ export class BrowserKernel {
     path: string,
     data: Uint8Array,
     mode = 0o644,
+    exclusive = false,
   ): Promise<void> {
     const requestId = this.nextRequestId++;
     const owned = data.slice();
     await this.request(requestId, {
       type: "write_vfs_file",
+      exclusive,
       requestId,
       path,
       data: owned,
