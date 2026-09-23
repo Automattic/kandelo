@@ -232,6 +232,10 @@ name = "nginx-php-vfs"
 class = "browser-product"
 
 [[packages]]
+name = "nginx-python-vfs"
+class = "browser-product"
+
+[[packages]]
 name = "nginx-vfs"
 class = "browser-product"
 
@@ -409,6 +413,11 @@ manifest = "images/vfs/products/browser-nginx.toml"
 id = "browser-nginx-php"
 package = "nginx-php-vfs"
 manifest = "images/vfs/products/browser-nginx-php.toml"
+
+[[products]]
+id = "browser-nginx-python"
+package = "nginx-python-vfs"
+manifest = "images/vfs/products/browser-nginx-python.toml"
 
 [[products]]
 id = "browser-ruby-todo"

@@ -46,6 +46,7 @@ import type {
 import { buildNodeVfsImage } from "./build-node-vfs-image";
 import { buildNginxVfsImage } from "./build-nginx-vfs-image";
 import { buildNginxPhpVfsImage } from "./build-nginx-php-vfs-image";
+import { buildNginxPythonVfsImage } from "./build-nginx-python-vfs-image";
 import { buildRubyTodoVfsImage } from "./build-ruby-todo-vfs-image";
 import { buildWordPressVfsImage } from "./build-wp-vfs-image";
 import { buildLampVfsImage } from "./build-lamp-vfs-image";
@@ -207,6 +208,7 @@ const SERVICE_PRODUCT_BUILDERS = new Map([
   ["browser-node", "images/vfs/scripts/build-node-vfs-image.sh"],
   ["browser-nginx", "images/vfs/scripts/build-nginx-vfs-image.sh"],
   ["browser-nginx-php", "images/vfs/scripts/build-nginx-php-vfs-image.sh"],
+  ["browser-nginx-python", "images/vfs/scripts/build-nginx-python-vfs-image.sh"],
   ["browser-ruby-todo", "images/vfs/scripts/build-ruby-todo-vfs-image.sh"],
   ["browser-wordpress", "images/vfs/scripts/build-wp-vfs-image.sh"],
   ["browser-lamp", "images/vfs/scripts/build-lamp-vfs-image.sh"],
@@ -355,6 +357,23 @@ export async function buildStagedBrowserService(
           outputPath: invocation.outputPath,
         });
         break;
+      case "browser-nginx-python": {
+        const runtimeRoot = join(work, "python-runtime");
+        materializeArchiveContents(
+          packageBytes("cpython", "python-runtime"),
+          runtimeRoot,
+          "browser-nginx-python runtime",
+        );
+        await buildNginxPythonVfsImage({
+          shellImage,
+          nginx: packageBytes("nginx", "nginx"),
+          python: packageBytes("cpython", "cpython"),
+          runtimeRoot,
+          dinit: dinit(),
+          outputPath: invocation.outputPath,
+        });
+        break;
+      }
       case "browser-ruby-todo": {
         // Empty-base server image (no shell base); Ruby is resident.
         const rubyRuntimeDir = join(work, "ruby-runtime");
