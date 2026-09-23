@@ -259,6 +259,7 @@ describe("shell VFS base composition", () => {
     expect(builders).toEqual([
       "build-lamp-vfs-image.ts",
       "build-nginx-php-vfs-image.ts",
+      "build-nginx-python-vfs-image.ts",
       "build-nginx-vfs-image.ts",
       "build-node-vfs-image.ts",
       "build-wp-vfs-image.ts",
@@ -273,6 +274,7 @@ describe("shell VFS base composition", () => {
     const packageNames = [
       "lamp",
       "nginx-php-vfs",
+      "nginx-python-vfs",
       "nginx-vfs",
       "node-vfs",
       "wordpress",
@@ -294,7 +296,8 @@ describe("shell VFS base composition", () => {
     }));
     expect(shellDerivedRevisions).toEqual({
       lamp: 18,
-      "nginx-php-vfs": 8,
+      "nginx-php-vfs": 9,
+      "nginx-python-vfs": 3,
       "nginx-vfs": 8,
       "node-vfs": 24,
       wordpress: 19,
