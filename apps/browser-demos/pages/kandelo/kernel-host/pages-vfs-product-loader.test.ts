@@ -299,6 +299,49 @@ test("rejects malformed image response bodies after authenticating the group", a
   }
 });
 
+test("accepts compressed and length-less responses and still authenticates them", async (t) => {
+  // CDNs commonly serve JSON with Content-Encoding: br and no Content-Length
+  // (kandelo.dev does); a compressed response's Content-Length, when present,
+  // is the compressed size. Neither is a size mismatch of the decoded body.
+  const fixture = groupFixture("/a/");
+  const withHeaders = (body: Uint8Array, headers: Record<string, string>) =>
+    new Response(body.slice().buffer, { headers, status: 200 });
+  const cases: Array<[string, (body: Uint8Array) => Response]> = [
+    ["brotli without content-length", (body) => withHeaders(body, { "content-encoding": "br" })],
+    ["gzip with compressed content-length", (body) => withHeaders(body, { "content-encoding": "gzip", "content-length": "7" })],
+    ["identity without content-length", (body) => withHeaders(body, {})],
+  ];
+  for (const [name, make] of cases) {
+    await t.test(name, async () => {
+      const loader = createPagesVfsProductLoaderForBase(
+        [fixture.entry],
+        async (url) => {
+          if (url === fixture.manifestPath) return make(fixture.manifest);
+          if (url === fixture.imageUrl) return make(fixture.image);
+          throw new Error(`unexpected URL ${url}`);
+        },
+        "/a/",
+      );
+      const activated = await loader.activate("browser-node");
+      assert.deepEqual(new Uint8Array(activated.imageBytes), fixture.image);
+    });
+  }
+  await t.test("a compressed body is still SHA-256 authenticated", async () => {
+    const tampered = fixture.image.slice();
+    tampered[0] ^= 0x01;
+    const loader = createPagesVfsProductLoaderForBase(
+      [fixture.entry],
+      async (url) => {
+        if (url === fixture.manifestPath) return withHeaders(fixture.manifest, { "content-encoding": "br" });
+        if (url === fixture.imageUrl) return withHeaders(tampered, { "content-encoding": "br" });
+        throw new Error(`unexpected URL ${url}`);
+      },
+      "/a/",
+    );
+    await assert.rejects(loader.activate("browser-node"), /SHA-256/i);
+  });
+});
+
 test("rejects a size- and digest-authenticated malformed group manifest", async () => {
   const fixture = groupFixture("/a/");
   const malformed = new Uint8Array(fixture.manifest.byteLength);
