@@ -72,6 +72,69 @@ printf '%s\\n' \
     expect(result.stdout).toContain("SSL_CERT_DIR=/etc/ssl/certs");
   });
 
+  it("exports npm's image-wide settings from the node profile script", async () => {
+    const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    ensureDirRecursive(rootfs, "/home/maker");
+    registerShellProfileScripts(rootfs);
+
+    const result = await runCentralizedProgram({
+      programPath: SHELL_WASM!,
+      argv: [
+        "sh",
+        "-c",
+        `. "$1"
+printf '%s\\n' \
+  "npm_config_cache=$npm_config_cache" \
+  "npm_config_registry=$npm_config_registry" \
+  "npm_config_fund=$npm_config_fund" \
+  "npm_config_audit=$npm_config_audit" \
+  "npm_config_progress=$npm_config_progress" \
+  "npm_config_update_notifier=$npm_config_update_notifier" \
+  "NPM_CONFIG_FUND=$NPM_CONFIG_FUND" \
+  "NPM_CONFIG_AUDIT=$NPM_CONFIG_AUDIT" \
+  "NPM_CONFIG_PROGRESS=$NPM_CONFIG_PROGRESS" \
+  "NPM_CONFIG_UPDATE_NOTIFIER=$NPM_CONFIG_UPDATE_NOTIFIER"`,
+        "sh",
+        "/etc/profile.d/node.sh",
+      ],
+      uid: 1000,
+      gid: 1000,
+      env: ["HOME=/home/maker", "USER=maker", "LOGNAME=maker"],
+      io: new VirtualPlatformIO(
+        [{ mountPoint: "/", backend: rootfs }],
+        new NodeTimeProvider(),
+      ),
+      onKernelReady: (kernel, pid) => kernel.setCwd(pid, "/home/maker"),
+      timeout: 20_000,
+    });
+
+    expect(result.exitCode, result.stderr || result.stdout).toBe(0);
+    expect(result.stdout).toContain("npm_config_cache=/tmp/.npm-cache");
+    expect(result.stdout).toContain(
+      "npm_config_registry=https://registry.npmjs.org/",
+    );
+    for (const name of [
+      "npm_config_fund",
+      "npm_config_audit",
+      "npm_config_progress",
+      "npm_config_update_notifier",
+      "NPM_CONFIG_FUND",
+      "NPM_CONFIG_AUDIT",
+      "NPM_CONFIG_PROGRESS",
+      "NPM_CONFIG_UPDATE_NOTIFIER",
+    ]) {
+      expect(result.stdout).toContain(`${name}=false`);
+    }
+    // The shell image ships ONE /etc/profile.d for every machine it carries,
+    // so nothing per-machine may live here: the node machine's name comes
+    // from identity.title in its /etc/kandelo/demo.json, and a bare-shell
+    // user must not find a seeded package.json in their home directory.
+    const script = readVfsText(rootfs, "/etc/profile.d/node.sh");
+    expect(script).not.toContain("PS1");
+    expect(script).not.toContain("package.json");
+    expect(() => rootfs.stat("/home/maker/package.json")).toThrow();
+  });
+
   it("does nothing for a non-maker HOME", async () => {
     const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
     ensureDirRecursive(rootfs, "/root");
@@ -101,3 +164,15 @@ printf '%s\\n' \
     expect(result.stdout).toContain("PS1=unset");
   });
 });
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const stat = fs.stat(path);
+  const handle = fs.open(path, 0, 0);
+  try {
+    const bytes = new Uint8Array(stat.size);
+    const length = fs.read(handle, bytes, null, bytes.length);
+    return new TextDecoder().decode(bytes.subarray(0, length));
+  } finally {
+    fs.close(handle);
+  }
+}

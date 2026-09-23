@@ -148,10 +148,10 @@ describe("baked-equals-tracked", () => {
   });
 
   it("throws a descriptive error when the baked bytes differ from the tracked source", async () => {
-    const relPath = "packages/registry/node/node-demo.json";
+    const relPath = "packages/registry/nginx/nginx-demo.json";
     const artifactRelPath = SINGLE_SOURCE_IMAGE_ARTIFACTS[relPath];
     const badImage = await buildImageWithDemoJson(
-      new TextEncoder().encode('{"version":1,"profiles":{"node":{}}}'),
+      new TextEncoder().encode('{"version":1,"profiles":{"nginx":{}}}'),
     );
     expect(() =>
       checkBakedEqualsTracked((rel) => (rel === artifactRelPath ? badImage : null))

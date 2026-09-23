@@ -124,7 +124,7 @@ export function checkPagesVfsProductRegistry(options) {
  * tables. `VFS_SOURCES` was not deleted; it was re-keyed into `VFS_PRODUCTS`
  * (live-setup.ts) and `OPTIONAL_DEMO_VFS_PATHS` (optional-demo-vfs.ts) — both
  * still hold `relPaths`/URL plumbing per PRODUCT id (`browser-main-shell`,
- * `browser-node`, ...), because Vite needs literal specifiers for those
+ * `browser-wordpress`, ...), because Vite needs literal specifiers for those
  * mirror globs and because resolving "where do this product's bytes live in
  * THIS deployment" is a real, ongoing need that has nothing to do with
  * machine identity. That is legitimate and must be admitted. What must
@@ -633,7 +633,7 @@ function checkPagesGallery({ catalog, galleryPath, pagesProducts, rosterPath }) 
   }
 }
 
-/** `node-vfs.vfs.zst` → `node`, `shell.vfs.zst` → `shell`, `rootfs.vfs` →
+/** `nginx-vfs.vfs.zst` → `nginx`, `shell.vfs.zst` → `shell`, `rootfs.vfs` →
  *  `rootfs`. The gallery scoping names the image, not the artifact file. */
 function vfsImageNameForOutput(output) {
   return output.replace(/(?:-vfs)?\.vfs(?:\.zst)?$/u, "");

@@ -261,7 +261,6 @@ describe("shell VFS base composition", () => {
       "build-nginx-php-vfs-image.ts",
       "build-nginx-python-vfs-image.ts",
       "build-nginx-vfs-image.ts",
-      "build-node-vfs-image.ts",
       "build-wp-vfs-image.ts",
     ]);
     for (const builder of builders) {
@@ -276,7 +275,6 @@ describe("shell VFS base composition", () => {
       "nginx-php-vfs",
       "nginx-python-vfs",
       "nginx-vfs",
-      "node-vfs",
       "wordpress",
     ] as const;
     const shellDerivedRevisions = Object.fromEntries(packageNames.map((name) => {
@@ -299,7 +297,6 @@ describe("shell VFS base composition", () => {
       "nginx-php-vfs": 9,
       "nginx-python-vfs": 3,
       "nginx-vfs": 8,
-      "node-vfs": 24,
       wordpress: 19,
     });
   });

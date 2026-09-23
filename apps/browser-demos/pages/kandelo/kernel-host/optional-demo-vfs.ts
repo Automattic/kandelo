@@ -1,4 +1,4 @@
-export type OptionalDemoVfsImage = "node" | "wordpress" | "lamp";
+export type OptionalDemoVfsImage = "wordpress" | "lamp";
 
 export type OptionalDemoVfsImporter = () => Promise<string>;
 export type OptionalDemoVfsImporters = Record<string, OptionalDemoVfsImporter>;
@@ -12,13 +12,6 @@ export const OPTIONAL_DEMO_VFS_PATHS: Record<
   OptionalDemoVfsImage,
   { label: string; relPaths: readonly string[] }
 > = {
-  node: {
-    label: "node-vfs.vfs.zst",
-    relPaths: [
-      "../../../../../local-binaries/programs/wasm32/node-vfs.vfs.zst",
-      "../../../../../binaries/programs/wasm32/node-vfs.vfs.zst",
-    ],
-  },
   wordpress: {
     label: "wordpress.vfs.zst",
     relPaths: [
@@ -40,12 +33,6 @@ export const OPTIONAL_DEMO_VFS_PATHS: Record<
 // returns a loader only for files that exist. The loader itself runs only when
 // the corresponding demo is requested.
 const OPTIONAL_DEMO_VFS_IMPORTERS = {
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/node-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/node-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wordpress.vfs.zst", {
     query: "?url", import: "default",
   }),

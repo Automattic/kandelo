@@ -128,8 +128,8 @@ test("rejects source-only and generated-only Pages registry mutations", () => {
     writeFileSync(
       sourceOnly,
       readFileSync(registryPath, "utf8").replace(
-        'id = "browser-node"',
-        'id = "browser-node-source-only"',
+        'id = "browser-nginx"',
+        'id = "browser-nginx-source-only"',
       ),
     );
     assert.throws(
@@ -191,10 +191,10 @@ test("rejects gallery product, roster, and VFS-image mapping drift", () => {
       () => checkPagesVfsProductRegistry({
         ...paths,
         galleryPath: mutateGallery("wrong-image.json", (gallery) => {
-          gallery.products.find(({ id }) => id === "browser-node").vfs_image = "shell";
+          gallery.products.find(({ id }) => id === "browser-nginx").vfs_image = "shell";
         }),
       }),
-      /gallery product browser-node declares VFS image shell, not node/i,
+      /gallery product browser-nginx declares VFS image shell, not nginx/i,
     );
   });
 });
@@ -212,7 +212,7 @@ test("rejects product-owned Pages intent and a missing product output", () => {
 
     const outputCatalog = writeCatalog(directory, (catalog) => {
       const product = catalog.products.find(
-        ({ manifest }) => manifest.id === "browser-node",
+        ({ manifest }) => manifest.id === "browser-nginx",
       );
       delete product.manifest.output;
       product.sha256 = digest(product.manifest);
@@ -240,11 +240,11 @@ test("enforces eager static imports and lazy glob-only imports", () => {
 
     const lazyStatic = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("live-setup.ts")) return contents;
-      return `import nodeVfs from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";\n${contents}`;
+      return `import nginxVfs from "@binaries/programs/wasm32/nginx-vfs.vfs.zst?url";\n${contents}`;
     });
     assert.throws(
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: lazyStatic }),
-      /browser-node.*lazy.*static import/is,
+      /browser-nginx.*lazy.*static import/is,
     );
   });
 });
@@ -253,11 +253,11 @@ test("rejects absent, unregistered, and unselected VFS source paths", () => {
   withTempDir((directory) => {
     const absent = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("optional-demo-vfs.ts")) return contents;
-      return contents.replaceAll("node-vfs.vfs.zst", "node-vfs.absent");
+      return contents.replaceAll("wordpress.vfs.zst", "wordpress.absent");
     });
     assert.throws(
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: absent }),
-      /browser-node.*glob/is,
+      /browser-wordpress.*glob/is,
     );
 
     const rogue = copyBrowserSources(directory, (source, contents) => {
@@ -326,11 +326,11 @@ test("keeps canonical resolution ahead of legacy fallback for every Pages produc
 
     const missingProduct = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("live-setup.ts")) return contents;
-      return contents.replace('productId: "browser-node"', 'productId: "browser-rogue"');
+      return contents.replace('productId: "browser-nginx"', 'productId: "browser-rogue"');
     });
     assert.throws(
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: missingProduct }),
-      /canonical product mapping.*browser-node/i,
+      /canonical product mapping.*browser-nginx/i,
     );
 
     const fallback = copyBrowserSources(directory, (source, contents) => {
@@ -447,11 +447,11 @@ test("admits product-id-keyed plumbing (not a machine-identity table)", () => {
       `
       const VFS_PRODUCTS = {
         "browser-main-shell": { kind: "url", url: "shell.vfs.zst" },
-        "browser-node": { kind: "optional-demo", image: "node" },
+        "browser-wordpress": { kind: "optional-demo", image: "wordpress" },
       };
       `,
     );
-    // "browser-main-shell" and "browser-node" ARE in realCatalog.productIds,
+    // "browser-main-shell" and "browser-wordpress" ARE in realCatalog.productIds,
     // so this must pass against the real catalog admission rule too.
     assert.doesNotThrow(() => assertNoAppMachineIdentityTables(realCatalog, directory));
   });

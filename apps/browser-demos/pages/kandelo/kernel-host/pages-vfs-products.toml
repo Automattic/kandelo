@@ -10,10 +10,6 @@ id = "browser-main-shell"
 load = "eager"
 
 [[products]]
-id = "browser-node"
-load = "lazy"
-
-[[products]]
 id = "browser-nginx"
 load = "lazy"
 

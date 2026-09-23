@@ -320,7 +320,6 @@ class BootSuperseded extends Error {
 type PagesVfsProductId =
   | "platform-rootfs"
   | "browser-main-shell"
-  | "browser-node"
   | "browser-nginx"
   | "browser-nginx-php"
   | "browser-nginx-python"
@@ -359,11 +358,6 @@ const VFS_PRODUCTS: Record<GalleryProductId, VfsProductSource> = {
     kind: "url",
     productId: "browser-main-shell",
     url: shellVfsUrl,
-  },
-  "browser-node": {
-    kind: "optional-demo",
-    image: "node",
-    productId: "browser-node",
   },
   "browser-nginx": {
     kind: "optional-binary",
@@ -582,10 +576,9 @@ request_slowlog_trace_depth = 0
 // through the login/bash path that sources /etc/profile.d, so it still
 // needs an explicit env from the caller. Every other shell and service
 // identity now comes entirely from the image: the base shell's own
-// /etc/profile.d/00-kandelo-shell.sh (see shell-lazy-archives.ts) and
-// node's /etc/profile.d/kandelo-node-workspace.sh (see
-// images/vfs/lib/init/spidermonkey-npm-runtime.ts) cover the interactive
-// shells; dinit's per-service env-file covers the service demos.
+// /etc/profile.d/00-kandelo-shell.sh and its siblings (see
+// shell-lazy-archives.ts) cover the interactive shells; dinit's
+// per-service env-file covers the service demos.
 const FBTEST_ENV: string[] = [
   `HOME=${DEMO_HOME}`,
   "TMPDIR=/tmp",

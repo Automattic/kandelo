@@ -66,7 +66,6 @@ export function writeTrackedDemoConfig(
 export const TRACKED_DEMO_CONFIG_SOURCES = [
   "packages/registry/shell/source-rootfs-shell-demo.json",
   "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
-  "packages/registry/node/node-demo.json",
   "packages/registry/nginx/nginx-demo.json",
   "packages/registry/nginx/nginx-php-demo.json",
   "packages/registry/nginx-python-vfs/nginx-python-demo.json",

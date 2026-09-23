@@ -1043,7 +1043,6 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded, while sudo and the ordinary command set remain first-use package outputs |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -1094,7 +1093,8 @@ Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI identity, package-backed lazy transports
 and seals, and record the exact shell digest and byte count in their own
 metadata. A revision bump on the shell therefore changes the cache key of
-`node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress` through the
+`nginx-vfs`, `nginx-php-vfs`, `nginx-python-vfs`, `lamp`, and `wordpress`
+through the
 normal dependency graph.
 
 Hosted GitHub Pages publication is disabled. Its retained workflow is outside

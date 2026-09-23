@@ -100,7 +100,6 @@ const OPTIONAL_BINARY_PRODUCTS: Record<
 };
 
 const OPTIONAL_DEMO_PRODUCTS: Record<string, OptionalDemoVfsImage> = {
-  "browser-node": "node",
   "browser-wordpress": "wordpress",
   "browser-lamp": "lamp",
 };

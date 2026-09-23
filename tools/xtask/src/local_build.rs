@@ -6161,7 +6161,6 @@ mod tests {
                 "build_nginx_php_vfs",
                 Expectation::FoldedProduct("browser-nginx-php"),
             ),
-            ("build_node_vfs", Expectation::FoldedProduct("browser-node")),
     // mariadb-test has no `[[products]]` entry (matching the
             // sibling test-support manifests test-php.toml/test-sqlite.toml,
             // which are also manifest-only with no active product) but its

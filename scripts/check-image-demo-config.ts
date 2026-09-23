@@ -170,7 +170,6 @@ export const COMPOSED_TRACKED_SOURCES = new Set<string>([
  * rather than a silent skip — see the "not classified" check below.
  */
 export const SINGLE_SOURCE_IMAGE_ARTIFACTS: Record<string, string> = {
-  "packages/registry/node/node-demo.json": "programs/wasm32/node-vfs.vfs.zst",
   "packages/registry/nginx/nginx-demo.json": "programs/wasm32/nginx-vfs.vfs.zst",
   "packages/registry/nginx/nginx-php-demo.json": "programs/wasm32/nginx-php-vfs.vfs.zst",
   "packages/registry/nginx-python-vfs/nginx-python-demo.json":

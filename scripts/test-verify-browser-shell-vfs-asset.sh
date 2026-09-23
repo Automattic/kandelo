@@ -47,21 +47,21 @@ expect_rejected "a hashed asset with different bytes"
 printf 'expected shell\n' >"$asset"
 
 # The same verifier binds every package-owned VFS import by an exact, caller-
-# selected asset stem. A valid shell asset must not satisfy the Node check.
-printf 'expected Node VFS\n' >"$TMP_ROOT/expected-node.vfs.zst"
-node_asset="$TMP_ROOT/dist/assets/node-vfs.vfs-Node789.zst"
-cp "$TMP_ROOT/expected-node.vfs.zst" "$node_asset"
-node_actual="$(
+# selected asset stem. A valid shell asset must not satisfy the LAMP check.
+printf 'expected LAMP VFS\n' >"$TMP_ROOT/expected-lamp.vfs.zst"
+lamp_asset="$TMP_ROOT/dist/assets/lamp.vfs-Lamp789.zst"
+cp "$TMP_ROOT/expected-lamp.vfs.zst" "$lamp_asset"
+lamp_actual="$(
   "$VERIFIER" \
-    "$TMP_ROOT/dist" "$TMP_ROOT/expected-node.vfs.zst" node-vfs.vfs
+    "$TMP_ROOT/dist" "$TMP_ROOT/expected-lamp.vfs.zst" lamp.vfs
 )"
-[ "$node_actual" = "$node_asset" ] || fail "reported the wrong Node VFS asset"
-printf 'different Node VFS\n' >"$node_asset"
+[ "$lamp_actual" = "$lamp_asset" ] || fail "reported the wrong LAMP VFS asset"
+printf 'different LAMP VFS\n' >"$lamp_asset"
 expect_rejected \
-  "a hashed Node asset with different bytes" \
-  "$TMP_ROOT/expected-node.vfs.zst" node-vfs.vfs
+  "a hashed LAMP asset with different bytes" \
+  "$TMP_ROOT/expected-lamp.vfs.zst" lamp.vfs
 expect_rejected \
   "an unsafe asset stem" \
-  "$TMP_ROOT/expected-node.vfs.zst" '../node-vfs.vfs'
+  "$TMP_ROOT/expected-lamp.vfs.zst" '../lamp.vfs'
 
 echo "test-verify-browser-shell-vfs-asset: ok"

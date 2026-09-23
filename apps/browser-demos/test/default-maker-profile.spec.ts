@@ -9,9 +9,9 @@ const galleryDescriptorModule = resolve(
 const defaultMountsModule = resolve(repoRoot, "host/src/vfs/default-mounts.ts");
 const imageHelpersModule = resolve(repoRoot, "host/src/vfs/image-helpers.ts");
 const memoryFsModule = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
-const npmRuntimeModule = resolve(
+const shellProfilesModule = resolve(
   repoRoot,
-  "images/vfs/lib/init/spidermonkey-npm-runtime.ts",
+  "images/vfs/scripts/shell-lazy-archives.ts",
 );
 const timeModule = resolve(repoRoot, "host/src/vfs/time.ts");
 const vfsModule = resolve(repoRoot, "host/src/vfs/vfs.ts");
@@ -30,7 +30,7 @@ test("default browser profiles use the writable canonical maker home", async ({
       imageHelpersUrl,
       mountsUrl,
       memoryFsUrl,
-      npmRuntimeUrl,
+      shellProfilesUrl,
       timeUrl,
       vfsUrl,
     }) => {
@@ -40,16 +40,12 @@ test("default browser profiles use the writable canonical maker home", async ({
       const { DEFAULT_MOUNT_SPEC, resolveForBrowser } = await import(
         /* @vite-ignore */ mountsUrl
       );
-      const { ensureDirRecursive, writeVfsFile } = await import(
+      const { ensureDirRecursive } = await import(
         /* @vite-ignore */ imageHelpersUrl
       );
       const { MemoryFileSystem } = await import(/* @vite-ignore */ memoryFsUrl);
-      const {
-        NODE_WORKSPACE_PROFILE,
-        NODE_WORKSPACE_PROFILE_PATH,
-        stageSpiderMonkeyNpmRuntime,
-      } = await import(
-        /* @vite-ignore */ npmRuntimeUrl
+      const { registerShellProfileScripts } = await import(
+        /* @vite-ignore */ shellProfilesUrl
       );
       const { BrowserTimeProvider } = await import(/* @vite-ignore */ timeUrl);
       const { VirtualPlatformIO } = await import(/* @vite-ignore */ vfsUrl);
@@ -126,21 +122,18 @@ test("default browser profiles use the writable canonical maker home", async ({
         base,
       );
 
+      // The shell image ships ONE /etc/profile.d for every machine it
+      // carries, so the npm settings the `node` machine needs must live
+      // there — and must not seed a package.json or a /work tree that every
+      // other shell-family machine would also inherit.
       const nodeFs = MemoryFileSystem.create(
         new SharedArrayBuffer(4 * 1024 * 1024),
       );
-      for (const path of [
-        "/usr/local/lib/npm/lib/utils/display.js",
-        "/usr/local/lib/npm/lib/commands/token.js",
-        "/usr/local/lib/npm/node_modules/cacache/lib/entry-index.js",
-        "/usr/local/lib/npm/node_modules/cacache/lib/verify.js",
-      ]) {
-        ensureDirRecursive(nodeFs, path.slice(0, path.lastIndexOf("/")));
-        writeVfsFile(nodeFs, path, "", 0o644);
-      }
-      stageSpiderMonkeyNpmRuntime(nodeFs);
-      const profileStat = nodeFs.stat(NODE_WORKSPACE_PROFILE_PATH);
-      const profileFd = nodeFs.open(NODE_WORKSPACE_PROFILE_PATH, 0, 0);
+      ensureDirRecursive(nodeFs, "/home/maker");
+      registerShellProfileScripts(nodeFs);
+      const profilePath = "/etc/profile.d/node.sh";
+      const profileStat = nodeFs.stat(profilePath);
+      const profileFd = nodeFs.open(profilePath, 0, 0);
       const profileBytes = new Uint8Array(profileStat.size);
       const profileLength = nodeFs.read(
         profileFd,
@@ -169,10 +162,9 @@ test("default browser profiles use the writable canonical maker home", async ({
         data: new TextDecoder().decode(actual.subarray(0, length)),
         homeUid: homeMount?.backend.stat("/").uid,
         homeGid: homeMount?.backend.stat("/").gid,
-        nodeWorkspaceProfile: new TextDecoder().decode(
+        nodeShellProfile: new TextDecoder().decode(
           profileBytes.subarray(0, profileLength),
         ),
-        expectedNodeWorkspaceProfile: NODE_WORKSPACE_PROFILE,
         imageSeedsPackage,
         workExists,
         shell: shell.boot,
@@ -184,7 +176,7 @@ test("default browser profiles use the writable canonical maker home", async ({
       imageHelpersUrl: asViteFsUrl(imageHelpersModule),
       mountsUrl: asViteFsUrl(defaultMountsModule),
       memoryFsUrl: asViteFsUrl(memoryFsModule),
-      npmRuntimeUrl: asViteFsUrl(npmRuntimeModule),
+      shellProfilesUrl: asViteFsUrl(shellProfilesModule),
       timeUrl: asViteFsUrl(timeModule),
       vfsUrl: asViteFsUrl(vfsModule),
     },
@@ -194,8 +186,7 @@ test("default browser profiles use the writable canonical maker home", async ({
     data: "maker browser profile",
     homeUid: 1000,
     homeGid: 1000,
-    nodeWorkspaceProfile: expect.any(String),
-    expectedNodeWorkspaceProfile: expect.any(String),
+    nodeShellProfile: expect.any(String),
     imageSeedsPackage: false,
     workExists: false,
     shell: {
@@ -221,5 +212,9 @@ test("default browser profiles use the writable canonical maker home", async ({
       gid: 1000,
     },
   });
-  expect(result.nodeWorkspaceProfile).toBe(result.expectedNodeWorkspaceProfile);
+  expect(result.nodeShellProfile).toContain(
+    "export npm_config_cache=/tmp/.npm-cache",
+  );
+  expect(result.nodeShellProfile).not.toContain("PS1");
+  expect(result.nodeShellProfile).not.toContain("package.json");
 });

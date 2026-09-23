@@ -30,7 +30,7 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
 
   await expect
     .poll(() => new URL(page.url()).searchParams.get("vfs"))
-    .toContain("/node-vfs.vfs.zst#node");
+    .toContain("/shell.vfs.zst#node");
   const url = new URL(page.url());
   // The machine is named by the profile the IMAGE declares, not by an app-side
   // id: `&profile=` and the image URL's own fragment carry it, and the removed

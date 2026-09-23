@@ -2,7 +2,7 @@
   "schema": 1,
   "entries": [
     { "product": "browser-main-shell", "profile": "shell" },
-    { "product": "browser-node", "profile": "node" },
+    { "product": "browser-main-shell", "profile": "node" },
     { "product": "browser-nginx", "profile": "nginx" },
     { "product": "browser-nginx-php", "profile": "nginx-php" },
     { "product": "browser-nginx-python", "profile": "nginx-python" },

@@ -28,8 +28,6 @@ import shellDemoSource
   from "../../../../../packages/registry/shell/source-rootfs-shell-demo.json?raw";
 import shellDemoProfilesSource
   from "../../../../../packages/registry/shell/source-rootfs-shell-demo-profiles.json?raw";
-import nodeDemoSource
-  from "../../../../../packages/registry/node/node-demo.json?raw";
 import nginxDemoSource
   from "../../../../../packages/registry/nginx/nginx-demo.json?raw";
 import nginxPhpDemoSource
@@ -113,7 +111,6 @@ export const TRACKED_DEMO_CONFIG_BY_PRODUCT: Readonly<
       "source-rootfs-shell-demo-profiles.json",
     ),
   ),
-  "browser-node": parseTracked(nodeDemoSource, "node-demo.json"),
   "browser-nginx": parseTracked(nginxDemoSource, "nginx-demo.json"),
   "browser-nginx-php": parseTracked(nginxPhpDemoSource, "nginx-php-demo.json"),
   "browser-nginx-python": parseTracked(

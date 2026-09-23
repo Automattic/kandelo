@@ -19,7 +19,6 @@ import {
   WORDPRESS_SETUP_SQLITE_PLUGIN_ALIAS,
   WORDPRESS_SQLITE_PLUGIN_GUEST_PATH,
 } from "../../images/vfs/scripts/wordpress-source-layout";
-import { resolveNodeNpmSource } from "../../images/vfs/scripts/build-node-vfs-image";
 import { resolveLampSystemTablesDirectory } from "../../images/vfs/scripts/build-lamp-vfs-image";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
@@ -38,13 +37,10 @@ function readFile(fs: MemoryFileSystem, path: string): string {
 }
 
 describe("WordPress product source layout", () => {
-  it("prefers injected Node and WordPress sources without calling fallbacks", () => {
+  it("prefers injected WordPress sources without calling fallbacks", () => {
     const repoRoot = "/reviewed/kandelo";
     const fallback = vi.fn(() => "/network-fallback-must-not-run");
 
-    expect(resolveNodeNpmSource("/resolver/npm", repoRoot, fallback)).toBe(
-      "/resolver/npm",
-    );
     expect(
       resolveWordPressCoreSource(repoRoot, fallback, "/resolver/wordpress"),
     ).toBe(
@@ -63,9 +59,6 @@ describe("WordPress product source layout", () => {
   it("uses manifest-backed verified fallbacks outside resolver mode", () => {
     const fallback = vi.fn((packageName: string) => `/cache/${packageName}`);
 
-    expect(resolveNodeNpmSource(undefined, "/repo", fallback)).toBe(
-      "/cache/node-vfs",
-    );
     expect(resolveWordPressCoreSource("/repo", fallback)).toBe(
       "/cache/wordpress",
     );
@@ -73,7 +66,6 @@ describe("WordPress product source layout", () => {
       "/cache/wordpress-sqlite-integration-source",
     );
     expect(fallback.mock.calls).toEqual([
-      ["node-vfs", "/repo"],
       ["wordpress", "/repo"],
       ["wordpress-sqlite-integration-source", "/repo"],
     ]);

@@ -43,7 +43,6 @@ import type {
   VfsProductInputHandle,
   VfsProductInputKind,
 } from "./vfs-product-builder-contract";
-import { buildNodeVfsImage } from "./build-node-vfs-image";
 import { buildNginxVfsImage } from "./build-nginx-vfs-image";
 import { buildNginxPhpVfsImage } from "./build-nginx-php-vfs-image";
 import { buildNginxPythonVfsImage } from "./build-nginx-python-vfs-image";
@@ -205,7 +204,6 @@ async function buildStagedPackageVfs(
 
 
 const SERVICE_PRODUCT_BUILDERS = new Map([
-  ["browser-node", "images/vfs/scripts/build-node-vfs-image.sh"],
   ["browser-nginx", "images/vfs/scripts/build-nginx-vfs-image.sh"],
   ["browser-nginx-php", "images/vfs/scripts/build-nginx-php-vfs-image.sh"],
   ["browser-nginx-python", "images/vfs/scripts/build-nginx-python-vfs-image.sh"],
@@ -320,21 +318,6 @@ export async function buildStagedBrowserService(
     };
 
     switch (productId) {
-      case "browser-node": {
-        const npmDirectory = join(work, "npm-runtime");
-        materializeSingleRootArchive(
-          sourceArchive("npm-runtime"),
-          npmDirectory,
-          "browser-node npm runtime",
-        );
-        await buildNodeVfsImage({
-          shellImage,
-          node: packageBytes("node", "node"),
-          npmDirectory,
-          outputPath: invocation.outputPath,
-        });
-        break;
-      }
       case "browser-nginx":
         await buildNginxVfsImage({
           shellImage,

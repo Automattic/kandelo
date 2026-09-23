@@ -502,9 +502,9 @@ describe("profile-only schema", () => {
 
 describe("tracked demo-config sources", () => {
   it("declares every tracked source", () => {
-    // 10 = eight converted builders plus the shell image's base config and
-    // its profile overlay, which are two separate tracked files.
-    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(10);
+    // 9 = seven single-source builders plus the shell image's base config
+    // and its profile overlay, which are two separate tracked files.
+    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(9);
   });
 
   it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s parses and validates", (relPath) => {

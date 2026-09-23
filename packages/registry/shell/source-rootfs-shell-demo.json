@@ -56,6 +56,87 @@
         }
       }
     },
+    "node": {
+      "identity": {
+        "title": "Node.js",
+        "summary": "SpiderMonkey-backed Node.js compatibility runtime; node, npm and npx arrive from the shell image's lazy node archive on first use.",
+        "accent": "#43853d",
+        "glyph": "js",
+        "packages": [
+          "node@local",
+          "npm@10.9.2",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "memoryPages": 4096
+        }
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "SpiderMonkey Node.js demo",
+        "summary": "Run Node-compatible commands against the SpiderMonkey-backed runtime, including npm packages, Intl, and worker_threads shared memory.",
+        "groups": [
+          {
+            "title": "Commands",
+            "actions": [
+              {
+                "id": "runtime-check",
+                "label": "Runtime check",
+                "description": "Exercise process metadata, Intl formatting, and a shared-memory worker.",
+                "kind": "terminal.run",
+                "payload": "node -e \" const {Worker}=require('worker_threads'); console.log('node', process.version, process.arch); console.log('intl', new Intl.NumberFormat('de-DE').format(1234567.89)); const sab=new SharedArrayBuffer(8); const view=new Int32Array(sab); new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab}); if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000); if(Atomics.load(view,1)!==1) throw new Error('worker did not finish'); console.log('worker', Atomics.load(view,0)); \""
+              },
+              {
+                "id": "install-cowsay",
+                "label": "Install cowsay",
+                "description": "Install cowsay with npm and run its package bin.",
+                "kind": "terminal.run",
+                "payload": "rm -rf node_modules package-lock.json /tmp/.npm-cache && printf '%s\\n' '{\"name\":\"demo\",\"version\":\"0.0.1\"}' > package.json && npm install cowsay && ./node_modules/.bin/cowsay Kandelo"
+              }
+            ]
+          },
+          {
+            "title": "REPL",
+            "actions": [
+              {
+                "id": "enter-repl",
+                "label": "Open REPL",
+                "description": "Start an interactive Node-compatible REPL.",
+                "kind": "terminal.write",
+                "payload": "node\n"
+              },
+              {
+                "id": "repl-expression",
+                "label": "Send expr",
+                "description": "Send an expression to the current terminal.",
+                "kind": "terminal.write",
+                "payload": "process.version\n"
+              }
+            ]
+          }
+        ],
+        "script": {
+          "title": "SpiderMonkey Node script",
+          "language": "sh",
+          "initialText": "rm -rf node_modules package-lock.json /tmp/.npm-cache && printf '%s\\n' '{\"name\":\"demo\",\"version\":\"0.0.1\"}' > package.json && npm install cowsay && ./node_modules/.bin/cowsay Kandelo"
+        },
+        "companion": {
+          "title": "Companion HTML",
+          "srcDoc": "<!doctype html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n    :root { color-scheme: dark; }\n    body {\n      margin: 0;\n      padding: 12px;\n      background: #191512;\n      color: #f3d6b3;\n      font: 12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n    }\n    h1 {\n      margin: 0 0 8px;\n      font-size: 12px;\n      font-weight: 650;\n      letter-spacing: 0;\n      color: #fff2df;\n    }\n    p {\n      margin: 0 0 10px;\n      color: #b99d7d;\n      line-height: 1.4;\n    }\n    .row {\n      display: flex;\n      flex-wrap: wrap;\n      gap: 6px;\n    }\n    button {\n      border: 1px solid rgba(255, 169, 86, 0.28);\n      background: rgba(255, 169, 86, 0.12);\n      color: #ffe0b9;\n      border-radius: 6px;\n      padding: 7px 9px;\n      font: inherit;\n      cursor: pointer;\n    }\n    button:hover { background: rgba(255, 169, 86, 0.2); }\n    #status {\n      min-height: 16px;\n      margin-top: 10px;\n      color: #d2b08b;\n      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n      font-size: 11px;\n    }\n  </style>\n</head>\n<body>\n  <h1>SpiderMonkey Node companion</h1>\n  <p>This frame has no kernel access. It can only request parent-approved action ids.</p>\n  <div class=\"row\"><button type=\"button\" data-action=\"runtime-check\">Runtime</button><button type=\"button\" data-action=\"install-cowsay\">cowsay</button><button type=\"button\" data-action=\"repl-expression\">REPL input</button></div>\n  <div id=\"status\"></div>\n  <script>\n    const status = document.getElementById(\"status\");\n    document.addEventListener(\"click\", (event) => {\n      const button = event.target.closest(\"button[data-action]\");\n      if (!button) return;\n      const actionId = button.getAttribute(\"data-action\");\n      parent.postMessage({ type: \"kandelo.demoAction\", actionId }, \"*\");\n      status.textContent = \"sent \" + actionId;\n    });\n  </script>\n</body>\n</html>"
+        }
+      }
+    },
     "sdl2": {
       "identity": {
         "title": "SDL2 GLSL playground",
