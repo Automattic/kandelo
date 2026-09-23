@@ -25,7 +25,6 @@ inputs = [
   "host/src/types.ts",
   "host/src/vfs",
   "web-libs/kandelo-session/src/demo-config.ts",
-  "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
 ]
