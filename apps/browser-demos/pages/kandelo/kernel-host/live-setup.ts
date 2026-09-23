@@ -68,6 +68,10 @@ import {
 } from "../url-state";
 import { failOn, optionalBinaryUrl } from "./binary-urls";
 import { composeImageInWorker } from "./image-composer-client";
+import {
+  detectRuntimeMemoryProfile,
+  type RuntimeMemoryProfile,
+} from "@host/runtime-memory-profile";
 import { verifyImportedSealsForCurrentBoot } from "./boot-current-boundary";
 import {
   candidateEvidenceBootDescriptor,
@@ -1333,6 +1337,7 @@ async function bootProfile(
   // staging buffer held by this persistent realm would accumulate across
   // boots until Safari throws "Out of memory". The main thread never touches
   // the staged filesystem — only the serialized bytes that come back.
+  const memoryProfile = hostMemoryProfile();
   const composed = await composeImageInWorker(
     {
       profile: {
@@ -1352,6 +1357,7 @@ async function bootProfile(
       lazyAssets: loadedVfs.lazyAssets,
       appPath: APP_PATH,
       proto: PROTO,
+      preforkServiceProcesses: memoryProfile.preforkServiceProcesses,
     },
     {
       onTick: tick,
@@ -1407,6 +1413,10 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      // Pass the budget this boot already resolved, so the kernel and the
+      // image composition agree on one profile rather than detecting
+      // separately. `?memoryProfile=` overrides it; see hostMemoryProfile().
+      memoryProfile: memoryProfile.id,
       ...(profile.candidateEvidence === undefined
         ? {}
         : {
@@ -1833,6 +1843,34 @@ async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
   if (profile.vfsSource) return resolveLiveVfsSourceUrl(profile.vfsSource);
   if (profile.vfsUrl) return profile.vfsUrl;
   throw new Error(`No VFS image URL configured for ${profile.id}`);
+}
+
+/**
+ * Read `?memoryProfile=` from the page URL.
+ *
+ * The host detects the right budget for the device on its own; this exists so
+ * a device that misbehaves under one budget can be retried under the other
+ * without a different build. An unknown id fails the boot loudly rather than
+ * silently falling back.
+ */
+function hostMemoryProfile(): RuntimeMemoryProfile {
+  // Resolve once per boot and share it: composition needs the budget before a
+  // BrowserKernel exists, and detecting twice could drift.
+  return detectRuntimeMemoryProfile(
+    typeof navigator === "undefined"
+      ? {}
+      : {
+        userAgent: navigator.userAgent,
+        maxTouchPoints: navigator.maxTouchPoints,
+      },
+    memoryProfileOverride(),
+  );
+}
+
+function memoryProfileOverride(): string | undefined {
+  if (typeof location === "undefined") return undefined;
+  const value = new URLSearchParams(location.search).get("memoryProfile");
+  return value === null || value === "" ? undefined : value;
 }
 
 function dirname(path: string): string {

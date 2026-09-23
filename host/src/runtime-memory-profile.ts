@@ -48,6 +48,16 @@ export interface RuntimeMemoryProfile {
   readonly kernelMaxPages: number;
   /** Growth ceiling for an image-backed root filesystem, in bytes. */
   readonly imageMemfsMaxBytes: number;
+  /**
+   * How many worker processes a pre-forking service should start.
+   *
+   * A pool like php-fpm's `pm.max_children` claims that many process address
+   * spaces at once, each charged at `processMaxPages`. When the pool does not
+   * fit, the service does not degrade gracefully: php-fpm's master SIGTERMs
+   * the children it did start and exits, taking the demo's init tree with it.
+   * Sizing the pool to the host is what keeps that from happening.
+   */
+  readonly preforkServiceProcesses: number;
 }
 
 /**
@@ -59,6 +69,7 @@ export const DESKTOP_MEMORY_PROFILE: RuntimeMemoryProfile = {
   processMaxPages: DEFAULT_MAX_PAGES,
   kernelMaxPages: DEFAULT_KERNEL_MAX_PAGES,
   imageMemfsMaxBytes: 1 * 1024 * 1024 * 1024,
+  preforkServiceProcesses: 6,
 };
 
 /**
@@ -78,6 +89,11 @@ export const CONSTRAINED_MEMORY_PROFILE: RuntimeMemoryProfile = {
   processMaxPages: 4096,
   kernelMaxPages: 4096,
   imageMemfsMaxBytes: 768 * 1024 * 1024,
+  // Measured on the iOS 27 Simulator with the nginx-php demo: six php-fpm
+  // children reproducibly kill the pool (the master SIGTERMs its children
+  // while forking the sixth and exits, and dinit follows it down), while four
+  // serve normally. Five was not tested; four keeps a margin.
+  preforkServiceProcesses: 4,
 };
 
 export const RUNTIME_MEMORY_PROFILES: readonly RuntimeMemoryProfile[] = [

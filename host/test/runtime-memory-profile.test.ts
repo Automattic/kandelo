@@ -37,6 +37,18 @@ describe("detectRuntimeMemoryProfile", () => {
       DEFAULT_KERNEL_MAX_PAGES,
     );
     expect(DESKTOP_MEMORY_PROFILE.imageMemfsMaxBytes).toBe(1024 * 1024 * 1024);
+    // The value php-fpm.conf carried before it was budgeted per host.
+    expect(DESKTOP_MEMORY_PROFILE.preforkServiceProcesses).toBe(6);
+  });
+
+  it("pre-forks fewer service workers on a constrained host", () => {
+    // `pm = static` claims every child at once, so this is a demand for that
+    // many process address spaces, not a soft concurrency hint.
+    expect(CONSTRAINED_MEMORY_PROFILE.preforkServiceProcesses).toBeLessThan(
+      DESKTOP_MEMORY_PROFILE.preforkServiceProcesses,
+    );
+    expect(CONSTRAINED_MEMORY_PROFILE.preforkServiceProcesses)
+      .toBeGreaterThan(0);
   });
 
   it.each([
@@ -205,6 +217,19 @@ describe("declaredMachineReservationBytes", () => {
     // second generation cannot fit alongside the first in a ~6 GiB pool.
     expect(perMachine).toBe(4 * 1024 * MiB);
     expect(perMachine * 2).toBeGreaterThan(6 * 1024 * MiB);
+  });
+
+  it("keeps a constrained machine's pre-forked pool inside the pool", () => {
+    // nginx-php on iOS: dinit + php-fpm master + nginx master + 2 nginx
+    // workers, plus the pre-forked php children. Six children reproducibly
+    // killed php-fpm on the iOS Simulator; the budgeted count must leave the
+    // whole machine inside the measured ~6 GiB reservation pool.
+    const live = 5 + CONSTRAINED_MEMORY_PROFILE.preforkServiceProcesses;
+    const perMachine = declaredMachineReservationBytes(
+      CONSTRAINED_MEMORY_PROFILE,
+      live,
+    );
+    expect(perMachine).toBeLessThan(4 * 1024 * MiB);
   });
 
   it("rejects a nonsense process count", () => {

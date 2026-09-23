@@ -88,8 +88,20 @@ const DEMO_HOME = "/home/maker";
 const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
 const MARIADB_READY_SERVICE = "mariadb-ready";
 const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
-const PHP_FPM_WORKERS = 6;
-const PATCHED_PHP_FPM_CONF = `[global]
+/**
+ * php-fpm's static worker pool, sized by the host.
+ *
+ * `pm = static` claims every child at startup, so this number is a demand for
+ * that many process address spaces at once. On a host whose reservation pool
+ * cannot supply them, php-fpm's master SIGTERMs the children it did start and
+ * exits — taking dinit and the whole demo with it — so the count has to come
+ * from the host's memory profile rather than a fixed constant.
+ */
+function patchedPhpFpmConf(workers: number): string {
+  if (!Number.isSafeInteger(workers) || workers <= 0) {
+    throw new Error(`invalid php-fpm worker count: ${workers}`);
+  }
+  return `[global]
 daemonize = no
 error_log = /dev/stderr
 log_level = notice
@@ -99,11 +111,12 @@ user = nobody
 group = nobody
 listen = 127.0.0.1:9000
 pm = static
-pm.max_children = ${PHP_FPM_WORKERS}
+pm.max_children = ${workers}
 clear_env = no
 slowlog = /dev/null
 request_slowlog_trace_depth = 0
 `;
+}
 
 /**
  * Everything composition needs from a `LiveProfile`, reduced to plain data so
@@ -135,6 +148,11 @@ export interface ComposeImageJob {
   appPath: string;
   /** "http" or "https", from the composing page's origin. */
   proto: string;
+  /**
+   * Worker count for pre-forking services, from the host's memory profile.
+   * See {@link patchedPhpFpmConf}.
+   */
+  preforkServiceProcesses: number;
 }
 
 export interface ComposeImageResult {
@@ -181,7 +199,11 @@ export async function composeKandeloImage(
       profile.id === "wordpress-sqlite" ||
       profile.id === "wordpress-mariadb"
     ) {
-      writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+      writeVfsFile(
+        buildFs,
+        "/etc/php-fpm.conf",
+        patchedPhpFpmConf(job.preforkServiceProcesses),
+      );
       ensureDirRecursive(buildFs, "/var/cache/opcache");
     }
     if (profile.id === "wordpress-sqlite") {
