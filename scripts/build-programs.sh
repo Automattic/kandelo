@@ -374,11 +374,17 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libdrm.a"
             ;;
         sdl2_*.c)
-            # SDL2's KMSDRM backend calls into gbm and libdrm, so both
-            # follow libSDL2.a in the link order.
+            # SDL2's KMSDRM backend calls into gbm, libdrm and — through
+            # SDL_egl.c's SDL_VIDEO_STATIC_ANGLE path — EGL/GLES2, so all
+            # four follow libSDL2.a in the link order. build_program's
+            # header-based auto-detection cannot see the EGL dependency:
+            # these fixtures include only SDL headers, and without the
+            # explicit archives every eglFoo SDL2 references becomes an
+            # `env.*` import that traps the first time a window is made.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a"
             ;;
         posix-timer-thread.c)
             # Keep the fixture's pthread capacity small so its timer-helper

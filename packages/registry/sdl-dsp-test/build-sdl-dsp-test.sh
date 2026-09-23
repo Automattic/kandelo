@@ -35,11 +35,19 @@ REPRO_FLAGS=(
     "-fmacro-prefix-map=$REPO_ROOT=/usr/src/kandelo"
 )
 
+# libSDL2.a is built with the KMSDRM video backend, so it references
+# libdrm, libgbm and (through SDL_egl.c's SDL_VIDEO_STATIC_ANGLE path)
+# EGL/GLES2 even in a fixture that only ever calls SDL_INIT_AUDIO. Leaving
+# them off the link does not fail: `-Wl,--allow-undefined` turns each one
+# into an `env.*` import the host resolves to a throwing stub. Link the
+# sysroot libraries SDL2 actually calls into.
+SDL2_PLATFORM_LIBS="$(wasm32posix-pkg-config --libs gbm libdrm egl glesv2)"
+
 echo "==> Building the SDL2 blocking-write pacing fixture..."
 "$CC" -O2 "${REPRO_FLAGS[@]}" -DSDL_MAIN_HANDLED \
     -I"$SDL2_PREFIX/include/SDL2" \
     "$SCRIPT_DIR/src/sdl2-dsp-test.c" \
-    "$SDL2_PREFIX/lib/libSDL2.a" -lm \
+    "$SDL2_PREFIX/lib/libSDL2.a" $SDL2_PLATFORM_LIBS -lm \
     -o "$INSTALL_DIR/sdl2-dsp-test.wasm"
 
 echo "==> Building the SDL3 GETOSPACE pacing fixture..."

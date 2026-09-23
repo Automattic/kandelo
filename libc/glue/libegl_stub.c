@@ -13,6 +13,7 @@
  */
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -38,6 +39,38 @@ uint8_t *_wpk_gl_cmdbuf_base(void)  { return g_cmdbuf_base; }
 
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
     (void)display_id;
+    return EGL_DPY_HANDLE;
+}
+
+/* EGL 1.5 core. `eglQueryString(dpy, EGL_VERSION)` below reports 1.5, so
+ * a client that believes us binds this entry point instead of the 1.0
+ * `eglGetDisplay` — SDL2's `SDL_EGL_LoadLibrary` does exactly that, and
+ * under `SDL_VIDEO_STATIC_ANGLE` the binding is a direct symbol
+ * reference. It has to resolve from libEGL.a or `-Wl,--allow-undefined`
+ * silently turns it into an `env.eglGetPlatformDisplay` import that the
+ * host stubs with a throwing function.
+ *
+ * One display, one device: everything is driven through
+ * WPK_GL_DEVICE. `EGL_PLATFORM_GBM_KHR` (== EGL_PLATFORM_GBM_MESA, the
+ * enum SDL2's KMSDRM backend passes) is the only platform this backend
+ * really is, so every other platform gets the EGL_BAD_PARAMETER the
+ * spec asks for rather than a display that cannot work. `native_display`
+ * is the caller's `gbm_device *`, which selects nothing here: the
+ * libgbm shim opens the same device. */
+EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native_display,
+                                 const EGLAttrib *attrib_list) {
+    (void)native_display;
+    if (platform != EGL_PLATFORM_GBM_KHR) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_NO_DISPLAY;
+    }
+    /* No platform attributes are defined for this backend. The spec
+     * requires EGL_BAD_ATTRIBUTE for anything we do not recognize; a NULL
+     * or immediately EGL_NONE-terminated list is legal. */
+    if (attrib_list && attrib_list[0] != EGL_NONE) {
+        g_last_error = EGL_BAD_ATTRIBUTE;
+        return EGL_NO_DISPLAY;
+    }
     return EGL_DPY_HANDLE;
 }
 
@@ -239,6 +272,22 @@ EGLint eglGetError(void) {
     return e;
 }
 
+/* The "1.5" below is the version clients branch on, and this archive
+ * does not define the whole 1.5 entry-point set: the sync objects
+ * (eglCreateSync/eglDestroySync/eglClientWaitSync/eglWaitSync/
+ * eglGetSyncAttrib), the images (eglCreateImage/eglDestroyImage),
+ * eglCreatePlatformWindowSurface/eglCreatePlatformPixmapSurface, and
+ * several 1.0-1.4 queries (eglGetConfigs, eglQuerySurface,
+ * eglQueryContext, eglGetCurrent*, eglSurfaceAttrib, eglBindTexImage,
+ * eglReleaseTexImage, eglCopyBuffers, eglCreatePixmapSurface,
+ * eglCreatePbufferFromClientBuffer) are all absent. That gap is
+ * deliberately left visible rather than papered over with a plausible
+ * return value — `wasm_require_approved_reserved_env_imports` in
+ * scripts/wasm-artifact-guards.sh refuses any artifact that references
+ * one, so a new consumer fails its build here instead of trapping on a
+ * throwing host import at run time. Implement the entry point when a
+ * consumer needs it; eglQuerySurface in particular needs the granted
+ * surface size, which GLIO_CREATE_SURFACE does not report back today. */
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     if (dpy != EGL_DPY_HANDLE) return NULL;
     switch (name) {
