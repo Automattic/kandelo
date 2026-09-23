@@ -517,13 +517,32 @@ test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the N
   // removes the currently-working os.fork (a real POSIX capability). Left as a
   // truthful failure rather than faked green; remove this fixme once the
   // residual worker-stack depth is closed.
+  // BROWSER OVERFLOW GAP CLOSED by fork PR #1402 (spill switch-dispatch locals
+  // to a shadow-stack scratch frame). Measured on Node with
+  // KANDELO_NODE_WORKER_STACK_SIZE_MB: the fork-instrumented stdlib import
+  // chain now needs ~0.3 MB of worker stack (PASS at 0.3, OVERFLOW at 0.27),
+  // down from the pre-#1402 ~0.82 MB, landing at the no-fork ~0.27 MB baseline.
+  // In a real chromium Worker the Notes API now works end to end: the static
+  // page renders, GET /api/notes returns the seeded rows, and POST creates a
+  // row (verified 2026-09-22 on this merge).
+  //
+  // RESIDUAL (unrelated) BLOCKER — why this stays fixme: the trailing terminal
+  // check below asserts the `kandelo$ ` prompt, but main's PR #1403 ("Ship bash
+  // as the only shell") changed every dinit-service demo's terminal to bash's
+  // default login prompt (`kandelo-bash-5.2$`), which `/kandelo\$ ?/` no longer
+  // matches. This is not a Python or fork regression: the sibling nginx and
+  // nginx-php demo tests in this same file fail the identical terminal
+  // assertion in this merged tree. Remove this fixme once the #1403 dinit-demo
+  // terminal prompt regression is resolved (restore `PS1=kandelo$ ` for the
+  // service demos' terminal drawer, or update the shared prompt matcher).
   test.fixme(
     true,
-    "Residual browser platform gap: with build-time .pyc prewarm the stdlib " +
-      "import chain still needs ~0.85 MB of worker stack (measured on Node) " +
-      "and chromium's fixed dedicated-Worker stack is marginally below that; " +
-      "no Web Worker API enlarges it. Full close needs a frame-neutral " +
-      "fork-instrument transport or a larger browser worker stack.",
+    "nginx-python Notes API works in-browser after fork PR #1402 (GET+POST " +
+      "verified; import-chain worker stack ~0.3 MB, was ~0.82 MB). Blocked only " +
+      "by an unrelated PR #1403 regression: dinit-service demos' terminal prompt " +
+      "is now `kandelo-bash-5.2$`, which the shared `/kandelo$/` matcher (also " +
+      "used by the nginx and nginx-php tests, which fail identically) no longer " +
+      "matches.",
   );
   test.setTimeout(300_000);
 
@@ -537,11 +556,16 @@ test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the N
   );
   await expect(frame.locator("body")).toContainText("wsgiref", { timeout: 30_000 });
 
-  // "GET /api/notes" button: the seeded rows must already be present.
-  await frame.locator("#load").click();
-  await expect(frame.locator("#out")).toContainText("Welcome to Kandelo", {
-    timeout: 60_000,
-  });
+  // "GET /api/notes" button: the seeded rows must already be present. nginx
+  // (static page) comes up before notes-app finishes its first Python stdlib
+  // import, so a single early click can hit nginx's proxy error page. Re-click
+  // until the live JSON answers.
+  await expect(async () => {
+    await frame.locator("#load").click();
+    await expect(frame.locator("#out")).toContainText("Welcome to Kandelo", {
+      timeout: 5_000,
+    });
+  }).toPass({ timeout: 180_000 });
   const seeded = await frame.locator("#out").evaluate((node) =>
     JSON.parse(node.textContent ?? "[]"),
   );
