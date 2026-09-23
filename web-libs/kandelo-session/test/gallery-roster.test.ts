@@ -125,6 +125,7 @@ describe("parseGalleryRoster", () => {
       "node",
       "nginx",
       "nginx-php",
+      "nginx-python",
       "ruby-todo",
       "wordpress-sqlite",
       "wordpress-mariadb",

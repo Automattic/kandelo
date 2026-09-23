@@ -34,6 +34,8 @@ import nginxDemoSource
   from "../../../../../packages/registry/nginx/nginx-demo.json?raw";
 import nginxPhpDemoSource
   from "../../../../../packages/registry/nginx/nginx-php-demo.json?raw";
+import nginxPythonDemoSource
+  from "../../../../../packages/registry/nginx-python-vfs/nginx-python-demo.json?raw";
 import wordpressDemoSource
   from "../../../../../packages/registry/wordpress/wordpress-demo.json?raw";
 import lampDemoSource
@@ -114,6 +116,10 @@ export const TRACKED_DEMO_CONFIG_BY_PRODUCT: Readonly<
   "browser-node": parseTracked(nodeDemoSource, "node-demo.json"),
   "browser-nginx": parseTracked(nginxDemoSource, "nginx-demo.json"),
   "browser-nginx-php": parseTracked(nginxPhpDemoSource, "nginx-php-demo.json"),
+  "browser-nginx-python": parseTracked(
+    nginxPythonDemoSource,
+    "nginx-python-demo.json",
+  ),
   "browser-wordpress": parseTracked(wordpressDemoSource, "wordpress-demo.json"),
   "browser-lamp": parseTracked(lampDemoSource, "lamp-demo.json"),
   "browser-ruby-todo": parseTracked(rubyTodoDemoSource, "ruby-todo-demo.json"),

@@ -347,6 +347,7 @@ Located in `apps/browser-demos/pages/`:
 | erlang | OTP 28 BEAM | legacy spawn | Erlang VM, message passing |
 | nginx | nginx | dinit | Static file serving via service worker |
 | nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
+| nginx-python | nginx + Python (wsgiref) | dinit | Reverse proxy to a standard-library WSGI JSON API over SQLite |
 | mariadb | MariaDB 10.5 | dinit | SQL database with threads (Aria/InnoDB) |
 | redis | Redis 7.2 | dinit | In-memory store with threads |
 | wordpress | nginx + PHP-FPM + WP | dinit | Full stack with SQLite |
@@ -830,7 +831,9 @@ constructs this object in TypeScript: it calls `writeTrackedDemoConfig(fs,
 `images/vfs/scripts/tracked-demo-config.ts`, which copies the reviewed file
 byte-for-byte to `/etc/kandelo/demo.json`. Every tracked source is listed in
 `TRACKED_DEMO_CONFIG_SOURCES` in that same module, and
-`scripts/check-image-demo-config.mjs` validates all of them. Images without
+`scripts/check-image-demo-config.ts` validates all of them and
+byte-compares each single-source image's baked copy against its tracked
+source. Images without
 this file still boot with Kandelo's generic presentation defaults, but the
 Kandelo app does not carry demo-specific presentation fallbacks.
 Any extra files needed by an image-declared `autoCommand` can be declared in

@@ -5,6 +5,7 @@
     { "product": "browser-node", "profile": "node" },
     { "product": "browser-nginx", "profile": "nginx" },
     { "product": "browser-nginx-php", "profile": "nginx-php" },
+    { "product": "browser-nginx-python", "profile": "nginx-python" },
     { "product": "browser-ruby-todo", "profile": "ruby-todo" },
     { "product": "browser-wordpress", "profile": "wordpress-sqlite" },
     { "product": "browser-lamp", "profile": "wordpress-mariadb" },

@@ -176,6 +176,8 @@ export const SINGLE_SOURCE_IMAGE_ARTIFACTS: Record<string, string> = {
   "packages/registry/node/node-demo.json": "programs/wasm32/node-vfs.vfs.zst",
   "packages/registry/nginx/nginx-demo.json": "programs/wasm32/nginx-vfs.vfs.zst",
   "packages/registry/nginx/nginx-php-demo.json": "programs/wasm32/nginx-php-vfs.vfs.zst",
+  "packages/registry/nginx-python-vfs/nginx-python-demo.json":
+    "programs/wasm32/nginx-python-vfs.vfs.zst",
   "packages/registry/wordpress/wordpress-demo.json": "programs/wasm32/wordpress.vfs.zst",
   "packages/registry/wordpress/lamp-demo.json": "programs/wasm32/lamp.vfs.zst",
   "packages/registry/ruby/ruby-todo-demo.json": "programs/wasm32/ruby-todo-vfs.vfs.zst",

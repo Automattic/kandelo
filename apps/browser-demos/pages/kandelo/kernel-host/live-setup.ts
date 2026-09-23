@@ -193,6 +193,20 @@ const OPTIONAL_BINARY_URLS = {
       import: "default",
     },
   ),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
     query: "?url", import: "default",
   }),
@@ -288,6 +302,7 @@ type PagesVfsProductId =
   | "browser-node"
   | "browser-nginx"
   | "browser-nginx-php"
+  | "browser-nginx-python"
   | "browser-wordpress"
   | "browser-lamp"
   | "browser-ruby-todo";
@@ -345,6 +360,15 @@ const VFS_PRODUCTS: Record<GalleryProductId, VfsProductSource> = {
     relPaths: [
       "../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
       "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    ],
+  },
+  "browser-nginx-python": {
+    kind: "optional-binary",
+    label: "nginx-python-vfs.vfs.zst",
+    productId: "browser-nginx-python",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
     ],
   },
   "browser-wordpress": {

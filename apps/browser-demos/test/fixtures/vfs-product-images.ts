@@ -26,7 +26,7 @@ import {
 
 type OptionalBinaryImporters = Record<string, () => Promise<string>>;
 
-// The three products whose images are plain optional binaries. `live-setup.ts`
+// The products whose images are plain optional binaries. `live-setup.ts`
 // keeps its own copy of these globs because the SourceOnly Vite boundary
 // rewrites `import.meta.glob` by its literal specifier and importer, so the
 // specifier cannot be shared through a variable or a helper.
@@ -45,6 +45,14 @@ const OPTIONAL_BINARY_VFS_URLS = {
   ),
   ...import.meta.glob(
     "../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    { query: "?url", import: "default" },
+  ),
+  ...import.meta.glob(
+    "../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    { query: "?url", import: "default" },
+  ),
+  ...import.meta.glob(
+    "../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
     { query: "?url", import: "default" },
   ),
   ...import.meta.glob(
@@ -73,6 +81,13 @@ const OPTIONAL_BINARY_PRODUCTS: Record<
     relPaths: [
       "../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
       "../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    ],
+  },
+  "browser-nginx-python": {
+    label: "nginx-python-vfs.vfs.zst",
+    relPaths: [
+      "../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+      "../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
     ],
   },
   "browser-ruby-todo": {

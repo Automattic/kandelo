@@ -69,6 +69,7 @@ export const TRACKED_DEMO_CONFIG_SOURCES = [
   "packages/registry/node/node-demo.json",
   "packages/registry/nginx/nginx-demo.json",
   "packages/registry/nginx/nginx-php-demo.json",
+  "packages/registry/nginx-python-vfs/nginx-python-demo.json",
   "packages/registry/wordpress/wordpress-demo.json",
   "packages/registry/wordpress/lamp-demo.json",
   "packages/registry/ruby/ruby-todo-demo.json",

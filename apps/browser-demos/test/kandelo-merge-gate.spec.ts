@@ -516,11 +516,13 @@ test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the N
   // instead of compiling from source, which removes the deepest recursion and
   // is verified by syscall trace (import opens the baked .pyc, no compile).
   //
-  // ALSO FIXED alongside it: the browser "nginx-python" service boot and the
-  // Node serve-python.ts were not actually setting PYTHONDONTWRITEBYTECODE /
-  // PYTHONHOME despite images/vfs/products/browser-nginx-python.toml's
-  // [boot.env] declaring them; live-setup.ts's "python-service" init-env
-  // profile and serve-python.ts now do.
+  // ALSO FIXED alongside it: the Python service was not actually getting
+  // PYTHONDONTWRITEBYTECODE / PYTHONHOME despite
+  // images/vfs/products/browser-nginx-python.toml's [boot.env] declaring
+  // them. They now live in the IMAGE, as notes-app's own dinit env-file
+  // (images/vfs/scripts/build-nginx-python-vfs-image.ts), which is where a
+  // dinit-target machine's per-service environment belongs: the browser host
+  // hands pid 1 only what no baked artifact can know.
   //
   // BROWSER OVERFLOW GAP CLOSED by fork PR #1402 (spill switch-dispatch locals
   // to a shadow-stack scratch frame). Measured on Node with
@@ -532,7 +534,7 @@ test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the N
   // row (verified 2026-09-22 on this merge).
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=nginx-python");
+  await gotoMachineOrSkip(page, "nginx-python");
   await page.waitForSelector('iframe[title="nginx + Python"]', { timeout: 180_000 });
 
   const frame = webFrame(page, "nginx + Python");
