@@ -1,5 +1,13 @@
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
+// Imported HERE, in the Playwright (Node) process, not through the page:
+// shell-lazy-archives.ts reads package artifacts with node:fs at module
+// scope, so the browser cannot evaluate it. What the browser half of this
+// spec proves is the mounted maker home; the profile scripts are plain
+// bytes, and checking them in Node keeps both halves honest.
+import { registerShellProfileScripts } from "../../../images/vfs/scripts/shell-lazy-archives";
+import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const galleryDescriptorModule = resolve(
@@ -7,12 +15,7 @@ const galleryDescriptorModule = resolve(
   "apps/browser-demos/pages/kandelo/gallery-descriptor.ts",
 );
 const defaultMountsModule = resolve(repoRoot, "host/src/vfs/default-mounts.ts");
-const imageHelpersModule = resolve(repoRoot, "host/src/vfs/image-helpers.ts");
 const memoryFsModule = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
-const shellProfilesModule = resolve(
-  repoRoot,
-  "images/vfs/scripts/shell-lazy-archives.ts",
-);
 const timeModule = resolve(repoRoot, "host/src/vfs/time.ts");
 const vfsModule = resolve(repoRoot, "host/src/vfs/vfs.ts");
 
@@ -27,10 +30,8 @@ test("default browser profiles use the writable canonical maker home", async ({
   const result = await page.evaluate(
     async ({
       galleryUrl,
-      imageHelpersUrl,
       mountsUrl,
       memoryFsUrl,
-      shellProfilesUrl,
       timeUrl,
       vfsUrl,
     }) => {
@@ -40,13 +41,7 @@ test("default browser profiles use the writable canonical maker home", async ({
       const { DEFAULT_MOUNT_SPEC, resolveForBrowser } = await import(
         /* @vite-ignore */ mountsUrl
       );
-      const { ensureDirRecursive } = await import(
-        /* @vite-ignore */ imageHelpersUrl
-      );
       const { MemoryFileSystem } = await import(/* @vite-ignore */ memoryFsUrl);
-      const { registerShellProfileScripts } = await import(
-        /* @vite-ignore */ shellProfilesUrl
-      );
       const { BrowserTimeProvider } = await import(/* @vite-ignore */ timeUrl);
       const { VirtualPlatformIO } = await import(/* @vite-ignore */ vfsUrl);
 
@@ -122,38 +117,6 @@ test("default browser profiles use the writable canonical maker home", async ({
         base,
       );
 
-      // The shell image ships ONE /etc/profile.d for every machine it
-      // carries, so the npm settings the `node` machine needs must live
-      // there — and must not seed a package.json or a /work tree that every
-      // other shell-family machine would also inherit.
-      const nodeFs = MemoryFileSystem.create(
-        new SharedArrayBuffer(4 * 1024 * 1024),
-      );
-      ensureDirRecursive(nodeFs, "/home/maker");
-      registerShellProfileScripts(nodeFs);
-      const profilePath = "/etc/profile.d/node.sh";
-      const profileStat = nodeFs.stat(profilePath);
-      const profileFd = nodeFs.open(profilePath, 0, 0);
-      const profileBytes = new Uint8Array(profileStat.size);
-      const profileLength = nodeFs.read(
-        profileFd,
-        profileBytes,
-        null,
-        profileBytes.length,
-      );
-      nodeFs.close(profileFd);
-      let imageSeedsPackage = true;
-      try {
-        nodeFs.stat("/home/maker/package.json");
-      } catch {
-        imageSeedsPackage = false;
-      }
-      let workExists = true;
-      try {
-        nodeFs.stat("/work");
-      } catch {
-        workExists = false;
-      }
 
       const homeMount = mounts.find(
         (mount: { mountPoint: string }) => mount.mountPoint === "/home/maker",
@@ -162,21 +125,14 @@ test("default browser profiles use the writable canonical maker home", async ({
         data: new TextDecoder().decode(actual.subarray(0, length)),
         homeUid: homeMount?.backend.stat("/").uid,
         homeGid: homeMount?.backend.stat("/").gid,
-        nodeShellProfile: new TextDecoder().decode(
-          profileBytes.subarray(0, profileLength),
-        ),
-        imageSeedsPackage,
-        workExists,
         shell: shell.boot,
         node: node.boot,
       };
     },
     {
       galleryUrl: asViteFsUrl(galleryDescriptorModule),
-      imageHelpersUrl: asViteFsUrl(imageHelpersModule),
       mountsUrl: asViteFsUrl(defaultMountsModule),
       memoryFsUrl: asViteFsUrl(memoryFsModule),
-      shellProfilesUrl: asViteFsUrl(shellProfilesModule),
       timeUrl: asViteFsUrl(timeModule),
       vfsUrl: asViteFsUrl(vfsModule),
     },
@@ -186,9 +142,6 @@ test("default browser profiles use the writable canonical maker home", async ({
     data: "maker browser profile",
     homeUid: 1000,
     homeGid: 1000,
-    nodeShellProfile: expect.any(String),
-    imageSeedsPackage: false,
-    workExists: false,
     shell: {
       // BOOT IDENTITY COMES FROM THE IMAGE: descriptorFromGalleryItem no
       // longer assigns argv from the gallery item's display-only
@@ -212,9 +165,32 @@ test("default browser profiles use the writable canonical maker home", async ({
       gid: 1000,
     },
   });
-  expect(result.nodeShellProfile).toContain(
-    "export npm_config_cache=/tmp/.npm-cache",
+
+  // The shell image ships ONE /etc/profile.d for every machine it carries,
+  // so the npm settings the `node` machine needs live there — and must not
+  // seed a package.json or a /work tree that every other shell-family
+  // machine would inherit.
+  const profileFs = MemoryFileSystem.create(
+    new SharedArrayBuffer(4 * 1024 * 1024),
   );
-  expect(result.nodeShellProfile).not.toContain("PS1");
-  expect(result.nodeShellProfile).not.toContain("package.json");
+  ensureDirRecursive(profileFs, "/home/maker");
+  registerShellProfileScripts(profileFs);
+  const nodeShellProfile = readVfsText(profileFs, "/etc/profile.d/node.sh");
+  expect(nodeShellProfile).toContain("export npm_config_cache=/tmp/.npm-cache");
+  expect(nodeShellProfile).not.toContain("PS1");
+  expect(nodeShellProfile).not.toContain("package.json");
+  expect(() => profileFs.stat("/home/maker/package.json")).toThrow();
+  expect(() => profileFs.stat("/work")).toThrow();
 });
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const stat = fs.stat(path);
+  const handle = fs.open(path, 0, 0);
+  try {
+    const bytes = new Uint8Array(stat.size);
+    const length = fs.read(handle, bytes, null, bytes.length);
+    return new TextDecoder().decode(bytes.subarray(0, length));
+  } finally {
+    fs.close(handle);
+  }
+}
