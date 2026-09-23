@@ -9,6 +9,16 @@ type BrowserDiagnostics = {
 
 const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
 const MAX_LOG_LINES = 160;
+// The plain shell demo's login boot env sets PS1 to the literal `kandelo$ `
+// (images/vfs/products/browser-main-shell.toml), but PR #1403 ("Ship bash as
+// the only shell") made bash the login shell for every dinit-service demo's
+// terminal drawer (nginx, nginx-php, nginx-python) without a PS1 override, so
+// those terminals fall back to bash's compiled-in default prompt, which
+// includes the running bash's version. Confirmed against a real chromium run
+// of the nginx demo terminal: the received prompt text is exactly
+// `kandelo-bash-5.2$ `. Match both forms with one shared pattern instead of
+// pinning to a specific bash version.
+const KANDELO_PROMPT = /kandelo(?:-bash-[0-9.]+)?\$ ?/;
 const sourceRootfsExpectation =
   process.env.KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL;
 if (sourceRootfsExpectation !== undefined && sourceRootfsExpectation !== "1") {
@@ -300,7 +310,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   // Input typed before bash's first prompt is legitimately discarded by the
   // boot chain's startup typeahead flush (tcflush), so wait for the prompt
   // like the other terminal tests do.
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
 
   await runGuideScript(
     page,
@@ -421,7 +431,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
   await runTerminalCommand(
     page,
     "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
@@ -454,7 +464,7 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
   await runTerminalCommand(
     page,
     "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
@@ -502,21 +512,6 @@ test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the N
   // [boot.env] declaring them; live-setup.ts's "python-service" init-env
   // profile and serve-python.ts now do.
   //
-  // RESIDUAL GAP (why this stays fixme): even loading bytecode, the stdlib
-  // import chain's execution depth still marginally exceeds chromium's fixed
-  // Worker stack. Measured on Node (KANDELO_NODE_WORKER_STACK_SIZE_MB): the
-  // import chain needs ~0.85 MB of worker stack with the fork-instrumented
-  // interpreter (succeeds at 0.9, overflows at 0.8), and chromium's dedicated
-  // Worker stack is just below that. Closing it fully needs either a larger
-  // browser worker stack (no Web Worker API/flag exists) or a frame-neutral
-  // (tail-call) fork-instrument transport so the trampoline stops adding a
-  // native frame per fork-reaching call — an ABI-adjacent fork-instrument
-  // change. Removing fork instrumentation instead is not viable: the kernel
-  // requires fork-importing programs to carry the full instrumentation
-  // contract, so it would mean shipping a CPython built without fork, which
-  // removes the currently-working os.fork (a real POSIX capability). Left as a
-  // truthful failure rather than faked green; remove this fixme once the
-  // residual worker-stack depth is closed.
   // BROWSER OVERFLOW GAP CLOSED by fork PR #1402 (spill switch-dispatch locals
   // to a shadow-stack scratch frame). Measured on Node with
   // KANDELO_NODE_WORKER_STACK_SIZE_MB: the fork-instrumented stdlib import
@@ -525,25 +520,6 @@ test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the N
   // In a real chromium Worker the Notes API now works end to end: the static
   // page renders, GET /api/notes returns the seeded rows, and POST creates a
   // row (verified 2026-09-22 on this merge).
-  //
-  // RESIDUAL (unrelated) BLOCKER — why this stays fixme: the trailing terminal
-  // check below asserts the `kandelo$ ` prompt, but main's PR #1403 ("Ship bash
-  // as the only shell") changed every dinit-service demo's terminal to bash's
-  // default login prompt (`kandelo-bash-5.2$`), which `/kandelo\$ ?/` no longer
-  // matches. This is not a Python or fork regression: the sibling nginx and
-  // nginx-php demo tests in this same file fail the identical terminal
-  // assertion in this merged tree. Remove this fixme once the #1403 dinit-demo
-  // terminal prompt regression is resolved (restore `PS1=kandelo$ ` for the
-  // service demos' terminal drawer, or update the shared prompt matcher).
-  test.fixme(
-    true,
-    "nginx-python Notes API works in-browser after fork PR #1402 (GET+POST " +
-      "verified; import-chain worker stack ~0.3 MB, was ~0.82 MB). Blocked only " +
-      "by an unrelated PR #1403 regression: dinit-service demos' terminal prompt " +
-      "is now `kandelo-bash-5.2$`, which the shared `/kandelo$/` matcher (also " +
-      "used by the nginx and nginx-php tests, which fail identically) no longer " +
-      "matches.",
-  );
   test.setTimeout(300_000);
 
   await gotoOrSkip(page, "/?demo=nginx-python");
@@ -585,7 +561,7 @@ test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the N
   expect(typeof created.id).toBe("number");
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
   await runTerminalCommand(
     page,
     "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
