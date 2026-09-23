@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "defaultProfile": "wordpress-mariadb",
+  "profiles": {
+    "wordpress-mariadb": {
+      "identity": {
+        "title": "WordPress MariaDB",
+        "summary": "WordPress on nginx + PHP-FPM with MariaDB.",
+        "accent": "#5f8f73",
+        "glyph": "wp+"
+      },
+      "runtime": {
+        "network": true,
+        "requests": {
+          "memoryPages": 16384,
+          "maxWorkers": 24
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080,
+          9000
+        ],
+        "probeHttp": true,
+        "probePath": "/kandelo-ready.php"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
+    "lamp": {
+      "runtime": {
+        "network": true,
+        "requests": {
+          "memoryPages": 16384,
+          "maxWorkers": 24
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080,
+          9000
+        ],
+        "probeHttp": true,
+        "probePath": "/kandelo-ready.php"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    }
+  }
+}

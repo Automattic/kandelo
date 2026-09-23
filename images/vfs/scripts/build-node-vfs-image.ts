@@ -41,11 +41,7 @@ import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import { stageSpiderMonkeyNpmRuntime } from "../lib/init/spidermonkey-npm-runtime";
-import {
-  terminalPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
-import { nodeGuide } from "./kandelo-demo-guides";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import { ensureSourceExtract } from "./source-extract-helper";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
@@ -108,15 +104,7 @@ export async function buildNodeVfsImage(
   });
   console.log(`  ${written} files written`);
   stageSpiderMonkeyNpmRuntime(fs);
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      node: {
-        presentation: terminalPresentation(),
-        guide: nodeGuide(),
-      },
-    },
-  });
+  writeTrackedDemoConfig(fs, "packages/registry/node/node-demo.json");
 
   await saveShellDerivedVfsImage(fs, inputs.outputPath, {
     wasmArtifactPolicies: [NODE_WASM_ARTIFACT_POLICY],

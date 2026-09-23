@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "defaultProfile": "wordpress-sqlite",
+  "profiles": {
+    "wordpress-sqlite": {
+      "identity": {
+        "title": "WordPress SQLite",
+        "summary": "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
+        "accent": "#21759b",
+        "glyph": "wp"
+      },
+      "runtime": {
+        "network": true,
+        "requests": {
+          "memoryPages": 4096,
+          "maxWorkers": 12
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
+    "wordpress": {
+      "runtime": {
+        "network": true,
+        "requests": {
+          "memoryPages": 4096,
+          "maxWorkers": 12
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    }
+  }
+}

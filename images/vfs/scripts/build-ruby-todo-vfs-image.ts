@@ -34,10 +34,7 @@ import {
 } from "./vfs-image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { addDinitBaseSystemFiles } from "./dinit-image-helpers";
-import {
-  webPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
 } from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
@@ -118,14 +115,7 @@ export async function buildRubyTodoVfsImage(
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsFile(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH, EXPERIMENTAL_TERMINAL_SESSION);
 
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      "ruby-todo": {
-        presentation: webPresentation(),
-      },
-    },
-  });
+  writeTrackedDemoConfig(fs, "packages/registry/ruby/ruby-todo-demo.json");
 
   await saveImage(fs, inputs.outputPath, {
     wasmArtifactPolicies: [RUBY_WASM_ARTIFACT_POLICY],

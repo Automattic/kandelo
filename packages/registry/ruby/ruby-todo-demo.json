@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "defaultProfile": "ruby-todo",
+  "profiles": {
+    "ruby-todo": {
+      "identity": {
+        "title": "Ruby + Roda todo",
+        "summary": "A Roda web app on Ruby 4 with a SQLite database, served on :8080. Not Rails.",
+        "accent": "#b31217",
+        "glyph": "rb"
+      },
+      "runtime": {
+        "network": true,
+        "requests": {
+          "memoryPages": 4096,
+          "maxWorkers": 12
+        }
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/bin/ruby /var/lib/todo/server.rb"
+      }
+    }
+  }
+}

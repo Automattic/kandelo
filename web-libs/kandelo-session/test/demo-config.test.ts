@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findRepoRoot } from "../../../host/src/binary-resolver";
+import { TRACKED_DEMO_CONFIG_SOURCES } from "../../../images/vfs/scripts/tracked-demo-config";
 import {
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   MAX_REQUESTED_MEMORY_PAGES,
@@ -266,23 +267,28 @@ describe("resolvers", () => {
 });
 
 describe("tracked demo-config sources", () => {
-  it("parses and validates the shell image's tracked source", () => {
-    const path = join(
-      findRepoRoot(),
-      "packages/registry/shell/source-rootfs-shell-demo.json",
-    );
-    const source = readFileSync(path, "utf8");
+  it("declares every tracked source", () => {
+    // 9 = seven converted builders plus the shell image's base config and
+    // its profile overlay, which are two separate tracked files.
+    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(9);
+  });
+
+  it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s parses and validates", (relPath) => {
+    const source = readFileSync(join(findRepoRoot(), relPath), "utf8");
     const config = parseKandeloDemoConfig(source);
     expect(config).not.toBeNull();
     expect(() => validateKandeloDemoConfig(config!)).not.toThrow();
   });
 
-  it("keeps every tracked source under the byte cap", () => {
-    const path = join(
-      findRepoRoot(),
-      "packages/registry/shell/source-rootfs-shell-demo.json",
-    );
-    expect(readFileSync(path).byteLength)
+  it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s stays under the byte cap", (relPath) => {
+    expect(readFileSync(join(findRepoRoot(), relPath)).byteLength)
       .toBeLessThanOrEqual(MAX_KANDELO_DEMO_CONFIG_BYTES);
+  });
+
+  it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s declares a resolvable default", (relPath) => {
+    const config = parseKandeloDemoConfig(
+      readFileSync(join(findRepoRoot(), relPath), "utf8"),
+    )!;
+    expect(resolveDefaultProfileId(config)).not.toBeNull();
   });
 });

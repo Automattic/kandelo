@@ -57,3 +57,20 @@ export function writeTrackedDemoConfig(
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, source, 0o644);
 }
+
+/**
+ * Every tracked demo-config source, one per image that ships machine
+ * metadata. The gallery aggregates these without building any image, and the
+ * baked-equals-tracked check walks this list.
+ */
+export const TRACKED_DEMO_CONFIG_SOURCES = [
+  "packages/registry/shell/source-rootfs-shell-demo.json",
+  "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
+  "packages/registry/node/node-demo.json",
+  "packages/registry/nginx/nginx-demo.json",
+  "packages/registry/nginx/nginx-php-demo.json",
+  "packages/registry/wordpress/wordpress-demo.json",
+  "packages/registry/wordpress/lamp-demo.json",
+  "packages/registry/ruby/ruby-todo-demo.json",
+  "packages/registry/python-vfs/python-demo.json",
+] as const;
