@@ -200,7 +200,16 @@ export interface InitMessage {
   };
 }
 
+export interface OwnedJobMessage {
+  type: "read_owned_job" | "cancel_owned_job";
+  requestId: number;
+  jobId: string;
+  offset?: number;
+  limit?: number;
+}
+
 export interface SpawnMessage {
+  ownedJob?: { id: string; timeoutMs: number };
   type: "spawn";
   requestId: number;
   programPath?: string;
@@ -242,11 +251,26 @@ export interface ReadVfsDirMessage {
   path: string;
 }
 
+export interface ListVfsDirectoryMessage {
+  type: "list_vfs_directory";
+  requestId: number;
+  path: string;
+}
+
 /** Describe one path (following symlinks) through the worker-owned VFS. */
 export interface StatVfsPathMessage {
   type: "stat_vfs_path";
   requestId: number;
   path: string;
+}
+
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  path: string;
+  data: Uint8Array;
+  mode: number;
+  exclusive?: boolean;
 }
 
 export interface UnlinkVfsFileMessage {
@@ -385,8 +409,10 @@ export interface ClipboardGuestWaitMessage {
 
 export type MainToKernelMessage =
   | InitMessage
+  | OwnedJobMessage
   | SpawnMessage
   | TerminateProcessMessage
+  | ListVfsDirectoryMessage
   | ReadVfsFileMessage
   | ReadVfsDirMessage
   | StatVfsPathMessage
