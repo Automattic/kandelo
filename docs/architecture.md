@@ -2585,8 +2585,9 @@ upstream 2.4.120, KMS subset only — the kernel implements enough of the
 Packages that depend on these APIs link through `wasm32posix-pkg-config` and
 declare their resulting program artifacts as packages. The `modeset` demo is
 one such package: its VFS image installs `/usr/local/bin/modeset`, and
-`/etc/kandelo/demo.json` selects the KMS surface and `autoCommand` that starts
-it. The browser loader stays generic; it does not special-case `modeset.wasm`.
+`/etc/kandelo/demo.json` selects the KMS surface and the `init.shellCommand`
+that starts it. The browser loader stays generic; it does not special-case
+`modeset.wasm`.
 
 ## Performance Architecture
 

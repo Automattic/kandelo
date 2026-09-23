@@ -66,7 +66,7 @@ export interface VfsProductDeploymentMapV1 {
 }
 
 interface CanonicalMapAuthority {
-  gallery: Array<{ gallery_entries: string[]; id: string; vfs_image: string }>;
+  gallery: Array<{ id: string; vfs_image: string }>;
   productByLegacyFilename: Map<string, string>;
   productById: Map<string, { architecture: string }>;
 }
@@ -618,7 +618,7 @@ function repositoryAuthorityPaths(sourceRoot: string) {
         sourceRoot,
         "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
       ),
-      presentationPath: join(sourceRoot, "apps/browser-demos/pages/kandelo/presets.ts"),
+      rosterPath: join(sourceRoot, "apps/browser-demos/pages/kandelo/gallery-roster.json"),
       registryPath,
     },
   };

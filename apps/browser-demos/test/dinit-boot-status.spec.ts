@@ -1,30 +1,8 @@
 import { expect, test } from "@playwright/test";
 import {
   DinitBootStatusTracker,
-  REQUIRED_DINIT_SERVICES,
   type DinitServiceCompletion,
 } from "../pages/kandelo/kernel-host/dinit-boot-status";
-
-test("web demos track their complete dinit service closure", () => {
-  expect(REQUIRED_DINIT_SERVICES).toEqual({
-    nginx: ["nginx"],
-    "nginx-php": ["php-fpm", "nginx"],
-    "wordpress-sqlite": [
-      "wp-config-init",
-      "smtp-capture",
-      "php-fpm",
-      "nginx",
-    ],
-    "wordpress-mariadb": [
-      "mariadb",
-      "wp-config-init",
-      "smtp-capture",
-      "mariadb-ready",
-      "php-fpm",
-      "nginx",
-    ],
-  });
-});
 
 test("successful dinit output satisfies service readiness", () => {
   const progress: string[] = [];

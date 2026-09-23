@@ -22,13 +22,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 const DOOM_WAD_URL = "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
 
 let wadPath = "";
 let wadDir = "";
@@ -54,10 +50,7 @@ test.afterAll(() => {
 
 async function bootDoomOrSkip(page: Page): Promise<Locator> {
   test.skip(!existsSync(wadPath), "doom1.wad unavailable (offline) — demo can't run");
-  await page.goto(appUrl("/?demo=doom"), { waitUntil: "domcontentloaded" });
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
+  await gotoMachineOrSkip(page, "doom");
   const canvas = page.locator("canvas.kframebuffer-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 180_000 });
   // Wait until fbDOOM has fetched its IWAD and painted the title screen.

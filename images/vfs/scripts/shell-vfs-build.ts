@@ -33,8 +33,7 @@ import {
   displacePosixUtilsLiteManApplet,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
-  registerManShellProfile,
-  registerPythonShellProfile,
+  registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
@@ -464,6 +463,12 @@ export function populateShellEnvironment(
   // /usr/share/terminfo on every run, so the shared database must be present
   // regardless of whether the base rootfs already carries it.
   populateTerminfoDatabase(fs, resolveArtifact);
+  // Every /etc/profile.d script this image ships (the maker account's
+  // interactive identity, the static-CPython prefix, mandoc's pager), from
+  // the one list both shell-family builders call. Registered here rather than
+  // beside the archives that motivate each script so a new one cannot reach
+  // only whichever builder its author edited.
+  registerShellProfileScripts(fs);
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }
@@ -471,11 +476,9 @@ export function populateShellEnvironment(
   populateNetHackArchive(fs, resolveArtifact);
   populateRubyArchive(fs, resolveArtifact);
   populatePythonArchive(fs, resolveArtifact);
-  registerPythonShellProfile(fs);
   populateNodeArchive(fs, resolveArtifact);
   populatePerlArchive(fs, resolveArtifact);
   populateManArchive(fs, resolveArtifact);
-  registerManShellProfile(fs);
   populateCoreutilsDocsArchive(fs, resolveArtifact);
   populateLsofDocsArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);

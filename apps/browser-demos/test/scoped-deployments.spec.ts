@@ -140,8 +140,8 @@ test.describe.serial("real scoped production deployments", () => {
     try {
       const pageA = await context.newPage();
       const pageB = await context.newPage();
-      await pageA.goto(`${server.origin}/a/?demo=shell`, { waitUntil: "domcontentloaded" });
-      await pageB.goto(`${server.origin}/candidate-b/?demo=shell`, { waitUntil: "domcontentloaded" });
+      await pageA.goto(`${server.origin}/a/`, { waitUntil: "domcontentloaded" });
+      await pageB.goto(`${server.origin}/candidate-b/`, { waitUntil: "domcontentloaded" });
       await Promise.all([waitForShell(pageA), waitForShell(pageB)]);
 
       await seedUnrelatedCache(pageA);
@@ -264,7 +264,7 @@ test.describe.serial("real scoped production deployments", () => {
 
       await server.replaceRoot("a", join(fixtureRoot, "a-relocated"));
       const relocated = await context.newPage();
-      await relocated.goto(`${server.origin}/a/?demo=shell`, { waitUntil: "domcontentloaded" });
+      await relocated.goto(`${server.origin}/a/`, { waitUntil: "domcontentloaded" });
       await waitForShell(relocated);
       server.clearRequests();
       await runVimVersion(relocated);

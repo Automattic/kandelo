@@ -3,33 +3,6 @@ export type DinitServiceCompletion = {
   outcome: "succeeded" | "failed";
 };
 
-/**
- * Complete dinit target/dependency closures for browser web demos.
- *
- * Every listed service participates in readiness and failure reporting. This
- * prevents a dependency failure from being hidden behind a still-running init
- * process or a later HTTP 502 response.
- */
-export const REQUIRED_DINIT_SERVICES = {
-  nginx: ["nginx"],
-  "nginx-php": ["php-fpm", "nginx"],
-  "nginx-python": ["notes-app", "nginx"],
-  "wordpress-sqlite": [
-    "wp-config-init",
-    "smtp-capture",
-    "php-fpm",
-    "nginx",
-  ],
-  "wordpress-mariadb": [
-    "mariadb",
-    "wp-config-init",
-    "smtp-capture",
-    "mariadb-ready",
-    "php-fpm",
-    "nginx",
-  ],
-} as const;
-
 export class DinitBootStatusTracker {
   private completedServices = new Map<
     string,

@@ -10,8 +10,7 @@ import {
   displacePosixUtilsLiteManApplet,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
-  registerManShellProfile,
-  registerPythonShellProfile,
+  registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
@@ -78,6 +77,9 @@ export function populateSourceRootfsShellOverlay(
     symlink(fs, target, alias);
   }
 
-  registerPythonShellProfile(fs);
-  registerManShellProfile(fs);
+  // Every /etc/profile.d script this image ships, from the one list both
+  // shell-family builders call. Listing individual registrations here is what
+  // let the maker account's identity script ship in the layered base image
+  // but not in this one.
+  registerShellProfileScripts(fs);
 }

@@ -462,7 +462,6 @@ has_shell_vfs()     {
 }
 has_node()          { pkg_has_output node node.wasm; }
 has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
-has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/packages/registry/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
@@ -883,12 +882,6 @@ build_spidermonkey_node() {
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
         build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve spidermonkey-node)
     info "spidermonkey-node resolved"
-}
-
-build_node_vfs() {
-    # Declared VFS product; the engine resolves shell/node and runs
-    # packages/registry/node-vfs/build-node-vfs.sh (unchanged script).
-    bootstrap_target browser-node
 }
 
 build_vim_zip() {
@@ -1833,7 +1826,6 @@ build_target() {
         shell-vfs)  build_shell_vfs ;;
         node)       build_node ;;
         spidermonkey-node) build_spidermonkey_node ;;
-        node-vfs)   build_node_vfs ;;
         wordpress)  build_wordpress ;;
         wp-vfs)     build_wp_vfs ;;
         erlang)     build_erlang ;;
@@ -1887,7 +1879,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs ruby-todo-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1943,7 +1935,6 @@ build_all() {
     build_perl_vfs
     build_ruby
     build_shell_vfs
-    build_node_vfs
     build_wordpress
     build_wp_vfs
     build_lamp_vfs
@@ -2129,11 +2120,6 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/spidermonkey-node.wasm"
             warn "Cleaned spidermonkey-node" ;;
-        node-vfs)
-            xtask_clean_target node-vfs
-            rm -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" \
-                  "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
-            warn "Cleaned Node VFS image" ;;
         wordpress)
             xtask_clean_target wordpress
             rm -rf "$REPO_ROOT/packages/registry/wordpress/wordpress" \
@@ -2363,7 +2349,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -2921,7 +2907,6 @@ cmd_list() {
     echo "  shell-vfs   Shell environment VFS image           $(has_shell_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  node        SpiderMonkey Node compatibility binary $(has_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  spidermonkey-node  SpiderMonkey Node-compatible binary $(has_spidermonkey_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  node-vfs    Node + npm VFS image                  $(has_node_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

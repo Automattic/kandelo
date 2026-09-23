@@ -916,7 +916,6 @@ jobs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
       promote_matrix: ${{ steps.compute.outputs.promote_matrix }}
-      stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
       candidate_release_id: ${{ steps.compute.outputs.candidate_release_id }}
@@ -1061,7 +1060,6 @@ jobs:
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "promote_matrix=[]" >> "$GITHUB_OUTPUT"
-              echo "stages_node_vfs=false" >> "$GITHUB_OUTPUT"
               echo "preflight: package staging not required; skipping package drift matrix"
               exit 0
             fi
@@ -1213,19 +1211,9 @@ jobs:
                 --matrix "$program_matrix_file")
             rm -f "$program_matrix_file"
 
-            exact_matrix=$(jq -cn \
-              --argjson promote "$promote_matrix" \
-              --argjson library "$library_matrix" \
-              --argjson program "$program_matrix" \
-              "\$promote + \$library + \$program")
-            stages_node_vfs=$(jq -r \
-              "any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")" \
-              <<<"$exact_matrix")
-
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
             echo "promote_matrix=$promote_matrix" >> "$GITHUB_OUTPUT"
-            echo "stages_node_vfs=$stages_node_vfs" >> "$GITHUB_OUTPUT"
             echo "preflight: promote=$(echo "$promote_matrix" | jq length) library-build=$(echo "$library_matrix" | jq length) program-build=$(echo "$program_matrix" | jq length)"
             echo "promote_matrix:"; echo "$promote_matrix" | jq .
             echo "library_matrix:"; echo "$library_matrix" | jq .
@@ -2728,7 +2716,6 @@ jobs:
       TEST_GROUP: ${{ matrix.group }}
       PREPARE_BROWSER_ASSETS: ${{ matrix.suite == 'browser' }}
       VERIFY_BROWSER_PRODUCTION_BUILD: ${{ matrix.suite == 'browser' }}
-      STAGES_NODE_VFS: ${{ needs.preflight.outputs.stages_node_vfs }}
     steps:
       - name: Decide whether to run suite
         id: suite

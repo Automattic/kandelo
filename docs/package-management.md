@@ -195,7 +195,6 @@ closure:
 
 - `rootfs` revision 11;
 - `shell` revision 29;
-- `node-vfs` revision 22;
 - `lamp` revision 17;
 - `wordpress` revision 18; and
 - `nginx-vfs` and `nginx-php-vfs` revision 7.

@@ -2,6 +2,7 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot-descriptor";
 import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
 import type { BootDescriptor } from "../../../web-libs/kandelo-session/src/kernel-host";
+import { gotoMachine } from "./support/kandelo-machine";
 
 /**
  * Links printed into the Shell pane's terminal must open in a new tab, and
@@ -34,11 +35,6 @@ const BRIDGED_PORT = 8080;
  * fixture names one rather than guessing what a live boot would pick.
  */
 const MACHINE_PREFIX = "/computer/test-machine/";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
 
 interface RowRect {
   x: number;
@@ -288,9 +284,7 @@ test.describe("terminal links", () => {
     await installRefererProbe(context, "http://boot-probe.invalid");
 
     const fragment = await bootScriptFragment(`printf '%s\\n' '${probe}'\n`);
-    await page.goto(appUrl(`/?demo=shell#${fragment}`), {
-      waitUntil: "domcontentloaded",
-    });
+    await gotoMachine(page, "shell", { hash: fragment });
     await expect(page.locator(".xterm-rows").first()).toBeVisible({
       timeout: 240_000,
     });

@@ -27,7 +27,15 @@
 # workflow context, not tools: `./run.sh local-build` re-enters this
 # shell, so without these keeps an isolated-cache or no-auto-GC
 # request would be silently dropped and the build would run against
-# the machine-wide shared cache. PATH is intentionally NOT kept — Nix
+# the machine-wide shared cache. `KANDELO_PLAYWRIGHT_PORT` is kept for
+# the same reason and with a sharper failure mode: dropping it sends
+# Playwright to the shared default port, and on a machine running more
+# than one checkout that port already belongs to somebody else's dev
+# server — so the run passes while testing code that is not yours.
+# `WASM_POSIX_RESOLUTION_POLICY` and `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`
+# select which binary tier the browser app resolves against; dropping
+# them silently falls back to the default tier, which is the same class
+# of wrong-artifact bug. PATH is intentionally NOT kept — Nix
 # rebuilds it from the flake so anything that needs to leak from
 # the host raises a "command not found" instead of building wrong.
 #
@@ -121,6 +129,9 @@ nix_develop=(
     --keep KANDELO_NIX_BIN \
     --keep KANDELO_SOURCE_CACHE_ROOT \
     --keep KANDELO_CACHE_GC_AUTO \
+    --keep KANDELO_PLAYWRIGHT_PORT \
+    --keep WASM_POSIX_RESOLUTION_POLICY \
+    --keep WASM_POSIX_SOURCE_ONLY_BINARY_ROOT \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \

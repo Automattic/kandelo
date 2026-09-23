@@ -225,7 +225,6 @@ jobs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
       staged_matrix: ${{ steps.compute.outputs.staged_matrix }}
-      stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}
       repair_index: ${{ steps.compute.outputs.repair_index }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
@@ -295,7 +294,6 @@ jobs:
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "staged_matrix=[]" >> "$GITHUB_OUTPUT"
-              echo "stages_node_vfs=false" >> "$GITHUB_OUTPUT"
               echo "repair_index=false" >> "$GITHUB_OUTPUT"
               echo "preflight: package staging not required; skipping package drift matrix"
               exit 0
@@ -502,14 +500,9 @@ jobs:
               echo "preflight: staging requires at least one exact target-owned row" >&2
               exit 1
             fi
-            stages_node_vfs=$(jq -r \
-              "any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")" \
-              <<<"$staged_matrix")
-
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
             echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"
-            echo "stages_node_vfs=$stages_node_vfs" >> "$GITHUB_OUTPUT"
             echo "repair_index=$repair_index_output" >> "$GITHUB_OUTPUT"
             echo "preflight: library=$library_count program=$program_count staged=$staged_count repair-index=$repair_index_output"
             echo "library_matrix:"; echo "$library_matrix" | jq .
@@ -1452,7 +1445,6 @@ jobs:
       SUITE: ${{ matrix.suite }}
       TEST_GROUP: ${{ matrix.group }}
       PREPARE_BROWSER_ASSETS: ${{ matrix.suite == 'browser' }}
-      STAGES_NODE_VFS: ${{ needs.preflight.outputs.stages_node_vfs }}
     steps:
       - name: Decide whether to run suite
         id: suite
@@ -1722,8 +1714,7 @@ jobs:
   package-main-shell-gate:
     # Keep the historical required-check display name so branch protection
     # does not silently lose a gate. The canonical shell is package-owned now;
-    # the generic test gate includes the browser cell and conditionally runs
-    # the exact slow Node/npm acceptance when node-vfs is staged.
+    # the generic test gate includes the browser cell.
     name: exact current lazy shell (Node + Chromium)
     needs:
       - change-scope

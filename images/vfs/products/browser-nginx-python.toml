@@ -57,12 +57,18 @@ cwd = "/root"
 uid = 0
 gid = 0
 
+# pid 1 here is dinit, not Python. The Notes API service gets PYTHONHOME and
+# PYTHONDONTWRITEBYTECODE from its own dinit env-file inside the image
+# (/etc/dinit.d/env-python, written by
+# images/vfs/scripts/build-nginx-python-vfs-image.ts), which is where a
+# dinit-target machine's per-service environment belongs. Declaring them here
+# as well was left over from when the app was launched directly rather than
+# supervised: dinit never passed them on, and the service never read them
+# from pid 1.
 [boot.env]
 HOME = "/root"
 LOGNAME = "root"
 PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
-PYTHONHOME = "/usr"
-PYTHONDONTWRITEBYTECODE = "1"
 TMPDIR = "/tmp"
 USER = "root"
 

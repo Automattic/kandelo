@@ -56,8 +56,13 @@ describe("gallery descriptor profiles", () => {
         id,
         title: `Title: ${id}`,
         packages: [`package:${id}`],
-        boot: { argv: command, cwd, uid, gid, env },
+        // BOOT IDENTITY COMES FROM THE IMAGE: `item.bootCommand` is
+        // display-only gallery metadata, so the argv the base descriptor
+        // carried survives untouched. Only the identity a profile switch
+        // owns — cwd, uid, gid, and the account environment — is replaced.
+        boot: { argv: base.boot.argv, cwd, uid, gid, env },
       });
+      expect(descriptor.boot.argv).not.toEqual(command);
       expect(descriptor.boot.env).not.toHaveProperty("PS1");
       expect(descriptor.boot.env).not.toHaveProperty("npm_config_cache");
       expect(descriptor.runtime).toBe(base.runtime);

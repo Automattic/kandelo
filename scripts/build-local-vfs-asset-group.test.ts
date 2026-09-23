@@ -838,7 +838,7 @@ async function createFixture(
           ],
         );
       }
-    } else if (id === "browser-node" && options.collidingImageMember) {
+    } else if (id === "browser-nginx" && options.collidingImageMember) {
       const body = images.get("browser-lamp")!;
       fs.registerLazyFile(
         `/opt/${id}`,

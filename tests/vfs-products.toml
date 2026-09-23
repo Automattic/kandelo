@@ -26,16 +26,6 @@ kernel = "required"
 host = "required"
 
 [[registrations]]
-product = "browser-node"
-node = ["node-vfs-node-startup"]
-browser = ["node-vfs-browser-startup"]
-
-[registrations.applicability]
-abi = "required"
-kernel = "required"
-host = "required"
-
-[[registrations]]
 product = "browser-nginx"
 node = ["nginx-vfs-node-startup"]
 browser = ["nginx-vfs-browser-startup"]

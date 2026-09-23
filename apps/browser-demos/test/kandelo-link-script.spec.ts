@@ -2,11 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot-descriptor";
 import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
 import type { BootDescriptor } from "../../../web-libs/kandelo-session/src/kernel-host";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
+import { gotoMachine } from "./support/kandelo-machine";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate(
@@ -60,9 +56,7 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
   const fragment = await scriptFragment(
     'echo "link-script:$((6 * 7))"\ncat /run/kandelo/boot-input.json\n',
   );
-  await page.goto(appUrl(`/?demo=shell#${fragment}`), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell", { hash: fragment });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 180_000,
   });
@@ -74,9 +68,7 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
 });
 
 test("a malformed #k1= fragment fails loudly instead of booting", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell#k1=!!!not-base64url!!!"), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell", { hash: "k1=!!!not-base64url!!!" });
   await expect(
     page.getByText("Rejected #k1= boot link fragment", { exact: false }),
   ).toBeVisible({ timeout: 30_000 });
@@ -84,7 +76,7 @@ test("a malformed #k1= fragment fails loudly instead of booting", async ({ page 
 });
 
 test("gallery navigation drops a boot-link fragment", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+  await gotoMachine(page, "shell");
   const next = await page.evaluate(async () => {
     const { galleryItemUrl } = await import("/pages/kandelo/url-state.ts");
     return galleryItemUrl(
@@ -97,18 +89,21 @@ test("gallery navigation drops a boot-link fragment", async ({ page }) => {
     );
   });
   expect(new URL(next).hash).toBe("");
-  expect(new URL(next).searchParams.get("demo")).toBe("node");
+  expect(new URL(next).searchParams.get("profile")).toBe("node");
+  // The legacy selector on the link the visitor arrived with is dropped, not
+  // carried forward: nothing reads it any more.
+  expect(new URL(next).searchParams.get("demo")).toBeNull();
 });
 
 test("share dialog authors a script link that runs on open @slow", async ({ page, context }) => {
   test.setTimeout(300_000);
-  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+  await gotoMachine(page, "shell");
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 180_000,
   });
 
   await page
-    .getByRole("button", { name: "Share this machine as a link" })
+    .getByRole("button", { name: "Share this computer as a link" })
     .click();
   await page
     .locator(".kshare textarea")
