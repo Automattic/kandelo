@@ -62,9 +62,10 @@ they are the deliverable.
 ## Test baseline the merger should expect
 
 - Full fork sweep: `cd host && npx vitest run test/fork- test/vfork-` —
-  **81 files** (both prefixes needed; `test/fork-` alone misses every
-  `vfork-` file). Only `fork-host-import-runtime`'s two tests fail; they are
-  in the 64-file `host/test/expected-failures.json` baseline.
+  85 files at the batch's measurement (both prefixes needed; `test/fork-`
+  alone misses every `vfork-` file). Every fork file is now expected
+  green; `host/test/expected-failures.json` holds 63 files, none of them
+  fork tests.
 - `cargo test -p host-native --target aarch64-apple-darwin`: 8 pre-existing
   fork-reference failures, all trapping in `__wpk_fork_ref_gc_allocate`.
 - A hung sweep = a crashed guest OR a harness with no responder; the tell is
@@ -84,19 +85,15 @@ they are the deliverable.
    module-driven (Task 3 of Change 2); its third supporting fact was false.
 5. The plan's 17-page endpoint is not reachable by storage work; the 1 MiB
    shadow stack now dominates 12:1. Task 13's record says so.
-6. Pre-existing, not this branch's: `fork-host-import-runtime` stays on
-   the expected-failures baseline for two TEST defects, not a reader gap.
-   Case "retains complete ... import types" encodes `0x63 0x65 0x00`, a
-   shared prefix on a CONCRETE type index; the shared-everything-threads
-   binary grammar only allows `0x65` before an abstract heap type
-   (`heaptype ::= 0x65 ht:absheaptype`), so wasmparser correctly rejects
-   the fixture. Case "parses exact artifact signatures" asserts the reader
-   returns `(ref null extern)` verbatim, but `facts.rs` documents that it
-   canonicalizes to `externref` because wasmparser does not preserve the
-   spelling. Fix both in the test; the reader is right. No shipping
-   runtime implements shared reference types today (V8 flag-only, no
-   Firefox/Safari signal, wasmtime "unimplemented"), so nothing Kandelo
-   runs can produce them.
+6. FIXED on this branch (was banked before it): `fork-host-import-runtime`
+   is off the expected-failures baseline (64 -> 63 files). Its two red
+   cases were test defects: a shared prefix on a concrete type index,
+   which the shared-everything-threads grammar does not allow
+   (`heaptype ::= 0x65 ht:absheaptype`), and an assertion that the reader
+   preserve `(ref null extern)` verbatim when `facts.rs` documents it
+   canonicalizes to `externref`. The reader was right both times. No
+   shipping runtime implements shared reference types today (V8
+   flag-only, no Firefox/Safari signal, wasmtime "unimplemented").
 
 ## PENDING at writing (filled in when the batch lands)
 

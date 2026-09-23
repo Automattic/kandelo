@@ -115,7 +115,6 @@
     "test/dri-cube-pyramid.test.ts",
     "test/exec-brk-base.test.ts",
     "test/exec-state-tracking.test.ts",
-    "test/fork-host-import-runtime.test.ts",
     "test/getaddrinfo.test.ts",
     "test/interactive-stdin.test.ts",
     "test/kernel-allocator-churn.test.ts",

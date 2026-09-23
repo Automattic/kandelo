@@ -100,7 +100,10 @@ function typedBoundaryImportsModule(): ArrayBuffer {
     0x69, // exnref
     0x63, 0x00, // (ref null 0)
     0x64, 0x00, // (ref 0)
-    0x63, 0x65, 0x00, // (ref null shared 0)
+    // The shared prefix (0x65) is only defined before an ABSTRACT heap
+    // type: `heaptype ::= 0x65 ht:absheaptype`. A concrete type carries
+    // sharedness on its definition, not on references to it.
+    0x63, 0x65, 0x6f, // (ref null (shared extern))
     2,
     0x68, // contref
     0x74, // noexnref
@@ -173,7 +176,7 @@ describe("production fork host-import routing", () => {
       { code: 0x69, shared: false },
       { code: 0x63, heapType: 0, shared: false },
       { code: 0x64, heapType: 0, shared: false },
-      { code: 0x63, heapType: 0, shared: true },
+      { code: 0x63, heapType: -17, shared: true },
     ]);
     expect(imported?.signature.resultTypes).toEqual([
       { code: 0x68, shared: false },
@@ -290,11 +293,15 @@ describe("production fork host-import routing", () => {
         importOrdinal: 0,
         functionIndex: 0,
         signature: {
-          params: [0x7f, 0x63],
+          // The artifact spells the param long-form, `(ref null extern)`;
+          // the reader emits the canonical shorthand because wasmparser
+          // does not preserve the spelling (facts.rs, BinaryValueType).
+          // `(ref extern)` has no shorthand, so the result stays long-form.
+          params: [0x7f, 0x6f],
           results: [0x64],
           paramTypes: [
             { code: 0x7f, shared: false },
-            { code: 0x63, heapType: -17, shared: false },
+            { code: 0x6f, shared: false },
           ],
           resultTypes: [{ code: 0x64, heapType: -17, shared: false }],
         },
