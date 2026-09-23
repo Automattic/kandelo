@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
@@ -25,6 +26,7 @@ import {
   saveImage,
   sourceDateEpochMilliseconds,
   writeVfsBinary,
+  writeVfsFile,
 } from "./vfs-image-helpers";
 import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
 import {
@@ -41,11 +43,36 @@ const SYMBOLIC_LINK_MODE = 0o120000;
 const FILE_TYPE_MASK = 0o170000;
 const EXECUTE_BITS = 0o111;
 
+// WHY: the SDL2 GLSL playground's shader presets are repository-owned source
+// text, not a resolver-published package artifact — same status as the demo
+// config JSON above. Read directly from the tracked programs/ tree rather
+// than through a resolver dependency.
+const SDL2_PRESET_ROOT = fileURLToPath(
+  new URL("../../../programs/sdl2/presets", import.meta.url),
+);
+const SDL2_SHADER_PRESETS: ReadonlyArray<{
+  guestPath: string;
+  sourcePath: string;
+}> = [
+  { guestPath: "image/plasma.frag", sourcePath: "image/plasma.frag" },
+  { guestPath: "image/audio_bars.frag", sourcePath: "image/audio_bars.frag" },
+  { guestPath: "image/tunnelwisp.frag", sourcePath: "image/tunnelwisp.frag" },
+  { guestPath: "sound/tunnelwisp.frag", sourcePath: "sound/tunnelwisp.frag" },
+  { guestPath: "sound/sine.frag", sourcePath: "sound/sine.frag" },
+  { guestPath: "sound/fm_bell.frag", sourcePath: "sound/fm_bell.frag" },
+  { guestPath: "sound/noise_sweep.frag", sourcePath: "sound/noise_sweep.frag" },
+  { guestPath: "sound/chord.frag", sourcePath: "sound/chord.frag" },
+];
+
 export interface SourceRootfsShellInputs {
   rootfsPath: string;
   bashPath: string;
   fbdoomPath: string;
   modesetPath: string;
+  sdl2Path: string;
+  evdevDemoPath: string;
+  espeakNgPath: string;
+  espeakNgDataPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
   outFile: string;
@@ -114,6 +141,49 @@ function readRegularInput(path: string, label: string): Uint8Array {
     throw new Error(`${label} must be a regular non-symlink file: ${path}`);
   }
   return new Uint8Array(readFileSync(path));
+}
+
+/**
+ * Unpack espeak-ng's voice-data zip at `/usr/share/espeak-ng-data`.
+ *
+ * libespeak-ng's `PATH_ESPEAK_DATA` is compiled in as `/usr/share`, so the
+ * data tree must land unpacked on disk rather than staying a lazy archive
+ * mount: espeak-ng never issues the range-mapped reads a lazy zip needs.
+ */
+function writeEspeakVoiceData(fs: MemoryFileSystem, zipBytes: Uint8Array): void {
+  const root = "/usr/share/espeak-ng-data";
+  ensureDirRecursive(fs, root);
+  for (const entry of parseZipCentralDirectory(zipBytes)) {
+    if (entry.isDirectory) continue;
+    const target = `${root}/${entry.fileName}`;
+    ensureDirRecursive(fs, target.slice(0, target.lastIndexOf("/")));
+    writeVfsBinary(fs, target, extractZipEntry(zipBytes, entry), 0o644);
+  }
+}
+
+/**
+ * Bake the SDL2 GLSL playground's shader presets into the image.
+ *
+ * The playground's source-resolution chain is
+ *   1. /home/shaders/<mode>/current.frag       (user-editable)
+ *   2. /usr/share/shaders/<mode>/<preset>.frag (preset, baked here)
+ *   3. built-in fallback compiled into main.c
+ * tunnelwisp is the boot default for both modes; the others are loadable
+ * through the editor's Ctrl+L preset browser.
+ */
+function writeSdl2ShaderPresets(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/usr/share/shaders/image");
+  ensureDirRecursive(fs, "/usr/share/shaders/sound");
+  for (const preset of SDL2_SHADER_PRESETS) {
+    const source = decodeUtf8(
+      readRegularInput(
+        join(SDL2_PRESET_ROOT, preset.sourcePath),
+        `sdl2 shader preset ${preset.sourcePath}`,
+      ),
+      `sdl2 shader preset ${preset.sourcePath}`,
+    );
+    writeVfsFile(fs, `/usr/share/shaders/${preset.guestPath}`, source);
+  }
 }
 
 function decodeUtf8(bytes: Uint8Array, label: string): string {
@@ -680,6 +750,16 @@ export async function buildSourceRootfsShellImage(
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
   const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
   const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
+  const sdl2 = readRegularInput(inputs.sdl2Path, "sdl2 dependency");
+  const evdevDemo = readRegularInput(
+    inputs.evdevDemoPath,
+    "evdev_demo dependency",
+  );
+  const espeakNg = readRegularInput(inputs.espeakNgPath, "espeak-ng dependency");
+  const espeakNgData = readRegularInput(
+    inputs.espeakNgDataPath,
+    "espeak-ng data dependency",
+  );
 
   // WHY: Bash remains the ordinary account shell and is therefore eager after
   // login. Opening its canonical alias follows a symlink when present,
@@ -701,6 +781,12 @@ export async function buildSourceRootfsShellImage(
   ensureDirRecursive(fs, "/usr/local/bin");
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/sdl2", sdl2, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/evdev_demo", evdevDemo, 0o755);
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/usr/bin/espeak-ng", espeakNg, 0o755);
+  writeEspeakVoiceData(fs, espeakNgData);
+  writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
@@ -758,6 +844,10 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--bash",
     "--fbdoom",
     "--modeset",
+    "--sdl2",
+    "--evdev-demo",
+    "--espeak-ng",
+    "--espeak-ng-data",
     "--demo-config",
     "--demo-profile-overlay",
     "--dependency-contract",
@@ -776,7 +866,9 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
           "--rootfs <rootfs.vfs> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
-          "--modeset <modeset.wasm> " +
+          "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
+          "--evdev-demo <evdev_demo.wasm> --espeak-ng <espeak-ng.wasm> " +
+          "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
           "--out <shell.vfs.zst>",
@@ -792,6 +884,10 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     bashPath: values.get("--bash")!,
     fbdoomPath: values.get("--fbdoom")!,
     modesetPath: values.get("--modeset")!,
+    sdl2Path: values.get("--sdl2")!,
+    evdevDemoPath: values.get("--evdev-demo")!,
+    espeakNgPath: values.get("--espeak-ng")!,
+    espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,
