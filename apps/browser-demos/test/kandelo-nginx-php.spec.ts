@@ -1,17 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { expect, test } from "@playwright/test";
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 // The nginx + PHP-FPM demo serves Adminer as its landing page, auto-connected
 // to a SQLite database that PHP-FPM seeds on the first request. A successful
@@ -22,7 +10,7 @@ test("@slow Kandelo nginx+PHP demo auto-logs Adminer into the seeded SQLite data
 }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=nginx-php");
+  await gotoMachineOrSkip(page, "nginx-php");
   await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
 
   const frame = page.frameLocator('iframe[src*="/app/"]');

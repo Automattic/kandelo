@@ -1,17 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 // The demo dock auto-opens a guide/theme popover whose full-screen dismiss
 // layer overlays the iframe and intercepts pointer events (a real user's first
@@ -62,7 +50,7 @@ async function readPersistedCookieJar(
 
 /** Boot the WordPress demo and sign into wp-admin. Returns the app frame. */
 async function loginToWpAdmin(page: Page) {
-  await gotoOrSkip(page, "/?demo=wordpress-mariadb");
+  await gotoMachineOrSkip(page, "wordpress-mariadb");
   await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
 
   const frame = page.frameLocator('iframe[src*="/app/"]');
@@ -91,7 +79,7 @@ test("@slow Kandelo WordPress/MariaDB mysqli transport benchmark returns", async
 }) => {
   test.setTimeout(240_000);
 
-  await gotoOrSkip(page, "/?demo=wordpress-mariadb");
+  await gotoMachineOrSkip(page, "wordpress-mariadb");
   await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
 
   const result = await page.evaluate(async () => {
@@ -139,7 +127,7 @@ test("@slow Kandelo WordPress/MariaDB preinstalled site logs into wp-admin", asy
 }) => {
   test.setTimeout(420_000);
 
-  await gotoOrSkip(page, "/?demo=wordpress-mariadb");
+  await gotoMachineOrSkip(page, "wordpress-mariadb");
   await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
 
   const frame = page.frameLocator('iframe[src*="/app/"]');

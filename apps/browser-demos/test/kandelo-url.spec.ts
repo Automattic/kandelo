@@ -1,15 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
+import { appUrl, gotoMachine } from "./support/kandelo-machine";
 
 test("Kandelo dock defaults to full width", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell"), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell");
 
   // WHY: a brand-new origin reloads once after its service worker first takes
   // control. This test must also pass alone, without another test priming it.
@@ -22,12 +16,10 @@ test("Kandelo dock defaults to full width", async ({ page }) => {
 });
 
 test("Kandelo gallery launch updates the browser URL with a VFS image", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell"), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell");
 
   await page.getByRole("button", { name: "New", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Launch New Machine" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Launch New Computer" })).toBeVisible();
 
   await page
     .locator(".kgal-row", {
@@ -40,27 +32,30 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
     .poll(() => new URL(page.url()).searchParams.get("vfs"))
     .toContain("/node-vfs.vfs.zst#node");
   const url = new URL(page.url());
-  expect(url.searchParams.get("demo")).toBe("node");
+  // The machine is named by the profile the IMAGE declares, not by an app-side
+  // id: `&profile=` and the image URL's own fragment carry it, and the removed
+  // `?demo=` must not come back.
+  expect(url.searchParams.get("profile")).toBe("node");
+  expect(url.searchParams.get("demo")).toBeNull();
   // WHY: selecting a VFS updates the URL before the replacement machine has
   // finished its service-worker reload and VFS assembly. Assert the stable
   // accessible machine identity across that boundary instead of racing a
   // transient descendant from the old dock.
   await expect(
     page.getByRole("button", {
-      name: /^Current machine: Node\.js,/,
+      name: /^Current computer: Node\.js,/,
     }),
   ).toBeVisible({ timeout: 30_000 });
 });
 
 test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell"), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell");
 
   const result = await page.evaluate(async (abiVersion) => {
     const {
       descriptorWithVfsImageUrl,
       galleryItemUrl,
+      profileIdFromVfsImageUrl,
       readKandeloBootQuery,
       vfsImageUrlFromDescriptor,
     } = await import("/pages/kandelo/url-state.ts");
@@ -97,9 +92,20 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       glyph: "st",
       estimatedUrlBytes: 120,
     }, "https://kandelo.dev/?demo=shell");
+    const fragmentImage =
+      "https%3A%2F%2Fcdn.example.invalid%2Fsite.vfs.zst%23doom";
     return {
       href,
       parsed: readKandeloBootQuery("?demo=site&vfs=https%3A%2F%2Fcdn.example.invalid%2Fsite.vfs.zst"),
+      profileChannels: {
+        queryOverridesFragment: readKandeloBootQuery(
+          `?vfs=${fragmentImage}&profile=shell`,
+        ),
+        fragmentOnly: readKandeloBootQuery(`?vfs=${fragmentImage}`),
+        fragmentProfile: profileIdFromVfsImageUrl(
+          "https://cdn.example.invalid/site.vfs.zst#doom",
+        ),
+      },
       localRefUrl: vfsImageUrlFromDescriptor(descriptor),
       relativeRefUrl: vfsImageUrlFromDescriptor(withRelativeVfs),
       expectedRelativeRefUrl: new URL("images/site.vfs.zst", window.location.href).href,
@@ -107,19 +113,30 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   }, ABI_VERSION);
 
   const url = new URL(result.href);
-  expect(url.searchParams.get("demo")).toBe("site");
+  // Launching from a legacy `?demo=` link strips the dead parameter and writes
+  // the profile the image declares instead.
+  expect(url.searchParams.get("profile")).toBe("site");
+  expect(url.searchParams.get("demo")).toBeNull();
   expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/site.vfs.zst");
+  // A surviving `?demo=` in the wild is IGNORED, not rejected: the link still
+  // resolves its image and boots that image's declared default profile.
   expect(result.parsed).toEqual({
     vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst",
+    profileId: null,
+  });
+  expect(result.profileChannels).toEqual({
+    // `&profile=` wins over the image URL's fragment, and the fragment alone
+    // is enough when no query parameter names a profile.
+    queryOverridesFragment: { vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst#doom", profileId: "shell" },
+    fragmentOnly: { vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst#doom", profileId: null },
+    fragmentProfile: "doom",
   });
   expect(result.localRefUrl).toBeNull();
   expect(result.relativeRefUrl).toBe(result.expectedRelativeRefUrl);
 });
 
 test("Kandelo identifies a built-in VFS image only by its exact source", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell"), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell");
 
   const result = await page.evaluate(async () => {
     const { matchTrustedVfsSourceId } = await import("/pages/kandelo/url-state.ts");
@@ -202,9 +219,7 @@ test("Kandelo identifies a built-in VFS image only by its exact source", async (
 });
 
 test("Kandelo service worker app probe does not capture the shell page client", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell"), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell");
 
   await installDummyAppBridge(page);
   await page.evaluate(async () => {

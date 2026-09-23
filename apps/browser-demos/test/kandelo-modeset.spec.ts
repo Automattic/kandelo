@@ -1,22 +1,10 @@
-import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { expect, test } from "@playwright/test";
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 test("Kandelo modeset demo commits PAGE_FLIPs through /dev/dri/card0", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=modeset");
+  await gotoMachineOrSkip(page, "modeset");
 
   const modesetControls = page
     .locator(".kdemo-surface-controls")

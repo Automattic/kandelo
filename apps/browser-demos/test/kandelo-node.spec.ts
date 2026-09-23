@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { isNodeVfsImageUrl } from "../lib/shell-vfs-image-url";
 import { runTerminalCommand } from "./support/terminal-command";
+import { vfsImageUrlForProduct } from "./support/kandelo-machine";
 
 const strict = process.env.KANDELO_NODE_VFS_STRICT === "1";
 const expectedImageSha256 = process.env.KANDELO_NODE_VFS_SHA256;
@@ -205,7 +206,19 @@ test("@slow @node-npm-acceptance Kandelo Node demo completes HTTPS and installs 
     });
 
     const productBase = new URL(process.env.KANDELO_TEST_BASE_URL ?? baseURL);
-    await page.goto(new URL("?demo=node", productBase).href, {
+    // `?demo=node` is gone: a URL names the IMAGE and the profile that image
+    // declares. Resolving the image through the app's own product plumbing is
+    // what keeps the loader recognizing these bytes as the Node product (and
+    // applying its resource policy) rather than as an unknown custom image.
+    // This throws rather than skipping when the image is absent: a Node
+    // acceptance run must fail closed on missing production assets.
+    const target = new URL(productBase.href);
+    target.searchParams.set(
+      "vfs",
+      await vfsImageUrlForProduct(page, "browser-node"),
+    );
+    target.searchParams.set("profile", "node");
+    await page.goto(target.href, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForTimeout(2_000);

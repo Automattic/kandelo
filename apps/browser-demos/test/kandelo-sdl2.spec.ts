@@ -1,17 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 async function openInternals(page: Page) {
   const internals = page.getByRole("button", { name: "Internals" });
@@ -34,18 +22,21 @@ async function terminalText(page: Page): Promise<string> {
 test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page }) => {
   test.setTimeout(240_000);
 
-  await gotoOrSkip(page, "/?demo=sdl2");
+  await gotoMachineOrSkip(page, "sdl2");
 
   await openInternals(page);
   await expect
     .poll(() => syslogText(page), { timeout: 90_000 })
-    .toMatch(/running sdl2/);
+    // The image's `presentation.autoCommand` is what launches this machine's
+    // program now, so the host logs the command it ran rather than an
+    // app-side demo name.
+    .toMatch(/running \/usr\/local\/bin\/sdl2/);
 
   const canvas = page.locator(".kmodeset-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 30_000 });
 
   /* Wait for the app's FIRST presented frame before sampling anything.
-   * "running sdl2" only means the process launched: between that and
+   * "running /usr/local/bin/sdl2" only means the process launched: between that and
    * the first drmModePageFlip sit EGL/WebGL2 context creation, shader
    * compiles, the text-atlas bake, and the sound-shader tile
    * prerender + readback — under CI's software GL (SwiftShader) that

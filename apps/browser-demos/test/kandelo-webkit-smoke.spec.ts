@@ -1,17 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
@@ -49,7 +37,7 @@ test("Kandelo shell demo boots and accepts terminal input in WebKit", async ({
   test.skip(browserName !== "webkit", "WebKit-only Safari compatibility smoke");
   test.setTimeout(240_000);
 
-  await gotoOrSkip(page, "/?demo=shell");
+  await gotoMachineOrSkip(page, "shell");
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForPrompt(page);
@@ -80,7 +68,7 @@ test("Kandelo WebKit tears down Node before launching another demo", async ({
   });
   page.on("pageerror", (err) => runtimeErrors.push(`pageerror: ${err.message}`));
 
-  await gotoOrSkip(page, "/?demo=node");
+  await gotoMachineOrSkip(page, "node");
   await waitForReady(page, 240_000);
   await page.getByRole("button", { name: "Runtime check" }).click();
   await expect
@@ -139,7 +127,7 @@ test("Kandelo WordPress SQLite renders in WebKit without COEP redirect failures"
     }
   });
 
-  await gotoOrSkip(page, "/?demo=wordpress-sqlite");
+  await gotoMachineOrSkip(page, "wordpress-sqlite");
   await page.waitForSelector('iframe[title="WordPress SQLite"]', { timeout: 240_000 });
   const frame = page.frameLocator('iframe[title="WordPress SQLite"]');
   await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {

@@ -1,17 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
@@ -20,7 +8,7 @@ async function terminalText(page: Page): Promise<string> {
 test("Kandelo espeak-ng demo speaks through pcaudiolib + /dev/dsp", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=espeak");
+  await gotoMachineOrSkip(page, "espeak");
 
   // Web Audio starts only after a trusted gesture. App.tsx activates the
   // PCM sink from a capturing pointerdown listener, so a physical click

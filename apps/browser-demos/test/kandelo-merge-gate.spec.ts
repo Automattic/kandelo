@@ -1,5 +1,6 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 import { runTerminalCommand } from "./support/terminal-command";
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 type BrowserDiagnostics = {
   console: string[];
@@ -17,11 +18,6 @@ if (sourceRootfsExpectation !== undefined && sourceRootfsExpectation !== "1") {
   );
 }
 const expectSourceRootfsShell = sourceRootfsExpectation === "1";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
 
 test.beforeEach(({ page }) => {
   const diagnostics: BrowserDiagnostics = {
@@ -48,14 +44,6 @@ test.beforeEach(({ page }) => {
 function trimLog(lines: string[]) {
   if (lines.length > MAX_LOG_LINES) {
     lines.splice(0, lines.length - MAX_LOG_LINES);
-  }
-}
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
   }
 }
 
@@ -211,12 +199,13 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
 
   try {
     // WHY: the deployed regression this protects against happened only when
-    // Gallery resolved an optional VFS asset and navigated to it. A direct
-    // ?demo= URL would bypass that product path and could pass while Launch
-    // still assigned the image an undersized custom-image capacity profile.
-    await gotoOrSkip(page, "/?demo=shell");
+    // Gallery resolved an optional VFS asset and navigated to it. Arriving on
+    // a ready-made `?vfs=` URL would bypass that product path and could pass
+    // while Launch still assigned the image an undersized custom-image
+    // capacity profile.
+    await gotoMachineOrSkip(page, "shell");
     await page.getByRole("button", { name: "New", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Launch New Machine" }))
+    await expect(page.getByRole("heading", { name: "Launch New Computer" }))
       .toBeVisible();
     await page
       .locator(".kgal-row", {
@@ -224,9 +213,12 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
       })
       .getByRole("button", { name: "Launch" })
       .click();
+    // Launch writes both profile channels: the image URL carries the profile
+    // in its own fragment, and `&profile=` repeats it so the selection stays
+    // visible in the address bar and survives a hand-edited link.
     await expect
       .poll(
-        () => new URL(page.url()).searchParams.get("demo"),
+        () => new URL(page.url()).searchParams.get("profile"),
         { timeout: 60_000 },
       )
       .toBe(demo);
@@ -236,6 +228,7 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
         { timeout: 60_000 },
       )
       .toContain(`#${demo}`);
+    expect(new URL(page.url()).searchParams.get("demo")).toBeNull();
     await expect(page.locator(".kdock-status-title")).toHaveText(title, {
       timeout: 60_000,
     });
@@ -294,7 +287,7 @@ test.describe.configure({ mode: "serial" });
 test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   test.setTimeout(360_000);
 
-  await gotoOrSkip(page, "/?demo=shell");
+  await gotoMachineOrSkip(page, "shell");
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   // Input typed before bash's first prompt is legitimately discarded by the
@@ -365,7 +358,7 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
     }
   });
 
-  await gotoOrSkip(page, "/?demo=node");
+  await gotoMachineOrSkip(page, "node");
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(
@@ -412,7 +405,7 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
 test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   test.setTimeout(240_000);
 
-  await gotoOrSkip(page, "/?demo=nginx");
+  await gotoMachineOrSkip(page, "nginx");
   await page.waitForSelector('iframe[title="nginx"]', { timeout: 180_000 });
 
   await expect(webFrame(page, "nginx").locator("body")).toContainText(
@@ -445,7 +438,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
 test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=nginx-php");
+  await gotoMachineOrSkip(page, "nginx-php");
   await page.waitForSelector('iframe[title="nginx + PHP"]', { timeout: 180_000 });
 
   await expect(webFrame(page, "nginx + PHP").locator("body")).toContainText(
@@ -474,7 +467,7 @@ test("Kandelo WordPress MariaDB demo is preinstalled and logs into wp-admin", as
 test("Kandelo fbDOOM demo renders and starts the OSS audio sink", async ({ page }) => {
   test.setTimeout(240_000);
 
-  await gotoOrSkip(page, "/?demo=doom");
+  await gotoMachineOrSkip(page, "doom");
   const canvas = page.locator("canvas").first();
   await expect(canvas).toBeVisible({ timeout: 180_000 });
 
