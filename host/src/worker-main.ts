@@ -2912,11 +2912,11 @@ function createProcessTableReplicationOwner(options: {
   const mutationContexts: Array<{ readonly deferPublication: boolean }> = [];
 
   // WHAT USED TO RELEASE A SUPERSEDED CHECKPOINT: a host arena attached to the
-  // old root purely to free its chunks. The module maps those chunks and frees
-  // them when the next capture reclaims its chunk list, so attaching one here
-  // was the host freeing memory it never mapped -- the ownership split census
-  // 133 named, and the reason `fm_module_state_arena` (since deleted) grew
-  // RELEASE and OWNED.
+  // old root purely to free its chunks. The module maps those chunks, so
+  // attaching one here was the host freeing memory it never mapped -- the
+  // ownership split census 133 named, and the reason `fm_module_state_arena`
+  // (since deleted) grew RELEASE and OWNED. Nothing frees a superseded
+  // checkpoint today (`capture_peer_tables_impl` says why).
   const replica = new DylinkForkTableReplica(
     options.dlopen.archiveGeneration,
     options.dlopen.loader,

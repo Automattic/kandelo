@@ -290,6 +290,42 @@ describe("the module frees exactly what it mapped", () => {
   });
 });
 
+describe("the module frees a completed fork's arena", () => {
+  it("does not keep one mapping per completed fork", () => {
+    // A completed fork's KFMS arena outlives its own replay on purpose: a
+    // vfork borrower reads its owner's arena until it execs or exits. By the
+    // NEXT capture in this worker nothing can read it -- the borrower is gone
+    // and a copied child has its own copy -- so the module that mapped it must
+    // unmap it then. Counted through the responder's tallies, so a chunk list
+    // dropped without its munmaps reads as the leak it is.
+    const f = fixture();
+    const live = (): number => {
+      const view = new DataView(f.memory.buffer);
+      return view.getUint32(MMAP_COUNTER, true) - view.getUint32(MUNMAP_COUNTER, true);
+    };
+    const completedFork = (): void => {
+      openCapture(f);
+      (f.x.fm_parent_seal_capture as (b: number) => number)(CHANNEL_BASE);
+      expect(f.errno(), "the seal").toBe(0);
+      (f.x.fm_parent_replay as (abort: number) => void)(0);
+      expect(f.errno(), "the parent replay").toBe(0);
+      (f.x.fm_parent_finish as (abort: number) => void)(0);
+      expect(f.errno(), "the finish").toBe(0);
+      expect((f.x.fm_phase as () => number)(), "back to idle").toBe(PHASE_IDLE);
+    };
+    // The first fork maps the bump heap's chunk, which a durable instance
+    // keeps by design (`fork-bump-heap.test.ts`), and the latest completed
+    // fork's arena is legitimately live. So compare two later points: in a
+    // steady state each fork frees the previous fork's arena as it maps its
+    // own, and the number of live mappings stops growing.
+    completedFork();
+    completedFork();
+    const after2 = live();
+    for (let i = 0; i < 4; i += 1) completedFork();
+    expect(live(), "live mappings after six completed forks vs after two").toBe(after2);
+  });
+});
+
 describe("the parent fork lifecycle, end to end through the module", () => {
   it("walks idle -> capture -> sealed -> replay -> idle", () => {
     // The whole point of the responder. Every one of these calls allocates or

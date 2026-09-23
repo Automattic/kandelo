@@ -4980,6 +4980,32 @@ mod wasm {
         core::mem::forget(slot.take());
     }
 
+    /// Unmap the previous parent fork's KFMS arena before a new capture drops
+    /// the `ForkModule` that lists its chunks.
+    ///
+    /// `abandon_resident` is right for the bump-backed statics and WRONG for
+    /// this one field: `module_state_chunks` owns channel mappings, not bump
+    /// memory, so forgetting it leaked one arena per completed fork (an aborted
+    /// fork already released its own). A completed fork keeps its arena past
+    /// its replay on purpose -- a vfork borrower reads its owner's until it
+    /// execs or exits -- but by the next capture in this worker no reader is
+    /// left: the borrower is gone, and a copied child has its own copy.
+    ///
+    /// Called ONLY where a parent opens a new capture. NOT from
+    /// `reset_bump_heap` as a whole, which a copied child also runs before its
+    /// replay -- when its inherited `ForkModule` names the very arena that
+    /// replay is about to read. An adopted arena belongs to another process
+    /// and is never freed here, and a published peer-table checkpoint has
+    /// already handed its chunks to the publication
+    /// (`capture_peer_tables_impl`), so its list is empty.
+    fn release_previous_fork_arena() {
+        if let Some(previous) = state().as_mut() {
+            if !previous.module_state.is_adopted() {
+                previous.module_state_chunks.release_all();
+            }
+        }
+    }
+
     /// Reclaim the module bump heap for a fresh fork, first DROPPING every
     /// bump-allocated static WITHOUT running its `Drop`.
     ///
@@ -5603,6 +5629,7 @@ mod wasm {
             // dropping every resident bump-allocated static (including any stale
             // capture builder) BEFORE the reset so a later drop never walks
             // clobbered memory (see `reset_bump_heap`).
+            release_previous_fork_arena();
             reset_bump_heap();
         } else {
             // A capture is armed: `fm_capture_begin` already reset the bump and the
@@ -8790,6 +8817,7 @@ mod wasm {
         // `reset_bump_heap`): a `ReferenceGraphBuilder` owns `BTreeMap`s whose
         // `Drop` walks their nodes in place, so dropping one after the reset has
         // reused its low bump addresses walks clobbered pointers and traps.
+        release_previous_fork_arena();
         reset_bump_heap();
         // Create the builder EAGERLY, now that the bump is fresh for this fork:
         // the guest may issue its first reference encode BEFORE `fm_begin_unwind`,
@@ -10967,7 +10995,9 @@ mod wasm {
         // A fresh bump for the capture builder, exactly as `fm_capture_begin`
         // does and for the same reason: the previous fork's builder lives in
         // memory the reset reclaims, so it is abandoned before rather than
-        // dropped after.
+        // dropped after. A previous fork's arena is unmapped first, as a new
+        // fork capture does.
+        release_previous_fork_arena();
         reset_bump_heap();
         let module = ForkModule {
             activations: BTreeMap::new(),
@@ -11053,6 +11083,16 @@ mod wasm {
         capture_refusal()?;
         capture_builder()?.validate()?;
         write_reference_transaction(CAPTURE_SEGMENT_WINDOW)?;
+        // The publication now owns these chunks: the loader names the root and
+        // peers read it long after this call. Hand the list over so the next
+        // capture's `release_previous_fork_arena` cannot unmap a published
+        // checkpoint. Nothing frees a superseded checkpoint yet; that needs to
+        // know when its last peer reader is done, which this module does not.
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        core::mem::forget(core::mem::replace(
+            &mut st.module_state_chunks,
+            ForkChunkList::new_channel(channel_base),
+        ));
         Ok(arena_root)
     }
 
@@ -11064,9 +11104,10 @@ mod wasm {
     /// template id for is included -- that seeded set, not a fork's activation
     /// list, is what a peer-table checkpoint means by "this worker's modules".
     ///
-    /// The returned arena is NOT released here. Its root goes to the dlopen
-    /// loader as a publication that peers read long after this call returns; the
-    /// module frees it when the next capture reclaims the chunk list.
+    /// The returned arena is NOT released here, nor by the next capture. Its
+    /// root goes to the dlopen loader as a publication that peers read long
+    /// after this call returns. A superseded checkpoint is not freed at all
+    /// yet: that needs to know when its last peer reader is done.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_capture_peer_tables(channel_base: usize) -> usize {
         match require_phase(PHASE_IDLE)
