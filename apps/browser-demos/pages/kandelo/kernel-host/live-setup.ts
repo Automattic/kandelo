@@ -8,6 +8,15 @@ import {
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
+import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
+import sdl2PlasmaFragSrc from "../../../../../programs/sdl2/presets/image/plasma.frag?raw";
+import sdl2AudioBarsFragSrc from "../../../../../programs/sdl2/presets/image/audio_bars.frag?raw";
+import sdl2TunnelwispFragSrc from "../../../../../programs/sdl2/presets/image/tunnelwisp.frag?raw";
+import sdl2SoundSineFragSrc from "../../../../../programs/sdl2/presets/sound/sine.frag?raw";
+import sdl2SoundTunnelwispFragSrc from "../../../../../programs/sdl2/presets/sound/tunnelwisp.frag?raw";
+import sdl2SoundFmBellFragSrc from "../../../../../programs/sdl2/presets/sound/fm_bell.frag?raw";
+import sdl2SoundNoiseSweepFragSrc from "../../../../../programs/sdl2/presets/sound/noise_sweep.frag?raw";
+import sdl2SoundChordFragSrc from "../../../../../programs/sdl2/presets/sound/chord.frag?raw";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
@@ -46,11 +55,13 @@ import {
   LiveKernelHost,
   type BootDescriptor,
   type BootInput,
+  type BootJsonValue,
   type BootParameters,
   type DemoPresentation,
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
 import {
   materializeBootInputs,
   type BootInputManifest,
@@ -195,6 +206,18 @@ const OPTIONAL_BINARY_URLS = {
       import: "default",
     },
   ),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/sdl2.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/evdev_demo.wasm", {
     query: "?url", import: "default",
   }),
@@ -256,7 +279,7 @@ class BootSuperseded extends Error {
 }
 
 type LiveVfsImage =
-  "shell" | "node" | "nginx" | "nginx-php" | "nginx-python" | "wordpress" | "lamp";
+  "shell" | "node" | "nginx" | "nginx-php" | "nginx-python" | "wordpress" | "lamp" | "ruby-todo";
 
 type PagesVfsProductId =
   | "platform-rootfs"
@@ -266,7 +289,8 @@ type PagesVfsProductId =
   | "browser-nginx-php"
   | "browser-nginx-python"
   | "browser-wordpress"
-  | "browser-lamp";
+  | "browser-lamp"
+  | "browser-ruby-todo";
 
 type LiveVfsSource =
   | { kind: "url"; productId: PagesVfsProductId; url: string }
@@ -343,6 +367,15 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
     productId: "browser-wordpress",
   },
   lamp: { kind: "optional-demo", image: "lamp", productId: "browser-lamp" },
+  "ruby-todo": {
+    kind: "optional-binary",
+    label: "ruby-todo-vfs.vfs.zst",
+    productId: "browser-ruby-todo",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst",
+    ],
+  },
 };
 
 const DINIT_NGINX_ARGV = [
@@ -359,10 +392,12 @@ const LIVE_DEMO_IDS = [
   "nginx",
   "nginx-php",
   "nginx-python",
+  "ruby-todo",
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
   "modeset",
+  "sdl2",
   "evdev",
   "espeak",
 ] as const;
@@ -433,6 +468,23 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       },
     },
   },
+  "ruby-todo": {
+    image: "ruby-todo",
+    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    network: true,
+    init: {
+      // Single-process server: boot the resident Ruby directly as init (no
+      // dinit needed for one long-running process).
+      argv: ["/usr/bin/ruby", "/var/lib/todo/server.rb"],
+      env: "service",
+      cwd: "/var/lib/todo",
+      maxWorkers: 12,
+      maxMemoryPages: 4096,
+      web: {
+        requiredPorts: [HTTP_PORT],
+      },
+    },
+  },
   "wordpress-sqlite": {
     image: "wordpress",
     maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
@@ -478,6 +530,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  sdl2: {
+    image: "shell",
+    features: ["kms"],
+  },
   evdev: {
     image: "shell",
   },
@@ -492,6 +548,7 @@ const DEFAULT_DEMO_FOR_VFS_IMAGE: Record<LiveVfsImage, LiveDemoId> = {
   nginx: "nginx",
   "nginx-php": "nginx-php",
   "nginx-python": "nginx-python",
+  "ruby-todo": "ruby-todo",
   wordpress: "wordpress-sqlite",
   lamp: "wordpress-mariadb",
 };
@@ -544,6 +601,14 @@ interface LiveProfile {
   };
   framebufferTest: boolean;
   /**
+   * Stage the SDL2 GLSL playground at `/usr/local/bin/sdl2` with its
+   * shader presets, attach a `BrowserInputSource` for the keyboard and
+   * wheel (the Modeset pane owns the pointer through `sendPointerAbs`),
+   * and run the binary from bash. Audio rides the /dev/dsp path every
+   * other sound demo uses.
+   */
+  sdl2Demo: boolean;
+  /**
    * Stage `evdev_demo` into `/usr/local/bin`, attach a `BrowserInputSource`
    * to the window so keyboard/pointer events flow into the kernel's
    * `/dev/input/event{0,1}`, and run the binary from bash so its event
@@ -567,8 +632,13 @@ interface WebReadinessState {
   failed: boolean;
 }
 
-const APP_PREFIX = import.meta.env.BASE_URL + "app/";
-const APP_PATH = import.meta.env.BASE_URL + "app";
+// The public URL segment for a booted machine's web surface:
+// <base>/computer/<name>/. Machines are "computers" in the product vocabulary;
+// the per-machine <name> is minted by the service worker at bridge handshake.
+// APP_PREFIX here is only the pre-mint placeholder (used by error states that
+// never mount the iframe); live web previews use the minted /computer/<name>/.
+const APP_PREFIX = import.meta.env.BASE_URL + "computer/";
+const APP_PATH = import.meta.env.BASE_URL + "computer";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const SW_SCOPE = deploymentScopeFromServiceWorkerUrl(
@@ -1041,6 +1111,7 @@ function customVfsProfile(
     shell: "default",
     maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     framebufferTest: fb === "test",
+    sdl2Demo: false,
     evdevDemo: false,
     espeakDemo: false,
   };
@@ -1091,6 +1162,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       },
     },
     framebufferTest: fb === "test",
+    sdl2Demo: normalized === "sdl2",
     evdevDemo: normalized === "evdev",
     espeakDemo: normalized === "espeak",
   };
@@ -1200,6 +1272,7 @@ function reportInitError(
     host.setWebPreview({
       label: profile.init.web.label,
       url: APP_PREFIX,
+      port: HTTP_PORT,
       status: "error",
       message,
     });
@@ -1207,18 +1280,40 @@ function reportInitError(
   host.setStatus("error");
 }
 
+// Shell used to run a boot-link script when the link did not record one
+// (links authored before runScriptShell existed). Kandelo browser images
+// ship bash as their default shell, so this matches what those links intended
+// and keeps the invocation unconditional.
+const DEFAULT_BOOT_LINK_SHELL = "bash";
+
+// A recorded shell is untrusted, URL-carried input that is interpolated into a
+// shell command line, so it must be a bare command word with no shell
+// metacharacters. Anything else is rejected in favour of the default rather
+// than trusted, which closes the injection vector while keeping the run
+// unconditional.
+function safeBootLinkShell(recorded: BootJsonValue | undefined): string {
+  return typeof recorded === "string" && /^[a-z][a-z0-9_-]{0,15}$/.test(recorded)
+    ? recorded
+    : DEFAULT_BOOT_LINK_SHELL;
+}
+
 async function runLinkScript(
   host: LiveKernelHost,
   path: string,
+  recordedShell: BootJsonValue | undefined,
   tick: (msg: string) => void,
 ): Promise<void> {
   // The script was already written (mode 0755, writable and executable) by
   // materializeBootInputs during image staging, at `path`.
-  // "Default shell" for the invocation: the PTY session program is login,
-  // not a shell, so probe the image for bash and fall back to sh. Authors
-  // needing another interpreter can exec it from the script body.
-  const bash = await host.stat("/bin/bash").catch(() => null);
-  const interpreter = bash ? "bash" : "sh";
+  //
+  // The interpreter comes from the link itself (boot.parameters.runScriptShell,
+  // set by ShareDialog to the authoring machine's default shell), so the script
+  // runs directly as `<shell> script` with no visible `command -v bash` probe.
+  // A main-thread host.stat("/bin/bash") is not a usable substitute: the kernel
+  // owns the VFS in its worker and exposes no synchronous surface in the
+  // browser, so that probe always reads empty and would silently drop the
+  // script onto sh. The shell token is validated to a bare command word first.
+  const shell = safeBootLinkShell(recordedShell);
   tick("showing boot-link script in the terminal...");
   // Show the actual script contents in the terminal before running them —
   // the visitor sees exactly what the link asked their machine to execute.
@@ -1227,8 +1322,8 @@ async function runLinkScript(
   // and filenames to a safe character set — defense in depth against a
   // future relaxation of that validation.
   await host.runShellCommand(`cat "${path}"`);
-  tick(`running boot-link script with ${interpreter}...`);
-  await host.runShellCommand(`${interpreter} "${path}"`);
+  tick(`running boot-link script with ${shell}...`);
+  await host.runShellCommand(`${shell} "${path}"`);
 }
 
 async function bootProfile(
@@ -1409,8 +1504,13 @@ async function bootProfile(
       ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
       writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
     }
-    // Both demos run their binary from a path, so the bytes have to be in the
+    // Each demo runs its binary from a path, so the bytes have to be in the
     // image before the worker takes exclusive ownership of the VFS.
+    if (profile.sdl2Demo) {
+      tick("staging sdl2...");
+      await stageSdl2Runtime(buildFs);
+      assertCurrent();
+    }
     if (profile.espeakDemo) {
       tick("staging espeak-ng...");
       await stageEspeakRuntime(buildFs);
@@ -1487,12 +1587,21 @@ async function bootProfile(
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
+  // The service worker mints this machine's app prefix (/base/computer/<name>/) and
+  // returns it from the bridge handshake. Every web-preview URL must use the
+  // minted value: the bare /computer/ no longer routes to any machine, so the SW
+  // serves it as the Kandelo shell — mounting the whole app inside its own
+  // web-preview iframe and recursing (stacked docks). Until the handshake
+  // returns, this holds the base prefix (only used by error states, which
+  // never mount the iframe).
+  let machineAppPrefix = APP_PREFIX;
   maybeUpdateWebReadiness = () => {
     maybeMarkWebReady(
       host,
       profile,
       seenPorts,
       bridgeSent,
+      machineAppPrefix,
       webReadiness,
       dinitBootTracker,
       tick,
@@ -1562,22 +1671,18 @@ async function bootProfile(
 
     if (profile.init?.web) {
       tick("initializing HTTP bridge...");
-      host.setWebPreview({
-        label: profile.init.web.label,
-        url: APP_PREFIX,
-        status: "starting",
-        message: "Waiting for services",
-      });
       try {
         // Unique id for this machine instance. Scopes the service worker's
         // cookie jar so sessions never share cookies. Temporary instances get a
         // fresh random id per boot; when machines become persistable this is
         // where their durable id would be passed instead.
         const sessionId = crypto.randomUUID();
-        await setupServiceWorkerFetchBridge(
+        // The service worker mints the machine name and app prefix; the
+        // web-preview URL comes from the returned prefix, not a static
+        // constant, so this tab addresses its own machine.
+        const { name, appPrefix } = await setupServiceWorkerFetchBridge(
           SW_URL,
           SW_SCOPE,
-          APP_PREFIX,
           kernel,
           HTTP_PORT,
           sessionId,
@@ -1590,8 +1695,33 @@ async function bootProfile(
           },
         );
         assertCurrent();
+        // Every later web-preview update (readiness "running", probe URL) must
+        // address this machine's minted prefix, not the bare /computer/ constant.
+        machineAppPrefix = appPrefix;
+        host.setWebPreview({
+          label: profile.init.web.label,
+          url: appPrefix,
+          port: HTTP_PORT,
+          status: "starting",
+          message: "Waiting for services",
+        });
         bridgeSent = true;
         maybeUpdateWebReadiness();
+        // The service worker pushes machine-offline (owning tab closed) and
+        // machine-reconnecting (transient SW restart) to viewer clients. React
+        // to pushes for THIS machine's SW-minted name only, and let the shared
+        // mapping decide whether the pane should change — it enforces the
+        // strict name match, the isCurrent() supersession guard, and preserves
+        // the preview identity while switching status/message.
+        navigator.serviceWorker.addEventListener("message", (event) => {
+          const next = webPreviewForMachineChromeMessage({
+            data: (event as MessageEvent).data,
+            mintedName: name,
+            current: host.getWebPreview(),
+            isCurrent,
+          });
+          if (next !== null) host.setWebPreview(next);
+        });
       } catch (err) {
         if (!isCurrent()) throw err;
         const message = err instanceof Error ? err.message : String(err);
@@ -1599,6 +1729,7 @@ async function bootProfile(
         host.setWebPreview({
           label: profile.init.web.label,
           url: APP_PREFIX,
+          port: HTTP_PORT,
           status: "error",
           message: "HTTP bridge unavailable",
         });
@@ -1670,6 +1801,60 @@ async function bootProfile(
         tick,
         assertCurrent,
       );
+    } else if (profile.sdl2Demo) {
+      // autoCommand can't run this: the InputSource must be attached before
+      // the binary starts polling /dev/input/event{0,1}. The binary and its
+      // shader presets are already in the image; see stageSdl2Runtime.
+      const kernelForSdl2 = kernel;
+      void (async () => {
+        try {
+          tick("attaching input source...");
+          // Keyboard goes through BrowserInputSource (typing, ESC → evdev
+          // event0). The POINTER is owned by the Modeset pane, which feeds
+          // framebuffer-positioned pointer events into evdev event1 via
+          // `sendPointerAbs` — so this source's pointer feed is disabled
+          // (its window-relative coordinates would fight the pane's
+          // correct ones). WHEEL stays enabled: REL_WHEEL carries no
+          // absolute coordinates, so it doesn't fight the pane, and it
+          // drives the editor's mouse-scroll (SDL_MOUSEWHEEL).
+          // The dims set EVIOCGABS's ABS_X/Y.maximum. SDL treats event1
+          // as a relative mouse (it advertises REL_X/Y) and clamps the
+          // cursor to the window rather than this range, but the
+          // framebuffer size (1920×1080, matching
+          // host/src/dri/kms-registry.ts and the Modeset canvas) keeps
+          // the bounds sane for any ABS-aware consumer.
+          const SDL2_FB_W = 1920;
+          const SDL2_FB_H = 1080;
+          kernelForSdl2.attachInputSource(
+            // Bind to window for global reach, but scope capture to the
+            // playground's own Modeset canvas surface so keyboard/wheel
+            // over the "New" menu, dialogs, and the sibling terminal and
+            // Inspector surfaces stay usable while the playground runs.
+            // See demoSurfaceCaptureGate.
+            new BrowserInputSource(window, {
+              pointer: false,
+              wheel: true,
+              shouldCapture: demoSurfaceCaptureGate(
+                () => document.querySelector(".kmodeset-surface"),
+              ),
+            }),
+            { width: SDL2_FB_W, height: SDL2_FB_H },
+          );
+          tick("running sdl2...");
+          // The playground runs until ESC; runShellCommand resolves when
+          // the bash prompt reappears or rejects after its internal
+          // 5-minute timeout. Both are expected — log neutrally.
+          await host.runShellCommand("/usr/local/bin/sdl2");
+          tick("sdl2 exited");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/timed out waiting for PTY prompt/.test(msg)) {
+            tick("sdl2 running (long-tail; no further status updates)");
+          } else {
+            tick(`sdl2 failed: ${msg}`);
+          }
+        }
+      })();
     } else if (profile.espeakDemo) {
       // The binary and its voice data are already in the image; see
       // stageEspeakRuntime. Playback rides the /dev/dsp path every other
@@ -1699,12 +1884,20 @@ async function bootProfile(
             // viewport (injected clientX/clientY grow with the window). The
             // resize listener lives inside BrowserInputSource, so it is
             // removed when the host stops the source on teardown/reboot.
-            new BrowserInputSource(window, () =>
-              kernelForEvdev.setInputCanvasDims(
-                window.innerWidth,
-                window.innerHeight,
+            new BrowserInputSource(window, {
+              onResize: () =>
+                kernelForEvdev.setInputCanvasDims(
+                  window.innerWidth,
+                  window.innerHeight,
+                ),
+              // evdev is the global-input logger, so it captures across the
+              // whole demo stage (<main>) by design; the gate still releases
+              // the out-of-<main> chrome (the "New" menu, dialogs) so the
+              // dock stays usable while it runs. See demoSurfaceCaptureGate.
+              shouldCapture: demoSurfaceCaptureGate(
+                () => document.querySelector("main"),
               ),
-            ),
+            }),
             {
               width: window.innerWidth,
               height: window.innerHeight,
@@ -1756,7 +1949,8 @@ async function bootProfile(
         // persistence feature MUST first add an explicit show-the-script
         // Run/Skip consent step here. See
         // docs/superpowers/specs/2026-09-21-script-bearing-links-design.md.
-        void runLinkScript(host, scriptInput.path, tick).catch((err) => {
+        const runScriptShell = requestedDescriptor.boot.parameters.runScriptShell;
+        void runLinkScript(host, scriptInput.path, runScriptShell, tick).catch((err) => {
           tick(
             `boot-link script failed: ${
               err instanceof Error ? err.message : String(err)
@@ -1837,6 +2031,44 @@ function stageShellUtilities(
   } catch {
     /* exists */
   }
+}
+
+/**
+ * Bake the SDL2 GLSL playground and its shader presets into the image.
+ *
+ * The playground's source-resolution chain is
+ *   1. /home/shaders/<mode>/current.frag       (user-editable)
+ *   2. /usr/share/shaders/<mode>/<preset>.frag (preset)
+ *   3. built-in fallback compiled into main.c
+ * Staging (2) makes the browser path exercise the VFS leg;
+ * /home/shaders/<mode> is created so Ctrl+S can write (1) without first
+ * creating directories. tunnelwisp is the boot default for both modes;
+ * the others are loadable through the editor's Ctrl+L preset browser.
+ */
+async function stageSdl2Runtime(fs: MemoryFileSystem): Promise<void> {
+  const url = await optionalBinaryUrl([
+    "../../../../../local-binaries/programs/wasm32/sdl2.wasm",
+    "../../../../../binaries/programs/wasm32/sdl2.wasm",
+  ], "sdl2.wasm");
+  const bytes = await fetch(url)
+    .then(failOn("sdl2.wasm"))
+    .then((r) => r.arrayBuffer());
+  ensureDirRecursive(fs, "/usr/local/bin");
+  writeVfsBinary(fs, "/usr/local/bin/sdl2", new Uint8Array(bytes), 0o755);
+
+  ensureDirRecursive(fs, "/usr/share/shaders/image");
+  ensureDirRecursive(fs, "/home/shaders/image");
+  writeVfsFile(fs, "/usr/share/shaders/image/plasma.frag", sdl2PlasmaFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/image/audio_bars.frag", sdl2AudioBarsFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/image/tunnelwisp.frag", sdl2TunnelwispFragSrc);
+
+  ensureDirRecursive(fs, "/usr/share/shaders/sound");
+  ensureDirRecursive(fs, "/home/shaders/sound");
+  writeVfsFile(fs, "/usr/share/shaders/sound/tunnelwisp.frag", sdl2SoundTunnelwispFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/sine.frag", sdl2SoundSineFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/fm_bell.frag", sdl2SoundFmBellFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/noise_sweep.frag", sdl2SoundNoiseSweepFragSrc);
+  writeVfsFile(fs, "/usr/share/shaders/sound/chord.frag", sdl2SoundChordFragSrc);
 }
 
 /**
@@ -2165,6 +2397,7 @@ function maybeMarkWebReady(
   profile: LiveProfile,
   seenPorts: Set<number>,
   bridgeSent: boolean,
+  appPrefix: string,
   readiness: WebReadinessState,
   dinitBootTracker: DinitBootStatusTracker,
   tick: (msg: string) => void,
@@ -2185,7 +2418,8 @@ function maybeMarkWebReady(
     if (!isCurrent()) return;
     host.setWebPreview({
       label: web.label,
-      url: APP_PREFIX,
+      url: appPrefix,
+      port: HTTP_PORT,
       status: "running",
       message: readyMessage,
     });
@@ -2196,7 +2430,8 @@ function maybeMarkWebReady(
     tick("Web preview ready");
     host.setWebPreview({
       label: web.label,
-      url: APP_PREFIX,
+      url: appPrefix,
+      port: HTTP_PORT,
       status: "running",
       message: readyMessage,
     });
@@ -2204,10 +2439,11 @@ function maybeMarkWebReady(
   }
   if (readiness.probing) return;
   readiness.probing = true;
-  const probeUrl = previewUrlForPath(web.probePath ?? "/");
+  const probeUrl = previewUrlForPath(appPrefix, web.probePath ?? "/");
   host.setWebPreview({
     label: web.label,
-    url: APP_PREFIX,
+    url: appPrefix,
+    port: HTTP_PORT,
     status: "starting",
     message: web.probePath
       ? "Waiting for application readiness"
@@ -2223,7 +2459,8 @@ function maybeMarkWebReady(
         tick("HTTP preview ready");
         host.setWebPreview({
           label: web.label,
-          url: APP_PREFIX,
+          url: appPrefix,
+          port: HTTP_PORT,
           status: "running",
           message: "HTTP bridge ready",
         });
@@ -2233,7 +2470,8 @@ function maybeMarkWebReady(
         const message = err instanceof Error ? err.message : String(err);
         host.setWebPreview({
           label: web.label,
-          url: APP_PREFIX,
+          url: appPrefix,
+          port: HTTP_PORT,
           status: "error",
           message: "HTTP preview did not become ready",
         });
@@ -2270,8 +2508,8 @@ async function waitForHttpPreview(
   throw new Error(lastError || "timed out");
 }
 
-function previewUrlForPath(path: string): string {
-  const root = new URL(APP_PREFIX, window.location.href);
+function previewUrlForPath(appPrefix: string, path: string): string {
+  const root = new URL(appPrefix, window.location.href);
   const normalized = path.startsWith("/") ? path.slice(1) : path;
   return new URL(normalized || ".", root).href;
 }
@@ -2420,7 +2658,14 @@ function vfsImageUrlResolverForPreset(
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
   const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
-  if (source.kind !== "optional-demo") return undefined;
+  // A "url" source already yields an eager vfsImageUrl via
+  // vfsImageUrlForPreset. Every other kind (optional-demo AND
+  // optional-binary) needs a lazy resolver so the gallery can produce a
+  // shareable/navigable ?demo=&vfs= URL — resolveLiveVfsSourceUrl handles all
+  // of them. Without this, optional-binary items (nginx, nginx-php) had no
+  // way to resolve their image, so Launch fell back to an in-place descriptor
+  // apply that never updated the address bar and Copy produced a dead link.
+  if (source.kind === "url") return undefined;
   return async () => {
     const url = new URL(
       await resolveLiveVfsSourceUrl(source),

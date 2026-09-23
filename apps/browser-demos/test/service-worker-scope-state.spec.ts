@@ -3,7 +3,6 @@ import {
   test,
   type BrowserContext,
   type Page,
-  type Worker,
 } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -11,8 +10,15 @@ import { createServer, type Server } from "node:http";
 const FIXTURE_PORT = 55_431;
 const FIXTURE_ORIGIN = `http://127.0.0.1:${FIXTURE_PORT}`;
 const SESSION_A = "11111111-1111-4111-8111-111111111111";
-const SESSION_A_NEXT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SESSION_B = "22222222-2222-4222-8222-222222222222";
+const SESSION_A_NEXT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const BRIDGE_AUTHORITY_KEY = "bridge-authority-v1";
+const BRIDGE_AUTHORITY_VERSION = 1;
+const BRIDGE_AUTHORITY_MAX_BYTES = 64 * 1024;
+const BRIDGE_AUTHORITY_MAX_COOKIES = 32;
+const BRIDGE_COOKIE_NAME_MAX_BYTES = 256;
+const BRIDGE_COOKIE_VALUE_MAX_BYTES = 4_096;
+const BRIDGE_COOKIE_PATH_MAX_BYTES = 4_096;
 const CACHE_A = "kandelo-sw:%2Fa%2F:bridge-v2";
 const CACHE_B = "kandelo-sw:%2Fb%2F:bridge-v2";
 const LAZY_CACHE_A = "kandelo-sw:%2Fa%2F:lazy-assets-v1";
@@ -21,13 +27,6 @@ const VFS_LAZY_CACHE_VERSION_PLACEHOLDER =
   "__KANDELO_VFS_LAZY_CACHE_VERSION__";
 const GROUP_A_SHA256 = "a".repeat(64);
 const GROUP_B_SHA256 = "b".repeat(64);
-const BRIDGE_AUTHORITY_KEY = "bridge-authority-v1";
-const BRIDGE_AUTHORITY_MAX_BYTES = 64 * 1024;
-const BRIDGE_AUTHORITY_MAX_COOKIES = 32;
-const BRIDGE_APP_PREFIX_MAX_BYTES = 4_096;
-const BRIDGE_COOKIE_NAME_MAX_BYTES = 256;
-const BRIDGE_COOKIE_VALUE_MAX_BYTES = 4_096;
-const BRIDGE_COOKIE_PATH_MAX_BYTES = 4_096;
 
 const cleanupMatrix = [
   "unrelated-site-cache",
@@ -310,1139 +309,6 @@ test("a 206 lazy VFS response returns raw bytes without creating a cache entry",
   expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
 });
 
-test("lazy VFS cache excludes bridge, static, query, navigation, sibling, and cross-origin routes", async ({
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/vfs-groups/", SESSION_A, "excluded"))
-    .toMatchObject({ body: "bridge:excluded" });
-
-  expect(await fetchText(page, "/a/vfs-groups/release-1/assets/shared.bin"))
-    .toBe("bridge:excluded");
-  expect(await installBridge(page, "/a/app/", SESSION_A_NEXT, "excluded-reset"))
-    .toMatchObject({ body: "bridge:excluded-reset" });
-  await fetchText(page, "/a/static.txt");
-  await fetchText(page, "/a/vfs-groups/release-1/assets/shared.bin?revision=1");
-  await fetchText(page, "/a/vfs-groups-sibling/release-1/assets/shared.bin");
-  await fetchText(
-    page,
-    "/a/products/demo/sha256-" + "a".repeat(64) + "/demo-1.vfs.zst",
-  );
-  await page.goto(`${FIXTURE_ORIGIN}/a/vfs-groups/release-1/navigation.html`);
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await page.evaluate(async () => {
-    await fetch(
-      "http://localhost:55431/a/vfs-groups/release-1/assets/shared.bin",
-      { mode: "no-cors" },
-    ).catch(() => undefined);
-  });
-
-  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
-});
-
-test("a restarted worker restores a VFS-group bridge before classifying lazy cache routes", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/vfs-groups/", SESSION_A, "before-restart"))
-    .toMatchObject({ body: "bridge:before-restart" });
-  await installRestoreResponder(page, {
-    appPrefix: "/a/vfs-groups/",
-    sessionId: SESSION_A,
-    label: "restored-vfs-groups",
-  });
-  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
-
-  expect(await fetchText(page, "/a/vfs-groups/release-1/assets/shared.bin"))
-    .toBe("bridge:restored-vfs-groups");
-  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
-});
-
-test("sibling workers persist independent bridge records and garbage collect locally", async ({
-  context,
-  page: pageA,
-}) => {
-  await pageA.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(pageA, "/a/");
-  expect(await installBridge(pageA, "/a/app/", SESSION_A, "a-first"))
-    .toEqual({ reply: { type: "bridge-ready" }, body: "bridge:a-first" });
-
-  const pageB = await context.newPage();
-  await pageB.goto(`${FIXTURE_ORIGIN}/b/`);
-  await registerScope(pageB, "/b/");
-  expect(await installBridge(pageB, "/b/app/", SESSION_B, "b"))
-    .toEqual({ reply: { type: "bridge-ready" }, body: "bridge:b" });
-
-  expect(await installBridge(pageA, "/a/app/", SESSION_A_NEXT, "a-next"))
-    .toEqual({ reply: { type: "bridge-ready" }, body: "bridge:a-next" });
-
-  expect(await readBridgeAuthority(pageA, CACHE_A)).toMatchObject({
-    version: 1,
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A_NEXT,
-    cookies: [{ name: "a-next", value: "1", path: "/a/app/" }],
-  });
-  expect(await readBridgeAuthority(pageA, CACHE_B)).toMatchObject({
-    version: 1,
-    appPrefix: "/b/app/",
-    sessionId: SESSION_B,
-    cookies: [{ name: "b", value: "1", path: "/b/app/" }],
-  });
-  expect((await readBridgeCaches(pageA, [CACHE_A, CACHE_B]))).toEqual({
-    [CACHE_A]: { appPrefix: null, entries: [BRIDGE_AUTHORITY_KEY] },
-    [CACHE_B]: { appPrefix: null, entries: [BRIDGE_AUTHORITY_KEY] },
-  });
-});
-
-test("invalid persisted app-prefix state never configures or restores the bridge", async ({
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedAppPrefix(page, CACHE_A, "/b/app/");
-  await seedAppPrefix(page, "sw-bridge-config", "/b/app/");
-  await installRestoreResponder(page, {
-    appPrefix: "/b/app/",
-    sessionId: SESSION_A,
-    label: "invalid-persisted",
-  });
-  await registerScope(page, "/a/");
-
-  const result = await page.evaluate(async () => {
-    const response = await fetch("/b/app/persisted-probe", {
-      cache: "no-store",
-    });
-    return {
-      body: await response.text(),
-      needBridgeCount: (window as typeof window & {
-        __needBridgeCount?: number;
-      }).__needBridgeCount ?? 0,
-    };
-  });
-  expect(result).toEqual({
-    body: "network:/b/app/persisted-probe",
-    needBridgeCount: 0,
-  });
-  expect((await readBridgeCaches(page, [CACHE_A]))[CACHE_A]).toEqual({
-    appPrefix: "/b/app/",
-    entries: ["app-prefix"],
-  });
-});
-
-test("an invalid committed authority never falls back to legacy bridge records", async ({
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedAppPrefix(page, CACHE_A, "/a/app/");
-  await seedCookieJar(page, CACHE_A, SESSION_A, [
-    { name: "legacy", value: "1", path: "/a/app/" },
-  ]);
-  await seedBridgeAuthority(page, CACHE_A, {
-    version: 1,
-    revision: 1,
-    appPrefix: "/b/app/",
-    sessionId: SESSION_A,
-    cookies: [],
-  });
-  const durableBefore = await cacheSnapshot(page);
-  await installRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    label: "legacy-fallback",
-  });
-  await registerScope(page, "/a/");
-
-  expect(await fetchText(page, "/a/app/invalid-authority"))
-    .toBe("network:/a/app/invalid-authority");
-  expect(await page.evaluate(() => (
-    window as typeof window & { __needBridgeCount?: number }
-  ).__needBridgeCount ?? 0)).toBe(0);
-  expect(await cacheSnapshot(page)).toEqual(durableBefore);
-});
-
-test("invalid handshakes preserve the valid live port and every durable byte", async ({
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "valid"))
-    .toEqual({ reply: { type: "bridge-ready" }, body: "bridge:valid" });
-  const durableBefore = await cacheSnapshot(page);
-
-  const invalidPrefixes: unknown[] = [
-    "/a/",
-    "/app/",
-    "/a",
-    "/ab/app/",
-    "/b/app/",
-    "a/app/",
-    "https://example.test/a/app/",
-    "//example.test/a/app/",
-    "/a//app/",
-    "/a/./app/",
-    "/a/%2e/app/",
-    "/a/%2f/app/",
-    "/a/%5c/app/",
-    "/a/%252e%252e/app/",
-    "/a/app/?q=1",
-    "/a/app/#x",
-    "/a/\0/app/",
-    null,
-    42,
-  ];
-  const invalidSessions: unknown[] = [
-    "",
-    "11111111-1111-1111-8111-111111111111",
-    "11111111-1111-4111-7111-111111111111",
-    "11111111-1111-4111-8111-11111111111A",
-    "HTTPS://EXAMPLE.TEST/",
-    "cookie-jar-app-prefix",
-    "x".repeat(200),
-    null,
-    42,
-    undefined,
-  ];
-
-  for (const appPrefix of invalidPrefixes) {
-    expect.soft(
-      await initAttempt(page, appPrefix, SESSION_A, `prefix:${appPrefix}`),
-      `invalid prefix ${JSON.stringify(appPrefix)}`,
-    ).toEqual({ type: "bridge-error", code: "invalid-scope-config" });
-    expect.soft(await fetchText(page, "/a/app/live-port"))
-      .toBe("bridge:valid");
-  }
-  for (const sessionId of invalidSessions) {
-    expect.soft(
-      await initAttempt(page, "/a/app/", sessionId, `session:${sessionId}`),
-      `invalid session ${JSON.stringify(sessionId)}`,
-    ).toEqual({ type: "bridge-error", code: "invalid-scope-config" });
-    expect.soft(await fetchText(page, "/a/app/live-port"))
-      .toBe("bridge:valid");
-  }
-
-  await initAttempt(page, "/a/app/", SESSION_A, "missing-reply", 1);
-  await initAttempt(page, "/a/app/", SESSION_A, "missing-ports", 0);
-  expect(await fetchText(page, "/a/app/live-port")).toBe("bridge:valid");
-  expect((await capturedCookies(page, "valid")).at(-1)).toBe("valid=1");
-  expect(await cacheSnapshot(page)).toEqual(durableBefore);
-  expect(await page.evaluate(() => (
-    window as typeof window & { __replacementBridgeRequests?: number }
-  ).__replacementBridgeRequests ?? 0)).toBe(0);
-});
-
-for (const [operation, failAfter] of [
-  ["open", 0],
-  ["put", 0],
-] as const) {
-  test(`a ${operation} failure preserves the prior live and durable bridge transaction`, async ({
-    context,
-    page,
-  }) => {
-    await page.goto(`${FIXTURE_ORIGIN}/a/`);
-    await registerScope(page, "/a/");
-    expect(await installBridge(page, "/a/app/", SESSION_A, "stable"))
-      .toEqual({ reply: { type: "bridge-ready" }, body: "bridge:stable" });
-    expect(await fetchText(page, "/a/app/seeded-cookie"))
-      .toBe("bridge:stable");
-    expect((await capturedCookies(page, "stable")).at(-1)).toBe("stable=1");
-
-    await seedCookieJar(page, CACHE_A, SESSION_A_NEXT, [
-      { name: "next", value: "1", path: "/a/next/" },
-    ]);
-    await seedCookieJar(page, CACHE_A, SESSION_B, [
-      { name: "wrong-session", value: "1", path: "/a/app/" },
-    ]);
-    const durableBefore = await cacheSnapshot(page);
-    await injectCacheOperation(context, operation, "reject", failAfter);
-
-    expect(
-      await transitionAttempt(
-        page,
-        "/a/next/",
-        SESSION_A_NEXT,
-        `failed-${operation}`,
-      ),
-    ).toEqual({ type: "bridge-error", code: "bridge-init-failed" });
-    expect(await fetchText(page, "/a/app/after-failure"))
-      .toBe("bridge:stable");
-    expect((await capturedCookies(page, "stable")).at(-1)).toBe("stable=1");
-    expect(await cacheSnapshot(page)).toEqual(durableBefore);
-    expect(await replacementBridgeRequestCount(page)).toBe(0);
-  });
-}
-
-test("a legacy jar match failure cannot create a first bridge authority", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  await seedCookieJar(page, CACHE_A, SESSION_A, [
-    { name: "legacy", value: "1", path: "/a/app/" },
-  ]);
-  const durableBefore = await cacheSnapshot(page);
-  await injectCacheOperation(context, "match", "reject", 0);
-
-  expect(await transitionAttempt(
-    page,
-    "/a/app/",
-    SESSION_A,
-    "failed-match",
-  )).toEqual({ type: "bridge-error", code: "bridge-init-failed" });
-  expect(await readBridgeAuthority(page)).toBeNull();
-  expect(await fetchText(page, "/a/app/after-match-failure"))
-    .toBe("network:/a/app/after-match-failure");
-  expect(await cacheSnapshot(page)).toEqual(durableBefore);
-  expect(await replacementBridgeRequestCount(page)).toBe(0);
-});
-
-test("worker termination before the authority commit preserves the prior transaction", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "stable-lifetime"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:stable-lifetime",
-    });
-  expect(await fetchText(page, "/a/app/seeded-cookie"))
-    .toBe("bridge:stable-lifetime");
-  await seedCookieJar(page, CACHE_A, SESSION_A_NEXT, [
-    { name: "next", value: "1", path: "/a/next/" },
-  ]);
-  await seedCookieJar(page, CACHE_A, SESSION_B, [
-    { name: "wrong-session", value: "1", path: "/a/app/" },
-  ]);
-  const durableBefore = await cacheSnapshot(page);
-  await installRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    label: "lifetime-restore",
-  });
-  const worker = await injectCacheOperation(context, "put", "block", 0);
-
-  const transition = transitionAttempt(
-    page,
-    "/a/next/",
-    SESSION_A_NEXT,
-    "terminated-replacement",
-    1_000,
-  );
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
-
-  expect(await transition).toBeNull();
-  expect(await cacheSnapshot(page)).toEqual(durableBefore);
-  expect(await fetchText(page, "/a/app/after-terminated-init"))
-    .toBe("bridge:lifetime-restore");
-  expect((await capturedCookies(page, "lifetime-restore")).at(-1))
-    .toBe("stable-lifetime=1");
-  expect(await replacementBridgeRequestCount(page)).toBe(0);
-});
-
-test("a cleanup failure cannot corrupt the single committed bridge authority", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "rollback-stable"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:rollback-stable",
-    });
-  await seedAppPrefix(page, CACHE_A, "/a/app/");
-  await seedCookieJar(page, CACHE_A, SESSION_A_NEXT, [
-    { name: "next", value: "1", path: "/a/next/" },
-  ]);
-  await seedCookieJar(page, CACHE_A, SESSION_B, [
-    { name: "obsolete", value: "1", path: "/a/app/" },
-  ]);
-  await injectRollbackFailure(context);
-
-  expect(await transitionAttempt(
-    page,
-    "/a/next/",
-    SESSION_A_NEXT,
-    "rollback-next",
-    1_000,
-  )).toEqual({ type: "bridge-ready" });
-  expect(await fetchText(page, "/a/next/after-cleanup-failure"))
-    .toBe("replacement:rollback-next");
-  expect(await readBridgeAuthority(page)).toMatchObject({
-    version: 1,
-    appPrefix: "/a/next/",
-    sessionId: SESSION_A_NEXT,
-    cookies: [],
-  });
-});
-
-test("termination during partial cleanup restarts from the new complete authority", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "cleanup-stable"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:cleanup-stable",
-    });
-  await seedAppPrefix(page, CACHE_A, "/a/app/");
-  await seedCookieJar(page, CACHE_A, SESSION_A_NEXT, [
-    { name: "legacy-next", value: "1", path: "/a/next/" },
-  ]);
-  await seedCookieJar(page, CACHE_A, SESSION_B, [
-    { name: "legacy-obsolete", value: "1", path: "/a/app/" },
-  ]);
-  await installRestoreResponder(page, {
-    appPrefix: "/a/next/",
-    sessionId: SESSION_A_NEXT,
-    label: "cleanup-restore",
-  });
-  const worker = await injectReleasableCacheOperation(
-    context,
-    "delete",
-    1,
-  );
-
-  const transition = transitionAttempt(
-    page,
-    "/a/next/",
-    SESSION_A_NEXT,
-    "cleanup-next",
-    1_000,
-  );
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  expect(await transition).toEqual({ type: "bridge-ready" });
-  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
-
-  expect(await readBridgeAuthority(page)).toMatchObject({
-    version: 1,
-    appPrefix: "/a/next/",
-    sessionId: SESSION_A_NEXT,
-    cookies: [],
-  });
-  expect(await fetchText(page, "/a/next/after-partial-cleanup"))
-    .toBe("bridge:cleanup-restore");
-  expect((await capturedCookies(page, "cleanup-restore")).at(-1)).toBe("");
-});
-
-test("an obsolete live bridge cookie write serializes before a newer init", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "cookie-race"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:cookie-race",
-    });
-  await setBridgeCookieValue(page, "cookie-race", "2");
-  const worker = await injectReleasableCacheOperation(context, "put", 0);
-
-  const oldFetch = fetchText(page, "/a/app/blocked-cookie-write");
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  let transitionSettled = false;
-  const transition = transitionAttempt(
-    page,
-    "/a/next/",
-    SESSION_A_NEXT,
-    "cookie-race-next",
-    2_000,
-  ).then((reply) => {
-    transitionSettled = true;
-    return reply;
-  });
-  await page.waitForTimeout(200);
-  const settledBeforeOldWrite = transitionSettled;
-  await releaseCacheOperation(worker);
-
-  expect(await oldFetch).toBe("bridge:cookie-race");
-  expect(settledBeforeOldWrite).toBe(false);
-  expect(await transition).toEqual({ type: "bridge-ready" });
-  expect(await readBridgeAuthority(page)).toMatchObject({
-    version: 1,
-    appPrefix: "/a/next/",
-    sessionId: SESSION_A_NEXT,
-    cookies: [],
-  });
-  await expect.poll(async () =>
-    (await readBridgeCaches(page, [CACHE_A]))[CACHE_A]?.entries ?? []
-  ).not.toContain(`cookie-jar-${SESSION_A}`);
-});
-
-test("an old port response during init preparation cannot mutate the new authority", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "preparing-old"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:preparing-old",
-    });
-  await setBridgeCookieValue(page, "preparing-old", "2");
-  const worker = await injectReleasableCacheOperation(context, "put", 0);
-
-  const transition = transitionAttempt(
-    page,
-    "/a/app/",
-    SESSION_A,
-    "prepared-new",
-    2_000,
-  );
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  let oldFetchSettled = false;
-  const oldFetch = fetchText(
-    page,
-    "/a/app/old-port-during-preparation",
-  ).then((body) => {
-    oldFetchSettled = true;
-    return body;
-  });
-  await expect.poll(async () =>
-    (await capturedCookies(page, "preparing-old")).length
-  ).toBe(2);
-  await page.waitForTimeout(200);
-  const settledBeforeTransitionCommit = oldFetchSettled;
-  await releaseCacheOperation(worker);
-
-  expect(settledBeforeTransitionCommit).toBe(false);
-  expect(await transition).toEqual({ type: "bridge-ready" });
-  expect(await oldFetch).toBe("bridge:preparing-old");
-  expect(await readBridgeAuthority(page)).toMatchObject({
-    version: 1,
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    cookies: [{
-      name: "preparing-old",
-      value: "1",
-      path: "/a/app/",
-    }],
-  });
-  expect(await fetchText(page, "/a/app/new-port-after-preparation"))
-    .toBe("replacement:prepared-new");
-});
-
-test("a navigation reset cannot be undone by an in-flight cookie commit", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "reset-race"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:reset-race",
-    });
-  await setBridgeCookieValue(page, "reset-race", "2");
-  const worker = await injectReleasableCacheOperation(context, "put", 0);
-
-  const oldFetch = fetchText(page, "/a/app/before-navigation-reset");
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  const resetPage = await context.newPage();
-  try {
-    await resetPage.goto(`${FIXTURE_ORIGIN}/a/navigation-reset`, {
-      waitUntil: "domcontentloaded",
-    });
-  } finally {
-    await resetPage.close();
-  }
-  await releaseCacheOperation(worker);
-
-  expect(await oldFetch).toBe("bridge:reset-race");
-  expect(await fetchText(page, "/a/app/after-navigation-reset"))
-    .toBe("bridge:reset-race");
-  expect((await capturedCookies(page, "reset-race")).at(-1)).toBe("");
-});
-
-test("a delayed restoration cannot overwrite a newer acknowledged init", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "restore-old"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:restore-old",
-    });
-  await installControlledRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    label: "stale-restore",
-  });
-  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
-
-  const pendingFetch = fetchText(page, "/a/app/pending-restoration");
-  await expect.poll(() => restoreResponderPending(page)).toBe(true);
-  expect(await transitionAttempt(
-    page,
-    "/a/app/",
-    SESSION_A_NEXT,
-    "newer-init",
-    1_000,
-  )).toEqual({ type: "bridge-ready" });
-  await releaseRestoreResponder(page);
-
-  expect(await pendingFetch).toBe("replacement:newer-init");
-  expect(await fetchText(page, "/a/app/after-stale-restoration"))
-    .toBe("replacement:newer-init");
-  expect(await staleRestoreBridgeRequestCount(page)).toBe(0);
-  expect(await readBridgeAuthority(page)).toMatchObject({
-    version: 1,
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A_NEXT,
-    cookies: [],
-  });
-});
-
-test("a restoration begun during a blocked init cannot replace its committed port", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "pending-init-old"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:pending-init-old",
-    });
-  await installRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A_NEXT,
-    label: "pending-init-restore",
-  });
-  const worker = await injectReleasableCacheOperation(context, "put", 0);
-  await worker.evaluate(() => {
-    (globalThis as typeof globalThis & { bridgePort: MessagePort | null })
-      .bridgePort = null;
-  });
-
-  const transition = transitionAttempt(
-    page,
-    "/a/app/",
-    SESSION_A_NEXT,
-    "pending-init-new",
-    2_000,
-  );
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  const pendingFetch = fetchText(page, "/a/app/restore-during-init");
-  await expect.poll(() => page.evaluate(() => (
-    window as typeof window & { __needBridgeCount?: number }
-  ).__needBridgeCount ?? 0)).toBe(1);
-  await releaseCacheOperation(worker);
-
-  expect(await transition).toEqual({ type: "bridge-ready" });
-  const pendingBody = await Promise.race([
-    pendingFetch,
-    new Promise<string>((resolve) => setTimeout(
-      () => resolve("fixture:pending-fetch-timeout"),
-      3_000,
-    )),
-  ]);
-  expect(pendingBody).toBe("replacement:pending-init-new");
-  expect(await fetchText(page, "/a/app/after-pending-init-restore"))
-    .toBe("replacement:pending-init-new");
-  expect(await capturedCookies(page, "pending-init-restore")).toEqual([]);
-  expect(await readBridgeAuthority(page)).toMatchObject({
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A_NEXT,
-    cookies: [],
-  });
-});
-
-test("a claimed legacy authority commit outlives the discovery timeout", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedAppPrefix(page, CACHE_A, "/a/app/");
-  await seedCookieJar(page, CACHE_A, SESSION_A, [
-    { name: "claimed-legacy", value: "1", path: "/a/app/" },
-  ]);
-  await installRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    label: "claimed-legacy",
-  });
-  await registerScope(page, "/a/");
-  const worker = await injectReleasableCacheOperation(context, "put", 0);
-
-  let fetchSettled = false;
-  const pendingFetch = fetchText(page, "/a/app/claimed-legacy-timeout").then(
-    (body) => {
-      fetchSettled = true;
-      return body;
-    },
-  );
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  await page.waitForTimeout(5_250);
-  const settledBeforeRelease = fetchSettled;
-  const authorityBeforeRelease = await readBridgeAuthority(page);
-  await releaseCacheOperation(worker);
-  const body = await pendingFetch;
-  const authorityAfterRelease = await readBridgeAuthority(page);
-
-  expect(settledBeforeRelease).toBe(false);
-  expect(authorityBeforeRelease).toBeNull();
-  expect(body).toBe("bridge:claimed-legacy");
-  expect((await capturedCookies(page, "claimed-legacy")).at(-1))
-    .toBe("claimed-legacy=1");
-  expect(authorityAfterRelease).toMatchObject({
-    version: 1,
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    cookies: [{ name: "claimed-legacy", value: "1", path: "/a/app/" }],
-  });
-});
-
-test("a newer init queued behind a claimed legacy commit remains final", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedAppPrefix(page, CACHE_A, "/a/app/");
-  await seedCookieJar(page, CACHE_A, SESSION_A, [
-    { name: "legacy-before-init", value: "1", path: "/a/app/" },
-  ]);
-  await installRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    label: "legacy-before-init",
-  });
-  await registerScope(page, "/a/");
-  const worker = await injectReleasableCacheOperation(context, "put", 0);
-
-  const pendingFetch = fetchText(page, "/a/app/claimed-before-new-init");
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  let initSettled = false;
-  const newerInit = transitionAttempt(
-    page,
-    "/a/next/",
-    SESSION_A_NEXT,
-    "newer-after-legacy",
-    10_000,
-  ).then((reply) => {
-    initSettled = true;
-    return reply;
-  });
-  await page.waitForTimeout(200);
-  const initSettledBeforeRelease = initSettled;
-  await releaseCacheOperation(worker);
-
-  expect(initSettledBeforeRelease).toBe(false);
-  expect(await pendingFetch).toBe("bridge:legacy-before-init");
-  expect(await newerInit).toEqual({ type: "bridge-ready" });
-  expect(await fetchText(page, "/a/next/final-init-port"))
-    .toBe("replacement:newer-after-legacy");
-  expect(await capturedCookies(page, "legacy-before-init"))
-    .toEqual(["legacy-before-init=1"]);
-  expect(await readBridgeAuthority(page)).toMatchObject({
-    version: 1,
-    appPrefix: "/a/next/",
-    sessionId: SESSION_A_NEXT,
-    cookies: [],
-  });
-});
-
-test("a timeout before a legacy candidate claim closes its port without mutation", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedAppPrefix(page, CACHE_A, "/a/app/");
-  await seedCookieJar(page, CACHE_A, SESSION_A, [
-    { name: "unclaimed-legacy", value: "1", path: "/a/app/" },
-  ]);
-  await installRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    label: "unclaimed-legacy",
-  });
-  await registerScope(page, "/a/");
-  expect(await fetchText(page, "/a/startup-ready"))
-    .toBe("network:/a/startup-ready");
-  const durableBefore = await cacheSnapshot(page);
-  const worker = await injectReleasableCacheOperation(context, "match", 0);
-  await observeWorkerPortCloses(worker);
-
-  const timedOutFetch = fetchText(page, "/a/app/unclaimed-timeout");
-  await expect.poll(() => worker.evaluate(() => (
-    globalThis as typeof globalThis & { __cacheOperationEntered?: boolean }
-  ).__cacheOperationEntered ?? false)).toBe(true);
-  expect(await timedOutFetch)
-    .toBe("Service worker bridge unavailable — please reload the page");
-  const closesAtTimeout = await workerPortCloseCount(worker);
-  await releaseCacheOperation(worker);
-
-  expect(closesAtTimeout).toBe(1);
-  await expect.poll(() => workerPortCloseCount(worker))
-    .toBe(2);
-  expect(await worker.evaluate(() => (
-    globalThis as typeof globalThis & { bridgePort: MessagePort | null }
-  ).bridgePort === null)).toBe(true);
-  expect(await readBridgeAuthority(page)).toBeNull();
-  expect(await cacheSnapshot(page)).toEqual(durableBefore);
-});
-
-test("a stale first client cannot starve a later matching restoration", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "multi-client-old"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:multi-client-old",
-    });
-
-  const matchingPage = await context.newPage();
-  let result: {
-    body: string;
-    staleCookies: string[];
-    matchingCookies: string[];
-  } | undefined;
-  try {
-    await matchingPage.goto(`${FIXTURE_ORIGIN}/a/second-client`);
-    await installRestoreResponder(page, {
-      appPrefix: "/a/app/",
-      sessionId: SESSION_A_NEXT,
-      label: "stale-first-client",
-    });
-    await installRestoreResponder(matchingPage, {
-      appPrefix: "/a/app/",
-      sessionId: SESSION_A,
-      label: "matching-second-client",
-      delayMs: 150,
-    });
-    await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
-
-    const body = await fetchText(page, "/a/app/multi-client-restore");
-    result = {
-      body,
-      staleCookies: await capturedCookies(page, "stale-first-client"),
-      matchingCookies: await capturedCookies(
-        matchingPage,
-        "matching-second-client",
-      ),
-    };
-  } finally {
-    await matchingPage.close();
-  }
-
-  expect(result).toEqual({
-    body: "bridge:matching-second-client",
-    staleCookies: [],
-    matchingCookies: ["multi-client-old=1"],
-  });
-});
-
-test("a complete authority accepts its exact byte, field, count, and revision boundaries", async ({
-  page,
-}) => {
-  const appPrefix = `/a/${"x".repeat(BRIDGE_APP_PREFIX_MAX_BYTES - 4)}/`;
-  const boundaryName = "n".repeat(BRIDGE_COOKIE_NAME_MAX_BYTES);
-  const boundaryValue = "é".repeat(BRIDGE_COOKIE_VALUE_MAX_BYTES / 2);
-  const cookies = Array.from(
-    { length: BRIDGE_AUTHORITY_MAX_COOKIES },
-    (_, index) => ({
-      name: index === 0 ? boundaryName : `cookie-${index}`,
-      value: index === 0
-        ? boundaryValue
-        : String(index),
-      path: index === 0 ? appPrefix : "/a/",
-    }),
-  );
-  const authority: BridgeAuthoritySnapshot = {
-    version: 1,
-    revision: 0,
-    appPrefix,
-    sessionId: SESSION_A,
-    cookies,
-  };
-  const authorityText = padAuthorityText(
-    authority,
-    BRIDGE_AUTHORITY_MAX_BYTES,
-  );
-  expect(new TextEncoder().encode(appPrefix).byteLength)
-    .toBe(BRIDGE_APP_PREFIX_MAX_BYTES);
-  expect(boundaryValue.length).toBe(BRIDGE_COOKIE_VALUE_MAX_BYTES / 2);
-  expect(new TextEncoder().encode(boundaryValue).byteLength)
-    .toBe(BRIDGE_COOKIE_VALUE_MAX_BYTES);
-  expect(new TextEncoder().encode(authorityText).byteLength)
-    .toBe(BRIDGE_AUTHORITY_MAX_BYTES);
-
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedRawBridgeAuthority(page, CACHE_A, authorityText);
-  await installRestoreResponder(page, {
-    appPrefix,
-    sessionId: SESSION_A,
-    label: "authority-boundary",
-  });
-  await registerScope(page, "/a/");
-
-  expect(await fetchText(page, `${appPrefix}boundary`))
-    .toBe("bridge:authority-boundary");
-  const outgoing = (await capturedCookies(page, "authority-boundary")).at(-1);
-  expect(outgoing?.split("; ")).toHaveLength(BRIDGE_AUTHORITY_MAX_COOKIES);
-  expect(outgoing).toContain(`${boundaryName}=${boundaryValue}`);
-});
-
-test("complete authority rejects every over-limit or malformed persisted field", async ({
-  browser,
-}) => {
-  const validAuthority = (): BridgeAuthoritySnapshot => ({
-    version: 1,
-    revision: 1,
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    cookies: [{ name: "valid", value: "1", path: "/a/app/" }],
-  });
-  const invalidCases: Array<{
-    label: string;
-    authority: BridgeAuthoritySnapshot;
-    text?: string;
-  }> = [];
-
-  const totalBytes = validAuthority();
-  invalidCases.push({
-    label: "total serialized bytes",
-    authority: totalBytes,
-    text: padAuthorityText(totalBytes, BRIDGE_AUTHORITY_MAX_BYTES + 1),
-  });
-  const cookieCount = validAuthority();
-  cookieCount.cookies = Array.from(
-    { length: BRIDGE_AUTHORITY_MAX_COOKIES + 1 },
-    (_, index) => ({ name: `cookie-${index}`, value: "1", path: "/a/app/" }),
-  );
-  invalidCases.push({ label: "cookie count", authority: cookieCount });
-  const nameBytes = validAuthority();
-  nameBytes.cookies[0]!.name = "n".repeat(BRIDGE_COOKIE_NAME_MAX_BYTES + 1);
-  invalidCases.push({ label: "cookie name bytes", authority: nameBytes });
-  const nameSyntax = validAuthority();
-  nameSyntax.cookies[0]!.name = "invalid cookie name";
-  invalidCases.push({ label: "cookie name syntax", authority: nameSyntax });
-  const valueBytes = validAuthority();
-  valueBytes.cookies[0]!.value =
-    "é".repeat(BRIDGE_COOKIE_VALUE_MAX_BYTES / 2) + "x";
-  expect(valueBytes.cookies[0]!.value.length)
-    .toBeLessThan(BRIDGE_COOKIE_VALUE_MAX_BYTES);
-  expect(new TextEncoder().encode(valueBytes.cookies[0]!.value).byteLength)
-    .toBe(BRIDGE_COOKIE_VALUE_MAX_BYTES + 1);
-  invalidCases.push({ label: "cookie value bytes", authority: valueBytes });
-  const valueSyntax = validAuthority();
-  valueSyntax.cookies[0]!.value = "invalid;\nvalue";
-  invalidCases.push({ label: "cookie value syntax", authority: valueSyntax });
-  const pathBytes = validAuthority();
-  pathBytes.cookies[0]!.path =
-    `/a/${"p".repeat(BRIDGE_COOKIE_PATH_MAX_BYTES - 2)}`;
-  invalidCases.push({ label: "cookie path bytes", authority: pathBytes });
-  const pathSyntax = validAuthority();
-  pathSyntax.cookies[0]!.path = "/b/outside-scope";
-  invalidCases.push({ label: "cookie path syntax", authority: pathSyntax });
-  const prefixBytes = validAuthority();
-  prefixBytes.appPrefix =
-    `/a/${"x".repeat(BRIDGE_APP_PREFIX_MAX_BYTES - 3)}/`;
-  invalidCases.push({ label: "app-prefix bytes", authority: prefixBytes });
-  const revision = validAuthority();
-  revision.revision = Number.MAX_SAFE_INTEGER;
-  invalidCases.push({ label: "MAX_SAFE revision", authority: revision });
-
-  for (const invalid of invalidCases) {
-    const isolatedContext = await browser.newContext({ serviceWorkers: "allow" });
-    const isolatedPage = await isolatedContext.newPage();
-    try {
-      await isolatedPage.goto(`${FIXTURE_ORIGIN}/a/`);
-      await seedAppPrefix(isolatedPage, CACHE_A, "/a/app/");
-      await seedCookieJar(isolatedPage, CACHE_A, SESSION_A, [
-        { name: "legacy", value: "1", path: "/a/app/" },
-      ]);
-      if (invalid.text) {
-        await seedRawBridgeAuthority(isolatedPage, CACHE_A, invalid.text);
-      } else {
-        await seedBridgeAuthority(isolatedPage, CACHE_A, invalid.authority);
-      }
-      const durableBefore = await cacheSnapshot(isolatedPage);
-      await installRestoreResponder(isolatedPage, {
-        appPrefix: invalid.authority.appPrefix,
-        sessionId: invalid.authority.sessionId,
-        label: `invalid-${invalid.label}`,
-      });
-      await registerScope(isolatedPage, "/a/");
-      const probePath = `${invalid.authority.appPrefix}invalid-authority`;
-
-      expect.soft(
-        await fetchText(isolatedPage, probePath),
-        invalid.label,
-      ).toBe(`network:${probePath}`);
-      expect.soft(await isolatedPage.evaluate(() => (
-        window as typeof window & { __needBridgeCount?: number }
-      ).__needBridgeCount ?? 0), invalid.label).toBe(0);
-      expect.soft(await cacheSnapshot(isolatedPage), invalid.label)
-        .toEqual(durableBefore);
-    } finally {
-      await isolatedContext.close();
-    }
-  }
-});
-
-test("the highest accepted revision cannot advance to a restart-rejected record", async ({
-  page,
-}) => {
-  const authority: BridgeAuthoritySnapshot = {
-    version: 1,
-    revision: Number.MAX_SAFE_INTEGER - 1,
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    cookies: [{ name: "revision", value: "1", path: "/a/app/" }],
-  };
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedBridgeAuthority(page, CACHE_A, authority);
-  await installRestoreResponder(page, {
-    appPrefix: authority.appPrefix,
-    sessionId: authority.sessionId,
-    label: "revision-boundary",
-  });
-  await registerScope(page, "/a/");
-  expect(await fetchText(page, "/a/app/revision-before"))
-    .toBe("bridge:revision-boundary");
-  const durableBefore = await cacheSnapshot(page);
-
-  expect(await transitionAttempt(
-    page,
-    "/a/app/",
-    SESSION_A_NEXT,
-    "unsafe-revision",
-  )).toEqual({ type: "bridge-error", code: "bridge-init-failed" });
-  expect(await fetchText(page, "/a/app/revision-after"))
-    .toBe("bridge:revision-boundary");
-  expect((await capturedCookies(page, "revision-boundary")).at(-1))
-    .toBe("revision=1");
-  expect(await cacheSnapshot(page)).toEqual(durableBefore);
-  expect(await replacementBridgeRequestCount(page)).toBe(0);
-});
-
-test("an oversized live Set-Cookie cannot create restart-invalid authority bytes", async ({
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "bounded-live"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:bounded-live",
-    });
-  const durableBefore = await cacheSnapshot(page);
-  const oversizedValue =
-    "é".repeat(BRIDGE_COOKIE_VALUE_MAX_BYTES / 2) + "x";
-  expect(oversizedValue.length).toBeLessThan(BRIDGE_COOKIE_VALUE_MAX_BYTES);
-  expect(new TextEncoder().encode(oversizedValue).byteLength)
-    .toBe(BRIDGE_COOKIE_VALUE_MAX_BYTES + 1);
-  await setBridgeCookieValue(
-    page,
-    "bounded-live",
-    oversizedValue,
-  );
-
-  expect(await fetchText(page, "/a/app/oversized-live-cookie"))
-    .toBe("bridge:bounded-live");
-  expect(await cacheSnapshot(page)).toEqual(durableBefore);
-  expect(await fetchText(page, "/a/app/after-oversized-live-cookie"))
-    .toBe("bridge:bounded-live");
-  expect((await capturedCookies(page, "bounded-live")).at(-1))
-    .toBe("bounded-live=1");
-});
-
-test("restart rejects invalid restoration, then restores only its scoped session", async ({
-  context,
-  page,
-}) => {
-  await page.goto(`${FIXTURE_ORIGIN}/a/`);
-  await seedCaches(page, [CACHE_B, LAZY_CACHE_A, "sw-bridge-config"]);
-  await registerScope(page, "/a/");
-  expect(await installBridge(page, "/a/app/", SESSION_A, "before-restart"))
-    .toEqual({
-      reply: { type: "bridge-ready" },
-      body: "bridge:before-restart",
-    });
-  await seedCookieJar(page, CACHE_A, SESSION_A_NEXT, [
-    { name: "wrong-session", value: "1", path: "/a/app/" },
-  ]);
-  await seedCookieJar(page, CACHE_B, SESSION_A, [
-    { name: "wrong-scope", value: "1", path: "/a/app/" },
-  ]);
-  const before = await cacheSnapshot(page);
-  await installRestoreResponder(page, {
-    appPrefix: "/b/app/",
-    sessionId: SESSION_A,
-    label: "invalid-restore",
-  });
-  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
-
-  const invalidResponse = await page.evaluate(async () => {
-    const response = await fetch("/a/app/after-invalid-restore", {
-      cache: "no-store",
-    });
-    return { status: response.status, body: await response.text() };
-  });
-  expect(invalidResponse).toEqual({
-    status: 503,
-    body: "Service worker bridge unavailable — please reload the page",
-  });
-  expect(await cacheSnapshot(page)).toEqual(before);
-
-  await updateRestoreResponder(page, {
-    appPrefix: "/a/app/",
-    sessionId: SESSION_A,
-    label: "valid-restore",
-  });
-  expect(await fetchText(page, "/a/app/after-valid-restore"))
-    .toBe("bridge:valid-restore");
-  expect((await capturedCookies(page, "valid-restore")).at(-1))
-    .toBe("before-restart=1");
-  expect(await page.evaluate(() => (
-    window as typeof window & { __needBridgeCount?: number }
-  ).__needBridgeCount ?? 0)).toBe(2);
-  expect((await readBridgeCaches(page, [CACHE_B]))[CACHE_B]).toEqual({
-    appPrefix: null,
-    entries: [
-      `cookie-jar-${SESSION_A}`,
-      "seed",
-    ],
-  });
-  expect((await cacheNames(page)).sort()).toEqual([
-    CACHE_A,
-    CACHE_B,
-    LAZY_CACHE_A,
-    "sw-bridge-config",
-  ].sort());
-});
-
 test("production COI reload state is scoped while the theme remains origin-wide", async ({
   page,
 }) => {
@@ -1526,6 +392,617 @@ test("the exact worker accepts canonical scopes and rejects noncanonical scope p
   )).activated).toBe(false);
 });
 
+test("mints a validly-formatted machine name and app prefix", async ({ page }) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const first = await installBridge(page, SESSION_A, "first");
+  expect(first.name).toMatch(/^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}$/);
+  expect(first.appPrefix).toBe(`/a/computer/${first.name}/`);
+  expect(first.body).toBe("bridge:first");
+});
+
+test("two machines in one scope route to their own bridges", async ({ page }) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const one = await installBridge(page, SESSION_A, "one");
+  const two = await installBridge(page, SESSION_B, "two");
+  expect(one.name).not.toBe(two.name);
+  expect(await fetchText(page, `${one.appPrefix}page`)).toBe("bridge:one");
+  expect(await fetchText(page, `${two.appPrefix}page`)).toBe("bridge:two");
+});
+
+test("root-relative subresources are attributed to the viewing machine", async ({
+  context,
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  // The host tab keeps the machine's bridge alive for the whole test. A
+  // separate viewer tab navigates to /computer/<name>/ so the SW records its
+  // clientId -> name mapping; navigating the host itself would destroy the very
+  // bridge port the machine is served over (see task report), so the viewer is
+  // a distinct page — matching the real cross-tab design.
+  const m = await installBridge(page, SESSION_A, "solo");
+  const viewer = await context.newPage();
+  try {
+    await viewer.goto(`${FIXTURE_ORIGIN}${m.appPrefix}`);
+    // A bare root-relative fetch from inside the app must reach the machine.
+    const body = await viewer.evaluate(async () =>
+      (await fetch("/wp-content/x.css", { cache: "no-store" })).text()
+    );
+    expect(body).toBe("bridge:solo");
+  } finally {
+    await viewer.close();
+  }
+});
+
+test("a host-page request to a machine does not make the host a viewer", async ({ page }) => {
+  // Regression: the web-readiness probe and the boot's kernel.wasm / VFS fetches
+  // run on the HOST client (at "/"), not inside the app iframe. installBridge
+  // itself makes a host request to /a/computer/<name>/cookie. If a host request to an
+  // app path registered the host as a viewer, its later NAMELESS fetches would
+  // be 307-redirected into that machine's app prefix — and after an in-place
+  // machine switch, into the PREVIOUS machine's now-dead prefix, deadlocking
+  // every host fetch (boot hangs forever). The host must never become a viewer:
+  // only navigations INTO /computer/<name>/ and subresources with an app referer do.
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  await installBridge(page, SESSION_A, "solo"); // host fetches /a/computer/<name>/cookie
+  const body = await page.evaluate(async () =>
+    (await fetch("/a/not-an-app-path", { cache: "no-store" })).text()
+  );
+  // Served as a normal same-origin response, NOT redirected into the machine.
+  expect(body).toBe("network:/a/not-an-app-path");
+  expect(body).not.toContain("bridge:");
+});
+
+test("a bare machine-prefix link in app HTML is not doubled", async ({ page }) => {
+  // Regression: WordPress emits its home link as the bare prefix
+  // http://host/a/computer/<name> (no trailing slash). The SW URL-rewriter must
+  // treat that as already-prefixed and leave it alone; recognizing only "/" or
+  // end-of-text as the boundary re-prefixed it into
+  // /a/computer/<name>/computer/<name>. A root-relative absolute link that is
+  // NOT yet under the prefix must still be rewritten into the machine.
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const out = await page.evaluate(async () => {
+    const controller = navigator.serviceWorker.controller!;
+    const host = location.host;
+    const keepAlive = window as any;
+    keepAlive.__bridgePorts ??= [];
+    let name = "";
+    const bridge = new MessageChannel();
+    bridge.port1.onmessage = (event: any) => {
+      if (event.data?.type !== "http-request") return;
+      const html =
+        `<!doctype html>` +
+        `<a id="home" href="http://${host}/a/computer/${name}">home</a>` +
+        `<a id="root" href="http://${host}/wp-content/x.css">asset</a>` +
+        `<a id="ok" href="http://${host}/a/computer/${name}/already.css">ok</a>`;
+      bridge.port1.postMessage({
+        type: "http-response",
+        requestId: event.data.requestId,
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        body: new TextEncoder().encode(html),
+      });
+    };
+    bridge.port1.start();
+    const reply = new MessageChannel();
+    const replyData = await new Promise<any>((resolve) => {
+      reply.port1.onmessage = (e: any) => resolve(e.data);
+      reply.port1.start();
+      keepAlive.__bridgePorts.push(bridge.port1, reply.port1);
+      controller.postMessage(
+        { type: "init-bridge", sessionId: "33333333-3333-4333-8333-333333333333" },
+        [bridge.port2, reply.port2],
+      );
+    });
+    name = replyData.name;
+    const res = await fetch(replyData.appPrefix, { cache: "no-store" });
+    return { name: replyData.name, body: await res.text() };
+  });
+  const origin = `http://127.0.0.1:${FIXTURE_PORT}`;
+  // The bare home link stays a single prefix — never doubled.
+  expect(out.body).toContain(`href="${origin}/a/computer/${out.name}"`);
+  expect(out.body).not.toContain(`/a/computer/${out.name}/computer/${out.name}`);
+  // An already-correct deeper link is untouched.
+  expect(out.body).toContain(`href="${origin}/a/computer/${out.name}/already.css"`);
+  // A root-relative absolute link is re-prefixed into this machine.
+  expect(out.body).toContain(`href="${origin}/a/computer/${out.name}/wp-content/x.css"`);
+});
+
+test("an unknown machine name returns a 503 HTML page", async ({ page }) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const res = await fetchResponse(page, "/a/computer/happy-teal-otter/");
+  expect(res.status).toBe(503);
+  // An HTML document, not the plain-text stub.
+  expect(res.body).toContain("<!doctype html");
+  expect(res.body).toContain("happy-teal-otter");
+});
+
+test("a bare /computer/ request returns 503, never the app shell", async ({ page }) => {
+  // Regression: the web-preview iframe once loaded the bare /computer/ (a stale
+  // prefix), and the SW served the Kandelo shell for it, mounting the whole
+  // app inside its own preview iframe and recursing (stacked docks). An
+  // /computer/-namespaced request that resolves to no machine must be a 503, not a
+  // 200 passthrough that could be the shell.
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const bare = await fetchResponse(page, "/a/computer/");
+  expect(bare.status).toBe(503);
+  expect(bare.body).toContain("<!doctype html");
+  // An invalid (non-three-word) name is likewise never served the shell.
+  const invalid = await fetchResponse(page, "/a/computer/not-a-valid-name-segment");
+  expect(invalid.status).toBe(503);
+});
+
+test("closing the host tab pushes machine-offline to viewers", async ({
+  context,
+}) => {
+  const host = await context.newPage();
+  await host.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(host, "/a/");
+  const m = await installBridge(host, SESSION_A, "solo");
+
+  const viewer = await context.newPage();
+  await viewer.goto(`${FIXTURE_ORIGIN}${m.appPrefix}`);
+  // Attach the listener and confirm it is installed before the host announces
+  // it is closing, so the machine-offline push cannot race ahead of the
+  // viewer's subscription.
+  await viewer.evaluate((name) => {
+    (window as typeof window & { __offline?: Promise<string> }).__offline =
+      new Promise<string>((resolve) => {
+        navigator.serviceWorker.addEventListener("message", (event) => {
+          const data = (event as MessageEvent).data;
+          if (data?.type === "machine-offline" && data.name === name) {
+            resolve("offline");
+          }
+        });
+      });
+  }, m.name);
+
+  // Drive the real host->SW instance-closing message the pagehide listener
+  // sends when the owning tab goes away.
+  await host.evaluate(() =>
+    navigator.serviceWorker.controller!.postMessage({
+      type: "instance-closing",
+      name: (window as typeof window & { __lastInstanceName?: string })
+        .__lastInstanceName,
+    })
+  );
+
+  expect(
+    await viewer.evaluate(() =>
+      (window as typeof window & { __offline?: Promise<string> }).__offline!
+    ),
+  ).toBe("offline");
+});
+
+test("a restarted-then-closed machine is terminally offlined and GCs its authority", async ({
+  context,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  const host = await context.newPage();
+  await host.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(host, "/a/");
+  const m = await installBridge(host, SESSION_A, "solo");
+
+  // A viewer tab is attributed to the machine while it is live, then the SW is
+  // genuinely restarted. Only the host answers need-bridge, so restoration must
+  // re-establish the host as the record's owningClientId — without that, the
+  // machine can never be reconciled offline after the owner closes.
+  const viewer = await context.newPage();
+  await viewer.goto(`${FIXTURE_ORIGIN}${m.appPrefix}`);
+
+  await installNamedRestoreResponder(host, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A, label: "solo" },
+  ]);
+  await stopWorker(context, host, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  // The first post-restart named request from the viewer drives restore (the
+  // host re-supplies the bridge) and re-registers the viewer as an attributed
+  // viewer of the restored record.
+  expect(await fetchText(viewer, `${m.appPrefix}after-restart`))
+    .toBe("restored:solo");
+
+  await subscribeMachineOffline(viewer, m.name);
+
+  // The owning tab closes without any further signal. A restart-restored record
+  // now knows its owner, so lazy reconciliation on the next request can retire
+  // it terminally.
+  await host.close();
+
+  await expect.poll(async () =>
+    (await fetchResponse(viewer, `${m.appPrefix}after-close`)).status
+  ).toBe(503);
+  expect(await readMachineOffline(viewer)).toBe("offline");
+  // markInstanceOffline GCs the per-name durable authority so a terminated
+  // machine does not re-materialize on the next SW restart.
+  await expect.poll(() => readBridgeAuthority(viewer, CACHE_A, m.name)).toBe(
+    null,
+  );
+});
+
+test("a crashed owner (no instance-closing) is reconciled offline on the next request", async ({
+  context,
+}) => {
+  const host = await context.newPage();
+  await host.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(host, "/a/");
+  const m = await installBridge(host, SESSION_A, "solo");
+
+  const viewer = await context.newPage();
+  await viewer.goto(`${FIXTURE_ORIGIN}${m.appPrefix}`);
+  await subscribeMachineOffline(viewer, m.name);
+
+  // The owner tab goes away WITHOUT sending instance-closing — a crash, not an
+  // orderly pagehide. Only lazy reconcileOwners on a later request can notice
+  // the owning window client is gone and retire the machine.
+  await host.close();
+
+  await expect.poll(async () =>
+    (await fetchResponse(viewer, `${m.appPrefix}after-crash`)).status
+  ).toBe(503);
+  expect(await readMachineOffline(viewer)).toBe("offline");
+});
+
+test("an offlined machine returns the 503 HTML page on a later request", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "solo");
+
+  // Retire the machine via the real owner instance-closing message (the same
+  // message the pagehide listener sends). The sender is the owning client, so
+  // the SW marks it offline.
+  await page.evaluate((name) =>
+    navigator.serviceWorker.controller!.postMessage({
+      type: "instance-closing",
+      name,
+    }), m.name);
+
+  // A later named request to the now-offline machine returns the 503 HTML page
+  // (distinct in origin from an unknown name, identical as the real boundary:
+  // this machine is not running here).
+  await expect.poll(async () =>
+    (await fetchResponse(page, `${m.appPrefix}later`)).status
+  ).toBe(503);
+  const res = await fetchResponse(page, `${m.appPrefix}later`);
+  expect(res.status).toBe(503);
+  expect(res.body).toContain("<!doctype html");
+  expect(res.body).toContain(m.name);
+});
+
+test("cookie jars are isolated per machine", async ({ page }) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const one = await installBridge(page, SESSION_A, "one");
+  const two = await installBridge(page, SESSION_B, "two");
+  await setBridgeCookieValue(page, "one", "ONEVAL");
+  await setBridgeCookieValue(page, "two", "TWOVAL");
+  await fetchText(page, `${one.appPrefix}set`); // machine one sets its cookie
+  await fetchText(page, `${two.appPrefix}set`); // machine two sets its cookie
+  // A second request to each machine replays the jar it has accumulated.
+  await fetchText(page, `${one.appPrefix}replay`);
+  await fetchText(page, `${two.appPrefix}replay`);
+  const oneCookies = await page.evaluate(() =>
+    (window as any).__bridgeCookies.one.at(-1)
+  );
+  const twoCookies = await page.evaluate(() =>
+    (window as any).__bridgeCookies.two.at(-1)
+  );
+  // Each machine only ever sees its own cookie replayed.
+  expect(oneCookies).toContain("one=ONEVAL");
+  expect(oneCookies).not.toContain("two=");
+  expect(twoCookies).toContain("two=TWOVAL");
+  expect(twoCookies).not.toContain("one=");
+});
+
+test("a restarted SW restores each machine by name", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const one = await installBridge(page, SESSION_A, "one");
+  const two = await installBridge(page, SESSION_B, "two");
+
+  // Page-side need-bridge responders, one per machine, each re-answering only
+  // for its own SW-minted name — the real cross-restart handshake shape.
+  await installNamedRestoreResponder(page, [
+    { name: one.name, appPrefix: one.appPrefix, sessionId: SESSION_A, label: "one" },
+    { name: two.name, appPrefix: two.appPrefix, sessionId: SESSION_B, label: "two" },
+  ]);
+
+  // Genuinely terminate the worker. A reincarnated module has no live bridge
+  // ports, so the very next in-app fetch must drive restore-by-name.
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  expect(await fetchText(page, `${one.appPrefix}after-restart`))
+    .toBe("restored:one");
+  expect(await fetchText(page, `${two.appPrefix}after-restart`))
+    .toBe("restored:two");
+});
+
+test("a restarted SW reloads durable authority and replays each machine's jar", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "solo");
+
+  // installBridge already fetched once, so the machine's login (a Set-Cookie of
+  // solo=1 at path /) is persisted as a durable authority revision keyed by the
+  // SW-minted name. The prefixed cookie path mirrors the browser-side URL.
+  const persisted = await readBridgeAuthority(page, CACHE_A, m.name);
+  expect(persisted).toMatchObject({
+    version: 1,
+    appPrefix: m.appPrefix,
+    sessionId: SESSION_A,
+    cookies: [{ name: "solo", value: "1", path: m.appPrefix }],
+  });
+  expect(persisted!.revision).toBeGreaterThanOrEqual(2);
+
+  await installNamedRestoreResponder(page, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A, label: "solo" },
+  ]);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  // The reincarnated worker reloads the durable jar and replays it onto the
+  // freshly restored bridge — the restored tab never had to re-authenticate.
+  expect(await fetchReplayedCookie(page, `${m.appPrefix}after-restart`))
+    .toContain("solo=1");
+});
+
+test("a restarted SW rejects a bridge-restored whose authority does not match", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "solo");
+
+  // Two page-side responders re-answer for this machine's name but with a wrong
+  // session id and a wrong app prefix. Restore is by exact durable authority,
+  // not merely by name, so both must be rejected and the machine stays offline.
+  await installNamedRestoreResponder(page, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A_NEXT, label: "wrong-session" },
+    { name: m.name, appPrefix: "/a/computer/some-other-name/", sessionId: SESSION_A, label: "wrong-prefix" },
+  ]);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  expect((await fetchResponse(page, `${m.appPrefix}after-mismatch`)).status)
+    .toBe(503);
+
+  // A correct responder restores the same machine over the same durable
+  // authority the mismatched candidates could not satisfy.
+  await installNamedRestoreResponder(page, [
+    { name: m.name, appPrefix: m.appPrefix, sessionId: SESSION_A, label: "correct" },
+  ]);
+  expect(await fetchText(page, `${m.appPrefix}after-correct`))
+    .toBe("restored:correct");
+});
+
+test("restart quarantines malformed or foreign durable authority entries", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  const goodName = "able-blue-oak";
+  const foreignName = "eager-teal-fern";
+  const malformedName = "brave-gold-pine";
+
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+
+  // Seed three durable entries directly, then restart so the startup scan runs
+  // against them: malformed JSON, a valid-shaped record whose appPrefix
+  // disagrees with the name it is keyed under, and a well-formed record.
+  await seedBridgeAuthority(page, CACHE_A, malformedName, "{ this is not json");
+  await seedBridgeAuthority(page, CACHE_A, foreignName, JSON.stringify({
+    version: 1,
+    revision: 1,
+    appPrefix: "/a/computer/some-other-name/",
+    sessionId: SESSION_A,
+    cookies: [],
+  }));
+  await seedBridgeAuthority(page, CACHE_A, goodName, JSON.stringify({
+    version: 1,
+    revision: 4,
+    appPrefix: `/a/computer/${goodName}/`,
+    sessionId: SESSION_A,
+    cookies: [{ name: "seeded", value: "1", path: `/a/computer/${goodName}/` }],
+  }));
+
+  await installNamedRestoreResponder(page, [
+    { name: goodName, appPrefix: `/a/computer/${goodName}/`, sessionId: SESSION_A, label: "good" },
+    { name: foreignName, appPrefix: "/a/computer/some-other-name/", sessionId: SESSION_A, label: "foreign" },
+  ]);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  // The malformed and the name/prefix-mismatched entries never become records:
+  // their machines report unavailable and never trigger a need-bridge handshake.
+  expect((await fetchResponse(page, `/a/computer/${foreignName}/probe`)).status)
+    .toBe(503);
+  expect((await fetchResponse(page, `/a/computer/${malformedName}/probe`)).status)
+    .toBe(503);
+  expect(await needBridgeCount(page)).toBe(0);
+
+  // The well-formed entry restores and replays its seeded jar.
+  expect(await fetchReplayedCookie(page, `/a/computer/${goodName}/probe`))
+    .toContain("seeded=1");
+});
+
+test("restart rejects every over-limit or malformed persisted authority field", async ({
+  context,
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+
+  // Each invalid record is keyed under a distinct well-formed machine name so
+  // the only reason the scan can reject it is the field under test.
+  const validAuthority = (name: string) => ({
+    version: BRIDGE_AUTHORITY_VERSION,
+    revision: 1,
+    appPrefix: `/a/computer/${name}/`,
+    sessionId: SESSION_A,
+    cookies: [{ name: "ok", value: "1", path: `/a/computer/${name}/` }],
+  });
+
+  const cases: Array<{ name: string; text: string }> = [];
+  const add = (
+    name: string,
+    mutate: (authority: ReturnType<typeof validAuthority>) => unknown,
+  ) => {
+    const authority = validAuthority(name);
+    cases.push({ name, text: JSON.stringify(mutate(authority) ?? authority) });
+  };
+
+  // Total serialized bytes above the cap (valid JSON padded past the limit).
+  const oversizedName = "dev-red-oak";
+  const padded = JSON.stringify(validAuthority(oversizedName));
+  cases.push({
+    name: oversizedName,
+    text: padded +
+      " ".repeat(BRIDGE_AUTHORITY_MAX_BYTES + 1 - Buffer.byteLength(padded)),
+  });
+  add("dev-red-elm", (a) => {
+    a.cookies = Array.from(
+      { length: BRIDGE_AUTHORITY_MAX_COOKIES + 1 },
+      (_, index) => ({ name: `c${index}`, value: "1", path: a.appPrefix }),
+    );
+  });
+  add("dev-red-fir", (a) => {
+    a.cookies[0].name = "n".repeat(BRIDGE_COOKIE_NAME_MAX_BYTES + 1);
+  });
+  add("dev-red-ash", (a) => {
+    a.cookies[0].name = "bad name";
+  });
+  add("dev-red-yew", (a) => {
+    a.cookies[0].value = "x".repeat(BRIDGE_COOKIE_VALUE_MAX_BYTES + 1);
+  });
+  add("dev-red-bay", (a) => {
+    a.cookies[0].value = "bad;value";
+  });
+  add("dev-red-fig", (a) => {
+    a.cookies[0].path = `/a/${"p".repeat(BRIDGE_COOKIE_PATH_MAX_BYTES)}`;
+  });
+  add("dev-red-gum", (a) => {
+    a.cookies[0].path = "/b/outside-scope/";
+  });
+  add("dev-red-haw", (a) => {
+    a.version = 2;
+  });
+  add("dev-red-ivy", (a) => {
+    a.revision = -1;
+  });
+  add("dev-red-nut", (a) => {
+    a.revision = Number.MAX_SAFE_INTEGER;
+  });
+
+  for (const invalid of cases) {
+    await seedBridgeAuthority(page, CACHE_A, invalid.name, invalid.text);
+  }
+  // No responder should ever be needed: quarantined entries never become
+  // records, so they never broadcast need-bridge.
+  await installNamedRestoreResponder(page, []);
+  await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+
+  for (const invalid of cases) {
+    expect.soft(
+      (await fetchResponse(page, `/a/computer/${invalid.name}/probe`)).status,
+      invalid.name,
+    ).toBe(503);
+  }
+  expect(await needBridgeCount(page)).toBe(0);
+});
+
+test("the lazy VFS cache excludes bridge, static, query, navigation, sibling, and cross-origin routes", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const m = await installBridge(page, SESSION_A, "excluded");
+
+  // A real vfs-groups asset is the only route the lazy cache owns.
+  expect(await fetchText(page, "/a/vfs-groups/release-1/assets/shared.bin"))
+    .toBe("scope-a shared bytes");
+
+  // Excluded: an app/<name> bridge route (name in path, never lazy).
+  await fetchText(page, `${m.appPrefix}vfs-groups/release-1/assets/shared.bin`);
+  // Excluded: a static file outside vfs-groups.
+  await fetchText(page, "/a/static.txt");
+  // Excluded: a query string.
+  await fetchText(page, "/a/vfs-groups/release-1/assets/shared.bin?revision=1");
+  // Excluded: a sibling prefix that only shares a stem.
+  await fetchText(page, "/a/vfs-groups-sibling/release-1/assets/shared.bin");
+  // Excluded: a canonical Pages VFS object.
+  await fetchText(
+    page,
+    "/a/products/demo/sha256-" + "a".repeat(64) + "/demo-1.vfs.zst",
+  );
+  // Excluded: a navigation request under vfs-groups.
+  await page.goto(`${FIXTURE_ORIGIN}/a/vfs-groups/release-1/navigation.html`);
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  // Excluded: a cross-origin request for the same asset path.
+  await page.evaluate(async () => {
+    await fetch(
+      "http://localhost:55431/a/vfs-groups/release-1/assets/shared.bin",
+      { mode: "no-cors" },
+    ).catch(() => undefined);
+  });
+
+  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([
+    "/a/vfs-groups/release-1/assets/shared.bin",
+  ]);
+});
+
+// Subscribe a viewer page to the SW's machine-offline push for one machine,
+// storing the resolution on window.__offline so a later step can await it. The
+// listener is installed before the offline event is triggered so the push can
+// never race ahead of the subscription.
+async function subscribeMachineOffline(page: Page, name: string): Promise<void> {
+  await page.evaluate((machineName) => {
+    (window as typeof window & { __offline?: Promise<string> }).__offline =
+      new Promise<string>((resolve) => {
+        navigator.serviceWorker.addEventListener("message", (event) => {
+          const data = (event as MessageEvent).data;
+          if (data?.type === "machine-offline" && data.name === machineName) {
+            resolve("offline");
+          }
+        });
+      });
+  }, name);
+}
+
+async function readMachineOffline(page: Page): Promise<string> {
+  return page.evaluate(() =>
+    (window as typeof window & { __offline?: Promise<string> }).__offline!
+  );
+}
+
+async function fetchReplayedCookie(page: Page, pathname: string): Promise<string> {
+  return page.evaluate(async (path) => {
+    const response = await fetch(path, { cache: "no-store" });
+    return response.headers.get("x-replayed-cookie") ?? "";
+  }, pathname);
+}
+
 async function seedCaches(page: Page, names: readonly string[]): Promise<void> {
   await page.evaluate(async (cacheNamesToSeed) => {
     for (const name of cacheNamesToSeed) {
@@ -1533,17 +1010,6 @@ async function seedCaches(page: Page, names: readonly string[]): Promise<void> {
       await cache.put("seed", new Response(name));
     }
   }, names);
-}
-
-async function seedAppPrefix(
-  page: Page,
-  cacheName: string,
-  appPrefix: string,
-): Promise<void> {
-  await page.evaluate(async ({ name, prefix }) => {
-    const cache = await caches.open(name);
-    await cache.put("app-prefix", new Response(prefix));
-  }, { name: cacheName, prefix: appPrefix });
 }
 
 async function cacheNames(page: Page): Promise<string[]> {
@@ -1652,18 +1118,13 @@ async function registerScope(
 
 async function installBridge(
   page: Page,
-  appPrefix: string,
   sessionId: string,
   label: string,
-): Promise<{ reply: unknown; body: string }> {
-  return page.evaluate(async ({ prefix, session, responseLabel }) => {
+): Promise<{ reply: any; name: string; appPrefix: string; body: string }> {
+  return page.evaluate(async ({ session, responseLabel }) => {
     const controller = navigator.serviceWorker.controller;
     if (!controller) throw new Error("service worker does not control fixture");
-    const keepAlive = window as typeof window & {
-      __bridgePorts?: MessagePort[];
-      __bridgeCookies?: Record<string, string[]>;
-      __bridgeCookieValues?: Record<string, string>;
-    };
+    const keepAlive = window as any;
     keepAlive.__bridgePorts ??= [];
     keepAlive.__bridgeCookies ??= {};
     keepAlive.__bridgeCookieValues ??= {};
@@ -1671,44 +1132,34 @@ async function installBridge(
     const bridge = new MessageChannel();
     bridge.port1.onmessage = (event) => {
       if (event.data?.type !== "http-request") return;
-      keepAlive.__bridgeCookies![responseLabel].push(
-        event.data.headers?.cookie ?? "",
-      );
+      keepAlive.__bridgeCookies[responseLabel].push(event.data.headers?.cookie ?? "");
       bridge.port1.postMessage({
         type: "http-response",
         requestId: event.data.requestId,
         status: 200,
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
-          "Set-Cookie": `${responseLabel}=${
-            keepAlive.__bridgeCookieValues![responseLabel] ?? "1"
-          }; Path=/`,
+          "Set-Cookie": `${responseLabel}=${keepAlive.__bridgeCookieValues[responseLabel] ?? "1"}; Path=/`,
         },
         body: new TextEncoder().encode(`bridge:${responseLabel}`),
       });
     };
     bridge.port1.start();
     const reply = new MessageChannel();
-    const replyData = new Promise<unknown>((resolve, reject) => {
-      const timeout = window.setTimeout(
-        () => reject(new Error("timed out waiting for bridge reply")),
-        2_000,
-      );
-      reply.port1.onmessage = (event) => {
-        window.clearTimeout(timeout);
-        resolve(event.data);
-      };
+    const replyData = await new Promise<any>((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error("timed out waiting for bridge reply")), 2_000);
+      reply.port1.onmessage = (event) => { window.clearTimeout(timeout); resolve(event.data); };
       reply.port1.start();
+      keepAlive.__bridgePorts.push(bridge.port1, reply.port1);
+      controller.postMessage({ type: "init-bridge", sessionId: session }, [bridge.port2, reply.port2]);
     });
-    keepAlive.__bridgePorts.push(bridge.port1, reply.port1);
-    controller.postMessage(
-      { type: "init-bridge", appPrefix: prefix, sessionId: session },
-      [bridge.port2, reply.port2],
-    );
-    const acknowledged = await replyData;
-    const response = await fetch(`${prefix}cookie`, { cache: "no-store" });
-    return { reply: acknowledged, body: await response.text() };
-  }, { prefix: appPrefix, session: sessionId, responseLabel: label });
+    // Expose the SW-minted name so the offline test can drive the real
+    // instance-closing message the host page's pagehide listener would send.
+    keepAlive.__lastInstanceName = replyData.name;
+    const appPrefix: string = replyData.appPrefix;
+    const response = await fetch(`${appPrefix}cookie`, { cache: "no-store" });
+    return { reply: replyData, name: replyData.name, appPrefix, body: await response.text() };
+  }, { session: sessionId, responseLabel: label });
 }
 
 async function setBridgeCookieValue(
@@ -1723,124 +1174,6 @@ async function setBridgeCookieValue(
     keepAlive.__bridgeCookieValues ??= {};
     keepAlive.__bridgeCookieValues[responseLabel] = cookieValue;
   }, { responseLabel: label, cookieValue: value });
-}
-
-async function transitionAttempt(
-  page: Page,
-  appPrefix: string,
-  sessionId: string,
-  label: string,
-  timeoutMs = 500,
-): Promise<unknown | null> {
-  return page.evaluate(async ({ prefix, session, responseLabel, timeout }) => {
-    const controller = navigator.serviceWorker.controller;
-    if (!controller) throw new Error("service worker does not control fixture");
-    const keepAlive = window as typeof window & {
-      __bridgePorts?: MessagePort[];
-      __replacementBridgeRequests?: number;
-    };
-    keepAlive.__bridgePorts ??= [];
-    keepAlive.__replacementBridgeRequests ??= 0;
-    const bridge = new MessageChannel();
-    bridge.port1.onmessage = (event) => {
-      if (event.data?.type !== "http-request") return;
-      keepAlive.__replacementBridgeRequests! += 1;
-      bridge.port1.postMessage({
-        type: "http-response",
-        requestId: event.data.requestId,
-        status: 200,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-        body: new TextEncoder().encode(`replacement:${responseLabel}`),
-      });
-    };
-    bridge.port1.start();
-    const reply = new MessageChannel();
-    reply.port1.start();
-    keepAlive.__bridgePorts.push(bridge.port1, reply.port1);
-    const replyData = new Promise<unknown>((resolve) => {
-      reply.port1.onmessage = (event) => resolve(event.data);
-    });
-    controller.postMessage(
-      { type: "init-bridge", appPrefix: prefix, sessionId: session },
-      [bridge.port2, reply.port2],
-    );
-    return Promise.race([
-      replyData,
-      new Promise<null>((resolve) => window.setTimeout(() => resolve(null), timeout)),
-    ]);
-  }, {
-    prefix: appPrefix,
-    session: sessionId,
-    responseLabel: label,
-    timeout: timeoutMs,
-  });
-}
-
-async function initAttempt(
-  page: Page,
-  appPrefix: unknown,
-  sessionId: unknown,
-  label: string,
-  portCount = 2,
-): Promise<unknown> {
-  return page.evaluate(async ({ prefix, session, responseLabel, ports }) => {
-    const controller = navigator.serviceWorker.controller;
-    if (!controller) throw new Error("service worker does not control fixture");
-    const keepAlive = window as typeof window & {
-      __bridgePorts?: MessagePort[];
-      __replacementBridgeRequests?: number;
-    };
-    keepAlive.__bridgePorts ??= [];
-    keepAlive.__replacementBridgeRequests ??= 0;
-    const replacement = new MessageChannel();
-    replacement.port1.onmessage = (event) => {
-      keepAlive.__replacementBridgeRequests! += 1;
-      replacement.port1.postMessage({
-        type: "http-response",
-        requestId: event.data.requestId,
-        status: 200,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-        body: new TextEncoder().encode(`replacement:${responseLabel}`),
-      });
-    };
-    replacement.port1.start();
-    keepAlive.__bridgePorts.push(replacement.port1);
-    const message = {
-      type: "init-bridge",
-      appPrefix: prefix,
-      sessionId: session,
-    };
-    if (ports === 0) {
-      controller.postMessage(message);
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
-      return null;
-    }
-    if (ports === 1) {
-      controller.postMessage(message, [replacement.port2]);
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
-      return null;
-    }
-    const reply = new MessageChannel();
-    keepAlive.__bridgePorts.push(reply.port1);
-    const replyData = new Promise<unknown>((resolve, reject) => {
-      const timeout = window.setTimeout(
-        () => reject(new Error("timed out waiting for invalid reply")),
-        2_000,
-      );
-      reply.port1.onmessage = (event) => {
-        window.clearTimeout(timeout);
-        resolve(event.data);
-      };
-      reply.port1.start();
-    });
-    controller.postMessage(message, [replacement.port2, reply.port2]);
-    return replyData;
-  }, {
-    prefix: appPrefix,
-    session: sessionId,
-    responseLabel: label,
-    ports: portCount,
-  });
 }
 
 async function fetchText(page: Page, pathname: string): Promise<string> {
@@ -1880,487 +1213,111 @@ async function lazyCacheEntries(page: Page, cacheName: string): Promise<string[]
   }, cacheName);
 }
 
-async function readBridgeCaches(
-  page: Page,
-  names: string[],
-): Promise<Record<string, { appPrefix: string | null; entries: string[] }>> {
-  return page.evaluate(async (cacheNamesToRead) => {
-    const available = new Set(await caches.keys());
-    const out: Record<string, { appPrefix: string | null; entries: string[] }> = {};
-    for (const name of cacheNamesToRead) {
-      if (!available.has(name)) continue;
-      const cache = await caches.open(name);
-      const requests = await cache.keys();
-      const appPrefixRequest = requests.find((request) =>
-        (new URL(request.url).pathname.split("/").pop() ?? "") === "app-prefix"
-      );
-      const appPrefix = appPrefixRequest
-        ? await cache.match(appPrefixRequest)
-        : undefined;
-      out[name] = {
-        appPrefix: appPrefix ? await appPrefix.text() : null,
-        entries: requests.map((request) =>
-          new URL(request.url).pathname.split("/").pop() ?? ""
-        ).sort(),
-      };
-    }
-    return out;
-  }, names);
-}
-
-async function cacheSnapshot(
-  page: Page,
-): Promise<Record<string, Array<{ key: string; value: string }>>> {
-  return page.evaluate(async () => {
-    const out: Record<string, Array<{ key: string; value: string }>> = {};
-    for (const name of (await caches.keys()).sort()) {
-      const cache = await caches.open(name);
-      const entries = [];
-      for (const request of await cache.keys()) {
-        const response = await cache.match(request);
-        entries.push({
-          key: new URL(request.url).pathname.split("/").pop() ?? "",
-          value: response ? await response.text() : "",
-        });
-      }
-      out[name] = entries.sort((a, b) => a.key.localeCompare(b.key));
-    }
-    return out;
-  });
-}
-
-interface BridgeAuthoritySnapshot {
-  version: number;
-  revision: number;
+interface RestoreResponderMachine {
+  name: string;
   appPrefix: string;
   sessionId: string;
-  cookies: Array<{ name: string; value: string; path: string }>;
+  label: string;
 }
 
-function padAuthorityText(
-  authority: BridgeAuthoritySnapshot,
-  targetBytes: number,
-): string {
-  const text = JSON.stringify(authority);
-  const byteLength = new TextEncoder().encode(text).byteLength;
-  if (byteLength > targetBytes) {
-    throw new Error(
-      `authority is ${byteLength} bytes, above target ${targetBytes}`,
-    );
-  }
-  return text + " ".repeat(targetBytes - byteLength);
+// Install one page-side need-bridge responder per machine. Each answers only
+// for its own SW-minted name with a fresh bridge port that echoes
+// "restored:<label>", mirroring setupServiceWorkerFetchBridge's per-machine
+// listener. A responder whose name/appPrefix/sessionId is deliberately wrong
+// exercises the SW's restore-by-name rejection.
+async function installNamedRestoreResponder(
+  page: Page,
+  machines: RestoreResponderMachine[],
+): Promise<void> {
+  await page.evaluate((entries) => {
+    const keepAlive = window as typeof window & {
+      __bridgePorts?: MessagePort[];
+      __needBridgeCount?: number;
+    };
+    keepAlive.__bridgePorts ??= [];
+    keepAlive.__needBridgeCount = 0;
+    for (const machine of entries) {
+      navigator.serviceWorker.addEventListener("message", (event) => {
+        if (event.data?.type !== "need-bridge" || !event.ports[0]) return;
+        keepAlive.__needBridgeCount! += 1;
+        const fresh = new MessageChannel();
+        fresh.port1.onmessage = (bridgeEvent) => {
+          if (bridgeEvent.data?.type !== "http-request") return;
+          fresh.port1.postMessage({
+            type: "http-response",
+            requestId: bridgeEvent.data.requestId,
+            status: 200,
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8",
+              // Echo the cookie header the SW injected so a test can prove the
+              // reloaded durable jar is replayed onto the restored bridge.
+              "x-replayed-cookie": bridgeEvent.data.headers?.cookie ?? "",
+            },
+            body: new TextEncoder().encode(`restored:${machine.label}`),
+          });
+        };
+        fresh.port1.start();
+        keepAlive.__bridgePorts!.push(fresh.port1);
+        event.ports[0].postMessage(
+          {
+            type: "bridge-restored",
+            name: machine.name,
+            appPrefix: machine.appPrefix,
+            sessionId: machine.sessionId,
+          },
+          [fresh.port2],
+        );
+      });
+    }
+  }, machines);
+}
+
+async function needBridgeCount(page: Page): Promise<number> {
+  return page.evaluate(() => (
+    window as typeof window & { __needBridgeCount?: number }
+  ).__needBridgeCount ?? 0);
 }
 
 async function readBridgeAuthority(
   page: Page,
-  cacheName = CACHE_A,
-): Promise<BridgeAuthoritySnapshot | null> {
-  return page.evaluate(async ({ cacheName, authorityKey }) => {
-    const cache = await caches.open(cacheName);
-    const authorityRequest = (await cache.keys()).find((request) =>
-      (new URL(request.url).pathname.split("/").pop() ?? "") === authorityKey
-    );
-    const response = authorityRequest
-      ? await cache.match(authorityRequest)
-      : undefined;
-    return response ? JSON.parse(await response.text()) : null;
-  }, { cacheName, authorityKey: BRIDGE_AUTHORITY_KEY });
-}
-
-async function seedCookieJar(
-  page: Page,
   cacheName: string,
-  sessionId: string,
-  records: Array<{ name: string; value: string; path: string }>,
-): Promise<void> {
-  await page.evaluate(async ({ name, session, cookies }) => {
-    const cache = await caches.open(name);
-    await cache.put(
-      `cookie-jar-${session}`,
-      new Response(JSON.stringify(cookies), {
-        headers: { "Content-Type": "application/json" },
-      }),
+  name: string,
+): Promise<
+  | { version: number; revision: number; appPrefix: string; sessionId: string; cookies: Array<{ name: string; value: string; path: string }> }
+  | null
+> {
+  return page.evaluate(async ({ cache: cacheName, authorityKey, machineName }) => {
+    if (!(await caches.keys()).includes(cacheName)) return null;
+    const cache = await caches.open(cacheName);
+    const suffix = `${authorityKey}/${machineName}`;
+    const match = (await cache.keys()).find((request) =>
+      new URL(request.url).pathname.endsWith(suffix)
     );
-  }, { name: cacheName, session: sessionId, cookies: records });
+    if (!match) return null;
+    const response = await cache.match(match);
+    return response ? JSON.parse(await response.text()) : null;
+  }, { cache: cacheName, authorityKey: BRIDGE_AUTHORITY_KEY, machineName: name });
 }
 
 async function seedBridgeAuthority(
   page: Page,
   cacheName: string,
-  authority: BridgeAuthoritySnapshot,
-): Promise<void> {
-  await page.evaluate(async ({ name, key, record }) => {
-    const cache = await caches.open(name);
-    await cache.put(
-      key,
-      new Response(JSON.stringify(record), {
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-  }, { name: cacheName, key: BRIDGE_AUTHORITY_KEY, record: authority });
-}
-
-async function seedRawBridgeAuthority(
-  page: Page,
-  cacheName: string,
+  name: string,
   authorityText: string,
 ): Promise<void> {
-  await page.evaluate(async ({ name, key, text }) => {
-    const cache = await caches.open(name);
+  await page.evaluate(async ({ cache: cacheName, key, text }) => {
+    const cache = await caches.open(cacheName);
     await cache.put(
       key,
-      new Response(text, {
-        headers: { "Content-Type": "application/json" },
-      }),
+      new Response(text, { headers: { "Content-Type": "application/json" } }),
     );
-  }, { name: cacheName, key: BRIDGE_AUTHORITY_KEY, text: authorityText });
+  }, { cache: cacheName, key: `${BRIDGE_AUTHORITY_KEY}/${name}`, text: authorityText });
 }
 
-async function capturedCookies(page: Page, label: string): Promise<string[]> {
-  return page.evaluate((responseLabel) => (
-    window as typeof window & { __bridgeCookies?: Record<string, string[]> }
-  ).__bridgeCookies?.[responseLabel] ?? [], label);
-}
-
-async function replacementBridgeRequestCount(page: Page): Promise<number> {
-  return page.evaluate(() => (
-    window as typeof window & { __replacementBridgeRequests?: number }
-  ).__replacementBridgeRequests ?? 0);
-}
-
-async function injectCacheOperation(
-  context: BrowserContext,
-  operation: "open" | "match" | "put" | "delete",
-  outcome: "reject" | "block",
-  failAfter: number,
-): Promise<Worker> {
-  const workerUrl = `${FIXTURE_ORIGIN}/a/service-worker.js`;
-  const worker = context.serviceWorkers().find((candidate) =>
-    candidate.url() === workerUrl
-  );
-  if (!worker) throw new Error(`missing exact service worker ${workerUrl}`);
-  await worker.evaluate(({ cacheName, operationName, operationOutcome, after }) => {
-    const fixtureGlobal = globalThis as typeof globalThis & {
-      __cacheOperationEntered?: boolean;
-    };
-    fixtureGlobal.__cacheOperationEntered = false;
-    const originalOpen = caches.open.bind(caches);
-    let calls = 0;
-    Object.defineProperty(caches, "open", {
-      configurable: true,
-      value: async (name: string) => {
-        if (name === cacheName && operationName === "open") {
-          if (calls++ >= after) {
-            fixtureGlobal.__cacheOperationEntered = true;
-            if (operationOutcome === "block") {
-              return new Promise<Cache>(() => {});
-            }
-            throw new Error("injected CacheStorage.open failure");
-          }
-        }
-        const cache = await originalOpen(name);
-        if (name !== cacheName || operationName === "open") return cache;
-        return new Proxy(cache, {
-          get(target, property) {
-            const value = Reflect.get(target, property, target);
-            if (property === operationName && typeof value === "function") {
-              return (...args: unknown[]) => {
-                if (calls++ >= after) {
-                  fixtureGlobal.__cacheOperationEntered = true;
-                  if (operationOutcome === "block") {
-                    return new Promise<never>(() => {});
-                  }
-                  return Promise.reject(
-                    new Error(`injected Cache.${operationName} failure`),
-                  );
-                }
-                return value.apply(target, args);
-              };
-            }
-            return typeof value === "function" ? value.bind(target) : value;
-          },
-        });
-      },
-    });
-  }, {
-    cacheName: CACHE_A,
-    operationName: operation,
-    operationOutcome: outcome,
-    after: failAfter,
-  });
-  return worker;
-}
-
-async function injectRollbackFailure(context: BrowserContext): Promise<void> {
-  const workerUrl = `${FIXTURE_ORIGIN}/a/service-worker.js`;
-  const worker = context.serviceWorkers().find((candidate) =>
-    candidate.url() === workerUrl
-  );
-  if (!worker) throw new Error(`missing exact service worker ${workerUrl}`);
-  await worker.evaluate((cacheName) => {
-    const originalOpen = caches.open.bind(caches);
-    let putCalls = 0;
-    let deleteCalls = 0;
-    Object.defineProperty(caches, "open", {
-      configurable: true,
-      value: async (name: string) => {
-        const cache = await originalOpen(name);
-        if (name !== cacheName) return cache;
-        return new Proxy(cache, {
-          get(target, property) {
-            const value = Reflect.get(target, property, target);
-            if (property === "put") {
-              return (...args: unknown[]) => {
-                if (putCalls++ >= 1) {
-                  return Promise.reject(new Error("injected rollback put failure"));
-                }
-                return value.apply(target, args);
-              };
-            }
-            if (property === "delete") {
-              return (...args: unknown[]) => {
-                if (deleteCalls++ >= 1) {
-                  return Promise.reject(new Error("injected cleanup delete failure"));
-                }
-                return value.apply(target, args);
-              };
-            }
-            return typeof value === "function" ? value.bind(target) : value;
-          },
-        });
-      },
-    });
-  }, CACHE_A);
-}
-
-async function injectReleasableCacheOperation(
-  context: BrowserContext,
-  operation: "match" | "put" | "delete",
-  blockAfter: number,
-): Promise<Worker> {
-  const workerUrl = `${FIXTURE_ORIGIN}/a/service-worker.js`;
-  const worker = context.serviceWorkers().find((candidate) =>
-    candidate.url() === workerUrl
-  );
-  if (!worker) throw new Error(`missing exact service worker ${workerUrl}`);
-  await worker.evaluate(({ cacheName, operationName, after }) => {
-    const fixtureGlobal = globalThis as typeof globalThis & {
-      __cacheOperationEntered?: boolean;
-      __releaseCacheOperation?: () => void;
-    };
-    fixtureGlobal.__cacheOperationEntered = false;
-    fixtureGlobal.__releaseCacheOperation = undefined;
-    const originalOpen = caches.open.bind(caches);
-    let calls = 0;
-    let blocked = false;
-    Object.defineProperty(caches, "open", {
-      configurable: true,
-      value: async (name: string) => {
-        const cache = await originalOpen(name);
-        if (name !== cacheName) return cache;
-        return new Proxy(cache, {
-          get(target, property) {
-            const value = Reflect.get(target, property, target);
-            if (property === operationName && typeof value === "function") {
-              return (...args: unknown[]) => {
-                if (!blocked && calls++ >= after) {
-                  blocked = true;
-                  fixtureGlobal.__cacheOperationEntered = true;
-                  return new Promise((resolve, reject) => {
-                    fixtureGlobal.__releaseCacheOperation = () => {
-                      Promise.resolve(value.apply(target, args)).then(
-                        resolve,
-                        reject,
-                      );
-                    };
-                  });
-                }
-                return value.apply(target, args);
-              };
-            }
-            return typeof value === "function" ? value.bind(target) : value;
-          },
-        });
-      },
-    });
-  }, { cacheName: CACHE_A, operationName: operation, after: blockAfter });
-  return worker;
-}
-
-async function releaseCacheOperation(worker: Worker): Promise<void> {
-  await worker.evaluate(() => {
-    const fixtureGlobal = globalThis as typeof globalThis & {
-      __releaseCacheOperation?: () => void;
-    };
-    if (!fixtureGlobal.__releaseCacheOperation) {
-      throw new Error("no blocked cache operation to release");
-    }
-    fixtureGlobal.__releaseCacheOperation();
-  });
-}
-
-async function observeWorkerPortCloses(worker: Worker): Promise<void> {
-  await worker.evaluate(() => {
-    const fixtureGlobal = globalThis as typeof globalThis & {
-      __portCloseCount?: number;
-    };
-    fixtureGlobal.__portCloseCount = 0;
-    const originalClose = MessagePort.prototype.close;
-    Object.defineProperty(MessagePort.prototype, "close", {
-      configurable: true,
-      value: function (this: MessagePort) {
-        fixtureGlobal.__portCloseCount! += 1;
-        return originalClose.call(this);
-      },
-    });
-  });
-}
-
-async function workerPortCloseCount(worker: Worker): Promise<number> {
-  return worker.evaluate(() => (
-    globalThis as typeof globalThis & { __portCloseCount?: number }
-  ).__portCloseCount ?? 0);
-}
-
-async function installControlledRestoreResponder(
-  page: Page,
-  state: { appPrefix: string; sessionId: string; label: string },
-): Promise<void> {
-  await page.evaluate((restoreState) => {
-    const fixtureWindow = window as typeof window & {
-      __bridgePorts?: MessagePort[];
-      __restoreResponderPending?: boolean;
-      __releaseRestoreResponder?: () => void;
-      __staleRestoreBridgeRequests?: number;
-    };
-    fixtureWindow.__bridgePorts ??= [];
-    fixtureWindow.__restoreResponderPending = false;
-    fixtureWindow.__staleRestoreBridgeRequests = 0;
-    navigator.serviceWorker.addEventListener("message", (event) => {
-      if (event.data?.type !== "need-bridge" || !event.ports[0]) return;
-      const bridge = new MessageChannel();
-      bridge.port1.onmessage = (bridgeEvent) => {
-        if (bridgeEvent.data?.type !== "http-request") return;
-        fixtureWindow.__staleRestoreBridgeRequests! += 1;
-        bridge.port1.postMessage({
-          type: "http-response",
-          requestId: bridgeEvent.data.requestId,
-          status: 200,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-          body: new TextEncoder().encode(`bridge:${restoreState.label}`),
-        });
-      };
-      bridge.port1.start();
-      fixtureWindow.__bridgePorts!.push(bridge.port1);
-      fixtureWindow.__restoreResponderPending = true;
-      fixtureWindow.__releaseRestoreResponder = () => {
-        event.ports[0].postMessage(
-          {
-            type: "bridge-restored",
-            appPrefix: restoreState.appPrefix,
-            sessionId: restoreState.sessionId,
-          },
-          [bridge.port2],
-        );
-      };
-    });
-  }, state);
-}
-
-async function restoreResponderPending(page: Page): Promise<boolean> {
-  return page.evaluate(() => (
-    window as typeof window & { __restoreResponderPending?: boolean }
-  ).__restoreResponderPending ?? false);
-}
-
-async function releaseRestoreResponder(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const fixtureWindow = window as typeof window & {
-      __releaseRestoreResponder?: () => void;
-    };
-    if (!fixtureWindow.__releaseRestoreResponder) {
-      throw new Error("no pending restoration to release");
-    }
-    fixtureWindow.__releaseRestoreResponder();
-  });
-}
-
-async function staleRestoreBridgeRequestCount(page: Page): Promise<number> {
-  return page.evaluate(() => (
-    window as typeof window & { __staleRestoreBridgeRequests?: number }
-  ).__staleRestoreBridgeRequests ?? 0);
-}
-
-async function installRestoreResponder(
-  page: Page,
-  state: {
-    appPrefix: string;
-    sessionId: string;
-    label: string;
-    delayMs?: number;
-  },
-): Promise<void> {
-  await page.evaluate((initialState) => {
-    const fixtureWindow = window as typeof window & {
-      __bridgePorts?: MessagePort[];
-      __bridgeCookies?: Record<string, string[]>;
-      __needBridgeCount?: number;
-      __restoreState?: typeof initialState;
-    };
-    fixtureWindow.__bridgePorts ??= [];
-    fixtureWindow.__bridgeCookies ??= {};
-    fixtureWindow.__needBridgeCount = 0;
-    fixtureWindow.__restoreState = initialState;
-    navigator.serviceWorker.addEventListener("message", (event) => {
-      if (event.data?.type !== "need-bridge" || !event.ports[0]) return;
-      fixtureWindow.__needBridgeCount! += 1;
-      const current = fixtureWindow.__restoreState!;
-      fixtureWindow.__bridgeCookies![current.label] ??= [];
-      const bridge = new MessageChannel();
-      bridge.port1.onmessage = (bridgeEvent) => {
-        if (bridgeEvent.data?.type !== "http-request") return;
-        fixtureWindow.__bridgeCookies![current.label].push(
-          bridgeEvent.data.headers?.cookie ?? "",
-        );
-        bridge.port1.postMessage({
-          type: "http-response",
-          requestId: bridgeEvent.data.requestId,
-          status: 200,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-          body: new TextEncoder().encode(`bridge:${current.label}`),
-        });
-      };
-      bridge.port1.start();
-      fixtureWindow.__bridgePorts!.push(bridge.port1);
-      window.setTimeout(() => {
-        event.ports[0].postMessage(
-          {
-            type: "bridge-restored",
-            appPrefix: current.appPrefix,
-            sessionId: current.sessionId,
-          },
-          [bridge.port2],
-        );
-      }, current.delayMs ?? 0);
-    });
-  }, state);
-}
-
-async function updateRestoreResponder(
-  page: Page,
-  state: {
-    appPrefix: string;
-    sessionId: string;
-    label: string;
-    delayMs?: number;
-  },
-): Promise<void> {
-  await page.evaluate((nextState) => {
-    (window as typeof window & { __restoreState?: typeof nextState })
-      .__restoreState = nextState;
-  }, state);
-}
-
+// Genuinely terminate the running service worker via the Chromium DevTools
+// Protocol. A reincarnated worker re-evaluates its module with an empty live
+// registry, so this is the real restart the recovery path must survive — no
+// SW-side test backdoor required.
 async function stopWorker(
   context: BrowserContext,
   page: Page,

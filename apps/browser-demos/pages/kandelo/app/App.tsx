@@ -51,8 +51,8 @@ const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
 
 const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
   gallery: {
-    title: "Launch New Machine",
-    subtitle: "Choose a published Kandelo machine or local demo image to boot.",
+    title: "Launch New Computer",
+    subtitle: "Choose a published Kandelo computer or local demo image to boot.",
   },
 };
 
@@ -397,7 +397,7 @@ const AudioStatusToast: React.FC<{
       ? "This browser does not provide the required Web Audio output."
       : state === "error"
       ? "The browser audio sink could not be started."
-      : "Browser policy pauses audio until you interact with this machine."
+      : "Browser policy pauses audio until you interact with this computer."
   );
   return (
     <aside className="kdownload-toasts kpcm-audio-status" aria-label="Audio status" aria-live="polite">

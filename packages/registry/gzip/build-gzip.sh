@@ -32,7 +32,12 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading gzip $GZIP_VERSION..."
     TARBALL="gzip-${GZIP_VERSION}.tar.xz"
     URL="https://ftpmirror.gnu.org/gzip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    # ftpmirror.gnu.org picks one mirror per client and some mirrors lack
+    # this tarball entirely (observed: mirror.freedif.org 404s 1.14), so a
+    # mirror failure falls back to the canonical GNU host.
+    FALLBACK_URL="https://ftp.gnu.org/gnu/gzip/${TARBALL}"
+    curl --retry 3 --retry-delay 5 --retry-max-time 120 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL" \
+        || curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$FALLBACK_URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

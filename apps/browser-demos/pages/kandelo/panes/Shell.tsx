@@ -11,6 +11,8 @@ import "@xterm/xterm/css/xterm.css";
 
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { TerminalLinkContext } from "../../../../../web-libs/kandelo-session/src/terminal-links";
+import { registerTerminalLinks } from "../../../lib/terminal-links";
 import { requestTerminalAutoFocus } from "./terminal-focus";
 
 export interface ShellProps {
@@ -134,9 +136,37 @@ const ShellTerminalHost: React.FC<{
       attributes: true,
       attributeFilter: ["data-k-theme", "data-k-mode", "style"],
     });
-    fit.fit();
+    const links = registerTerminalLinks(term, (): TerminalLinkContext => {
+      // Pull the preview on demand rather than subscribing. This callback only
+      // runs while resolving a hovered link, and `setWebPreviewPendingRequests`
+      // fires on every HTTP request through the bridge — subscribing here would
+      // re-render the live terminal host on each one.
+      const preview = host.getWebPreview();
+      // Loopback URLs the machine prints are reachable from the page only
+      // through a running HTTP bridge, and only on the one port it forwards.
+      const machine = preview && preview.status === "running" && typeof preview.port === "number"
+        ? { url: preview.url, port: preview.port }
+        : null;
+      return { pageUrl: window.location.href, machine };
+    });
     let unsubData = () => {};
     let disposed = false;
+    // Fitting the terminal depends on the flex layout, the dock's reserved
+    // height (--kdock-height), and xterm's character measurement all being
+    // final. None of those are guaranteed on this first synchronous pass, so a
+    // single fit here can spawn the shell at the wrong winsize and leave it
+    // there — the ResizeObserver below only re-fits on a box-size change, so
+    // without this the size stays wrong until the user physically resizes the
+    // window. safeFit() is retried after layout settles (see resettle below).
+    const safeFit = () => {
+      if (disposed || !containerRef.current) return;
+      try {
+        fit.fit();
+      } catch {
+        /* xterm can throw if measured before layout; a later pass retries */
+      }
+    };
+    safeFit();
     const focusTerminal = () => {
       term.focus();
       window.requestAnimationFrame(() => {
@@ -187,11 +217,31 @@ const ShellTerminalHost: React.FC<{
         const onInput = term.onData((data) => pty.write(data));
         const onResize = term.onResize(({ cols, rows }) => pty.resize(cols, rows));
         const ro = new ResizeObserver(() => {
-          fit.fit();
+          safeFit();
         });
         ro.observe(containerRef.current!);
         setAttached(true);
         focusTerm();
+
+        // The shell was spawned with the first (possibly premature) fit. Re-fit
+        // once the browser has laid out and painted this subtree (two frames)
+        // and once web fonts have settled, then push the result to the PTY.
+        // term.onResize only fires when the dimensions actually change, so an
+        // explicit resize is needed for the case where the corrected fit equals
+        // the size the shell was spawned with yet the kernel winsize is stale.
+        // Without this the terminal only becomes correct after a manual window
+        // resize (the sole event that re-fits).
+        let rafId = 0;
+        const resettle = () => {
+          safeFit();
+          if (!disposed) pty.resize(term.cols, term.rows);
+        };
+        rafId = window.requestAnimationFrame(() => {
+          rafId = window.requestAnimationFrame(resettle);
+        });
+        void document.fonts?.ready?.then(() => {
+          if (!disposed) resettle();
+        });
 
         // store extra disposers via the unsubData closure
         const origUnsubData = unsubData;
@@ -200,6 +250,7 @@ const ShellTerminalHost: React.FC<{
           onInput.dispose();
           onResize.dispose();
           ro.disconnect();
+          if (rafId) window.cancelAnimationFrame(rafId);
         };
       } catch (err) {
         setAttachError(err instanceof Error ? err.message : String(err));
@@ -215,6 +266,7 @@ const ShellTerminalHost: React.FC<{
       }
       document.removeEventListener("pointerdown", onDocumentPointerDown, true);
       themeObserver.disconnect();
+      links.dispose();
       term.dispose();
       terminalRef.current = null;
       setAttached(false);

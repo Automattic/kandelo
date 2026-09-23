@@ -136,6 +136,10 @@ name = "libcxx"
 class = "platform"
 
 [[packages]]
+name = "libdrm"
+class = "platform"
+
+[[packages]]
 name = "libiconv"
 class = "platform"
 
@@ -280,6 +284,10 @@ name = "ruby"
 class = "user-software"
 
 [[packages]]
+name = "ruby-todo-vfs"
+class = "browser-product"
+
+[[packages]]
 name = "ruby-browser-bundle"
 class = "browser-product"
 
@@ -290,6 +298,10 @@ class = "test-support"
 [[packages]]
 name = "sdl2"
 class = "platform"
+
+[[packages]]
+name = "sdl2-demo"
+class = "user-software"
 
 [[packages]]
 name = "sdl2-mixer-playwave"
@@ -406,6 +418,11 @@ manifest = "images/vfs/products/browser-nginx-php.toml"
 id = "browser-nginx-python"
 package = "nginx-python-vfs"
 manifest = "images/vfs/products/browser-nginx-python.toml"
+
+[[products]]
+id = "browser-ruby-todo"
+package = "ruby-todo-vfs"
+manifest = "images/vfs/products/browser-ruby-todo.toml"
 
 [[products]]
 id = "browser-wordpress"

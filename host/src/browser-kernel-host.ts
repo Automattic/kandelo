@@ -24,7 +24,8 @@ import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
 } from "./networking/browser-cors-proxy";
-import type { InputSource } from "./input/input-source";
+import type { InputEvent, InputSource } from "./input/input-source";
+import { batchBySynReport } from "./input/input-batch";
 
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
@@ -1025,6 +1026,17 @@ export class BrowserKernel {
   }
 
   /**
+   * Push a whole `SYN_REPORT` frame of evdev records to the worker in one
+   * message. `attachInputSource` uses this so a pointer move (REL_X,
+   * REL_Y, SYN_REPORT) crosses the worker boundary once instead of three
+   * times. Mirrors `NodeKernelHost.injectInputEventBatch`.
+   */
+  injectInputEventBatch(records: InputEvent[]): void {
+    if (records.length === 0) return;
+    this.sendToKernel({ type: "input_event_batch_inject", records });
+  }
+
+  /**
    * Tell the kernel the current host canvas dimensions so EVIOCGABS
    * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
    * `ABS_Y.maximum = height - 1`. Call once at boot when the canvas
@@ -1053,8 +1065,8 @@ export class BrowserKernel {
     this.attachedInputSource?.stop();
     this.attachedInputSource = source;
     this.setInputCanvasDims(dims.width, dims.height);
-    source.start((ev) =>
-      this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
+    source.start(
+      batchBySynReport((records) => this.injectInputEventBatch(records)),
     );
   }
 

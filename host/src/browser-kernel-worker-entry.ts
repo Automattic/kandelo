@@ -1445,14 +1445,19 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const channelOffset = layout.channelOffset;
     const launchEnv = withBrowserMitmCaEnv(msg.env ?? defaultEnv);
 
-    kernelWorker.registerProcess(pid, memory, [channelOffset], {
-      ptrWidth,
-      argv: msg.argv,
-      env: launchEnv,
-      brkBase: layout.brkBase,
-      mmapBase: layout.mmapBase,
-      maxAddr: layout.maxAddr,
-    });
+    // Launch continuations resume on the host event loop, where an active
+    // kernel export may legitimately own the entry gate. registerProcess
+    // rejects reentrant ingress rather than deferring, so retry on a later
+    // host turn instead of turning contention into a launch failure.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(pid, memory, [channelOffset], {
+        ptrWidth,
+        argv: msg.argv,
+        env: launchEnv,
+        brkBase: layout.brkBase,
+        mmapBase: layout.mmapBase,
+        maxAddr: layout.maxAddr,
+      }));
     createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
@@ -1982,12 +1987,14 @@ async function handleVfork(
       workspaceAddress,
       PAGES_PER_THREAD * PAGE_SIZE,
     );
-    kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
-      ptrWidth,
-      maxAddr: childLayout.maxAddr,
-      mmapBase: childLayout.mmapBase,
-      borrowedAddressSpace: true,
-    });
+    // See the launch-continuation retry note on the root spawn path.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
+        ptrWidth,
+        maxAddr: childLayout.maxAddr,
+        mmapBase: childLayout.mmapBase,
+        borrowedAddressSpace: true,
+      }));
     registered = true;
     kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
@@ -2363,11 +2370,15 @@ async function handleOrdinaryFork(
       CH_TOTAL_SIZE,
     ).fill(0);
 
-    kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-      ptrWidth,
-      maxAddr: childLayout.maxAddr,
-      mmapBase: childLayout.mmapBase,
-    });
+    // See the launch-continuation retry note on the root spawn path. This
+    // fork-child registration raced dinit/php-fpm boot traffic in practice
+    // (KernelReentrantEntryError → spurious fork failure).
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+        ptrWidth,
+        maxAddr: childLayout.maxAddr,
+        mmapBase: childLayout.mmapBase,
+      }));
     registered = true;
     kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
@@ -2829,17 +2840,19 @@ async function handleExec(
         }
         return workerAdapter.createWorker(execInitData);
       });
-      kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-        preserveProcessState: true,
-        ptrWidth,
-        metadataPtrWidth: initiatingInfo.ptrWidth,
-        brkBase: newLayout.brkBase,
-        mmapBase: newLayout.mmapBase,
-        maxAddr: newLayout.maxAddr,
-        // Refresh kernel-owned argv/environment for procfs and kernel APIs.
-        argv: launchArgv,
-        env: envp,
-      });
+      // See the launch-continuation retry note on the root spawn path.
+      await retryKernelEntryResult(() =>
+        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+          preserveProcessState: true,
+          ptrWidth,
+          metadataPtrWidth: initiatingInfo.ptrWidth,
+          brkBase: newLayout.brkBase,
+          mmapBase: newLayout.mmapBase,
+          maxAddr: newLayout.maxAddr,
+          // Refresh kernel-owned argv/environment for procfs and kernel APIs.
+          argv: launchArgv,
+          env: envp,
+        }));
       replacementRegistered = true;
       bindForkHostImports(replacementWorker, replacementForkHostImports);
 
@@ -3139,12 +3152,14 @@ async function handlePosixSpawn(
   try {
     // Kernel already created the child via kernel_spawn_process. Treat every
     // subsequent host attachment as one rollback-capable transaction.
-    kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
-      ptrWidth,
-      brkBase: newLayout.brkBase,
-      mmapBase: newLayout.mmapBase,
-      maxAddr: newLayout.maxAddr,
-    });
+    // See the launch-continuation retry note on the root spawn path.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
+        ptrWidth,
+        brkBase: newLayout.brkBase,
+        mmapBase: newLayout.mmapBase,
+        maxAddr: newLayout.maxAddr,
+      }));
     registered = true;
 
     externrefGeneration = externrefProcessOwner.startGeneration(childPid);
@@ -4470,6 +4485,9 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "input_event_inject":
       kernelWorker.injectInputEvent(msg.device, msg.ev_type, msg.code, msg.value);
+      break;
+    case "input_event_batch_inject":
+      kernelWorker.injectInputEventBatch(msg.records);
       break;
     case "set_input_canvas_dims":
       kernelWorker.setInputCanvasDims(msg.width, msg.height);

@@ -10,8 +10,8 @@ import type { MainToKernelMessage } from "../src/node-kernel-protocol.js";
  *
  *   1. `setInputCanvasDims` runs exactly once with the requested dims.
  *   2. `source.start(dispatch)` runs exactly once.
- *   3. The dispatch handed to `start` funnels each emitted record
- *      through `injectInputEvent` (→ `input_event_inject` worker msg).
+ *   3. The dispatch handed to `start` groups each SYN_REPORT frame and
+ *      forwards it as one `input_event_batch_inject` worker msg.
  *
  * We bypass `init()` (which spawns a worker_thread + waits for ready
  * over a worker channel) and stub `sendToWorker` directly. The
@@ -19,7 +19,7 @@ import type { MainToKernelMessage } from "../src/node-kernel-protocol.js";
  * is safe to construct.
  */
 describe("NodeKernelHost.attachInputSource", () => {
-  it("sets canvas dims, starts the source, and routes dispatch to injectInputEvent", () => {
+  it("sets canvas dims, starts the source, and batches each SYN_REPORT frame", () => {
     const host = new NodeKernelHost();
     const sent: MainToKernelMessage[] = [];
     (host as unknown as { sendToWorker: (m: MainToKernelMessage) => void })
@@ -41,27 +41,24 @@ describe("NodeKernelHost.attachInputSource", () => {
     const dispatch = startSpy.mock.calls[0]?.[0];
     expect(typeof dispatch).toBe("function");
 
-    // 3. The dispatch routes each record through input_event_inject.
-    dispatch!({ device: 0, ev_type: 0x01, code: 30, value: 1 });
-    dispatch!({ device: 1, ev_type: 0x02, code: 0x00, value: -5 });
+    // 3. A pointer frame (REL_X, REL_Y, SYN_REPORT) crosses as one batch.
+    const relX = { device: 1 as const, ev_type: 0x02, code: 0x00, value: 5 };
+    const relY = { device: 1 as const, ev_type: 0x02, code: 0x01, value: -3 };
+    const syn = { device: 1 as const, ev_type: 0x00, code: 0x00, value: 0 };
+    dispatch!(relX);
+    dispatch!(relY);
+    // Nothing crosses until the frame closes.
+    expect(sent.filter((m) => m.type === "input_event_batch_inject")).toEqual(
+      [],
+    );
+    dispatch!(syn);
 
-    const injects = sent.filter((m) => m.type === "input_event_inject");
-    expect(injects).toEqual([
-      {
-        type: "input_event_inject",
-        device: 0,
-        ev_type: 0x01,
-        code: 30,
-        value: 1,
-      },
-      {
-        type: "input_event_inject",
-        device: 1,
-        ev_type: 0x02,
-        code: 0x00,
-        value: -5,
-      },
+    const batches = sent.filter((m) => m.type === "input_event_batch_inject");
+    expect(batches).toEqual([
+      { type: "input_event_batch_inject", records: [relX, relY, syn] },
     ]);
+    // The per-record channel is unused by the batched path.
+    expect(sent.filter((m) => m.type === "input_event_inject")).toEqual([]);
   });
 
   it("setInputCanvasDims posts the worker message standalone", () => {
@@ -95,6 +92,24 @@ describe("NodeKernelHost.attachInputSource", () => {
         code: 1,
         value: 0,
       },
+    ]);
+  });
+
+  it("injectInputEventBatch posts one message and drops an empty batch", () => {
+    const host = new NodeKernelHost();
+    const sent: MainToKernelMessage[] = [];
+    (host as unknown as { sendToWorker: (m: MainToKernelMessage) => void })
+      .sendToWorker = (m) => sent.push(m);
+
+    host.injectInputEventBatch([]); // empty → no message
+    const records = [
+      { device: 1 as const, ev_type: 0x02, code: 0x00, value: 2 },
+      { device: 1 as const, ev_type: 0x00, code: 0x00, value: 0 },
+    ];
+    host.injectInputEventBatch(records);
+
+    expect(sent).toEqual([
+      { type: "input_event_batch_inject", records },
     ]);
   });
 });

@@ -1,0 +1,52 @@
+schema = 1
+id = "browser-ruby-todo"
+architecture = "wasm32"
+output = "ruby-todo-vfs.vfs.zst"
+builder = "images/vfs/scripts/build-ruby-todo-vfs-image.sh"
+
+# A dedicated Ruby server image, assembled on an empty filesystem (like the
+# redis/mariadb server demos) so Ruby is a resident binary rather than the shell
+# base's on-demand lazy /usr archive.
+
+[[software.package]]
+name = "ruby"
+outputs = ["ruby", "ruby-runtime"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+# Single-process server: boot the resident Ruby directly as init (pid 1). No
+# dinit is needed for one long-running process, and it keeps the browser's
+# kernel-owned boot from depending on dinit service discovery.
+[boot]
+argv = ["/usr/bin/ruby", "/var/lib/todo/server.rb"]
+cwd = "/var/lib/todo"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+TODO_DB = "/tmp/todo.sqlite3"
+USER = "root"
+
+[evidence.node]
+test = "ruby-todo-vfs-node-startup"
+
+[evidence.browser]
+test = "ruby-todo-vfs-browser-startup"

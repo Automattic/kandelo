@@ -29,6 +29,13 @@ pub fn push_event(
     if device > 1 {
         return 0;
     }
+    // Update the device-global keystate first — before the per-OFD ring
+    // fan-out — so a key/button transition is recorded even when a ring
+    // is full and drops a record. That is what lets a client recover the
+    // true key state via EVIOCGKEY after a SYN_DROPPED.
+    if ev_type == wasm_posix_shared::input::EV_KEY {
+        crate::input::note_key_event(device, code, value);
+    }
     let ev = WpkInputEvent {
         tv_sec,
         tv_usec,
@@ -277,5 +284,31 @@ mod tests {
         push_event(0, EV_KEY, KEY_A, 1, 0, 0);
         push_event(0, EV_SYN, SYN_REPORT, 0, 0, 0);
         assert_eq!(ring_records(proc, ofd_idx), 2);
+    }
+
+    #[test]
+    fn keystate_records_key_up_even_when_ring_overflows() {
+        // #1(B): keystate is updated before the per-OFD ring op, so a key
+        // transition is reflected in EVIOCGKEY even when the ring is
+        // saturated — the recovery a client performs after SYN_DROPPED.
+        crate::input::reset_key_state();
+        let proc = install_process(7050);
+        let ofd_idx = install_input_ofd(proc, 0);
+        push_event(0, EV_KEY, KEY_A, 1, 0, 0);
+        for _ in 0..INPUT_RING_MAX_RECORDS {
+            push_event(0, EV_KEY, KEY_A, 2, 0, 0);
+        }
+        push_event(0, EV_KEY, KEY_A, 0, 0, 0);
+        assert_eq!(ring_records(proc, ofd_idx), INPUT_RING_MAX_RECORDS);
+        assert!(ring_dropped(proc, ofd_idx), "ring must have overflowed");
+        let mut buf = [0u8; 64];
+        crate::input::copy_key_state(0, &mut buf);
+        let a_byte = (KEY_A >> 3) as usize;
+        assert_eq!(
+            buf[a_byte] & (1u8 << (KEY_A & 7)),
+            0,
+            "keystate must record the key-up regardless of ring overflow",
+        );
+        crate::input::reset_key_state();
     }
 }

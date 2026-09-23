@@ -44,7 +44,9 @@ const nginxScript = `curl -i http://127.0.0.1:8080/ | head -40
 echo "--- nginx processes ---"
 lsof | grep nginx | head -40 || true`;
 
-const nginxPhpScript = `curl -i http://127.0.0.1:8080/ | head -60
+const nginxPhpScript = `curl -s http://127.0.0.1:8080/info.php | sed -n '1,40p'
+echo "--- SQLite database (seeded by PHP-FPM on first load) ---"
+ls -l /var/www/data && head -c 16 /var/www/data/demo.db; echo
 echo "--- service processes ---"
 lsof | grep -E 'nginx|php-fpm' | head -60 || true`;
 
@@ -209,10 +211,11 @@ export function nginxGuide(): DemoGuideConfig {
 export function nginxPhpGuide(): DemoGuideConfig {
   return scriptGuide(
     "nginx + PHP demo",
-    "Run service checks and PHP commands against the live FastCGI stack.",
+    "The web preview is Adminer, auto-connected to a SQLite database that PHP-FPM seeds on first load. These actions inspect the same live FastCGI stack from a shell.",
     [
       actionGroup("Service", [
-        action("curl-php", "Fetch PHP", "Fetch the PHP-backed page through nginx.", "terminal.run", "curl -i http://127.0.0.1:8080/ | head -60"),
+        action("curl-info", "Status page", "Fetch the PHP-FPM status page at /info.php.", "terminal.run", "curl -s http://127.0.0.1:8080/info.php | sed -n '1,40p'"),
+        action("show-db", "SQLite file", "Show the demo database PHP-FPM created (SQLite header included).", "terminal.run", "ls -l /var/www/data && echo '--- header ---' && head -c 16 /var/www/data/demo.db; echo"),
         action("php-version", "PHP", "Print the PHP-FPM version.", "terminal.run", "/usr/sbin/php-fpm -v"),
         action("php-procs", "Workers", "Show nginx and PHP-FPM processes.", "terminal.run", "lsof | grep -E 'nginx|php-fpm' | head -60 || true"),
       ]),

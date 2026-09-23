@@ -207,7 +207,41 @@ pipe pair.
 ### Terminal
 - PTY support with full line discipline
 - Interactive stdin via `appendStdinData` for incremental input
-- xterm.js integration via `PtyTerminal`
+- xterm.js integration. The live Shell pane
+  (`apps/browser-demos/pages/kandelo/panes/Shell.tsx`) builds its own
+  `Terminal`; `apps/browser-demos/lib/pty-terminal.ts` provides a standalone
+  `PtyTerminal` for pages that drive a `BrowserKernel` directly.
+
+#### Clickable links
+
+URLs in terminal output are clickable and always open in a new tab. Both plain
+text URLs and OSC 8 hyperlinks go through one policy, decided by
+`classifyTerminalLink` in `web-libs/kandelo-session/src/terminal-links.ts` and
+wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
+
+- **Third-party destinations** open with `rel="noopener noreferrer"`. A Kandelo
+  page URL can carry machine state — a `#k1=` boot descriptor, a share link —
+  so the `Referer` header is withheld from anything that is not this machine.
+- **Same-origin destinations**, including the machine's own web surface, open
+  with `rel="noopener"` and do send a referrer.
+- **Loopback URLs an in-machine program printed** (`localhost`, `127.0.0.0/8`,
+  `0.0.0.0`, `[::1]`, `[::]`) name a port in the *machine's* network namespace,
+  not on the user's computer. The service-worker HTTP bridge forwards exactly
+  one machine port to the app prefix, so such a URL is rewritten onto that
+  prefix — `http://localhost:8080/wp-admin/` becomes
+  `<origin>/computer/<name>/wp-admin/` —
+  and only when its port matches the bridged one.
+- **Loopback URLs on any other port, or with no bridge running, are not
+  linkified at all.** Nothing forwards them, and a click that silently landed
+  on the user's own machine would be worse than plain text.
+- Only `http:` and `https:` are linkified. `javascript:`, `data:` and `file:`
+  URLs a program writes are never clickable.
+- An **OSC 8 hyperlink** lets a program choose the visible text and the
+  destination independently, so the text can misrepresent where the link goes.
+  Following one to a third party keeps xterm.js's confirmation prompt, which
+  names the real destination; only the referrer behavior changes. (xterm's
+  built-in handler navigates with `window.open` + `location.href`, which does
+  send the `Referer`.)
 
 ### Framebuffer (`/dev/fb0`)
 - 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
@@ -321,7 +355,8 @@ Located in `apps/browser-demos/pages/`:
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | dash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
-| evdev | evdev_demo | dinit | Reads `/dev/input/event{0,1}` and prints each record. A `BrowserInputSource` translates DOM key and pointer events into `EV_KEY`/`EV_REL`/`EV_ABS` and pushes them through `kernel_input_event`. The binary comes from the `evdev-demo` package and is baked into the image before boot; the input source is attached first, because the binary polls as soon as it runs. |
+| sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package and is baked into the image with its shader presets before boot. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
+| evdev | evdev_demo | dinit | Reads `/dev/input/event{0,1}` and prints each record. A `BrowserInputSource` translates DOM key and pointer events into `EV_KEY`/`EV_REL` and pushes them through `kernel_input_event`. The binary comes from the `evdev-demo` package and is baked into the image before boot; the input source is attached first, because the binary polls as soon as it runs. |
 | espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
@@ -428,6 +463,75 @@ known boundary: the worker may already have committed irreversible
 CacheStorage authority, so a client-only timeout could reject while leaving a
 discarded bridge authoritative. Closing this gap requires a coordinated
 transaction, cancellation acknowledgement, and restart reconciliation.
+
+### Multiple machines under one service worker scope
+
+A single service-worker scope can host several live Kandelo machines at
+once, one per booted browser tab. On `init-bridge` the worker mints a
+three-word, human-readable name (`adjective-color-noun`, e.g.
+`brisk-amber-otter`, drawn from three embedded word lists of 128+ entries
+each) and gives that machine its own stable, shareable URL space at
+`/<scope>/app/<name>/`. The worker keeps one in-memory `InstanceRecord` per
+name in a registry (name -> record), so two tabs under the same scope route
+independently and never clobber each other's bridge, cookies, or lifecycle
+state.
+
+A request is attributed to a machine one of two ways. A path that already
+contains `/app/<name>/` resolves directly to that machine's record; an
+unknown or malformed name never falls back to another machine, it is a real
+"not found" (see the 503 page below). A root-relative subresource request
+with no name in its path — the common case for a page's own same-origin
+asset requests — is attributed by the requesting client's id: the first time
+the worker resolves a named request for a given client, it remembers that
+client is "viewing" that machine, and later nameless requests from the same
+tab or iframe keep routing to it. That same client-id bookkeeping is what
+makes cross-tab viewing work: opening a machine's `/<scope>/app/<name>/` link
+in a second tab reaches the same running machine and relays through the
+bridge on the tab that owns it, rather than starting a second machine, because
+the name in the URL always takes priority over any per-client attribution.
+
+Each machine has its own cookie jar, keyed by its SW-minted name, so session
+cookies for one machine (WordPress admin cookies, for example) are never
+visible to another machine's requests even though both live under the same
+scope's origin.
+
+Each machine's bridge authority (its live `MessagePort`, session id, and
+cookie jar) is also persisted to Cache Storage under a per-name key as it is
+established, independent of the in-memory registry. If the browser
+terminates and restarts the service worker while a machine's host tab is
+still open, the worker has lost every live `MessagePort` but still has each
+machine's durable authority record. On the next request for that machine it
+broadcasts `need-bridge` to window clients and accepts only a
+`bridge-restored` reply whose name, app prefix, and session id match that
+exact record, re-establishing the bridge and replaying the persisted cookie
+jar. This restart is transient: while the worker waits for the owning tab to
+respond, the machine is "reconnecting", not offline, and it recovers without
+losing session state once the tab answers.
+
+A machine goes terminally offline only when its owning tab actually closes
+(a `pagehide`-driven `instance-closing` message, or — for a crashed tab that
+never sends one — the worker noticing on a later request that the owning
+window client is gone). There is no migration of a machine to a different
+host tab: once its host tab is gone, that machine is done, and its durable
+authority and cookie jar are dropped. Starting the demo again mints a new
+machine under a new name.
+
+When a machine goes offline or starts reconnecting, the worker pushes a
+`machine-offline` or `machine-reconnecting` message to every tab currently
+viewing it (any client whose viewing map points at that machine, not just the
+host tab). Demo pages that render a web preview of the machine map that push
+to the preview's `offline` or `reconnecting` status via
+`webPreviewForMachineChromeMessage()`
+(`web-libs/kandelo-session/src/machine-chrome-message.ts`); the pane keeps
+its existing label and URL and only its status and message change, so a
+viewer sees the same preview pane report itself unavailable or reconnecting
+rather than disappearing. A request that reaches the worker for a machine
+that is offline, or whose name was never minted, gets one 503 HTML page
+naming the machine — 503 rather than 404, because the name is a valid route,
+the machine behind it is just not running here. This is the raw-request
+fallback for any request that has no demo chrome to render a status in, such
+as loading `/<scope>/app/<name>/` directly with no page-side listener
+attached.
 
 ### Blob-URL iframes (service-worker boundary)
 
@@ -963,6 +1067,11 @@ served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
 at `/candidate-b/`. A completed build is not freely relocatable, and
 `base: "./"` is not a supported substitute for choosing its public path.
 
+`./run.sh build-browser [--base /prefix/] [--out DIR]` performs every step
+below for one prefix (default `/`, output `apps/browser-demos/dist`) and
+fails if the output lacks `index.html`, `service-worker.js`, or the VFS
+group, or contains the private product map.
+
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
 way to build the seven active VFS products. Produce
@@ -985,8 +1094,8 @@ VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
 ```
 
 Vite authenticates and copies the complete group beneath the owning output as
-`vfs-groups/release-1/`: manifest, seven unchanged images, and all 80 lazy
-assets. The private map is not published. Changing the public group path
+`vfs-groups/release-1/`: manifest, seven unchanged images, and every lazy
+asset those images reference. The private map is not published. Changing the public group path
 requires regenerating the complete manifest/images/assets handoff, updating
 the private map to its new manifest path, and rebuilding the distribution.
 Never move a group within an already completed build. Its complete group must
@@ -1002,6 +1111,11 @@ and lazy VFS cache are separately namespaced by registration scope. Restarting
 one worker restores only that prefix's durable state. The Kandelo theme is the
 intentional origin-wide exception because it is ordinary `localStorage` UI
 preference state, not machine, bridge, cookie, retry, or VFS state.
+Within one scope, that bridge authority and cookie jar are further split per
+machine by its SW-minted name — see [Multiple machines under one service
+worker scope](#multiple-machines-under-one-service-worker-scope) — so
+restarting one worker restores every machine that scope was hosting, each
+from its own persisted record.
 
 The production coexistence scenario has been measured in Chromium with `/a/`
 and `/candidate-b/`: both shells booted, Vim materialized from each prefix's

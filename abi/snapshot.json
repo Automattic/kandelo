@@ -1804,6 +1804,33 @@
       "maxCallerSize": null,
       "nrFirst": 64,
       "nrLast": 127
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 24,
+      "nrLast": 24
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 25,
+      "nrLast": 25
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 27,
+      "nrLast": 27
     }
   ],
   "kernel_exports": [

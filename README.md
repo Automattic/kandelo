@@ -275,9 +275,21 @@ unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
-Production output is bound to the absolute prefix selected at build time. Once
-the SourceOnly projection above exists, produce its authenticated VFS group and
-build separate distributions for `/a/` and `/candidate-b/`:
+To build the deployable static site, run:
+
+```bash
+./run.sh build-browser                      # site root, e.g. https://kandelo.dev/
+./run.sh build-browser --base /kandelo/ --out build/kandelo   # under a prefix
+```
+
+It runs the local build, produces the authenticated VFS asset group, runs the
+production Vite build, and checks the result. Upload the contents of the
+output directory (default `apps/browser-demos/dist/`) so it is served at
+exactly the chosen base.
+
+Production output is bound to the absolute prefix selected at build time. The
+equivalent manual steps, here building separate distributions for `/a/` and
+`/candidate-b/`, are:
 
 ```bash
 scripts/dev-shell.sh bash -lc '

@@ -47,7 +47,8 @@ import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
-import type { InputSource } from "./input/input-source";
+import type { InputEvent, InputSource } from "./input/input-source";
+import { batchBySynReport } from "./input/input-batch";
 
 export type { HttpRequest, HttpResponse };
 
@@ -684,6 +685,16 @@ export class NodeKernelHost {
   }
 
   /**
+   * Push a whole `SYN_REPORT` frame of evdev records to the worker in one
+   * message, so the worker runs a single kernel entry and wake scan for
+   * the frame. Mirrors `BrowserKernel.injectInputEventBatch`.
+   */
+  injectInputEventBatch(records: InputEvent[]): void {
+    if (records.length === 0) return;
+    this.sendToWorker({ type: "input_event_batch_inject", records });
+  }
+
+  /**
    * Tell the kernel the current host canvas dimensions so EVIOCGABS
    * on `/dev/input/event1` reports the right `ABS_X.maximum` /
    * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
@@ -716,8 +727,8 @@ export class NodeKernelHost {
     this.attachedInputSource?.stop();
     this.attachedInputSource = source;
     this.setInputCanvasDims(dims.width, dims.height);
-    source.start((ev) =>
-      this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
+    source.start(
+      batchBySynReport((records) => this.injectInputEventBatch(records)),
     );
   }
 

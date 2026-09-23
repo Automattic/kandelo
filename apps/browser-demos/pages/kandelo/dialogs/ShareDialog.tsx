@@ -109,7 +109,12 @@ export const SharePanel: React.FC<SharePanelProps> = ({
               bytes: new TextEncoder().encode(text),
               compression: "gzip",
             })],
-            parameters: { runScript: "script" },
+            // Record the shell that should run the script so the opener's
+            // machine executes it directly (`<shell> script`) with no visible
+            // `command -v bash` probe. Every Kandelo browser image provides
+            // bash as its default shell, and the opener boots the same image
+            // this link carries, so the choice is a property of the link.
+            parameters: { runScript: "script", runScriptShell: "bash" },
           },
         };
         const { fragment } = await encodeBootDescriptor(desc);

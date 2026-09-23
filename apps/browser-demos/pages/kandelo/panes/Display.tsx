@@ -187,7 +187,21 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
           }}
         />
       ) : (
-        <div className={`kdisplay-status${preview.status === "error" ? " is-error" : ""}`} role="status">
+        <div
+          className={`kdisplay-status${
+            preview.status === "error" || preview.status === "offline"
+              ? " is-error"
+              : ""
+          }${preview.status === "reconnecting" ? " is-reconnecting" : ""}`}
+          role="status"
+          data-testid={
+            preview.status === "offline"
+              ? "web-preview-offline"
+              : preview.status === "reconnecting"
+                ? "web-preview-reconnecting"
+                : undefined
+          }
+        >
           {preview.message ?? "Starting service"}
         </div>
       )}

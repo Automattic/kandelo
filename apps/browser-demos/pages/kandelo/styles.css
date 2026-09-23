@@ -3787,9 +3787,6 @@
   color: var(--k-text-faint);
 }
 .kshare-url {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   padding: 10px 12px;
   background: var(--k-surface-sunk);
   border: 1px solid var(--k-border);
@@ -3798,7 +3795,13 @@
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--k-text);
-  word-break: break-all;
+  /* The full URL can be arbitrarily long (a #k1= script fragment runs to
+     kilobytes), so keep the field a single line and truncate with an ellipsis
+     rather than growing in height. The complete URL is still copied via the
+     Copy button / data-share-url, so truncation is purely visual. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   user-select: all;
 }
 .kshare-tier {

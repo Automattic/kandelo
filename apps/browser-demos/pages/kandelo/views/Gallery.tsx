@@ -6,7 +6,7 @@ import * as React from "react";
 import { useGalleryItems, useKernelHost, useStatus } from "../kernel-host/react";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
 import { galleryItemUrl, vfsImageUrlFromDescriptor } from "../url-state";
-import { buildShareUrl, encodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import { encodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   GalleryItem,
   BootDescriptor,
@@ -105,7 +105,7 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = f
         <div className="kgal-empty">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="kgal-empty">
-          {q ? `No machines match "${q}".` : "Nothing in the gallery yet."}
+          {q ? `No computers match "${q}".` : "Nothing in the gallery yet."}
         </div>
       ) : (
         <div className="kgal-table-shell">
@@ -270,15 +270,25 @@ async function shareUrlForGalleryItem(
   item: GalleryItem,
   currentDescriptor: BootDescriptor,
 ): Promise<string> {
-  if (item.vfsImageUrl) return galleryItemUrl(item);
+  // Copy must yield exactly the URL Launch navigates to, so resolve the
+  // item's VFS image the same way onLaunchGalleryItem does: prefer the eager
+  // vfsImageUrl, then fall back to the lazy resolver (optional-demo /
+  // optional-binary images). galleryItemUrl() builds the working
+  // ?demo=&vfs= link on this origin.
+  let vfsImageUrl = item.vfsImageUrl;
+  if (!vfsImageUrl && item.resolveVfsImageUrl) {
+    vfsImageUrl = await item.resolveVfsImageUrl();
+  }
+  if (vfsImageUrl) return galleryItemUrl({ ...item, vfsImageUrl });
 
+  // No VFS image URL: share the descriptor inline as a #k1= boot link on THIS
+  // origin. buildShareUrl()'s /c/… path modes have no route in this app (see
+  // ShareDialog), so a same-origin fragment link is the one the app can boot.
   const descriptor = descriptorFromGalleryItem(item, currentDescriptor);
-  const encoded = await encodeBootDescriptor(descriptor);
-  return buildShareUrl(descriptor, {
-    mode: "inline",
-    fragment: encoded.fragment,
-    presetId: item.id,
-  });
+  const { fragment } = await encodeBootDescriptor(descriptor);
+  const url = new URL(window.location.href);
+  url.hash = fragment;
+  return url.href;
 }
 
 async function writeClipboardText(text: string): Promise<void> {
