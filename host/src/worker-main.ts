@@ -35,6 +35,7 @@ import {
   readWasmFunctionArity,
   readWasmImportDescriptors,
   WASM_PAGE_SIZE,
+  WPK_FORK_EXPORTS,
 } from "./constants";
 import {
   ABI_SYSCALLS,
@@ -61,7 +62,6 @@ import {
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
   WPK_FORK_EXCEPTION_CODEC_SECTION,
   WPK_FORK_GC_CODEC_SECTION,
-  WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
   ABI_VERSION,
@@ -306,12 +306,6 @@ const STARTUP_ENOMEM = 12;
 const STARTUP_EFAULT = 14;
 const STARTUP_EINVAL = 22;
 const STARTUP_ERANGE = 34;
-// Errno::EOPNOTSUPP (crates/shared/src/lib.rs; POSIX ENOTSUP shares this value).
-// Returned to a guest fork() that carries a reference kind the platform cannot
-// faithfully reconstruct in a fresh child (see the capture-side record-stubs in
-// fork-activation-registry.ts). No host-generated numeric errno constant exists
-// for this seam, so it is defined symbolically here.
-const FORK_REFERENCE_EOPNOTSUPP = 95;
 
 function processForkMode(value: number): ProcessForkMode | null {
   if (value === PROCESS_FORK_MODE_FORK) return PROCESS_FORK_MODE_FORK;
@@ -743,10 +737,7 @@ export interface DlopenSupport {
 }
 
 interface ProcessDylinkActivationOwnerOptions {
-  readonly memory: WebAssembly.Memory;
   readonly ptrWidth: 4 | 8;
-  readonly channelOffset: number;
-  readonly forkUnwindTag: WebAssembly.Tag | undefined;
   readonly resumeTable: ForkResumeTable;
   readonly importedStateCapture?: ForkImportIdentity;
   /** The host's record of live activations; see `fork-activations.ts`. */
@@ -2821,7 +2812,6 @@ const DLOPEN_LOCK_WRITER = -1;
 const DLOPEN_LOCK_MAX_READERS = 0x7fff_ffff;
 const DLOPEN_OWNER_IDLE = 0;
 const RTLD_GLOBAL = 0x100;
-const WPK_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name);
 
 /**
  * The cross-worker table mutation protocol a guest's instrumented `table.set`
@@ -2888,7 +2878,6 @@ function createForkPeerTableCheckpoint(
   activations: () => ForkActivations,
   channelBase: number,
   pid: number,
-  label: string,
 ): ForkPeerTableCheckpoint {
   return {
     capture: () => backend().capturePeerTables(channelBase),
@@ -3440,29 +3429,13 @@ export async function centralizedWorkerMain(
       // This does NOT generalise to the dlopen side-activation path, which
       // re-checks the descriptor itself because the artifact policy is never
       // asked about a side module. See census section 103.
-      // Phase 6 D5: eagerly instantiate the co-resident `fork-module` once, at
-      // process init, behind `initData.forkModuleEnabled`. It is placed into a
-      // host-reserved region of the shared memory (via the same channel
-      // `continuationMmap` the fork arena uses), so its static/BSS/stack never
-      // collide with live guest data. Assert exports loudly here, never mid-fork.
-      // For a QUALIFYING fork (see the predicate below) step 4b/5 then flips the
-      // guest's five frame/resume imports to this instance and routes the
-      // coordinator through it. Flag-off is byte-identical: this whole branch is
-      // skipped, no region is reserved, and no import is flipped.
+      // The co-resident fork module, instantiated once at process init into a
+      // host-reserved region of shared memory (placed through
+      // `continuationMmap`, so its static data and stack never collide with
+      // guest data). Its exports are asserted here, never mid-fork.
       let forkModuleInstance: ForkModuleInstance | null = null;
-      // The process worker's single Wasm-GC transit table (STORE #2). It is the
-      // SAME object the guest publishes struct/array/i31 identities into (bound to
-      // every activation's `__wpk_fork_ref_gc_transit` import via the registry
-      // below) AND the object the co-resident fork-module's injected
-      // `fm_drive_execute` reads back after each ALLOC step, so the drive's
-      // post-allocate integrity check sees what the guest published. On flag-on
-      // this WRAPS the fork-module's own exported table (assigned below, once the
-      // module exists) so all three parties — guest import, module export, and
-      // this host seam — share one object; on flag-off (no fork-module) it mints
-      // its own table, exactly as before.
       // Phase 6 D6.2: the real engine-floor `wpk_fork_host.*` seam backing (the
-      // externref side table + broker token materialization). Null when the
-      // fork-module is not instantiated (flag-off / borrowed child).
+      // externref side table + broker token materialization).
       let forkModuleHostCapabilities: ForkModuleHostCapabilities | null = null;
       // Phase 6 D5 step 4b/5: when the fork qualifies, this backend drives the
       // continuation through the co-resident module and the coordinator takes
@@ -3545,7 +3518,6 @@ export async function centralizedWorkerMain(
           { type: "fork_aborted", pid, errno, reason } satisfies WorkerToHostMessage,
         );
       };
-      let useForkModule = false;
       // Phase 6 item 4: a borrowed (vfork) child instantiates its OWN fork-module
       // at a distinct `__memory_base` by channel-mmapping a fresh region on
       // demand. Captured here so the child releases it (channel-munmap) the moment
@@ -3560,7 +3532,6 @@ export async function centralizedWorkerMain(
       // for the parent (its guest was instantiated at parent init, before any
       // fork transaction existed) and for any fork with a non-funcref reference,
       // so those keep the byte-identical JS reference path.
-      let moduleReferenceKindsSupported = false;
       // The child worker's externref token cache (broker handle -> canonical
       // worker-local token). Created BEFORE the fork-module so the D6.2
       // engine-floor seam can close over it; also owned by the JS reference path
@@ -3709,34 +3680,12 @@ export async function centralizedWorkerMain(
           };
         }
 
-        // Phase 3 (rust-first fork point-of-no-return): the co-resident module
-        // is the UNCONDITIONAL reconstructor + capturer, so it backs EVERY fork
-        // on this worker path. The three former `useForkModule=false` fallbacks
-        // that silently dropped to the byte-identical JS continuation twin are
-        // now closed; the only reason a fork does not go through the module is a
-        // genuine impossibility, which FAILS LOUD (never silent JS):
-        //  - Case 1 (pointer width): the CORRECT-width module is instantiated on
-        //    demand per guest (`forkModuleInitFields(ptrWidth)` in the kernel
-        //    worker entries selects `fork_module32` vs `fork_module64`), and a
-        //    genuine width mismatch already threw above. No fallback remains.
-        //  - Case 2 (resume catalog > cap): raised to hold every real guest's
-        //    catalog (php-fpm/node were the only programs past the old 16384
-        //    cap). The cap is a module-BSS structure, enforced loudly by the
-        //    backend constructor below; a catalog past the (raised) cap is a
-        //    fail-loud module-capacity boundary, not a JS fallback.
-        //  - Case 3 (fork-from-thread child): its module replay path needs the
-        //    guest's `wpk_fork_resume_thread` export, which fork-instrument emits
-        //    for any guest exporting `__indirect_function_table` — i.e. every
-        //    pthread-capable (hence fork-from-thread-capable) guest. A thread
-        //    child missing it is a stale / mis-instrumented artifact; fail loud
-        //    so it is rebuilt through the current fork-instrument path.
-        // Single-activation admission is UNCHANGED (Phase 6 D7a.1a): a dlopen
-        // fork's side activations seed their OWN resume catalogs through the
-        // module, and multi-activation REFERENCES still take the JS reference
-        // path via `moduleReferenceKindsSupported` (gated below). Single-thread
-        // and not-vfork hold by construction here: this is the main process
-        // worker path (the pthread coordinator is separate) and a borrowed vfork
-        // child is admitted like any other (item 4).
+        // The module is the only capturer and reconstructor for every fork on
+        // this worker; there is no JavaScript fallback. The one precondition
+        // the host checks here is a fork-from-thread child's
+        // `wpk_fork_resume_thread` export: fork-instrument emits it for every
+        // guest exporting `__indirect_function_table`, so a child without it
+        // is a stale artifact and fails loud.
         const catalogOrdinals = readForkResumeCatalog(module).map(
           (entry) => entry.functionOrdinal,
         );
@@ -3763,86 +3712,62 @@ export async function centralizedWorkerMain(
               "program through the current fork-instrument path",
           );
         }
-        useForkModule = true;
         // Phase 6 item 4: a borrowed (vfork) child is admitted like any other —
         // single-activation and multi-activation dlopen-vfork ("mode-1") are both
         // seeded through the coarse `childSeedBorrowed` module entry. The
         // coordinator's `attachBorrowedModuleChild` handles both.
-        if (useForkModule) {
-          // Stage the backend's small pre-fork guest buffers into the dedicated
-          // slab reserved inside the fork-module region rather than mmapping a
-          // fresh, memory-growing region per staging. The slab is part of the
-          // single reused region, so a COPIED fork child (which reuses the whole
-          // region via `forkModuleInheritedBase`) stages into the SAME slab and
-          // its `memory.size` stays equal to the parent's — a growing channel
-          // mmap here would land at the child's inherited (higher) mmap cursor
-          // and inflate the clone. A staging request larger than the slab (a
-          // large GC codec) falls back to the growing channel mmap; that path
-          // never asserts an exact memory size, so its growth is invisible.
-          // The instance carries its own exports, drive table and staging
-          // slab, so none of those are threaded separately any more -- and the
-          // reserve/release region callbacks are gone with them: the backend
-          // stages into the module's OWN slab rather than asking the host for
-          // a region, so there is nothing for a host to hand over or reclaim.
-          forkModuleBackend = new ForkModuleContinuationBackend({
-            instance: forkModuleInstance,
-            memory,
-            ptrWidth,
-            format: linkedFrameFormat,
-            catalogOrdinals,
-            // The module channel-mmaps its own arena and journal image, through
-            // this worker's syscall channel. It was never told where that is:
-            // every capture and seal would have asked the module to issue a
-            // syscall at address 0.
-            channelBase: channelOffset,
-            label: `pid=${pid}: fork-module`,
-          });
-          // Seed the linked-frame format + full resume catalog once, now, before
-          // any fork drives the module. Both are host-known custom sections.
-          forkModuleBackend.setup();
-          // `setup()` seeds the resume catalog, and seeding IS what assigns
-          // this activation's slots. Binding here rather than at construction
-          // is forced by the order: the resume table exists before the module
-          // does, because the guest's import object is built from it.
-          resumeTable.bindSlots(
-            forkModuleBackend,
-            forkModuleInstance.exports.__wpk_fork_resume_table as WebAssembly.Table,
-          );
-          // The per-activation frame entry points are the module's own, emitted
-          // by the injector and read out of its table -- there is nothing to
-          // construct or cache here any more.
-          forkModuleFrameExports = forkModuleInstance.exports;
-        }
+        // Stage the backend's small pre-fork guest buffers into the dedicated
+        // slab reserved inside the fork-module region rather than mmapping a
+        // fresh, memory-growing region per staging. The slab is part of the
+        // single reused region, so a COPIED fork child (which reuses the whole
+        // region via `forkModuleInheritedBase`) stages into the SAME slab and
+        // its `memory.size` stays equal to the parent's — a growing channel
+        // mmap here would land at the child's inherited (higher) mmap cursor
+        // and inflate the clone. A staging request larger than the slab (a
+        // large GC codec) falls back to the growing channel mmap; that path
+        // never asserts an exact memory size, so its growth is invisible.
+        // The instance carries its own exports, drive table and staging
+        // slab, so none of those are threaded separately any more -- and the
+        // reserve/release region callbacks are gone with them: the backend
+        // stages into the module's OWN slab rather than asking the host for
+        // a region, so there is nothing for a host to hand over or reclaim.
+        forkModuleBackend = new ForkModuleContinuationBackend({
+          instance: forkModuleInstance,
+          memory,
+          ptrWidth,
+          format: linkedFrameFormat,
+          catalogOrdinals,
+          // The module channel-mmaps its own arena and journal image, through
+          // this worker's syscall channel. It was never told where that is:
+          // every capture and seal would have asked the module to issue a
+          // syscall at address 0.
+          channelBase: channelOffset,
+          label: `pid=${pid}: fork-module`,
+        });
+        // Seed the linked-frame format + full resume catalog once, now, before
+        // any fork drives the module. Both are host-known custom sections.
+        forkModuleBackend.setup();
+        // `setup()` seeds the resume catalog, and seeding IS what assigns
+        // this activation's slots. Binding here rather than at construction
+        // is forced by the order: the resume table exists before the module
+        // does, because the guest's import object is built from it.
+        resumeTable.bindSlots(
+          forkModuleBackend,
+          forkModuleInstance.exports.__wpk_fork_resume_table as WebAssembly.Table,
+        );
+        // The per-activation frame entry points are the module's own, emitted
+        // by the injector and read out of its table -- there is nothing to
+        // construct or cache here any more.
+        forkModuleFrameExports = forkModuleInstance.exports;
         // The unwind transport is the module's, not this host's. The module is
         // unconditional for a fork-instrumented worker (see the fail-loud check
         // above), so there is no branch here where a host-minted fallback would
         // be needed.
         moduleForkUnwindTag = forkUnwindTagFrom(forkModuleInstance.exports, `pid=${pid} unwind`);
       }
-      // Phase 6 item 3a (minimize host surface): the RESTORE data-feed FLIP. When
-      // a child's whole reference graph is admitted through the module
-      // (`moduleReferenceKindsSupported`), the guest's typed-GC/exnref codec reads
-      // the decoded reference graph (vector entries, GC/exnref routes, scalar +
-      // edge loads, exnref cache indices) through the module's seven `fm_ref_*`
-      // exports instead of the JS reference provider (`referenceReplay`). The
-      // still-JS drive-order (`materializeTypedGraph`) is UNCHANGED — it now calls
-      // the guest `_gc_allocate`/`_gc_fill` exports, which call back into these
-      // module exports (module->guest->module; safe because the feed only READS
-      // the immutable decoded graph and WRITES guest memory). Flipped alongside
-      // `__wpk_fork_ref_decode_funcref`, per-activation (every activation's codec
-      // reads the SAME whole-graph module feed), and only when the whole graph is
-      // admitted; a flag-off / non-admitted fork keeps the byte-identical JS
-      // reference path (this returns `{}`, leaving the JS provider imports intact).
       const mainTemplateId = computeForkModuleTemplateId(programBytes);
       let processInstance: WebAssembly.Instance | null = null;
 
-      // WHAT USED TO BE HERE: `newModuleStateArena`, a host KFMS arena with its
-      // own channel mmap/munmap pair. Census 133 called the split it created --
-      // the module maps chunks, the host frees them by walking the linked list
-      // back out of guest memory -- the reason `fm_module_state_arena` grew
-      // RELEASE and OWNED. Both sides are the module's now, so the host neither
-      // allocates nor frees, and the chain walk, cycle check and length bound
-      // it needed to do that safely go with it.
       processHostImportRuntime = new ForkHostImportWorkerRuntime(
         initData.forkHostImports,
         pid,
@@ -4299,10 +4224,7 @@ export async function centralizedWorkerMain(
 
       const dylinkForkActivationOwner = hasDylinkForkRole
         ? createProcessDylinkActivationOwner({
-            memory,
             ptrWidth,
-            channelOffset,
-            forkUnwindTag: processForkUnwindTag(),
             resumeTable,
             activations: forkActivations,
             importedStateCapture,
@@ -4321,7 +4243,7 @@ export async function centralizedWorkerMain(
               return Number((fork as () => number)());
             },
             forkModuleFrameFlip:
-              useForkModule && forkModuleBackend && forkModuleFrameExports
+              forkModuleBackend && forkModuleFrameExports
                 ? {
                     moduleExports: forkModuleFrameExports,
                     backend: forkModuleBackend,
@@ -4368,7 +4290,6 @@ export async function centralizedWorkerMain(
           () => forkActivations,
           channelOffset,
           pid,
-          `pid=${pid}: peer table checkpoint`,
         ),
         dlopen: dlopenSupport,
         materializeModules: () => {
@@ -4503,8 +4424,6 @@ export async function centralizedWorkerMain(
         // the same bytes. Multi-activation (dlopen) forks are covered
         // identically: the merged, activation-namespaced funcref and
         // static-root catalogs resolve each node against its owning activation.
-        moduleReferenceKindsSupported =
-          useForkModule && forkModuleInstance !== null;
         // Make the MODULE's decoded reference graph resident for the merged
         // static-root catalog mirror seeding below, which reads node kinds +
         // coordinates from the module's `fm_decoded_*` accessors instead of
@@ -4522,7 +4441,7 @@ export async function centralizedWorkerMain(
         // only SEEDS those tags (in the drive block below), so the fail-loud
         // boundary lives inside reconstruction rather than as a separate host
         // pre-walk.
-        if (moduleReferenceKindsSupported && forkModuleBackend) {
+        if (forkModuleBackend) {
           forkModuleBackend.decodeReferenceGraph(childArenaRoot);
         }
         // The child's pre-instantiation reference view. Every fact comes from
@@ -4614,7 +4533,7 @@ export async function centralizedWorkerMain(
         // frame/resume exports directly (wasm->wasm over shared memory); the
         // module is the ONLY frame/journal implementation. Guest ABI names and
         // signatures are unchanged; no guest re-instrumentation.
-        ...(useForkModule && forkModuleInstance
+        ...(forkModuleInstance
           ? {
               // MODULE-MODE PARTIAL-CAPTURE ABORT: the module reserve returns 0
               // (no throw, no JS callback) when a mid-unwind frame allocation
@@ -4788,7 +4707,7 @@ export async function centralizedWorkerMain(
         // the arena itself now, and the early view retains nothing to hand
         // over -- it resolves each coordinate through the module and keeps no
         // table of its own.
-        if (moduleReferenceKindsSupported && forkModuleInstance) {
+        if (forkModuleInstance) {
           // The merged funcref catalog was filled as each activation registered
           // (see `mirrorFunctionCatalog`), parent and child alike, so nothing
           // mirrors here any more.
@@ -4963,7 +4882,7 @@ export async function centralizedWorkerMain(
         // so it never extends a child root's lifetime past replay — the same
         // no-leak contract the harvest-table clear and `finishReplay` transit
         // clear keep for the JS path.
-        if (moduleReferenceKindsSupported && forkModuleInstance) {
+        if (forkModuleInstance) {
           const mirror = forkModuleInstance.staticRootCatalog;
           for (let slot = 0; slot < mirror.length; slot += 1) {
             mirror.set(slot, null);
@@ -5012,14 +4931,9 @@ export async function centralizedWorkerMain(
           const fnIdx = initData.forkChildThreadFnPtr;
           const childArgPtr = initData.forkChildThreadArgPtr ?? 0;
           const threadArg = ptrWidth === 8 ? BigInt(childArgPtr) : childArgPtr;
+          // Asserted present for a fork-from-thread child at module setup.
           const resumeThread = instance.exports.wpk_fork_resume_thread as
-            | ((tableIndex: number, arg: number | bigint) => number | bigint)
-            | undefined;
-          if (typeof resumeThread !== "function") {
-            throw new Error(
-              "Fork-from-thread child: missing wpk_fork_resume_thread",
-            );
-          }
+            (tableIndex: number, arg: number | bigint) => number | bigint;
           // A fork child never executes the lexical pthread entry. Keep the
           // two closures structurally complete so the loop can select solely
           // from coordinator phase below.
@@ -5108,57 +5022,6 @@ export async function centralizedWorkerMain(
               }
               throw sealError;
             }
-            // GATED REFERENCE KIND: a capture-side record-stub in
-            // the reference transaction marked this fork as carrying a
-            // reference kind the platform cannot faithfully reconstruct in a
-            // fresh child (e.g. a live externref or typed Wasm-GC value). Abort
-            // the fork cleanly with EOPNOTSUPP instead of launching a child:
-            // the guest's `kernel_fork` re-enters in `abort-replay` and returns
-            // `-EOPNOTSUPP`. This reaches the exact post-abort handling the
-            // `childPid < 0` branch below uses; it never throws (a throw cannot
-            // unwind an errno through the Wasm fork save walk) and never
-            // silently succeeds.
-            const unsupportedKind: string | null = null;
-            if (unsupportedKind !== null) {
-              // Make the platform boundary VISIBLE to a developer (Platform
-              // Values: truthful failure over silent illusion). Marker-gated:
-              // this fires ONLY when a capture-side record-stub marked an
-              // unsupported reference kind, never on a supported (funcref /
-              // exnref / simple) fork. One concise line per aborted fork.
-              console.warn(
-                `[worker] pid=${pid}: fork aborted with EOPNOTSUPP — carried a ` +
-                  `live '${unsupportedKind}' reference across the fork boundary, ` +
-                  `which the platform cannot reconstruct in a fresh child yet. ` +
-                  `No child was spawned; the parent continues. ` +
-                  `See docs/fork-reference-support.md.`,
-              );
-              forkResult = -FORK_REFERENCE_EOPNOTSUPP;
-              forkAbortErrno = FORK_REFERENCE_EOPNOTSUPP;
-              reportForkAborted(
-                FORK_REFERENCE_EOPNOTSUPP,
-                `the capture carried a '${unsupportedKind}' reference this `
-                  + "platform cannot reconstruct in a fresh child",
-              );
-              forkModule().parentReplay(true);
-              // Path B P4 proof-of-use: when the co-resident module is enabled,
-              // `beginAbortReplay` above routed through the module's OWN abort
-              // path (`beginModuleAbortReplay` -> `fm_begin_abort`), replaying
-              // the parent's committed frames rather than the JS engine that P6
-              // deletes. Emit the committed-frame count INLINE here — symmetric
-              // with the success branch's inline emission below — so the proof
-              // is deterministic for a gated parent that spawns no child and
-              // may exit immediately (its worker-tail emission can race the
-              // `kernel_exit` teardown). A silent JS-only abort (no module
-              // backend) constructs no backend and emits nothing.
-              if (forkModuleBackend && !initData.isForkChild) {
-                port.postMessage({
-                  type: "fork_module_frames",
-                  pid,
-                  frames: Number(forkModuleBackend.stat("framesCommitted")),
-                } satisfies WorkerToHostMessage);
-              }
-              continue;
-            }
             // Hand the kernel worker the externref handles this capture
             // interned, so it does not have to decode this parked worker's
             // arena to re-derive them. Written AFTER the seal (the set is
@@ -5201,9 +5064,7 @@ export async function centralizedWorkerMain(
               // even in main-thread hosts where the fork parent's worker tail is
               // torn down before it runs (the tail-scoped `fork_module_frames`
               // below is the worker-thread-host mirror). A nonzero committed
-              // count here proves the module drove THIS fork's unwind; a silent
-              // JS fallback (`useForkModule === false`) never constructs the
-              // backend and emits nothing.
+              // count here proves the module drove THIS fork's unwind.
               if (forkModuleBackend && !initData.isForkChild) {
                 port.postMessage({
                   type: "fork_module_frames",
@@ -6409,7 +6270,6 @@ export async function centralizedThreadWorkerMain(
       },
       `pid=${pid} tid=${tid}: fork tables`,
     );
-    const threadActivationRegistry = hasForkInstrumentation;
     // One election per physical table for this replica, shared by the imported
     // identity capture and by the activation record's table registration -- two
     // separate owner sets would let two coordinates both believe they own one
@@ -6473,7 +6333,7 @@ export async function centralizedThreadWorkerMain(
     // since `forkUnwindTagFrom` landed.
     let threadModuleUnwindTag: WebAssembly.Tag | undefined;
     let threadForkModuleBackend: ForkModuleContinuationBackend | null = null;
-    if (hasForkInstrumentation && threadActivationRegistry) {
+    if (hasForkInstrumentation) {
       const forkModuleModule = initData.forkModuleModule;
       if (!forkModuleModule) {
         throw new Error(
@@ -6517,20 +6377,6 @@ export async function centralizedThreadWorkerMain(
           // the resolver instead of being left a trapping stub.
           tokens: threadExternrefTokens!,
         });
-        // STORE #2: on this path the thread registry is created BEFORE the
-        // fork-module (unlike the process path), and its `enableModuleBacking`
-        // gate below requires `threadActivationRegistry` — itself built from
-        // the registry — to already exist, so the registry cannot simply be
-        // constructed after the module. Instead, ADOPT the module's own
-        // exported transit table into the already-built registry so the
-        // guest's `__wpk_fork_ref_gc_transit` import (bound later by
-        // `buildForkGuestImports`, well below) and the module's
-        // drive integrity check read the exact same table. This happens
-        // before any activation import is built and before any fork capture.
-        // The registry used to adopt this table so its capture session and the
-        // module read the same one. There is one reader now -- the module owns
-        // the transit table and exports it -- so adopting it into a second
-        // owner is the mirroring census 157 removed.
         // Stage into the dedicated slab inside this thread's fork-module region
         // rather than a growing channel mmap (see the process-worker path for
         // the full rationale): keeps the staging from permanently growing the
@@ -6557,41 +6403,39 @@ export async function centralizedThreadWorkerMain(
         // Built here rather than beside the registry above, because it publishes
         // straight into this thread's module and there is no module before this
         // point. Nothing reads it earlier.
-        if (threadActivationRegistry) {
-          const backend = threadForkModuleBackend;
-          // A pthread replica runs its OWN fork-module instance, so it needs
-          // its own merged catalog and its own bases -- and, like every other
-          // worker, its own activation record.
-          threadForkActivations = new ForkActivations(
-            backend,
-            `pid=${pid} tid=${tid}: fork activations`,
-            forkActivationCatalogSink({
-              tables: threadForkTables,
-              merged: new ForkMergedFunctionCatalog(
-                threadForkModuleInstance.functionCatalog,
-                backend,
-                `pid=${pid} tid=${tid}: merged function catalog`,
-              ),
-              staticRoots: new Map(),
-              // A pthread replica runs its OWN module instance, so its merged
-              // static-root table is its own too. It is filled per fork like
-              // the process one, by the fork path that opens the capture.
-              mergedStaticRoots: new ForkMergedStaticRoots(
-                threadForkModuleInstance.staticRootCatalog,
-                (activationId, base) =>
-                  backend.setActivationStaticRootBase(activationId, base),
-                `pid=${pid} tid=${tid}: merged static roots`,
-              ),
-              owners: threadTableStateOwners,
-            }),
-          );
-          threadFixedPrefixSize = linkedFrameFormat.fixedPrefixSize;
-          threadImportedStateCapture = new ForkImportIdentity(
-            backend,
-            `pid=${pid} tid=${tid}: imported activation state`,
-            threadTableStateOwners,
-          );
-        }
+        const backend = threadForkModuleBackend;
+        // A pthread replica runs its OWN fork-module instance, so it needs
+        // its own merged catalog and its own bases -- and, like every other
+        // worker, its own activation record.
+        threadForkActivations = new ForkActivations(
+          backend,
+          `pid=${pid} tid=${tid}: fork activations`,
+          forkActivationCatalogSink({
+            tables: threadForkTables,
+            merged: new ForkMergedFunctionCatalog(
+              threadForkModuleInstance.functionCatalog,
+              backend,
+              `pid=${pid} tid=${tid}: merged function catalog`,
+            ),
+            staticRoots: new Map(),
+            // A pthread replica runs its OWN module instance, so its merged
+            // static-root table is its own too. It is filled per fork like
+            // the process one, by the fork path that opens the capture.
+            mergedStaticRoots: new ForkMergedStaticRoots(
+              threadForkModuleInstance.staticRootCatalog,
+              (activationId, base) =>
+                backend.setActivationStaticRootBase(activationId, base),
+              `pid=${pid} tid=${tid}: merged static roots`,
+            ),
+            owners: threadTableStateOwners,
+          }),
+        );
+        threadFixedPrefixSize = linkedFrameFormat.fixedPrefixSize;
+        threadImportedStateCapture = new ForkImportIdentity(
+          backend,
+          `pid=${pid} tid=${tid}: imported activation state`,
+          threadTableStateOwners,
+        );
         // Path-A A4 parity: route this pthread worker's peer-table CAPTURE
         // through the co-resident module (the process path does this at
         // `setCaptureModule` above). Peer-table replication is module-only now,
@@ -6694,7 +6538,7 @@ export async function centralizedThreadWorkerMain(
     );
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (rawMode: number): number => {
-        if (!threadInstance || !threadActivationRegistry) return -38; // ENOSYS
+        if (!threadInstance) return -38; // ENOSYS
         const mode = processForkMode(rawMode);
         if (mode === null) return -STARTUP_EINVAL;
 
@@ -6812,13 +6656,9 @@ export async function centralizedThreadWorkerMain(
     // worker had the same defect and the same fix.
     const replicaActivationOwner =
       hasDylinkForkRole &&
-      threadActivationRegistry &&
       hasForkInstrumentation
         ? createProcessDylinkActivationOwner({
-            memory,
             ptrWidth,
-            channelOffset,
-            forkUnwindTag: threadForkUnwindTag(),
             resumeTable: threadResumeTable,
             importedStateCapture: threadImportedStateCapture ?? undefined,
             activations: threadForkActivations ?? undefined,
@@ -6879,7 +6719,7 @@ export async function centralizedThreadWorkerMain(
       "copied",
       initData.dylinkModuleModule,
     );
-    if (threadActivationRegistry) {
+    if (hasForkInstrumentation) {
       threadTableReplication = createProcessTableReplicationOwner({
         generationAddress: processGenerationAddress,
         tables: threadForkTables,
@@ -6896,7 +6736,6 @@ export async function centralizedThreadWorkerMain(
           },
           channelOffset,
           pid,
-          `pid=${pid} tid=${tid}: peer table checkpoint`,
         ),
         dlopen: threadDlopenSupport,
         materializeModules: () => {
@@ -6907,7 +6746,7 @@ export async function centralizedThreadWorkerMain(
       });
     }
     const threadForkEnvImports =
-      threadActivationRegistry && hasForkInstrumentation
+      hasForkInstrumentation
         ? {
             // Everything the module serves, plus the three object imports a JS
             // host supplies. Fails by NAME here if anything is unbound, rather
@@ -7012,17 +6851,11 @@ export async function centralizedThreadWorkerMain(
     threadMainImportedState?.complete(instance);
     if (
       hasForkInstrumentation &&
-      threadActivationRegistry &&
-      threadActivationRegistry &&
       threadTemplateId
     ) {
+      // Required by `hasCompleteForkInstrumentation`, so present here.
       const threadBootstrap = instance.exports
-        .wpk_fork_module_thread_bootstrap as (() => void) | undefined;
-      if (!threadBootstrap) {
-        throw new Error(
-          `pid=${pid} tid=${tid}: fork module is missing thread bootstrap`,
-        );
-      }
+        .wpk_fork_module_thread_bootstrap as () => void;
       threadResumeTable.registerActivation(0, instance);
       threadForkActivations?.register({
         activationId: 0,
@@ -7124,7 +6957,7 @@ export async function centralizedThreadWorkerMain(
       );
     }
     let result = 0;
-    if (hasForkInstrumentation && threadActivationRegistry) {
+    if (hasForkInstrumentation) {
       for (;;) {
         let transportedForkUnwind = false;
         try {
@@ -7175,32 +7008,6 @@ export async function centralizedThreadWorkerMain(
               continue;
             }
             throw sealError;
-          }
-          // GATED REFERENCE KIND (fork-from-thread mirror of the main run
-          // loop): abort cleanly with EOPNOTSUPP when a capture-side record-stub
-          // marked an unsupported reference kind, instead of launching a child.
-          // The guest fork() re-enters in `abort-replay` and returns
-          // `-EOPNOTSUPP`.
-          // The capture-side marker the registry latched. The module refuses an
-          // unadmitted reference kind with `EOPNOTSUPP` at the call that meets
-          // it, so the signal is the errno rather than a flag read afterwards.
-          const unsupportedKind: string | null = null;
-          if (unsupportedKind !== null) {
-            // Make the platform boundary VISIBLE to a developer (Platform
-            // Values: truthful failure over silent illusion). Marker-gated:
-            // fires ONLY when a capture-side record-stub marked an unsupported
-            // reference kind, never on a supported fork. One line per abort.
-            console.warn(
-              `[worker] pid=${pid} tid=${tid}: fork aborted with EOPNOTSUPP — ` +
-                `carried a live '${unsupportedKind}' reference across the fork ` +
-                `boundary, which the platform cannot reconstruct in a fresh ` +
-                `child yet. No child was spawned; the parent continues. ` +
-                `See docs/fork-reference-support.md.`,
-            );
-            forkResult = -FORK_REFERENCE_EOPNOTSUPP;
-            threadForkAbortErrno = FORK_REFERENCE_EOPNOTSUPP;
-            threadForkModule().parentReplay(true);
-            continue;
           }
           const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
             ? threadForkModule().borrowedReplayWorkspace()
