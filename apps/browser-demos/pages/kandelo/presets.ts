@@ -75,7 +75,7 @@ export const PRESET_LIBRARY: Preset[] = [
     base: SHELL_BASE,
     packages: ["dinit@local", "nginx@local", "cpython@local", "bash@local", "coreutils@local"],
     accent: "#4b8bbe",
-    glyph: "python",
+    glyph: "py",
     bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
     estimatedUrlBytes: 944,
   },
