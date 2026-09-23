@@ -1878,23 +1878,24 @@ describe("Kandelo demo config", () => {
     });
   });
 
-  it("resolves profile presentation over image defaults", () => {
+  it("resolves the selected profile's presentation, and only that profile's", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      },
       profiles: {
+        shell: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["terminal", "syslog"],
+            terminalAccess: "primary",
+            internalsAccess: "drawer",
+          },
+        },
         doom: {
           presentation: {
             bootPrimary: "syslog",
             runningPrimary: ["framebuffer", "terminal", "syslog"],
             terminalAccess: "drawer",
             internalsAccess: "drawer",
-            autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
             touchControls: true,
           },
         },
@@ -1905,8 +1906,9 @@ describe("Kandelo demo config", () => {
     const presentation = resolveDemoPresentation(config!, "doom");
     expect(presentation.runningPrimary).toEqual(["framebuffer", "terminal", "syslog"]);
     expect(presentation.terminalAccess).toBe("drawer");
-    expect(presentation.autoCommand).toContain("fbdoom");
     expect(presentation.touchControls).toBe(true);
+    // A sibling profile's block is not a fallback for this one.
+    expect(resolveDemoPresentation(config!, "unknown")).toBeNull();
   });
 
   it("throws when profile metadata is incomplete", () => {
@@ -1984,12 +1986,10 @@ describe("Kandelo demo config", () => {
   it("resolves and validates profile assets", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      assets: [
-        { path: "/common.dat", url: "https://example.invalid/common.dat" },
-      ],
       profiles: {
         doom: {
           assets: [
+            { path: "/common.dat", url: "https://example.invalid/common.dat" },
             {
               path: "/doom1.wad",
               url: "https://example.invalid/doom1.wad",
@@ -1999,6 +1999,7 @@ describe("Kandelo demo config", () => {
             },
           ],
         },
+        shell: {},
       },
     }));
     expect(config).not.toBeNull();
@@ -2013,6 +2014,8 @@ describe("Kandelo demo config", () => {
         devCorsProxy: true,
       },
     ]);
+    // Assets belong to the profile that declares them; no sibling inherits.
+    expect(resolveDemoAssets(config!, "shell")).toEqual([]);
   });
 
   it("throws when profile assets use a relative path", () => {
@@ -2065,17 +2068,21 @@ describe("Kandelo demo config", () => {
   it("rejects duplicate guide action ids", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      guide: {
-        title: "Bad guide",
-        groups: [
-          {
-            title: "Actions",
-            actions: [
-              { id: "dup", label: "One", kind: "terminal.run", payload: "echo one" },
-              { id: "dup", label: "Two", kind: "terminal.write", payload: "two\n" },
+      profiles: {
+        shell: {
+          guide: {
+            title: "Bad guide",
+            groups: [
+              {
+                title: "Actions",
+                actions: [
+                  { id: "dup", label: "One", kind: "terminal.run", payload: "echo one" },
+                  { id: "dup", label: "Two", kind: "terminal.write", payload: "two\n" },
+                ],
+              },
             ],
           },
-        ],
+        },
       },
     }));
     expect(config).not.toBeNull();

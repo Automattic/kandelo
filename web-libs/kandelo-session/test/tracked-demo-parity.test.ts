@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   parseKandeloDemoConfig,
@@ -14,18 +13,19 @@ import { TRACKED_DEMO_CONFIG_SOURCES } from "../../../images/vfs/scripts/tracked
 /**
  * The gallery listing is aggregated from the TRACKED demo-config sources, not
  * from built images — that is what lets a fresh worktree with zero `.vfs.zst`
- * files still render the gallery. This file guards the two properties that
+ * files still render the gallery. This file guards the property that
  * aggregation depends on, now that the app-side `PRESET_LIBRARY` those ids
- * used to be checked against is gone:
+ * used to be checked against is gone: every curated roster entry names a
+ * tracked profile that declares an `identity`. Without one there is nothing
+ * truthful to display, and the entry silently disappears from the gallery.
  *
- * 1. Every curated roster entry names a tracked profile that declares an
- *    `identity`. Without one there is nothing truthful to display, and the
- *    entry silently disappears from the gallery.
- * 2. Every tracked `identity.base` names the CURRENT ABI. `base` embeds
- *    `ABI_VERSION`, and Kandelo enforces strict `__abi_version` equality, so
- *    an ABI bump that leaves these strings behind would ship a gallery
- *    advertising a base no built image can match. This assertion is what
- *    makes that fail here rather than in a browser.
+ * There is no ABI assertion here any more, because it no longer has a
+ * subject. It checked that every tracked `identity.base` named the current
+ * `ABI_VERSION`; `identity.base` has been removed from the schema (nothing
+ * verified the declared string, and `live-setup.ts` computes
+ * `kandelo:shell@abi${ABI_VERSION}` itself), so the assertion would have had
+ * nothing to read. ABI compatibility is enforced where it actually bites:
+ * the strict `__abi_version` equality check on every binary.
  */
 function identityByProfile(): Map<string, DemoIdentityConfig> {
   const out = new Map<string, DemoIdentityConfig>();
@@ -64,24 +64,6 @@ describe("tracked demo-config identity backs the gallery roster", () => {
       expect(identity!.summary.length).toBeGreaterThan(0);
       expect(identity!.accent).toMatch(/^#[0-9a-f]{6}$/);
       expect(identity!.glyph.length).toBeGreaterThan(0);
-      // A listed machine must say which base it is built on, or the gallery
-      // has no honest answer for the ABI it needs.
-      expect(identity!.base, `profile ${profileId} declares no base`)
-        .toBeDefined();
     },
   );
-
-  // `base` is optional in the schema (python-demo.json declares none, and it
-  // is not on the roster), but every tracked file that DOES declare one must
-  // name the current ABI.
-  it("declares the current ABI in every tracked identity base", () => {
-    const expected = `kandelo:shell@abi${ABI_VERSION}`;
-    const declared = [...tracked].filter(([, identity]) =>
-      identity.base !== undefined
-    );
-    expect(declared.length).toBeGreaterThan(0);
-    for (const [profileId, identity] of declared) {
-      expect(identity.base, `profile ${profileId}`).toBe(expected);
-    }
-  });
 });

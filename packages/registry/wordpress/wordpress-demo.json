@@ -8,7 +8,6 @@
         "summary": "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
         "accent": "#21759b",
         "glyph": "wp",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "dinit@local",
           "nginx@local",
@@ -20,7 +19,6 @@
         ]
       },
       "runtime": {
-        "network": true,
         "requests": {
           "memoryPages": 4096,
           "maxWorkers": 12
@@ -69,7 +67,6 @@
         "summary": "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
         "accent": "#21759b",
         "glyph": "wp",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "dinit@local",
           "nginx@local",
@@ -81,7 +78,6 @@
         ]
       },
       "runtime": {
-        "network": true,
         "requests": {
           "memoryPages": 4096,
           "maxWorkers": 12

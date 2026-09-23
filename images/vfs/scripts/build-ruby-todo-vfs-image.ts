@@ -94,6 +94,15 @@ export async function buildRubyTodoVfsImage(
   }
   fs.chmod("/tmp", 0o777);
 
+  // The Ruby server boots as the unprivileged `maker` account (uid/gid 1000
+  // in ruby-todo-demo.json and browser-ruby-todo.toml), and /etc/passwd
+  // already says that account's home is /home/maker. Create it so the HOME
+  // the boot environment names is a real directory this uid owns, rather
+  // than a path that only happens to be unused.
+  ensureDir(fs, "/home/maker");
+  fs.chown("/home/maker", 1000, 1000);
+  fs.chmod("/home/maker", 0o755);
+
   // Ruby runtime: standard library + gem/bundler/irb scripts under /usr.
   console.log("Staging Ruby runtime...");
   const usrDir = join(inputs.rubyRuntimeDir, "usr");

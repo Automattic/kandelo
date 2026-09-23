@@ -8,13 +8,11 @@
         "summary": "A Roda web app on Ruby 4 with a SQLite database, served on :8080. Not Rails.",
         "accent": "#b31217",
         "glyph": "rb",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "ruby@local"
         ]
       },
       "runtime": {
-        "network": true,
         "requests": {
           "memoryPages": 4096,
           "maxWorkers": 12
@@ -25,7 +23,9 @@
         "args": [
           "/var/lib/todo/server.rb"
         ],
-        "cwd": "/var/lib/todo"
+        "cwd": "/var/lib/todo",
+        "uid": 1000,
+        "gid": 1000
       },
       "web": {
         "requiredPorts": [

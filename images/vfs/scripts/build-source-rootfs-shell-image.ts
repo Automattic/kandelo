@@ -10,7 +10,7 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
-  resolveDemoPresentation,
+  resolveDemoInit,
   validateKandeloDemoConfig,
   type KandeloDemoConfig,
 } from "../../../web-libs/kandelo-session/src/demo-config";
@@ -313,8 +313,9 @@ function requireOwnedDemoCommands(
   for (const [profileId, expected] of Object.entries(
     SOURCE_ROOTFS_DEMO_COMMANDS,
   )) {
-    const presentation = resolveDemoPresentation(config, profileId);
-    if (presentation?.autoCommand !== expected.command) {
+    const init = resolveDemoInit(config, profileId);
+    if (init === null || !("shellCommand" in init)
+      || init.shellCommand !== expected.command) {
       throw new Error(
         `source-rootfs demo profile ${profileId} must launch ${expected.command}`,
       );

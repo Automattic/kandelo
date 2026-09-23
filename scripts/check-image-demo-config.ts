@@ -49,14 +49,17 @@ export { parseTrackedSourcePaths, trackedSourcePaths };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// KandeloDemoConfig declares this same block-key set at both the top level
-// and inside each profiles.<id> entry (every resolveDemoX in
-// web-libs/kandelo-session/src/demo-config.ts falls back from the profile
-// value to the top-level config.X). A new short key must be added here in
-// the same change that introduces it, or edit-distance-2 will reject it as
-// a typo of an existing key on day one (e.g. "net" is distance 2 from
-// "init", "web2" is distance 1 from "web"). That false-positive risk is
-// accepted: this checker only gates the tracked files in this repository.
+// The block keys a profile may declare. There is ONE shape to scan now:
+// KandeloDemoConfig keeps only `version`, `defaultProfile`, and `profiles`
+// at the top level, and `validateKandeloDemoConfig` rejects a machine block
+// there outright, so this checker no longer needs a second pass over the top
+// level for the same key set.
+//
+// A new short key must be added here in the same change that introduces it,
+// or edit-distance-2 will reject it as a typo of an existing key on day one
+// (e.g. "net" is distance 2 from "init", "web2" is distance 1 from "web").
+// That false-positive risk is accepted: this checker only gates the tracked
+// files in this repository.
 const KNOWN_PROFILE_KEYS = [
   "presentation", "assets", "guide", "ingest",
   "identity", "runtime", "init", "web", "display",
@@ -100,9 +103,12 @@ export function nearMissKeys(
 
 /**
  * Validate one already-parsed demo config. Exported (independent of file
- * I/O) so a top-level near-miss can be exercised against a plain object in
- * tests, the same way profile-nested near-misses are exercised via
- * nearMissKeys() directly.
+ * I/O) so the scan can be exercised against a plain object in tests, the
+ * same way nearMissKeys() is exercised directly.
+ *
+ * Unknown block keys are tolerated inside a profile for forward
+ * compatibility, so a typo'd block name would otherwise boot a machine
+ * missing that block with no diagnostic. That is what this catches.
  */
 export function assertValidDemoConfig(
   parsed: { version?: unknown; profiles?: Record<string, unknown> } & Record<string, unknown>,
@@ -111,21 +117,12 @@ export function assertValidDemoConfig(
   if (parsed.version !== 1) {
     throw new Error(`${relPath} must declare version 1`);
   }
-  // "demo config" matches how validateProfileFields(config, "demo config")
-  // labels the top level elsewhere in web-libs/kandelo-session. Unknown
-  // block keys are tolerated for forward compatibility at both the top
-  // level and inside each profile, so a typo'd block name at either level
-  // would otherwise boot a default machine with no diagnostic.
-  const blocks: Array<[string, Record<string, unknown>]> = [["demo config", parsed]];
   for (const [profileId, profile] of Object.entries(parsed.profiles ?? {})) {
-    blocks.push([`profiles.${profileId}`, profile as Record<string, unknown>]);
-  }
-  for (const [label, value] of blocks) {
-    for (const { found, meant } of nearMissKeys(value)) {
+    for (const { found, meant } of nearMissKeys(profile as Record<string, unknown>)) {
       throw new Error(
-        `${relPath} ${label} has key "${found}" — did you mean `
+        `${relPath} profiles.${profileId} has key "${found}" — did you mean `
           + `"${meant}"? Unknown keys are tolerated for forward compatibility, `
-          + `so a typo here would silently boot a default machine.`,
+          + `so a typo here would silently boot a machine without that block.`,
       );
     }
   }

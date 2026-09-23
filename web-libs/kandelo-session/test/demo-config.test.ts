@@ -27,7 +27,6 @@ describe("runtime block", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       runtime: {
         features: ["kms", "evdev-input"],
-        network: true,
         requests: { memoryPages: 4096, maxWorkers: 12 },
       },
     }))).not.toThrow();
@@ -36,6 +35,14 @@ describe("runtime block", () => {
   it("rejects an unknown feature", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       runtime: { features: ["teleport"] },
+    }))).toThrow(/profiles\.m\.runtime\.features\[0\] must be one of/);
+  });
+
+  // Deleted with its last consumer: it had no reader anywhere and only ever
+  // rendered as a capability badge in a pane that no longer exists.
+  it("rejects the removed js-workers feature", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { features: ["js-workers"] },
     }))).toThrow(/profiles\.m\.runtime\.features\[0\] must be one of/);
   });
 
@@ -74,10 +81,17 @@ describe("runtime block", () => {
     }))).toThrow(/maxWorkers must be a positive integer/);
   });
 
-  it("rejects a non-boolean network flag", () => {
-    expect(() => validateKandeloDemoConfig(withProfile({
-      runtime: { network: "yes" },
-    }))).toThrow(/profiles\.m\.runtime\.network must be a boolean/);
+  // `network` was descriptive only — it gated no socket syscall — and a
+  // field that READS like a sandbox control is a trap once third-party
+  // images declare it. An image declaring it now gets the normalized block
+  // without it, rather than a promise nothing keeps.
+  it("carries no network flag through normalization", () => {
+    const config = withProfile({ runtime: { network: true } });
+    validateKandeloDemoConfig(config);
+    expect(resolveDemoRuntime(config, "m")).toEqual({
+      features: [],
+      requests: {},
+    });
   });
 });
 
@@ -110,6 +124,8 @@ describe("init and web blocks", () => {
         program: "/usr/bin/ruby",
         args: ["/var/lib/todo/server.rb"],
         cwd: "/var/lib/todo",
+        uid: 1000,
+        gid: 1000,
       },
       web: { requiredPorts: [8080] },
     }))).not.toThrow();
@@ -117,69 +133,103 @@ describe("init and web blocks", () => {
 
   it("resolves a direct-program init, defaulting args to an empty array", () => {
     expect(resolveDemoInit(withProfile({
-      init: { program: "/usr/bin/ruby" },
-    }), "m")).toEqual({ program: "/usr/bin/ruby", args: [] });
+      init: { program: "/usr/bin/ruby", uid: 1000, gid: 1000 },
+    }), "m")).toEqual({
+      program: "/usr/bin/ruby",
+      args: [],
+      uid: 1000,
+      gid: 1000,
+    });
+  });
+
+  // A default of 0 would hand root to any third-party image that picks this
+  // shape, and a default of 1000 would invent an account convention the
+  // image may not share. The privilege pid 1 runs with is stated, or the
+  // file is rejected.
+  it.each(["uid", "gid"])("requires init.%s on a direct-program init", (field) => {
+    const init: Record<string, unknown> = {
+      program: "/usr/bin/ruby",
+      uid: 1000,
+      gid: 1000,
+    };
+    delete init[field];
+    expect(() => validateKandeloDemoConfig(withProfile({ init }))).toThrow(
+      new RegExp(`profiles\\.m\\.init\\.${field} must be a non-negative integer`),
+    );
+  });
+
+  it.each([-1, 1.5, "1000", null])(
+    "rejects a non-integer init uid: %s",
+    (uid: unknown) => {
+      expect(() => validateKandeloDemoConfig(withProfile({
+        init: { program: "/usr/bin/ruby", uid, gid: 1000 },
+      }))).toThrow(/profiles\.m\.init\.uid must be a non-negative integer/);
+    },
+  );
+
+  it("accepts uid 0 when the image says so explicitly", () => {
+    expect(resolveDemoInit(withProfile({
+      init: { program: "/sbin/myinit", uid: 0, gid: 0 },
+    }), "m")).toEqual({ program: "/sbin/myinit", args: [], uid: 0, gid: 0 });
   });
 
   it("rejects a non-absolute init program", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
-      init: { program: "usr/bin/ruby" },
+      init: { program: "usr/bin/ruby", uid: 0, gid: 0 },
     }))).toThrow(/profiles\.m\.init\.program must be absolute/);
   });
 
   it("rejects a traversal in an init program path", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
-      init: { program: "/usr/bin/../../etc/passwd" },
+      init: { program: "/usr/bin/../../etc/passwd", uid: 0, gid: 0 },
     }))).toThrow(/profiles\.m\.init\.program must be a normalized file path/);
   });
 
   it("rejects a non-absolute init cwd", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
-      init: { program: "/usr/bin/ruby", cwd: "var/lib/todo" },
+      init: { program: "/usr/bin/ruby", cwd: "var/lib/todo", uid: 0, gid: 0 },
     }))).toThrow(/profiles\.m\.init\.cwd must be absolute/);
   });
 
-  it("rejects init declaring both a target and a program", () => {
+  // The third "what runs" shape: a command for the machine's login shell,
+  // which used to live one block away as presentation.autoCommand.
+  it("accepts a shell-command init", () => {
+    expect(resolveDemoInit(withProfile({
+      init: { shellCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad" },
+    }), "m")).toEqual({
+      shellCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+    });
+  });
+
+  it("rejects an empty shell command", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
-      init: { target: "nginx", program: "/usr/bin/ruby" },
+      init: { shellCommand: "" },
+    }))).toThrow(/profiles\.m\.init\.shellCommand must be a non-empty string/);
+  });
+
+  it("rejects an unbounded shell command", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      init: { shellCommand: "x".repeat(4097) },
     }))).toThrow(
-      /profiles\.m\.init cannot declare both target and program/,
+      /profiles\.m\.init\.shellCommand must be at most 4096 characters/,
     );
   });
 
-  // Review Focus 5: two things claiming to be what the machine runs.
-  it("rejects a profile declaring both init and autoCommand", () => {
-    expect(() => validateKandeloDemoConfig(withProfile({
-      init: { target: "nginx" },
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["web"],
-        terminalAccess: "drawer",
-        internalsAccess: "drawer",
-        autoCommand: "/usr/local/bin/fbdoom",
-      },
-    }))).toThrow(
-      /profiles\.m cannot declare both init\.target and presentation\.autoCommand/,
-    );
-  });
-
-  // Review finding: the same-level check cannot see this. Both blocks fall
-  // back to the top level independently, so a profile-level init plus a
-  // top-level autoCommand resolves to two answers for "what runs here".
-  it("rejects a profile init.target under a top-level autoCommand", () => {
-    expect(() => validateKandeloDemoConfig({
-      version: 1,
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["web"],
-        terminalAccess: "drawer",
-        internalsAccess: "drawer",
-        autoCommand: "/usr/local/bin/fbdoom",
-      },
-      profiles: { m: { init: { target: "nginx" } } },
-    } as unknown as KandeloDemoConfig)).toThrow(
-      /profiles\.m resolves both init\.target and presentation\.autoCommand/,
-    );
+  // Exclusivity is now STRUCTURAL: all three "what runs" shapes are arms of
+  // one union, so no cross-block rule is needed to keep them apart.
+  it.each([
+    [{ target: "nginx", program: "/usr/bin/ruby" }, /target and program/],
+    [
+      { target: "nginx", shellCommand: "echo hi" },
+      /target and shellCommand/,
+    ],
+    [
+      { program: "/usr/bin/ruby", shellCommand: "echo hi" },
+      /program and shellCommand/,
+    ],
+  ])("rejects an init declaring two shapes: %j", (init, message) => {
+    expect(() => validateKandeloDemoConfig(withProfile({ init })))
+      .toThrow(message as RegExp);
   });
 
   it("rejects an out-of-range port", () => {
@@ -249,10 +299,32 @@ describe("identity, display, and defaultProfile", () => {
         summary: "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
         accent: "#b5301c",
         glyph: "D",
-        base: "kandelo:shell@abi44",
         packages: ["fbdoom@local", "doom-shareware@local"],
       },
     }))).not.toThrow();
+  });
+
+  // `base` is gone: nothing verified the declared string, real ABI
+  // compatibility is the binaries' own `__abi_version` check, and the app
+  // computes the reference itself. An image that still declares one is
+  // simply carrying an unknown key, not restating the ABI.
+  it("drops a declared identity base", () => {
+    const config = withProfile({
+      identity: {
+        title: "T",
+        summary: "S",
+        accent: "#b5301c",
+        glyph: "D",
+        base: "kandelo:shell@abi44",
+      },
+    });
+    validateKandeloDemoConfig(config);
+    expect(resolveDemoIdentity(config, "m")).toEqual({
+      title: "T",
+      summary: "S",
+      accent: "#b5301c",
+      glyph: "D",
+    });
   });
 
   it("rejects a non-hex accent", () => {
@@ -267,21 +339,9 @@ describe("identity, display, and defaultProfile", () => {
     }))).toThrow(/profiles\.m\.identity\.glyph must be 1 to 4 characters/);
   });
 
-  // Review finding: title and summary were capped while base and each
-  // packages entry were unbounded, so the two fields the gallery renders as
-  // a list could carry arbitrarily long strings.
-  it("rejects an overlong base", () => {
-    expect(() => validateKandeloDemoConfig(withProfile({
-      identity: {
-        title: "T",
-        summary: "S",
-        accent: "#b5301c",
-        glyph: "D",
-        base: "k".repeat(129),
-      },
-    }))).toThrow(/profiles\.m\.identity\.base must be at most 128 characters/);
-  });
-
+  // Review finding: title and summary were capped while each packages entry
+  // was unbounded, so a field the gallery renders as a list could carry
+  // arbitrarily long strings.
   it("rejects an overlong package entry", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       identity: {
@@ -349,25 +409,22 @@ describe("identity, display, and defaultProfile", () => {
 describe("resolvers", () => {
   const config = {
     version: 1,
-    runtime: { features: ["js-workers"], network: true },
     profiles: {
-      base: {},
-      override: { runtime: { features: ["kms"] }, init: { target: "nginx" } },
+      bare: {},
+      full: { runtime: { features: ["kms"] }, init: { target: "nginx" } },
     },
   } as unknown as KandeloDemoConfig;
 
-  it("falls back to the top-level runtime block", () => {
-    expect(resolveDemoRuntime(config, "base")).toEqual({
-      features: ["js-workers"],
-      network: true,
+  // The schema is profile-only: a machine field is read from the selected
+  // profile or from nowhere. There is no top-level copy to fall back to, so
+  // one profile's block can never answer for another's.
+  it("reads runtime from the selected profile only", () => {
+    expect(resolveDemoRuntime(config, "full")).toEqual({
+      features: ["kms"],
       requests: {},
     });
-  });
-
-  it("prefers the profile's runtime block", () => {
-    expect(resolveDemoRuntime(config, "override")).toEqual({
-      features: ["kms"],
-      network: false,
+    expect(resolveDemoRuntime(config, "bare")).toEqual({
+      features: [],
       requests: {},
     });
   });
@@ -375,19 +432,71 @@ describe("resolvers", () => {
   it("returns an empty runtime for an image with no runtime block", () => {
     expect(resolveDemoRuntime(withProfile({}), "m")).toEqual({
       features: [],
-      network: false,
       requests: {},
     });
   });
 
   it("resolves init only where declared", () => {
-    expect(resolveDemoInit(config, "override")).toEqual({ target: "nginx" });
-    expect(resolveDemoInit(config, "base")).toBeNull();
+    expect(resolveDemoInit(config, "full")).toEqual({ target: "nginx" });
+    expect(resolveDemoInit(config, "bare")).toBeNull();
   });
 
   it("resolves null for an unknown profile id", () => {
     expect(resolveDemoInit(config, "nope")).toBeNull();
     expect(resolveDemoDisplay(config, "nope")).toBeNull();
+  });
+});
+
+describe("profile-only schema", () => {
+  // A machine field at the top level used to resolve for every profile.
+  // Rejecting it is what keeps one file from having two places to look —
+  // and silently ignoring a top-level `init` would boot a different machine
+  // than the file describes.
+  it.each([
+    ["init", { target: "nginx" }],
+    ["runtime", { features: ["kms"] }],
+    ["identity", { title: "T", summary: "S", accent: "#b5301c", glyph: "D" }],
+    ["web", { requiredPorts: [8080] }],
+    ["display", { minWidth: 640, minHeight: 480 }],
+    ["assets", []],
+    ["ingest", { accept: [".wad"], targetPath: "/u.wad", maxBytes: 1 }],
+    ["guide", { title: "G" }],
+    ["presentation", {
+      bootPrimary: "syslog",
+      runningPrimary: ["terminal"],
+      terminalAccess: "primary",
+      internalsAccess: "drawer",
+    }],
+  ])("rejects a top-level %s block", (key, value) => {
+    expect(() => validateKandeloDemoConfig({
+      version: 1,
+      [key]: value,
+      profiles: { m: {} },
+    } as unknown as KandeloDemoConfig)).toThrow(
+      new RegExp(
+        `demo config declares ${key} at the top level; every machine field`
+          + " belongs to a profile",
+      ),
+    );
+  });
+
+  it("names every misplaced block at once", () => {
+    expect(() => validateKandeloDemoConfig({
+      version: 1,
+      init: { target: "nginx" },
+      web: { requiredPorts: [8080] },
+      profiles: { m: {} },
+    } as unknown as KandeloDemoConfig)).toThrow(
+      /demo config declares init, web at the top level/,
+    );
+  });
+
+  it("keeps version, defaultProfile, and profiles at the top level", () => {
+    expect(() => validateKandeloDemoConfig({
+      version: 1,
+      defaultProfile: "m",
+      profiles: { m: { init: { target: "nginx" } } },
+    } as unknown as KandeloDemoConfig)).not.toThrow();
   });
 });
 

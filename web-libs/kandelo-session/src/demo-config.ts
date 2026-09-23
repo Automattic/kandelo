@@ -11,7 +11,6 @@ export interface DemoPresentationConfig {
   runningPrimary: PrimarySurface[];
   terminalAccess: DemoPresentation["terminalAccess"];
   internalsAccess: DemoPresentation["internalsAccess"];
-  autoCommand?: string;
   touchControls?: boolean;
 }
 
@@ -23,6 +22,19 @@ export interface DemoAssetConfig {
   devCorsProxy?: boolean;
 }
 
+/**
+ * What a guide button does.
+ *
+ * `web.wordpressLogin` is ONE APPLICATION'S LOGIN FLOW in a generic schema:
+ * the host hard-codes WordPress's form field names and submit button, so any
+ * other image with a login form cannot express itself here. The replacement
+ * is a generic `web.formFill` action whose payload carries the form URL, the
+ * field values, and the submit selector — an application knows its own login
+ * form, so that data is legitimately image-owned and needs no host-side
+ * knowledge of WordPress. Until that lands, this kind stays: the login
+ * feature is kept, not dropped. See "Future work: a generic web form action"
+ * in docs/superpowers/specs/2026-09-22-image-owned-machine-definitions-design.md.
+ */
 export type DemoActionKind = "terminal.run" | "terminal.write" | "web.wordpressLogin";
 
 export interface DemoActionConfig {
@@ -80,40 +92,45 @@ export interface DemoIngestConfig {
 /**
  * Declared runtime shape of a machine.
  *
- * `network` is DESCRIPTIVE ONLY. Nothing gates a socket syscall on it today:
- * across the repo `tcp-bridge` appears at its producer, a capability-badge
- * display list, and a type comment, and `caps.network` has no readers. It is
- * carried so the Config surface can show what a machine claims, and must not
- * be presented to users as a sandbox control until it actually gates the
- * guest socket path. See the spec's "Known-inert capability flag".
+ * There is deliberately no `network` flag. One was carried here as
+ * "descriptive only", but nothing ever gated a socket syscall on it, and a
+ * field that READS like a sandbox control is worse than an absent one once
+ * third-party images declare it: the first reader to trust it would be
+ * trusting a promise the platform never made. Whether the guest socket path
+ * should be gated at all is a separate question, and gets a separate field
+ * when it is answered.
  */
 export interface DemoRuntimeConfig {
   features: DemoRuntimeFeature[];
-  network: boolean;
   requests: DemoResourceRequests;
 }
 
 /**
  * The `runtime` block AS IT APPEARS ON DISK. Every field is optional there —
- * `nginx-demo.json` declares `network` and `requests` with no `features` —
- * and `parseKandeloDemoConfig` is a cast, so a required-field declaration
- * would let a consumer write `profile.runtime.features.includes(...)` and
- * get a TypeError with no type error to warn them.
+ * `nginx-demo.json` declares `requests` with no `features` — and
+ * `parseKandeloDemoConfig` is a cast, so a required-field declaration would
+ * let a consumer write `profile.runtime.features.includes(...)` and get a
+ * TypeError with no type error to warn them.
  *
  * `resolveDemoRuntime` returns the fully-populated `DemoRuntimeConfig`;
  * reach for that rather than the raw block.
  */
 export interface DemoRuntimeConfigInput {
   features?: DemoRuntimeFeature[];
-  network?: boolean;
   requests?: DemoResourceRequests;
 }
 
+/**
+ * Each feature here changes what the host actually does: `framebuffer` and
+ * `kms` select a display surface, `evdev-input` makes the host attach a DOM
+ * input source before the machine's command runs. A feature with no consumer
+ * is a claim the platform does not honour, so it does not belong in this
+ * union.
+ */
 export type DemoRuntimeFeature =
   | "framebuffer"
   | "kms"
-  | "evdev-input"
-  | "js-workers";
+  | "evdev-input";
 
 /**
  * What the image ASKS for. The host clamps each of these to its own policy
@@ -132,10 +149,13 @@ export const MAX_REQUESTED_MEMORY_PAGES = 16384;
 export const MAX_REQUESTED_WORKERS = 64;
 
 /**
- * How to bring the machine's init process up. A profile with no `init` block
- * boots the image's default login session.
+ * WHAT THIS MACHINE RUNS. A profile with no `init` block boots the image's
+ * default login session.
  *
- * Two mutually exclusive shapes:
+ * Three mutually exclusive shapes, and the exclusivity is STRUCTURAL: a
+ * machine has exactly one answer to "what runs here", so all three forms
+ * live in one union rather than one of them sitting in `presentation` and
+ * being kept apart by a validation rule.
  *
  * - `{ target }` — a NAME, not a command vector: dinit is already running
  *   the image's real init configuration (service files under
@@ -143,21 +163,34 @@ export const MAX_REQUESTED_WORKERS = 64;
  *   This is the shape every dinit-based service demo (nginx, nginx-php, the
  *   wordpress-* family) uses — they all happen to share one launcher
  *   (`dinit --container <target>`).
- * - `{ program, args, cwd? }` — exec a program from the image directly as
- *   pid 1, no service manager involved. Booting a program directly as init
- *   is a legitimate POSIX shape; not every machine needs or wants a service
- *   manager (see images/vfs/products/browser-ruby-todo.toml, which
- *   deliberately excludes dinit to stay lean for one long-running process).
- *   `program` must be an absolute, normalized path — validated the same way
- *   as `ingest.targetPath` — but this does NOT weaken the "boot identity is
- *   never URL-carried" trust rule: the path names a program that must
- *   already exist inside the image, which is exactly as image-owned as a
- *   dinit target name. What that rule forbids is a *command vector*
+ * - `{ program, args, cwd?, uid, gid }` — exec a program from the image
+ *   directly as pid 1, no service manager involved. Booting a program
+ *   directly as init is a legitimate POSIX shape; not every machine needs or
+ *   wants a service manager (see images/vfs/products/browser-ruby-todo.toml,
+ *   which deliberately excludes dinit to stay lean for one long-running
+ *   process). `program` must be an absolute, normalized path — validated the
+ *   same way as `ingest.targetPath` — but this does NOT weaken the "boot
+ *   identity is never URL-carried" trust rule: the path names a program that
+ *   must already exist inside the image, which is exactly as image-owned as
+ *   a dinit target name. What that rule forbids is a *command vector*
  *   supplied by the boot descriptor/URL, not a reference to image content.
+ *
+ *   `uid` and `gid` are REQUIRED, with no default. A default of 0 would hand
+ *   root to any third-party image that picks this shape; a default of 1000
+ *   would invent an account convention the image may not share. Requiring
+ *   them puts the privilege pid 1 runs with in the reviewed file, where a
+ *   reader can see it.
+ * - `{ shellCommand }` — a command line for the machine's interactive shell,
+ *   run after the image's default login session comes up. This is the shape
+ *   for a machine that IS one program over an ordinary shell (fbDOOM, the
+ *   KMS fluid sim, espeak): exiting the program returns to that shell. It is
+ *   not pid 1, which is exactly why it is a separate arm rather than a
+ *   variant of `{ program }`.
  */
 export type DemoInitConfig =
   | { target: string }
-  | { program: string; args: string[]; cwd?: string };
+  | { program: string; args: string[]; cwd?: string; uid: number; gid: number }
+  | { shellCommand: string };
 
 /**
  * Readiness signalling for the host's web pane. This is presentation, not
@@ -182,13 +215,22 @@ export interface DemoWebConfigInput {
   probePath?: string;
 }
 
-/** What the gallery and machine chrome show for this profile. */
+/**
+ * What the gallery and machine chrome show for this profile.
+ *
+ * There is deliberately no `base` field. The base image reference an image
+ * would have declared (`kandelo:shell@abi<N>`) is not verified against
+ * anything — real ABI compatibility is enforced by the `__abi_version` check
+ * on the binaries themselves — so a declared string could only ever agree
+ * with, or lie about, what the app already computes from `ABI_VERSION`. Let
+ * the app compute it, rather than making every image restate a constant that
+ * rots on each ABI bump.
+ */
 export interface DemoIdentityConfig {
   title: string;
   summary: string;
   accent: string;
   glyph: string;
-  base?: string;
   packages?: string[];
 }
 
@@ -227,17 +269,19 @@ export interface KandeloDemoProfileConfig {
   display?: DemoDisplayConfig;
 }
 
+/**
+ * The file AS IT APPEARS ON DISK. Machine fields live in a profile and
+ * NOWHERE ELSE: there is no top-level copy of `presentation`, `runtime`,
+ * `init` and the rest that a profile falls back to.
+ *
+ * Every field used to be declarable at both levels, with each `resolveDemoX`
+ * falling back from the profile to the top level. No tracked image ever used
+ * it, it doubled the lookup surface a reviewer has to check, and independent
+ * per-block fallback is what let one profile resolve two different answers
+ * for the same question. One shape means one place to look.
+ */
 export interface KandeloDemoConfig {
   version: 1;
-  presentation?: DemoPresentationConfig;
-  assets?: DemoAssetConfig[];
-  guide?: DemoGuideConfig;
-  ingest?: DemoIngestConfig;
-  runtime?: DemoRuntimeConfigInput;
-  init?: DemoInitConfig;
-  web?: DemoWebConfigInput;
-  identity?: DemoIdentityConfig;
-  display?: DemoDisplayConfig;
   defaultProfile?: string;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
@@ -301,6 +345,23 @@ export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
 }
 
 /**
+ * Machine fields that belong to a profile. Declared at the top level they
+ * are REJECTED rather than ignored: a silently dropped `init` block would
+ * boot a different machine than the file describes.
+ */
+const PROFILE_ONLY_KEYS = [
+  "presentation",
+  "assets",
+  "guide",
+  "ingest",
+  "runtime",
+  "init",
+  "web",
+  "identity",
+  "display",
+] as const;
+
+/**
  * Validate every image-owned demo profile eagerly. Runtime resolution stays
  * profile-specific, but an image builder must not publish malformed metadata
  * for a profile that its smoke test happened not to select.
@@ -309,7 +370,15 @@ export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
   if (!isRecord(config) || config.version !== 1) {
     throw new Error("demo config must use version 1");
   }
-  validateProfileFields(config, "demo config");
+  const misplaced = PROFILE_ONLY_KEYS.filter(
+    (key) => (config as Record<string, unknown>)[key] !== undefined,
+  );
+  if (misplaced.length > 0) {
+    throw new Error(
+      `demo config declares ${misplaced.join(", ")} at the top level;`
+        + " every machine field belongs to a profile (profiles.<id>)",
+    );
+  }
   if (config.profiles !== undefined) {
     if (!isRecord(config.profiles)) {
       throw new Error("profiles must be an object");
@@ -319,22 +388,6 @@ export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
         throw new Error(`profiles.${profileId} must be an object`);
       }
       validateProfileFields(profile, `profiles.${profileId}`);
-    }
-    // The check inside validateProfileFields is SAME-LEVEL only, and both
-    // blocks fall back independently: a profile that declares `init.target`
-    // while the top level declares `presentation.autoCommand` passes it, yet
-    // resolveDemoInit and resolveDemoPresentation then both answer "this is
-    // what the machine runs" for that profile. Validate the RESOLVED pair.
-    for (const profileId of Object.keys(config.profiles)) {
-      if (resolveDemoInit(config, profileId) === null) continue;
-      if (resolveDemoPresentation(config, profileId)?.autoCommand === undefined) {
-        continue;
-      }
-      throw new Error(
-        `profiles.${profileId} resolves both init.target and`
-          + " presentation.autoCommand — only one thing can be what the"
-          + " machine runs",
-      );
     }
   }
   if (config.defaultProfile !== undefined) {
@@ -350,12 +403,9 @@ export function resolveDemoPresentation(
   profileId: string,
 ): DemoPresentation | null {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.presentation !== undefined) {
-    return normalizePresentationConfig(profile.presentation);
-  }
-  return config.presentation === undefined
+  return profile?.presentation === undefined
     ? null
-    : normalizePresentationConfig(config.presentation);
+    : normalizePresentationConfig(profile.presentation);
 }
 
 export function resolveDemoAssets(
@@ -363,13 +413,7 @@ export function resolveDemoAssets(
   profileId: string,
 ): DemoAssetConfig[] {
   const profile = profileConfig(config, profileId);
-  return [
-    ...normalizeAssets(config.assets, "assets"),
-    ...normalizeAssets(
-      isRecord(profile) ? profile.assets : undefined,
-      `profiles.${profileId}.assets`,
-    ),
-  ];
+  return normalizeAssets(profile?.assets, `profiles.${profileId}.assets`);
 }
 
 export function resolveDemoGuide(
@@ -377,12 +421,9 @@ export function resolveDemoGuide(
   profileId: string,
 ): DemoGuideConfig | null {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.guide !== undefined) {
-    return normalizeGuide(profile.guide, `profiles.${profileId}.guide`);
-  }
-  return config.guide === undefined
+  return profile?.guide === undefined
     ? null
-    : normalizeGuide(config.guide, "guide");
+    : normalizeGuide(profile.guide, `profiles.${profileId}.guide`);
 }
 
 export function resolveDemoIngest(
@@ -390,12 +431,9 @@ export function resolveDemoIngest(
   profileId: string,
 ): DemoIngestConfig | null {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.ingest !== undefined) {
-    return normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
-  }
-  return config.ingest === undefined
+  return profile?.ingest === undefined
     ? null
-    : normalizeIngest(config.ingest, "ingest");
+    : normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
 }
 
 /** Upper bound on any image-declared cap, so a bad image can't ask the browser
@@ -406,7 +444,6 @@ const RUNTIME_FEATURES = new Set<DemoRuntimeFeature>([
   "framebuffer",
   "kms",
   "evdev-input",
-  "js-workers",
 ]);
 
 function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
@@ -436,17 +473,8 @@ function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
     });
   }
 
-  let network = false;
-  if (value.network !== undefined) {
-    if (typeof value.network !== "boolean") {
-      throw new Error(`${field}.network must be a boolean`);
-    }
-    network = value.network;
-  }
-
   return {
     features,
-    network,
     requests: normalizeResourceRequests(value.requests, `${field}.requests`),
   };
 }
@@ -520,15 +548,32 @@ function validateAbsoluteNormalizedPath(path: string, field: string): void {
   }
 }
 
+/** The three keys that each select one arm of `DemoInitConfig`. */
+const INIT_SHAPE_KEYS = ["target", "program", "shellCommand"] as const;
+
+/** Long enough for any real launch line, short enough that a hostile `?vfs=`
+ *  image cannot bury a megabyte in the command the shell is handed. */
+const MAX_SHELL_COMMAND_CHARS = 4096;
+
 function normalizeInit(value: unknown, field: string): DemoInitConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);
   }
-  if (value.target !== undefined && value.program !== undefined) {
+  const declared = INIT_SHAPE_KEYS.filter((key) => value[key] !== undefined);
+  if (declared.length > 1) {
     throw new Error(
-      `${field} cannot declare both target and program`
-        + " — only one thing can be pid 1",
+      `${field} cannot declare ${declared.join(" and ")}`
+        + " — only one thing can be what the machine runs",
     );
+  }
+  if (value.shellCommand !== undefined) {
+    return {
+      shellCommand: cappedString(
+        value.shellCommand,
+        `${field}.shellCommand`,
+        MAX_SHELL_COMMAND_CHARS,
+      ),
+    };
   }
   if (value.program !== undefined) {
     const program = requiredString(value.program, `${field}.program`);
@@ -544,7 +589,14 @@ function normalizeInit(value: unknown, field: string): DemoInitConfig {
       );
     }
 
-    const init: DemoInitConfig = { program, args };
+    const init: DemoInitConfig = {
+      program,
+      args,
+      // Required, not defaulted: see DemoInitConfig. The image states the
+      // privilege its pid 1 runs with, or it does not get to use this shape.
+      uid: accountId(value.uid, `${field}.uid`),
+      gid: accountId(value.gid, `${field}.gid`),
+    };
     if (value.cwd !== undefined) {
       const cwd = requiredString(value.cwd, `${field}.cwd`);
       validateAbsoluteNormalizedPath(cwd, `${field}.cwd`);
@@ -560,6 +612,16 @@ function normalizeInit(value: unknown, field: string): DemoInitConfig {
     );
   }
   return { target };
+}
+
+/** A POSIX uid/gid: a non-negative integer. 0 is root and is allowed — it is
+ *  what every dinit-based machine already runs as; what is not allowed is
+ *  leaving it unsaid. */
+function accountId(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${field} must be a non-negative integer`);
+  }
+  return value;
 }
 
 /** Matches MAX_IDENTITY_PACKAGES: an image declaring more than this is
@@ -650,10 +712,9 @@ export function resolveDemoWeb(
   profileId: string,
 ): DemoWebConfig | null {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.web !== undefined) {
-    return normalizeWeb(profile.web, `profiles.${profileId}.web`);
-  }
-  return config.web === undefined ? null : normalizeWeb(config.web, "web");
+  return profile?.web === undefined
+    ? null
+    : normalizeWeb(profile.web, `profiles.${profileId}.web`);
 }
 
 const ACCENT_RE = /^#[0-9a-f]{6}$/i;
@@ -662,11 +723,9 @@ const MAX_DISPLAY_PIXELS = 7680;
 const MAX_IDENTITY_TITLE_CHARS = 64;
 const MAX_IDENTITY_SUMMARY_CHARS = 512;
 const MAX_IDENTITY_PACKAGES = 64;
-/** `base` is an image reference like `kandelo:shell@abi43`, and a package
- *  entry is a `name@version` spec. Both are short identifiers, so cap them
- *  the way `title` and `summary` are capped rather than leaving two
- *  unbounded strings in a block the gallery renders. */
-const MAX_IDENTITY_BASE_CHARS = 128;
+/** A package entry is a `name@version` spec: a short identifier, capped the
+ *  way `title` and `summary` are rather than left unbounded in a block the
+ *  gallery renders as a list. */
 const MAX_IDENTITY_PACKAGE_CHARS = 128;
 
 function normalizeIdentity(value: unknown, field: string): DemoIdentityConfig {
@@ -695,13 +754,6 @@ function normalizeIdentity(value: unknown, field: string): DemoIdentityConfig {
   }
 
   const identity: DemoIdentityConfig = { title, summary, accent, glyph };
-  if (value.base !== undefined) {
-    identity.base = cappedString(
-      value.base,
-      `${field}.base`,
-      MAX_IDENTITY_BASE_CHARS,
-    );
-  }
   if (value.packages !== undefined) {
     if (!Array.isArray(value.packages)) {
       throw new Error(`${field}.packages must be an array`);
@@ -754,12 +806,9 @@ export function resolveDemoIdentity(
   profileId: string,
 ): DemoIdentityConfig | null {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.identity !== undefined) {
-    return normalizeIdentity(profile.identity, `profiles.${profileId}.identity`);
-  }
-  return config.identity === undefined
+  return profile?.identity === undefined
     ? null
-    : normalizeIdentity(config.identity, "identity");
+    : normalizeIdentity(profile.identity, `profiles.${profileId}.identity`);
 }
 
 /**
@@ -780,14 +829,11 @@ export function resolveDemoRuntime(
   profileId: string,
 ): DemoRuntimeConfig {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.runtime !== undefined) {
-    return normalizeRuntime(profile.runtime, `profiles.${profileId}.runtime`);
-  }
   // A fresh object each call: `features` and `requests` are mutable and a
   // shared constant would let one caller's edit leak into every machine.
-  return config.runtime === undefined
-    ? { features: [], network: false, requests: {} }
-    : normalizeRuntime(config.runtime, "runtime");
+  return profile?.runtime === undefined
+    ? { features: [], requests: {} }
+    : normalizeRuntime(profile.runtime, `profiles.${profileId}.runtime`);
 }
 
 export function resolveDemoInit(
@@ -795,10 +841,9 @@ export function resolveDemoInit(
   profileId: string,
 ): DemoInitConfig | null {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.init !== undefined) {
-    return normalizeInit(profile.init, `profiles.${profileId}.init`);
-  }
-  return config.init === undefined ? null : normalizeInit(config.init, "init");
+  return profile?.init === undefined
+    ? null
+    : normalizeInit(profile.init, `profiles.${profileId}.init`);
 }
 
 export function resolveDemoDisplay(
@@ -806,12 +851,9 @@ export function resolveDemoDisplay(
   profileId: string,
 ): DemoDisplayConfig | null {
   const profile = profileConfig(config, profileId);
-  if (isRecord(profile) && profile.display !== undefined) {
-    return normalizeDisplay(profile.display, `profiles.${profileId}.display`);
-  }
-  return config.display === undefined
+  return profile?.display === undefined
     ? null
-    : normalizeDisplay(config.display, "display");
+    : normalizeDisplay(profile.display, `profiles.${profileId}.display`);
 }
 
 function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
@@ -869,11 +911,21 @@ function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   return ingest;
 }
 
+/**
+ * The one place a machine field is looked up. Anything that is not a record
+ * — a missing profile id, or a profile declared as an array or a string —
+ * resolves to "this profile declares nothing", the same answer the
+ * resolvers give for an unknown id. `validateKandeloDemoConfig` rejects the
+ * malformed shapes outright; this keeps a resolver from throwing a
+ * TypeError if it is reached first.
+ */
 function profileConfig(
   config: KandeloDemoConfig,
   profileId: string,
 ): KandeloDemoProfileConfig | undefined {
-  return isRecord(config.profiles) ? config.profiles[profileId] : undefined;
+  if (!isRecord(config.profiles)) return undefined;
+  const profile = config.profiles[profileId];
+  return isRecord(profile) ? (profile as KandeloDemoProfileConfig) : undefined;
 }
 
 function validateProfileFields(
@@ -887,14 +939,10 @@ function validateProfileFields(
     normalizeRuntime(value.runtime, `${field}.runtime`);
   }
   if (value.init !== undefined) {
+    // No cross-block check here any more: `init` is the ONLY block that says
+    // what a machine runs, and its three shapes exclude each other inside
+    // normalizeInit.
     normalizeInit(value.init, `${field}.init`);
-    const presentation = value.presentation;
-    if (isRecord(presentation) && presentation.autoCommand !== undefined) {
-      throw new Error(
-        `${field} cannot declare both init.target and presentation.autoCommand`
-          + " — only one thing can be what the machine runs",
-      );
-    }
   }
   if (value.web !== undefined) {
     normalizeWeb(value.web, `${field}.web`);
@@ -933,7 +981,6 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     runningPrimary,
     terminalAccess: accessMode(config.terminalAccess, "terminalAccess"),
     internalsAccess: accessMode(config.internalsAccess, "internalsAccess"),
-    ...(typeof config.autoCommand === "string" ? { autoCommand: config.autoCommand } : {}),
     ...(typeof config.touchControls === "boolean" ? { touchControls: config.touchControls } : {}),
   };
 }

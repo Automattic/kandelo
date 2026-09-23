@@ -8,7 +8,6 @@
         "summary": "Adminer database manager: nginx → FastCGI → PHP-FPM, backed by SQLite.",
         "accent": "#6b63a6",
         "glyph": "php",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "dinit@local",
           "nginx@local",
@@ -18,7 +17,6 @@
         ]
       },
       "runtime": {
-        "network": true,
         "requests": {
           "maxWorkers": 12
         }

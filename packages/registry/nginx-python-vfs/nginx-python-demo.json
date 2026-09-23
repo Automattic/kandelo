@@ -8,7 +8,6 @@
         "summary": "nginx reverse-proxying to a Python (wsgiref) JSON API over SQLite.",
         "accent": "#4b8bbe",
         "glyph": "py",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "dinit@local",
           "nginx@local",
@@ -18,7 +17,6 @@
         ]
       },
       "runtime": {
-        "network": true,
         "requests": {
           "maxWorkers": 12
         }

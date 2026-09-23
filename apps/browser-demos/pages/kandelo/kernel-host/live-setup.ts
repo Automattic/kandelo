@@ -246,6 +246,21 @@ const DEMO_GID = 1000;
 const DEMO_USER = "maker";
 const DEMO_HOME = "/home/maker";
 
+/**
+ * The accounts the host can name by construction: uid 0, and the `maker`
+ * demo account every Kandelo image is built with
+ * (`configureDemoLogin`, host/src/demo-login-image.ts, and `ensureDemoHomes`
+ * below). For any OTHER uid an image declares, the host states no
+ * HOME/USER/LOGNAME rather than inventing one — it does not know that
+ * account's home, and guessing would put a wrong path in pid 1's
+ * environment. Such an image owns that part of its environment through its
+ * own profile scripts.
+ */
+const KNOWN_PID1_ACCOUNTS = new Map<number, { user: string; home: string }>([
+  [ROOT_UID, { user: "root", home: ROOT_HOME }],
+  [DEMO_UID, { user: DEMO_USER, home: DEMO_HOME }],
+]);
+
 // pid 1's environment, as HOST POLICY rather than machine identity.
 //
 // A machine booted through `init.target` gets its real per-service
@@ -258,17 +273,23 @@ const DEMO_HOME = "/home/maker";
 // POSIX baseline every program expects. The host supplies that baseline
 // uniformly, for every direct-program machine, never per machine id — and it
 // is deliberately identical to the image-owned dinit baseline so the two
-// shapes agree.
-const PID1_BASELINE_ENV: string[] = [
-  `HOME=${ROOT_HOME}`,
-  "TMPDIR=/tmp",
-  "TERM=xterm-256color",
-  `USER=root`,
-  `LOGNAME=root`,
-  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-  "SSL_CERT_DIR=/etc/ssl/certs",
-];
+// shapes agree. The account part follows the uid the IMAGE declared, because
+// `init.program` machines no longer all run as root.
+function pid1BaselineEnv(uid: number): string[] {
+  const account = KNOWN_PID1_ACCOUNTS.get(uid);
+  return [
+    ...(account === undefined ? [] : [
+      `HOME=${account.home}`,
+      `USER=${account.user}`,
+      `LOGNAME=${account.user}`,
+    ]),
+    "TMPDIR=/tmp",
+    "TERM=xterm-256color",
+    "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+    "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+    "SSL_CERT_DIR=/etc/ssl/certs",
+  ];
+}
 
 /**
  * The two env vars no baked artifact can know: they are computed from THIS
@@ -1117,13 +1138,18 @@ function imageMachine(
 }
 
 /**
- * Turn the image's declared `init` into the pid-1 launch.
+ * Turn the image's declared `init` into the pid-1 launch, or `null` when the
+ * machine declares no pid 1 of its own.
  *
  * `demo.json` SELECTS (which dinit target, or which program in the image);
- * the host composes the launcher and supplies pid 1's baseline identity as
- * policy. Neither shape lets anything outside the image name what runs.
+ * the host composes the launcher and supplies pid 1's baseline environment as
+ * policy. No shape lets anything outside the image name what runs.
+ *
+ * `{ shellCommand }` has no pid-1 launch by construction: it is a command for
+ * the machine's ordinary login session, so the image's default init stands.
  */
-function initLaunchForMachine(init: DemoInitConfig): InitLaunch {
+function initLaunchForMachine(init: DemoInitConfig): InitLaunch | null {
+  if ("shellCommand" in init) return null;
   if ("target" in init) {
     return {
       argv: dinitContainerArgv(init.target),
@@ -1138,10 +1164,18 @@ function initLaunchForMachine(init: DemoInitConfig): InitLaunch {
   return {
     argv: [init.program, ...init.args],
     cwd: init.cwd ?? ROOT_HOME,
-    uid: ROOT_UID,
-    gid: ROOT_GID,
-    env: [...PID1_BASELINE_ENV, ...hostSuppliedInitEnv()],
+    // The privilege pid 1 runs with is the IMAGE'S declaration, not a host
+    // default: `init.program` requires uid/gid precisely so no machine gets
+    // root by omission.
+    uid: init.uid,
+    gid: init.gid,
+    env: [...pid1BaselineEnv(init.uid), ...hostSuppliedInitEnv()],
   };
+}
+
+/** The command an image asked its login shell to run, if it asked for one. */
+function shellCommandForMachine(init: DemoInitConfig | null): string | null {
+  return init !== null && "shellCommand" in init ? init.shellCommand : null;
 }
 
 /**
@@ -1493,6 +1527,9 @@ async function bootProfile(
   // replaced with a package- or profile-name-specific UI promise.
   host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
   const assets = resolveDemoAssets(imageConfig, profileId);
+  // The one command this machine asked its login shell to run, if any. Read
+  // once here: `init` is the single block that says what a machine runs.
+  const machineShellCommand = shellCommandForMachine(machine.init);
   const initLaunch = machine.init === null
     ? null
     : profile.candidateEvidence === undefined
@@ -1767,7 +1804,7 @@ async function bootProfile(
     // ── Input, then the command ─────────────────────────────────────────
     //
     // The old ladder (framebufferTest → sdl2 → espeak → evdev → runScript →
-    // autoCommand) named six machines. It collapses to: attach an input
+    // the machine's command) named six machines. It collapses to: attach an input
     // source when the image DECLARES it needs one, then run the one command.
     // Attachment has to precede the command because a program that polls
     // /dev/input/event{0,1} misses everything delivered before it starts.
@@ -1817,12 +1854,12 @@ async function bootProfile(
           );
         }
       } else {
-        if (presentation.autoCommand !== undefined) {
+        if (machineShellCommand !== null) {
           // The link wins, matching what the ladder always did — but the
           // machine's own command is not dropped in silence.
           tick(
             "boot-link script replaces the machine's configured command: "
-              + presentation.autoCommand,
+              + machineShellCommand,
           );
         }
         // ⚠️ CONSENT REQUIRED BEFORE PERSISTENT MACHINES ⚠️
@@ -1843,8 +1880,8 @@ async function bootProfile(
           );
         });
       }
-    } else if (presentation.autoCommand !== undefined) {
-      const autoCommand = presentation.autoCommand;
+    } else if (machineShellCommand !== null) {
+      const autoCommand = machineShellCommand;
       tick(`running ${autoCommand}...`);
       void host.runShellCommand(autoCommand).then(
         () => tick(`${autoCommand} exited`),
@@ -2434,18 +2471,16 @@ function descriptorForMachine(
     version: 1,
     id: machine.profileId || profile.descriptor.id,
     title,
-    base: identity?.base ?? `kandelo:shell@abi${ABI_VERSION}`,
+    // The ABI this build speaks, computed here rather than restated by every
+    // image: the binaries' own `__abi_version` check is what actually
+    // enforces compatibility, so a declared string could only agree or lie.
+    base: `kandelo:shell@abi${ABI_VERSION}`,
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
       memoryPages: machine.runtime.requests.memoryPages
         ?? HOST_DEFAULT_DESCRIPTOR_MEMORY_PAGES,
-      features: [
-        "shared-array-buffer",
-        "pty",
-        ...machine.runtime.features,
-        ...(machine.runtime.network ? ["tcp-bridge"] : []),
-      ],
+      features: ["shared-array-buffer", "pty", ...machine.runtime.features],
       time: "real",
     },
     packages: identity?.packages ?? [],
@@ -2459,7 +2494,9 @@ function descriptorForMachine(
         uid: init.uid,
         gid: init.gid,
       },
-    caps: { network: machine.runtime.network },
+    // No `caps`: the machine declares no capability the host enforces, and a
+    // flag that reads like a sandbox control but gates nothing is worse than
+    // an absent one.
   };
 }
 
@@ -2498,9 +2535,11 @@ function galleryItemForRosterEntry(entry: RosterEntry): GalleryItem | null {
   const availability = galleryEntryAvailability(entry);
   const source = galleryProductSource(entry.product);
   const init = resolveDemoInit(config, entry.profile);
-  const bootCommand = init === null
-    ? DEFAULT_LOGIN_SESSION_ARGV
-    : initLaunchForMachine(init).argv;
+  // A `shellCommand` machine has no pid 1 of its own, so `initLaunchForMachine`
+  // answers null and the listing shows the login session it really boots —
+  // the command runs in that session, after it.
+  const bootCommand = (init === null ? null : initLaunchForMachine(init))?.argv
+    ?? DEFAULT_LOGIN_SESSION_ARGV;
   const eagerUrl = source !== undefined && source.kind === "url"
     ? vfsImageUrlWithProfile(source.url, entry.profile)
     : undefined;
@@ -2508,7 +2547,7 @@ function galleryItemForRosterEntry(entry: RosterEntry): GalleryItem | null {
     id: entry.profile,
     title: identity.title,
     summary: identity.summary,
-    base: identity.base ?? `kandelo:shell@abi${ABI_VERSION}`,
+    base: `kandelo:shell@abi${ABI_VERSION}`,
     packages: identity.packages ?? [],
     bootCommand,
     ...(eagerUrl === undefined ? {} : { vfsImageUrl: eagerUrl }),

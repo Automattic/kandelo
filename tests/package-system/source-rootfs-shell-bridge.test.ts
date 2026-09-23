@@ -37,6 +37,7 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoInit,
   resolveDemoPresentation,
   validateKandeloDemoConfig,
 } from "../../web-libs/kandelo-session/src/demo-config";
@@ -656,12 +657,10 @@ describe("canonical source-rootfs shell", () => {
     const demo = parseKandeloDemoConfig(text(demoBytes));
     expect(demo).not.toBeNull();
     validateKandeloDemoConfig(demo!);
-    expect(
-      resolveDemoPresentation(demo!, "shell")?.autoCommand,
-    ).toBeUndefined();
-    expect(resolveDemoPresentation(demo!, "doom")?.autoCommand).toBe(
-      "/usr/local/bin/fbdoom -iwad /doom1.wad",
-    );
+    expect(resolveDemoInit(demo!, "shell")).toBeNull();
+    expect(resolveDemoInit(demo!, "doom")).toEqual({
+      shellCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+    });
     expect(resolveDemoPresentation(demo!, "doom")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
       "framebuffer",
@@ -677,9 +676,9 @@ describe("canonical source-rootfs shell", () => {
         devCorsProxy: true,
       },
     ]);
-    expect(resolveDemoPresentation(demo!, "modeset")?.autoCommand).toBe(
-      "/usr/local/bin/modeset",
-    );
+    expect(resolveDemoInit(demo!, "modeset")).toEqual({
+      shellCommand: "/usr/local/bin/modeset",
+    });
     expect(resolveDemoPresentation(demo!, "modeset")?.runningPrimary).toEqual([
       "kms",
       "terminal",
@@ -870,8 +869,8 @@ describe("canonical source-rootfs shell", () => {
     writeFileSync(
       demoProfileOverlayPath,
       readFileSync(paths.demoProfileOverlayPath, "utf8").replace(
-        '"autoCommand": "/usr/local/bin/modeset"',
-        '"autoCommand": "/usr/local/bin/not-modeset"',
+        '"shellCommand": "/usr/local/bin/modeset"',
+        '"shellCommand": "/usr/local/bin/not-modeset"',
       ),
     );
 

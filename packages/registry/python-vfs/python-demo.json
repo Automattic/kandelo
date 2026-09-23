@@ -9,6 +9,9 @@
         "accent": "#3776ab",
         "glyph": "py"
       },
+      "init": {
+        "shellCommand": "PYTHONHOME=/usr PYTHONDONTWRITEBYTECODE=1 python3 -c \"import json, sys; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\""
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": [
@@ -16,8 +19,7 @@
           "syslog"
         ],
         "terminalAccess": "primary",
-        "internalsAccess": "drawer",
-        "autoCommand": "PYTHONHOME=/usr PYTHONDONTWRITEBYTECODE=1 python3 -c \"import json, sys; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\""
+        "internalsAccess": "drawer"
       }
     }
   }

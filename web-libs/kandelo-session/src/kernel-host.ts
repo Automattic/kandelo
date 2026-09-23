@@ -567,11 +567,6 @@ export interface DemoPresentation {
   /** Where detailed system views live when they are not primary. */
   internalsAccess: "primary" | "drawer" | "side";
   /**
-   * Optional command to inject into the persistent shell after boot. Used by
-   * framebuffer demos so exiting the app returns to the shell command.
-   */
-  autoCommand?: string;
-  /**
    * Whether the demo wants an on-screen touch control overlay on coarse-pointer
    * devices. Used by keyboard-driven framebuffer demos that are otherwise
    * unplayable without a physical keyboard.

@@ -8,7 +8,6 @@
         "summary": "Static HTTP service supervised by dinit and exposed through the browser bridge.",
         "accent": "#3a8f41",
         "glyph": "nx",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "dinit@local",
           "nginx@local",
@@ -17,7 +16,6 @@
         ]
       },
       "runtime": {
-        "network": true,
         "requests": {
           "maxWorkers": 6
         }

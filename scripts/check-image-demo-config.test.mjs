@@ -49,23 +49,21 @@ describe("tracked demo-config checker", () => {
       .toEqual([{ found: "Runtime", meant: "runtime" }]);
   });
 
-  // Review finding: KandeloDemoConfig declares the same block-key set at
-  // the top level as inside profiles.<id>, and every resolveDemoX falls
-  // back from the profile value to the top-level config.X. A top-level
-  // near-miss is exactly as dangerous as a profile-nested one, so it must
-  // be checked too, not just nearMissKeys() on each profile.
-  it("flags a near-miss key at the top level of the demo config", () => {
-    expect(() => assertValidDemoConfig({ version: 1, runtimee: {} }, "fixture.json"))
-      .toThrow(/fixture\.json demo config has key "runtimee" — did you mean "runtime"/);
-  });
-
-  it("still flags a near-miss nested under a profile", () => {
+  it("flags a near-miss nested under a profile", () => {
     expect(() =>
       assertValidDemoConfig(
         { version: 1, profiles: { node: { runtimee: {} } } },
         "fixture.json",
       )
     ).toThrow(/fixture\.json profiles\.node has key "runtimee" — did you mean "runtime"/);
+  });
+
+  // The schema is profile-only: a machine block at the top level is rejected
+  // by validateKandeloDemoConfig itself (web-libs/kandelo-session), so this
+  // checker scans one shape — profiles — instead of the same key set twice.
+  it("scans profiles only, not the top level", () => {
+    expect(() => assertValidDemoConfig({ version: 1, runtimee: {} }, "fixture.json"))
+      .not.toThrow();
   });
 
   // Review finding: the old regex was a non-greedy match up to the first

@@ -8,7 +8,6 @@
         "summary": "SpiderMonkey-backed Node.js compatibility runtime with npm staged as /usr/bin/node.",
         "accent": "#43853d",
         "glyph": "js",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "node@local",
           "node-vfs@local",
@@ -18,10 +17,6 @@
         ]
       },
       "runtime": {
-        "features": [
-          "js-workers"
-        ],
-        "network": true,
         "requests": {
           "memoryPages": 4096
         }

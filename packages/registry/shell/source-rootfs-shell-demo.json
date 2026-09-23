@@ -8,7 +8,6 @@
         "summary": "Bash, dash, coreutils, and the full utility set from the shell image.",
         "accent": "#3858e9",
         "glyph": "sh",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "bash@local",
           "dash@local",
@@ -63,7 +62,6 @@
         "summary": "SDL2 GLSL shader playground: a live-coding editor (left) beside a GLES2 fragment shader rendered on a 1920×1080 /dev/dri/card0 surface (right), auto-recompiling 250 ms after you stop typing. F1/F2 switch between the image and sound shader, Ctrl+L cycles presets, Ctrl+S persists, ESC quits.",
         "accent": "#9c27b0",
         "glyph": "S",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "bash@local",
           "coreutils@local"
@@ -79,6 +77,9 @@
         "minWidth": 1920,
         "minHeight": 1080
       },
+      "init": {
+        "shellCommand": "/usr/local/bin/sdl2"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": [
@@ -87,8 +88,7 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/sdl2"
+        "internalsAccess": "drawer"
       }
     },
     "evdev": {
@@ -97,7 +97,6 @@
         "summary": "Keystrokes + pointer motion captured from the DOM and replayed through /dev/input/event{0,1}.",
         "accent": "#7e57c2",
         "glyph": "E",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "bash@local",
           "coreutils@local"
@@ -108,28 +107,8 @@
           "evdev-input"
         ]
       },
-      "presentation": {
-        "bootPrimary": "syslog",
-        "runningPrimary": [
-          "terminal",
-          "syslog"
-        ],
-        "terminalAccess": "primary",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/evdev_demo"
-      }
-    },
-    "espeak": {
-      "identity": {
-        "title": "OSS - Espeak-NG",
-        "summary": "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's OSS backend.",
-        "accent": "#f48fb1",
-        "glyph": "T",
-        "base": "kandelo:shell@abi43",
-        "packages": [
-          "bash@local",
-          "coreutils@local"
-        ]
+      "init": {
+        "shellCommand": "/usr/local/bin/evdev_demo"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -138,8 +117,31 @@
           "syslog"
         ],
         "terminalAccess": "primary",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/bin/espeak-ng \"Welcome to Kandelo, the WebAssembly POSIX kernel\""
+        "internalsAccess": "drawer"
+      }
+    },
+    "espeak": {
+      "identity": {
+        "title": "OSS - Espeak-NG",
+        "summary": "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's OSS backend.",
+        "accent": "#f48fb1",
+        "glyph": "T",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/espeak-ng \"Welcome to Kandelo, the WebAssembly POSIX kernel\""
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
       }
     }
   }

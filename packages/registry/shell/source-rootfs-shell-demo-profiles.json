@@ -7,7 +7,6 @@
         "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
         "accent": "#b5301c",
         "glyph": "D",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "fbdoom@local",
           "doom-shareware@local",
@@ -20,12 +19,14 @@
           "framebuffer"
         ]
       },
+      "init": {
+        "shellCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad",
         "touchControls": true
       },
       "assets": [
@@ -53,7 +54,6 @@
         "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
         "accent": "#4f8fd6",
         "glyph": "K",
-        "base": "kandelo:shell@abi43",
         "packages": [
           "modeset@local",
           "bash@local",
@@ -65,12 +65,14 @@
           "kms"
         ]
       },
+      "init": {
+        "shellCommand": "/usr/local/bin/modeset"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/modeset"
+        "internalsAccess": "drawer"
       }
     }
   }
