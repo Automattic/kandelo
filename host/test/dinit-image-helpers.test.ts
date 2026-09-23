@@ -14,6 +14,7 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "../src/vfs/image-helpers";
+import { S_IFMT, S_IFREG } from "../src/vfs/sharedfs-vendor";
 import {
   derivePackageDeferredZipTree,
   registerPackageDeferredZipTree,
@@ -151,6 +152,33 @@ describe("dinit-derived image system databases", () => {
 });
 
 describe("dinit-derived image binary ownership", () => {
+  it("bakes /sbin/dinit and /sbin/dinitctl into the image as resident executables", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-dinit-baked-"));
+    const dinit = join(root, "dinit.wasm");
+    const dinitctl = join(root, "dinitctl.wasm");
+    writeFileSync(dinit, encoder.encode("baked dinit"));
+    writeFileSync(dinitctl, encoder.encode("baked dinitctl"));
+    dinitResolverFixture.artifacts.set("programs/dinit/dinit.wasm", dinit);
+    dinitResolverFixture.artifacts.set(
+      "programs/dinit/dinitctl.wasm",
+      dinitctl,
+    );
+
+    try {
+      const fs = createFs();
+      addDinitInit(fs, []);
+
+      for (const path of ["/sbin/dinit", "/sbin/dinitctl"]) {
+        const stat = fs.stat(path);
+        expect(stat.mode & S_IFMT).toBe(S_IFREG);
+        expect(stat.mode & 0o777).toBe(0o755);
+      }
+    } finally {
+      dinitResolverFixture.artifacts.clear();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("installs the exact declared services database for a standalone image", () => {
     const fs = createFs();
     addDinitInit(fs, [], {

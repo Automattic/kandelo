@@ -138,7 +138,6 @@ import {
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
-import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 // @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
 import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
 
@@ -302,7 +301,6 @@ interface LiveDemoSpec {
     argv: string[];
     env?: InitEnvProfile;
     cwd?: string;
-    programUrl?: string;
     uid?: number;
     gid?: number;
     maxWorkers?: number;
@@ -405,7 +403,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     init: {
       argv: DINIT_NGINX_ARGV,
       env: "service",
-      programUrl: dinitWasmUrl,
       maxWorkers: 6,
       web: {
         requiredPorts: [HTTP_PORT],
@@ -420,7 +417,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     init: {
       argv: DINIT_NGINX_ARGV,
       env: "service",
-      programUrl: dinitWasmUrl,
       maxWorkers: 12,
       web: {
         requiredPorts: [HTTP_PORT],
@@ -452,7 +448,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     init: {
       argv: DINIT_NGINX_ARGV,
       env: "wordpress",
-      programUrl: dinitWasmUrl,
       maxWorkers: 12,
       maxMemoryPages: 4096,
       web: {
@@ -471,7 +466,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     init: {
       argv: DINIT_NGINX_ARGV,
       env: "wordpress",
-      programUrl: dinitWasmUrl,
       maxWorkers: 24,
       maxMemoryPages: 16384,
       web: {
@@ -543,7 +537,6 @@ interface LiveProfile {
     argv: string[];
     env?: string[];
     cwd?: string;
-    programUrl?: string;
     uid?: number;
     gid?: number;
     maxWorkers?: number;
@@ -1000,15 +993,6 @@ function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
     id: knownDemo ?? desc.id,
     vfsUrl,
     descriptor: desc,
-    init: profile.init === undefined
-      ? undefined
-      : {
-        ...profile.init,
-        // WHY: an explicit VFS image is a complete product closure. Fetching
-        // the built-in init binary would hide an incomplete image and makes
-        // canonical Pages depend on the forbidden legacy binary graph.
-        programUrl: undefined,
-      },
   };
 }
 
@@ -1035,10 +1019,6 @@ function profileForCandidateEvidence(
         cwd: evidence.boot.cwd,
         uid: evidence.boot.uid,
         gid: evidence.boot.gid,
-        // Candidate products own their complete executable closure. Pulling
-        // dinit or another program from the default Vite graph would make
-        // evidence pass with an incomplete candidate image.
-        programUrl: undefined,
       },
   };
 }
@@ -1088,12 +1068,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       argv: spec.init.argv.slice(),
       env: initEnv(spec.init.env),
       cwd: spec.init.cwd,
-      // Canonical Pages products own their complete executable closure just
-      // like an explicit VFS descriptor does. The legacy URL is available
-      // only when the ordinary checked-out binary graph owns the image.
-      programUrl: CANONICAL_PAGES_VFS_LOADER === undefined
-        ? spec.init.programUrl
-        : undefined,
       uid: spec.init.uid,
       gid: spec.init.gid,
       maxWorkers: spec.init.maxWorkers,
@@ -1439,15 +1413,6 @@ async function bootProfile(
     } else if (profile.id === "wordpress-mariadb") {
       patchMariaDbUnixSocketConfig(buildFs);
       patchWordPressRuntimeConfig(buildFs, "mariadb");
-    }
-    if (profile.init?.programUrl) {
-      tick(`staging ${profile.init.argv[0]}...`);
-      const bytes = await fetch(profile.init.programUrl)
-        .then(failOn(profile.init.argv[0]))
-        .then((r) => r.arrayBuffer());
-      assertCurrent();
-      ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
-      writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
     }
     // Each demo runs its binary from a path, so the bytes have to be in the
     // image before the worker takes exclusive ownership of the VFS.
