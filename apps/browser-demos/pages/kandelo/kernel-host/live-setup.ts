@@ -219,6 +219,23 @@ const DEMO_GID = 1000;
 const DEMO_USER = "maker";
 const DEMO_HOME = "/home/maker";
 
+// ruby-todo boots its server directly as init (no dinit tree — see
+// images/vfs/products/browser-ruby-todo.toml), so unlike the dinit-based
+// service demos it has no per-service env-file to carry its baseline env.
+// It runs as DEMO_UID/DEMO_GID (maker), so its HOME/USER/LOGNAME match that
+// identity rather than root's.
+const RUBY_TODO_INIT_ENV: string[] = [
+  `HOME=${DEMO_HOME}`,
+  "TMPDIR=/tmp",
+  "TERM=xterm-256color",
+  "LANG=en_US.UTF-8",
+  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  `USER=${DEMO_USER}`,
+  `LOGNAME=${DEMO_USER}`,
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_DIR=/etc/ssl/certs",
+];
+
 class BootSuperseded extends Error {
   constructor() {
     super("boot superseded");
@@ -249,7 +266,6 @@ type LiveVfsSource =
   };
 
 type ShellProfile = "default" | "node";
-type InitEnvProfile = "service" | "wordpress";
 
 interface LiveDemoSpec {
   image: LiveVfsImage;
@@ -261,7 +277,25 @@ interface LiveDemoSpec {
   features?: string[];
   init?: {
     argv: string[];
-    env?: InitEnvProfile;
+    /**
+     * Extra env this init process needs beyond what the image itself
+     * already supplies. dinit-based demos (nginx, nginx-php, the
+     * wordpress-* family) get their baseline env from each service's own
+     * `env-file` (see images/vfs/scripts/dinit-image-helpers.ts) — that
+     * baseline never needs to be repeated here. `ruby-todo` runs its
+     * server directly as init (no dinit; see
+     * images/vfs/products/browser-ruby-todo.toml), so it still needs an
+     * explicit baseline, listed inline at its spec below.
+     */
+    env?: string[];
+    /**
+     * `true` marks demos whose init process needs WordPress's
+     * `WP_APP_PATH`/`WP_PROTO`. Those two are computed from this page's own
+     * deployment prefix and protocol at boot time — no VFS artifact baked
+     * ahead of time can know them, so they stay host-supplied here rather
+     * than moving into the image.
+     */
+    wordpressEnv?: boolean;
     cwd?: string;
     uid?: number;
     gid?: number;
@@ -364,7 +398,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
-      env: "service",
       maxWorkers: 6,
       web: {
         requiredPorts: [HTTP_PORT],
@@ -378,7 +411,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
-      env: "service",
       maxWorkers: 12,
       web: {
         requiredPorts: [HTTP_PORT],
@@ -392,9 +424,12 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     network: true,
     init: {
       // Single-process server: boot the resident Ruby directly as init (no
-      // dinit needed for one long-running process).
+      // dinit needed for one long-running process — see
+      // images/vfs/products/browser-ruby-todo.toml). Since there is no
+      // dinit service to carry a per-service env-file, the baseline env
+      // stays inline here, matching that product's own [boot.env].
       argv: ["/usr/bin/ruby", "/var/lib/todo/server.rb"],
-      env: "service",
+      env: RUBY_TODO_INIT_ENV,
       cwd: "/var/lib/todo",
       maxWorkers: 12,
       maxMemoryPages: 4096,
@@ -409,7 +444,7 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
-      env: "wordpress",
+      wordpressEnv: true,
       maxWorkers: 12,
       maxMemoryPages: 4096,
       web: {
@@ -427,7 +462,7 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
-      env: "wordpress",
+      wordpressEnv: true,
       maxWorkers: 24,
       maxMemoryPages: 16384,
       web: {
@@ -584,7 +619,15 @@ slowlog = /dev/null
 request_slowlog_trace_depth = 0
 `;
 
-const SHELL_ENV: string[] = [
+// fbtest is spawned directly by path+bytes (see spawnLazy below), not
+// through the login/bash path that sources /etc/profile.d, so it still
+// needs an explicit env from the caller. Every other shell and service
+// identity now comes entirely from the image: the base shell's own
+// /etc/profile.d/00-kandelo-shell.sh (see shell-lazy-archives.ts) and
+// node's /etc/profile.d/kandelo-node-workspace.sh (see
+// images/vfs/lib/init/spidermonkey-npm-runtime.ts) cover the interactive
+// shells; dinit's per-service env-file covers the service demos.
+const FBTEST_ENV: string[] = [
   `HOME=${DEMO_HOME}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
@@ -592,61 +635,9 @@ const SHELL_ENV: string[] = [
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
   `USER=${DEMO_USER}`,
   `LOGNAME=${DEMO_USER}`,
-  "PS1=kandelo$ ",
-  `HISTFILE=${DEMO_HOME}/.bash_history`,
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
 ];
-
-const NODE_SHELL_ENV: string[] = [
-  `HOME=${DEMO_HOME}`,
-  `PWD=${DEMO_HOME}`,
-  "TMPDIR=/tmp",
-  "TERM=xterm-256color",
-  "LANG=en_US.UTF-8",
-  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-  `USER=${DEMO_USER}`,
-  `LOGNAME=${DEMO_USER}`,
-  "PS1=spidermonkey-node$ ",
-  `HISTFILE=${DEMO_HOME}/.bash_history`,
-  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-  "SSL_CERT_DIR=/etc/ssl/certs",
-  "npm_config_cache=/tmp/.npm-cache",
-  "npm_config_registry=https://registry.npmjs.org/",
-  "npm_config_fund=false",
-  "npm_config_audit=false",
-  "npm_config_progress=false",
-  "npm_config_update_notifier=false",
-  "NPM_CONFIG_FUND=false",
-  "NPM_CONFIG_AUDIT=false",
-  "NPM_CONFIG_PROGRESS=false",
-  "NPM_CONFIG_UPDATE_NOTIFIER=false",
-];
-
-const SERVICE_ENV: string[] = [
-  `HOME=${ROOT_HOME}`,
-  "TMPDIR=/tmp",
-  "TERM=xterm-256color",
-  "USER=root",
-  "LOGNAME=root",
-  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-  "SSL_CERT_DIR=/etc/ssl/certs",
-];
-
-const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
-  default: { env: SHELL_ENV, cwd: DEMO_HOME },
-  node: { env: NODE_SHELL_ENV, cwd: DEMO_HOME },
-};
-
-const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
-  service: () => SERVICE_ENV,
-  wordpress: () => [
-    ...SERVICE_ENV,
-    `WP_APP_PATH=${APP_PATH}`,
-    `WP_PROTO=${PROTO}`,
-  ],
-};
 
 export type FbDemo = "none" | "test";
 
@@ -1028,7 +1019,9 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     autoCommand: spec.autoCommand,
     init: spec.init && {
       argv: spec.init.argv.slice(),
-      env: initEnv(spec.init.env),
+      env: spec.init.wordpressEnv
+        ? [`WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`]
+        : spec.init.env,
       cwd: spec.init.cwd,
       uid: spec.init.uid,
       gid: spec.init.gid,
@@ -1046,53 +1039,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     sdl2Demo: normalized === "sdl2",
     evdevDemo: normalized === "evdev",
     espeakDemo: normalized === "espeak",
-  };
-}
-
-function initEnv(profile: InitEnvProfile | undefined): string[] | undefined {
-  if (!profile) return undefined;
-  return INIT_ENV_PROFILES[profile]();
-}
-
-function shellEnvFor(profile: ShellProfile): string[] {
-  return SHELL_PROFILES[profile].env;
-}
-
-function shellCwdFor(profile: ShellProfile): string {
-  return SHELL_PROFILES[profile].cwd;
-}
-
-function shellIdentityForProfile(
-  profile: LiveProfile,
-  boot?: BootDescriptor["boot"],
-): {
-  env: string[];
-  cwd: string;
-  uid: number;
-  gid: number;
-} {
-  let identity: { env: string[]; cwd: string; uid: number; gid: number };
-  if (profile.shell === "node") {
-    identity = {
-      env: shellEnvFor(profile.shell),
-      cwd: shellCwdFor(profile.shell),
-      uid: DEMO_UID,
-      gid: DEMO_GID,
-    };
-  } else {
-    identity = {
-      env: shellEnvFor(profile.shell),
-      cwd: shellCwdFor(profile.shell),
-      uid: DEMO_UID,
-      gid: DEMO_GID,
-    };
-  }
-  if (!boot) return identity;
-  return {
-    env: mergeEnvArrays(identity.env, envArray(boot.env)),
-    cwd: boot.cwd || identity.cwd,
-    uid: boot.uid ?? identity.uid,
-    gid: boot.gid ?? identity.gid,
   };
 }
 
@@ -2147,7 +2093,7 @@ async function spawnLazy(
     assertCurrent();
     tick(`spawning ${argv[0]}...`);
     await kernel.spawn(bytes, argv, {
-      env: SHELL_ENV,
+      env: FBTEST_ENV,
       cwd: DEMO_HOME,
       uid: DEMO_UID,
       gid: DEMO_GID,
@@ -2306,7 +2252,6 @@ function sleep(ms: number): Promise<void> {
 
 function descriptorBootIdentity(
   id: string,
-  shell: ShellProfile,
 ): { env: string[]; cwd: string; uid: number; gid: number } {
   const serviceIds = new Set([
     "nginx",
@@ -2315,27 +2260,23 @@ function descriptorBootIdentity(
     "wordpress-mariadb",
   ]);
   if (serviceIds.has(id)) {
-    return {
-      env: SERVICE_ENV,
-      cwd: ROOT_HOME,
-      uid: ROOT_UID,
-      gid: ROOT_GID,
-    };
+    // Baseline service env now lives in the image (each dinit service's own
+    // env-file — see images/vfs/scripts/dinit-image-helpers.ts). This
+    // descriptor identity is presentation/sharing metadata, not the actual
+    // spawn env, so it carries no env of its own.
+    return { env: [], cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID };
   }
-  if (id === "node" || shell === "node") {
-    return {
-      env: shellEnvFor(shell),
-      cwd: shellCwdFor(shell),
-      uid: DEMO_UID,
-      gid: DEMO_GID,
-    };
+  if (id === "ruby-todo") {
+    // Matches LIVE_DEMO_SPECS["ruby-todo"].init: a direct-exec server, not
+    // an interactive shell, so its cwd is the app directory rather than the
+    // maker home the branch below returns.
+    return { env: [], cwd: "/var/lib/todo", uid: DEMO_UID, gid: DEMO_GID };
   }
-  return {
-    env: shellEnvFor(shell),
-    cwd: shellCwdFor(shell),
-    uid: DEMO_UID,
-    gid: DEMO_GID,
-  };
+  // Interactive shells (base + node) get PS1, HISTFILE, TERM, LANG, and the
+  // rest of their env from the image's own /etc/profile.d, sourced by the
+  // `/usr/bin/login -p -f maker` login shell — see FBTEST_ENV's comment
+  // above for the exact files.
+  return { env: [], cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
 }
 
 function envRecord(env: string[]): Record<string, string> {
@@ -2353,9 +2294,8 @@ function descriptorFor(id: string): BootDescriptor {
   const item =
     liveGalleryItems().find((p) => p.id === normalized) ??
     liveGalleryItems()[0];
-  const shell = spec.shell ?? "default";
   const network = spec.network ?? false;
-  const bootIdentity = descriptorBootIdentity(normalized, shell);
+  const bootIdentity = descriptorBootIdentity(normalized);
   return {
     version: 1,
     id: item.id,

@@ -103,6 +103,37 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
+// The maker account's interactive identity: prompt, history file, locale,
+// terminal type, and the TLS trust anchors curl/wget/etc. expect at their
+// well-known paths. `/usr/bin/login -p -f maker` (the image's
+// experimental-terminal-session initial program) sets HOME/USER/LOGNAME/PATH
+// from /etc/passwd and preserves the caller's TERM, but nothing sets these
+// the rest of the way — that used to be the browser app's job (a SHELL_ENV
+// array baked into live-setup.ts); it belongs here instead, so every host
+// that boots this image (not just the one browser app) gets the same
+// interactive shell. Named with a "00-" prefix so it runs before any other
+// profile.d script that wants to override a piece of this baseline (e.g.
+// the node image's PS1) for its own derived identity.
+export function registerDemoShellProfile(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/00-kandelo-shell.sh",
+    "# The demo account's interactive shell identity. login sets HOME/USER/\n" +
+      "# LOGNAME/PATH from /etc/passwd already; this fills in the rest.\n" +
+      'if [ "${HOME:-}" = /home/maker ]; then\n' +
+      "  export PS1='kandelo$ '\n" +
+      '  export HISTFILE="$HOME/.bash_history"\n' +
+      "  export TMPDIR=/tmp\n" +
+      "  export LANG=en_US.UTF-8\n" +
+      "  export TERM=xterm-256color\n" +
+      "  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n" +
+      "  export SSL_CERT_DIR=/etc/ssl/certs\n" +
+      "fi\n",
+    0o644,
+  );
+}
+
 // The python lazy-archive mounts a statically-linked CPython at /usr/bin with
 // its standard library at /usr/lib/python3.13. A static build ships no
 // platform-dependent (lib-dynload) modules, so CPython's exec_prefix probe

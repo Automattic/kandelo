@@ -33,6 +33,7 @@ import {
   displacePosixUtilsLiteManApplet,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
+  registerDemoShellProfile,
   registerManShellProfile,
   registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
@@ -464,6 +465,10 @@ export function populateShellEnvironment(
   // /usr/share/terminfo on every run, so the shared database must be present
   // regardless of whether the base rootfs already carries it.
   populateTerminfoDatabase(fs, resolveArtifact);
+  // Demo account interactive-shell identity (prompt, history file, locale,
+  // TLS trust anchors). Every image derived from the shell base — including
+  // service demos that layer dinit on top — inherits it for free.
+  registerDemoShellProfile(fs);
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }

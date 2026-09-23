@@ -8,6 +8,8 @@ import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
   addDinitBaseSystemFiles,
   addDinitInit,
+  DINIT_SERVICE_ENV,
+  DINIT_SERVICE_ENV_PATH,
 } from "../../images/vfs/scripts/dinit-image-helpers";
 import {
   ensureDirRecursive,
@@ -244,6 +246,63 @@ describe("dinit-derived image binary ownership", () => {
     expect(readGuestFile(fs, "/sbin/dinitctl")).toBe("base dinitctl");
     expect(readGuestFile(fs, "/etc/dinit.d/service")).toContain(
       "type = internal",
+    );
+  });
+
+  it("gives every non-internal service the shared baseline env-file", () => {
+    const fs = createFs();
+    ensureDirRecursive(fs, "/sbin");
+    writeVfsBinary(fs, "/sbin/dinit", new TextEncoder().encode("base dinit"));
+    writeVfsBinary(
+      fs,
+      "/sbin/dinitctl",
+      new TextEncoder().encode("base dinitctl"),
+    );
+
+    addDinitInit(fs, [
+      { name: "nginx", type: "process", command: "/usr/sbin/nginx" },
+      { name: "seed", type: "scripted", command: "/bin/true" },
+      { name: "aggregator", type: "internal" },
+    ]);
+
+    expect(readGuestFile(fs, "/etc/dinit.d/nginx")).toContain(
+      `env-file = ${DINIT_SERVICE_ENV_PATH}`,
+    );
+    expect(readGuestFile(fs, "/etc/dinit.d/seed")).toContain(
+      `env-file = ${DINIT_SERVICE_ENV_PATH}`,
+    );
+    // Internal services run no command, so an env-file would be meaningless.
+    expect(readGuestFile(fs, "/etc/dinit.d/aggregator")).not.toContain(
+      "env-file",
+    );
+
+    const envFile = readGuestFile(fs, DINIT_SERVICE_ENV_PATH);
+    for (const [key, value] of Object.entries(DINIT_SERVICE_ENV)) {
+      expect(envFile).toContain(`${key}=${value}`);
+    }
+  });
+
+  it("lets a service opt out of the shared baseline env-file", () => {
+    const fs = createFs();
+    ensureDirRecursive(fs, "/sbin");
+    writeVfsBinary(fs, "/sbin/dinit", new TextEncoder().encode("base dinit"));
+    writeVfsBinary(
+      fs,
+      "/sbin/dinitctl",
+      new TextEncoder().encode("base dinitctl"),
+    );
+
+    addDinitInit(fs, [
+      {
+        name: "custom",
+        type: "process",
+        command: "/usr/bin/custom",
+        noDefaultEnvFile: true,
+      },
+    ]);
+
+    expect(readGuestFile(fs, "/etc/dinit.d/custom")).not.toContain(
+      "env-file",
     );
   });
 

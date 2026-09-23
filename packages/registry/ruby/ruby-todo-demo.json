@@ -33,8 +33,7 @@
           "terminal"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/bin/ruby /var/lib/todo/server.rb"
+        "internalsAccess": "drawer"
       }
     }
   }
