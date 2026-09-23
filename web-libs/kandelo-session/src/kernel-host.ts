@@ -535,6 +535,14 @@ export interface WebPreviewState {
   status: WebPreviewStatus;
   message?: string;
   pendingRequests?: number;
+  /**
+   * The in-machine TCP port that `url` forwards to through the service-worker
+   * HTTP bridge. Consumers that have to decide whether a loopback URL the
+   * machine printed is reachable from the page need this: the bridge forwards
+   * exactly this one port, so `http://localhost:<port>/` is reachable only
+   * when `<port>` matches.
+   */
+  port?: number;
 }
 
 // ── Presentation intent ──────────────────────────────────────────────────

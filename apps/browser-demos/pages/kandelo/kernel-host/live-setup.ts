@@ -1217,6 +1217,7 @@ function reportInitError(
     host.setWebPreview({
       label: profile.init.web.label,
       url: APP_PREFIX,
+      port: HTTP_PORT,
       status: "error",
       message,
     });
@@ -1645,6 +1646,7 @@ async function bootProfile(
         host.setWebPreview({
           label: profile.init.web.label,
           url: appPrefix,
+          port: HTTP_PORT,
           status: "starting",
           message: "Waiting for services",
         });
@@ -1672,6 +1674,7 @@ async function bootProfile(
         host.setWebPreview({
           label: profile.init.web.label,
           url: APP_PREFIX,
+          port: HTTP_PORT,
           status: "error",
           message: "HTTP bridge unavailable",
         });
@@ -2361,6 +2364,7 @@ function maybeMarkWebReady(
     host.setWebPreview({
       label: web.label,
       url: appPrefix,
+      port: HTTP_PORT,
       status: "running",
       message: readyMessage,
     });
@@ -2372,6 +2376,7 @@ function maybeMarkWebReady(
     host.setWebPreview({
       label: web.label,
       url: appPrefix,
+      port: HTTP_PORT,
       status: "running",
       message: readyMessage,
     });
@@ -2383,6 +2388,7 @@ function maybeMarkWebReady(
   host.setWebPreview({
     label: web.label,
     url: appPrefix,
+    port: HTTP_PORT,
     status: "starting",
     message: web.probePath
       ? "Waiting for application readiness"
@@ -2399,6 +2405,7 @@ function maybeMarkWebReady(
         host.setWebPreview({
           label: web.label,
           url: appPrefix,
+          port: HTTP_PORT,
           status: "running",
           message: "HTTP bridge ready",
         });
@@ -2409,6 +2416,7 @@ function maybeMarkWebReady(
         host.setWebPreview({
           label: web.label,
           url: appPrefix,
+          port: HTTP_PORT,
           status: "error",
           message: "HTTP preview did not become ready",
         });
