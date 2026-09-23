@@ -673,7 +673,6 @@ describe("canonical source-rootfs shell", () => {
         url: DOOM_WAD_URL,
         sha256: DOOM_WAD_SHA256,
         mode: 0o644,
-        devCorsProxy: true,
       },
     ]);
     expect(resolveDemoInit(demo!, "modeset")).toEqual({

@@ -34,8 +34,30 @@ export async function stageConfiguredAssets(
   }
 }
 
+/**
+ * Where to actually fetch an image-declared asset from.
+ *
+ * The image says only where the bytes live. Whether reaching them needs the
+ * dev server's same-origin CORS detour is the HOST's call, and the host has
+ * everything it needs to make it: it knows it is a dev server
+ * (`import.meta.env.DEV`) and it knows its own origin. So in dev, route every
+ * cross-origin asset URL through the proxy and leave same-origin ones alone.
+ *
+ * This replaced a per-asset `devCorsProxy: true` flag in the image's
+ * demo.json. The flag could only help images that knew Kandelo's dev-server
+ * convention; deriving it from the URL means a third-party image's
+ * cross-origin asset works in dev too. A URL that does not parse is left
+ * untouched — `fetch` should report it, not this function.
+ */
 function demoAssetFetchUrl(asset: DemoAssetConfig): string {
-  if (!asset.devCorsProxy || !import.meta.env.DEV) return asset.url;
+  if (!import.meta.env.DEV) return asset.url;
+  let assetOrigin: string;
+  try {
+    assetOrigin = new URL(asset.url, window.location.href).origin;
+  } catch {
+    return asset.url;
+  }
+  if (assetOrigin === window.location.origin) return asset.url;
   const proxyUrl = new URL(DEV_CORS_PROXY_PATH, window.location.href);
   proxyUrl.searchParams.set("url", asset.url);
   return proxyUrl.href;

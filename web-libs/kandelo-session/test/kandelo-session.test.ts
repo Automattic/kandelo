@@ -1995,7 +1995,6 @@ describe("Kandelo demo config", () => {
               url: "https://example.invalid/doom1.wad",
               sha256: "abc123",
               mode: 420,
-              devCorsProxy: true,
             },
           ],
         },
@@ -2011,7 +2010,6 @@ describe("Kandelo demo config", () => {
         url: "https://example.invalid/doom1.wad",
         sha256: "abc123",
         mode: 420,
-        devCorsProxy: true,
       },
     ]);
     // Assets belong to the profile that declares them; no sibling inherits.

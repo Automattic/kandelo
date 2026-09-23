@@ -14,12 +14,22 @@ export interface DemoPresentationConfig {
   touchControls?: boolean;
 }
 
+/**
+ * One file the host stages into the image's filesystem before boot.
+ *
+ * There is deliberately no "route this through the dev CORS proxy" flag. An
+ * image knows where its asset lives; whether fetching it needs a same-origin
+ * detour is a property of the HOST doing the fetching (which origin the page
+ * is served from, and whether this is a dev server at all), so the host
+ * decides it by comparing `url`'s origin with its own. That also means a
+ * third-party image gets the dev proxy for its cross-origin assets without
+ * knowing any Kandelo-specific flag exists.
+ */
 export interface DemoAssetConfig {
   path: string;
   url: string;
   sha256?: string;
   mode?: number;
-  devCorsProxy?: boolean;
 }
 
 /**
@@ -1007,7 +1017,6 @@ function normalizeAsset(value: unknown, field: string): DemoAssetConfig {
     url,
     ...(typeof value.sha256 === "string" ? { sha256: value.sha256 } : {}),
     ...(typeof value.mode === "number" ? { mode: value.mode } : {}),
-    ...(typeof value.devCorsProxy === "boolean" ? { devCorsProxy: value.devCorsProxy } : {}),
   };
 }
 
