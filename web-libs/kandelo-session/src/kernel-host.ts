@@ -106,6 +106,32 @@ export interface LazyDownloadEvent {
   t: number;
 }
 
+/** Stage of a boot that can report incremental byte progress. */
+export type BootPhase = "image";
+
+/**
+ * Progress of the boot-time VFS image load, before any kernel exists.
+ *
+ * Deliberately separate from {@link LazyDownloadEvent}: lazy downloads are
+ * emitted by the running kernel and their ledger is cleared on `attachKernel`,
+ * which happens *after* the boot image has already finished loading.
+ *
+ * Every field is a scalar. This record must never retain image bytes — the
+ * main thread is not an owner of VFS memory.
+ *
+ * `totalBytes` is absent when no authenticated size is available, which
+ * callers render as indeterminate rather than inventing a denominator.
+ */
+export interface BootProgress {
+  phase: BootPhase;
+  /** Human-readable image identity, e.g. `wordpress-sqlite.vfs.zst`. */
+  label: string;
+  loadedBytes: number;
+  totalBytes?: number;
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
+
 /**
  * Authoritative latest state for one lazy VFS transport asset.
  *
@@ -716,6 +742,10 @@ export interface KernelHost {
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
   dmesgHistory(): DmesgLine[];
 
+  // Boot-time VFS image load progress. Null outside an in-flight boot.
+  getBootProgress(): BootProgress | null;
+  subscribeBootProgress(cb: (progress: BootProgress | null) => void): () => void;
+
   // Lazy VFS materialization progress
   subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void;
   /** Bounded chronological log for low-level diagnostics. */
@@ -1056,6 +1086,8 @@ export class LiveKernelHost implements KernelHost {
   private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
   private lazyDownloadSummaryListeners = new ListenerSet<void>();
   private lazyDownloadCapacity = 512;
+  private bootProgress: BootProgress | null = null;
+  private bootProgressListeners = new ListenerSet<BootProgress | null>();
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
@@ -1286,8 +1318,32 @@ export class LiveKernelHost implements KernelHost {
   setStatus(s: MachineStatus): void {
     if (s === this._status) return;
     this._status = s;
+    // The boot screen owns this record; once the machine leaves `booting`
+    // there is no boot screen left to show it.
+    if (s !== "booting") this.setBootProgress(null);
     this.refreshTerminalAvailability();
     this.statusListeners.emit(s);
+  }
+
+  /**
+   * Publish boot-time VFS image progress. Pass `null` to clear it.
+   *
+   * Survives `attachKernel` on purpose: the image finishes loading before the
+   * kernel is created, so this cannot live in the lazy-download ledger.
+   */
+  setBootProgress(progress: BootProgress | null): void {
+    this.bootProgress = progress === null ? null : { ...progress };
+    this.bootProgressListeners.emit(this.bootProgress);
+  }
+
+  getBootProgress(): BootProgress | null {
+    return this.bootProgress === null ? null : { ...this.bootProgress };
+  }
+
+  subscribeBootProgress(
+    cb: (progress: BootProgress | null) => void,
+  ): () => void {
+    return this.bootProgressListeners.add(cb);
   }
 
   /**
