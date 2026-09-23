@@ -57,7 +57,7 @@ import {
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
-import { detectPtrWidth } from "./constants";
+import { DEFAULT_KERNEL_MAX_PAGES, detectPtrWidth } from "./constants";
 import {
   allocateKernelScratchRegion,
   checkedMemoryRange,
@@ -1306,10 +1306,17 @@ export class WasmPosixKernel {
   }
 
   #createKernelMemory(pointerWidth: 4 | 8): WebAssembly.Memory {
+    // The ceiling is a host budget, not a kernel requirement: the kernel Wasm
+    // starts at 24 pages and grows on demand. Engines that charge a declared
+    // `maximum` against a reservation pool pass a smaller one.
+    const maximumPages = this.config.kernelMaxPages ?? DEFAULT_KERNEL_MAX_PAGES;
+    if (!Number.isSafeInteger(maximumPages) || maximumPages < 24) {
+      throw new Error(`invalid kernel maximum pages: ${maximumPages}`);
+    }
     if (pointerWidth === 8) {
       return new IntrinsicWasmMemory({
         initial: 24n,
-        maximum: 16384n,
+        maximum: BigInt(maximumPages),
         shared: true,
         address: "i64",
       } as unknown as WebAssembly.MemoryDescriptor);
@@ -1319,7 +1326,7 @@ export class WasmPosixKernel {
       // the kernel Wasm's linker-derived minimum and leaves headroom for
       // future static data without re-tuning host construction each time.
       initial: 24,
-      maximum: 16384,
+      maximum: maximumPages,
       shared: true,
     });
   }

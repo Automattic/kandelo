@@ -19,6 +19,8 @@ import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
   DEFAULT_MOUNT_SPEC,
   ensureMountParentDirectories,
+  IMAGE_MEMFS_MAX_BYTES,
+  imageMemfsReservationBytes,
   resolveForBrowser,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
@@ -853,5 +855,79 @@ describe("resolveForBrowser", () => {
       { path: "/tmp", source: "scratch" },
     ];
     expect(() => resolveForBrowser(dup, image)).toThrow(/duplicate/i);
+  });
+});
+
+describe("image-backed rootfs reservation", () => {
+  let image: Uint8Array;
+  const tinyScratch = Object.fromEntries(
+    DEFAULT_MOUNT_SPEC.filter((m) => m.source === "scratch").map((m) => [
+      m.path,
+      256 * 1024,
+    ]),
+  );
+
+  beforeAll(async () => {
+    image = await buildFixtureImage();
+  });
+
+  it("reserves the capacity the image records, not the host budget", () => {
+    // A SharedFS cannot grow past SB_MAX_SIZE_BLOCKS, so reserving the full
+    // 1 GiB budget for a small image buys no filesystem space at all — and on
+    // WebKit that unused ceiling is charged against a shared pool.
+    const capacity = MemoryFileSystem.readImageCapacity(image);
+    expect(capacity.maxByteLength).toBeLessThan(IMAGE_MEMFS_MAX_BYTES);
+    expect(imageMemfsReservationBytes(image, IMAGE_MEMFS_MAX_BYTES)).toBe(
+      capacity.maxByteLength,
+    );
+  });
+
+  it("clamps to the host budget when an image records more", () => {
+    const capacity = MemoryFileSystem.readImageCapacity(image);
+    const budget = Math.max(capacity.byteLength, capacity.maxByteLength - 4096);
+    expect(imageMemfsReservationBytes(image, budget)).toBe(budget);
+  });
+
+  it("never reserves below the bytes the image already occupies", () => {
+    const capacity = MemoryFileSystem.readImageCapacity(image);
+    expect(imageMemfsReservationBytes(image, 4096)).toBe(capacity.byteLength);
+  });
+
+  it("rejects a nonsense budget rather than reserving something arbitrary", () => {
+    expect(() => imageMemfsReservationBytes(image, 0)).toThrow(
+      /invalid image filesystem reservation budget/,
+    );
+    expect(() => imageMemfsReservationBytes(image, -1)).toThrow(
+      /invalid image filesystem reservation budget/,
+    );
+  });
+
+  it("gives the restored root mount exactly that reservation", async () => {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+      scratchSabBytes: tinyScratch,
+    });
+    const root = mounts.find((m) => m.mountPoint === "/")!
+      .backend as MemoryFileSystem;
+    const buffer = root.sharedBuffer as SharedArrayBuffer & {
+      maxByteLength?: number;
+    };
+    expect(buffer.maxByteLength).toBe(
+      imageMemfsReservationBytes(image, IMAGE_MEMFS_MAX_BYTES),
+    );
+  });
+
+  it("honours a smaller budget threaded from the kernel worker config", async () => {
+    const capacity = MemoryFileSystem.readImageCapacity(image);
+    const budget = Math.max(capacity.byteLength, capacity.maxByteLength - 8192);
+    const mounts = await restoreBrowserKernelInitMounts(
+      image,
+      [{ path: "/", source: "image", readonly: false }],
+      budget,
+    );
+    const root = mounts[0]!.backend as MemoryFileSystem;
+    const buffer = root.sharedBuffer as SharedArrayBuffer & {
+      maxByteLength?: number;
+    };
+    expect(buffer.maxByteLength).toBe(budget);
   });
 });

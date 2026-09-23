@@ -1134,16 +1134,18 @@ const auditAllowances: AuditAllowance[] = [
     why: "This closed import-free helper has no memory and exposes only the unconditional trap used for Worker exception semantics.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: 16384n, shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: BigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
     disposition: "kernel-control",
     authorityOwner: "kernel",
-    why: "This true-private memory64 branch creates the dedicated kernel linear memory.",
+    why:
+      "This true-private memory64 branch creates the dedicated kernel linear memory at the host memory profile's ceiling.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: 16384, shared: true, })",
+    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: maximumPages, shared: true, })",
     disposition: "kernel-control",
     authorityOwner: "kernel",
-    why: "This true-private memory32 branch creates the dedicated kernel linear memory.",
+    why:
+      "This true-private memory32 branch creates the dedicated kernel linear memory at the host memory profile's ceiling.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.init::wasm-instance-authority::intrinsicApply( intrinsicWasmInstantiate, WebAssembly, [module, importObject], )",
@@ -1346,12 +1348,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "The dedicated memory is returned only as env.memory inside the private kernel import object consumed by the reviewed instantiation path or module-secret test companion.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ initial: 24n, maximum: 16384n, shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor);',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ initial: 24n, maximum: BigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor);',
     disposition: "kernel-control",
     why: "This true-private factory branch creates the dedicated memory64 kernel linear memory before it can be published to an instance or worker.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: 16384, shared: true, });",
+    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: maximumPages, shared: true, });",
     disposition: "kernel-control",
     why: "This true-private factory branch creates the dedicated memory32 kernel linear memory before it can be published to an instance or worker.",
   },

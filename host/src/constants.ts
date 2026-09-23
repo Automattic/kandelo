@@ -83,6 +83,14 @@ export { CH_DATA_SIZE, CH_HEADER_SIZE, CH_TOTAL_SIZE } from "./generated/abi";
 /** Default max pages for WebAssembly.Memory */
 export const DEFAULT_MAX_PAGES = PROCESS_MEMORY_DEFAULT_MAX_PAGES;
 
+/**
+ * Default ceiling for the kernel's own wasm address space (1 GiB).
+ *
+ * The kernel Wasm starts at 24 pages and grows on demand; this is a host
+ * budget, overridable per host via `KernelConfig.kernelMaxPages`.
+ */
+export const DEFAULT_KERNEL_MAX_PAGES = 16384;
+
 /** Default process-worker admission input shared by Node and browser hosts. */
 export const DEFAULT_MAX_WORKERS = 4;
 

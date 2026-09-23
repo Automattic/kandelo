@@ -1051,6 +1051,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,
     msg.rootfsMountSpec,
+    msg.config.imageMemfsMaxBytes,
   );
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("rootfs mount spec missing / mount");
@@ -1114,6 +1115,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       dataBufferSize: PAGE_SIZE,
       useSharedMemory: true,
       defaultThreadSlots,
+      kernelMaxPages: msg.config.kernelMaxPages,
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
     },

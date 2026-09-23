@@ -11,6 +11,14 @@ export interface KernelConfig {
    *  are wasm32 — enabling enableSyscallLog drowns the trace in unrelated
    *  syscalls. */
   syscallLogPtrWidth?: 4 | 8;
+  /**
+   * Ceiling for the kernel's own wasm address space, in 64 KiB pages.
+   *
+   * Defaults to {@link DEFAULT_KERNEL_MAX_PAGES}. Hosts whose engine charges a
+   * declared `maximum` against a reservation pool supply a smaller budget —
+   * see `runtime-memory-profile.ts`.
+   */
+  kernelMaxPages?: number;
 }
 
 export interface StatResult {

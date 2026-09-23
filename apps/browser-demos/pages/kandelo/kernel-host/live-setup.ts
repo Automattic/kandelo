@@ -4,52 +4,22 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
-  bindImageOwnedRuntimeUrls,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
-import sdl2PlasmaFragSrc from "../../../../../programs/sdl2/presets/image/plasma.frag?raw";
-import sdl2AudioBarsFragSrc from "../../../../../programs/sdl2/presets/image/audio_bars.frag?raw";
-import sdl2TunnelwispFragSrc from "../../../../../programs/sdl2/presets/image/tunnelwisp.frag?raw";
-import sdl2SoundSineFragSrc from "../../../../../programs/sdl2/presets/sound/sine.frag?raw";
-import sdl2SoundTunnelwispFragSrc from "../../../../../programs/sdl2/presets/sound/tunnelwisp.frag?raw";
-import sdl2SoundFmBellFragSrc from "../../../../../programs/sdl2/presets/sound/fm_bell.frag?raw";
-import sdl2SoundNoiseSweepFragSrc from "../../../../../programs/sdl2/presets/sound/noise_sweep.frag?raw";
-import sdl2SoundChordFragSrc from "../../../../../programs/sdl2/presets/sound/chord.frag?raw";
-import {
-  WORDPRESS_CONFIG_INIT_SCRIPT,
-  WORDPRESS_URL_MU_PLUGIN,
-  patchWordPressMysqliPersistentSource,
-  renderWordPressConfig,
-  wordpressConfigTemplate,
-  type WordPressDatabaseKind,
-} from "../../../lib/init/wordpress-runtime-config";
 import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
 import {
-  WORDPRESS_MARIADB_READY_FILE,
   WORDPRESS_MARIADB_READY_PATH,
-  WORDPRESS_MARIADB_READY_PHP,
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
-  extractZipEntry,
-  parseZipCentralDirectory,
-} from "../../../../../host/src/vfs/zip";
-import {
   resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
 import {
-  finalizeKernelOwnedImage,
   settleWebKitReclaim,
-  trackTransientImageBuffer,
 } from "../../../lib/kernel-owned-boot";
-import {
-  ensureDirRecursive,
-  writeVfsBinary,
-  writeVfsFile,
-} from "../../../../../host/src/vfs/image-helpers";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import {
   LiveKernelHost,
@@ -64,24 +34,16 @@ import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/
 import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
 import {
   materializeBootInputs,
-  type BootInputManifest,
 } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
 import {
   genericDemoPresentation,
-  resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoIngest,
   resolveDemoPresentation,
-  type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
 import {
-  EXPERIMENTAL_TERMINAL_SESSION_PATH,
-  MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
   experimentalTerminalSessionPolicy,
-  parseExperimentalTerminalSession,
-  type ExperimentalTerminalProgram,
-  type ExperimentalTerminalSession,
 } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
   CUSTOM_VFS_PROFILE_MAX_BYTES,
@@ -92,7 +54,6 @@ import {
   declaredVfsMaxByteLength,
 } from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
 import {
-  builtinDemoAssets,
   builtinDemoGuide,
   builtinDemoPresentation,
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
@@ -105,6 +66,8 @@ import {
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
 } from "../url-state";
+import { failOn, optionalBinaryUrl } from "./binary-urls";
+import { composeImageInWorker } from "./image-composer-client";
 import { verifyImportedSealsForCurrentBoot } from "./boot-current-boundary";
 import {
   candidateEvidenceBootDescriptor,
@@ -151,109 +114,6 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
     CANONICAL_PAGES_VFS_PRODUCTS,
     (url, init) => fetch(url, init),
   );
-
-const OPTIONAL_BINARY_URLS = {
-  ...import.meta.glob(
-    "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
-    {
-      query: "?url",
-      import: "default",
-    },
-  ),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
-    query: "?url",
-    import: "default",
-  }),
-  ...import.meta.glob(
-    "../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst",
-    {
-      query: "?url",
-      import: "default",
-    },
-  ),
-  ...import.meta.glob(
-    "../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst",
-    {
-      query: "?url",
-      import: "default",
-    },
-  ),
-  ...import.meta.glob(
-    "../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
-    {
-      query: "?url",
-      import: "default",
-    },
-  ),
-  ...import.meta.glob(
-    "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
-    {
-      query: "?url",
-      import: "default",
-    },
-  ),
-  ...import.meta.glob(
-    "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
-    {
-      query: "?url",
-      import: "default",
-    },
-  ),
-  ...import.meta.glob(
-    "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
-    {
-      query: "?url",
-      import: "default",
-    },
-  ),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/sdl2.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/evdev_demo.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/evdev_demo.wasm", {
-    query: "?url", import: "default",
-  }),
-  // espeak-ng publishes a wasm output plus a runtime file, so the resolver
-  // mirrors its whole closure under the package directory.
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip", {
-    query: "?url", import: "default",
-  }),
-} as Record<string, () => Promise<string>>;
-
-async function optionalBinaryUrl(
-  relPaths: string[],
-  label: string,
-): Promise<string> {
-  for (const relPath of relPaths) {
-    const loader = OPTIONAL_BINARY_URLS[relPath];
-    if (loader) return loader();
-  }
-  throw new Error(
-    `${label} is not built. Run: ./run.sh build programs, ` +
-      `or for package-owned binaries: ` +
-      `cargo xtask build-deps resolve <package>`,
-  );
-}
 
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
@@ -1443,8 +1303,9 @@ async function bootProfile(
   );
   const fetchedVfsImageBytes = new Uint8Array(loadedVfs.imageBytes);
   const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
+  const vfsCapacity = MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes);
   assertVfsImageFitsProfile(
-    MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes),
+    vfsCapacity,
     profile.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
     `${profile.id}.vfs.zst`,
@@ -1461,73 +1322,45 @@ async function bootProfile(
   // out of the live-VFS ownership set so WebKit reclaims it on teardown via
   // Worker.terminate() rather than lazy GC — the root fix for the Safari
   // image-switch OOM.
-  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
-    maxByteLength: profile.maxVfsByteLength,
-  });
-  // Track as soon as the caller owns the staged filesystem. This covers every
-  // later fetch, staging, supersession, and serialization failure; finalizing
-  // the image is intentionally an idempotent second registration.
-  trackTransientImageBuffer(buildFs.sharedBuffer);
-  // WHY: register cleanup before rejecting a composition superseded while its
-  // asynchronous layer loads were in flight. Otherwise its completed buffer
-  // becomes unreachable without entering the WebKit reclamation ledger.
+  // Reserve what the image's SharedFS superblock can actually use, not the
+  // whole profile budget: `SharedFS.grow()` refuses to pass the recorded
+  // capacity, so any reservation beyond it buys no staging room — and on
+  // WebKit it is charged against a process-wide pool whether used or not.
+  // Reuse the capacity already read above rather than decompressing again.
+  // Compose the image in a DISPOSABLE WORKER. Composition needs a live
+  // MemoryFileSystem, which means a SharedArrayBuffer; on WebKit only
+  // Worker.terminate() reclaims shared memory deterministically, so a
+  // staging buffer held by this persistent realm would accumulate across
+  // boots until Safari throws "Out of memory". The main thread never touches
+  // the staged filesystem — only the serialized bytes that come back.
+  const composed = await composeImageInWorker(
+    {
+      profile: {
+        id: profile.id,
+        maxVfsByteLength: profile.maxVfsByteLength,
+        hasCandidateEvidence: profile.candidateEvidence !== undefined,
+        init: profile.init && {
+          argv: profile.init.argv.slice(),
+          programUrl: profile.init.programUrl,
+        },
+        sdl2Demo: profile.sdl2Demo,
+        espeakDemo: profile.espeakDemo,
+        evdevDemo: profile.evdevDemo,
+      },
+      descriptor: requestedDescriptor,
+      imageBytes: fetchedVfsImageBytes,
+      lazyAssets: loadedVfs.lazyAssets,
+      appPath: APP_PATH,
+      proto: PROTO,
+    },
+    {
+      onTick: tick,
+      isCurrent,
+      supersededError: () => new BootSuperseded(),
+    },
+  );
   assertCurrent();
-  // WHY: establish cleanup ownership first, then reject forged imported seals
-  // before URL rewriting or asset registration can trust their lazy metadata.
-  await verifyImportedSealsForCurrentBoot(buildFs);
-  // WHY: this check must live in the same continuation as the effects below.
-  // Moving it into an async helper creates a microtask gap where a newer boot
-  // can take ownership before this boot resumes mutating its staged image.
-  assertCurrent();
-  const terminalSession = readImageExperimentalTerminalSession(buildFs);
-  if (profile.candidateEvidence === undefined) {
-    if (
-      profile.id === "nginx-php" ||
-      profile.id === "wordpress-sqlite" ||
-      profile.id === "wordpress-mariadb"
-    ) {
-      writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
-      ensureDirRecursive(buildFs, "/var/cache/opcache");
-    }
-    if (profile.id === "wordpress-sqlite") {
-      patchWordPressRuntimeConfig(buildFs, "sqlite");
-    } else if (profile.id === "wordpress-mariadb") {
-      patchMariaDbUnixSocketConfig(buildFs);
-      patchWordPressRuntimeConfig(buildFs, "mariadb");
-    }
-    if (profile.init?.programUrl) {
-      tick(`staging ${profile.init.argv[0]}...`);
-      const bytes = await fetch(profile.init.programUrl)
-        .then(failOn(profile.init.argv[0]))
-        .then((r) => r.arrayBuffer());
-      assertCurrent();
-      ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
-      writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
-    }
-    // Each demo runs its binary from a path, so the bytes have to be in the
-    // image before the worker takes exclusive ownership of the VFS.
-    if (profile.sdl2Demo) {
-      tick("staging sdl2...");
-      await stageSdl2Runtime(buildFs);
-      assertCurrent();
-    }
-    if (profile.espeakDemo) {
-      tick("staging espeak-ng...");
-      await stageEspeakRuntime(buildFs);
-      assertCurrent();
-    }
-    if (profile.evdevDemo) {
-      tick("staging evdev_demo...");
-      await stageEvdevDemo(buildFs);
-      assertCurrent();
-    }
-    ensureDemoHomes(buildFs);
-  }
-  assertImageTerminalProgram(buildFs, terminalSession.initial);
-  if (terminalSession.afterExit !== undefined) {
-    assertImageTerminalProgram(buildFs, terminalSession.afterExit);
-  }
-  const imageConfig = readImageConfig(buildFs);
+  const { terminalSession, imageConfig, bootInputManifest } = composed;
   const rawPresentation =
     (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null) ??
     builtinDemoPresentation(profile.id) ??
@@ -1543,45 +1376,7 @@ async function bootProfile(
   host.setDemoIngest(
     imageConfig ? resolveDemoIngest(imageConfig, profile.id) : null,
   );
-  const imageAssets = imageConfig
-    ? resolveDemoAssets(imageConfig, profile.id)
-    : [];
-  const assets =
-    imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
-  if (profile.candidateEvidence === undefined) {
-    await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
-    assertCurrent();
-  }
-
-  // Boot inputs (e.g. a #k1= link's script) are untrusted, URL-carried
-  // payloads. Materialize the whole declared set now, at the same
-  // image-staging point as the asset patches above: every input must verify
-  // its byte length and sha256 before anything is written, and a
-  // materialization failure must fail the boot loudly rather than silently
-  // continue without the input the link promised.
-  let bootInputManifest: BootInputManifest | undefined;
-  if (requestedDescriptor.boot.inputs?.length) {
-    tick("materializing boot inputs...");
-    bootInputManifest = await materializeBootInputs(requestedDescriptor, {
-      resolvers: {},
-      mkdir: (p) => ensureDirRecursive(buildFs, p),
-      writeFile: (p, b, m) => writeVfsBinary(buildFs, p, b, m),
-    });
-    assertCurrent();
-  }
-
-  // Serialize the assembled image to transferable bytes, then let `buildFs`
-  // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
-  // `MemoryFileSystem.fromImage` restores directly in the worker.
-  // WHY: this is the final synchronous image mutation. Binding before any
-  // later staging could leave newly-added lazy metadata outside the manifest
-  // authority copied from the authenticated product activation.
-  bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets);
-  tick("assembling kernel-owned VFS image...");
-  // Serialize to transferable bytes + register the transient build buffer for
-  // reclamation tracking, then let `buildFs` fall out of scope when bootProfile
-  // returns. `settleAfterKernelDestroy` reclaims it on WebKit.
-  const vfsImageBytes = await finalizeKernelOwnedImage(buildFs);
+  const vfsImageBytes = composed.imageBytes;
   assertCurrent();
 
   tick("instantiating kernel...");
@@ -2001,293 +1796,6 @@ function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   return genericDemoPresentation("terminal");
 }
 
-function stageShellUtilities(
-  fs: MemoryFileSystem,
-  dashBytes: ArrayBuffer,
-  bashBytes: ArrayBuffer,
-): void {
-  ensureDemoHomes(fs);
-  ensureDirRecursive(fs, "/bin");
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
-  try {
-    fs.symlink("/bin/dash", "/bin/sh");
-  } catch {
-    /* exists */
-  }
-  try {
-    fs.symlink("/bin/dash", "/usr/bin/dash");
-  } catch {
-    /* exists */
-  }
-  try {
-    fs.symlink("/bin/dash", "/usr/bin/sh");
-  } catch {
-    /* exists */
-  }
-  writeVfsBinary(fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
-  try {
-    fs.symlink("/bin/bash", "/usr/bin/bash");
-  } catch {
-    /* exists */
-  }
-}
-
-/**
- * Bake the SDL2 GLSL playground and its shader presets into the image.
- *
- * The playground's source-resolution chain is
- *   1. /home/shaders/<mode>/current.frag       (user-editable)
- *   2. /usr/share/shaders/<mode>/<preset>.frag (preset)
- *   3. built-in fallback compiled into main.c
- * Staging (2) makes the browser path exercise the VFS leg;
- * /home/shaders/<mode> is created so Ctrl+S can write (1) without first
- * creating directories. tunnelwisp is the boot default for both modes;
- * the others are loadable through the editor's Ctrl+L preset browser.
- */
-async function stageSdl2Runtime(fs: MemoryFileSystem): Promise<void> {
-  const url = await optionalBinaryUrl([
-    "../../../../../local-binaries/programs/wasm32/sdl2.wasm",
-    "../../../../../binaries/programs/wasm32/sdl2.wasm",
-  ], "sdl2.wasm");
-  const bytes = await fetch(url)
-    .then(failOn("sdl2.wasm"))
-    .then((r) => r.arrayBuffer());
-  ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/sdl2", new Uint8Array(bytes), 0o755);
-
-  ensureDirRecursive(fs, "/usr/share/shaders/image");
-  ensureDirRecursive(fs, "/home/shaders/image");
-  writeVfsFile(fs, "/usr/share/shaders/image/plasma.frag", sdl2PlasmaFragSrc);
-  writeVfsFile(fs, "/usr/share/shaders/image/audio_bars.frag", sdl2AudioBarsFragSrc);
-  writeVfsFile(fs, "/usr/share/shaders/image/tunnelwisp.frag", sdl2TunnelwispFragSrc);
-
-  ensureDirRecursive(fs, "/usr/share/shaders/sound");
-  ensureDirRecursive(fs, "/home/shaders/sound");
-  writeVfsFile(fs, "/usr/share/shaders/sound/tunnelwisp.frag", sdl2SoundTunnelwispFragSrc);
-  writeVfsFile(fs, "/usr/share/shaders/sound/sine.frag", sdl2SoundSineFragSrc);
-  writeVfsFile(fs, "/usr/share/shaders/sound/fm_bell.frag", sdl2SoundFmBellFragSrc);
-  writeVfsFile(fs, "/usr/share/shaders/sound/noise_sweep.frag", sdl2SoundNoiseSweepFragSrc);
-  writeVfsFile(fs, "/usr/share/shaders/sound/chord.frag", sdl2SoundChordFragSrc);
-}
-
-/**
- * Bake espeak-ng and its voice data into the image.
- *
- * Both come from the espeak-ng package closure, so the demo consumes the same
- * bytes the resolver published. libespeak-ng's PATH_ESPEAK_DATA is fixed to
- * /usr/share at build time, so the data tree has to land unpacked there.
- */
-async function stageEspeakRuntime(fs: MemoryFileSystem): Promise<void> {
-  const binaryUrl = await optionalBinaryUrl([
-    "../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng.wasm",
-    "../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng.wasm",
-  ], "espeak-ng.wasm");
-  const binary = await fetch(binaryUrl)
-    .then(failOn("espeak-ng.wasm"))
-    .then((r) => r.arrayBuffer());
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/usr/bin/espeak-ng", new Uint8Array(binary), 0o755);
-
-  const dataUrl = await optionalBinaryUrl([
-    "../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip",
-    "../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip",
-  ], "espeak-ng-data.zip");
-  const data = await fetch(dataUrl)
-    .then(failOn("espeak-ng-data.zip"))
-    .then((r) => r.arrayBuffer());
-  const zipBytes = new Uint8Array(data);
-  const root = "/usr/share/espeak-ng-data";
-  ensureDirRecursive(fs, root);
-  for (const entry of parseZipCentralDirectory(zipBytes)) {
-    if (entry.isDirectory) continue;
-    const target = `${root}/${entry.fileName}`;
-    ensureDirRecursive(fs, target.slice(0, target.lastIndexOf("/")));
-    writeVfsBinary(fs, target, extractZipEntry(zipBytes, entry), 0o644);
-  }
-}
-
-async function stageEvdevDemo(fs: MemoryFileSystem): Promise<void> {
-  const url = await optionalBinaryUrl([
-    "../../../../../local-binaries/programs/wasm32/evdev_demo.wasm",
-    "../../../../../binaries/programs/wasm32/evdev_demo.wasm",
-  ], "evdev_demo.wasm");
-  const bytes = await fetch(url)
-    .then(failOn("evdev_demo.wasm"))
-    .then((r) => r.arrayBuffer());
-  ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/evdev_demo", new Uint8Array(bytes), 0o755);
-}
-
-function ensureDemoHomes(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, "/home");
-  ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
-  ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
-}
-
-function ensureOwnedDir(
-  fs: MemoryFileSystem,
-  path: string,
-  mode: number,
-  uid: number,
-  gid: number,
-): void {
-  ensureDirRecursive(fs, path);
-  fs.chown(path, uid, gid);
-  fs.chmod(path, mode);
-}
-
-function patchWordPressRuntimeConfig(
-  fs: MemoryFileSystem,
-  kind: WordPressDatabaseKind,
-): void {
-  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
-  writeVfsFile(
-    fs,
-    "/etc/wp-config-template.php",
-    wordpressConfigTemplate(kind),
-  );
-  writeVfsFile(
-    fs,
-    "/var/www/html/wp-config.php",
-    renderWordPressConfig(kind, APP_PATH, PROTO),
-  );
-  if (kind === "sqlite") {
-    ensureOwnedDir(
-      fs,
-      "/var/www/html/wp-content/database",
-      0o775,
-      PHP_FPM_UID,
-      PHP_FPM_GID,
-    );
-  } else if (kind === "mariadb") {
-    for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
-      ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
-    }
-    patchWordPressPersistentMysqli(fs);
-    writeVfsFile(
-      fs,
-      "/var/www/html/kandelo-mysql-bench.php",
-      MYSQL_BENCHMARK_PHP,
-    );
-  }
-  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
-  writeVfsFile(
-    fs,
-    "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
-    WORDPRESS_URL_MU_PLUGIN,
-  );
-}
-
-function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, "/tmp");
-  fs.chmod("/tmp", 0o1777);
-  ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
-  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
-
-  const phpIniPath = "/etc/php.ini";
-  const phpIni = readOptionalVfsText(fs, phpIniPath);
-  if (phpIni !== null) {
-    let patched = phpIni;
-    if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
-      patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
-    }
-    if (!/^mysqli\.allow_persistent\s*=/m.test(patched)) {
-      patched += `mysqli.allow_persistent=1\n`;
-    }
-    if (!/^mysqli\.max_persistent\s*=/m.test(patched)) {
-      patched += `mysqli.max_persistent=-1\n`;
-    }
-    if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
-      patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
-    }
-    if (patched !== phpIni) writeVfsFile(fs, phpIniPath, patched);
-  }
-
-  const mariadbServicePath = "/etc/dinit.d/mariadb";
-  const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
-  if (mariadbService !== null) {
-    const patched = mariadbService
-      .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
-      .replace(/\s*--thread-handling=no-threads\b/g, "");
-    if (patched !== mariadbService)
-      writeVfsFile(fs, mariadbServicePath, patched);
-  }
-
-  ensureMariaDbReadyService(fs);
-  patchPhpFpmMariaDbDependency(fs);
-}
-
-function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
-  writeVfsFile(
-    fs,
-    MARIADB_READY_SCRIPT_PATH,
-    `#!/bin/sh
-set -u
-
-i=0
-while [ "$i" -lt 60 ]; do
-    if [ -S "${MARIADB_SOCKET_PATH}" ] || [ -e "${MARIADB_SOCKET_PATH}" ]; then
-        exit 0
-    fi
-    sleep 1
-    i=$((i + 1))
-done
-
-echo "MariaDB readiness timed out waiting for ${MARIADB_SOCKET_PATH}" >&2
-exit 1
-`,
-    0o755,
-  );
-  writeVfsFile(
-    fs,
-    `/etc/dinit.d/${MARIADB_READY_SERVICE}`,
-    `type = scripted
-command = /bin/sh ${MARIADB_READY_SCRIPT_PATH}
-depends-on = mariadb
-restart = false
-`,
-  );
-}
-
-function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
-  const phpFpmServicePath = "/etc/dinit.d/php-fpm";
-  const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
-  if (phpFpmService === null) return;
-  if (
-    new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(
-      phpFpmService,
-    )
-  ) {
-    return;
-  }
-  const patched = phpFpmService.replace(
-    /^depends-on\s*=\s*mariadb\s*$/m,
-    `depends-on = ${MARIADB_READY_SERVICE}`,
-  );
-  if (patched !== phpFpmService) {
-    writeVfsFile(fs, phpFpmServicePath, patched);
-  } else {
-    writeVfsFile(
-      fs,
-      phpFpmServicePath,
-      `${phpFpmService}${phpFpmService.endsWith("\n") ? "" : "\n"}depends-on = ${MARIADB_READY_SERVICE}\n`,
-    );
-  }
-}
-
-function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
-  for (const path of [
-    "/var/www/html/wp-includes/class-wpdb.php",
-    "/var/www/html/wp-includes/wp-db.php",
-  ]) {
-    const source = readOptionalVfsText(fs, path);
-    if (source === null) continue;
-    const patched = patchWordPressMysqliPersistentSource(source);
-    if (patched !== source) writeVfsFile(fs, path, patched);
-  }
-}
 
 interface LoadedVfsImage {
   imageBytes: ArrayBuffer;
@@ -2738,116 +2246,6 @@ function isLiveDemoId(id: string): id is LiveDemoId {
   return Object.hasOwn(LIVE_DEMO_SPECS, id);
 }
 
-function readImageExperimentalTerminalSession(
-  fs: MemoryFileSystem,
-): ExperimentalTerminalSession {
-  let stat;
-  try {
-    stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
-  } catch (err) {
-    if (isMissingVfsPath(err)) {
-      throw new Error(
-        `VFS image is missing ${EXPERIMENTAL_TERMINAL_SESSION_PATH}`,
-      );
-    }
-    throw err;
-  }
-  if ((stat.mode & 0xf000) !== 0x8000) {
-    throw new Error(
-      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} must be a regular file`,
-    );
-  }
-  if (stat.size > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
-    throw new Error(
-      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} exceeds ` +
-        `${MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES} bytes`,
-    );
-  }
-  const json = new TextDecoder("utf-8", { fatal: true }).decode(
-    new Uint8Array(readVfsFile(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH)),
-  );
-  return parseExperimentalTerminalSession(json);
-}
-
-function assertImageTerminalProgram(
-  fs: MemoryFileSystem,
-  program: ExperimentalTerminalProgram,
-): void {
-  const path = program.path;
-  let stat;
-  try {
-    stat = fs.stat(path);
-  } catch {
-    throw new Error(`VFS image terminal program is missing: ${path}`);
-  }
-  if ((stat.mode & 0xf000) !== 0x8000) {
-    throw new Error(`VFS image terminal program is not a regular file: ${path}`);
-  }
-  if ((stat.mode & 0o111) === 0) {
-    throw new Error(`VFS image terminal program is not executable: ${path}`);
-  }
-}
-
-function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
-  return readKandeloDemoConfigFromVfs(fs);
-}
-
-function readOptionalVfsText(
-  fs: MemoryFileSystem,
-  path: string,
-): string | null {
-  const bytes = readOptionalVfsFile(fs, path);
-  return bytes === null
-    ? null
-    : new TextDecoder().decode(new Uint8Array(bytes));
-}
-
-function readOptionalVfsFile(
-  fs: MemoryFileSystem,
-  path: string,
-): ArrayBuffer | null {
-  try {
-    return readVfsFile(fs, path);
-  } catch (err) {
-    if (isMissingVfsPath(err)) return null;
-    throw err;
-  }
-}
-
-function isMissingVfsPath(err: unknown): boolean {
-  if (typeof err === "object" && err !== null) {
-    const code = (err as { code?: unknown }).code;
-    if (code === -2 || code === "ENOENT") return true;
-  }
-  const message = err instanceof Error ? err.message : String(err);
-  if (/\bENOENT\b/.test(message)) return true;
-  return message.includes("No such file or directory");
-}
-
-function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
-  const st = fs.stat(path);
-  const fd = fs.open(path, 0, 0);
-  try {
-    const out = new Uint8Array(st.size);
-    let off = 0;
-    while (off < out.byteLength) {
-      const n = fs.read(fd, out.subarray(off), null, out.byteLength - off);
-      if (n <= 0) break;
-      off += n;
-    }
-    return out.buffer.slice(out.byteOffset, out.byteOffset + off);
-  } finally {
-    fs.close(fd);
-  }
-}
-
-function failOn(label: string): (r: Response) => Response {
-  return (r) => {
-    if (!r.ok)
-      throw new Error(`fetch failed for ${label}: ${r.status} ${r.statusText}`);
-    return r;
-  };
-}
 
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(0)} KiB`;

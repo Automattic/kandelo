@@ -36,7 +36,9 @@ export async function stageConfiguredAssets(
 
 function demoAssetFetchUrl(asset: DemoAssetConfig): string {
   if (!asset.devCorsProxy || !import.meta.env.DEV) return asset.url;
-  const proxyUrl = new URL(DEV_CORS_PROXY_PATH, window.location.href);
+  // `self.location`, not `window.location`: this runs inside the image
+  // composer worker, where `window` does not exist.
+  const proxyUrl = new URL(DEV_CORS_PROXY_PATH, self.location.href);
   proxyUrl.searchParams.set("url", asset.url);
   return proxyUrl.href;
 }

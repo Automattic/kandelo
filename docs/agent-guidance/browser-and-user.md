@@ -9,6 +9,20 @@ implement alternate runtime behavior.
 metadata, and sharing behavior. App-specific React wiring and page fixtures
 belong under `apps/browser-demos`.
 
+The main thread must never own a VFS `SharedArrayBuffer`. The kernel worker
+owns the live filesystem, and `Worker.terminate()` is the only mechanism that
+reclaims a shared buffer deterministically on WebKit — a buffer the persistent
+main thread holds is released only if a garbage collection happens to run, and
+reserved shared memory creates almost no heap pressure to trigger one. Every
+main-thread VFS buffer therefore accumulates across machine boots until Safari
+throws `Out of memory`. This has been fixed once already (#863 moved the live
+filesystem into the worker) and regressed in spirit through a "transient"
+main-thread build filesystem, so treat any new main-thread
+`MemoryFileSystem`/`SharedArrayBuffer` in a boot path as a defect: compose
+images in a worker and hand the main thread plain, transferable bytes. A
+buffer that is merely dropped rather than worker-owned does not count as
+fixed.
+
 `KernelHost` is a compatibility surface. UI surfaces should consume machine
 state through that contract: status, boot descriptor, dmesg, process events,
 PTY, VFS reads, proc/memory inspection, syscall trace, framebuffer, web
