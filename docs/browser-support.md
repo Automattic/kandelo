@@ -677,16 +677,52 @@ artifact lookup continues to support relocated build inputs and local source
 overrides, but those paths do not carry enough identity to authorize a Wasm
 validation exception without a separate content-bound receipt.
 
-Gallery launch URLs retain both the logical demo id and the resolved VFS image
-URL. Each built-in VFS image has one trusted source and resource identity; the
-logical id separately selects launch behavior. This lets the shell, Doom, and
-modeset demos reuse the same shell image without creating multiple trusted
-image profiles. The loader verifies that the URL exactly matches the current
-built-in image before granting its larger resource limit. A query parameter or
-URL fragment cannot give an unrelated image that limit; images consumed by the
-general live host use the bounded custom-image profile when they do not match.
-The specialized Node host always boots its fixed built-in image rather than
-consuming a `vfs` override.
+### Selecting a machine: `?vfs=` and `&profile=`
+
+A Kandelo VFS image describes the machine it contains, in a tracked
+`/etc/kandelo/demo.json` baked into the image
+(`web-libs/kandelo-session/src/demo-config.ts`). The browser app holds no
+machine identities: no id list, no per-id switch, no per-id spec table. `?vfs=`
+alone is therefore enough to boot a first-party machine or a stranger's image,
+and both travel one code path.
+
+An image may declare several profiles — the shell image carries `shell`,
+`doom`, `modeset`, `sdl2`, `evdev`, and `espeak` — so two channels select one:
+
+1. `&profile=<id>` on the page URL.
+2. else the fragment on the image URL itself, e.g.
+   `?vfs=https://cdn/shell.vfs.zst%23doom`. A fragment is a client-side view
+   selector on a resource, not part of its identity, so URL identity and Cache
+   API matching ignore it. This is what lets a third party publish one
+   self-describing URL instead of "paste this, and also add `&profile=`".
+3. else the image's own `defaultProfile`.
+
+An id no profile in the image declares is a **loud boot error** naming the
+profiles the image does declare — never a silent fall back to its default.
+When both channels are present and disagree, the query parameter wins and the
+boot log says so. An image with no `/etc/kandelo/demo.json`, or a malformed
+one, fails the boot with that reason; nothing synthesizes a fallback machine.
+
+The older `?demo=<id>` parameter is **removed**. It named one of a dozen ids
+the app held, which is exactly what image-owned machine definitions delete. It
+is ignored rather than rejected, so links in the wild degrade instead of
+breaking: `galleryItemUrl` has always written `?vfs=` alongside it, so such a
+link still resolves its image and boots that image's declared default profile.
+
+Each built-in VFS image has one trusted source and resource identity. The
+loader verifies that the URL exactly matches the current built-in image before
+granting its larger resource limit. A query parameter or URL fragment cannot
+give an unrelated image that limit; images consumed by the general live host
+use the bounded custom-image profile when they do not match. The specialized
+Node host always boots its fixed built-in image rather than consuming a `vfs`
+override.
+
+Resource ceilings are host policy, not image authority: `runtime.requests` in
+`demo.json` is a REQUEST that `live-setup.ts` clamps (worker count, memory
+pages, VFS byte ceiling). Gallery membership is likewise curated, in
+`apps/browser-demos/pages/kandelo/gallery-roster.json`; an image cannot claim a
+place in the gallery by declaring one. Every displayed byte — title, summary,
+accent, glyph — still comes from the named product's own tracked demo config.
 
 ```typescript
 // Typical demo pattern
@@ -708,7 +744,8 @@ const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 ### Script-carrying share links
 
 The Share button in the dock produces links of the form
-`…/?demo=<id>#k1=<payload>`. The fragment is a versioned, gzip-compressed
+`…/?vfs=<image>&profile=<id>#k1=<payload>`. The fragment is a versioned,
+gzip-compressed
 boot descriptor (`web-libs/kandelo-session/src/boot-descriptor.ts`) that may
 carry optional `inputs` and `parameters` fields. The payload is validated
 with hard caps and loud `BootDescriptorError` failures. A malformed or

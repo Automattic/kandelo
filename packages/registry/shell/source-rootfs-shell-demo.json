@@ -75,6 +75,10 @@
           "evdev-input"
         ]
       },
+      "display": {
+        "minWidth": 1920,
+        "minHeight": 1080
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": [
@@ -83,7 +87,8 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer"
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/local/bin/sdl2"
       }
     },
     "evdev": {
@@ -102,6 +107,16 @@
         "features": [
           "evdev-input"
         ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/local/bin/evdev_demo"
       }
     },
     "espeak": {
@@ -115,6 +130,16 @@
           "bash@local",
           "coreutils@local"
         ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/bin/espeak-ng \"Welcome to Kandelo, the WebAssembly POSIX kernel\""
       }
     }
   }

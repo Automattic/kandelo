@@ -60,6 +60,21 @@ const OPTIONAL_DEMO_VFS_IMPORTERS = {
   }),
 } as OptionalDemoVfsImporters;
 
+/**
+ * Whether this checkout has actually materialized the image for an optional
+ * demo product. The gallery lists every roster entry either way; this is what
+ * lets it say "not built yet — run ./run.sh fetch" before the click instead
+ * of throwing after it.
+ */
+export function optionalDemoVfsIsBuilt(
+  image: OptionalDemoVfsImage,
+  importers: OptionalDemoVfsImporters = OPTIONAL_DEMO_VFS_IMPORTERS,
+): boolean {
+  return OPTIONAL_DEMO_VFS_PATHS[image].relPaths.some(
+    (relPath) => importers[relPath] !== undefined,
+  );
+}
+
 export async function resolveOptionalDemoVfsUrl(
   image: OptionalDemoVfsImage,
   importers: OptionalDemoVfsImporters = OPTIONAL_DEMO_VFS_IMPORTERS,

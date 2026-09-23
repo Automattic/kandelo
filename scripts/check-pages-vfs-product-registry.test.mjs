@@ -31,7 +31,7 @@ const galleryPath = join(
   repoRoot,
   "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
 );
-const presentationPath = join(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts");
+const rosterPath = join(repoRoot, "apps/browser-demos/pages/kandelo/gallery-roster.json");
 const browserDepsPath = join(repoRoot, "run.sh");
 const browserSources = [
   join(repoRoot, "host/src/browser-kernel-default-artifacts.ts"),
@@ -44,7 +44,7 @@ const paths = {
   registryPath,
   generatedRegistryPath,
   galleryPath,
-  presentationPath,
+  rosterPath,
   browserDepsPath,
   browserSources,
 };
@@ -148,7 +148,7 @@ test("rejects source-only and generated-only Pages registry mutations", () => {
   });
 });
 
-test("rejects gallery product, preset, and VFS-image mapping drift", () => {
+test("rejects gallery product, roster, and VFS-image mapping drift", () => {
   withTempDir((directory) => {
     const mutateGallery = (name, mutate) => {
       const gallery = JSON.parse(readFileSync(galleryPath, "utf8"));
@@ -171,7 +171,7 @@ test("rejects gallery product, preset, and VFS-image mapping drift", () => {
           gallery.products.find(({ id }) => id === "browser-node").gallery_entries = ["rogue"];
         }),
       }),
-      /gallery entries differ.*preset/i,
+      /gallery entries differ.*roster/i,
     );
     assert.throws(
       () => checkPagesVfsProductRegistry({
@@ -180,7 +180,7 @@ test("rejects gallery product, preset, and VFS-image mapping drift", () => {
           gallery.products.find(({ id }) => id === "browser-node").vfs_image = "shell";
         }),
       }),
-      /gallery entry node.*VFS image node/i,
+      /gallery product browser-node declares VFS image shell, not node/i,
     );
   });
 });

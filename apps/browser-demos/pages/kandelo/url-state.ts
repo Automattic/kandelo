@@ -6,6 +6,18 @@ import type {
 
 export const VFS_IMAGE_QUERY_PARAM = "vfs";
 
+/**
+ * `&profile=<id>` — which machine inside the image to boot.
+ *
+ * This replaced `?demo=<id>` outright. The old parameter named one of a dozen
+ * ids the APP held; this one names a profile the IMAGE declares, so the app
+ * never has to know what any of them are. A legacy `?demo=` is ignored (and
+ * stripped when the app rewrites a URL) rather than rejected: every link ever
+ * shared carries `?vfs=` too, so such a link still resolves its image and
+ * boots that image's declared default profile.
+ */
+export const PROFILE_QUERY_PARAM = "profile";
+
 const VFS_IMAGE_QUERY_ALIASES = [
   VFS_IMAGE_QUERY_PARAM,
   "vfsUrl",
@@ -16,6 +28,9 @@ const VFS_IMAGE_QUERY_ALIASES = [
 
 export interface KandeloBootQuery {
   vfsImageUrl: string | null;
+  /** `&profile=` only. The image URL's own `#fragment` is the other channel,
+   *  read from `vfsImageUrl` where its precedence is decided. */
+  profileId: string | null;
 }
 
 export interface TrustedVfsSourceCandidate<SourceId extends string> {
@@ -31,7 +46,31 @@ export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery
   const params = new URLSearchParams(search);
   return {
     vfsImageUrl: normalizeVfsImageUrl(firstVfsImageQueryValue(params)),
+    profileId: nonEmpty(params.get(PROFILE_QUERY_PARAM)),
   };
+}
+
+/**
+ * The profile an image URL names in its own fragment, e.g.
+ * `https://cdn/shell.vfs.zst#doom`.
+ *
+ * A fragment is a client-side view selector on a resource, not part of its
+ * identity, and "which profile of this image" is exactly that — which is why
+ * URL identity here is already fragment-safe (see `matchTrustedVfsSourceId`).
+ * Keeping this channel is what makes a third party's single image URL
+ * self-describing, with no second parameter to paste alongside it.
+ */
+export function profileIdFromVfsImageUrl(
+  vfsImageUrl: string,
+  baseHref = currentHref(),
+): string | null {
+  try {
+    return nonEmpty(
+      decodeURIComponent(new URL(vfsImageUrl, baseHref).hash.slice(1)),
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function galleryItemUrl(
@@ -39,18 +78,23 @@ export function galleryItemUrl(
   href = currentHref(),
 ): string {
   const url = new URL(href);
+  // `?demo=` is gone. Strip it so a legacy link the visitor arrived on does
+  // not keep a parameter nothing reads any more.
   url.searchParams.delete("demo");
   url.searchParams.delete("idle");
+  url.searchParams.delete(PROFILE_QUERY_PARAM);
   clearVfsImageQueryParams(url.searchParams);
   // A #k1= boot-link fragment belongs to the linked machine only. Launching
   // a different machine from the gallery must not carry its script along.
   url.hash = "";
   if (item.vfsImageUrl) {
-    // WHY: the demo id selects launch behavior while the exact URL identifies
-    // the VFS image and its resource limit. Gallery navigation must preserve
-    // both parts of that contract.
-    url.searchParams.set("demo", item.id);
+    // WHY: the exact image URL identifies the bytes and their resource limit,
+    // while the profile selects which machine inside them to boot. The image
+    // URL already carries that profile in its own fragment; `&profile=` is
+    // written too so the selection is visible in the address bar and survives
+    // a hand-edited link that drops the fragment.
     url.searchParams.set(VFS_IMAGE_QUERY_PARAM, item.vfsImageUrl);
+    url.searchParams.set(PROFILE_QUERY_PARAM, item.id);
   }
   return url.href;
 }

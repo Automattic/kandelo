@@ -618,7 +618,7 @@ function repositoryAuthorityPaths(sourceRoot: string) {
         sourceRoot,
         "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
       ),
-      presentationPath: join(sourceRoot, "apps/browser-demos/pages/kandelo/presets.ts"),
+      rosterPath: join(sourceRoot, "apps/browser-demos/pages/kandelo/gallery-roster.json"),
       registryPath,
     },
   };

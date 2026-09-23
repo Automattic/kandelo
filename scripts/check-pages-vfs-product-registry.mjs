@@ -17,10 +17,10 @@ export function checkPagesVfsProductRegistry(options) {
     throw new Error("source and generated Pages registries differ");
   }
   checkPagesGallery({
+    catalog,
     galleryPath: options.galleryPath,
     pagesProducts: registry.products,
-    presentationPath: options.presentationPath,
-    liveSetupPath: options.browserSources.find((path) => basename(path) === "live-setup.ts"),
+    rosterPath: options.rosterPath,
   });
   const selected = new Map();
   for (const entry of registry.products) {
@@ -337,47 +337,74 @@ export function readGeneratedPagesRegistry(path) {
   return value;
 }
 
-function checkPagesGallery({ galleryPath, pagesProducts, presentationPath, liveSetupPath }) {
-  if (typeof galleryPath !== "string" || typeof presentationPath !== "string" ||
-      typeof liveSetupPath !== "string") {
-    throw new Error("Pages gallery check lacks its reviewed presentation authorities");
+/**
+ * The Pages deployment's gallery scoping must agree with the CURATED ROSTER.
+ *
+ * The app no longer holds any machine identities — `PRESET_LIBRARY` and
+ * `LIVE_DEMO_SPECS` are deleted, and the roster
+ * (apps/browser-demos/pages/kandelo/gallery-roster.json) is the only place
+ * gallery membership is decided. A roster entry names a PRODUCT id plus a
+ * profile inside that product's own image, so this check is now a direct
+ * comparison: the same set of profiles, each attributed to the same product.
+ */
+function checkPagesGallery({ catalog, galleryPath, pagesProducts, rosterPath }) {
+  if (typeof galleryPath !== "string" || typeof rosterPath !== "string") {
+    throw new Error("Pages gallery check lacks its reviewed roster authority");
   }
   const products = readPagesGallery(galleryPath, pagesProducts).products;
-
-  const presetSource = readFileSync(presentationPath, "utf8");
-  const presetStart = presetSource.indexOf("export const PRESET_LIBRARY");
-  const presetEnd = presetSource.indexOf("\n];", presetStart);
-  if (presetStart < 0 || presetEnd < 0) throw new Error("reviewed preset authority is not static");
-  const presetIds = [...presetSource.slice(presetStart, presetEnd).matchAll(/^\s{4}id: "([a-z0-9-]+)",$/gmu)]
-    .map((match) => match[1]);
-  requireUnique(presetIds, "reviewed preset IDs");
-
-  const liveSource = readFileSync(liveSetupPath, "utf8");
-  const specStart = liveSource.indexOf("const LIVE_DEMO_SPECS");
-  const specEnd = liveSource.indexOf("\n};", specStart);
-  if (specStart < 0 || specEnd < 0) throw new Error("reviewed live-demo authority is not static");
-  const imageByEntry = new Map(
-    [...liveSource.slice(specStart, specEnd).matchAll(
-      /^\s{2}(?:"([a-z0-9-]+)"|([a-z0-9-]+)): \{\n\s{4}image: "([a-z0-9-]+)",$/gmu,
-    )].map((match) => [match[1] ?? match[2], match[3]]),
+  const roster = readGalleryRoster(rosterPath);
+  const rosterProfiles = roster.map(({ profile }) => profile);
+  requireUnique(rosterProfiles, "gallery roster profiles");
+  const productByProfile = new Map(
+    roster.map(({ product, profile }) => [profile, product]),
   );
+
   const declaredEntries = products.flatMap(({ gallery_entries }) => gallery_entries).sort();
-  if (JSON.stringify(declaredEntries) !== JSON.stringify([...presetIds].sort())) {
-    throw new Error("Pages gallery entries differ from the reviewed preset authority");
+  if (JSON.stringify(declaredEntries) !== JSON.stringify([...rosterProfiles].sort())) {
+    throw new Error("Pages gallery entries differ from the curated gallery roster");
   }
   for (const product of products) {
     for (const entry of product.gallery_entries) {
-      if (!presetIds.includes(entry)) {
-        throw new Error(`Pages gallery entry ${entry} is absent from the reviewed preset authority`);
+      const rosterProduct = productByProfile.get(entry);
+      if (rosterProduct === undefined) {
+        throw new Error(`Pages gallery entry ${entry} is absent from the curated gallery roster`);
       }
-      const image = imageByEntry.get(entry);
-      if (image !== product.vfs_image) {
+      if (rosterProduct !== product.id) {
         throw new Error(
-          `Pages gallery entry ${entry} uses reviewed VFS image ${String(image)}, not ${product.vfs_image}`,
+          `Pages gallery entry ${entry} belongs to roster product ${rosterProduct}, not ${product.id}`,
         );
       }
     }
+    // `vfs_image` used to be cross-checked against the app's LIVE_DEMO_SPECS
+    // image families. With those deleted, hold it to the catalog instead:
+    // it must be a mechanical projection of the product's declared output.
+    const expected = vfsImageNameForOutput(catalog.productById(product.id).output);
+    if (product.vfs_image !== expected) {
+      throw new Error(
+        `Pages gallery product ${product.id} declares VFS image ${product.vfs_image}, not ${expected}`,
+      );
+    }
   }
+}
+
+/** `node-vfs.vfs.zst` → `node`, `shell.vfs.zst` → `shell`, `rootfs.vfs` →
+ *  `rootfs`. The gallery scoping names the image, not the artifact file. */
+function vfsImageNameForOutput(output) {
+  return output.replace(/(?:-vfs)?\.vfs(?:\.zst)?$/u, "");
+}
+
+function readGalleryRoster(rosterPath) {
+  const value = JSON.parse(readFileSync(rosterPath, "utf8"));
+  if (value === null || typeof value !== "object" || value.schema !== 1 ||
+      !Array.isArray(value.entries) || value.entries.length === 0) {
+    throw new Error("gallery roster has unsupported identity");
+  }
+  return value.entries.map((entry, index) => {
+    exactObjectKeys(entry, ["product", "profile"], `gallery roster entry ${index}`);
+    requireTomlString(entry.product, `gallery roster entry ${index}.product`);
+    requireTomlString(entry.profile, `gallery roster entry ${index}.profile`);
+    return entry;
+  });
 }
 
 export function readPagesGallery(galleryPath, pagesProducts) {
@@ -530,7 +557,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       repoRoot,
       "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
     ),
-    presentationPath: resolve(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts"),
+    rosterPath: resolve(repoRoot, "apps/browser-demos/pages/kandelo/gallery-roster.json"),
     browserDepsPath: resolve(repoRoot, "run.sh"),
     browserSources: [
       resolve(repoRoot, "host/src/browser-kernel-default-artifacts.ts"),

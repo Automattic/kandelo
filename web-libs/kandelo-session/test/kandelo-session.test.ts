@@ -20,13 +20,6 @@ import {
 } from "../src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../src/demo-config-vfs";
 import {
-  DOOM_COMMAND,
-  builtinDemoAssets,
-  builtinDemoGuide,
-  builtinDemoPresentation,
-  nodeGuide,
-} from "../src/demo-guides";
-import {
   experimentalTerminalSessionPolicy,
   parseExperimentalTerminalSession,
 } from "../src/experimental-terminal-session";
@@ -2067,36 +2060,6 @@ describe("Kandelo demo config", () => {
 
     expect(resolveDemoGuide(config!, "node")?.groups?.[0].actions[0].kind).toBe("terminal.write");
     expect(resolveDemoGuide(config!, "missing")).toBeNull();
-  });
-
-  it("provides built-in Node guide metadata for stale VFS images", () => {
-    const guide = builtinDemoGuide("node");
-
-    expect(guide).toEqual(nodeGuide());
-    expect(guide?.title).toBe("SpiderMonkey Node.js demo");
-    expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("install-cowsay");
-    expect(builtinDemoGuide("wordpress-sqlite")?.groups?.[0].actions[0]).toMatchObject({
-      id: "wp-admin-login",
-      kind: "web.wordpressLogin",
-    });
-  });
-
-  it("provides built-in presentation and assets for stale VFS images", () => {
-    expect(builtinDemoPresentation("shell")).toMatchObject({
-      runningPrimary: ["terminal", "syslog"],
-    });
-    expect(builtinDemoPresentation("wordpress-mariadb")).toMatchObject({
-      runningPrimary: ["web", "terminal", "syslog"],
-    });
-    expect(builtinDemoPresentation("doom")).toMatchObject({
-      runningPrimary: ["framebuffer", "terminal", "syslog"],
-      autoCommand: DOOM_COMMAND,
-    });
-
-    expect(builtinDemoAssets("doom")).toEqual([
-      expect.objectContaining({ path: "/doom1.wad", devCorsProxy: true }),
-    ]);
-    expect(builtinDemoAssets("node")).toEqual([]);
   });
 
   it("rejects duplicate guide action ids", () => {

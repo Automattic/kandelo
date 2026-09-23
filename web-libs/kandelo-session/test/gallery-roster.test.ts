@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findRepoRoot } from "../../../host/src/binary-resolver";
-import { PRESET_LIBRARY } from "../../../apps/browser-demos/pages/kandelo/presets";
 import {
   parseGalleryRoster,
   resolveEntryAvailability,
@@ -116,14 +115,27 @@ describe("parseGalleryRoster", () => {
     ]))).not.toThrow();
   });
 
-  it("parses the tracked gallery-roster.json seeded from PRESET_LIBRARY's order", () => {
+  // The roster is now the ONLY authority for gallery membership and display
+  // order — the app's PRESET_LIBRARY it was seeded from is deleted. Pin the
+  // order here so a reordering or a dropped machine is a reviewed change.
+  it("parses the tracked gallery-roster.json in its curated order", () => {
     const roster = parseGalleryRoster(readTrackedRoster());
-    expect(roster.entries.map((e) => e.profile)).toEqual(
-      PRESET_LIBRARY.map((p) => p.id),
-    );
+    expect(roster.entries.map((e) => e.profile)).toEqual([
+      "shell",
+      "node",
+      "nginx",
+      "nginx-php",
+      "ruby-todo",
+      "wordpress-sqlite",
+      "wordpress-mariadb",
+      "doom",
+      "modeset",
+      "sdl2",
+      "evdev",
+      "espeak",
+    ]);
     // sdl2 is deliberately in the gallery even though its omission from
-    // pages-vfs-product-gallery.json is known drift, not intent — see the
-    // brief for Task B1.
+    // pages-vfs-product-gallery.json was known drift, not intent.
     expect(roster.entries).toContainEqual({
       product: "browser-main-shell",
       profile: "sdl2",
