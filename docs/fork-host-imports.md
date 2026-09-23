@@ -12,6 +12,12 @@ of a comment.
 
 ## A. Supplied to the fork-module at instantiation — 10
 
+*Externref stage E2 (2026-09-23) removed `env.resolve_externref` and
+`env.__wpk_fork_host_externref_handle` from this list; see "Host
+externrefs" below. The current import count is pinned by
+`EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT` (5 fork imports plus 5 PIC
+imports) and the `forkModuleHostImports` surface budget.*
+
 | import | kind | why the host |
 |---|---|---|
 | `env.memory` | memory | the module shares the guest's linear memory; it cannot define one and still see the guest's frames |
@@ -22,17 +28,16 @@ of a comment.
 | `env.__wpk_fork_function_catalog` | funcref table | funcrefs of ANOTHER instance's functions. `ref.func` only produces a module's own, so only the host can fill this |
 | `env.__wpk_fork_drive_table` | funcref table | same: the guest exports the module `call_indirect`s |
 | `env.__wpk_fork_static_root_catalog` | anyref table | filled from the guest's static-root harvest, which runs in the host |
-| `env.resolve_externref(i32) -> externref` | **function** | handle to live externref. See "the four functions" below |
+| `env.__wpk_fork_host_func_identity(funcref) -> i32` | **function** | stable id per function. See below |
 | `env.__wpk_fork_host_ref_identity(anyref) -> i32` | **function** | stable id per GC reference. See below |
 
-## B. Supplied directly to the guest — 5
+## B. Supplied directly to the guest — 4
 
-The fork-module serves most of the guest's fork ABI. These five it cannot.
+The fork-module serves most of the guest's fork ABI. These four it cannot.
 
 | import | kind | why the host |
 |---|---|---|
 | `__wpk_fork_ref_encode_funcref(funcref) -> i32` | **function** | funcref identity — see below |
-| `__wpk_fork_ref_provenance_externref(externref) -> externref` | **function** | externref identity — see below |
 | `__wpk_fork_module_activation` | global i32 | **one fork-module instance serves N guest activations** (main program plus each `dlopen`'d side module), and each needs a different value. One exported global has one value. The host supplies it per instantiation, which is also why arbitrary N works |
 | `__wpk_fork_module_state_table_generation_addr` | global i64 | the address of the process-wide table-generation word the reconcile guard loads. Per-process, host-allocated |
 | `__wpk_fork_resume_table` | funcref table | the guest only ever `call_indirect`s through it — it never writes to it — so the host fills it from the guest's resume catalog |
@@ -49,10 +54,10 @@ regardless of how much else moves.
 
 ---
 
-## The four functions, and why they exist
+## The identity functions, and why they exist
 
-Three of them are the same concept — **reference identity** — in three type
-flavours, and one is its inverse.
+They are one concept — **reference identity** — in more than one type
+flavour.
 
 **Wasm cannot compare a funcref or an externref.** Measured against V8 with a
 passing control:
@@ -67,7 +72,7 @@ ref.eq on anyref       REJECTED
 and a host reference cannot be cast into the comparable hierarchy either —
 `any.convert_extern` then `ref.test eq` returns 0 for a JS object, a function, a
 string and null. So `__wpk_fork_ref_encode_funcref` and
-`__wpk_fork_ref_provenance_externref` have nowhere else to live.
+`__wpk_fork_host_func_identity` have nowhere else to live.
 
 `__wpk_fork_host_ref_identity` is different in kind. GC values ARE comparable
 (`ref.eq` validates on `eqref`), so the module CAN do this itself — and does, by
@@ -87,19 +92,23 @@ capability, and it was twice offered as one before the maintainer ruled
 otherwise. The measurement is useful only for judging urgency and for knowing
 what is exercised by tests versus by programs.
 
-`env.resolve_externref` is the replay direction: handle back to the live value.
-It is listed as a function because that is what a host writes today. It could
-become a bulk table seed — the host filling an externref table once instead of
-answering per lookup — which would move it out of this section. That has not been
-done, and until it is, counting it as anything but a function understates the
-floor.
+## Host externrefs
+
+A raw host `externref` is not carried across fork (externref stage E2,
+2026-09-23; see `docs/fork-reference-support.md`): the capture refuses one
+with `EOPNOTSUPP` inside the fork module, so nothing on either side of a fork
+has to name a host object or rebuild one. That removed three entries from
+this contract: `env.resolve_externref` (handle back to the live value, the
+replay direction), `env.__wpk_fork_host_externref_handle` (its inverse, for
+capture), and the guest's `__wpk_fork_ref_provenance_externref` hook. An
+`externref` that is an `extern.convert_any` view of the program's own GC
+object needs none of them: the guest converts it back and it is captured as
+that GC object.
 
 ## Naming
 
-Everything is `__wpk_fork_*` except `env.resolve_externref`, which predates the
-convention. The new identity import takes the prefix. Renaming the old one is a
-contained but wide change (~20 files, most of them TypeScript that does not
-currently build) and is deliberately not bundled here.
+Every fork host import is `__wpk_fork_*`. (`env.resolve_externref`, which
+predated the convention, left with the host externref path.)
 
 ---
 

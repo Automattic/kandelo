@@ -182,21 +182,23 @@ same final-OFD lifetime rules.
 
 ### Fork reference reconstruction
 
-`fork()` reconstructs `null`, `funcref`, and wasm-tag `exnref` (C++
-`-fwasm-exceptions`) references across the fork boundary; this covers
-every reference kind produced by every built package program today,
-including `dlopen`-based programs like `php`/`php-fpm` and
-`redis-server`.
+`fork()` reconstructs `null`, `funcref`, wasm-tag `exnref` (C++
+`-fwasm-exceptions`), typed Wasm-GC (`struct`/`array`/`i31`) and
+static-root references across the fork boundary, and an `externref`
+that is an `extern.convert_any` view of the program's own GC object.
+That covers every reference kind produced by every built package
+program today, including `dlopen`-based programs like `php`/`php-fpm`
+and `redis-server`.
 
-Carrying a live `externref`, `struct`, `array`, `i31`, or static-root
-reference across a fork is an explicit unsupported boundary: the fork
-fails loudly with `EOPNOTSUPP` on the parent side instead of being
-silently reconstructed. This is a documented platform gap, not a
-workaround — closing it means building the reconstruction in
-module-owned Wasm rather than host JS, deferred until a real
-workload needs one of these kinds. See
+Carrying a live raw host `externref` — an object a host import handed
+the guest — across a fork is an explicit unsupported boundary on every
+host (Node, browser, native): `fork()` returns `-1`/`EOPNOTSUPP`, no
+child is created, and the parent continues unchanged. A host object
+cannot be given to a fresh child with its identity intact; a capability
+a guest needs across fork belongs behind a kernel object (a file
+descriptor or a device), which fork already shares. See
 [fork-reference-support.md](fork-reference-support.md) for the full
-support boundary, why it is safe today, and the future-work plan.
+support boundary, why it is safe today, and how it is tested.
 
 ## Signals
 

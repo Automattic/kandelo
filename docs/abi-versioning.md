@@ -1061,6 +1061,23 @@ snapshot diff.
   libc glue stopped writing the slot too, so musl must be rebuilt. Host import
   count unchanged at 75. Details above.
 
+- **Raw host externrefs are refused across fork (externref stage E2,
+  2026-09-23).** A fork that carries a live raw host `externref` now fails
+  with `EOPNOTSUPP` on every host instead of being reconstructed, so the
+  contract that carried one is gone. The fork-instrument guest contract lost
+  the required import `env.__wpk_fork_ref_provenance_externref` and the
+  required export `__wpk_fork_ref_gc_publish_externref`
+  (`WPK_FORK_REQUIRED_IMPORTS` 46 → 45, `WPK_FORK_REQUIRED_EXPORTS` 29 → 28;
+  `abi/snapshot.json` and `host/src/generated/abi.ts` regenerated). The
+  co-resident fork module stopped importing `env.resolve_externref` and
+  `env.__wpk_fork_host_externref_handle` (its host obligation 7 → 5, pinned by
+  `EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT`), and its reference-graph wire
+  format retired node kind 2 (host externref) and drive-plan op 4 (its
+  transit publish): a decoder now rejects kind 2 with `EINVAL`. `fm_stats`
+  field 3 stays as a retired slot so later field indices hold. Every
+  fork-instrumented artifact must be rebuilt through the normal path. Folded
+  into 44 because 44 is unreleased. See `docs/fork-reference-support.md`.
+
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
   removed and ten directory-relative `*at` replacements added, taking the built

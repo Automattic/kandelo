@@ -127,8 +127,11 @@ Add an entry here or nowhere.
 
 - worker spawn and lifecycle,
 - the `fork()`/`vfork()` syscall + the syscall-channel transport,
-- `resolve_externref(handle) -> externref` identity materialization (the one
-  true engine-floor seam),
+- NOTHING for host externrefs. `resolve_externref(handle) -> externref`
+  identity materialization was listed here as "the one true engine-floor
+  seam"; externref stage E2 (2026-09-23) removed it on every host, because a
+  fork no longer carries a raw host externref -- the capture refuses one with
+  `EOPNOTSUPP` inside the fork module (`docs/fork-reference-support.md`).
 - anyref-transit `Table.grow` sizing (host must grow STORE #2 before drive),
 - PIC placement globals (`__memory_base`/`__stack_pointer`/`__table_base`/
   `__indirect_function_table`) chosen at instantiation,
