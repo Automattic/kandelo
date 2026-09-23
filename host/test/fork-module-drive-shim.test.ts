@@ -144,7 +144,7 @@ function setup(): {
     label: "drive-shim-test",
   });
   const x = fm.exports as unknown as DriveShimExports;
-  (fm.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, 4 * 65536);
+  (fm.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 4 * 65536);
 
   new Uint8Array(f.memory.buffer, CODEC_AT, GC_CODEC.byteLength).set(GC_CODEC);
   x.fm_set_activation_gc_codec(0, CODEC_AT, GC_CODEC.byteLength);

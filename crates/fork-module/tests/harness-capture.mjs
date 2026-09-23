@@ -998,13 +998,56 @@ function i31Minter() {
   transitTable.set(0, null);
 }
 
-// ---- Funcref table reconcile against the REAL published dylink archive ------
+// ---- A stand-in guest's table shims ---------------------------------------
+//
+// The module reaches a guest table only through the guest's own
+// `wpk_fork_module_table_{read,length,apply}` exports, bound into the
+// activation's drive-table slice. This stub forwards each to JavaScript so the
+// harness can see exactly what the module asked a guest to do. Hand-assembled:
+// (import "h" "read" (i32 i32) -> i32), "length" (i32) -> i32, "apply"
+// (i32 i32 i32 i32), each re-exported through a wasm function, because a drive
+// table holds only wasm functions.
+const TABLE_SHIM_STUB = new Uint8Array([
+  0,97,115,109,1,0,0,0,1,19,3,96,2,127,127,1,127,96,1,127,1,127,96,4,127,127,
+  127,127,0,2,31,3,1,104,4,114,101,97,100,0,0,1,104,6,108,101,110,103,116,104,0,
+  1,1,104,5,97,112,112,108,121,0,2,3,4,3,0,1,2,7,25,3,4,114,101,97,100,0,3,6,
+  108,101,110,103,116,104,0,4,5,97,112,112,108,121,0,5,10,30,3,8,0,32,0,32,1,16,
+  0,11,6,0,32,0,16,1,11,12,0,32,0,32,1,32,2,32,3,16,2,11,
+]);
+// Must match `fork_codec::drive_plan`.
+const DRIVE_SLOTS_PER_ACTIVATION = 19;
+const DRIVE_SLOT_TABLE_READ = 16;
+const DRIVE_SLOT_TABLE_LENGTH = 17;
+const DRIVE_SLOT_TABLE_APPLY = 18;
+const bindTableShims = (activation, host) => {
+  const stub = new WebAssembly.Instance(new WebAssembly.Module(TABLE_SHIM_STUB), {
+    h: host,
+  });
+  const driveTable = importObject.env.__wpk_fork_drive_table;
+  const base = activation * DRIVE_SLOTS_PER_ACTIVATION;
+  const need = base + DRIVE_SLOTS_PER_ACTIVATION;
+  if (driveTable.length < need) driveTable.grow(need - driveTable.length);
+  driveTable.set(base + DRIVE_SLOT_TABLE_READ, stub.exports.read);
+  driveTable.set(base + DRIVE_SLOT_TABLE_LENGTH, stub.exports.length);
+  driveTable.set(base + DRIVE_SLOT_TABLE_APPLY, stub.exports.apply);
+};
+
+// ---- Table reconcile against the REAL published dylink archive -------------
 //
 // The fixture is the same byte image `fork_codec::dylink_table_plan`'s
 // `plans_against_the_real_published_archive` uses: a memory dump whose KFLA
-// header sits at offset 4096. Here it proves the whole module-side path --
-// decode, plan, catalog resolution, and the injected `table.set` -- against
-// tables a host really supplied, which no Rust unit test can reach.
+// header sits at offset 4096. It carries ONE patch, for the table owner 3 of
+// activation 7: slots 5..7 cleared, slots 7..10 set to activation 8's function
+// ordinal 4. Here it proves the module-side path -- decode, plan, catalog
+// resolution, and the call to the OWNING activation's apply shim with records
+// it can read in place -- which no Rust unit test can reach.
+//
+// This harness has no kernel, so it cannot seed per-activation catalog bases
+// (each is an arena record, and the arena is mapped through the syscall
+// channel). With no base seeded the module is a single-activation worker: only
+// activation 0 is present, and every catalog base is 0. So the patch is first
+// applied as published -- and refused, activation 7 not being here -- and then
+// with its table re-pointed at activation 0.
 {
   const FIXTURE_HEAD = 4096;
   const fixture = readFileSync(
@@ -1013,41 +1056,40 @@ function i31Minter() {
   assert.ok(fixture.length > FIXTURE_HEAD, "fixture must contain its own header");
   u8().set(fixture, 0);
 
-  const indirect = importObject.env.__indirect_function_table;
-  const catalog = importObject.env.__wpk_fork_function_catalog;
-  // Every catalog slot holds the SAME function, so a written slot is
-  // identifiable without knowing which ordinal the archive chose.
-  const SENTINEL = x.fm_last_errno;
-  const SLOTS = RECONCILE_TABLE_SLOTS;
-  catalog.grow(SLOTS, SENTINEL);
-  assert.equal(indirect.length, SLOTS, "the indirect table is sized for the plan");
-  // The module's OWN dylink entries are already in the table -- it was placed
-  // at TABLE_BASE. Those are not reconcile writes, so everything below counts
-  // the DELTA against them rather than the absolute occupancy.
-  const occupied = () => {
-    let n = 0;
-    for (let i = 0; i < SLOTS; i += 1) if (indirect.get(i) !== null) n += 1;
-    return n;
-  };
-  const ownEntries = new Map();
-  for (let i = 0; i < SLOTS; i += 1) {
-    const entry = indirect.get(i);
-    if (entry !== null) ownEntries.set(i, entry);
-  }
-  const baseline = ownEntries.size;
-  const added = () => occupied() - baseline;
-  // Reset to exactly the placement state: every reconcile write undone, every
-  // entry the module placed for itself put back, so the module stays callable.
-  const resetIndirect = () => {
-    for (let i = 0; i < SLOTS; i += 1) {
-      indirect.set(i, ownEntries.get(i) ?? null);
+  // The patch record: activation 7, owner 3, start 5, length 12, at +32..+56.
+  let patchAt = -1;
+  for (let at = FIXTURE_HEAD; at + 56 <= fixture.length; at += 4) {
+    const view = dv();
+    if (view.getUint32(at + 32, true) === 7 && view.getUint32(at + 36, true) === 3
+      && view.getBigUint64(at + 40, true) === 5n && view.getBigUint64(at + 48, true) === 12n) {
+      patchAt = at;
+      break;
     }
-  };
+  }
+  assert.ok(patchAt > 0, "the fixture's one table patch is found");
+  const applied = [];
+  bindTableShims(0, {
+    read: () => -1,
+    length: () => 12,
+    apply: (owner, length, records, count) => {
+      const view = dv();
+      const writes = [];
+      for (let i = 0; i < count; i += 1) {
+        const at = records + i * 12;
+        writes.push([
+          view.getUint32(at, true),
+          view.getUint32(at + 4, true),
+          view.getUint32(at + 8, true),
+        ]);
+      }
+      applied.push({ owner, length, writes });
+    },
+  });
 
   // The archive coordinates arrive with the once-per-worker format seed, which
   // also RESETS them -- what a COW child depends on. A control address of 0 is
   // a worker with no dlopen archive at all.
-  x.fm_set_format(4, 0, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0);
   assert.equal(lastErrno(), 0, "wasm32 with no archive is a valid seed");
 
   // An unpublished worker is coherent by definition: generation 0, no error.
@@ -1057,71 +1099,68 @@ function i31Minter() {
     "no published archive reconciles to generation 0",
   );
   assert.equal(lastErrno(), 0, "and reports no error");
-  assert.equal(added(), 0, "an unpublished reconcile writes nothing");
+  assert.equal(applied.length, 0, "an unpublished reconcile asks no guest to write");
 
   // The real archive. The module reads the head out of the control block at a
   // fixed negative offset, so the harness writes the head there and passes the
-  // control address -- exactly what a host does. Owner 3 is the one
-  // `plans_against_the_real_published_archive` exercises.
+  // control address -- exactly what a host does.
   const CONTROL = 64 * 1024;
   const DLOPEN_HEAD_OFFSET_WASM32 = 12;
   const seedControl = (head) => {
     dv().setUint32(CONTROL - DLOPEN_HEAD_OFFSET_WASM32, head, true);
-    x.fm_set_format(4, 0, CONTROL, 3, 0);
+    x.fm_set_format(4, 0, CONTROL, 0);
     assert.equal(lastErrno(), 0, "seeding the control address succeeds");
   };
+
+  // As published: activation 7's table. Activation 7 is not in this worker, so
+  // the patch is refused BEFORE any guest is asked to write -- its drive slots
+  // are empty, and a partial apply would leave tables between generations.
+  seedControl(FIXTURE_HEAD);
+  assert.equal(
+    Number(x.__wpk_fork_module_state_table_reconcile()),
+    -1,
+    "a patch for an absent activation is refused",
+  );
+  assert.equal(lastErrno(), 2 /* ENOENT */, "and the reason is ENOENT");
+  assert.equal(applied.length, 0, "a refused reconcile writes nothing");
+
+  // Re-pointed at activation 0, which is here.
+  dv().setUint32(patchAt + 32, 0, true);
   seedControl(FIXTURE_HEAD);
   const reached = Number(x.__wpk_fork_module_state_table_reconcile());
   assert.equal(lastErrno(), 0, `reconcile errno=${lastErrno()}`);
-  assert.ok(reached > 0, `a published archive reaches a real generation (${reached})`);
-  // Without this the idempotence check below would pass VACUOUSLY on an
-  // archive that never wrote a slot in the first place.
-  const first = added();
-  assert.ok(first > 0, `the reconcile wrote table slots (${first})`);
-  // Every slot the reconcile CHANGED must hold a value it took from the
-  // function catalog, never something it invented. A cleared slot is null.
-  let changed = 0;
-  for (let i = 0; i < SLOTS; i += 1) {
-    const entry = indirect.get(i);
-    if (entry === (ownEntries.get(i) ?? null)) continue;
-    changed += 1;
-    if (entry !== null) {
-      assert.equal(entry, SENTINEL, `slot ${i} came from the function catalog`);
-    }
-  }
-  assert.ok(changed > 0, "the reconcile changed slots it did not already own");
+  assert.equal(reached, 3, "a published archive reaches its generation");
+  assert.deepEqual(
+    applied,
+    [{
+      owner: 3,
+      length: 12,
+      writes: [[5, 0, 1], [6, 0, 1], [7, 4, 0], [8, 4, 0], [9, 4, 0]],
+    }],
+    "the table's activation is asked to write exactly the patch into owner 3",
+  );
 
-  // Idempotent: replaying from the generation just reached must write NOTHING.
-  // Clearing first is what makes that observable -- otherwise a second full
-  // rewrite would leave the table looking identical.
-  resetIndirect();
-  const again = Number(x.__wpk_fork_module_state_table_reconcile());
-  assert.equal(again, reached, "a second reconcile reaches the same generation");
-  assert.equal(added(), 0, "and writes nothing, because nothing moved");
+  // Idempotent: replaying from the generation just reached asks for NOTHING.
+  applied.length = 0;
+  assert.equal(
+    Number(x.__wpk_fork_module_state_table_reconcile()),
+    reached,
+    "a second reconcile reaches the same generation",
+  );
+  assert.equal(applied.length, 0, "and writes nothing, because nothing moved");
 
-  // The generation a reconcile REPORTS is the snapshot's, not the highest one
-  // this worker's own owner appears in.
-  //
-  // This needs its own archive shape to mean anything: in the fixture as
-  // published, the header generation and owner 3's newest patch are the SAME
-  // number, so a reconcile that returned either would look right. Raising the
-  // header's fence above every owner-3 patch separates them. It matters because
-  // the guest caches this value and compares it against the fence on the next
-  // table access -- report below the fence and the guard re-enters on every
-  // access, forever.
+  // The generation a reconcile REPORTS is the snapshot's. The guest caches it
+  // and compares it against the fence on the next table access -- report below
+  // the fence and the guard re-enters on every access, forever.
   const HEADER_GENERATION_OFFSET = 40;
   dv().setBigUint64(FIXTURE_HEAD + HEADER_GENERATION_OFFSET, 99n, true);
   seedControl(FIXTURE_HEAD);
   const fenced = Number(x.__wpk_fork_module_state_table_reconcile());
   assert.equal(lastErrno(), 0, `fenced reconcile errno=${lastErrno()}`);
   assert.equal(fenced, 99, "the reconcile reports the snapshot generation");
-  assert.notEqual(fenced, reached, "and that is NOT the owner-filtered value");
   dv().setBigUint64(FIXTURE_HEAD + HEADER_GENERATION_OFFSET, BigInt(reached), true);
-  // Re-seeding reset the applied cursor, so that reconcile legitimately rewrote
-  // the table. Put it back to the placement state before the refusal cases,
-  // which measure that a REFUSED reconcile writes nothing.
-  resetIndirect();
 
+  applied.length = 0;
   // A head that names no header is a malformed archive, not an empty one.
   seedControl(FIXTURE_HEAD + 8);
   assert.equal(
@@ -1130,7 +1169,7 @@ function i31Minter() {
     "a head pointing into the middle of the header is refused",
   );
   assert.equal(lastErrno(), EINVAL, "and the reason is EINVAL");
-  assert.equal(added(), 0, "a refused reconcile writes no slots");
+  assert.equal(applied.length, 0, "a refused reconcile writes no slots");
 
   // A head past the end of memory is refused by the bounds check rather than
   // read out of the guest's memory.
@@ -1159,14 +1198,14 @@ function i31Minter() {
 
   // No archive at all: there is no lock word to take, and that is an error
   // rather than a silently ungoverned mutation.
-  x.fm_set_format(4, 0, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0);
   assert.equal(Number(x.__wpk_fork_module_state_table_mutation_begin()), -1);
   assert.equal(lastErrno(), EINVAL, "a worker with no archive cannot begin");
 
   // A real archive, unheld.
   dv().setUint32(CONTROL - 12, 4096, true); // the published head
   Atomics.store(lock, 0, 0);
-  x.fm_set_format(4, 0, CONTROL, 3, 0);
+  x.fm_set_format(4, 0, CONTROL, 0);
   const at = Number(x.__wpk_fork_module_state_table_mutation_begin());
   assert.equal(lastErrno(), 0, `begin errno=${lastErrno()}`);
   assert.ok(at > 0, `begin reports the generation it reached (${at})`);
@@ -1189,7 +1228,7 @@ function i31Minter() {
   // A failed begin holds nothing. Reconcile fails on a malformed head, and if
   // begin kept the writer through that, every other worker would wedge.
   dv().setUint32(CONTROL - 12, 4096 + 8, true);
-  x.fm_set_format(4, 0, CONTROL, 3, 0);
+  x.fm_set_format(4, 0, CONTROL, 0);
   assert.equal(Number(x.__wpk_fork_module_state_table_mutation_begin()), -1);
   assert.equal(lastErrno(), EINVAL, "a begin whose reconcile fails reports it");
   assert.equal(Atomics.load(lock, 0), 0, "and releases the writer it took");
@@ -1216,7 +1255,7 @@ function i31Minter() {
 
   dv().setUint32(CONTROL - 12, 4096, true);
   Atomics.store(lock, 0, 0);
-  x.fm_set_format(4, 0, CONTROL, 3, 0);
+  x.fm_set_format(4, 0, CONTROL, 0);
   assert.ok(
     Number(x.__wpk_fork_module_state_table_mutation_begin()) > 0,
     "the writer is held before the peer waits on it",
@@ -1301,7 +1340,7 @@ function i31Minter() {
 
   // A fresh worker: `fm_set_format` resets the per-activation catalogs, so these
   // activation ids are unseeded regardless of what ran above.
-  x.fm_set_format(4, 0, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format reseeded");
 
   // The real fixture is accepted.
@@ -1343,7 +1382,7 @@ function i31Minter() {
   );
   const AT = SCRATCH_BASE + 24576;
 
-  x.fm_set_format(4, 0, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format reseeded");
   u8().set(codecBytes, AT);
 
@@ -1394,7 +1433,7 @@ function i31Minter() {
   const beta = x.fm_journal_image_len;
   const uncatalogued = x.fm_funcref_uncatalogued;
 
-  x.fm_set_format(4, 0, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format seeded");
   x.fm_capture_begin();
   assert.equal(lastErrno(), 0, "a capture session is open");
@@ -1471,12 +1510,13 @@ function i31Minter() {
   const LOCK_OFFSET_WASM32 = 20;
   const CONTROL = 64 * 1024;
   const lock = new Int32Array(memory.buffer, CONTROL - LOCK_OFFSET_WASM32, 1);
-  const catalog = importObject.env.__wpk_fork_function_catalog;
-  const indirect = importObject.env.__indirect_function_table;
+  // Activation 0's guest: every slot the module reads holds an UNCATALOGUED
+  // function (-2), and its table is 128 long.
+  bindTableShims(0, { read: () => -2, length: () => 128, apply: () => {} });
 
   dv().setUint32(CONTROL - 12, 4096, true);
   Atomics.store(lock, 0, 0);
-  x.fm_set_format(4, 0, CONTROL, 3, 0);
+  x.fm_set_format(4, 0, CONTROL, 0);
   assert.equal(lastErrno(), 0, "format seeded with the control block");
 
   // A zero-length mutation publishes nothing and is not an error: a zero-length
@@ -1487,7 +1527,7 @@ function i31Minter() {
     "the writer is taken",
   );
   assert.equal(Atomics.load(lock, 0), -1, "and held");
-  x.__wpk_fork_module_state_table_mutation_commit(3, 0n, 0n);
+  x.__wpk_fork_module_state_table_mutation_commit(0, 3, 0n, 0n);
   assert.equal(lastErrno(), 0, "a zero-length mutation commits cleanly");
   assert.equal(Atomics.load(lock, 0), 0, "and releases the writer");
 
@@ -1495,18 +1535,11 @@ function i31Minter() {
   // described as a coordinate. The commit must FAIL -- a patch that silently
   // omitted it would tell peers the slot was cleared -- and it must still
   // release the writer, or every other worker in the process wedges.
-  // Slot 100, NOT a low one: the module's own dylink entries occupy the start of
-  // this table and it calls them through `call_indirect`. Overwriting slot 1
-  // traps the module inside its own archive decoder -- which is how this test
-  // first failed.
-  const UNCATALOGUED_SLOT = 100;
-  const uncatalogued = x.fm_funcref_uncatalogued;
-  indirect.set(UNCATALOGUED_SLOT, uncatalogued);
   assert.ok(
     Number(x.__wpk_fork_module_state_table_mutation_begin()) >= 0,
     "the writer is taken again",
   );
-  x.__wpk_fork_module_state_table_mutation_commit(3, BigInt(UNCATALOGUED_SLOT), 1n);
+  x.__wpk_fork_module_state_table_mutation_commit(0, 3, 100n, 1n);
   // ENOENT, not EINVAL: every other failure in this path reports EINVAL, so
   // asserting EINVAL here would pass for the wrong reason -- which it did, until
   // a perturbation that recorded the slot as CLEARED went undetected.
@@ -1521,13 +1554,18 @@ function i31Minter() {
     0,
     "and a FAILED commit still releases the writer",
   );
-  indirect.set(UNCATALOGUED_SLOT, null);
+
+  // A commit naming an activation this worker does not have is refused rather
+  // than sent through an empty drive slot.
+  assert.ok(Number(x.__wpk_fork_module_state_table_mutation_begin()) >= 0);
+  x.__wpk_fork_module_state_table_mutation_commit(9, 3, 0n, 1n);
+  assert.equal(lastErrno(), ENOENT, "an absent activation's table is refused");
+  assert.equal(Atomics.load(lock, 0), 0, "and the writer is released");
 
   // Committing without holding the writer is refused rather than forced.
-  x.__wpk_fork_module_state_table_mutation_commit(3, 0n, 0n);
+  x.__wpk_fork_module_state_table_mutation_commit(0, 3, 0n, 0n);
   assert.notEqual(lastErrno(), 0, "committing without the writer is an error");
   assert.equal(Atomics.load(lock, 0), 0, "and changes nothing");
-  void catalog;
 }
 
 console.log("fork-module capture harness: all assertions passed");

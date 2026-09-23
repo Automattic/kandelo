@@ -62,10 +62,9 @@ function fixture() {
       pw: number,
       prefix: number,
       archive: number,
-      owner: number,
       channelBase: number,
     ) => void
-  )(4, 0, 0, 0, CHANNEL_BASE);
+  )(4, 0, 0, CHANNEL_BASE);
   return {
     memory,
     errno: () => (x.fm_last_errno as () => number)(),

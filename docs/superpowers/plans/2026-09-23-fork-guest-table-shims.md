@@ -154,3 +154,36 @@ per-slot shims. Out of scope until asked: C, D, and moving replication to the
 dynamic linker. Still in scope because A needs them to be correct: mutation
 calls name their table, and the pthread one-slot-short table (root-cause
 first; if it is a separate defect, fix it separately).
+
+## Outcome (2026-09-23, branch `brandonpayton/fork-table-shims`)
+
+Implemented as Option A. What landed, and what did not:
+
+- The pthread "one slot short" table was a separate `crates/dylink` defect:
+  export slots were handed out at the table's current length during
+  publication, after the loader had appended a staged-call slot a replica
+  never makes. Fixed on its own (export slots are reserved with the
+  `dylink.0` region).
+- fork-instrument splits "saved across fork" from "replicated across
+  Workers". Only plain `funcref` tables take the writer/commit/reconcile
+  path; externref and GC-typed tables keep dirty-page journaling and the
+  save/restore helpers. Commits name `(activation, owner)`.
+- Guest shims `wpk_fork_module_table_{read,length,apply}` at drive slots
+  16-18; the module's injected `fm_indirect_slot_catalog_index`,
+  `fm_indirect_table_size` and `__wpk_fork_table_apply` are gone, replaced
+  by two module exports the guest calls (`..._table_catalog_index`,
+  `..._table_catalog_function`). The module's own
+  `__indirect_function_table` import stays: its own dylink entries use it.
+- Found while testing, fixed in the module: a commit wrote the archive
+  header's generation but never the process FENCE, so peers never
+  reconciled; and a borrowed vfork child's reconcile allocated after its
+  heap was returned.
+- `fm_set_format` lost its table-owner argument; hosts pass the dlopen
+  control address (a borrowed vfork child: its owner's). host-native passes
+  0 (no dlopen).
+
+Not done, awaiting the maintainer: a pthread already running when another
+thread dlopens cannot call into the library until it next takes the loader
+lock, forks, or restarts. Instantiating the library is host work and the
+guard is served by the module, which has no way to request it
+(`dlopen-pthread-table-replication.test.ts` keeps it as `it.fails`).

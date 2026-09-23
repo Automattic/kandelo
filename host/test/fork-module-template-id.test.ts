@@ -48,7 +48,7 @@ function freshModule(): {
   // base answers `EINVAL` from every seed, which is the truthful refusal for
   // a module that cannot own storage -- and not what this file tests.
   startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
-  (exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+  (exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
   return {
     seed: exports.fm_set_activation_template_id as (a: number, p: number) => void,
     errno: () => (exports.fm_last_errno as () => number)(),

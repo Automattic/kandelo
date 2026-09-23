@@ -166,6 +166,7 @@ WAT_FIXTURES=(
     native_fork_gc_array_cycle
     native_fork_gc_static_root
     native_fork_gc_struct_cycle
+    native_fork_externref_table
     native_fork_gc_two_object_cycle
     native_fork_host_externref_field_refused
     native_fork_host_externref_refused
@@ -191,6 +192,7 @@ done
 # what user programs get. The entry is uniform across all of them.
 INSTRUMENTED_FIXTURES=(
     native_fork
+    native_fork_externref_table
     native_fork_from_thread
     native_fork_gc_array_cycle
     native_fork_gc_static_root

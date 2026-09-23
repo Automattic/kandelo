@@ -124,10 +124,18 @@ mutation:
 mutation_begin() -> i64            ;; take the writer lock, return the generation
   ... table.set / copy / fill / init / grow ...
 dirty_mark(owner, first_page, page_count)
-mutation_commit(owner, start, count)   ;; publish the slot range, release the lock
+mutation_commit(activation, owner, start, count)   ;; publish the slot range, release the lock
 mutation_abort()                       ;; release without publishing
 reconcile() -> i64                     ;; apply siblings' mutations, return the generation APPLIED
 ```
+
+(`activation` was added 2026-09-23: an owner id is only unique inside one
+module, so the commit names its table by both. The module reads the written
+slots, and applies a peer's patch, through the guest's own
+`wpk_fork_module_table_{read,length,apply}` exports bound into the
+activation's drive-table slots; the host supplies nothing new. Only plain
+`funcref` tables take this transaction -- see docs/architecture.md, "Only
+`funcref` tables are replicated".)
 
 and a guard the instrumenter injects around ordinary table reads:
 

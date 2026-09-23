@@ -2800,25 +2800,25 @@ const RTLD_GLOBAL = 0x100;
 export interface ForkActivationTableReplication {
   /** Immutable pointer-width address of the shared generation fence. */
   readonly generationAddress: WebAssembly.Global;
-  /**
-   * Acquire the process writer, apply the latest snapshot, and return its
-   * exact generation. Ownership stays live until `commit` or `abort`.
-   */
+}
+
+/**
+ * WHAT USED TO BE ON `ForkActivationTableReplication`: the four guest table
+ * imports (`beginMutation`, `reconcile`, `commit`, `abort`), forwarded from
+ * each worker's `tableReplicationImports` object. The fork module serves those
+ * imports now, so the forwarders were bound to nothing; they are gone and the
+ * owner below keeps the methods only its own callers use.
+ */
+interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   beginMutation(): bigint;
-  /** Apply the latest process snapshot and return its exact generation. */
   reconcile(): bigint;
-  /** Publish a successful guest mutation and release writer ownership. */
   commit(
     activationId: number,
     ownerId: number,
     firstIndex: number | bigint,
     length: number | bigint,
   ): void;
-  /** Release writer ownership after a non-mutating failure or no-op. */
   abort(): void;
-}
-
-interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   /** Bring this Worker to the latest complete process generation. */
   reconcileNow(): number;
   /** Check the archive fence while the caller already excludes writers. */
@@ -3683,6 +3683,7 @@ export async function centralizedWorkerMain(
           // every capture and seal would have asked the module to issue a
           // syscall at address 0.
           channelBase: channelOffset,
+          archiveControlAddr: dlopenArchiveControlAddr,
           label: `pid=${pid}: fork-module`,
         });
         // Seed the linked-frame format + full resume catalog once, now, before
@@ -3826,20 +3827,6 @@ export async function centralizedWorkerMain(
           { value: "i64", mutable: false },
           BigInt(tableGenerationAddress),
         ),
-        reconcile: (): bigint => processTableReplication?.reconcile() ?? 0n,
-        beginMutation: (): bigint =>
-          processTableReplication?.beginMutation() ?? 0n,
-        commit: (activationId, ownerId, firstIndex, length): void => {
-          processTableReplication?.commit(
-            activationId,
-            ownerId,
-            firstIndex,
-            length,
-          );
-        },
-        abort: (): void => {
-          processTableReplication?.abort();
-        },
       };
       // WHAT USED TO BE HERE: the exception broker and the host identity floor.
       //
@@ -6219,6 +6206,8 @@ export async function centralizedThreadWorkerMain(
           format: linkedFrameFormat,
           catalogOrdinals,
           channelBase: channelOffset,
+          // The PROCESS control block: a pthread shares the process archive.
+          archiveControlAddr: processChannelOffset - FORK_BUF_SIZE,
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
@@ -6318,20 +6307,6 @@ export async function centralizedThreadWorkerMain(
         { value: "i64", mutable: false },
         BigInt(processGenerationAddress),
       ),
-      reconcile: (): bigint => threadTableReplication?.reconcile() ?? 0n,
-      beginMutation: (): bigint =>
-        threadTableReplication?.beginMutation() ?? 0n,
-      commit: (activationId, ownerId, firstIndex, length): void => {
-        threadTableReplication?.commit(
-          activationId,
-          ownerId,
-          firstIndex,
-          length,
-        );
-      },
-      abort: (): void => {
-        threadTableReplication?.abort();
-      },
     };
     let forkResult = 0;
     // What a fork-from-thread abort will report. The coordinator used to hold

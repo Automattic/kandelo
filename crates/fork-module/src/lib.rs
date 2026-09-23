@@ -214,11 +214,26 @@ mod wasm {
         /// through the drive table. NEVER RETURNS -- the callee throws.
         fn __wpk_fork_exn_throw(activation: u32, recipe: u32);
 
-        /// Write one funcref table slot during a reconcile: set
-        /// `__indirect_function_table[dest]` from `__wpk_fork_function_catalog[
-        /// catalog_slot]`, or to null when `clear` is non-zero.
-        /// Injector-rewritten into a local thunk.
-        fn __wpk_fork_table_apply(dest: u32, catalog_slot: u32, clear: u32);
+        /// The guest table shims, reached through `activation`'s drive-table
+        /// slice. Each is injector-rewritten into a thunk that `call_indirect`s
+        /// the guest's `wpk_fork_module_table_{read,length,apply}` with the
+        /// remaining arguments: the module reaches a guest table only through
+        /// code emitted into that guest, never by holding the table.
+        ///
+        /// `read` answers the merged-catalog slot of the function at `index`
+        /// (`-1` null, `-2` uncatalogued); `length` the table's length; `apply`
+        /// grows the table to `length` and writes `count` records at `records`
+        /// (see `WPK_FORK_MODULE_TABLE_APPLY_RECORD_SIZE`). Every one TRAPS on
+        /// an owner the activation does not replicate.
+        fn __wpk_fork_guest_table_read(activation: u32, owner: u32, index: u32) -> i32;
+        fn __wpk_fork_guest_table_length(activation: u32, owner: u32) -> i32;
+        fn __wpk_fork_guest_table_apply(
+            activation: u32,
+            owner: u32,
+            length: u32,
+            records: usize,
+            count: u32,
+        );
         /// Grow the module-owned anyref transit table to at least `needed`
         /// slots, answering its size or -1. Injector-wired to the emitted
         /// `fm_transit_grow`, because `table.grow` on an anyref table needs a
@@ -226,9 +241,8 @@ mod wasm {
         fn __wpk_fork_transit_grow(needed: u32) -> i32;
         /// Clear one process-owned resume-table slot:
         /// `table.set $resume (ref.null func)`. Injector-rewritten into a
-        /// local thunk, for the same reason `__wpk_fork_table_apply`'s clear
-        /// arm is: Rust cannot emit `table.set`, but writing a NULL is not
-        /// holding a funcref -- so this does not need a host and no longer
+        /// local thunk: Rust cannot emit `table.set`, but writing a NULL is
+        /// not holding a funcref -- so this does not need a host and no longer
         /// has one.
         ///
         /// `lenient` non-zero skips a slot at or past `table.size` instead of
@@ -243,15 +257,6 @@ mod wasm {
         /// `memory.atomic.notify(addr, count) -> i32`, returning how many
         /// waiters were woken. Injector-rewritten into a local thunk.
         fn __wpk_fork_atomic_notify(addr: u32, count: u32) -> i32;
-
-        /// Which merged function-catalog slot holds the function at
-        /// `__indirect_function_table[dest]`: `-1` if the slot is null, `-2` if
-        /// the function is not catalogued. Injector-emitted; see
-        /// `inject_indirect_slot_catalog`.
-        fn fm_indirect_slot_catalog_index(dest: u32) -> i32;
-
-        /// `table.size` of the guest's indirect function table.
-        fn fm_indirect_table_size() -> i32;
     }
 
     /// Block until the i32 at `addr` stops being `expected`.
@@ -281,16 +286,17 @@ mod wasm {
         unsafe { __wpk_fork_atomic_notify(addr, u32::MAX) }
     }
 
-    /// Safe wrapper over the injector-wired table-write placeholder.
+    /// Whether `activation` is instantiated in THIS worker, so its drive-table
+    /// slice holds its table shims.
     ///
-    /// One slot per call, with Rust owning the loop. The alternative — a loop
-    /// inside the shim — would put the step striding and bounds logic in
-    /// emitted wasm, where it is far harder to test than in Rust.
-    fn table_apply_via_injector(dest: u32, catalog_slot: u32, clear: bool) {
-        // SAFETY: after injection this is a local thunk doing one `table.get`
-        // on the imported function catalog and one `table.set` on the guest's
-        // indirect function table, both bounds-checked by wasm itself.
-        unsafe { __wpk_fork_table_apply(dest, catalog_slot, u32::from(clear)) }
+    /// Every activation seeds a function-catalog base when it registers; a
+    /// worker that seeded none is the single-activation worker, where only
+    /// activation 0 exists. Calling a shim for an activation that is not here
+    /// would `call_indirect` a null slot, so a patch naming one is refused
+    /// before that rather than trapped on.
+    fn activation_is_present(activation: u32) -> bool {
+        func_catalog_base(activation).is_some()
+            || (activation == 0 && func_catalog_base_map_empty())
     }
 
     /// Safe wrapper over the injector-wired encode placeholder.
@@ -4318,7 +4324,6 @@ mod wasm {
         pointer_width: u32,
         fixed_prefix_size: u32,
         archive_control_addr: usize,
-        table_owner: u32,
         channel_base: usize,
     ) -> Result<(), Errno> {
         // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
@@ -4386,7 +4391,6 @@ mod wasm {
         // uses its OWNER's, so the address is not derivable inside the module
         // and has to arrive with the rest of the per-worker setup.
         ARCHIVE_CONTROL.store(archive_control_addr, Ordering::Relaxed);
-        ARCHIVE_OWNER.store(table_owner, Ordering::Relaxed);
         CHANNEL_BASE.store(channel_base, Ordering::Relaxed);
         // The record arena and its directory are MAPPINGS the COW child
         // inherited through the memory clone, not static BSS it can simply
@@ -7852,14 +7856,12 @@ mod wasm {
         pointer_width: u32,
         fixed_prefix_size: u32,
         archive_control_addr: usize,
-        table_owner: u32,
         channel_base: usize,
     ) {
         match set_format_impl(
             pointer_width,
             fixed_prefix_size,
             archive_control_addr,
-            table_owner,
             channel_base,
         ) {
             Ok(()) => set_ok(),
@@ -9587,6 +9589,24 @@ mod wasm {
     //
     // `crates/dylink` owns the protocol; `fork_codec::dylink_table_plan` decides
     // what a reconcile must write; this applies it. See census §32 and §34.
+    //
+    // CORRECTED 2026-09-23: §32's premise was that this module "holds the
+    // table" because its artifact imports `env.__indirect_function_table`. It
+    // does not hold the GUEST's: it is instantiated before the guest, which
+    // defines and exports its own, so both hosts bind that import to a private
+    // table sized for this module's own dylink entries. Every read and write of
+    // a guest table therefore goes through shims fork-instrument emits INTO the
+    // guest (`wpk_fork_module_table_{read,length,apply}`), reached through the
+    // activation's drive-table slice -- the resume-thunk placement shape.
+    // See docs/superpowers/plans/2026-09-23-fork-guest-table-shims.md.
+    //
+    // Only plain `funcref` tables are replicated. An externref or GC-typed
+    // table holds values that cannot exist in another Worker, so fork-instrument
+    // never routes one here; fork still carries it through the save/restore
+    // helpers.
+
+    // The apply records are `[dest, catalog_slot, clear]` as `u32`s.
+    const _: () = assert!(abi::WPK_FORK_MODULE_TABLE_APPLY_RECORD_SIZE == 12);
 
     /// Byte offset of the archive HEAD slot below the dlopen control address,
     /// by guest pointer width.
@@ -9605,10 +9625,6 @@ mod wasm {
     /// as an error. `AtomicUsize`, not `AtomicU32`: this is a guest ADDRESS, and
     /// truncating it would silently point a wasm64 worker at the wrong block.
     static ARCHIVE_CONTROL: AtomicUsize = AtomicUsize::new(0);
-    /// The physical table whose patches this worker applies. Per worker rather
-    /// than per activation, because the module writes exactly one table: the
-    /// `__indirect_function_table` it imports.
-    static ARCHIVE_OWNER: AtomicU32 = AtomicU32::new(0);
     /// This worker's syscall channel base; 0 until `fm_set_format` seeds it.
     static CHANNEL_BASE: AtomicUsize = AtomicUsize::new(0);
     /// The generation this worker has applied, low and high halves.
@@ -9652,6 +9668,64 @@ mod wasm {
     /// same test.
     const DLOPEN_LOCK_OFFSET_WASM32: usize = 20;
     const DLOPEN_LOCK_OFFSET_WASM64: usize = 40;
+
+    /// Byte offset of the process generation FENCE below the control address:
+    /// the `u64` every guest's table guard compares against the generation it
+    /// last reached (`__wpk_fork_module_state_table_generation_addr` points at
+    /// it). DUPLICATED from `host/src/worker-main.ts`
+    /// (`DLOPEN_GENERATION_OFFSET_WASM32` / `_WASM64`) for the reason
+    /// `DLOPEN_HEAD_OFFSET_*` is, and pinned by the same test.
+    const DLOPEN_GENERATION_OFFSET_WASM32: usize = 32;
+    const DLOPEN_GENERATION_OFFSET_WASM64: usize = 48;
+
+    /// The process generation fence as an atomic, or `EINVAL` without one.
+    fn generation_fence() -> Result<&'static AtomicU64, Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed);
+        if control == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let offset = match format()?.pointer_width {
+            4 => DLOPEN_GENERATION_OFFSET_WASM32,
+            8 => DLOPEN_GENERATION_OFFSET_WASM64,
+            _ => return Err(Errno::EINVAL),
+        };
+        let addr = control.checked_sub(offset).ok_or(Errno::EINVAL)?;
+        if addr % 8 != 0 || addr.checked_add(8).ok_or(Errno::EINVAL)? > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds- and alignment-checked above, in the guest's shared
+        // linear memory; the host and every guest guard access this word only
+        // atomically.
+        Ok(unsafe { &*(addr as *const AtomicU64) })
+    }
+
+    /// Whether this module serves a BORROWED vfork child.
+    ///
+    /// Such a child runs on its parked parent's memory, with the table snapshot
+    /// its replay already materialized, while the parent holds the archive
+    /// READER until the child execs or exits -- so the archive cannot move
+    /// under it. It must also not allocate: its heap chunks are returned when
+    /// its replay finishes (`fm_child_finish`). So its table path adopts the
+    /// fence and touches neither the lock nor the heap. The host's TypeScript
+    /// replica makes the same choice (`borrowedImmutableSnapshot`).
+    fn borrowed_child() -> bool {
+        BORROWED_PREFIX_BASE.load(Ordering::Relaxed) != 0
+    }
+
+    /// Publish `generation` to the process fence, as one atomic 8-byte store.
+    ///
+    /// The archive header's own generation is what a reconcile READS; the fence
+    /// is what makes a peer reconcile at all. A peer's guard compares the fence
+    /// against the generation it last reached and does nothing while they are
+    /// equal, so a patch appended without moving the fence is invisible to
+    /// every other thread -- which is what the module's commit did until it
+    /// did this (a pthread calling through a slot another thread had just
+    /// written trapped "table index is out of bounds"). The TypeScript loader
+    /// stores the same word the same way (`writeGenerationFence`).
+    fn publish_generation_fence(generation: u64) -> Result<(), Errno> {
+        generation_fence()?.store(generation, Ordering::SeqCst);
+        Ok(())
+    }
 
     /// Lock states. Zero is free, negative is the single writer, and any
     /// positive value counts concurrent readers. These are the host's values,
@@ -9736,6 +9810,12 @@ mod wasm {
     /// stale table would publish a patch describing slots the writer never saw.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_mutation_begin() -> i64 {
+        if borrowed_child() {
+            // A vfork child may only exec or `_exit` (POSIX); publishing from
+            // one would take the lock its parked parent holds a reader on.
+            set_err(Errno::EPERM);
+            return -1;
+        }
         if let Err(errno) = acquire_archive_writer() {
             set_err(errno);
             return -1;
@@ -9752,11 +9832,17 @@ mod wasm {
         reached
     }
 
-    /// The guest's indirect function table length, read rather than told.
-    fn indirect_table_length() -> u32 {
-        // SAFETY: after injection this is one `table.size` on the imported table.
-        let size = unsafe { fm_indirect_table_size() };
-        if size < 0 { 0 } else { size as u32 }
+    /// One guest table's length, read through the guest's own shim rather than
+    /// told: a patch records it, and the decoder refuses a run past it.
+    fn guest_table_length(activation: u32, owner: u32) -> Result<u32, Errno> {
+        if !activation_is_present(activation) {
+            return Err(Errno::ENOENT);
+        }
+        // SAFETY: after injection this `call_indirect`s the guest's
+        // `wpk_fork_module_table_length` through the activation's drive slot,
+        // which traps on an owner the guest does not replicate.
+        let size = unsafe { __wpk_fork_guest_table_length(activation, owner) };
+        u32::try_from(size).map_err(|_| Errno::EINVAL)
     }
 
     /// This worker's syscall channel base, seeded with the rest of the
@@ -9816,11 +9902,14 @@ mod wasm {
         Ok(())
     }
 
-    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_commit(owner,
-    /// first_index, length)`.
+    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_commit(
+    /// activation, owner, first_index, length)`.
     ///
-    /// Publish what the guest just wrote into `__indirect_function_table`, then
-    /// release the archive writer `begin` took.
+    /// Publish what the guest just wrote into the replicated table
+    /// `(activation, owner)` names, then release the archive writer `begin`
+    /// took. The guest names the table because an owner id alone is only unique
+    /// inside one module; the patch carries both halves, and a peer applies it
+    /// through the same activation's shim.
     ///
     /// Every step is the module's: read each changed slot, resolve the function
     /// there to a catalog coordinate, coalesce equal neighbours into runs, size
@@ -9834,11 +9923,16 @@ mod wasm {
     /// process, which is worse than the mutation being lost.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_mutation_commit(
+        activation: u32,
         owner: u32,
         first_index: u64,
         length: u64,
     ) {
-        let result = commit_table_mutation_impl(owner, first_index, length);
+        if borrowed_child() {
+            set_err(Errno::EPERM); // see `begin`: it took no writer to release
+            return;
+        }
+        let result = commit_table_mutation_impl(activation, owner, first_index, length);
         // Release before reporting, so a caller that ignores errno still does not
         // leave the process wedged.
         let released = release_archive_writer();
@@ -9849,6 +9943,7 @@ mod wasm {
     }
 
     fn commit_table_mutation_impl(
+        activation: u32,
         owner: u32,
         first_index: u64,
         length: u64,
@@ -9863,11 +9958,18 @@ mod wasm {
         }
         first.checked_add(count).ok_or(Errno::EINVAL)?;
 
+        // No archive means nowhere to publish: refuse BEFORE asking the guest
+        // to read anything. A host with no dlopen (host-native) passes no
+        // control block, and its threads need not have bound the table shims.
+        let head = archive_head()?;
+        if head == 0 {
+            return Err(Errno::EINVAL); // nothing published to append to
+        }
         // One run per maximal stretch of slots holding the same coordinate, which
         // is what makes a bulk `table.fill` one record instead of `count` of them.
         let mut runs: Vec<fork_codec::dylink_archive::DylinkTablePatchRun> = Vec::new();
         for offset in 0..count {
-            let index = fm_indirect_slot_catalog_index_safe(first + offset)?;
+            let index = guest_slot_catalog_index(activation, owner, first + offset)?;
             let function = match index {
                 None => None,
                 Some(slot) => Some(catalog_slot_coordinate(slot)?),
@@ -9881,10 +9983,6 @@ mod wasm {
             }
         }
 
-        let head = archive_head()?;
-        if head == 0 {
-            return Err(Errno::EINVAL); // nothing published to append to
-        }
         let pointer_width = format()?.pointer_width;
         let archive = fork_codec::dylink_archive::decode_dylink_archive(
             &GuestArchiveBytes,
@@ -9893,13 +9991,11 @@ mod wasm {
         )?;
         let patch = fork_codec::dylink_archive::DylinkTablePatch {
             generation: archive.generation.checked_add(1).ok_or(Errno::EINVAL)?,
-            // The guest's import signature carries no activation, and the planner
-            // reads each RUN's own activation rather than this field, so recording
-            // a guessed one would be a fiction nothing consumes.
-            activation_id: 0,
+            // Together these name the TABLE; each run names its function.
+            activation_id: activation,
             owner_id: owner,
             start: u64::from(first),
-            table_length: u64::from(indirect_table_length()),
+            table_length: u64::from(guest_table_length(activation, owner)?),
             runs,
         };
         let size = fork_codec::dylink_archive::table_append::appended_record_size(&patch)?;
@@ -9918,18 +10014,30 @@ mod wasm {
             write_guest_bytes(write.address, &write.bytes)?;
         }
         write_guest_bytes(plan.generation_address, &plan.generation.to_le_bytes())?;
+        // Then the fence, LAST: a peer that sees it moves to reconcile, and must
+        // find the header already naming the new patch.
+        publish_generation_fence(plan.generation)?;
         // This worker wrote it, so it already reflects it.
         ARCHIVE_APPLIED[0].store((plan.generation & 0xffff_ffff) as u32, Ordering::Relaxed);
         ARCHIVE_APPLIED[1].store((plan.generation >> 32) as u32, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Safe wrapper over the injected indirect-slot lookup. `None` is a null
-    /// slot; an uncatalogued function is `EINVAL`.
-    fn fm_indirect_slot_catalog_index_safe(dest: u32) -> Result<Option<u32>, Errno> {
-        // SAFETY: after injection this reads one indirect-table slot and scans
-        // the imported catalog, both bounds-checked by wasm itself.
-        match unsafe { fm_indirect_slot_catalog_index(dest) } {
+    /// The merged-catalog slot of the function at one slot of a guest table,
+    /// read by the guest's own shim. `None` is a null slot; an uncatalogued
+    /// function is `ENOENT`.
+    fn guest_slot_catalog_index(
+        activation: u32,
+        owner: u32,
+        dest: u32,
+    ) -> Result<Option<u32>, Errno> {
+        if !activation_is_present(activation) {
+            return Err(Errno::ENOENT);
+        }
+        // SAFETY: after injection this `call_indirect`s the guest's
+        // `wpk_fork_module_table_read`, which reads one slot of its own table
+        // (bounds-checked by wasm) and asks this module's catalog scan.
+        match unsafe { __wpk_fork_guest_table_read(activation, owner, dest) } {
             -1 => Ok(None),
             // A function the loader never catalogued cannot be described as a
             // coordinate, and a patch that omitted it would tell peers the slot
@@ -9976,6 +10084,10 @@ mod wasm {
     /// failed `dlopen`, or a `table.fill` of length zero.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_mutation_abort() {
+        if borrowed_child() {
+            set_err(Errno::EPERM); // see `begin`: it took no writer to release
+            return;
+        }
         match release_archive_writer() {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
@@ -9992,6 +10104,21 @@ mod wasm {
     /// yet. `-1` on failure, with the reason in `fm_last_errno`.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_reconcile() -> i64 {
+        if borrowed_child() {
+            return match generation_fence() {
+                Ok(fence) => {
+                    let reached = fence.load(Ordering::SeqCst);
+                    ARCHIVE_APPLIED[0].store((reached & 0xffff_ffff) as u32, Ordering::Relaxed);
+                    ARCHIVE_APPLIED[1].store((reached >> 32) as u32, Ordering::Relaxed);
+                    set_ok();
+                    reached as i64
+                }
+                Err(errno) => {
+                    set_err(errno);
+                    -1
+                }
+            };
+        }
         let head = match archive_head() {
             Ok(head) => head,
             Err(errno) => {
@@ -9999,7 +10126,6 @@ mod wasm {
                 return -1;
             }
         };
-        let owner = ARCHIVE_OWNER.load(Ordering::Relaxed);
         let applied = (u64::from(ARCHIVE_APPLIED[1].load(Ordering::Relaxed)) << 32)
             | u64::from(ARCHIVE_APPLIED[0].load(Ordering::Relaxed));
         if head == 0 {
@@ -10014,34 +10140,52 @@ mod wasm {
                 head,
                 pointer_width,
             )?;
-            let steps = fork_codec::dylink_table_plan::plan_table_patches(
-                &archive.table_patches,
-                owner,
-                applied,
-            )?;
-            // The generation this worker has REACHED is the snapshot's, not the
-            // highest one its own owner appears in. The guest caches whatever
-            // this returns and compares it against the shared fence on the next
-            // table access: returning the owner-filtered generation would leave
-            // the cached value permanently below the fence whenever some OTHER
-            // owner published last, and the guard would then re-enter on every
-            // single table access forever. Applying every patch for this owner
-            // up to `archive.generation` is exactly what makes the worker
-            // coherent with that snapshot, which is what the fence names.
+            let plans =
+                fork_codec::dylink_table_plan::plan_table_patches(&archive.table_patches, applied)?;
+            // The generation this worker has REACHED is the snapshot's. The
+            // guest caches whatever this returns and compares it against the
+            // shared fence on the next table access, so anything below the fence
+            // would re-enter the guard on every table access forever. Applying
+            // every patch up to `archive.generation` is exactly what makes the
+            // worker coherent with that snapshot, which is what the fence names.
             let reached = archive.generation.max(
-                fork_codec::dylink_table_plan::planned_generation(
-                    &archive.table_patches,
-                    owner,
-                    applied,
-                ),
+                fork_codec::dylink_table_plan::planned_generation(&archive.table_patches, applied),
             );
-            for step in &steps {
-                let slot = if step.clear {
-                    0
-                } else {
-                    catalog_slot(step.activation_id, step.ordinal)?
-                };
-                table_apply_via_injector(step.dest, slot, step.clear);
+            // Resolve EVERY patch before writing ANY: a patch this worker cannot
+            // apply (an activation it has not instantiated) must fail the
+            // reconcile without leaving the tables half-way between generations.
+            let mut batches: Vec<(u32, u32, u32, Vec<u32>)> = Vec::with_capacity(plans.len());
+            for plan in &plans {
+                if !activation_is_present(plan.activation_id) {
+                    return Err(Errno::ENOENT);
+                }
+                let mut records: Vec<u32> = Vec::with_capacity(plan.steps.len() * 3);
+                for step in &plan.steps {
+                    let slot = if step.clear {
+                        0
+                    } else {
+                        catalog_slot(step.activation_id, step.ordinal)?
+                    };
+                    records.extend_from_slice(&[step.dest, slot, u32::from(step.clear)]);
+                }
+                batches.push((plan.activation_id, plan.owner_id, plan.table_length, records));
+            }
+            for (activation, owner, length, records) in &batches {
+                // The records live in this module's heap, which is the guest's
+                // shared linear memory, so the guest shim reads them in place.
+                // SAFETY: after injection this `call_indirect`s the guest's
+                // `wpk_fork_module_table_apply` through `activation`'s drive
+                // slot; it traps on an owner the guest does not replicate and on
+                // a slot past a table it could not grow.
+                unsafe {
+                    __wpk_fork_guest_table_apply(
+                        *activation,
+                        *owner,
+                        *length,
+                        records.as_ptr() as usize,
+                        (records.len() / 3) as u32,
+                    );
+                }
             }
             Ok(reached)
         })();

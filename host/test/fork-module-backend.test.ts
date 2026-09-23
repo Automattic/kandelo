@@ -4,9 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   FORK_ACTIVATION_DRIVE_BINDINGS,
-  FORK_ACTIVATION_DRIVE_SLOTS,
   FORK_MODULE_STATS,
 } from "../src/fork-module-backend";
+
+/** The per-activation drive stride: one slot per binding. */
+const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
 
 const moduleSource = readFileSync(
   join(import.meta.dirname, "..", "..", "crates/fork-module/src/lib.rs"),
@@ -173,6 +175,12 @@ describe("activation drive bindings", () => {
         "__wpk_fork_ref_exn_throw_recipe",
         constant("DRIVE_SLOT_EXN_THROW_RECIPE"),
       ],
+      // The guest's table shims: the ONLY way the module reads or writes a
+      // guest table. Binding read at apply's slot would have the module apply
+      // a patch by calling a reader -- a silent no-op, not a trap.
+      ["wpk_fork_module_table_read", constant("DRIVE_SLOT_TABLE_READ")],
+      ["wpk_fork_module_table_length", constant("DRIVE_SLOT_TABLE_LENGTH")],
+      ["wpk_fork_module_table_apply", constant("DRIVE_SLOT_TABLE_APPLY")],
     ]);
     expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
     for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {
@@ -210,6 +218,9 @@ describe("activation drive bindings", () => {
       "wpk_fork_module_state_finish_restore",
       "wpk_fork_module_state_restore",
       "wpk_fork_module_state_save",
+      "wpk_fork_module_table_apply",
+      "wpk_fork_module_table_length",
+      "wpk_fork_module_table_read",
       "wpk_fork_rewind_begin",
       "wpk_fork_rewind_end",
       "wpk_fork_unwind_begin",

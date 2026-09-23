@@ -4,8 +4,8 @@ import { afterAll, expect } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import {
-  FORK_ACTIVATION_DRIVE_SLOTS,
   ForkModuleContinuationBackend,
+  FORK_ACTIVATION_DRIVE_BINDINGS,
 } from "../src/fork-module-backend";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -13,6 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FAITHFUL_GUEST_BYTES } from "./fork-module-faithful-guest";
 import { readForkModuleStateRoot } from "../src/fork-guest-sections";
+
+/** The per-activation drive stride: one slot per binding. */
+const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
 
 /**
  * The first test that reaches `begin_capture_impl`.
@@ -313,7 +316,7 @@ export function fixture(): Fixture {
     counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
   });
 
-  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
   // Activation 0's resume catalog, EMPTY, seeded the way every worker's
   // `setup()` seeds it before any fork. The module registers an activation's
   // resume slots from its seeded catalog and from nothing else: a replay of
@@ -484,7 +487,7 @@ export function childInstance(
     label: options.label ?? "child module",
   });
   const cx = child.exports as Record<string, unknown>;
-  (cx.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+  (cx.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
   return child;
 }
 
@@ -1140,7 +1143,7 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
   });
   const setFormat = (): void => {
-    (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+    (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
   };
   setFormat();
   const errno = (): number => (x.fm_last_errno as () => number)();

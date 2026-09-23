@@ -1,8 +1,8 @@
 //! Funcref table-replica reconcile PLAN.
 //!
-//! A forked child, and any peer worker, must bring its instance-local
-//! `__indirect_function_table` back in step with the process's published
-//! loader state. The published form is a chain of `DylinkTablePatch` records
+//! Any peer worker must bring its instance-local replicated funcref tables
+//! (the `__indirect_function_table`, and any other plain `funcref` table the
+//! guest mutates) back in step with the process's published state. The published form is a chain of `DylinkTablePatch` records
 //! (`dylink_archive`), each a run-length description of consecutive slots set
 //! to a `(activation_id, ordinal)` catalog coordinate or cleared to null.
 //!
@@ -27,7 +27,7 @@ use crate::dylink_archive::DylinkTablePatch;
 /// One funcref table slot a reconcile must write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TablePatchStep {
-    /// Slot in the guest's `__indirect_function_table`.
+    /// Slot in the patched table.
     pub dest: u32,
     /// Catalog coordinate to write, meaningless when `clear` is set.
     pub activation_id: u32,
@@ -36,14 +36,30 @@ pub struct TablePatchStep {
     pub clear: bool,
 }
 
+/// The writes one published patch makes to ONE table.
+///
+/// A patch names its table by `(activation_id, owner_id)`: the activation
+/// whose instance declares or imports the table, and the table's owner id
+/// inside that module. An owner id alone is only unique within one module, so
+/// both halves are needed to say which table changed -- and applying it means
+/// asking THAT activation to write its own table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TablePatchPlan {
+    pub activation_id: u32,
+    pub owner_id: u32,
+    /// The table's length after the patch; the applier grows to it first.
+    pub table_length: u32,
+    pub steps: Vec<TablePatchStep>,
+}
+
 /// A reconcile that would write more slots than this is refused rather than
 /// run: a patch chain long enough to exceed it means the publisher is emitting
 /// unbounded history where a checkpoint was expected, and silently applying
 /// millions of writes would turn a coherence bug into a hang.
 pub const MAX_PLAN_STEPS: usize = 1 << 20;
 
-/// Plan the writes that bring `owner_id`'s table from `since_generation` up to
-/// the newest published patch.
+/// Plan the writes that bring every replicated table from `since_generation`
+/// up to the newest published patch, one plan per patch, in publication order.
 ///
 /// Patches at or below `since_generation` are already applied and are skipped;
 /// `>` and not `>=` is the whole point, since re-applying a generation the
@@ -56,16 +72,13 @@ pub const MAX_PLAN_STEPS: usize = 1 << 20;
 /// invented order would make two workers disagree about what happened.
 pub fn plan_table_patches(
     patches: &[DylinkTablePatch],
-    owner_id: u32,
     since_generation: u64,
-) -> Result<Vec<TablePatchStep>, Errno> {
-    let mut steps: Vec<TablePatchStep> = Vec::new();
+) -> Result<Vec<TablePatchPlan>, Errno> {
+    let mut plans: Vec<TablePatchPlan> = Vec::new();
+    let mut total = 0usize;
     let mut last_generation: Option<u64> = None;
 
     for patch in patches {
-        if patch.owner_id != owner_id {
-            continue;
-        }
         if patch.generation <= since_generation {
             continue;
         }
@@ -76,6 +89,8 @@ pub fn plan_table_patches(
         }
         last_generation = Some(patch.generation);
 
+        let table_length = u32::try_from(patch.table_length).map_err(|_| Errno::EINVAL)?;
+        let mut steps = Vec::new();
         let mut cursor = patch.start;
         for run in &patch.runs {
             let end = cursor.checked_add(run.length).ok_or(Errno::EINVAL)?;
@@ -84,7 +99,8 @@ pub fn plan_table_patches(
             }
             for slot in cursor..end {
                 let dest = u32::try_from(slot).map_err(|_| Errno::EINVAL)?;
-                if steps.len() >= MAX_PLAN_STEPS {
+                total += 1;
+                if total > MAX_PLAN_STEPS {
                     return Err(Errno::E2BIG);
                 }
                 steps.push(match run.function {
@@ -104,8 +120,14 @@ pub fn plan_table_patches(
             }
             cursor = end;
         }
+        plans.push(TablePatchPlan {
+            activation_id: patch.activation_id,
+            owner_id: patch.owner_id,
+            table_length,
+            steps,
+        });
     }
-    Ok(steps)
+    Ok(plans)
 }
 
 /// The generation a reconcile reaches by applying [`plan_table_patches`]'s
@@ -114,14 +136,10 @@ pub fn plan_table_patches(
 /// Reported separately from the steps because the caller must publish it only
 /// AFTER the writes land: storing it first would let a peer observe a
 /// generation whose table entries are not there yet.
-pub fn planned_generation(
-    patches: &[DylinkTablePatch],
-    owner_id: u32,
-    since_generation: u64,
-) -> u64 {
+pub fn planned_generation(patches: &[DylinkTablePatch], since_generation: u64) -> u64 {
     patches
         .iter()
-        .filter(|patch| patch.owner_id == owner_id && patch.generation > since_generation)
+        .filter(|patch| patch.generation > since_generation)
         .map(|patch| patch.generation)
         .max()
         .unwrap_or(since_generation)
@@ -160,6 +178,10 @@ mod tests {
         }
     }
 
+    fn steps(plans: &[TablePatchPlan]) -> Vec<TablePatchStep> {
+        plans.iter().flat_map(|plan| plan.steps.iter().copied()).collect()
+    }
+
     /// The same archive fixture `dylink_archive.rs` decodes: real output from
     /// the TypeScript `DylinkForkArchive` writer. Planning against it rather
     /// than only against hand-built patches is what catches a disagreement
@@ -178,50 +200,34 @@ mod tests {
     #[test]
     fn plans_against_the_real_published_archive() {
         let archive = fixture_archive();
-        // Whatever the fixture happens to carry, planning it must be total and
-        // self-consistent: every owner it names plans without error, and
-        // replanning from the generation just reached yields nothing.
-        let owners: alloc::collections::BTreeSet<u32> =
-            archive.table_patches.iter().map(|p| p.owner_id).collect();
-        // Without this the loop below would be VACUOUS on a fixture that
-        // happens to carry no patches, and the test would pass by asserting
-        // nothing.
+        // Without this the checks below would be VACUOUS on a fixture that
+        // happens to carry no patches.
         assert!(
-            !owners.is_empty(),
+            !archive.table_patches.is_empty(),
             "the fixture must carry table patches for this test to mean anything",
         );
-        for owner in owners {
-            let steps = plan_table_patches(&archive.table_patches, owner, 0)
-                .expect("a published chain plans");
-            let reached = planned_generation(&archive.table_patches, owner, 0);
-            assert!(
-                reached > 0,
-                "owner {owner} has patches, so it reaches a generation",
-            );
-            let again = plan_table_patches(&archive.table_patches, owner, reached)
-                .expect("replan is total");
-            assert!(
-                again.is_empty(),
-                "replanning from the generation just reached must write nothing",
-            );
-            // Every step names a slot inside the table its patch described.
-            assert!(
-                steps.iter().all(|s| s.dest != u32::MAX),
-                "no step names a sentinel slot",
-            );
+        let plans = plan_table_patches(&archive.table_patches, 0).expect("a published chain plans");
+        assert_eq!(plans.len(), archive.table_patches.len(), "one plan per patch");
+        for (plan, patch) in plans.iter().zip(&archive.table_patches) {
+            assert_eq!((plan.activation_id, plan.owner_id), (patch.activation_id, patch.owner_id));
+            assert!(plan.steps.iter().all(|s| s.dest < plan.table_length));
         }
+        let reached = planned_generation(&archive.table_patches, 0);
+        assert!(reached > 0, "a chain with patches reaches a generation");
+        assert!(
+            plan_table_patches(&archive.table_patches, reached).expect("replan").is_empty(),
+            "replanning from the generation just reached must write nothing",
+        );
     }
 
     #[test]
     fn a_run_expands_to_consecutive_slots_from_start() {
         let patches = vec![patch(1, 7, 4, 16, vec![run(3, Some((2, 9)))])];
-        let steps = plan_table_patches(&patches, 7, 0).unwrap();
-        assert_eq!(steps.len(), 3);
-        assert_eq!(
-            steps.iter().map(|s| s.dest).collect::<Vec<_>>(),
-            vec![4, 5, 6],
-        );
+        let plans = plan_table_patches(&patches, 0).unwrap();
+        let steps = steps(&plans);
+        assert_eq!(steps.iter().map(|s| s.dest).collect::<Vec<_>>(), vec![4, 5, 6]);
         assert!(steps.iter().all(|s| s.activation_id == 2 && s.ordinal == 9 && !s.clear));
+        assert_eq!(plans[0].table_length, 16);
     }
 
     #[test]
@@ -230,20 +236,13 @@ mod tests {
         // populate every cleared slot with whichever function happens to be
         // first in the catalog.
         let patches = vec![patch(1, 7, 0, 4, vec![run(2, None)])];
-        let steps = plan_table_patches(&patches, 7, 0).unwrap();
-        assert!(steps.iter().all(|s| s.clear), "null runs clear");
+        assert!(steps(&plan_table_patches(&patches, 0).unwrap()).iter().all(|s| s.clear));
     }
 
     #[test]
     fn runs_advance_the_cursor_so_they_do_not_overlap() {
-        let patches = vec![patch(
-            1,
-            7,
-            0,
-            8,
-            vec![run(2, Some((1, 1))), run(2, Some((1, 2)))],
-        )];
-        let steps = plan_table_patches(&patches, 7, 0).unwrap();
+        let patches = vec![patch(1, 7, 0, 8, vec![run(2, Some((1, 1))), run(2, Some((1, 2)))])];
+        let steps = steps(&plan_table_patches(&patches, 0).unwrap());
         assert_eq!(
             steps.iter().map(|s| (s.dest, s.ordinal)).collect::<Vec<_>>(),
             vec![(0, 1), (1, 1), (2, 2), (3, 2)],
@@ -258,46 +257,51 @@ mod tests {
             patch(1, 7, 0, 8, vec![run(1, Some((1, 1)))]),
             patch(2, 7, 1, 8, vec![run(1, Some((1, 2)))]),
         ];
-        assert_eq!(plan_table_patches(&patches, 7, 0).unwrap().len(), 2);
-        assert_eq!(plan_table_patches(&patches, 7, 1).unwrap().len(), 1);
-        assert_eq!(plan_table_patches(&patches, 7, 2).unwrap().len(), 0);
+        assert_eq!(plan_table_patches(&patches, 0).unwrap().len(), 2);
+        assert_eq!(plan_table_patches(&patches, 1).unwrap().len(), 1);
+        assert_eq!(plan_table_patches(&patches, 2).unwrap().len(), 0);
     }
 
+    /// Each plan carries the table its patch named, activation AND owner, so
+    /// two modules' "owner 1" stay two tables. The old per-worker owner filter
+    /// dropped every patch but one owner's and could not tell activations apart.
     #[test]
-    fn another_owners_patches_are_not_applied() {
-        let patches = vec![patch(1, 9, 0, 8, vec![run(4, Some((1, 1)))])];
-        assert!(plan_table_patches(&patches, 7, 0).unwrap().is_empty());
+    fn each_plan_names_the_table_its_patch_changed() {
+        let mut side = patch(2, 1, 0, 8, vec![run(1, Some((3, 4)))]);
+        side.activation_id = 3;
+        let patches = vec![patch(1, 1, 0, 8, vec![run(1, Some((0, 5)))]), side];
+        let plans = plan_table_patches(&patches, 0).unwrap();
+        assert_eq!(
+            plans.iter().map(|p| (p.activation_id, p.owner_id)).collect::<Vec<_>>(),
+            vec![(0, 1), (3, 1)],
+        );
     }
 
     #[test]
     fn a_disordered_chain_is_refused_rather_than_sorted() {
         // The order records causality. Inventing one would let two workers
-        // disagree about what happened.
+        // disagree about what happened. Generations are archive-wide, so the
+        // rule holds across tables too.
         let patches = vec![
             patch(2, 7, 0, 8, vec![run(1, Some((1, 1)))]),
-            patch(1, 7, 1, 8, vec![run(1, Some((1, 2)))]),
+            patch(1, 9, 1, 8, vec![run(1, Some((1, 2)))]),
         ];
-        assert_eq!(plan_table_patches(&patches, 7, 0), Err(Errno::EINVAL));
+        assert_eq!(plan_table_patches(&patches, 0), Err(Errno::EINVAL));
         let repeated = vec![
             patch(2, 7, 0, 8, vec![run(1, Some((1, 1)))]),
             patch(2, 7, 1, 8, vec![run(1, Some((1, 2)))]),
         ];
-        assert_eq!(plan_table_patches(&repeated, 7, 0), Err(Errno::EINVAL));
+        assert_eq!(plan_table_patches(&repeated, 0), Err(Errno::EINVAL));
     }
 
     #[test]
     fn a_run_past_the_table_it_describes_is_refused() {
         let patches = vec![patch(1, 7, 6, 8, vec![run(4, Some((1, 1)))])];
-        assert_eq!(plan_table_patches(&patches, 7, 0), Err(Errno::EINVAL));
+        assert_eq!(plan_table_patches(&patches, 0), Err(Errno::EINVAL));
     }
 
     #[test]
     fn the_reached_generation_is_the_highest_applied_not_the_last_seen() {
-        // The out-of-order patch must belong to the SAME owner. An earlier
-        // version of this test put it under a different owner, so the filter
-        // removed it before order could matter and `.last()` passed in place of
-        // `.max()` — a test that could not fail.
-        //
         // `plan_table_patches` refuses a disordered chain, so this input cannot
         // reach a reconcile. `planned_generation` is public and independently
         // callable, so it is correct by construction rather than by relying on
@@ -307,18 +311,11 @@ mod tests {
             patch(1, 7, 1, 8, vec![run(1, Some((1, 2)))]),
         ];
         assert_eq!(
-            planned_generation(&disordered, 7, 0),
+            planned_generation(&disordered, 0),
             5,
             "the HIGHEST applicable generation, not whichever came last",
         );
-
-        let ordered = vec![
-            patch(1, 7, 0, 8, vec![run(1, Some((1, 1)))]),
-            patch(5, 7, 1, 8, vec![run(1, Some((1, 2)))]),
-            patch(3, 9, 2, 8, vec![run(1, Some((1, 3)))]), // another owner
-        ];
-        assert_eq!(planned_generation(&ordered, 7, 0), 5);
-        assert_eq!(planned_generation(&ordered, 7, 5), 5, "nothing to apply");
-        assert_eq!(planned_generation(&[], 7, 4), 4, "empty chain holds");
+        assert_eq!(planned_generation(&disordered, 5), 5, "nothing to apply");
+        assert_eq!(planned_generation(&[], 4), 4, "empty chain holds");
     }
 }

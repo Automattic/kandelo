@@ -165,12 +165,13 @@ const HOST_FUNC_IDENTITY_IMPORT: &str = "__wpk_fork_host_func_identity";
 /// Guest-facing capture entry: `(funcref) -> recipe`.
 const ENCODE_FUNCREF_EXPORT: &str = "__wpk_fork_ref_encode_funcref";
 
-/// Reads one `__indirect_function_table` slot and reports which merged
-/// function-catalog slot holds the same function. See `inject_indirect_slot_catalog`.
-const INDIRECT_SLOT_CATALOG_IMPORT: &str = "fm_indirect_slot_catalog_index";
+/// Guest-facing `(funcref) -> i32`: which merged function-catalog slot holds
+/// a function. See `inject_table_catalog_index`.
+const TABLE_CATALOG_INDEX_EXPORT: &str = "__wpk_fork_module_state_table_catalog_index";
 
-/// `table.size` of the guest's indirect function table, which Rust cannot emit.
-const INDIRECT_TABLE_SIZE_IMPORT: &str = "fm_indirect_table_size";
+/// Guest-facing `(i32) -> funcref`: the function at one merged catalog slot.
+/// See `inject_table_catalog_function`.
+const TABLE_CATALOG_FUNCTION_EXPORT: &str = "__wpk_fork_module_state_table_catalog_function";
 
 /// Rust helpers the scan calls once it has an answer.
 const FUNCREF_SLOT_TO_RECIPE_HELPER: &str = "fm_funcref_slot_to_recipe";
@@ -267,9 +268,23 @@ const DECODE_FUNCREF_EXPORT: &str = "__wpk_fork_ref_decode_funcref";
 /// mirror populated from the guest's catalog — identical funcref identities).
 const FUNCTION_CATALOG_IMPORT: &str = "__wpk_fork_function_catalog";
 
-/// Placeholder the fork module declares for one funcref table write during a
-/// reconcile. Rewritten below into a local thunk; see `inject_table_apply_thunk`.
-const TABLE_APPLY_THUNK_IMPORT: &str = "__wpk_fork_table_apply";
+/// Placeholders the fork module declares for the guest's three table shims,
+/// with the drive-table slot each is bound at. Rewritten below into thunks; see
+/// `inject_guest_table_thunks`.
+const GUEST_TABLE_THUNKS: [(&str, u32); 3] = [
+    (
+        "__wpk_fork_guest_table_read",
+        fork_codec::drive_plan::DRIVE_SLOT_TABLE_READ,
+    ),
+    (
+        "__wpk_fork_guest_table_length",
+        fork_codec::drive_plan::DRIVE_SLOT_TABLE_LENGTH,
+    ),
+    (
+        "__wpk_fork_guest_table_apply",
+        fork_codec::drive_plan::DRIVE_SLOT_TABLE_APPLY,
+    ),
+];
 
 /// Placeholders for the two shared-memory atomics Rust cannot emit. Rewritten
 /// below into local thunks; see `inject_atomic_thunks`.
@@ -289,9 +304,6 @@ const TRAMPOLINE_ACTIVATIONS: u32 = 64;
 /// frame_peek, frame_next, resume_peek.
 const TRAMPOLINE_SLOTS: u32 = 6;
 
-/// The guest's own indirect call table -- the table a reconcile writes into.
-/// Named by the wasm tool convention, not by anything Kandelo chose.
-const INDIRECT_FUNCTION_TABLE_IMPORT: &str = "__indirect_function_table";
 const IMPORT_MODULE: &str = "env";
 
 /// The `NULL_ORDINAL` sentinel `fm_funcref_ordinal` returns for a Null recipe;
@@ -535,128 +547,135 @@ fn inject_encode_funcref(module: &mut Module) -> Result<()> {
     Ok(())
 }
 
-/// Rewrite `fm_indirect_slot_catalog_index(dest) -> i32` into a local thunk.
+/// Export `__wpk_fork_module_state_table_catalog_index(funcref) -> i32`.
 ///
 /// Publishing a guest table mutation means describing what the guest WROTE, and
-/// the description is a catalog coordinate. So for each changed slot the module
-/// asks the same question `encode_funcref` asks, about a function it reads out of
-/// the indirect table rather than one it was handed.
+/// the description is a catalog coordinate. The guest's own
+/// `wpk_fork_module_table_read` shim reads the slot out of its own table and
+/// hands the function here, which asks the question `encode_funcref` asks.
 ///
 /// Returns the merged catalog slot, or:
-///   `-1` the indirect slot is null, a legitimate cleared entry;
+///   `-1` the function is null, a legitimate cleared entry;
 ///   `-2` the function is not in the catalog at all.
 ///
 /// Two codes rather than one because they are not the same event: a null slot is
 /// a run the patch records as `clear`, while an uncatalogued function is a
 /// mutation that cannot be described and must fail the commit.
-fn inject_indirect_slot_catalog(module: &mut Module) -> Result<()> {
-    let Some(import_fn) = imported_func(module, INDIRECT_SLOT_CATALOG_IMPORT) else {
-        return Ok(());
-    };
+///
+/// This used to be an injected IMPORT reading `__indirect_function_table`
+/// itself -- the module's own private table, never the guest's (see the
+/// 2026-09-23 guest-table-shims plan). Taking the function as an argument is
+/// what lets the guest supply it from the table it really owns.
+fn inject_table_catalog_index(module: &mut Module) -> Result<()> {
     let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
-    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
     let identity = import_host_func_identity(module);
     let catalog_is_64 = module.tables.get(catalog).table64;
-    let indirect_is_64 = module.tables.get(indirect).table64;
+    let held = module.locals.add(ValType::Ref(RefType::FUNCREF));
     let want_id = module.locals.add(ValType::I32);
     let i = module.locals.add(ValType::I32);
     let size = module.locals.add(ValType::I32);
-    let held = module.locals.add(ValType::Ref(RefType::FUNCREF));
     let entry = module.locals.add(ValType::Ref(RefType::FUNCREF));
 
-    module
-        .replace_imported_func(import_fn, |(body, args)| {
-            let dest = args[0];
-            let mut loop_body = body.dangling_instr_seq(None);
-            let loop_id = loop_body.id();
-            loop_body
-                .local_get(i)
-                .local_get(size)
-                .binop(BinaryOp::I32GeU)
-                .if_else(
+    let mut builder = FunctionBuilder::new(
+        &mut module.types,
+        &[ValType::Ref(RefType::FUNCREF)],
+        &[ValType::I32],
+    );
+    let mut loop_body = builder.dangling_instr_seq(None);
+    let loop_id = loop_body.id();
+    loop_body
+        .local_get(i)
+        .local_get(size)
+        .binop(BinaryOp::I32GeU)
+        .if_else(
+            None,
+            |done| {
+                done.i32_const(-2).return_();
+            },
+            |work| {
+                work.local_get(i);
+                if catalog_is_64 {
+                    work.unop(UnaryOp::I64ExtendUI32);
+                }
+                work.table_get(catalog).local_set(entry);
+                work.local_get(entry).ref_is_null().if_else(
                     None,
-                    |done| {
-                        done.i32_const(-2).return_();
-                    },
-                    |work| {
-                        work.local_get(i);
-                        if catalog_is_64 {
-                            work.unop(UnaryOp::I64ExtendUI32);
-                        }
-                        work.table_get(catalog).local_set(entry);
-                        work.local_get(entry).ref_is_null().if_else(
-                            None,
-                            |_null| {},
-                            |occupied| {
-                                occupied
-                                    .local_get(entry)
-                                    .call(identity)
-                                    .local_get(want_id)
-                                    .binop(BinaryOp::I32Eq)
-                                    .if_else(
-                                        None,
-                                        |found| {
-                                            found.local_get(i).return_();
-                                        },
-                                        |_| {},
-                                    );
-                            },
-                        );
-                        work.local_get(i)
-                            .i32_const(1)
-                            .binop(BinaryOp::I32Add)
-                            .local_set(i);
-                        work.instr(Br { block: loop_id });
+                    |_null| {},
+                    |occupied| {
+                        occupied
+                            .local_get(entry)
+                            .call(identity)
+                            .local_get(want_id)
+                            .binop(BinaryOp::I32Eq)
+                            .if_else(
+                                None,
+                                |found| {
+                                    found.local_get(i).return_();
+                                },
+                                |_| {},
+                            );
                     },
                 );
-            drop(loop_body);
-
-            body.local_get(dest);
-            if indirect_is_64 {
-                body.unop(UnaryOp::I64ExtendUI32);
-            }
-            body.table_get(indirect).local_set(held);
-            body.local_get(held).ref_is_null().if_else(
-                None,
-                |null| {
-                    null.i32_const(-1).return_();
-                },
-                |_| {},
-            );
-            body.local_get(held).call(identity).local_set(want_id);
-            body.table_size(catalog);
-            if catalog_is_64 {
-                body.unop(UnaryOp::I32WrapI64);
-            }
-            body.local_set(size);
-            body.i32_const(0).local_set(i);
-            body.instr(Loop { seq: loop_id });
-            body.i32_const(-2);
-        })
-        .with_context(|| format!("rewriting {INDIRECT_SLOT_CATALOG_IMPORT}"))?;
+                work.local_get(i)
+                    .i32_const(1)
+                    .binop(BinaryOp::I32Add)
+                    .local_set(i);
+                work.instr(Br { block: loop_id });
+            },
+        );
+    drop(loop_body);
+    {
+        let mut body = builder.func_body();
+        body.local_get(held).ref_is_null().if_else(
+            None,
+            |null| {
+                null.i32_const(-1).return_();
+            },
+            |_| {},
+        );
+        body.local_get(held).call(identity).local_set(want_id);
+        body.table_size(catalog);
+        if catalog_is_64 {
+            body.unop(UnaryOp::I32WrapI64);
+        }
+        body.local_set(size);
+        body.i32_const(0).local_set(i);
+        body.instr(Loop { seq: loop_id });
+        body.i32_const(-2);
+    }
+    let shim = builder.finish(vec![held], &mut module.funcs);
+    module.exports.add(TABLE_CATALOG_INDEX_EXPORT, shim);
     Ok(())
 }
 
-/// Rewrite `fm_indirect_table_size() -> i32` into a local thunk.
+/// Export `__wpk_fork_module_state_table_catalog_function(i32) -> funcref`: one
+/// `table.get` on the merged function catalog.
 ///
-/// A published table patch records the table's LENGTH, and the decoder rejects a
-/// patch whose range runs past it. Rust cannot emit `table.size`, so without this
-/// the module would have to be TOLD a number it can read for itself -- and a host
-/// that told it a stale one would publish patches the decoder refuses.
-fn inject_indirect_table_size(module: &mut Module) -> Result<()> {
-    let Some(import_fn) = imported_func(module, INDIRECT_TABLE_SIZE_IMPORT) else {
-        return Ok(());
-    };
-    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
-    let is64 = module.tables.get(indirect).table64;
-    module
-        .replace_imported_func(import_fn, |(body, _args)| {
-            body.table_size(indirect);
-            if is64 {
-                body.unop(UnaryOp::I32WrapI64);
-            }
-        })
-        .with_context(|| format!("rewriting {INDIRECT_TABLE_SIZE_IMPORT}"))?;
+/// The guest's `wpk_fork_module_table_apply` shim writes a published patch into
+/// its own table, and the functions a patch names are merged-catalog slots --
+/// the same coordinate the module resolved them to. Handing the guest a
+/// function this way keeps the value inside wasm: nothing crosses into
+/// JavaScript. An out-of-range slot TRAPS rather than writing some other
+/// function.
+fn inject_table_catalog_function(module: &mut Module) -> Result<()> {
+    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
+    let catalog_is_64 = module.tables.get(catalog).table64;
+    let slot = module.locals.add(ValType::I32);
+    let mut builder = FunctionBuilder::new(
+        &mut module.types,
+        &[ValType::I32],
+        &[ValType::Ref(RefType::FUNCREF)],
+    );
+    {
+        let mut body = builder.func_body();
+        body.local_get(slot);
+        if catalog_is_64 {
+            body.unop(UnaryOp::I64ExtendUI32);
+        }
+        body.table_get(catalog);
+    }
+    let shim = builder.finish(vec![slot], &mut module.funcs);
+    module.exports.add(TABLE_CATALOG_FUNCTION_EXPORT, shim);
     Ok(())
 }
 
@@ -1170,17 +1189,18 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_exn_throw into a thunk")?;
     inject_transit_grow_thunk(&mut module)
         .context("rewriting __wpk_fork_transit_grow into a thunk")?;
-    inject_table_apply_thunk(&mut module)
-        .context("rewriting __wpk_fork_table_apply into a thunk")?;
+    inject_guest_table_thunks(&mut module)
+        .context("rewriting the guest table placeholders into thunks")?;
     inject_resume_null_thunk(&mut module)
         .context("rewriting __wpk_fork_resume_null into a thunk")?;
     inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;
     inject_activation_trampolines(&mut module)
         .context("emitting the per-activation frame trampolines")?;
     inject_encode_funcref(&mut module).context("injecting __wpk_fork_ref_encode_funcref")?;
-    inject_indirect_slot_catalog(&mut module)
-        .context("injecting fm_indirect_slot_catalog_index")?;
-    inject_indirect_table_size(&mut module).context("injecting fm_indirect_table_size")?;
+    inject_table_catalog_index(&mut module)
+        .context("injecting __wpk_fork_module_state_table_catalog_index")?;
+    inject_table_catalog_function(&mut module)
+        .context("injecting __wpk_fork_module_state_table_catalog_function")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1719,8 +1739,8 @@ fn inject_activation_trampolines(module: &mut Module) -> Result<()> {
 /// burn a worker's CPU while the archive writer does I/O.
 ///
 /// Both take the address as the guest's pointer type, so a wasm64 build widens
-/// the `u32` Rust declared -- the same widening `inject_table_apply_thunk` does
-/// for table indices, and caught the same way if it is missing.
+/// the `u32` Rust declared, and a missing widening is caught by the injector's
+/// own validator on the wasm64 build.
 fn inject_atomic_thunks(module: &mut Module) -> Result<()> {
     let memory = module
         .memories
@@ -1778,70 +1798,47 @@ fn imported_func(module: &Module, name: &str) -> Option<FunctionId> {
     })
 }
 
-/// Rewrite the table-write placeholder into a local thunk.
+/// Rewrite the three guest-table placeholders into thunks that `call_indirect`
+/// the guest's own table shims through `drive_table[activation * SLOTS +
+/// slot]`, forwarding every argument after the activation.
 ///
-/// Rust cannot emit `table.set` on an imported table, so the fork module
-/// declares `__wpk_fork_table_apply(dest, catalog_slot, clear)` as an import
-/// and this replaces it with the three instructions it stands for. Rust keeps
-/// the reconcile's striding and bounds logic, where it is testable; only the
-/// write itself lives in emitted wasm.
+/// The module never holds a guest table. It is instantiated before the guest,
+/// so it cannot import one, and the guest's `__indirect_function_table` is the
+/// guest's own definition. So the guest reads and writes its own tables through
+/// code fork-instrument emits into it (`wpk_fork_module_table_{read,length,
+/// apply}`), which the host binds into each activation's drive slice -- the
+/// shape `wpk_fork_module_table_state_save` already has.
 ///
-/// Both bounds are wasm's own: an out-of-range `dest` or `catalog_slot` traps
-/// rather than writing somewhere else.
-fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
-    let import_fn = module.imports.iter().find_map(|import| {
-        if import.module != IMPORT_MODULE || import.name != TABLE_APPLY_THUNK_IMPORT {
-            return None;
-        }
-        match import.kind {
-            walrus::ImportKind::Function(id) => Some(id),
-            _ => None,
-        }
-    });
-    let Some(import_fn) = import_fn else {
-        // A build that does not declare the placeholder needs no thunk.
-        return Ok(());
-    };
-
-    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
-    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
-    let funcref = ValType::Ref(RefType::FUNCREF);
-    // A 64-bit table indexes with `i64`, and Rust declared the placeholder with
-    // `u32` slots because a slot ordinal is a small number on both widths. So
-    // widen here, per table: on wasm64 the two tables are indexed with `i64`
-    // even though the values passed are the same ordinals. Without this the
-    // emitted module fails validation with "expected i64, found i32" -- which
-    // is exactly how this was caught, by the injector's own validator on the
-    // wasm64 build.
-    let indirect_is_64 = module.tables.get(indirect).table64;
-    let catalog_is_64 = module.tables.get(catalog).table64;
-
-    module
-        .replace_imported_func(import_fn, |(body, args)| {
-            let dest = args[0];
-            let catalog_slot = args[1];
-            let clear = args[2];
-            body.local_get(dest);
-            if indirect_is_64 {
-                body.unop(UnaryOp::I64ExtendUI32);
-            }
-            body.local_get(clear)
-                .if_else(
-                    Some(funcref),
-                    |then| {
-                        then.ref_null(RefType::FUNCREF);
-                    },
-                    |els| {
-                        els.local_get(catalog_slot);
-                        if catalog_is_64 {
-                            els.unop(UnaryOp::I64ExtendUI32);
-                        }
-                        els.table_get(catalog);
-                    },
-                )
-                .table_set(indirect);
-        })
-        .with_context(|| format!("rewriting {TABLE_APPLY_THUNK_IMPORT} import into a thunk"))?;
+/// The callee's type is the placeholder's minus its leading activation, so the
+/// pointer argument of `apply` keeps whatever width this module build uses.
+fn inject_guest_table_thunks(module: &mut Module) -> Result<()> {
+    for (name, slot) in GUEST_TABLE_THUNKS {
+        let Some(import_fn) = imported_func(module, name) else {
+            continue;
+        };
+        let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
+        let ty = module.types.get(module.funcs.get(import_fn).ty());
+        let params = ty.params()[1..].to_vec();
+        let results = ty.results().to_vec();
+        let callee_ty = module.types.add(&params, &results);
+        let drive_slot = i32::try_from(slot).context("drive slot fits i32")?;
+        module
+            .replace_imported_func(import_fn, |(body, args)| {
+                for arg in &args[1..] {
+                    body.local_get(*arg);
+                }
+                body.local_get(args[0])
+                    .i32_const(DRIVE_SLOTS_PER_ACTIVATION)
+                    .binop(BinaryOp::I32Mul)
+                    .i32_const(drive_slot)
+                    .binop(BinaryOp::I32Add);
+                body.instr(CallIndirect {
+                    ty: callee_ty,
+                    table: drive_table,
+                });
+            })
+            .with_context(|| format!("rewriting {name} import into a thunk"))?;
+    }
     Ok(())
 }
 
@@ -1854,12 +1851,9 @@ fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
 /// The host used to null each freed slot itself, and the argument that kept it
 /// there was "Rust cannot hold a funcref, therefore the host has to clear the
 /// table". The premise is true and the inference does not follow: CLEARING
-/// writes `ref.null func`, which is not holding a funcref. `inject_table_apply_
-/// thunk` right above has been writing exactly that value into the guest's
-/// indirect function table on its `clear` arm since it was added, and the
-/// resume table is the module's OWN (`inject_drive_execute` defines and exports
-/// it), so clearing it is its own business rather than a favour a host does for
-/// it. Rust still cannot emit `table.set`, which is why this is a placeholder
+/// writes `ref.null func`, which is not holding a funcref, and the resume table
+/// is the module's OWN (`inject_drive_execute` defines and exports it), so
+/// clearing it is its own business rather than a favour a host does for it. Rust still cannot emit `table.set`, which is why this is a placeholder
 /// import and not a Rust function.
 ///
 /// # `lenient`, and why one primitive rather than two
@@ -1880,9 +1874,8 @@ fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
 /// reallocated slot is a real function of the right type, so nothing traps
 /// when a later resume walks into it (census 194).
 ///
-/// A flag rather than a second export follows `__wpk_fork_table_apply`, which
-/// already carries its `clear` arm the same way, and keeps Rust choosing the
-/// policy while only the write itself is emitted wasm.
+/// A flag rather than a second export keeps Rust choosing the policy while only
+/// the write itself is emitted wasm.
 ///
 /// ```wat
 /// (func (param $slot i32) (param $lenient i32)
@@ -1896,8 +1889,7 @@ fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
 ///
 /// The resume table is declared 32-bit on every build
 /// (`tables.add_local(false, ..)`), so the slot index is `i32` regardless of
-/// the module's memory width and none of the `i64` widening `table_apply` needs
-/// applies. Asserted below rather than assumed.
+/// the module's memory width and no `i64` widening applies. Asserted below rather than assumed.
 fn inject_resume_null_thunk(module: &mut Module) -> Result<()> {
     let Some(import_fn) = imported_func(module, RESUME_NULL_THUNK_IMPORT) else {
         // A build that does not declare the placeholder needs no thunk.

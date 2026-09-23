@@ -39,9 +39,15 @@ function constantsFrom(
 }
 
 describe("dlopen control-block offsets", () => {
+  // The module reads the head and takes the lock, and a table-mutation commit
+  // publishes the generation fence; each word it touches is pinned here.
   const names = [
     "DLOPEN_HEAD_OFFSET_WASM32",
     "DLOPEN_HEAD_OFFSET_WASM64",
+    "DLOPEN_LOCK_OFFSET_WASM32",
+    "DLOPEN_LOCK_OFFSET_WASM64",
+    "DLOPEN_GENERATION_OFFSET_WASM32",
+    "DLOPEN_GENERATION_OFFSET_WASM64",
   ] as const;
 
   it("agree between the host layout and the fork module that reads it", () => {

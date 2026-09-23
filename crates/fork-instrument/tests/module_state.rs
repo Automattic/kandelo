@@ -14,7 +14,8 @@ use walrus::{
 use wasm_posix_shared::abi::{
     WPK_FORK_EXPORT_MODULE_BOOTSTRAP, WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
     WPK_FORK_EXPORT_MODULE_STATE_RESTORE, WPK_FORK_EXPORT_MODULE_STATE_SAVE,
-    WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
+    WPK_FORK_EXPORT_MODULE_TABLE_APPLY, WPK_FORK_EXPORT_MODULE_TABLE_LENGTH,
+    WPK_FORK_EXPORT_MODULE_TABLE_READ, WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
     WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP, WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
     WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBALS_MAGIC,
     WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBALS_SECTION,
@@ -360,6 +361,220 @@ fn deterministic_static_tables_do_not_pay_the_process_generation_fence() {
     );
 }
 
+/// Which of `function`'s direct callees carry a name starting with `prefix`.
+fn callees_named(module: &Module, function: FunctionId, prefix: &str) -> Vec<FunctionId> {
+    let body = local(module, function);
+    let mut found = Vec::new();
+    walk(body, body.entry_block(), &mut |instr| {
+        if let Instr::Call(call) = instr {
+            if module
+                .funcs
+                .get(call.func)
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with(prefix))
+            {
+                found.push(call.func);
+            }
+        }
+    });
+    found
+}
+
+/// The table-operation helper an exported source function was rewritten to
+/// call, e.g. `__wpk_fork_table_set_2`.
+fn table_helper(module: &Module, export: &str) -> FunctionId {
+    let helpers = callees_named(module, export_function(module, export), "__wpk_fork_table_");
+    assert_eq!(helpers.len(), 1, "{export} calls exactly one table helper");
+    helpers[0]
+}
+
+/// Every function `function` reaches through direct calls, itself included.
+fn reachable(module: &Module, function: FunctionId) -> Vec<FunctionId> {
+    let mut seen = vec![function];
+    let mut cursor = 0;
+    while cursor < seen.len() {
+        let current = seen[cursor];
+        cursor += 1;
+        if !matches!(module.funcs.get(current).kind, FunctionKind::Local(_)) {
+            continue;
+        }
+        let body = local(module, current);
+        let mut next = Vec::new();
+        walk(body, body.entry_block(), &mut |instr| {
+            if let Instr::Call(call) = instr {
+                next.push(call.func);
+            }
+        });
+        for callee in next {
+            if !seen.contains(&callee) {
+                seen.push(callee);
+            }
+        }
+    }
+    seen
+}
+
+/// A table is REPLICATED across Workers only when a peer could be given its
+/// contents: a plain funcref table, whose functions exist in every Worker. An
+/// externref table's host objects cannot, so its mutations take no process
+/// writer and publish nothing, and its reads never reconcile -- while fork
+/// still journals its dirty pages and saves it.
+///
+/// Before this split both tables took the same path, and a C program that grew
+/// and set its own `__externref_t` table exited 132: the commit asked the module
+/// to describe an externref slot as a function catalog entry.
+#[test]
+fn only_funcref_tables_are_replicated_and_every_mutated_table_is_still_saved() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (memory 1)
+          (func $caller (result i32) call $fork)
+          (table $tokens 0 externref)
+          (table $callbacks 1 funcref)
+          (func $callback)
+          (func (export "set_token") (param i32 externref)
+            local.get 0 local.get 1 table.set $tokens)
+          (func (export "grow_token") (param externref i32) (result i32)
+            local.get 0 local.get 1 table.grow $tokens)
+          (func (export "get_token") (param i32) (result externref)
+            local.get 0 table.get $tokens)
+          (func (export "set_callback") (param i32 funcref)
+            local.get 0 local.get 1 table.set $callbacks)
+          (func (export "get_callback") (param i32) (result funcref)
+            local.get 0 table.get $callbacks))
+        "#,
+    );
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
+    let begin = imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_BEGIN);
+    let commit = imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT);
+    let abort = imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_ABORT);
+    let reconcile = imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_RECONCILE);
+    let dirty_mark = imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK);
+
+    for export in ["set_token", "grow_token"] {
+        let reached = reachable(&module, table_helper(&module, export));
+        assert!(reached.contains(&dirty_mark), "{export} still journals for fork");
+        for (import, what) in [(begin, "begin"), (commit, "commit"), (abort, "abort")] {
+            assert!(
+                !reached.contains(&import),
+                "{export} must not {what} a replicated mutation of an externref table",
+            );
+        }
+    }
+    assert!(
+        callees_named(&module, export_function(&module, "get_token"), "__wpk_fork_table_")
+            .is_empty(),
+        "an externref table read is a direct table.get, with no reconcile",
+    );
+
+    let reached = reachable(&module, table_helper(&module, "set_callback"));
+    for (import, what) in [(begin, "begin"), (commit, "commit"), (dirty_mark, "journal")] {
+        assert!(reached.contains(&import), "a funcref mutation must {what}");
+    }
+    let reached = reachable(&module, table_helper(&module, "get_callback"));
+    assert!(reached.contains(&reconcile), "a funcref read reconciles first");
+
+    // The shims the module drives, one dispatch per replicated owner.
+    assert_eq!(
+        signature(&module, export_function(&module, WPK_FORK_EXPORT_MODULE_TABLE_READ)),
+        (vec![ValType::I32, ValType::I32], vec![ValType::I32]),
+    );
+    assert_eq!(
+        signature(&module, export_function(&module, WPK_FORK_EXPORT_MODULE_TABLE_LENGTH)),
+        (vec![ValType::I32], vec![ValType::I32]),
+    );
+    assert_eq!(
+        signature(&module, export_function(&module, WPK_FORK_EXPORT_MODULE_TABLE_APPLY)),
+        (vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32], vec![]),
+    );
+    // Each shim touches the funcref table and never the externref one.
+    let tables_touched = |export: &str| {
+        let body = local(&module, export_function(&module, export));
+        let mut touched = Vec::new();
+        walk(body, body.entry_block(), &mut |instr| match instr {
+            Instr::TableGet(ir::TableGet { table })
+            | Instr::TableSet(ir::TableSet { table })
+            | Instr::TableSize(ir::TableSize { table })
+            | Instr::TableGrow(ir::TableGrow { table }) => touched.push(*table),
+            _ => {}
+        });
+        touched
+    };
+    for export in [
+        WPK_FORK_EXPORT_MODULE_TABLE_READ,
+        WPK_FORK_EXPORT_MODULE_TABLE_LENGTH,
+        WPK_FORK_EXPORT_MODULE_TABLE_APPLY,
+    ] {
+        let touched = tables_touched(export);
+        assert!(!touched.is_empty(), "{export} reaches a replicated table");
+        for table in touched {
+            assert_eq!(
+                module.tables.get(table).element_ty,
+                walrus::RefType::FUNCREF,
+                "{export} touches only funcref tables",
+            );
+        }
+    }
+}
+
+/// A commit names its table by (activation, owner): the owner id is only unique
+/// inside one module, and a dlopened library's owner 1 is a different table from
+/// the main program's owner 1.
+#[test]
+fn a_table_commit_names_the_committing_activation() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (memory 1)
+          (func $caller (result i32) call $fork)
+          (table $callbacks 1 funcref)
+          (func (export "set_callback") (param i32 funcref)
+            local.get 0 local.get 1 table.set $callbacks))
+        "#,
+    );
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
+    let commit = imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT);
+    let activation = module
+        .imports
+        .iter()
+        .find_map(|import| match import.kind {
+            ImportKind::Global(global)
+                if import.module == "env" && import.name == "__wpk_fork_module_activation" =>
+            {
+                Some(global)
+            }
+            _ => None,
+        })
+        .expect("the activation global is imported");
+    let mut commits = 0;
+    for function in reachable(&module, table_helper(&module, "set_callback")) {
+        if !matches!(module.funcs.get(function).kind, FunctionKind::Local(_)) {
+            continue;
+        }
+        let body = local(&module, function);
+        let mut sequence = Vec::new();
+        walk(body, body.entry_block(), &mut |instr| sequence.push(instr.clone()));
+        for window in sequence.windows(5) {
+            if let Instr::Call(call) = &window[4] {
+                if call.func == commit {
+                    commits += 1;
+                    assert!(
+                        matches!(&window[0], Instr::GlobalGet(get) if get.global == activation),
+                        "the commit's first argument is this activation's id",
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(commits, 1, "one commit site, and it names the activation");
+}
+
 #[test]
 fn module_state_imports_and_exports_use_exact_wasm32_signatures() {
     let bytes = instrument_wat(
@@ -459,7 +674,7 @@ fn module_state_imports_and_exports_use_exact_wasm32_signatures() {
             ),
         ),
         (
-            vec![ValType::I32, ValType::I64, ValType::I64],
+            vec![ValType::I32, ValType::I32, ValType::I64, ValType::I64],
             vec![],
         ),
     );
@@ -1439,6 +1654,14 @@ fn node_fresh_instance_restores_no_seed_module_state_and_segment_lifetime() {
           __wpk_fork_module_state_table_mutation_begin: () => 0n,
           __wpk_fork_module_state_table_mutation_commit: () => {},
           __wpk_fork_module_state_table_mutation_abort: () => {},
+          // Replication shims' catalog: this test publishes no patch, so a
+          // call into either would be a replication the test did not ask for.
+          __wpk_fork_module_state_table_catalog_index: () => {
+            throw new Error("no table patch is published in this test");
+          },
+          __wpk_fork_module_state_table_catalog_function: () => {
+            throw new Error("no table patch is applied in this test");
+          },
           __wpk_fork_ref_encode_funcref: encodeFuncref,
           __wpk_fork_ref_decode_funcref: decodeFuncref,
           __wpk_fork_ref_encode_externref: encodeExternref,

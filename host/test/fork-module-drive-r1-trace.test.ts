@@ -97,7 +97,7 @@ function driveCaptured(
     label: "r1 trace child",
   });
   const x = child.exports as unknown as DriveExports;
-  (child.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, 4 * 65536);
+  (child.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 4 * 65536);
 
   new Uint8Array(f.memory.buffer, CODEC_AT, GC_CODEC.byteLength).set(GC_CODEC);
   x.fm_set_activation_gc_codec(0, CODEC_AT, GC_CODEC.byteLength);

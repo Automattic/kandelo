@@ -2931,6 +2931,14 @@ pub mod abi {
         "__wpk_fork_module_state_record_find";
     pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE: &str =
         "__wpk_fork_module_state_record_reserve";
+    /// `(i32) -> funcref`: the function at one merged function-catalog slot.
+    /// A guest table shim fetches a published patch's functions through this.
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_FUNCTION: &str =
+        "__wpk_fork_module_state_table_catalog_function";
+    /// `(funcref) -> i32`: which merged function-catalog slot holds a
+    /// function: `-1` for null, `-2` when it is not catalogued.
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_INDEX: &str =
+        "__wpk_fork_module_state_table_catalog_index";
     pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT: &str =
         "__wpk_fork_module_state_table_dirty_count";
     pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK: &str =
@@ -3018,6 +3026,16 @@ pub mod abi {
     pub const WPK_FORK_EXPORT_MODULE_STATE_RESTORE: &str = "wpk_fork_module_state_restore";
     pub const WPK_FORK_EXPORT_MODULE_STATE_SAVE: &str = "wpk_fork_module_state_save";
     pub const WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE: &str = "wpk_fork_module_table_state_save";
+    /// Guest table shims the fork module drives for a replicated (funcref)
+    /// table, named by its owner id: read a slot's merged-catalog index, read
+    /// the table's length, and apply a published patch plan.
+    pub const WPK_FORK_EXPORT_MODULE_TABLE_APPLY: &str = "wpk_fork_module_table_apply";
+    pub const WPK_FORK_EXPORT_MODULE_TABLE_LENGTH: &str = "wpk_fork_module_table_length";
+    pub const WPK_FORK_EXPORT_MODULE_TABLE_READ: &str = "wpk_fork_module_table_read";
+    /// Bytes per record `wpk_fork_module_table_apply` reads: the destination
+    /// slot, the merged function-catalog slot to write there, and a non-zero
+    /// flag meaning "write null instead", each a little-endian `u32`.
+    pub const WPK_FORK_MODULE_TABLE_APPLY_RECORD_SIZE: u32 = 12;
     pub const WPK_FORK_EXPORT_MODULE_TABLE_STATE_RESTORE: &str =
         "wpk_fork_module_table_state_restore";
     pub const WPK_FORK_EXPORT_RESUME_START: &str = "wpk_fork_resume_start";
@@ -3087,6 +3105,18 @@ pub mod abi {
         },
         ProgramArtifactImport {
             module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_FUNCTION,
+            params: &[I32],
+            results: &[FuncRef],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_INDEX,
+            params: &[FuncRef],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
             name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT,
             params: &[I32],
             results: &[I32],
@@ -3118,7 +3148,7 @@ pub mod abi {
         ProgramArtifactImport {
             module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
             name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT,
-            params: &[I32, I64, I64],
+            params: &[I32, I32, I64, I64],
             results: &[],
         },
         ProgramArtifactImport {
@@ -3434,6 +3464,21 @@ pub mod abi {
             name: WPK_FORK_EXPORT_MODULE_STATE_SAVE,
             params: &[I32],
             results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_TABLE_APPLY,
+            params: &[I32, I32, Pointer, I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_TABLE_LENGTH,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_TABLE_READ,
+            params: &[I32, I32],
+            results: &[I32],
         },
         ProgramArtifactExport {
             name: WPK_FORK_EXPORT_MODULE_TABLE_STATE_RESTORE,
@@ -4428,7 +4473,7 @@ pub mod abi {
             assert_eq!(wpk_fork_linked_chunk_header_size(16), None);
             assert_eq!(wpk_fork_linked_node_header_size(16), None);
 
-            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 45);
+            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 47);
             let mut previous_import = ("", "");
             for requirement in WPK_FORK_REQUIRED_IMPORTS {
                 let current = (requirement.module, requirement.name);
@@ -4450,7 +4495,7 @@ pub mod abi {
                 );
                 previous_table_import = current;
             }
-            assert_eq!(WPK_FORK_REQUIRED_EXPORTS.len(), 28);
+            assert_eq!(WPK_FORK_REQUIRED_EXPORTS.len(), 31);
             let mut previous_export = "";
             for requirement in WPK_FORK_REQUIRED_EXPORTS {
                 assert!(

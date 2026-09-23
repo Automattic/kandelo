@@ -6187,6 +6187,38 @@
         },
         {
           "kind": "func",
+          "name": "wpk_fork_module_table_apply",
+          "params": [
+            "i32",
+            "i32",
+            "ptr",
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_table_length",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_table_read",
+          "params": [
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
           "name": "wpk_fork_module_table_state_restore",
           "params": [
             "i32"
@@ -6327,6 +6359,28 @@
         {
           "kind": "func",
           "module": "env",
+          "name": "__wpk_fork_module_state_table_catalog_function",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "funcref"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_catalog_index",
+          "params": [
+            "funcref"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
           "name": "__wpk_fork_module_state_table_dirty_count",
           "params": [
             "i32"
@@ -6379,6 +6433,7 @@
           "module": "env",
           "name": "__wpk_fork_module_state_table_mutation_commit",
           "params": [
+            "i32",
             "i32",
             "i64",
             "i64"

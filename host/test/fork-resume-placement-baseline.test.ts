@@ -203,7 +203,7 @@ function harness(): Harness {
   startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
   // The format resets the catalogs, so it has to come first -- the same
   // ordering `ForkModuleContinuationBackend.setup()` documents.
-  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
 
   const errno = () => (x.fm_last_errno as () => number)();
   // NO OP-0 COUPLING ANY MORE. The recorder used to ask `fm_resume_slots` op 0
