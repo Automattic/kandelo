@@ -67,6 +67,7 @@ import {
 } from "./channel-scalar-contract";
 import {
   reapHostOwnedExitedProcess as reapHostOwnedExitedProcessFromKernel,
+  reapOwnedJobExitedProcesses as reapOwnedJobExitedProcessesFromKernel,
   type HostOwnedProcessReapResult,
 } from "./host-owned-process-reap";
 import {
@@ -30590,12 +30591,25 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Reap one exited top-level process through the serialized kernel entry.
+   * Reap a fully exited and detached job through the serialized kernel entry.
    *
    * WHY: the dedicated worker owns the kernel instance and its entry gate.
    * Exposing the raw instance to browser or Node teardown would bypass scratch
    * and reentrancy ownership; callers receive only the detached result.
    */
+  reapOwnedJobExitedProcesses(family: ReadonlySet<number>): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const deferred = this.#runOrDeferKernelEntry(
+      "owned job process reap",
+      (entry) => {
+        reapOwnedJobExitedProcessesFromKernel(entry.instance, family);
+        return undefined;
+      },
+    );
+    if (deferred) throw new KernelReentrantEntryError("owned job process reap");
+  }
+
+  /** Reap one exited top-level process through the serialized kernel entry. */
   reapHostOwnedExitedProcess(pid: number): HostOwnedProcessReapResult {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let result: HostOwnedProcessReapResult | undefined;

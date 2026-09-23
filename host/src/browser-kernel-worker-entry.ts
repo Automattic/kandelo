@@ -1,3 +1,4 @@
+import { OwnedJobs } from "./owned-jobs";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
  * CentralizedKernelWorker and manages all process lifecycle.
@@ -589,7 +590,14 @@ let bridgeTargetPort: number | null = null; // The specific HTTP port to route b
 let nextBridgeActivityId = 1;
 const activeBridgeRequests = new Set<number>();
 
+const ownedJobs = new OwnedJobs(pid => {
+  // A committed child can still be awaiting its Worker; let launch settle first.
+  if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family));
+
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
+  if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
+  if (msg.type === "exit") ownedJobs.exited(msg.pid, msg.status);
   (globalThis as any).postMessage(msg, transfer ?? []);
 }
 
@@ -1131,6 +1139,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         continuation,
         borrowedReplay,
       }) => {
+        ownedJobs.inherit(parentPid, childPid);
         const launch = (releaseCreatorAdmission?: () => void) => {
           // Tell the main thread a kernel-side fork happened so Inspector
           // panes can refresh their process table without polling.
@@ -1150,7 +1159,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
             releaseCreatorAdmission,
           );
         };
-        return mode === PROCESS_FORK_MODE_VFORK
+        return (mode === PROCESS_FORK_MODE_VFORK
           ? processMemoryCreators.runUntilCommitted(
               "a vfork process Worker",
               (commit) => launch(commit),
@@ -1158,7 +1167,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
           : processMemoryCreators.run(
               "a fork process Worker",
               () => launch(),
-            );
+            )).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
       },
       onExec: async (request) => {
         const creatorAdmission = processMemoryCreators.acquire(
@@ -1237,11 +1246,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         }
       },
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: (parentPid, childPid, program, envp) =>
-        processMemoryCreators.run(
+      onSpawn: (parentPid, childPid, program, envp) => {
+        ownedJobs.inherit(parentPid, childPid);
+        return processMemoryCreators.run(
           "a posix_spawn process Worker",
           () => handlePosixSpawn(parentPid, childPid, program, envp),
-        ),
+        ).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+      },
       onClone: (attachment) => processMemoryCreators.run(
         "a pthread Worker",
         () => handleClone(attachment),
@@ -1428,6 +1439,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     );
     createdPid = pid;
+    if (msg.ownedJob) ownedJobs.create(msg.ownedJob.id, pid, msg.ownedJob.timeoutMs);
     const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
@@ -1599,6 +1611,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         }
       }
     }
+    if (createdPid !== undefined && !processes.has(createdPid)) { ownedJobs.exited(createdPid, 127); ownedJobs.detached(createdPid); }
     respondError(msg.requestId, String(e));
   } finally {
     releaseMutation?.();
@@ -3708,6 +3721,8 @@ async function finishProcessExit(
           formatError(error),
       });
     }
+    // Exit was published earlier; completion also requires exact detachment.
+    ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
 
@@ -3766,6 +3781,29 @@ async function handleReadVfsFile(
 // Mutate the mounted filesystem from inside its owning worker. This keeps the
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
+async function handleListVfsDirectory(msg: Extract<MainToKernelMessage, { type: "list_vfs_directory" }>) {
+  if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let release: (() => void) | undefined;
+  let handle: number | undefined;
+  try {
+    release = rootfsSnapshotGate.beginMutation("list or materialize a rootfs directory");
+    await io.preparePath(msg.path);
+    handle = io.opendir(msg.path);
+    const entries = [];
+    let entry;
+    while ((entry = io.readdir(handle))) {
+      if (entry.name === "." || entry.name === "..") continue;
+      entries.push({ ...entry, type: ({ 4: "directory", 8: "file", 10: "symlink" } as Record<number, string>)[entry.type] ?? "other" });
+    }
+    entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    respond(msg.requestId, entries);
+  } catch (error) { respondError(msg.requestId, formatError(error)); }
+  finally {
+    try { if (handle !== undefined) io.closedir(handle); }
+    finally { release?.(); }
+  }
+}
+
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
@@ -3774,7 +3812,7 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
     releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
     fd = io.open(
       msg.path,
-      O_WRONLY_CREAT_TRUNC,
+      msg.exclusive ? OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_EXCL : O_WRONLY_CREAT_TRUNC,
       msg.mode & FILE_MODES.S_MODE_BITS,
     );
     let offset = 0;
@@ -4382,12 +4420,20 @@ sw.onmessage = (e: MessageEvent) => {
         post({ type: "init_error", error });
       });
       break;
+    case "read_owned_job":
+    case "cancel_owned_job":
+      try {
+        if (msg.type === "cancel_owned_job") ownedJobs.cancel(msg.jobId);
+        respond(msg.requestId, ownedJobs.read(msg.jobId, msg.offset, msg.limit));
+      } catch (error) { respondError(msg.requestId, formatError(error)); }
+      break;
     case "spawn":
       void processMemoryCreators
         .run("a host-spawned process Worker", () => handleSpawn(msg))
         .catch((error) => respondError(msg.requestId, formatError(error)));
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
+    case "list_vfs_directory": void handleListVfsDirectory(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
