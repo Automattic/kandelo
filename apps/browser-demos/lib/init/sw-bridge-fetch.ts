@@ -18,6 +18,7 @@ import { initServiceWorkerBridge } from "./service-worker-bridge";
 interface ServiceWorkerFetchBridgeOptions {
   timeoutMs?: number;
   debugLog?: (line: string) => void;
+  onRequestStart?: (request: HttpRequest) => ((status: number | null, error?: string) => void) | undefined;
   onPendingRequests?: (count: number) => void;
 }
 
@@ -35,15 +36,18 @@ export function attachBridgeToKernel(
   };
 
   bridge.onRequest(async (requestId, request: HttpRequest) => {
+    const completed = options?.onRequestStart?.(request);
     updatePendingRequests(1);
     try {
       const response = await kernel.fetchInKernel(port, request, {
         timeoutMs: options?.timeoutMs,
       });
+      completed?.(response.status);
       bridge.respond(requestId, response);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       options?.debugLog?.(`bridge fetch failed: ${request.method} ${request.url}: ${msg}`);
+      completed?.(null, msg);
       bridge.error(requestId, msg);
     } finally {
       updatePendingRequests(-1);
