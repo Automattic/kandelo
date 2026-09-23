@@ -286,15 +286,15 @@
           "atMost": 2500
         },
         {
-          "surface": "forkModuleEntryPoints",
+          "surface": "forkModuleHostEntries",
           "atMost": 5
         },
         {
-          "surface": "workerMainTypeScript",
-          "atMost": 3000
+          "surface": "workerMainForkTypeScript",
+          "atMost": 1200
         }
       ],
-      "why": "Inversion is done when the host calls a handful of coarse entries and no longer drives the sequence. Each fine-grained fm_* entry leaves a host-side seeding loop behind, so the entry count and the TypeScript line count fall together or neither has moved."
+      "why": "CLOSURE REPOINTED 2026-09-22 by maintainer decision. It measured the whole of worker-main.ts (at most 3000) and every fm_* export (at most 5); both are the wrong population. About 2,200 of worker-main.ts's code lines are other lanes' (the dynamic linker, the kernel import surface, the pthread bootstrap), so a whole-file bound of 3000 required lane F's share to reach ~800, below the 1,200 its own surface estimates as irreducible. And about fifteen fm_* exports are helpers only the injected wasm shims call, never a host, so counting them could only be met by renaming. The closure now reads the surfaces that were split out for exactly this: workerMainForkTypeScript and forkModuleHostEntries.\n\nInversion is done when the host calls a handful of coarse entries and no longer drives the sequence. Each fine-grained fm_* entry leaves a host-side seeding loop behind, so the entry count and the TypeScript line count fall together or neither has moved."
     },
     "V": {
       "title": "VFS image \u2014 one implementation of SFFS",
