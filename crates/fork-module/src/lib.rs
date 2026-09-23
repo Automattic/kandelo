@@ -1878,16 +1878,6 @@ mod wasm {
 
         let used = arena_u32(target + 16);
         let record = target + ARENA_CHUNK_HEADER + u64::from(used);
-        // ZEROED, because a caller that writes only part of its payload would
-        // otherwise read whatever the mapping happened to carry. A fresh
-        // `SYS_MMAP` is zero, but a chunk being reused within this module is
-        // not necessarily -- `used` is monotonic, so this is a region no live
-        // record occupies, not a region nothing ever wrote.
-        {
-            let m = unsafe { mem_mut() };
-            let from = record as usize;
-            m[from..from + total as usize].fill(0);
-        }
         arena_set_u64(record, arena_u64(entry + 8)); // next_in_activation
         arena_set_u32(record + 8, kind);
         arena_set_u32(record + 12, byte_len as u32);
@@ -2057,10 +2047,10 @@ mod wasm {
     //     +4  reserved     keeps the entries 8-aligned
     //     +8  entries      `entry_bytes` each, a dense prefix
     //
-    // A fresh record and the tail of an extended one are ZERO --
-    // `arena_insert_record` zeroes, and `arena_extend` copies only the old
-    // bytes -- which is what makes `count` read 0 on a record nothing has
-    // pushed into yet.
+    // A fresh record and the tail of an extended one are ZERO -- a record is
+    // carved from never-written bytes of an anonymous mapping, and
+    // `arena_extend` copies only the old bytes -- which is what makes `count`
+    // read 0 on a record nothing has pushed into yet.
     const ENTRY_LIST_HEADER: usize = 8;
     /// Entries the first allocation holds: one table coordinate or one
     /// provenance fact with room for a `dlopen` that adds a couple more, so the

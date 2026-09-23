@@ -1854,6 +1854,31 @@ mod tests {
         Ok(())
     }
 
+    /// POSIX: a `MAP_ANONYMOUS` mapping reads as zero, including one placed
+    /// over pages an earlier mapping dirtied. Wasm memory never shrinks, so
+    /// `munmap` leaves the old bytes in place; the guest remaps the same
+    /// address (after `munmap`, and with `MAP_FIXED` over a live mapping) and
+    /// checks every byte. The exit code names which check failed.
+    #[test]
+    fn anonymous_mmap_over_dirtied_pages_reads_zero() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = crate::fixtures::fixture("native_mmap_zero.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(outcome.stdout, b"anonymous mappings read as zero\n");
+        Ok(())
+    }
+
     // Increment 5's `smoke_runs_host_fs_open_read` (native_hostfs.c/.wasm)
     // exercised host_lstat/host_open/host_read (all three since removed by K9)
     // serving a fixed single-file

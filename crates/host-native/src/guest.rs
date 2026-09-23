@@ -1465,6 +1465,23 @@ fn grow_to_cover(mem: &SharedMemory, end_addr: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Zero a fresh anonymous mapping, as POSIX requires and the TS kernel worker
+/// does for the same syscall (`ensureProcessMemoryCovers`).
+///
+/// The kernel keeps only the mapping's metadata: `munmap` cannot shrink wasm
+/// memory, so the bytes an earlier mapping wrote are still there when the
+/// kernel places a new one over them. Whole 64 KiB pages, because that is the
+/// kernel's mapping granularity (`MemoryManager::mmap_anonymous`), clamped to
+/// the memory `grow_to_cover` just made addressable.
+fn zero_anonymous_mapping(mem: &SharedMemory, addr: usize, len: usize) {
+    let end = addr
+        .saturating_add(len.div_ceil(WASM_PAGE_SIZE).saturating_mul(WASM_PAGE_SIZE))
+        .min(mem.data_size());
+    if end > addr {
+        unsafe { core::ptr::write_bytes(mem_base(mem).add(addr), 0, end - addr) };
+    }
+}
+
 /// N1-I5 Task 3: write a genuinely-valid module-state (KFMS) arena at
 /// `scratch_addr` (which the caller has already reserved as a page-aligned,
 /// otherwise-unused slice of the co-resident fork-module's own region — see
@@ -11476,6 +11493,9 @@ fn complete_channel(
     if ret >= 0 {
         if syscall_nr == Syscall::Mmap as u32 {
             grow_to_cover(guest_mem, ret as usize + args[1] as u32 as usize)?;
+            if args[3] as u32 & wasm_posix_shared::mmap::MAP_ANONYMOUS != 0 {
+                zero_anonymous_mapping(guest_mem, ret as usize, args[1] as u32 as usize);
+            }
         } else if syscall_nr == Syscall::Brk as u32 {
             grow_to_cover(guest_mem, ret as usize)?;
         }
