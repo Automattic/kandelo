@@ -1,7 +1,9 @@
-// Pure decision logic for pid 1's argv, factored out of `bootProfile` in
-// `live-setup.ts` so it can be unit tested without a browser: `live-setup.ts`
-// touches `window`/`import.meta.env` at module scope and cannot be imported
-// outside a real Vite + DOM environment.
+// Pure decision logic for pid 1's argv: which boot identity wins, the
+// image's or a caller's. Factored out of `bootProfile` in the Kandelo app's
+// `live-setup.ts` so it lives with the other reusable session contracts this
+// package owns (demo-config, gallery-roster, ...) and has a real unit test —
+// `live-setup.ts` touches `window`/`import.meta.env` at module scope and
+// cannot be imported outside a real Vite + DOM environment.
 
 /**
  * BOOT IDENTITY COMES FROM THE IMAGE.

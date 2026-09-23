@@ -7,7 +7,6 @@ import {
   bindImageOwnedRuntimeUrls,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
-import { resolveInitArgv } from "./init-boot-identity";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
 import {
@@ -51,6 +50,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
+import { resolveInitArgv } from "../../../../../web-libs/kandelo-session/src/init-boot-identity";
 import {
   materializeBootInputs,
   type BootInputManifest,
