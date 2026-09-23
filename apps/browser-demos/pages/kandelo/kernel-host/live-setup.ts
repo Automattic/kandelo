@@ -7,6 +7,7 @@ import {
   bindImageOwnedRuntimeUrls,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
+import { resolveInitArgv } from "./init-boot-identity";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
 import {
@@ -1689,21 +1690,14 @@ async function bootProfile(
     }
 
     if (initLaunch !== null) {
-      // BOOT IDENTITY COMES FROM THE IMAGE. A descriptor the caller supplied
-      // (a pasted #k1= link, a gallery apply) can carry an argv, because every
-      // link ShareDialog has ever produced spreads the authoring machine's
-      // whole boot block. That argv is IGNORED rather than rejected — so old
-      // links still boot — but the drop is announced instead of silent.
-      if (
-        !sameArgv(requestedDescriptor.boot.argv, initLaunch.argv) &&
-        requestedDescriptor.boot.argv.length > 0
-      ) {
-        tick(
-          "ignoring the boot descriptor's init argv: this machine's pid 1"
-            + ` comes from its image (${initLaunch.argv.join(" ")})`,
-        );
-      }
-      const initArgv = initLaunch.argv;
+      // BOOT IDENTITY COMES FROM THE IMAGE — see resolveInitArgv's doc
+      // comment for why a caller-supplied argv is ignored rather than
+      // rejected.
+      const { argv: initArgv, ignoredMessage } = resolveInitArgv(
+        requestedDescriptor.boot.argv,
+        initLaunch.argv,
+      );
+      if (ignoredMessage !== null) tick(ignoredMessage);
       tick(`spawning ${initArgv[0]}...`);
       // The init binary lives in the kernel-owned VFS; spawn it by path rather
       // than shipping bytes the kernel already has.
@@ -2395,11 +2389,6 @@ function envRecord(env: string[]): Record<string, string> {
       return [kv.slice(0, idx), kv.slice(idx + 1)];
     }),
   );
-}
-
-function sameArgv(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length
-    && left.every((value, index) => value === right[index]);
 }
 
 /**

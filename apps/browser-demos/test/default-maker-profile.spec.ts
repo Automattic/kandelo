@@ -199,14 +199,17 @@ test("default browser profiles use the writable canonical maker home", async ({
     imageSeedsPackage: false,
     workExists: false,
     shell: {
-      argv: ["bash", "-l", "-i"],
+      // BOOT IDENTITY COMES FROM THE IMAGE: descriptorFromGalleryItem no
+      // longer assigns argv from the gallery item's display-only
+      // `bootCommand`, so it stays whatever the base descriptor carried.
+      argv: ["stale"],
       cwd: "/home/maker",
       env: { HOME: "/home/maker", USER: "maker", LOGNAME: "maker" },
       uid: 1000,
       gid: 1000,
     },
     node: {
-      argv: ["bash", "-l", "-i"],
+      argv: ["stale"],
       cwd: "/home/maker",
       env: {
         HOME: "/home/maker",
