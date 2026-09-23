@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { parse } from "@babel/parser";
+
 import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
+import { allTrackedProfileIds } from "./tracked-demo-config-sources.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const rootfsAlias = "@rootfs-vfs";
 
 export function checkPagesVfsProductRegistry(options) {
   const catalog = loadVfsProductCatalog(options.catalogPath);
+  assertNoAppMachineIdentityTables(catalog);
   const registry = readPagesRegistry(options.registryPath);
   const generatedRegistry = readGeneratedPagesRegistry(options.generatedRegistryPath);
   if (JSON.stringify(registry) !== JSON.stringify(generatedRegistry)) {
@@ -108,6 +112,258 @@ export function checkPagesVfsProductRegistry(options) {
     catalog,
     selected,
   });
+}
+
+/**
+ * THE DURABLE GUARD (image-owned-machine-definitions, task B6): assert that
+ * the browser app holds no built-in machine identities, so `LIVE_DEMO_SPECS`,
+ * `PRESET_LIBRARY`, `DEMO_ALIASES`, and friends — all deleted by this
+ * project — cannot quietly come back as a differently-named table.
+ *
+ * The hard part is admitting PRODUCT-id plumbing while rejecting PROFILE-id
+ * tables. `VFS_SOURCES` was not deleted; it was re-keyed into `VFS_PRODUCTS`
+ * (live-setup.ts) and `OPTIONAL_DEMO_VFS_PATHS` (optional-demo-vfs.ts) — both
+ * still hold `relPaths`/URL plumbing per PRODUCT id (`browser-main-shell`,
+ * `browser-node`, ...), because Vite needs literal specifiers for those
+ * mirror globs and because resolving "where do this product's bytes live in
+ * THIS deployment" is a real, ongoing need that has nothing to do with
+ * machine identity. That is legitimate and must be admitted. What must
+ * never come back is a table keyed by PROFILE id (`doom`, `sdl2`,
+ * `wordpress-sqlite`, ...) carrying per-machine content (title, argv, env,
+ * features, ...) — that is exactly the shape of the deleted
+ * `LIVE_DEMO_SPECS`.
+ *
+ * The two id spaces are disjoint by construction (`browser-*` / product ids
+ * vs. bare `doom`/`sdl2`/... profile ids from the tracked demo configs), so
+ * "admit every catalog product id, reject every OTHER tracked profile id" is
+ * the general, non-hand-wavy rule: DANGEROUS_PROFILE_IDS is
+ * allTrackedProfileIds() (from images/vfs/scripts/tracked-demo-config.ts's
+ * own tracked JSON, the single authority for what a profile id even is)
+ * minus catalog.productIds (from images/vfs/products/generated/catalog.json,
+ * the single authority for what a product id is).
+ *
+ * A handful of pre-existing, already-reviewed constructs use a SHORT bucket
+ * name ("node", "wordpress", "lamp") that happens to collide with a
+ * single-profile image's profile id, or (candidate-evidence-vfs.ts) predate
+ * this project entirely. Those are exempted by NAME below — (file,
+ * declaration) pairs, each with a one-line reason — never by file or by
+ * directory: an unexplained blanket exemption is the hole the next table
+ * would walk through.
+ */
+const MACHINE_SURFACE_ROOTS = ["apps/browser-demos", "web-libs/kandelo-session/src"];
+const EXCLUDED_SURFACE_DIR_NAMES = new Set(["node_modules", "dist", ".vite", "test", "tests"]);
+
+/**
+ * Named exemptions. Each entry names the exact file (by basename) and the
+ * exact `const`/`type` declaration inside it that is allowed to reference
+ * two or more machine profile ids, and says why in one line. Do not widen
+ * this to a path or a whole-file exemption.
+ */
+const EXEMPT_MACHINE_ID_DECLARATIONS = [
+  {
+    file: "optional-demo-vfs.ts",
+    name: "OptionalDemoVfsImage",
+    reason:
+      "Product/image-bucket names ('node'/'wordpress'/'lamp') that happen "
+      + "to coincide with a single-profile image's profile id; the type "
+      + "carries no per-machine content.",
+  },
+  {
+    file: "optional-demo-vfs.ts",
+    name: "OPTIONAL_DEMO_VFS_PATHS",
+    reason:
+      "Per-bucket artifact LOCATION plumbing (label + relPaths only) — no "
+      + "title/summary/argv/env/features lives here, which is what makes "
+      + "this artifact plumbing rather than machine identity.",
+  },
+  {
+    file: "candidate-evidence-vfs.ts",
+    name: "CandidateOptionalDemoVfsImage",
+    reason:
+      "Mirrors OptionalDemoVfsImage for the protected evidence path; same "
+      + "bucket-naming coincidence, not machine identity.",
+  },
+  {
+    file: "candidate-evidence-vfs.ts",
+    name: "CandidateEvidenceLiveDemoId",
+    reason:
+      "Pre-existing admission boundary for the protected ABI-staging "
+      + "evidence path (PR #1247). It predates image-owned-machine-"
+      + "definitions and is out of scope for it: it selects which live demo "
+      + "the protected evidence harness may inject, gating an unrelated "
+      + "trust boundary, not an app-side machine-spec table for ordinary "
+      + "boot.",
+  },
+  {
+    file: "candidate-evidence-vfs.ts",
+    name: "LIVE_DEMO_BY_EVIDENCE_PROFILE",
+    reason: "Same protected ABI-staging admission boundary as CandidateEvidenceLiveDemoId above.",
+  },
+];
+
+function isExemptDeclaration(context) {
+  return EXEMPT_MACHINE_ID_DECLARATIONS.some(
+    (entry) => entry.file === context.fileBase && entry.name === context.declaratorName,
+  );
+}
+
+function collectMachineSurfaceFiles(root) {
+  const files = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (EXCLUDED_SURFACE_DIR_NAMES.has(entry.name)) continue;
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = extname(entry.name);
+      if (ext !== ".ts" && ext !== ".tsx") continue;
+      if (entry.name.endsWith(".d.ts")) continue;
+      if (/\.(test|spec)\.tsx?$/.test(entry.name)) continue;
+      files.push(full);
+    }
+  };
+  for (const relRoot of MACHINE_SURFACE_ROOTS) walk(resolve(root, relRoot));
+  return files;
+}
+
+function objectPropertyKeyName(prop) {
+  if (prop.type !== "ObjectProperty" && prop.type !== "ObjectMethod") return null;
+  if (prop.computed) return null;
+  const key = prop.key;
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "StringLiteral") return key.value;
+  return null;
+}
+
+const AST_SKIP_KEYS = new Set([
+  "loc", "start", "end", "range", "leadingComments", "trailingComments", "innerComments",
+]);
+
+/**
+ * Walk a Babel AST looking for three shapes a reintroduced machine-identity
+ * table could take: an object literal keyed by >=2 dangerous profile ids
+ * (LIVE_DEMO_SPECS's shape), a string-literal union type naming >=2 of them
+ * (LIVE_DEMO_IDS/LiveDemoId's shape), or a switch statement branching on
+ * >=2 of them (the id-selection ladder this project collapsed). Requiring
+ * >=2 is deliberate: a single incidental match (e.g. a `wordpress` THEME
+ * family, unrelated to any machine) is common and must not trip this guard;
+ * a real machine-identity table always carries more than one machine.
+ */
+function walkForMachineIdentityTables(node, dangerousIds, findings, context) {
+  if (node === null || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const child of node) walkForMachineIdentityTables(child, dangerousIds, findings, context);
+    return;
+  }
+  if (typeof node.type !== "string") {
+    for (const key of Object.keys(node)) {
+      if (AST_SKIP_KEYS.has(key)) continue;
+      walkForMachineIdentityTables(node[key], dangerousIds, findings, context);
+    }
+    return;
+  }
+
+  let childContext = context;
+  if (
+    (node.type === "VariableDeclarator" || node.type === "TSTypeAliasDeclaration")
+    && node.id?.type === "Identifier"
+  ) {
+    childContext = { ...context, declaratorName: node.id.name };
+  }
+
+  if (node.type === "ObjectExpression" && !isExemptDeclaration(context)) {
+    const keys = node.properties.map(objectPropertyKeyName).filter((k) => k !== null);
+    const dangerous = [...new Set(keys.filter((k) => dangerousIds.has(k)))];
+    if (dangerous.length >= 2) {
+      findings.push({ kind: "object literal", ids: dangerous, node, context });
+    }
+  } else if (node.type === "TSUnionType" && !isExemptDeclaration(context)) {
+    const members = node.types
+      .map((t) => (t.type === "TSLiteralType" && t.literal?.type === "StringLiteral" ? t.literal.value : null))
+      .filter((v) => v !== null);
+    const dangerous = [...new Set(members.filter((v) => dangerousIds.has(v)))];
+    if (dangerous.length >= 2) {
+      findings.push({ kind: "union type", ids: dangerous, node, context });
+    }
+  } else if (node.type === "SwitchStatement" && !isExemptDeclaration(context)) {
+    const caseIds = node.cases
+      .map((c) => (c.test?.type === "StringLiteral" ? c.test.value : null))
+      .filter((v) => v !== null);
+    const dangerous = [...new Set(caseIds.filter((v) => dangerousIds.has(v)))];
+    if (dangerous.length >= 2) {
+      findings.push({ kind: "switch statement", ids: dangerous, node, context });
+    }
+  }
+
+  for (const key of Object.keys(node)) {
+    if (AST_SKIP_KEYS.has(key)) continue;
+    walkForMachineIdentityTables(node[key], dangerousIds, findings, childContext);
+  }
+}
+
+/**
+ * `root` defaults to this repository, but is overridable so tests can point
+ * the file-scanning half at an isolated temp directory tree without ever
+ * writing a fixture file into the real apps/browser-demos or
+ * web-libs/kandelo-session sources. `dangerousIds` is always computed from
+ * the REAL tracked demo configs regardless of `root`: the universe of real
+ * machine profile ids is a property of this repository, not of whichever
+ * directory is being scanned for a reintroduced table.
+ */
+export function assertNoAppMachineIdentityTables(catalog, root = repoRoot) {
+  const allProfileIds = allTrackedProfileIds();
+  const admittedProductIds = new Set(catalog.productIds);
+  const dangerousIds = new Set(
+    [...allProfileIds].filter((id) => !admittedProductIds.has(id)),
+  );
+
+  const findings = [];
+  for (const file of collectMachineSurfaceFiles(root)) {
+    const relPath = relative(root, file);
+    const source = readFileSync(file, "utf8");
+    let ast;
+    try {
+      ast = parse(source, {
+        sourceType: "module",
+        plugins: file.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
+      });
+    } catch (error) {
+      throw new Error(
+        `failed to parse ${relPath} while scanning for machine-identity tables: ${error.message}`,
+      );
+    }
+    const fileFindings = [];
+    walkForMachineIdentityTables(ast.program, dangerousIds, fileFindings, {
+      fileBase: basename(file),
+    });
+    for (const finding of fileFindings) findings.push({ ...finding, relPath });
+  }
+
+  if (findings.length > 0) {
+    const lines = findings.map((finding) => {
+      const line = finding.node.loc?.start?.line ?? "?";
+      const where = finding.context.declaratorName ? ` (in ${finding.context.declaratorName})` : "";
+      return `  ${finding.relPath}:${line} ${finding.kind} keyed by machine profile ids `
+        + `[${finding.ids.join(", ")}]${where}`;
+    });
+    throw new Error(
+      "browser app source declares a machine-identity table. Every machine "
+        + "profile's title/argv/env/features must come from the image's own "
+        + "/etc/kandelo/demo.json (web-libs/kandelo-session/src/demo-config.ts), "
+        + "not from an app-side id table, union type, or switch:\n"
+        + lines.join("\n"),
+    );
+  }
 }
 
 function checkCanonicalPagesProjection(selected, sources) {
@@ -338,14 +594,16 @@ export function readGeneratedPagesRegistry(path) {
 }
 
 /**
- * The Pages deployment's gallery scoping must agree with the CURATED ROSTER.
- *
- * The app no longer holds any machine identities — `PRESET_LIBRARY` and
- * `LIVE_DEMO_SPECS` are deleted, and the roster
- * (apps/browser-demos/pages/kandelo/gallery-roster.json) is the only place
- * gallery membership is decided. A roster entry names a PRODUCT id plus a
- * profile inside that product's own image, so this check is now a direct
- * comparison: the same set of profiles, each attributed to the same product.
+ * `pages-vfs-product-gallery.json` does DEPLOYMENT SCOPING ONLY: which
+ * products this Pages deployment serves, and which VFS image each maps to.
+ * It no longer carries `gallery_entries` — gallery MEMBERSHIP lives
+ * exclusively in the curated roster
+ * (apps/browser-demos/pages/kandelo/gallery-roster.json), per the spec's
+ * "The roster" section. A roster entry is free to name a product this
+ * deployment does not serve (the availability model's "unavailable here"
+ * state); the only invariant left to check here is that every roster entry
+ * names a product that actually exists in the catalog, so a typo'd product
+ * id fails loudly instead of silently listing an unresolvable machine.
  */
 function checkPagesGallery({ catalog, galleryPath, pagesProducts, rosterPath }) {
   if (typeof galleryPath !== "string" || typeof rosterPath !== "string") {
@@ -355,26 +613,14 @@ function checkPagesGallery({ catalog, galleryPath, pagesProducts, rosterPath }) 
   const roster = readGalleryRoster(rosterPath);
   const rosterProfiles = roster.map(({ profile }) => profile);
   requireUnique(rosterProfiles, "gallery roster profiles");
-  const productByProfile = new Map(
-    roster.map(({ product, profile }) => [profile, product]),
-  );
-
-  const declaredEntries = products.flatMap(({ gallery_entries }) => gallery_entries).sort();
-  if (JSON.stringify(declaredEntries) !== JSON.stringify([...rosterProfiles].sort())) {
-    throw new Error("Pages gallery entries differ from the curated gallery roster");
-  }
-  for (const product of products) {
-    for (const entry of product.gallery_entries) {
-      const rosterProduct = productByProfile.get(entry);
-      if (rosterProduct === undefined) {
-        throw new Error(`Pages gallery entry ${entry} is absent from the curated gallery roster`);
-      }
-      if (rosterProduct !== product.id) {
-        throw new Error(
-          `Pages gallery entry ${entry} belongs to roster product ${rosterProduct}, not ${product.id}`,
-        );
-      }
+  const knownProductIds = new Set(catalog.productIds);
+  for (const { product } of roster) {
+    if (!knownProductIds.has(product)) {
+      throw new Error(`gallery roster references unknown product ${product}`);
     }
+  }
+
+  for (const product of products) {
     // `vfs_image` used to be cross-checked against the app's LIVE_DEMO_SPECS
     // image families. With those deleted, hold it to the catalog instead:
     // it must be a mechanical projection of the product's declared output.
@@ -417,17 +663,9 @@ export function readPagesGallery(galleryPath, pagesProducts) {
     throw new Error("Pages gallery registry has unsupported identity");
   }
   const products = value.products.map((entry, index) => {
-    exactObjectKeys(entry, ["gallery_entries", "id", "vfs_image"], `Pages gallery product ${index}`);
+    exactObjectKeys(entry, ["id", "vfs_image"], `Pages gallery product ${index}`);
     requireTomlString(entry.id, `Pages gallery product ${index}.id`);
     requireTomlString(entry.vfs_image, `Pages gallery product ${index}.vfs_image`);
-    if (!Array.isArray(entry.gallery_entries) ||
-        entry.gallery_entries.some((id) => typeof id !== "string" || id.length === 0)) {
-      throw new Error(`Pages gallery product ${entry.id} has invalid gallery entries`);
-    }
-    requireUnique(entry.gallery_entries, `Pages gallery product ${entry.id}`);
-    if (JSON.stringify(entry.gallery_entries) !== JSON.stringify([...entry.gallery_entries].sort())) {
-      throw new Error(`Pages gallery product ${entry.id} entries are not sorted`);
-    }
     return entry;
   });
   const pagesIds = pagesProducts.map(({ id }) => id).sort();

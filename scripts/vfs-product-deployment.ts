@@ -66,7 +66,7 @@ export interface VfsProductDeploymentMapV1 {
 }
 
 interface CanonicalMapAuthority {
-  gallery: Array<{ gallery_entries: string[]; id: string; vfs_image: string }>;
+  gallery: Array<{ id: string; vfs_image: string }>;
   productByLegacyFilename: Map<string, string>;
   productById: Map<string, { architecture: string }>;
 }
