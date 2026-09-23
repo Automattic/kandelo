@@ -20,6 +20,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 
+# shellcheck source=build-step-input-hash.sh
+source "$REPO_ROOT/scripts/build-step-input-hash.sh"
+
 # Auto-detect LLVM from the declared environment or ordinary PATH.
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ]; then echo "$LLVM_BIN"; return; fi
@@ -43,6 +46,48 @@ fi
 
 OUT_DIR="$SYSROOT/lib"
 PC_DIR="$OUT_DIR/pkgconfig"
+STAMP="$SYSROOT/.kandelo-dri-stubs.input-hash"
+
+# A sysroot outlives the tree that produced it. `xtask bootstrap sysroot`
+# only rebuilds musl when sysroot/lib/libc.a is missing, so a worktree
+# provisioned before these sources changed keeps whatever libdrm.a /
+# libgbm.a it was first given — and every program that links `-ldrm`
+# or `-lgbm` afterwards silently picks up the older entry-point set.
+# The SDK links executables with `-Wl,--allow-undefined` (autoconf link
+# probes depend on it), so the missing entry points do not fail the link:
+# they become `env.*` imports the host resolves to a throwing stub, and
+# the program dies mid-run on the first call. That is how the shipped
+# SDL2 demo ended up calling `env.drmAuthMagic`.
+#
+# Record the digest of the sources these archives are built from, so
+# bootstrap can call this script on every sysroot resync and it costs
+# nothing when the archives already match the tree.
+ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+    "$REPO_ROOT/crates/shared/src/lib.rs")"
+if [ -z "$ABI_VERSION" ]; then
+    echo "Error: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    exit 1
+fi
+DRI_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
+    scripts/build-dri-stubs.sh \
+    scripts/write-graphics-pkgconfig.sh \
+    scripts/build-step-input-hash.sh \
+    packages/registry/libdrm \
+    libc/glue \
+    libc/musl-overlay/include \
+    "literal:ABI_VERSION=$ABI_VERSION")"
+
+if [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&
+   [ -f "$OUT_DIR/libgbm.a" ] &&
+   [ -d "$SYSROOT/include/drm" ] &&
+   [ -d "$SYSROOT/include/libdrm" ] &&
+   [ -f "$PC_DIR/libdrm.pc" ] &&
+   [ -f "$PC_DIR/gbm.pc" ] &&
+   build_step_is_current "$OUT_DIR/libdrm.a" "$STAMP" "$DRI_INPUT_HASH"; then
+    echo "==> sysroot DRI libraries up to date ($DRI_INPUT_HASH)"
+    exit 0
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$OUT_DIR" "$PC_DIR"
@@ -80,3 +125,5 @@ echo "DRI libraries installed:"
 ls -la "$OUT_DIR/libdrm.a" "$OUT_DIR/libgbm.a"
 
 bash "$REPO_ROOT/scripts/write-graphics-pkgconfig.sh" dri "$PC_DIR"
+
+write_build_stamp "$STAMP" "$DRI_INPUT_HASH"
