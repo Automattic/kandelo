@@ -269,7 +269,6 @@ export function fixture(): Fixture {
   const fm = instantiateForkModule({
     module: new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm"))),
     memory,
-    ptrWidth: 4,
     reserve: () => MODULE_BASE,
     label: "capture drive",
   });
@@ -457,7 +456,6 @@ export function childInstance(
       readFileSync(resolveBinary("fork_module32.wasm")),
     ),
     memory: f.memory,
-    ptrWidth: 4,
     reserve: () => base,
     label: options.label ?? "child module",
   });
@@ -997,7 +995,6 @@ export function arenaFixture(label = "arena"): ArenaFixture {
   const fm = instantiateForkModule({
     module: new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm"))),
     memory,
-    ptrWidth: 4,
     reserve: () => MODULE_BASE,
     label,
   });

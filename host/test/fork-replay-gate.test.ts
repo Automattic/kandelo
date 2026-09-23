@@ -42,10 +42,8 @@ describe("fork replay readiness coordinator", () => {
     coordinator.ready();
     await waiting;
 
-    expect(coordinator.currentPhase).toBe("ready");
     expect(Atomics.load(new Int32Array(coordinator.gate), 0)).toBe(0);
     coordinator.commit();
-    expect(coordinator.currentPhase).toBe("committed");
     expect(Atomics.load(new Int32Array(coordinator.gate), 0)).toBe(1);
   });
 
@@ -64,7 +62,6 @@ describe("fork replay readiness coordinator", () => {
     coordinator.cancel(new Error("deferred Worker launch was cancelled"));
 
     await expect(waiting).rejects.toThrow(/deferred Worker launch was cancelled/);
-    expect(coordinator.currentPhase).toBe("cancelled");
     expect(Atomics.load(new Int32Array(coordinator.gate), 0)).toBe(-1);
   });
 
@@ -108,7 +105,6 @@ describe("fork replay Worker lifecycle observer", () => {
     const current = observed();
     current.worker.simulateMessage({ type: "fork_replay_ready", pid: 41 });
     await current.coordinator.waitUntilReady();
-    expect(current.coordinator.currentPhase).toBe("ready");
 
     const stale = observed(() => false);
     const staleWaiting = stale.coordinator.waitUntilReady();
@@ -156,7 +152,6 @@ describe("fork replay Worker lifecycle observer", () => {
     const waiting = coordinator.waitUntilReady();
     fire(worker);
     await expect(waiting).rejects.toThrow(diagnostic);
-    expect(coordinator.currentPhase).toBe("cancelled");
     expect(Atomics.load(new Int32Array(coordinator.gate), 0)).toBe(-1);
   });
 
@@ -169,7 +164,6 @@ describe("fork replay Worker lifecycle observer", () => {
     worker.simulateMessage({ type: "exit", pid: 41, status: 0 });
     worker.simulateExit(0);
 
-    expect(coordinator.currentPhase).toBe("committed");
     expect(Atomics.load(new Int32Array(coordinator.gate), 0)).toBe(1);
   });
 });

@@ -26,8 +26,10 @@ import { describe, expect, it } from "vitest";
 
 import { FORK_MODULE_STATS } from "../src/fork-module-backend";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
-import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
+import {
+  ensureTransitRecipeSlot,
+  instantiateFaithfulGuest,
+} from "./fork-module-faithful-guest";
 import {
   CAPTURE_KIND_EXNREF,
   INTERN_KIND_FUNCREF,
@@ -146,14 +148,9 @@ function bindFaithfulGuest(
   x: ForkModuleRefExports,
   maxRecipeId: number,
 ) {
-  // The module's EXPORTS, not its transit TABLE: this wrapper reads
-  // `__wpk_fork_ref_gc_transit`, `fm_transit_grow` and `fm_last_errno` off them.
-  const transitTable = new ForkAnyrefTransitTable(
-    fm.exports as Record<string, unknown>,
-    "exnref-replay transit",
-  );
-  transitTable.ensureRecipeSlot(maxRecipeId);
-  const { guest } = instantiateFaithfulGuest(transitTable);
+  const moduleExports = fm.exports as Record<string, unknown>;
+  ensureTransitRecipeSlot(moduleExports, maxRecipeId);
+  const { guest } = instantiateFaithfulGuest(moduleExports);
   const base = x.fm_drive_table_base(0);
   if (fm.driveTable.length < base + 3) {
     fm.driveTable.grow(base + 3 - fm.driveTable.length);
@@ -161,7 +158,7 @@ function bindFaithfulGuest(
   fm.driveTable.set(base + DRIVE_OP_ALLOC, guest.gc_allocate);
   fm.driveTable.set(base + DRIVE_OP_FILL, guest.gc_fill);
   fm.driveTable.set(base + DRIVE_OP_EXN, guest.exception_materialize);
-  return { transitTable, guest };
+  return { guest };
 }
 
 describe("fork-module exnref reference reconstruction (Phase 6 D6.3a)", () => {

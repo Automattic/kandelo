@@ -14,13 +14,11 @@
 // codec.rs` `emit_allocate_layout` / `emit_allocate_i31`). The test toolchain's
 // `wat2wasm` (wabt 1.0.36) predates GC wasm (no `anyref` tables, no `ref.i31`), so
 // this double routes the publish through a host import (`env.__wpk_fork_publish`)
-// that performs the anyref `table.set` on the SAME `ForkAnyrefTransitTable` the
-// shim reads. The TIMING (guest-`gc_allocate`-driven, mid-drive) and the STORE
+// that performs the anyref `table.set` on the SAME module-exported transit table
+// the shim reads. The TIMING (guest-`gc_allocate`-driven, mid-drive) and the STORE
 // (the identical table object) match production; only the instruction that writes
 // the slot differs. The guest's real wasm publish is covered by fork-instrument's
 // module_gc_codec tests.
-
-import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 
 // Deterministic wat2wasm encoding of the module in
 // `host/test/fork-module-faithful-guest.wat.txt` (kept alongside for reference):
@@ -68,17 +66,41 @@ export interface FaithfulGuestHandle {
 }
 
 /**
+ * Make sure the module's transit table has a slot for `recipe + 1`.
+ *
+ * The MODULE grows its own table (`fm_transit_grow`), which is what production
+ * relies on: the injected `__wpk_fork_ref_gc_claim` grows it the same way
+ * before the guest publishes. A test double that published past the end would
+ * trap for a reason that has nothing to do with the drive.
+ */
+export function ensureTransitRecipeSlot(
+  moduleExports: Record<string, unknown>,
+  recipe: number,
+): void {
+  const table = moduleExports.__wpk_fork_ref_gc_transit as WebAssembly.Table;
+  const needed = recipe + 2;
+  if (table.length >= needed) return;
+  const grown = (moduleExports.fm_transit_grow as (n: number) => number)(needed);
+  const errno = (moduleExports.fm_last_errno as () => number)();
+  if (grown < 0 || errno !== 0) {
+    throw new Error(`fm_transit_grow(${needed}) failed with errno ${errno}`);
+  }
+}
+
+/**
  * Instantiate the faithful guest double, wiring its `__wpk_fork_publish(recipe)`
- * import to publish a distinct live identity into `transit` (STORE #2) at slot
+ * import to publish a distinct live identity into the fork module's transit
+ * table (STORE #2, the module's `__wpk_fork_ref_gc_transit` export) at slot
  * `recipe + 1` — exactly what the drive's post-ALLOC store-#2 read expects to
- * find. `transit` MUST be the same table the fork-module imports.
+ * find. `moduleExports` MUST be the exports of the module the drive runs in.
  */
 export function instantiateFaithfulGuest(
-  transit: ForkAnyrefTransitTable,
+  moduleExports: Record<string, unknown>,
 ): FaithfulGuestHandle {
   if (!compiledModule) {
     compiledModule = new WebAssembly.Module(FAITHFUL_GUEST_BYTES);
   }
+  const transit = moduleExports.__wpk_fork_ref_gc_transit as WebAssembly.Table;
   const published: number[] = [];
   const instance = new WebAssembly.Instance(compiledModule, {
     env: {
@@ -87,7 +109,7 @@ export function instantiateFaithfulGuest(
         // shared anyref transit at `recipe + 1` (the slot the shim reads back).
         // A fresh object gives the slot a distinct, non-null internalized
         // identity, so `ref.is_null` reads false.
-        transit.ensureRecipeSlot(recipe);
+        ensureTransitRecipeSlot(moduleExports, recipe);
         transit.set(recipe + 1, { gcRecipe: recipe });
         published.push(recipe);
       },

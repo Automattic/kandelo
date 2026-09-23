@@ -38,7 +38,6 @@ function freshModule(): {
   const fm = instantiateForkModule({
     module: new WebAssembly.Module(buf),
     memory,
-    ptrWidth: 4,
     reserve: () => base,
     label: "template id test",
   });

@@ -8,11 +8,10 @@
  *   is a reference-typed `Table.set`. The module is instantiated BEFORE its
  *   guests -- it supplies their frame-flip imports -- so it cannot import their
  *   exports and the host has to put them where it can reach.
- * - `module`, because custom sections (KFIG, KFIT, the GC codec, the frame
- *   format) come out through `WebAssembly.Module.customSections` and nowhere
- *   else.
- * - `fixedPrefixSize`, read from that frame-format section, which a capture
- *   needs for every side activation.
+ * - `templateId`, the hash of the module bytes, which only the host holds.
+ * - `fixedPrefixSize`, read from the frame-format custom section (which comes
+ *   out through `WebAssembly.Module.customSections` and nowhere else), which a
+ *   capture needs for every side activation.
  * - `activationId`, the key every seed is published under.
  *
  * What is deliberately NOT here is the 2,098-line registry this replaces. That
@@ -40,7 +39,6 @@ const FUNCTION_CATALOG_EXPORT = "__wpk_fork_function_catalog";
 /** One live activation. */
 export interface ForkActivation {
   readonly activationId: number;
-  readonly module: WebAssembly.Module;
   readonly instance: WebAssembly.Instance;
   readonly fixedPrefixSize: number;
   /**
@@ -97,7 +95,6 @@ export function forkActivationCatalogSink(records: {
   };
   merged: { take(activationId: number, catalog: WebAssembly.Table): void };
   mergedStaticRoots: { take(activationId: number, catalog: WebAssembly.Table): void };
-  staticRoots: Map<number, WebAssembly.Table>;
   owners: {
     register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
   };
@@ -108,7 +105,6 @@ export function forkActivationCatalogSink(records: {
       records.merged.take(activationId, catalog);
     },
     registerStaticRoots: (activationId, catalog) => {
-      records.staticRoots.set(activationId, catalog);
       records.mergedStaticRoots.take(activationId, catalog);
     },
     registerTable: (activationId, ownerId, table) => {
@@ -223,10 +219,6 @@ export class ForkActivations {
       }
       this.catalogs.registerTable(activation.activationId, ownerId, value);
     }
-  }
-
-  get(activationId: number): ForkActivation | undefined {
-    return this.live.get(activationId);
   }
 
   /**

@@ -71,8 +71,6 @@ export interface CentralizedWorkerInitMessage {
   env?: string[];
   /** Optional argv */
   argv?: string[];
-  /** Optional cwd */
-  cwd?: string;
   /** If true, this is a fork child — drive wpk_fork_rewind_begin instead of normal _start */
   isForkChild?: boolean;
   /** Exact ordinary/vfork mode captured by the inherited fork import. */
@@ -192,8 +190,6 @@ export interface CentralizedThreadInitMessage {
   ctidPtr: number;
   /** Pre-allocated address in shared memory for Wasm TLS initialization. */
   tlsOffset: number;
-  /** @deprecated Use tlsOffset. */
-  tlsAllocAddr: number;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
   /** See [`CentralizedWorkerInitMessage#kernelAbiVersion`]. */

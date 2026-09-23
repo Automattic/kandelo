@@ -123,10 +123,6 @@ export class ForkReplayGateCoordinator {
     void this.readyPromise.catch(() => {});
   }
 
-  get currentPhase(): ForkReplayCoordinatorPhase {
-    return this.phase;
-  }
-
   ready(): void {
     if (this.phase === "pending") {
       this.phase = "ready";

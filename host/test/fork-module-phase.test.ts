@@ -50,7 +50,6 @@ function freshModule(): Fm {
   const fm = instantiateForkModule({
     module,
     memory,
-    ptrWidth: 4,
     reserve: () => base,
     label: "phase test",
   });

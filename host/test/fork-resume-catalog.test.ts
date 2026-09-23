@@ -21,7 +21,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  FORK_RESUME_CATALOG_EXPORT,
   FORK_RESUME_CATALOG_HEADER_SIZE,
   FORK_RESUME_CATALOG_SECTION,
   FORK_RESUME_CATALOG_VERSION,
@@ -96,7 +95,7 @@ function baseCatalogBytes(tableSize = 2): Uint8Array {
     "$second",
   ].slice(0, tableSize).join(" ")})`;
   writeFileSync(wat, `(module
-    (table $catalog (export "${FORK_RESUME_CATALOG_EXPORT}") ${tableSize} ${tableSize} funcref)
+    (table $catalog (export "__wpk_fork_resume_catalog") ${tableSize} ${tableSize} funcref)
     (func $first (result i32) i32.const 17)
     (func $second (result i32) i32.const 29)
     ${elements}

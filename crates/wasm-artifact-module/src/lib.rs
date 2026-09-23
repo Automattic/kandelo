@@ -499,45 +499,6 @@ pub extern "C" fn wa_process_memory_layout(artifact_len: u32, request_len: u32) 
     WA_OK
 }
 
-/// The complete ABI-epoch fork-artifact contract for this artifact.
-///
-/// Separate from [`wa_read_facts`] because it is asked only of artifacts that
-/// carry the transform: for an ordinary program every requirement is trivially
-/// unmet, so folding it into the facts blob would build a long list of
-/// irrelevant failures on every process launch.
-#[unsafe(no_mangle)]
-pub extern "C" fn wa_fork_contract(len: u32) -> i32 {
-    let Some(bytes) = artifact(len) else {
-        return fail("artifact length exceeds the bytes written to the input buffer");
-    };
-    let facts = match read_artifact_facts(bytes) {
-        Ok(facts) => facts,
-        Err(error) => {
-            // The TypeScript this replaces reported an unreadable artifact as a
-            // contract failure naming the epoch, so a caller that only renders
-            // failures still says something true. Preserved deliberately.
-            let mut writer = Writer::versioned();
-            let message = alloc::format!(
-                "cannot validate ABI {} fork-artifact contract: {}",
-                wasm_posix_shared::ABI_VERSION,
-                error.0
-            );
-            writer.strings(&[message]);
-            publish(writer.into_bytes());
-            return WA_OK;
-        }
-    };
-    let failures =
-        wasm_artifact::fork_contract::describe_fork_contract_failures(
-            &facts,
-            wasm_posix_shared::ABI_VERSION,
-        );
-    let mut writer = Writer::versioned();
-    writer.strings(&failures);
-    publish(writer.into_bytes());
-    WA_OK
-}
-
 // ---------------------------------------------------------------------------
 // Policy
 // ---------------------------------------------------------------------------

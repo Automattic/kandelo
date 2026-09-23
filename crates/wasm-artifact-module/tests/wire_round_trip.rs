@@ -13,7 +13,7 @@
 
 use wasm_artifact_module::wire::{Reader, Writer, WIRE_VERSION};
 use wasm_artifact_module::{
-    wa_custom_section, wa_detect_pointer_width, wa_fork_contract, wa_input_reserve,
+    wa_custom_section, wa_detect_pointer_width, wa_input_reserve,
     wa_is_wasm_module, wa_output_len, wa_output_ptr, wa_policy, wa_process_memory_layout,
     wa_read_facts, wa_wire_version, WA_ERROR, WA_OK,
 };
@@ -254,26 +254,6 @@ fn a_policy_request_at_an_unknown_wire_version_is_refused() {
     write_input(&[&module, &request]);
     assert_eq!(wa_policy(module.len() as u32, request.len() as u32), WA_ERROR);
     assert!(output_text().contains("unrecognised wire version"));
-}
-
-#[test]
-fn an_unreadable_artifact_still_names_the_epoch_in_its_contract_failure() {
-    // The TypeScript this replaces turned a walk error into a contract failure
-    // naming the epoch, so a caller that renders only failures still says
-    // something true. Preserved deliberately.
-    let junk = b"not a wasm module at all";
-    write_input(&[junk]);
-    assert_eq!(wa_fork_contract(junk.len() as u32), WA_OK);
-    let output = read_output();
-    let mut reader = Reader::versioned(&output).expect("versioned");
-    let failures = reader.strings().expect("failures");
-    assert_eq!(failures.len(), 1);
-    assert!(failures[0].contains("fork-artifact contract"));
-    assert!(
-        failures[0].contains(&wasm_posix_shared::ABI_VERSION.to_string()),
-        "the message names the epoch it was measured against: {}",
-        failures[0]
-    );
 }
 
 /// Encode a process-memory-layout request, matching

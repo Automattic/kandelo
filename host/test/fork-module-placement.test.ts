@@ -45,7 +45,6 @@ describe("fork-module placement", () => {
       instantiateForkModule({
         module: trivial,
         memory: sharedMemory(4),
-        ptrWidth: 4,
         reserve: () => 0,
         label: "placement-test",
       }),
@@ -65,7 +64,6 @@ describe("fork-module placement", () => {
       instantiateForkModule({
         module,
         memory: sharedMemory(80),
-        ptrWidth: 4,
         reserve: () => 4 * 1024 * 1024,
         label: "placement-test",
       }),
@@ -84,7 +82,6 @@ describe("fork-module placement", () => {
     const fm = instantiateForkModule({
       module,
       memory,
-      ptrWidth: 4,
       reserve: () => base,
       label: "placement-test",
     });
@@ -118,7 +115,6 @@ describe("fork-module placement", () => {
     const fm = instantiateForkModule({
       module,
       memory,
-      ptrWidth: 4,
       reserve: () => base,
       label: "placement-test",
     });
@@ -147,28 +143,23 @@ describe("fork-module placement", () => {
     // The two host functions need no input, so every instance binds both. A
     // caller that had to opt in could leave reference identity a trapping
     // stub, which a GC capture reaches -- both earlier worker-main call sites
-    // made that mistake when it was possible.
-    const fm = instantiateForkModule({
-      module,
-      memory: sharedMemory(512),
-      ptrWidth: 4,
-      reserve: () => 16 * 1024 * 1024,
-      label: "placement-test",
-    });
-    const a = {};
-    const id = fm.capabilities.imports.__wpk_fork_host_ref_identity;
-    expect(id(a)).toBe(id(a));
-    expect(id(a)).not.toBe(id({}));
-    const fn = () => 0;
-    const fid = fm.capabilities.imports.__wpk_fork_host_func_identity;
-    expect(fid(fn)).toBe(fid(fn));
+    // made that mistake when it was possible. The instance refuses to build
+    // with an unbound host function import, so instantiating with no
+    // `hostImports` at all is the assertion.
+    expect(() =>
+      instantiateForkModule({
+        module,
+        memory: sharedMemory(512),
+        reserve: () => 16 * 1024 * 1024,
+        label: "placement-test",
+      }),
+    ).not.toThrow();
   });
 
   it("exposes the host-supplied tables so catalogs can be published into them", () => {
     const fm = instantiateForkModule({
       module,
       memory: sharedMemory(512),
-      ptrWidth: 4,
       reserve: () => 16 * 1024 * 1024,
       label: "placement-test",
     });
@@ -176,8 +167,8 @@ describe("fork-module placement", () => {
     expect(fm.driveTable).toBeInstanceOf(WebAssembly.Table);
     expect(fm.staticRootCatalog).toBeInstanceOf(WebAssembly.Table);
     // The transit table is the module's OWN export, not one of ours.
-    expect(fm.gcTransitTable).toBeInstanceOf(WebAssembly.Table);
-    expect(fm.gcTransitTable).not.toBe(fm.driveTable);
+    expect(fm.exports.__wpk_fork_ref_gc_transit).toBeInstanceOf(WebAssembly.Table);
+    expect(fm.exports.__wpk_fork_ref_gc_transit).not.toBe(fm.driveTable);
   });
 });
 

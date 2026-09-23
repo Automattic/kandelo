@@ -15,7 +15,6 @@
 
 import {
   createForkModuleHostCapabilities,
-  type ForkModuleHostCapabilities,
   type ForkModuleHostImports,
 } from "./fork-module-host-capabilities";
 
@@ -48,12 +47,6 @@ export interface ForkModuleInstance {
    * staging slab.
    */
   readonly regionBytes: number;
-  /** The module's own aligned static/BSS footprint, from `dylink.0`. */
-  readonly staticBytes: number;
-  /** The shadow stack reserved above `staticBytes`. */
-  readonly shadowStackBytes: number;
-  /** The module-owned `(ref null any)` transit table the injector exports. */
-  readonly gcTransitTable: WebAssembly.Table;
   /** Host-supplied tables, exposed so a host can publish catalogs into them. */
   readonly functionCatalog: WebAssembly.Table;
   readonly driveTable: WebAssembly.Table;
@@ -70,14 +63,11 @@ export interface ForkModuleInstance {
    */
   readonly stagingBase: number;
   readonly stagingBytes: number;
-  /** The host functions this instance bound (see `hostImports`). */
-  readonly capabilities: ForkModuleHostCapabilities;
 }
 
 export interface InstantiateForkModuleOptions {
   readonly module: WebAssembly.Module;
   readonly memory: WebAssembly.Memory;
-  readonly ptrWidth: 4 | 8;
   /** Reserve `size` bytes in guest memory and return the base offset. */
   readonly reserve: (size: number) => number;
   /** Included in every thrown message, so a failure names the process. */
@@ -88,8 +78,6 @@ export interface InstantiateForkModuleOptions {
    * to observe or fail it.
    */
   readonly hostImports?: Partial<ForkModuleHostImports>;
-  /** @deprecated The module owns its transit table; supplying one is a no-op. */
-  readonly transitTable?: WebAssembly.Table;
 }
 
 /** The shadow stack reserved above the module's static footprint. */
@@ -203,7 +191,6 @@ export function instantiateForkModule(
   options: InstantiateForkModuleOptions,
 ): ForkModuleInstance {
   const { module, memory, reserve, label, hostImports } = options;
-  void options.transitTable; // deprecated; the module owns its transit table
 
   const info = readDylinkMemInfo(module, label);
   // Layout, low to high: the module's static/BSS footprint, then the shadow
@@ -299,14 +286,10 @@ export function instantiateForkModule(
     exports,
     memoryBase,
     regionBytes,
-    staticBytes,
-    shadowStackBytes: SHADOW_STACK_BYTES,
-    gcTransitTable: exports.__wpk_fork_ref_gc_transit as WebAssembly.Table,
     functionCatalog,
     driveTable,
     staticRootCatalog,
     stagingBase: memoryBase + stagingOffset,
     stagingBytes: STAGING_SLAB_BYTES,
-    capabilities,
   };
 }

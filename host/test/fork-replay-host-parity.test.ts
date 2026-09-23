@@ -37,13 +37,22 @@ function ordinaryForkHandlerSource(_relativePath: string): string {
   return source.slice(start, end);
 }
 
-/** Each entry must still bind the shared handler it delegates forks to. */
+/**
+ * Each entry must still route the kernel's fork callback into the shared
+ * lifecycle. That route is `processLifecycleKernelCallbacks()`, whose `onFork`
+ * calls `handleFork` and so `handleOrdinaryFork`, spread into the kernel
+ * worker's callbacks. It used to be checked by the entry destructuring
+ * `handleOrdinaryFork` itself, which neither entry calls: the name was bound
+ * and never read, so the check held whether or not forks reached the handler.
+ */
 function expectEntryProvides(relativePath: string): void {
   const entry = readFileSync(join(repoRoot, relativePath), "utf8");
   expect(
-    entry.includes("  handleOrdinaryFork,\n")
-    && entry.includes("} = lifecycle;"),
-    `${relativePath} must bind handleOrdinaryFork from ./process-lifecycle`,
+    entry.includes("  processLifecycleKernelCallbacks,\n")
+    && entry.includes("} = lifecycle;")
+    && entry.includes("...processLifecycleKernelCallbacks(),"),
+    `${relativePath} must route the kernel's fork callback through ` +
+      "processLifecycleKernelCallbacks() from ./process-lifecycle",
   ).toBe(true);
 }
 
@@ -51,7 +60,7 @@ describe.each([
   ["Node", "host/src/node-kernel-worker-entry.ts"],
   ["browser", "host/src/browser-kernel-worker-entry.ts"],
 ])("%s fork replay launch transaction", (_host, relativePath) => {
-  it("binds the shared ordinary-fork launch", () => {
+  it("routes the kernel fork callback into the shared ordinary-fork launch", () => {
     expectEntryProvides(relativePath);
   });
 

@@ -1973,10 +1973,11 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    * - **`maxPages` is honoured.** The Node entry ignored the per-request page
    *   ceiling and always used the kernel default, which is a POSIX-visible
    *   difference in what a spawn request may ask for.
-   * - **`cwd` reaches the worker.** The browser passed it in the init message
-   *   and Node did not, so a Node guest reading its own working directory
-   *   before its first `chdir` saw the kernel default rather than the
-   *   directory the launch named.
+   * - **`cwd` is honoured.** Node dropped it, so a Node guest reading its own
+   *   working directory before its first `chdir` saw the kernel default rather
+   *   than the directory the launch named. It is set on the kernel's process
+   *   record (`setCwd`) before launch; the process worker never read a `cwd`
+   *   init field, so none is sent.
    */
   async function handleSpawn(msg: ProcessSpawnRequest): Promise<void> {
     let releaseMutation: (() => void) | undefined;
@@ -2087,7 +2088,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         secureExec,
         env: launchEnv,
         argv: msg.argv,
-        cwd: msg.cwd,
         ptrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest:
@@ -2821,7 +2821,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       tlsPtr,
       ctidPtr,
       tlsOffset: alloc.tlsOffset,
-      tlsAllocAddr: alloc.tlsAllocAddr,
       ptrWidth: processInfo.ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,

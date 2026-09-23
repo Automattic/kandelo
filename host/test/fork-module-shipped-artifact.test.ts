@@ -199,7 +199,6 @@ describe("the shipped fork module", () => {
       instantiateForkModule({
         module: new WebAssembly.Module(bytes),
         memory,
-        ptrWidth: 4,
         reserve: (size: number) => {
           const base = next;
           next += Math.ceil(size / PAGE) * PAGE;

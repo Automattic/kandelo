@@ -265,7 +265,7 @@ async function main() {
                     memory,
                     channelOffset: alloc.channelOffset,
                     fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr,
-                    tlsAllocAddr: alloc.tlsAllocAddr,
+                    tlsOffset: alloc.tlsOffset,
                 };
                 const threadWorker = workerAdapter.createWorker(threadInitData);
                 serverThreadWorkers.add(threadWorker);

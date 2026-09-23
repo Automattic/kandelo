@@ -118,7 +118,6 @@ function instantiateFixtureModule(): FixtureModule {
   const fm = instantiateForkModule({
     module: new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm"))),
     memory,
-    ptrWidth: 4,
     reserve: () => 8 * 1024 * 1024,
     label: "identity release",
   });

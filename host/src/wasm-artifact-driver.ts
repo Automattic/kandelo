@@ -98,7 +98,6 @@ interface ArtifactModuleExports {
   readonly wa_heap_base: (len: number) => number;
   readonly wa_i32_const_export: (artifactLen: number, nameLen: number) => number;
   readonly wa_read_facts: (len: number) => number;
-  readonly wa_fork_contract: (len: number) => number;
   readonly wa_policy: (artifactLen: number, requestLen: number) => number;
   /**
    * Optional at install, because a module staged before this entry point
@@ -965,25 +964,6 @@ export function readWasmI32ConstExport(
     answer.byteOffset,
     answer.byteLength,
   ).getInt32(0, true);
-}
-
-/**
- * Validate the complete ABI-epoch fork contract without compiling or running
- * the artifact.
- *
- * Shared by program admission and the dynamic linker so a side module cannot
- * defer a malformed reconstruction recipe until replay.
- */
-export function describeWasmForkArtifactContractFailures(
-  programBytes: ArrayBuffer | Uint8Array,
-): string[] {
-  const api = required();
-  const bytes = asBytes(programBytes);
-  writeInput(api, bytes);
-  if (api.wa_fork_contract(bytes.byteLength) !== WA_OK) {
-    throw new WasmArtifactModuleError("wa_fork_contract", readOutputText(api));
-  }
-  return new WireReader(readOutput(api), "wa_fork_contract").strings();
 }
 
 // ---------------------------------------------------------------------------

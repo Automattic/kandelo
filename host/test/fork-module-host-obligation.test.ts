@@ -204,16 +204,6 @@ describe("fork-module host obligation", () => {
       expect(() => id(null)).toThrow(RangeError);
       expect(() => id(undefined)).toThrow(RangeError);
     });
-
-    it("counts distinct references for capture diagnostics", () => {
-      const caps = createForkModuleHostCapabilities();
-      const id = caps.imports.__wpk_fork_host_ref_identity;
-      const a = {};
-      id(a);
-      id(a);
-      id({});
-      expect(caps.distinctReferenceCount).toBe(2);
-    });
   });
 
   describe("against the real fork-module", () => {

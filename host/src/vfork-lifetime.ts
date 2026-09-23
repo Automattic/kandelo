@@ -44,7 +44,6 @@ export interface VforkLifetime<
   readonly childGeneration: TGeneration;
   readonly memory: WebAssembly.Memory;
   readonly phase: VforkLifetimePhase;
-  readonly failedExecAttempts: number;
   readonly completion: Promise<VforkLifetimeDisposition<TGeneration>>;
 }
 
@@ -61,7 +60,6 @@ interface MutableVforkLifetime<
     disposition: VforkLifetimeDisposition<TGeneration>,
   ) => void;
   phase: VforkLifetimePhase;
-  failedExecAttempts: number;
 }
 
 export class VforkAddressSpaceBusyError extends Error {
@@ -102,10 +100,6 @@ export class VforkLifetimeCoordinator<
     MutableVforkLifetime<TGeneration>
   >();
   private readonly completedChildren = new WeakSet<TGeneration>();
-
-  get activeCount(): number {
-    return this.byMemory.size;
-  }
 
   hasActiveAddressSpace(memory: WebAssembly.Memory): boolean {
     return this.byMemory.has(memory);
@@ -171,9 +165,6 @@ export class VforkLifetimeCoordinator<
       get phase() {
         return lifetime.phase;
       },
-      get failedExecAttempts() {
-        return lifetime.failedExecAttempts;
-      },
       completion,
     });
     Object.assign(lifetime, {
@@ -185,7 +176,6 @@ export class VforkLifetimeCoordinator<
       memory,
       resolve,
       phase: "starting" as const,
-      failedExecAttempts: 0,
     });
     this.byMemory.set(memory, lifetime);
     this.byChild.set(childGeneration, lifetime);
@@ -209,15 +199,17 @@ export class VforkLifetimeCoordinator<
     return true;
   }
 
-  /** Record a truthful child exec failure without releasing the parent. */
-  noteFailedExec(childGeneration: TGeneration, errno: number): number {
+  /**
+   * Check a truthful child exec failure without releasing the parent: the
+   * child keeps borrowing, and only its exit, exec or death settles the
+   * lifetime.
+   */
+  noteFailedExec(childGeneration: TGeneration, errno: number): void {
     this.validateErrno(errno);
     const lifetime = this.requireActive(childGeneration);
     if (lifetime.phase !== "borrowing") {
       throw new Error("vfork exec failure reported before child launch");
     }
-    lifetime.failedExecAttempts += 1;
-    return lifetime.failedExecAttempts;
   }
 
   /**

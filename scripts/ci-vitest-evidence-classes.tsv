@@ -62,7 +62,6 @@ host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-shared-memory.test.ts	source-only
 host/test/fork-abort-unwind.test.ts	source-only
 host/test/fork-activation-registry.test.ts	source-only
-host/test/fork-anyref-transit.test.ts	source-only
 host/test/fork-artifact-gc-types.test.ts	source-only
 host/test/fork-borrowed-replay.test.ts	source-only
 host/test/fork-continuation.test.ts	source-only

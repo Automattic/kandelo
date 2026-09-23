@@ -738,7 +738,7 @@ interface ProcessDylinkActivationOwnerOptions {
   readonly importedStateCapture?: ForkImportIdentity;
   /** The host's record of live activations; see `fork-activations.ts`. */
   readonly activations?: ForkActivations;
-  readonly tableReplication?: ForkActivationTableReplication;
+  readonly tableReplication: ForkActivationTableReplication;
   /**
    * The child planner needs the copied dlopen archive, while the archive
    * reader needs the activation owner installed first. Resolve it lazily at
@@ -830,15 +830,6 @@ function createProcessDylinkActivationOwner(
           `${request.name}: fresh-child replay is missing its activation id`,
         );
       }
-      if (
-        !options.isForkChild &&
-        !options.tableReplication &&
-        request.replayActivationId !== undefined
-      ) {
-        throw new Error(
-          `${request.name}: a parent load supplied a replay activation id`,
-        );
-      }
       // WHY: any live process Worker may reconcile an activation published by
       // a peer or originate dlopen while holding the process archive writer.
       // Its writer-acquire hook first adopts every published activation, so
@@ -910,12 +901,8 @@ function createProcessDylinkActivationOwner(
               { value: "i32", mutable: false },
               activationId,
             ),
-            ...(options.tableReplication
-              ? {
-                  [FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT]:
-                    options.tableReplication.generationAddress,
-                }
-              : {}),
+            [FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT]:
+              options.tableReplication.generationAddress,
           },
           guestModule: request.module,
           label: activationLabel,
@@ -1023,7 +1010,6 @@ function createProcessDylinkActivationOwner(
           // install, which left a parent's slots unbound until it forked.
           options.activations?.register({
             activationId,
-            module: request.module,
             instance,
             fixedPrefixSize: format.fixedPrefixSize,
             templateId,
@@ -3579,7 +3565,6 @@ export async function centralizedWorkerMain(
         forkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
           memory,
-          ptrWidth,
           reserve: (size) => {
             if (inheritForkModuleRegion) {
               // Reuse the inherited region rather than mmapping a fresh one. The
@@ -3755,8 +3740,6 @@ export async function centralizedWorkerMain(
             pid,
           ).setActivationTableStateOwner(activationId, ownerId, owns),
       );
-      /** Each activation's static-root catalog, for a static-root recipe. */
-      const forkStaticRoots = new Map<number, WebAssembly.Table>();
       // The module's imported merged static-root table, which CAPTURE reads to
       // recognise a statically initialised reference and REPLAY reads to
       // reconstruct one. Filled per fork and cleared after, so it never pins a
@@ -3798,7 +3781,6 @@ export async function centralizedWorkerMain(
             requireForkModuleBackend(forkModuleBackend, pid),
             `pid=${pid}: merged function catalog`,
           ),
-          staticRoots: forkStaticRoots,
           mergedStaticRoots: forkMergedStaticRoots,
           owners: processTableStateOwners,
         }),
@@ -4565,7 +4547,6 @@ export async function centralizedWorkerMain(
       processInstance = instance;
       forkActivations.register({
         activationId: 0,
-        module,
         instance,
         fixedPrefixSize: linkedFrameFormat.fixedPrefixSize,
         templateId: mainTemplateId,
@@ -6035,7 +6016,7 @@ export async function centralizedThreadWorkerMain(
     stackPtr,
     tlsPtr,
   } = initData;
-  const tlsOffset = initData.tlsOffset ?? initData.tlsAllocAddr;
+  const tlsOffset = initData.tlsOffset;
   const ptrWidth = initData.ptrWidth ?? 4;
 
   // WHY: synchronize the received memory before this isolate binds any view
@@ -6234,7 +6215,6 @@ export async function centralizedThreadWorkerMain(
         threadForkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
           memory,
-          ptrWidth,
           reserve: (size) =>
             continuationMmap(
               memory,
@@ -6284,7 +6264,6 @@ export async function centralizedThreadWorkerMain(
               backend,
               `pid=${pid} tid=${tid}: merged function catalog`,
             ),
-            staticRoots: new Map(),
             // A pthread replica runs its OWN module instance, so its merged
             // static-root table is its own too. It is filled per fork like
             // the process one, by the fork path that opens the capture.
@@ -6723,7 +6702,6 @@ export async function centralizedThreadWorkerMain(
       threadResumeTable.registerActivation(0, instance);
       threadForkActivations?.register({
         activationId: 0,
-        module,
         instance,
         fixedPrefixSize: threadFixedPrefixSize,
         templateId: threadTemplateId!,

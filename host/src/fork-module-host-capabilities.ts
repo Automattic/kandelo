@@ -50,12 +50,6 @@ export interface ForkModuleHostImports {
 
 export interface ForkModuleHostCapabilities {
   readonly imports: ForkModuleHostImports;
-  /**
-   * How many distinct references identity has issued. Diagnostics: a capture
-   * that splits one object into two recipes shows up here as a count larger
-   * than the object graph.
-   */
-  readonly distinctReferenceCount: number;
 }
 
 /**
@@ -96,26 +90,18 @@ function createReferenceIdentity(importName: string) {
     else primitives.set(value, id);
     return id;
   };
-  // `issued` is not a second counter: it is `next` read back. Keeping one of
-  // its own would be a second tally of the same event, and two tallies of one
-  // event are a drift bug waiting for the day someone increments only one.
-  return { identify, issued: () => next - 1 };
+  return identify;
 }
 
 export function createForkModuleHostCapabilities(): ForkModuleHostCapabilities {
   const identity = createReferenceIdentity("__wpk_fork_host_ref_identity");
   const functionIdentity = createReferenceIdentity("__wpk_fork_host_func_identity");
   const imports: ForkModuleHostImports = {
-    __wpk_fork_host_ref_identity: identity.identify,
+    __wpk_fork_host_ref_identity: identity,
     // A SEPARATE pool from the reference one: `funcref` and `anyref` are
     // disjoint hierarchies, so a function and a GC object can never be the same
     // value and one counter would only couple two independent numberings.
-    __wpk_fork_host_func_identity: functionIdentity.identify,
+    __wpk_fork_host_func_identity: functionIdentity,
   };
-  return {
-    imports,
-    get distinctReferenceCount() {
-      return identity.issued();
-    },
-  };
+  return { imports };
 }

@@ -93,7 +93,6 @@ describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
     const fm = instantiateForkModule({
       module: loadForkModule32(),
       memory,
-      ptrWidth: 4,
       reserve: alloc.reserve,
       label: "coarse-seal-fail",
     });

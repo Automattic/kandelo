@@ -19,21 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  CAPTURED_STDIO,
   CentralizedKernelWorker,
-  isCurrentProcessGeneration,
-  TERMINAL_STDIO,
-} from "./kernel-worker";
-import {
-  retryKernelEntryResult,
-  retryKernelEntryResultForGeneration,
-} from "./kernel-entry-retry";
-import type {
-  ForkBorrowedReplayWorkspace,
-  ForkContinuationContext,
-  ResolvedSpawnProgram,
-  SpawnProgramResolution,
-  ThreadChannelAttachment,
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import {
@@ -51,7 +37,6 @@ import {
   createClosedLazyAssetFetcherFromOwnedAssets,
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
-import { resolveLazyUrl } from "./vfs/lazy-url";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
@@ -61,73 +46,23 @@ import { findRepoRoot, resolveBinary } from "./binary-resolver";
 
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
-import type {
-  PreparedExecLaunchPlan,
-} from "./exec-target";
-import { patchWasmForThread } from "./worker-main";
-import {
-  describeWasmArtifactPolicyFailures,
-  extractAbiVersion,
-  isWasmModuleBytes,
-} from "./constants";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
-import {
-  PROCESS_FORK_MODE_VFORK,
-  type ProcessForkMode,
-} from "./generated/abi";
+import { DEFAULT_MAX_PAGES } from "./constants";
 import {
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
-import {
-  removeThreadWorkerRegistryEntry,
-  threadWorkerFailureDisposition,
-} from "./thread-worker-disposition";
 
-import { VmInterruptTimerManager } from "./vm-interrupt-timer";
-import {
-  type WorkerQuiescence,
-} from "./worker-quiescence";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import {
-  ForkReplayGateCoordinator,
-  observeForkReplayWorker,
-} from "./fork-replay-gate";
-import {
-  acquireForkMemoryClone,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  deriveProcessMemoryRetirementAdmissionThresholds,
-  FORK_SAVE_BUFFER_SIZE,
-  ProcessMemoryCapacityError,
   ProcessMemoryAllocator,
-  ProcessMemoryRetirementBacklogError,
-  type ProcessMemoryLayout,
-  type ProcessMemoryLease,
 } from "./process-memory";
-import {
-  VforkAddressSpaceBusyError,
-  VforkLifetimeCoordinator,
-  type VforkExactCompletionReason,
-  type VforkLifetime,
-} from "./vfork-lifetime";
-import {
-  ExactProcessGenerationDetachLedger,
-  type ExactProcessGenerationDetachResult,
-} from "./process-generation-detach";
-import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
 import type { PlatformIO } from "./types";
 import type {
-  CentralizedWorkerInitMessage,
-  CentralizedThreadInitMessage,
-  WorkerToHostMessage,
-} from "./worker-protocol";
-import type {
-  HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
   InitMessage,
-  SpawnMessage,
   TerminateProcessMessage,
   HttpRequestMessage,
 } from "./node-kernel-protocol";
@@ -135,14 +70,8 @@ import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   bufferToArrayBuffer,
   createProcessLifecycle,
-  type ForkReplayContext,
   type ProcessLifecycleInfo,
-  type ThreadWorkerRecord,
-  formatError,
-  handleThreadExit,
   signalFromExitStatus,
-  type ProcessGenerationOwnership,
-  type VforkWorkspaceOwnership,
 } from "./process-lifecycle";
 import { NodePcmDriver } from "./audio/node-pcm-driver";
 
@@ -508,7 +437,6 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   resolveExecFile: (path) => resolveExec(path),
 });
 const {
-  allocateProcessGeneration,
   configureRootfsOverlayFromImage,
   createInitProcessMemoryAllocator,
   destroyGenerationAccountingComplete,
@@ -517,32 +445,17 @@ const {
   processLifecycleKernelCallbacks,
   reportRetainedDestroyDetaches,
   settleDestroyedRealmAllocator,
-  completeVforkGenerationTeardown,
-  handleExec,
   processes,
-  processGenerationDetaches,
   processMemoryCreators,
   processTeardowns,
   ptyByPid,
-  vforkLifetimes,
   vmInterruptTimers,
   handleSpawn,
-  handlePosixSpawn,
-  handleOrdinaryFork,
-  handleVfork,
-  handleFork,
-  handleClone,
-  handleExit,
   threadModuleCache,
-  classifyWasmTrap,
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
-  awaitFinalizedProcessTeardown,
-  createFreshProcessMemory,
   detachExactProcessGeneration,
-  containVforkAddressSpace,
   finishProcessExit,
-  finishVforkDisposition,
   handleExportRootfsImage,
   handleInjectConnection,
   handlePipeRead,
@@ -550,31 +463,19 @@ const {
   handleReadVfsFile,
   handleWriteVfsFile,
   reportedExits,
-  rootfsSnapshotGate,
-  handlePosixSpawnResolve,
   handlePtyResize,
   intentionallyTerminated,
   terminateThreadWorkers,
   terminateTrackedWorker,
-  threadExits,
   threadWorkers,
-  waitForExecRetirement,
   waitForWorkerQuiescence,
-  workerTeardowns,
   readExecFromVfs,
   reportWorkerProtocolError,
-  resolveExecutableForLaunch,
-  respondTransferredBytes,
   handlePtyWrite,
-  handleVmInterruptTimer,
-  postForkModuleProof,
-  releaseVforkWorkspace,
   reportHostDiagnostic,
   reportRetainedProcessGeneration,
   respond,
   respondError,
-  terminatePoisonedKernelWorker,
-  traceVforkMechanism,
 } = lifecycle;
 
 // Exec resolution: request ID → resolver

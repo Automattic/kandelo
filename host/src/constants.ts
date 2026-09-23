@@ -45,7 +45,6 @@ import {
 } from "./generated/abi";
 import {
   describeWasmArtifactPolicy,
-  describeWasmForkArtifactContractFailures,
   readWasmArtifactFacts,
   readWasmHeapBase,
   readWasmI32ConstExport,
@@ -95,7 +94,6 @@ export const WPK_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name
 
 export {
   ABI_CONTRACT_SECTION,
-  describeWasmForkArtifactContractFailures,
   detectPtrWidth,
   isWasmModuleBytes,
   readWasmArtifactFacts,
@@ -190,18 +188,6 @@ export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
 
 export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {
   return readWasmArtifactFacts(programBytes).importsKernelFork;
-}
-
-export function wasmHasCompleteForkInstrumentation(
-  programBytes: ArrayBuffer,
-): boolean {
-  try {
-    const facts = readWasmArtifactFacts(programBytes);
-    if (!facts.hasForkArtifactSurface) return false;
-    return describeWasmForkArtifactContractFailures(programBytes).length === 0;
-  } catch {
-    return false;
-  }
 }
 
 /**

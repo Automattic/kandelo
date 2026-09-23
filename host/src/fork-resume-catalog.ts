@@ -26,18 +26,6 @@
 
 export const FORK_RESUME_CATALOG_SECTION =
   "kandelo.wpk_fork.resume_catalog";
-/**
- * The instance's own catalog table.
- *
- * TEST-ONLY as of the deletion above: nothing in `host/src` reads that table
- * now, and this name survives because `fork-resume-catalog.test.ts` builds its
- * fixtures around it. Kept rather than inlined into the test, because deleting
- * a name a test still uses to make a surface number fall is the incentive
- * `docs/surface-budget.json` warns about in `forkModuleEntriesWithoutProductionCaller`.
- * `fork-resume-table.ts` spells the same string separately, for the length
- * check it makes on the guest it is registering.
- */
-export const FORK_RESUME_CATALOG_EXPORT = "__wpk_fork_resume_catalog";
 export const FORK_RESUME_CATALOG_VERSION = 1;
 export const FORK_RESUME_CATALOG_HEADER_SIZE = 12;
 export const FORK_RESUME_CATALOG_RECORD_SIZE = 8;

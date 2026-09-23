@@ -34,7 +34,6 @@ function freshModule(): Fm {
   const fm = instantiateForkModule({
     module: new WebAssembly.Module(buf),
     memory,
-    ptrWidth: 4,
     reserve: () => 8 * 1024 * 1024,
     label: "arena test",
   });
@@ -81,7 +80,6 @@ describe("module-state arena, module half", () => {
     const fm = instantiateForkModule({
       module: new WebAssembly.Module(buf),
       memory,
-      ptrWidth: 4,
       reserve: () => 8 * 1024 * 1024,
       label: "unset-up",
     });

@@ -104,7 +104,6 @@ function harness(): Harness {
       readFileSync(resolveBinary("fork_module32.wasm")),
     ),
     memory,
-    ptrWidth: 4,
     reserve: () => MODULE_BASE,
     label: "resume assignment",
   });

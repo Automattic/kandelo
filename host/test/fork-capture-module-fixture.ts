@@ -41,7 +41,6 @@ export function installTestForkCaptureModule(
   const fm = instantiateForkModule({
     module: forkModule32(),
     memory,
-    ptrWidth: 4,
     reserve: (size) => {
       // The test's guest memory starts small; grow it to cover the module's
       // HIGH region (production reserves via the syscall channel, which grows).

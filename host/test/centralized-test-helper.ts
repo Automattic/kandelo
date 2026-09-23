@@ -1120,7 +1120,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           tlsPtr,
           ctidPtr,
           tlsOffset: alloc.tlsOffset,
-          tlsAllocAddr: alloc.tlsAllocAddr,
           ptrWidth: clonePtrWidth,
           // Phase 6 D7b: ship the fork-module to a pthread so a fork issued from
           // it unwinds through the module (parent side of a fork-from-thread),

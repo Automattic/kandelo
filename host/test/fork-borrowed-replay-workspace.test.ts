@@ -35,7 +35,6 @@ function freshModule(): Fm {
   const fm = instantiateForkModule({
     module: new WebAssembly.Module(buf),
     memory,
-    ptrWidth: 4,
     reserve: () => 8 * 1024 * 1024,
     label: "borrowed workspace test",
   });

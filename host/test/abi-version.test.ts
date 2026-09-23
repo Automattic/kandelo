@@ -132,13 +132,11 @@ describe("ABI version marker", () => {
     });
     const importObject: WebAssembly.Imports = { env: { memory } };
     const envImports = importObject.env as Record<string, unknown>;
-    // A bare anyref table, not `ForkAnyrefTransitTable`. That class now wraps
-    // the fork MODULE's exported transit table (it takes the module's exports
-    // and reads `__wpk_fork_ref_gc_transit`, `fm_transit_grow` and
-    // `fm_last_errno` off them) because the module owns the transit and its
-    // growth. This test instantiates a guest only to read its `__abi_version`
-    // export: it needs SOMETHING of the right element type on that import and
-    // never grows it, so it should not stand up a fork module to get one.
+    // A bare anyref table. In a real process the fork MODULE owns and exports
+    // the transit table (`__wpk_fork_ref_gc_transit`) and grows it itself.
+    // This test instantiates a guest only to read its `__abi_version` export:
+    // it needs SOMETHING of the right element type on that import and never
+    // grows it, so it should not stand up a fork module to get one.
     const gcTransitTable = new WebAssembly.Table({
       initial: 1,
       element: "anyref" as WebAssembly.TableKind,

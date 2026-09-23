@@ -33,7 +33,6 @@ import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { readFileSync } from "node:fs";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
 import {
   CAPTURE_KIND_STRUCT,
@@ -106,14 +105,14 @@ const NONPUBLISHING_GUEST_MODULE = new WebAssembly.Module(NONPUBLISHING_GUEST_BY
  * `fm_restore_from_arena` returns the ALLOC-then-FILL plan the drive executes.
  * Two `fm_*` entries went with the change.
  *
- * The transit table is the module's OWN export (STORE #2, M1), wrapped rather
- * than minted, so the shim's post-ALLOC read, the guest's publish and this
+ * The transit table is the module's OWN export (STORE #2, M1), read straight
+ * off its exports, so the shim's post-ALLOC read, the guest's publish and this
  * test's read-back all reach one table.
  */
 function setup(): {
   fm: ReturnType<typeof instantiateForkModule>;
   x: DriveShimExports;
-  transitTable: ForkAnyrefTransitTable;
+  transitTable: WebAssembly.Table;
   recipe: number;
   planPtr: number;
   count: number;
@@ -141,7 +140,6 @@ function setup(): {
   const fm = instantiateForkModule({
     module: MODULE,
     memory: f.memory,
-    ptrWidth: PTR_WIDTH,
     reserve: () => CHILD_MODULE_BASE,
     label: "drive-shim-test",
   });
@@ -152,7 +150,7 @@ function setup(): {
   x.fm_set_activation_gc_codec(0, CODEC_AT, GC_CODEC.byteLength);
   expect(x.fm_last_errno(), "the GC codec seeds").toBe(0);
 
-  const transitTable = new ForkAnyrefTransitTable(fm.exports);
+  const transitTable = fm.exports.__wpk_fork_ref_gc_transit as WebAssembly.Table;
   const planPtr = x.fm_restore_from_arena(root, PID);
   expect(x.fm_last_errno(), "the child restores the captured graph").toBe(0);
   const count = x.fm_gc_plan_count();
@@ -168,7 +166,7 @@ describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () 
     // Bind the FAITHFUL guest (its `gc_allocate` publishes a live identity into
     // STORE #2 at `recipe+1`) into the host-owned drive table (base(0) = 0 ->
     // ALLOC slot 0, FILL slot 1).
-    const { guest, published } = instantiateFaithfulGuest(transitTable);
+    const { guest, published } = instantiateFaithfulGuest(fm.exports);
     const base = x.fm_drive_table_base(0);
     expect(base).toBe(0);
     if (fm.driveTable.length < base + 2) {

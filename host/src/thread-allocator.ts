@@ -20,8 +20,6 @@ export interface ThreadAllocation {
   forkSaveOffset: number;
   /** Byte offset of the channel in Memory */
   channelOffset: number;
-  /** @deprecated Use tlsOffset. */
-  tlsAllocAddr: number;
 }
 
 /**
@@ -58,7 +56,6 @@ export function threadSlotOffsets(slotStartAddr: number): ThreadAllocation {
     tlsOffset,
     forkSaveOffset,
     channelOffset,
-    tlsAllocAddr: tlsOffset,
   };
 }
 

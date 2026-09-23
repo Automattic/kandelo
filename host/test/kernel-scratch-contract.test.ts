@@ -1166,12 +1166,6 @@ const auditAllowances: AuditAllowance[] = [
     why: "The per-activation trampoline declares no memory of its own and imports exactly five frame/resume functions from the co-resident fork-module instance above; it binds an activation id and forwards, so it adds no memory authority of any kind.",
   },
   {
-    key: "host/src/fork-anyref-transit.ts::ForkAnyrefTransitTable.constructor::wasm-instance-authority::new WebAssembly.Instance(compileProviderModule())",
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "The fork transit provider has no imports or linear memory and owns only the process worker's temporary externref table.",
-  },
-  {
     key: "host/src/import-trap-guard.ts::buildFatalTrap::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(bytes))",
     disposition: "non-kernel",
     authorityOwner: "process-memory",

@@ -64,7 +64,9 @@ describe("the fork module refuses a raw host externref at capture", () => {
     expect(f.errno(), "the call itself succeeds: the walk has no error path").toBe(0);
     // The guest publishes the live value at `recipe + 1` on its next
     // instruction, so that slot has to exist.
-    expect(f.instance.gcTransitTable.length).toBeGreaterThan(recipe + 1);
+    expect(
+      (f.x.__wpk_fork_ref_gc_transit as WebAssembly.Table).length,
+    ).toBeGreaterThan(recipe + 1);
 
     seal(f);
     expect(f.errno(), "the seal reports the refusal, not a later EINVAL").toBe(

@@ -135,9 +135,9 @@ describe("shared vfork lifetime coordinator", () => {
     await expectPending(lifetime.completion);
     expect(siblingRan).toBe(true);
 
-    expect(coordinator.noteFailedExec(child, 2)).toBe(1);
-    expect(coordinator.noteFailedExec(child, 13)).toBe(2);
-    expect(lifetime.failedExecAttempts).toBe(2);
+    coordinator.noteFailedExec(child, 2);
+    coordinator.noteFailedExec(child, 13);
+    expect(coordinator.isActiveBorrower(child)).toBe(true);
     await expectPending(lifetime.completion);
 
     coordinator.completeAfterExactTeardown(child, "exit");
@@ -190,10 +190,9 @@ describe("shared vfork lifetime coordinator", () => {
         childPid: 31,
         reason,
       });
-      expect(lifetime.failedExecAttempts).toBe(failedExecErrnos.length);
       expect(settlements).toBe(1);
       expect(lifetime.phase).toBe("settled");
-      expect(coordinator.activeCount).toBe(0);
+      expect(coordinator.hasActiveAddressSpace(memory)).toBe(false);
     },
   );
 
@@ -242,7 +241,7 @@ describe("shared vfork lifetime coordinator", () => {
       reason: "trap",
     });
     expect(settlements).toBe(1);
-    expect(coordinator.activeCount).toBe(0);
+    expect(coordinator.hasActiveAddressSpace(memory)).toBe(false);
   });
 
   it("requires whole-address-space containment after ambiguous termination", async () => {
@@ -265,7 +264,7 @@ describe("shared vfork lifetime coordinator", () => {
       cause: crash,
     });
     expect(settlements).toBe(1);
-    expect(coordinator.activeCount).toBe(0);
+    expect(coordinator.hasActiveAddressSpace(memory)).toBe(false);
   });
 
   it("rejects overlapping and nested borrowers with EAGAIN", async () => {
@@ -321,13 +320,15 @@ describe("shared vfork lifetime coordinator", () => {
       secondChild,
     );
 
-    expect(coordinator.activeCount).toBe(2);
+    expect(coordinator.hasActiveAddressSpace(firstMemory)).toBe(true);
+    expect(coordinator.hasActiveAddressSpace(secondMemory)).toBe(true);
     coordinator.markChildMayAccessMemory(firstChild);
     coordinator.markChildMayAccessMemory(secondChild);
     coordinator.completeAfterExactTeardown(firstChild, "exit");
     coordinator.completeAfterExactTeardown(secondChild, "exit");
     await Promise.all([first.completion, second.completion]);
-    expect(coordinator.activeCount).toBe(0);
+    expect(coordinator.hasActiveAddressSpace(firstMemory)).toBe(false);
+    expect(coordinator.hasActiveAddressSpace(secondMemory)).toBe(false);
   });
 
   it("supports repeated lifetimes but never reuses a child generation", async () => {

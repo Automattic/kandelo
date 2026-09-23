@@ -39,7 +39,6 @@ function activation(
 ): ForkActivation {
   return {
     activationId,
-    module: {} as WebAssembly.Module,
     instance: { exports } as unknown as WebAssembly.Instance,
     fixedPrefixSize,
     // Distinct per activation, so a test can tell whose id was seeded.

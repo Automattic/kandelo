@@ -1,8 +1,7 @@
 // M1: ONE anyref GC transit table per process, not three.
 //
-// The table the fork-module exports, the table the host wraps, and the table
-// the guest imports must be the SAME `WebAssembly.Table` object. Three tables
-// that each work in isolation lose every reference published across them, and
+// The table the fork-module exports and the table the guest imports must be
+// the SAME `WebAssembly.Table` object. Tables that each work in isolation lose every reference published across them, and
 // the runtime drive check only catches it when a value happens to cross.
 //
 // THIS USED TO ASSERT IT THROUGH `ForkActivationRegistry`, which is gone: the
@@ -20,7 +19,6 @@ import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { buildForkGuestImports } from "../src/fork-guest-imports";
-import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT } from "../src/generated/abi";
 
 function forkModule(): ReturnType<typeof instantiateForkModule> {
@@ -33,19 +31,16 @@ function forkModule(): ReturnType<typeof instantiateForkModule> {
       maximum: 16384,
       shared: true,
     }),
-    ptrWidth: 4,
     reserve: () => 8 * 1024 * 1024,
     label: "transit relocation",
   });
 }
 
 describe("the GC transit table is relocated into the fork-module", () => {
-  it("shares ONE table across the module export, the host wrapper, and the guest import", () => {
+  it("shares ONE table across the module export and the guest import", () => {
     const fm = forkModule();
-
-    // The host's wrapper does not mint; it wraps what the module exported.
-    const wrapper = new ForkAnyrefTransitTable(fm.exports);
-    expect(wrapper.table).toBe(fm.gcTransitTable);
+    const moduleTable = fm.exports.__wpk_fork_ref_gc_transit;
+    expect(moduleTable).toBeInstanceOf(WebAssembly.Table);
 
     // And the guest's import is that same object, bound by the builder that
     // production uses -- not by anything this test arranged.
@@ -63,7 +58,7 @@ describe("the GC transit table is relocated into the fork-module", () => {
       },
       label: "transit relocation imports",
     });
-    expect(imports[WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT]).toBe(fm.gcTransitTable);
+    expect(imports[WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT]).toBe(moduleTable);
   });
 
   it("gives each module instance its own table, so two processes cannot share one", () => {
@@ -73,6 +68,8 @@ describe("the GC transit table is relocated into the fork-module", () => {
     // is a cross-process reference leak no drive check could see.
     const first = forkModule();
     const second = forkModule();
-    expect(first.gcTransitTable).not.toBe(second.gcTransitTable);
+    expect(first.exports.__wpk_fork_ref_gc_transit).not.toBe(
+      second.exports.__wpk_fork_ref_gc_transit,
+    );
   });
 });

@@ -40,18 +40,20 @@ export type ForkTableStateOwnerSink = (
 export class ForkTableStateOwners {
   /** Coordinates seen per physical table, kept sorted. */
   private readonly byTable = new WeakMap<WebAssembly.Table, Coordinate[]>();
-  /** `activation:owner` -> owns the physical table's sparse state. */
+  /**
+   * `activation:owner` -> the election result last published for it, so an
+   * unchanged result is not republished.
+   */
   private readonly owns = new Map<string, boolean>();
 
   /**
    * `publish` forwards each election result to the fork module, which serves the
-   * guest's `table_state_owned` import from it. Optional so the election can be
-   * unit-tested without a module, but a caller that omits it in production
-   * elects into a vacuum: the module answers 0 for every coordinate and no
+   * guest's `table_state_owned` import from it. Required: an election nobody
+   * hears leaves the module answering 0 for every coordinate, and no
    * activation writes sparse state at all.
    */
   constructor(
-    private readonly publish?: ForkTableStateOwnerSink,
+    private readonly publish: ForkTableStateOwnerSink,
     private readonly label = "fork table state owners",
   ) {}
 
@@ -81,17 +83,6 @@ export class ForkTableStateOwners {
       this.byTable.set(table, seen);
     }
     this.elect(seen);
-  }
-
-  /**
-   * Whether this coordinate owns its table's sparse state.
-   *
-   * An unregistered coordinate is NOT an owner. Answering `true` by default
-   * would make two aliases both write sparse state for one table, and the
-   * duplicate would only surface as a corrupted child.
-   */
-  ownsState(activationId: number, ownerId: number): boolean {
-    return this.owns.get(key({ activationId, ownerId })) === true;
   }
 
   /** Forget every coordinate an unregistering activation contributed. */
@@ -134,12 +125,12 @@ export class ForkTableStateOwners {
     for (const { coordinate, owns } of changes) {
       if (owns) continue;
       this.owns.set(key(coordinate), false);
-      this.publish?.(coordinate.activationId, coordinate.ownerId, false);
+      this.publish(coordinate.activationId, coordinate.ownerId, false);
     }
     for (const { coordinate, owns } of changes) {
       if (!owns) continue;
       this.owns.set(key(coordinate), true);
-      this.publish?.(coordinate.activationId, coordinate.ownerId, true);
+      this.publish(coordinate.activationId, coordinate.ownerId, true);
     }
   }
 }

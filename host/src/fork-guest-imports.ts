@@ -73,12 +73,6 @@ export const FORK_GUEST_ACTIVATION_GLOBAL_IMPORT =
 export const FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT =
   "__wpk_fork_module_state_table_generation_addr" as const;
 
-/** The two above, for callers that need to reason about the set. */
-export const FORK_GUEST_HOST_OBJECT_IMPORTS = [
-  FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
-  FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
-] as const;
-
 export interface ForkGuestImportOptions {
   /** The co-resident fork module's exports, after injection. */
   readonly moduleExports: Record<string, unknown>;

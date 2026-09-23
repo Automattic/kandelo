@@ -39,7 +39,6 @@ describe("instantiateForkModule", () => {
     const fm = instantiateForkModule({
       module,
       memory,
-      ptrWidth: 4,
       reserve,
       label: "test",
     });
@@ -52,9 +51,10 @@ describe("instantiateForkModule", () => {
     // the module shrank, which is the goal of the storage work, and it did
     // fail during the spec experiment at 3,735,552 bytes.
     expect(reserved!.size).toBe(fm.regionBytes);
-    expect(fm.regionBytes).toBeGreaterThanOrEqual(
-      fm.staticBytes + fm.shadowStackBytes + fm.stagingBytes,
-    );
+    // The staging slab is the TOP of the region, above the module's static
+    // footprint and shadow stack.
+    expect(fm.stagingBase + fm.stagingBytes).toBe(fm.memoryBase + fm.regionBytes);
+    expect(fm.stagingBase).toBeGreaterThan(fm.memoryBase);
     expect(fm.memoryBase + fm.regionBytes).toBeLessThanOrEqual(
       memory.buffer.byteLength,
     );
@@ -146,7 +146,6 @@ describe("instantiateForkModule", () => {
     const fm = instantiateForkModule({
       module,
       memory,
-      ptrWidth: 4,
       reserve: () => 8 * 1024 * 1024,
       label: "test",
     });
@@ -170,52 +169,6 @@ describe("instantiateForkModule", () => {
     ).toBe(EINVAL);
   });
 
-  it("exposes the module-owned GC transit table without minting a provider", () => {
-    const module = loadForkModule32();
-    const memory = sharedMemory(256); // 16 MiB
-    const reserveBase = 8 * 1024 * 1024;
-    const reserve = (size: number): number => {
-      void size;
-      return reserveBase;
-    };
-
-    const fm = instantiateForkModule({
-      module,
-      memory,
-      ptrWidth: 4,
-      reserve,
-      label: "test",
-    });
-
-    expect(fm.gcTransitTable).toBeInstanceOf(WebAssembly.Table);
-  });
-
-  it("ignores a supplied transitTable option as a harmless no-op (deprecated)", () => {
-    const module = loadForkModule32();
-    const memory = sharedMemory(256); // 16 MiB
-    const reserveBase = 8 * 1024 * 1024;
-    const reserve = (size: number): number => {
-      void size;
-      return reserveBase;
-    };
-    const unusedProvidedTable = new WebAssembly.Table({
-      element: "anyfunc",
-      initial: 0,
-    });
-
-    expect(() =>
-      instantiateForkModule({
-        module,
-        memory,
-        ptrWidth: 4,
-        reserve,
-        label: "test",
-        // Deprecated option; must not throw or otherwise change behavior.
-        transitTable: unusedProvidedTable,
-      }),
-    ).not.toThrow();
-  });
-
   it("fails loudly when the module is not a PIC side module", () => {
     // Minimal valid wasm module with no dylink.0 section.
     const trivial = new WebAssembly.Module(
@@ -225,7 +178,6 @@ describe("instantiateForkModule", () => {
       instantiateForkModule({
         module: trivial,
         memory: sharedMemory(4),
-        ptrWidth: 4,
         reserve: () => 0,
         label: "test",
       })
@@ -239,7 +191,6 @@ describe("instantiateForkModule", () => {
       instantiateForkModule({
         module,
         memory,
-        ptrWidth: 4,
         reserve: () => 4 * 1024 * 1024,
         label: "test",
       })

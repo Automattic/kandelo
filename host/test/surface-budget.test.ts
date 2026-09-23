@@ -336,7 +336,6 @@ const MEASURED: Record<string, () => number> = {
     codeLineCount([
       "host/src/fork-guest-imports.ts",
       "host/src/fork-mechanism-trace.ts",
-      "host/src/fork-anyref-transit.ts",
       "host/src/fork-table-state-owners.ts",
       "host/src/fork-resume-table.ts",
       "host/src/fork-phase.ts",
@@ -358,7 +357,6 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-reference-capture-module.ts",
       "host/src/fork-guest-imports.ts",
       "host/src/fork-mechanism-trace.ts",
-      "host/src/fork-anyref-transit.ts",
       "host/src/fork-table-state-owners.ts",
       "host/src/fork-resume-table.ts",
       "host/src/fork-phase.ts",

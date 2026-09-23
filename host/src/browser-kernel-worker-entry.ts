@@ -11,28 +11,11 @@ import { installBrowserSetImmediatePolyfill } from "./browser-immediate-polyfill
 installBrowserSetImmediatePolyfill();
 
 import {
-  CAPTURED_STDIO,
   CentralizedKernelWorker,
-  isCurrentProcessGeneration,
-  TERMINAL_STDIO,
-} from "./kernel-worker";
-import {
-  retryKernelEntryResult,
-  retryKernelEntryResultForGeneration,
-} from "./kernel-entry-retry";
-import type {
-  ForkBorrowedReplayWorkspace,
-  ForkContinuationContext,
-  ResolvedSpawnProgram,
-  SpawnProgramResolution,
-  ThreadChannelAttachment,
 } from "./kernel-worker";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
 import { installBrowserWasmArtifactModule } from "./browser-wasm-artifact-module-install";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
-import type {
-  PreparedExecLaunchPlan,
-} from "./exec-target";
 import {
   VirtualPlatformIO,
 } from "./vfs/vfs";
@@ -50,63 +33,17 @@ import {
   BROWSER_MITM_CA_BUNDLE_PATH,
   withBrowserMitmCaEnv,
 } from "./networking/browser-mitm-ca-env";
-import { patchWasmForThread } from "./worker-main";
-import {
-  describeWasmArtifactPolicyFailures,
-  extractAbiVersion,
-  isWasmModuleBytes,
-} from "./constants";
 import {
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
-import {
-  removeThreadWorkerRegistryEntry,
-  threadWorkerFailureDisposition,
-} from "./thread-worker-disposition";
 
-import { VmInterruptTimerManager } from "./vm-interrupt-timer";
+import { DEFAULT_MAX_PAGES } from "./constants";
 import {
-  type WorkerQuiescence,
-} from "./worker-quiescence";
-import {
-  ForkReplayGateCoordinator,
-  observeForkReplayWorker,
-} from "./fork-replay-gate";
-import type {
-  CentralizedWorkerInitMessage,
-  CentralizedThreadInitMessage,
-  WorkerToHostMessage,
-} from "./worker-protocol";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
-import {
-  OPEN_FLAGS,
-  PROCESS_FORK_MODE_VFORK,
-  type ProcessForkMode,
-} from "./generated/abi";
-import {
-  acquireForkMemoryClone,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  deriveProcessMemoryRetirementAdmissionThresholds,
-  FORK_SAVE_BUFFER_SIZE,
-  ProcessMemoryCapacityError,
   ProcessMemoryAllocator,
-  ProcessMemoryRetirementBacklogError,
-  type ProcessMemoryLayout,
-  type ProcessMemoryLease,
 } from "./process-memory";
-import {
-  VforkAddressSpaceBusyError,
-  VforkLifetimeCoordinator,
-  type VforkExactCompletionReason,
-  type VforkLifetime,
-} from "./vfork-lifetime";
-import {
-  ExactProcessGenerationDetachLedger,
-  type ExactProcessGenerationDetachResult,
-} from "./process-generation-detach";
-import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -118,15 +55,9 @@ import {
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   createProcessLifecycle,
-  delay,
-  type ForkReplayContext,
   type ProcessLifecycleInfo,
-  type ThreadWorkerRecord,
   formatError,
-  handleThreadExit,
   signalFromExitStatus,
-  type ProcessGenerationOwnership,
-  type VforkWorkspaceOwnership,
 } from "./process-lifecycle";
 
 const PAGE_SIZE = 65536;
@@ -427,7 +358,6 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   // source of exec bytes.
 });
 const {
-  allocateProcessGeneration,
   configureRootfsOverlayFromImage,
   createInitProcessMemoryAllocator,
   destroyGenerationAccountingComplete,
@@ -436,33 +366,19 @@ const {
   processLifecycleKernelCallbacks,
   reportRetainedDestroyDetaches,
   settleDestroyedRealmAllocator,
-  completeVforkGenerationTeardown,
-  handleExec,
   processes,
-  processGenerationDetaches,
   processMemoryCreators,
   processTeardowns,
   ptyByPid,
   vforkLifetimes,
   vmInterruptTimers,
   handleSpawn,
-  handlePosixSpawn,
-  handleOrdinaryFork,
-  handleVfork,
-  handleFork,
-  handleClone,
   handleExit,
   threadModuleCache,
   threadedProcessPids,
-  classifyWasmTrap,
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
-  awaitFinalizedProcessTeardown,
-  createFreshProcessMemory,
   detachExactProcessGeneration,
-  containVforkAddressSpace,
-  finishProcessExit,
-  finishVforkDisposition,
   handleExportRootfsImage,
   handleInjectConnection,
   handlePipeRead,
@@ -471,29 +387,17 @@ const {
   handleWriteVfsFile,
   reportedExits,
   rootfsSnapshotGate,
-  handlePosixSpawnResolve,
   handlePtyResize,
   intentionallyTerminated,
   terminateThreadWorkers,
   terminateTrackedWorker,
-  threadExits,
   threadWorkers,
-  waitForExecRetirement,
-  waitForWorkerQuiescence,
   workerTeardowns,
   handlePtyWrite,
-  handleVmInterruptTimer,
-  postForkModuleProof,
-  readExecFromVfs,
-  releaseVforkWorkspace,
   reportHostDiagnostic,
-  reportWorkerProtocolError,
-  resolveExecutableForLaunch,
-  respondTransferredBytes,
   reportRetainedProcessGeneration,
   respond,
   respondError,
-  terminatePoisonedKernelWorker,
   traceVforkMechanism,
 } = lifecycle;
 

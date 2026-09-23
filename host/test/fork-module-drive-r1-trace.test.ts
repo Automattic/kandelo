@@ -30,7 +30,6 @@ import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
 import {
   CAPTURE_KIND_ARRAY,
@@ -94,7 +93,6 @@ function driveCaptured(
       readFileSync(resolveBinary("fork_module32.wasm")),
     ),
     memory: f.memory,
-    ptrWidth: 4,
     reserve: () => CHILD_MODULE_BASE,
     label: "r1 trace child",
   });
@@ -107,8 +105,8 @@ function driveCaptured(
 
   // STORE #2 is the module's OWN exported transit table -- the same object the
   // guest publishes into and the shim reads back.
-  const transit = new ForkAnyrefTransitTable(child.exports);
-  const { guest, published } = instantiateFaithfulGuest(transit);
+  const transit = child.exports.__wpk_fork_ref_gc_transit as WebAssembly.Table;
+  const { guest, published } = instantiateFaithfulGuest(child.exports);
 
   const planPtr = x.fm_restore_from_arena(root, PID);
   expect(x.fm_last_errno(), "the child restores the sealed graph").toBe(0);
@@ -136,7 +134,7 @@ function driveCaptured(
   }
 
   const liveSlots: number[] = [];
-  for (let slot = 1; slot < transit.table.length; slot += 1) {
+  for (let slot = 1; slot < transit.length; slot += 1) {
     if (transit.get(slot) !== null) liveSlots.push(slot);
   }
   return { steps, published, liveSlots, threw };
