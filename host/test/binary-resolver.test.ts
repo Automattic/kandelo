@@ -3318,6 +3318,31 @@ wasm = "bin/${renamedOutput}.zip"
     );
   });
 
+  it("refuses a source-only generation copy the projection does not own", () => {
+    // `local-binaries/source-only-v1` holds real files, so its identity is
+    // the `.kandelo` projection authority rather than the directory shape.
+    // A closure dropped in by hand is not in that authority and must not be
+    // mistaken for the generation's own bytes.
+    const fixture = createMultiOutputFixture();
+    const sourceOnlyRoot = join(localBinariesDir(), "source-only-v1");
+    for (const member of fixture.members) {
+      cleanupDirs.add(join(sourceOnlyRoot, dirname(member.relPath)));
+      writeCandidate(
+        sourceOnlyRoot,
+        member.relPath,
+        new TextEncoder().encode("unowned-source-only-copy"),
+      );
+    }
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const fetched = fixture.members.map((member) =>
+      linkClosureMember(binariesDir(), member, canonicalRoot)
+    );
+
+    expect(resolveBinary(fixture.members[0]!.relPath)).toBe(
+      realpathSync(fetched[0]!),
+    );
+  });
+
   it("does not treat mutable source-checkout wasm files as an installed package identity", () => {
     const fixture = createMultiOutputFixture();
     const installedRoot = join(findRepoRoot(), "host", "wasm");

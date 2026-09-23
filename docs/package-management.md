@@ -1015,7 +1015,17 @@ GBM/EGL/GLES shims (`libgbm.a`, `libEGL.a`, `libGLESv2.a`) are built by
 not outputs of the `kernel` package and should not be modeled as standalone
 package dependencies. `libdrm.a` sits beside them in the sysroot and is
 reached the same way, but it *is* a package — `scripts/build-dri-stubs.sh`
-resolves `packages/registry/libdrm` and symlinks the result in.
+resolves `packages/registry/libdrm` and copies the result in.
+
+Both stub scripts record the digest of the sources they build from in
+`sysroot/.kandelo-{dri,gles}-stubs.input-hash`, and `xtask bootstrap
+sysroot` runs them on every resync — including the fast path that only
+re-syncs overlay headers because `sysroot/lib/libc.a` already exists.
+Without that, a sysroot provisioned before a glue or `libdrm` change kept
+its old archives indefinitely: declaring the sources in `build.toml.inputs`
+moves the *cache key*, but the link still consumes whatever `sysroot/lib`
+happens to hold, and `-Wl,--allow-undefined` turns each missing entry point
+into an `env.*` import that traps at call time instead of failing the link.
 
 A package that depends on those libraries should:
 

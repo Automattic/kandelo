@@ -605,6 +605,20 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
     if libc_a.is_file() {
         let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
         run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
+        if arch == "wasm32posix" {
+            // The resync above copies headers only. `sysroot/lib/{libdrm,
+            // libgbm,libEGL,libGLESv2}.a` are sysroot *artifacts*, installed
+            // by these two scripts and only ever from inside build-musl.sh —
+            // which this branch deliberately skips. A worktree therefore kept
+            // whatever graphics archives it was first provisioned with, no
+            // matter how far libc/glue or the libdrm package moved on, and
+            // `-Wl,--allow-undefined` turned every entry point the stale
+            // archive lacked into an `env.*` import that traps at call time
+            // rather than failing the link. Both scripts skip on a matching
+            // input digest, so this is a no-op once the sysroot is current.
+            run_repo_script(repo, "scripts/build-dri-stubs.sh", &[])?;
+            run_repo_script(repo, "scripts/build-gles-stubs.sh", &[])?;
+        }
     } else if arch == "wasm32posix" {
         run_repo_script(repo, "scripts/build-musl.sh", &[])?;
     } else {

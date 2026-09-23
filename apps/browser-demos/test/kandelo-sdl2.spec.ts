@@ -119,6 +119,14 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
   expect(await syslogText(page), "sdl2 reported failure")
     .not.toMatch(/sdl2 failed/);
 
+  /* The dock shows one computer view at a time and this demo boots into
+   * "Demo" (the Modeset framebuffer pane), which leaves the shell's xterm
+   * unmounted. Switch to "Terminal" before reading the breadcrumb sdl2
+   * printed on the way out, or `.xterm-rows` is simply not in the DOM. */
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+    timeout: 30_000,
+  });
   await expect
     .poll(() => terminalText(page), { timeout: 30_000 })
     .toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=esc/);

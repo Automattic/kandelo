@@ -14,7 +14,8 @@ scripts/dev-shell.sh bash
 
 `./run.sh setup` provisions the musl sysroot for you on a fresh
 checkout (see "First build in a fresh checkout or worktree" below); it
-only re-syncs overlay headers if a sysroot already exists.
+only re-syncs overlay headers — plus the sysroot's DRI/GL archives,
+which carry their own input-digest stamp — if a sysroot already exists.
 
 Do not use bare `nix develop` for build verification. `scripts/dev-shell.sh`
 uses `nix develop --ignore-environment` with a curated keep-list so undeclared
