@@ -643,6 +643,27 @@ export async function createLiveHost(
   }
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
+  // Tear the machine down before the document goes away.
+  //
+  // Switching machines from the gallery is a full navigation
+  // (`navigateToGalleryItemUrl` calls `location.assign`), as is typing a URL
+  // or reloading. None of those run the in-page teardown, so without this the
+  // browser is left to terminate the machine's workers itself — and on JSC a
+  // worker parked in `Atomics.wait` does not release its thread or working
+  // set when terminated. Every navigation then leaks a whole machine until the
+  // tab throws "Out of memory". `destroy()` is what wakes those workers so
+  // they exit on their own; see
+  // docs/jsc-terminate-atomics-wait-workaround.md.
+  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  window.addEventListener("pagehide", () => {
+    const kernel = currentKernel;
+    if (!kernel) return;
+    currentKernel = null;
+    // Cannot await inside pagehide: the teardown has to be started here and
+    // race the document's destruction. Starting it is what gives the woken
+    // workers a chance to exit before the browser terminates them.
+    void kernel.destroy().catch(() => {});
+  });
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const candidateEvidence = readInjectedProtectedBrowserEvidence(
     window.__KANDELO_ABI_STAGING_BROWSER_EVIDENCE__,
