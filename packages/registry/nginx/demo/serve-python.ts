@@ -36,12 +36,12 @@ async function main() {
     target: "nginx",
     maxWorkers: 12,
     maxPages: 4096,
-    // WHY: matches images/vfs/products/browser-nginx-python.toml's declared
-    // [boot.env] contract and the browser's "python-service" init env
-    // profile (live-setup.ts). Without PYTHONDONTWRITEBYTECODE, first-run
-    // stdlib imports compile *and write* a bytecode cache file per module,
-    // which is real extra depth in the fork/exec continuation path.
-    env: [...SERVICE_DEMO_ENV, "PYTHONHOME=/usr", "PYTHONDONTWRITEBYTECODE=1"],
+    // WHY no PYTHONHOME/PYTHONDONTWRITEBYTECODE here: pid 1 is dinit, and
+    // the notes-app service reads those from its own env-file inside the
+    // image (/etc/dinit.d/env-python). Passing them to pid 1 as well was
+    // left over from when the app was launched directly; dinit does not
+    // forward its own environment to a service that names an env-file.
+    env: [...SERVICE_DEMO_ENV],
     configure: (fs) => {
       rewriteNginxListenPort(fs, port);
       removeServiceLogfiles(fs, ["notes-app", "nginx"]);
