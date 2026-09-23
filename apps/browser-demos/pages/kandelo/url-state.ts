@@ -55,12 +55,6 @@ export function galleryItemUrl(
   return url.href;
 }
 
-export function navigateToGalleryItemUrl(item: GalleryItem): void {
-  const next = galleryItemUrl(item);
-  if (next === window.location.href) return;
-  window.location.assign(next);
-}
-
 export function vfsImageUrlFromDescriptor(
   descriptor: BootDescriptor,
   baseHref = currentHref(),

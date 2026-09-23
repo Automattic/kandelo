@@ -645,9 +645,9 @@ export async function createLiveHost(
   let bootSeq = 0;
   // Tear the machine down before the document goes away.
   //
-  // Switching machines from the gallery is a full navigation
-  // (`navigateToGalleryItemUrl` calls `location.assign`), as is typing a URL
-  // or reloading. None of those run the in-page teardown, so without this the
+  // Gallery switching boots in place now, but typing a URL, reloading, and
+  // back/forward are still real navigations. None of those run the in-page
+  // teardown, so without this the
   // browser is left to terminate the machine's workers itself — and on JSC a
   // worker parked in `Atomics.wait` does not release its thread or working
   // set when terminated. Every navigation then leaks a whole machine until the

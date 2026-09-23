@@ -10,7 +10,7 @@ import { Gallery } from "../views/Gallery";
 import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
-import { navigateToGalleryItemUrl } from "../url-state";
+import { galleryItemUrl } from "../url-state";
 import { ShareDialog } from "../dialogs/ShareDialog";
 import type {
   BootDescriptor,
@@ -85,6 +85,29 @@ export const App: React.FC = () => {
 
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
+
+  // Keep the machine and the address bar in agreement across back/forward.
+  //
+  // Gallery launches now use `pushState` instead of navigating, so the browser
+  // no longer reloads on back/forward — it just fires `popstate` and changes
+  // the URL underneath us. Without this the address bar would name a machine
+  // that is not running, which is exactly the kind of lie the platform
+  // contract forbids.
+  //
+  // KNOWN LIMITATION: this reloads rather than booting the popped descriptor
+  // in place, so back/forward is still a real navigation and still leaks one
+  // machine's workers. That is a single user action rather than the
+  // accumulating switch loop this change fixes, and reloading is what
+  // back/forward already did before. Booting the popped URL in place needs a
+  // URL-to-descriptor path that also handles `#k1=` links and protected
+  // candidate mode; see the PR for why that is deferred.
+  React.useEffect(() => {
+    const onPopState = () => {
+      window.location.reload();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   React.useEffect(
     () => host.subscribeAudioState((state) => {
@@ -211,13 +234,39 @@ export const App: React.FC = () => {
           console.warn("resolveVfsImageUrl failed:", err);
         }
       }
-      if (vfsImageUrl) {
-        navigateToGalleryItemUrl({ ...item, vfsImageUrl });
-        return;
-      }
-
-      const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
+      // Boot in place, then move the address bar to match.
+      //
+      // Launching used to call `location.assign` whenever the item carried a
+      // VFS image URL, which navigates. A navigation destroys this document
+      // without running the machine's teardown, and on JavaScriptCore a worker
+      // parked in `Atomics.wait` does not release its OS thread when the
+      // browser terminates it — so every gallery switch leaked the whole
+      // machine's worker set and the tab grew until it threw "Out of memory".
+      // Measured at roughly +2.4 leaked threads per navigation. See
+      // docs/jsc-terminate-atomics-wait-workaround.md and
+      // benchmarks/measure-machine-switch-leak.mjs.
+      //
+      // `applyBootDescriptor` awaits the previous kernel's `destroy()` while
+      // this document is still alive, which is what lets those workers exit on
+      // their own. The descriptor already carries the image URL
+      // (`descriptorFromGalleryItem` -> `mountsWithRootImageUrl`), so nothing
+      // about the `?vfs=` contract changes: `pushState` writes exactly the URL
+      // `location.assign` would have, and a cold load still reads it from
+      // `location.search`.
+      const next = descriptorFromGalleryItem(
+        vfsImageUrl ? { ...item, vfsImageUrl } : item,
+        host.getBootDescriptor(),
+      );
       await host.applyBootDescriptor(next);
+      if (vfsImageUrl) {
+        // WHY after the boot: if composition fails, applyBootDescriptor throws
+        // and the address bar keeps naming the machine that is actually
+        // loaded, rather than one that never booted.
+        const url = galleryItemUrl({ ...item, vfsImageUrl });
+        if (url !== window.location.href) {
+          window.history.pushState(null, "", url);
+        }
+      }
       closeDockPane();
     })().catch((err) => {
       console.warn("applyBootDescriptor failed:", err);
