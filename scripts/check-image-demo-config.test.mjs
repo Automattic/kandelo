@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { checkTrackedDemoConfigs, nearMissKeys } from "./check-image-demo-config.mjs";
+import {
+  assertValidDemoConfig,
+  checkTrackedDemoConfigs,
+  nearMissKeys,
+  parseTrackedSourcePaths,
+} from "./check-image-demo-config.mjs";
 
 describe("tracked demo-config checker", () => {
   it("accepts the repository's tracked sources", () => {
@@ -21,5 +26,43 @@ describe("tracked demo-config checker", () => {
   it("is case-insensitive about near misses", () => {
     expect(nearMissKeys({ Runtime: {} }))
       .toEqual([{ found: "Runtime", meant: "runtime" }]);
+  });
+
+  // Review finding: KandeloDemoConfig declares the same block-key set at
+  // the top level as inside profiles.<id>, and every resolveDemoX falls
+  // back from the profile value to the top-level config.X. A top-level
+  // near-miss is exactly as dangerous as a profile-nested one, so it must
+  // be checked too, not just nearMissKeys() on each profile.
+  it("flags a near-miss key at the top level of the demo config", () => {
+    expect(() => assertValidDemoConfig({ version: 1, runtimee: {} }, "fixture.json"))
+      .toThrow(/fixture\.json demo config has key "runtimee" — did you mean "runtime"/);
+  });
+
+  it("still flags a near-miss nested under a profile", () => {
+    expect(() =>
+      assertValidDemoConfig(
+        { version: 1, profiles: { node: { runtimee: {} } } },
+        "fixture.json",
+      )
+    ).toThrow(/fixture\.json profiles\.node has key "runtimee" — did you mean "runtime"/);
+  });
+
+  // Review finding: the old regex was a non-greedy match up to the first
+  // bare `]`. A comment placed between array entries that happens to
+  // contain a `]` would make it stop early and return a short, non-empty
+  // list — silently skipping every source declared after the comment
+  // instead of failing loudly.
+  it("does not truncate the tracked-source list at a `]` inside a comment", () => {
+    const fixture = `
+      export const TRACKED_DEMO_CONFIG_SOURCES = [
+        "packages/registry/shell/source-rootfs-shell-demo.json",
+        // note: an array literal like [a, b] should not truncate this match
+        "packages/registry/node/node-demo.json",
+      ] as const;
+    `;
+    expect(parseTrackedSourcePaths(fixture)).toEqual([
+      "packages/registry/shell/source-rootfs-shell-demo.json",
+      "packages/registry/node/node-demo.json",
+    ]);
   });
 });
