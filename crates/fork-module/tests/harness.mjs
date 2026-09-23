@@ -34,7 +34,7 @@
 // co-residency + coordinator execution against the compiled module is proven in
 // `crates/host-native` (`smoke_instantiates_fork_module`). This harness retains
 // the V8 co-residency proof and the RETAINED coordinator/marshalling/infra
-// surface (`fm_set_format`, `fm_externref_handle`, `fm_stats`) that no
+// surface (`fm_set_format`, `fm_stats`) that no
 // host-triple Rust test exercises on the actual browser/Node engine.
 //
 // Run: node crates/fork-module/tests/harness.mjs <path-to-fork_module.wasm>
@@ -101,10 +101,6 @@ const importObject = {
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),
-    // M2: the single residual externref host import,
-    // `resolve_externref(handle) -> externref`. Never exercised by this harness;
-    // a stub returning a fresh unique object per call satisfies the
-    // reference-returning import signature.
     // The module asks the host "are these the same function?" when encoding a
     // funcref -- wasm cannot compare two of them. This harness never encodes one,
     // so a trap is the honest binding: it fails loud if the path is ever reached
@@ -112,7 +108,6 @@ const importObject = {
     __wpk_fork_host_func_identity: () => {
       throw new Error("harness: __wpk_fork_host_func_identity is not exercised here");
     },
-    resolve_externref: (_handle) => ({}),
     // `__wpk_fork_host_ref_identity(anyref) -> i32`: a stable integer per
     // distinct GC reference. Wasm can COMPARE references but cannot HASH one,
     // so a reference cannot key a map inside the module; the host can. On a
@@ -176,11 +171,26 @@ for (const name of [
   "fm_begin_reference_replay",
   // The single folded proof-of-use counter accessor (fm_stats(field) -> i64).
   "fm_stats",
-  // M2: the injected binder's helper for the externref recipe -> broker handle
-  // lookup (mirrors fm_funcref_ordinal/fm_static_root_slot).
-  "fm_externref_handle",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
+}
+// Externref stage E2: a fork does not carry a raw host externref, so the module
+// can neither name one nor rebuild one -- no host-externref helper export, and
+// no externref host import to satisfy.
+for (const name of [
+  "fm_externref_handle",
+  "fm_captured_externref",
+  "fm_captured_externref_count",
+  "__wpk_fork_ref_decode_externref",
+  "__wpk_fork_ref_provenance_externref",
+]) {
+  assert.ok(!exportNames.has(name), `module must not export ${name}`);
+}
+for (const { module: from, name } of WebAssembly.Module.imports(module)) {
+  assert.ok(
+    name !== "resolve_externref" && name !== "__wpk_fork_host_externref_handle",
+    `module must not import ${from}.${name}`,
+  );
 }
 
 // Field indices for the folded fm_stats(field) accessor. MUST match fm_stats's
@@ -189,7 +199,8 @@ const FM_STAT = {
   FRAMES_COMMITTED: 0,
   FRAMES_REPLAYED: 1,
   REFERENCES_RECONSTRUCTED: 2,
-  EXTERNREFS_RESOLVED: 3,
+  // 3 is retired (was EXTERNREFS_RESOLVED; always 0 since externref stage E2).
+  RETIRED_EXTERNREFS_RESOLVED: 3,
   EXNREFS_RECONSTRUCTED: 4,
   GC_NODES_RECONSTRUCTED: 5,
   STATIC_ROOTS_PUBLISHED: 6,
@@ -274,22 +285,6 @@ x.fm_set_format(4, 128, 0, 0, 0);
 assert.equal(errno(), 0, "fm_set_format errno");
 assertSentinelIntact("after fm_set_format");
 console.log("  ok: fm_set_format(4, 128, 0, 0) succeeded; SENTINEL SURVIVED a coordinator write");
-
-// -- M2: fm_externref_handle traps outside a seeded reference replay ----------
-//
-// `fm_externref_handle` is the helper the INJECTED binder calls to get the
-// broker handle for an externref recipe, keyed off the reference-replay driver
-// `fm_begin_reference_replay` seeds. This harness never seeds one, so calling it
-// must TRAP (`wasm_intr::unreachable`) rather than silently return a value — the
-// same truthful-corruption contract `fm_funcref_ordinal`/`fm_static_root_slot`
-// uphold. The full recipe -> captured-handle round trip is validated end to end
-// in `host/test/fork-module-externref-replay.test.ts`.
-assert.throws(
-  () => x.fm_externref_handle(0),
-  /unreachable/i,
-  "fm_externref_handle traps with no reference state seeded",
-);
-console.log("  ok: fm_externref_handle traps outside a seeded reference replay (no silent value)");
 
 // -- Phase 6 D6.3a/D6.4a: the reference proof-of-use counters are inert here --
 //

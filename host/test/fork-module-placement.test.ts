@@ -143,31 +143,25 @@ describe("fork-module placement", () => {
     );
   });
 
-  it("derives BOTH host functions from a token registry, never just the resolver", () => {
-    // Wiring `resolve_externref` while leaving reference identity a trapping
-    // stub is a mistake a caller should not be able to make. Both earlier
-    // worker-main call sites made it.
-    const value = { live: true };
+  it("binds BOTH identity oracles without being handed anything", () => {
+    // The two host functions need no input, so every instance binds both. A
+    // caller that had to opt in could leave reference identity a trapping
+    // stub, which a GC capture reaches -- both earlier worker-main call sites
+    // made that mistake when it was possible.
     const fm = instantiateForkModule({
       module,
       memory: sharedMemory(512),
       ptrWidth: 4,
       reserve: () => 16 * 1024 * 1024,
       label: "placement-test",
-      tokens: {
-        materialize: (handle: number) => {
-          if (handle !== 7) throw new RangeError(`no handle ${handle}`);
-          return value;
-        },
-      },
     });
-    expect(fm.capabilities).toBeDefined();
-    expect(fm.capabilities!.imports.resolve_externref(7)).toBe(value);
-    expect(fm.capabilities!.resolvedCount).toBe(1);
     const a = {};
-    const id = fm.capabilities!.imports.__wpk_fork_host_ref_identity;
+    const id = fm.capabilities.imports.__wpk_fork_host_ref_identity;
     expect(id(a)).toBe(id(a));
     expect(id(a)).not.toBe(id({}));
+    const fn = () => 0;
+    const fid = fm.capabilities.imports.__wpk_fork_host_func_identity;
+    expect(fid(fn)).toBe(fid(fn));
   });
 
   it("exposes the host-supplied tables so catalogs can be published into them", () => {

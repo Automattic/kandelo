@@ -4,7 +4,7 @@
  *
  * This is the other half of the host floor, beside
  * `fork-module-host-capabilities.ts`. That file owns the two host FUNCTIONS a
- * host must implement; this one owns everything that is about PLACEMENT —
+ * host must implement (the reference and function identity oracles); this one owns everything that is about PLACEMENT —
  * reserving a region in guest memory, deriving the position-independent-code
  * globals from the module's own `dylink.0` sizing, and creating the three
  * reference-typed tables the module imports.
@@ -15,7 +15,6 @@
 
 import {
   createForkModuleHostCapabilities,
-  type ForkExternrefResolver,
   type ForkModuleHostCapabilities,
   type ForkModuleHostImports,
 } from "./fork-module-host-capabilities";
@@ -71,11 +70,8 @@ export interface ForkModuleInstance {
    */
   readonly stagingBase: number;
   readonly stagingBytes: number;
-  /**
-   * Present when the instance derived its host imports from `tokens`, so a
-   * caller can read `resolvedCount` without holding the capabilities itself.
-   */
-  readonly capabilities?: ForkModuleHostCapabilities;
+  /** The host functions this instance bound (see `hostImports`). */
+  readonly capabilities: ForkModuleHostCapabilities;
 }
 
 export interface InstantiateForkModuleOptions {
@@ -87,13 +83,10 @@ export interface InstantiateForkModuleOptions {
   /** Included in every thrown message, so a failure names the process. */
   readonly label: string;
   /**
-   * The handle registry. Given this, BOTH host functions are derived from it
-   * together, which is the point: wiring `resolve_externref` while leaving
-   * reference identity a trapping stub is a mistake a caller should not be able
-   * to make, and both earlier call sites made it.
+   * Explicit host functions, overriding the derived ones. The identity
+   * oracles need no input, so every instance binds both; a test overrides one
+   * to observe or fail it.
    */
-  readonly tokens?: ForkExternrefResolver;
-  /** Explicit host functions, overriding `tokens`. Omitted, each traps. */
   readonly hostImports?: Partial<ForkModuleHostImports>;
   /** @deprecated The module owns its transit table; supplying one is a no-op. */
   readonly transitTable?: WebAssembly.Table;
@@ -206,14 +199,6 @@ function alignUp(value: number, alignPow2: number): number {
   return Math.ceil(value / alignment) * alignment;
 }
 
-function trap(label: string, name: string): never {
-  throw new Error(
-    `${label}: the fork-module called host import ${name}, which this host did ` +
-      `not supply. A trapping stub is deliberate: a silent no-op would let a ` +
-      `capture continue with a reference it never resolved.`,
-  );
-}
-
 export function instantiateForkModule(
   options: InstantiateForkModuleOptions,
 ): ForkModuleInstance {
@@ -255,12 +240,9 @@ export function instantiateForkModule(
   const driveTable = emptyTable("anyfunc");
   const staticRootCatalog = emptyTable("anyref");
 
-  const capabilities =
-    options.tokens !== undefined
-      ? createForkModuleHostCapabilities({ tokens: options.tokens })
-      : undefined;
-  const resolved: Partial<ForkModuleHostImports> = {
-    ...(capabilities?.imports ?? {}),
+  const capabilities = createForkModuleHostCapabilities();
+  const resolved: ForkModuleHostImports = {
+    ...capabilities.imports,
     ...(hostImports ?? {}),
   };
 
@@ -283,17 +265,8 @@ export function instantiateForkModule(
       __wpk_fork_function_catalog: functionCatalog,
       __wpk_fork_drive_table: driveTable,
       __wpk_fork_static_root_catalog: staticRootCatalog,
-      resolve_externref:
-        resolved.resolve_externref ?? (() => trap(label, "resolve_externref")),
-      __wpk_fork_host_ref_identity:
-        resolved.__wpk_fork_host_ref_identity ??
-        (() => trap(label, "__wpk_fork_host_ref_identity")),
-      __wpk_fork_host_func_identity:
-        resolved.__wpk_fork_host_func_identity ??
-        (() => trap(label, "__wpk_fork_host_func_identity")),
-      __wpk_fork_host_externref_handle:
-        resolved.__wpk_fork_host_externref_handle ??
-        (() => trap(label, "__wpk_fork_host_externref_handle")),
+      __wpk_fork_host_ref_identity: resolved.__wpk_fork_host_ref_identity,
+      __wpk_fork_host_func_identity: resolved.__wpk_fork_host_func_identity,
   };
   // BEFORE instantiating, because after it a missing binding has already
   // surfaced as a `LinkError` naming an import INDEX. The guest side of this

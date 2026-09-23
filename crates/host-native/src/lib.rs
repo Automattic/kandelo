@@ -244,11 +244,9 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// these as host surface would overstate the obligation and, worse, would make
 /// the number move for reasons that have nothing to do with fork.
 ///
-/// All SEVEN are the real obligation, and each is a Wasm capability floor
+/// All FIVE are the real obligation, and each is a Wasm capability floor
 /// rather than a design choice:
 ///
-/// * `env.resolve_externref` (function) -- materializes a host reference from
-///   a handle. Wasm cannot manufacture an externref.
 /// * `env.__wpk_fork_host_ref_identity` (function) -- decides whether two
 ///   references are the same object. `ref.eq` validates only on `eqref`, there
 ///   is no `ref.hash`, and no cast rescues a host reference into the eq
@@ -256,27 +254,23 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// * `env.__wpk_fork_host_func_identity` (function) -- the same question for
 ///   `funcref`, which is a disjoint hierarchy from `anyref`, so one oracle
 ///   cannot serve both.
-/// * `env.__wpk_fork_host_externref_handle` (function) -- the INVERSE of
-///   `resolve_externref`: which handle does this live reference already carry?
-///   Capture needs that direction, and only the host can look inside an
-///   externref to answer it.
 /// * `env.__wpk_fork_function_catalog`, `env.__wpk_fork_drive_table`,
 ///   `env.__wpk_fork_static_root_catalog` (tables) -- reference-typed tables.
 ///   Rust cannot declare or hold one; the module reaches their contents only
 ///   through injected `table.get`/`table.set`.
 ///
-/// WENT 6 -> 7 when the externref-handle import arrived. This host leaves it
-/// to `define_unknown_imports_as_traps`, exactly as it leaves
-/// `resolve_externref`: a native fork carries no host externref today, so
-/// calling either is a boundary rather than a path, and the inert-stub test
-/// asserts they are never reached. The COUNT is the obligation a new host
-/// reads, so it tracks the module whether or not this host implements each
-/// entry.
+/// WENT 6 -> 7 when the externref-handle import arrived, and 7 -> 5 in
+/// externref stage E2 (2026-09-23), which removed it and
+/// `env.resolve_externref`: a fork does not carry a raw host externref on any
+/// host (the capture refuses one with `EOPNOTSUPP`), so the module never has
+/// to name a host object or rebuild one. The COUNT is the obligation a new
+/// host reads, so it tracks the module whether or not this host implements
+/// each entry.
 ///
-/// If any of the seven is ever shown NOT to be a floor, this number and the
+/// If any of the five is ever shown NOT to be a floor, this number and the
 /// matching budget target should both fall. Until then they are equal, which
 /// is why this surface's target is not below its ceiling.
-pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 7;
+pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 5;
 
 /// The number of PIC linking imports excluded from the count above. Pinned so
 /// that a change in linking shape is visible instead of silently rebalancing
@@ -1501,14 +1495,6 @@ mod tests {
         assert_eq!(
             functions.as_slice(),
             [
-                // The INVERSE of `resolve_externref`: which handle does this
-                // live reference already carry? Capture needs that direction,
-                // and only the host can look inside an externref to answer it.
-                // Arrived with the lane-F capture work; this host leaves it to
-                // `define_unknown_imports_as_traps` exactly as it leaves
-                // `resolve_externref`, because a native fork carries no host
-                // externref today.
-                "__wpk_fork_host_externref_handle",
                 // Answers "are these the same function?" for funcref capture.
                 // Wasm cannot: `ref.eq` validates only on `eqref` and the
                 // reference hierarchies are disjoint. Maintainer-approved
@@ -1517,8 +1503,9 @@ mod tests {
                 "__wpk_fork_host_func_identity",
                 // The same question for `anyref`, approved earlier.
                 "__wpk_fork_host_ref_identity",
-                // handle -> externref materialization.
-                "resolve_externref",
+                // No externref import: `resolve_externref` and
+                // `__wpk_fork_host_externref_handle` left in externref stage
+                // E2. A fork does not carry a raw host externref.
             ],
             "the fork-module host FUNCTIONS changed",
         );
@@ -3275,9 +3262,8 @@ mod tests {
     ///    assertion above is therefore the load-bearing frame-preservation
     ///    proof for this fixture, not these two counters.
     ///  - every reference-path counter (`references_reconstructed`,
-    ///    `externrefs_resolved`, `exnrefs_reconstructed`,
-    ///    `gc_nodes_reconstructed`) stays EXACTLY `0`: this is frames-only
-    ///    (N1-I4) — the inert `env.resolve_externref`/exception host-import
+    ///    `exnrefs_reconstructed`, `gc_nodes_reconstructed`) stays EXACTLY
+    ///    `0`: this is frames-only (N1-I4) — the inert exception host-import
     ///    trap-stubs `instantiate_fork_module` wires must never actually be
     ///    reached (see `ForkProofOfUse`'s doc comment; I5 is reference
     ///    reconstruction, deliberately out of this task's scope).
@@ -3328,10 +3314,6 @@ mod tests {
         assert_eq!(
             proof.references_reconstructed, 0,
             "frames-only fork must never reconstruct a reference: {proof:?}"
-        );
-        assert_eq!(
-            proof.externrefs_resolved, 0,
-            "frames-only fork must never resolve an externref: {proof:?}"
         );
         assert_eq!(
             proof.exnrefs_reconstructed, 0,
@@ -3507,10 +3489,6 @@ mod tests {
             "frames-only fork must never reconstruct a reference: {proof:?}"
         );
         assert_eq!(
-            proof.externrefs_resolved, 0,
-            "frames-only fork must never resolve an externref: {proof:?}"
-        );
-        assert_eq!(
             proof.exnrefs_reconstructed, 0,
             "frames-only fork must never reconstruct an exnref: {proof:?}"
         );
@@ -3667,8 +3645,7 @@ mod tests {
     /// N1-I4 Task 3: a fork of a program with no captured references (the
     /// SAME `native_fork.instrumented.wasm` fixture — its `fork()` call site
     /// carries only scalar locals, no funcref/externref/exnref/GC state)
-    /// must never call the inert `env.resolve_externref`/exception
-    /// host-import stubs `instantiate_fork_module` wires as TRAPS. If the
+    /// must never call the inert exception host-import stubs `instantiate_fork_module` wires as TRAPS. If the
     /// frames-only coordinator ever reached one of those stubs, calling it
     /// would trap and abandon the guest thread mid-run — this test's own
     /// `exit_code == 3` and stdout assertions independently confirm the run
@@ -3700,10 +3677,6 @@ mod tests {
         assert_eq!(
             proof.references_reconstructed, 0,
             "the inert reference-decode stub must never be called: {proof:?}"
-        );
-        assert_eq!(
-            proof.externrefs_resolved, 0,
-            "the inert resolve_externref stub must never be called: {proof:?}"
         );
         assert_eq!(
             proof.exnrefs_reconstructed, 0,
@@ -3769,35 +3742,32 @@ mod tests {
     /// already-working REPLAY side.
     ///
     /// SCOPE (not a gate): this fixture stays funcref-only to keep THIS
-    /// test a focused funcref/null reconstruction case. externref, typed
-    /// Wasm-GC (`struct`/`array`/`i31`), and static-root references are NO
-    /// LONGER gated — they are all captured on native (via `guest.rs`'s
-    /// provenance registries) and reconstructed through the SAME shared
+    /// test a focused funcref/null reconstruction case. Typed Wasm-GC
+    /// (`struct`/`array`/`i31`) and static-root references are NOT gated —
+    /// they are captured on native (via `guest.rs`'s provenance registries)
+    /// and reconstructed through the SAME shared
     /// module/`fork-codec` replay engine (`fm_begin_reference_replay` /
     /// `fm_build_gc_plan` / `fm_drive_execute` over
     /// `crates/fork-codec::drive_plan::build_drive_plan`) that funcref uses.
     /// The sibling tests prove each kind end-to-end with a `fm_*` proof-of-
-    /// use counter: `smoke_fork_externref_reconstructs`,
-    /// `smoke_fork_gc_struct_reconstructs`, `smoke_fork_gc_two_object_cycle`,
+    /// use counter: `smoke_fork_gc_struct_reconstructs`, `smoke_fork_gc_two_object_cycle`,
     /// `smoke_fork_gc_array_reconstructs`, and
     /// `smoke_fork_static_root_reconstructs`. Reconstruction is never
     /// host-side on native — the host only supplies the Bucket-C floor
-    /// (`resolve_externref`, the reference-typed catalog/transit tables,
+    /// (the identity oracles, the reference-typed catalog/transit tables,
     /// PIC/shared-memory, the unwind `Tag`); the drive-order and value
     /// materialization live in the shared module engine.
     ///
-    /// The ONE remaining `EOPNOTSUPP` boundary is value-conditional, NOT
-    /// kind-level, and identical on every host (native, Node, browser): a
-    /// live anyref-lineage value with no recoverable production-site
-    /// provenance (a `call_indirect`/`call_ref`-minted externref the
-    /// instrumenter could not identify, or a genuinely engine-internalized
-    /// value). On native it is enforced in `guest.rs` at the
+    /// The `EOPNOTSUPP` boundary is a raw HOST externref (externref stage
+    /// E2), identical on every host (native, Node, browser): an
+    /// `extern.convert_any` view of the program's own GC object is captured
+    /// as that object, but a host object has nothing to rebuild it from in a
+    /// fresh child. On native it is enforced in `guest.rs` at the
     /// `take_unsupported_kind()` gated-abort branch (search
-    /// `drive_fork_capture_seal_and_launch_child`): capture records no
-    /// provenance → the fork aborts cleanly with `-EOPNOTSUPP`, no child is
-    /// spawned, and the parent survives. That boundary is proven by
-    /// `smoke_fork_gated_externref_parent_survives`, and documented in
-    /// `docs/fork-reference-support.md` ("One remaining gated boundary").
+    /// `drive_fork_capture_seal_and_launch_child`): the fork aborts cleanly
+    /// with `-EOPNOTSUPP`, no child is spawned, and the parent survives. That
+    /// boundary is proven by `smoke_fork_host_externref_refused`, and
+    /// documented in `docs/fork-reference-support.md`.
     #[test]
     fn smoke_fork_reconstructs_references() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -3836,161 +3806,62 @@ mod tests {
         Ok(())
     }
 
-    /// N1 refcomplete substrate (2026-09-05): the gate-hang fix's own proof.
-    /// A fork carrying a still-GATED reference (a genuine externref with NO
-    /// recorded mint-time provenance — see
-    /// `native_fork_externref_gate_indirect.wat`'s doc comment for exactly
-    /// why THIS fixture, not the older `native_fork_externref_gate.wat`,
-    /// still exercises the gate after the capture short-circuit landed)
-    /// must return `-EOPNOTSUPP` (errno 95) to the parent, spawn NO child,
-    /// and — the actual regression this test guards — the PARENT must keep
-    /// running afterward instead of the guest OS thread silently dying and
-    /// `run_pump`'s 30s hard-cap firing (root-caused in the 2026-09-05
-    /// substrate grounding doc §3: `drive_fork_capture_seal_and_launch_
-    /// child`'s gated-abort branch used to drive `fm_build_gc_plan` against
-    /// the sealed placeholder graph, which always fails `EINVAL` on native
-    /// since `decoded_gc_codecs()` is unconditionally empty here).
+    /// Externref stage E2: a native `fork()` that carries a live raw HOST
+    /// externref is REFUSED. `fork()` returns `-EOPNOTSUPP` (errno 95), NO
+    /// child is created, and the parent keeps running with every value it
+    /// held unchanged -- the same boundary Node and browser enforce
+    /// (`host/test/fork-host-externref-refusal.test.ts`). Two fixtures, one
+    /// fork each: the host object held in a local
+    /// (`fixtures/native_fork_host_externref_refused.wat`) and in a Wasm-GC
+    /// struct field (`fixtures/native_fork_host_externref_field_refused.wat`);
+    /// each asserts `fork() == -95` and the parent's values itself, and exits
+    /// nonzero with a distinct code if either fails.
     ///
-    /// This test is expected to complete in well under a second: it is a
-    /// regression guard against a 30-second hang, not a slow test — if this
-    /// ever takes anywhere near that long again, the gate-hang bug is back.
+    /// Folds in the former `smoke_fork_gated_externref_parent_survives`
+    /// (the gate-hang guard: a gated fork used to kill the guest thread and
+    /// let the 30s pump cap fire) and replaces `smoke_fork_externref_
+    /// reconstructs`, whose "carry it across" behaviour stage E2 removed.
+    /// Each run must finish well under the pump cap, and the kernel must
+    /// never see a SYS_FORK: a refused fork does not ask it for a child.
     #[test]
-    fn smoke_fork_gated_externref_parent_survives() -> anyhow::Result<()> {
+    fn smoke_fork_host_externref_refused() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm =
-            crate::fixtures::fixture("native_fork_externref_gate_indirect.instrumented.wasm");
+        for fixture in [
+            "native_fork_host_externref_refused.instrumented.wasm",
+            "native_fork_host_externref_field_refused.instrumented.wasm",
+        ] {
+            let guest_wasm = crate::fixtures::fixture(fixture);
+            let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+            let started = std::time::Instant::now();
+            let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+            let elapsed = started.elapsed();
 
-        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
-        let started = std::time::Instant::now();
-        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
-        let elapsed = started.elapsed();
-
-        assert_eq!(
-            outcome.exit_code, 0,
-            "expected a clean EOPNOTSUPP gate with the parent surviving \
-             (stdout: {:?}, stderr: {:?}, trace: {:?}, proof: {:?})",
-            String::from_utf8_lossy(&outcome.stdout),
-            String::from_utf8_lossy(&outcome.stderr),
-            outcome.syscall_trace,
-            outcome.fork_proof_of_use,
-        );
-        assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "gated fork took {elapsed:?} — the 30s pump hard-cap regression is back"
-        );
-        // No child was ever spawned for a gated fork: only the parent's own
-        // (single) frame graph is replayed, so the reference-reconstruction
-        // proof-of-use counters advance by exactly the amount ONE gated
-        // capture/abort-replay contributes — never a full success-shaped
-        // reconstruction count (that would mean the gate silently didn't
-        // fire). The gated placeholder is an `i31`, not a real `Externref`
-        // node, so `externrefs_resolved` (the externref-path proof-of-use
-        // counter) must stay at 0: this run never drives a real externref
-        // reconstruction.
-        let proof = outcome.fork_proof_of_use;
-        assert_eq!(
-            proof.externrefs_resolved, 0,
-            "a gated fork must never drive a real externref reconstruction: {proof:?}"
-        );
-        Ok(())
-    }
-
-    /// N1-F5 Task 2: a REAL native `fork()` that carries a genuine WASM
-    /// `externref` LIVE across the boundary, captured via mint-time
-    /// PROVENANCE recording (`guest.rs`'s
-    /// `__wpk_fork_ref_provenance_externref` host body +
-    /// `ExternrefProvenance`) and reconstructed, identity-preserved, through
-    /// the replay side — the externref analogue of
-    /// `smoke_fork_reconstructs_references`.
-    ///
-    /// STATUS: GREEN (N1 refcomplete substrate, 2026-09-05). Was
-    /// `#[ignore]`d, BLOCKED on a decode-side gap outside
-    /// `crates/host-native`'s scope: the capture-time entry point a plain
-    /// externref local actually reaches is `gc_lookup`, not
-    /// `__wpk_fork_ref_encode_externref` (see `guest.rs`'s doc comment on
-    /// its `gc_lookup` binding, and
-    /// `.superpowers/sdd/2026-09-05-n1-f5-externref-capture/task-2-report.md`),
-    /// and a sound capture-side fix there was prototyped and verified to
-    /// work, but the frozen/shared replay drive-plan builder
-    /// (`crates/fork_codec::drive_plan::build_drive_plan`) only scheduled a
-    /// transit-publish for an externref reachable from a GC struct/array
-    /// field or exception payload — not one reachable only from an ordinary
-    /// frame reference vector (this fixture's case). That decode-side gap is
-    /// now CLOSED: `build_drive_plan`'s Phase 0b publishes EVERY `Externref`
-    /// recipe node unconditionally (see `crates/fork-codec/src/
-    /// drive_plan.rs`), and the transit table is sized for the plan before
-    /// it is driven (`drive_reference_replay`'s own growth step in
-    /// `guest.rs`). Mirrors `smoke_fork_reconstructs_references`'s own
-    /// HISTORY note precedent (that test was itself `#[ignore]`d through
-    /// N1-I5 Task 3 until its capture path existed).
-    ///
-    /// Fixture: `native_fork_externref_reconstruct.instrumented.wasm`
-    /// (`fixtures/native_fork_externref_reconstruct.wat`). NOTE: the OLDER
-    /// `native_fork_externref_gate.wat` fixture is now SUPERSEDED as a gate
-    /// proof — it mints its externref via a DIRECT call, which the N1-F5 T1
-    /// provenance-wrapper pass DOES record, so with this fix landed that
-    /// fixture's fork actually SUCCEEDS (reconstructs) rather than gating.
-    /// The still-gated case is now proven by
-    /// `smoke_fork_gated_externref_parent_survives`
-    /// (`native_fork_externref_gate_indirect.wat`, which mints via
-    /// `call_indirect` specifically so no provenance is ever recorded — see
-    /// that fixture's own doc comment).
-    ///
-    /// Asserts correctness (`exit_code == 0`, both processes observe the
-    /// SAME externref handle, 42) AND proof of use
-    /// (`fork_proof_of_use.externrefs_resolved > 0`, so a silent
-    /// fallback that merely happened to leave the local unread cannot pass).
-    #[test]
-    fn smoke_fork_externref_reconstructs() -> anyhow::Result<()> {
-        let Some(path) = kernel_path_or_skip() else {
-            return Ok(());
-        };
-        let Some(_fork_module_path) = fork_module_path_or_skip() else {
-            return Ok(());
-        };
-        let guest_wasm =
-            crate::fixtures::fixture("native_fork_externref_reconstruct.instrumented.wasm");
-
-        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
-        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
-
-        assert_eq!(
-            outcome.exit_code, 0,
-            "expected both the reconstructed CHILD externref and the \
-             PARENT's own post-fork externref to check out at handle 42 \
-             (stdout: {:?}, stderr: {:?}, trace: {:?}, proof: {:?})",
-            String::from_utf8_lossy(&outcome.stdout),
-            String::from_utf8_lossy(&outcome.stderr),
-            outcome.syscall_trace,
-            outcome.fork_proof_of_use,
-        );
-        assert!(
-            outcome.syscall_trace.contains(&wasm_posix_shared::abi::host_intercepted::SYS_FORK),
-            "expected the SYS_FORK sentinel in the syscall trace: {:?}",
-            outcome.syscall_trace
-        );
-
-        // `externrefs_resolved` (`fm_externrefs_resolved`), NOT
-        // `references_reconstructed` (`fm_references_reconstructed`), is the
-        // proof-of-use counter for the externref path: `REFERENCES_
-        // RECONSTRUCTED` only ever advances for funcref/null reconstruction
-        // (`fork-module/src/lib.rs`'s own doc comment on each static). Expect
-        // 2, not just >0: `fm_begin_reference_replay` bumps it once per
-        // `drive_reconstruction()` call, and this fork drives that TWICE —
-        // once for the CHILD's own rewind, once for the PARENT's — proving
-        // BOTH sides really drove reconstruction through the module, not a
-        // silent fallback on either side.
-        let proof = outcome.fork_proof_of_use;
-        assert!(
-            proof.externrefs_resolved > 0,
-            "the module must have driven a real externref reconstruction \
-             (not a silent fallback): {proof:?}"
-        );
+            assert_eq!(
+                outcome.exit_code, 0,
+                "{fixture}: expected the fork refused with -EOPNOTSUPP and the \
+                 parent's values intact (stdout: {:?}, stderr: {:?}, trace: {:?}, \
+                 proof: {:?})",
+                String::from_utf8_lossy(&outcome.stdout),
+                String::from_utf8_lossy(&outcome.stderr),
+                outcome.syscall_trace,
+                outcome.fork_proof_of_use,
+            );
+            assert!(
+                elapsed < std::time::Duration::from_secs(10),
+                "{fixture}: the refused fork took {elapsed:?} -- the 30s pump \
+                 hard-cap regression is back"
+            );
+            assert!(
+                !outcome.syscall_trace.contains(&wasm_posix_shared::abi::host_intercepted::SYS_FORK),
+                "{fixture}: a refused fork must never ask the kernel for a child: {:?}",
+                outcome.syscall_trace
+            );
+        }
         Ok(())
     }
 
@@ -4036,9 +3907,8 @@ mod tests {
 
         // `gc_nodes_reconstructed` (`fm_gc_nodes_reconstructed`), NOT
         // `references_reconstructed` (which only ever advances for
-        // funcref/null reconstruction — see `smoke_fork_externref_
-        // reconstructs`'s own doc comment on the analogous externref
-        // counter), is the proof-of-use counter for the GC struct/array/i31
+        // funcref/null reconstruction), is the proof-of-use counter for the
+        // GC struct/array/i31
         // path.
         let proof = outcome.fork_proof_of_use;
         assert!(
@@ -4095,9 +3965,8 @@ mod tests {
 
         // `gc_nodes_reconstructed` (`fm_gc_nodes_reconstructed`), NOT
         // `references_reconstructed` (which only ever advances for
-        // funcref/null reconstruction — see `smoke_fork_externref_
-        // reconstructs`'s own doc comment on the analogous externref
-        // counter), is the proof-of-use counter for the GC struct/array/i31
+        // funcref/null reconstruction), is the proof-of-use counter for the
+        // GC struct/array/i31
         // path.
         let proof = outcome.fork_proof_of_use;
         assert!(
@@ -4154,9 +4023,8 @@ mod tests {
 
         // `gc_nodes_reconstructed` (`fm_gc_nodes_reconstructed`), NOT
         // `references_reconstructed` (which only ever advances for
-        // funcref/null reconstruction — see `smoke_fork_externref_
-        // reconstructs`'s own doc comment on the analogous externref
-        // counter), is the proof-of-use counter for the GC struct/array/i31
+        // funcref/null reconstruction), is the proof-of-use counter for the
+        // GC struct/array/i31
         // path.
         let proof = outcome.fork_proof_of_use;
         assert!(

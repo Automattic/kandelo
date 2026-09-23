@@ -7,7 +7,6 @@ import {
   ARENA_OWNED,
   CAPTURE_KIND_ARRAY,
   CAPTURE_KIND_STRUCT,
-  INTERN_KIND_EXTERNREF,
   INTERN_KIND_I31,
   captureGraph,
   openCapture,
@@ -1547,7 +1546,7 @@ describe("the binding records the module assembles at capture", () => {
     const { root, recipes, aggregateRecipes } = captureGraph(
       f,
       [
-        [INTERN_KIND_EXTERNREF, 77, 0],
+        [INTERN_KIND_I31, 77, 0],
         [INTERN_KIND_I31, 42, 0],
       ],
       [
@@ -1599,14 +1598,14 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     const { root, aggregateRecipes } = captureGraph(
       f,
-      [[INTERN_KIND_EXTERNREF, 91, 0]],
+      [[INTERN_KIND_I31, 91, 0]],
       [
         {
           kind: CAPTURE_KIND_STRUCT,
           activation: 0,
           typeOrdinal: 4,
           scalars: new Uint8Array([9, 9, 9, 9]),
-          // -> the array, and the shared externref leaf.
+          // -> the array, and the shared i31 leaf.
           edges: ({ leaves, aggregates }) => [aggregates[1]!, leaves[0]!],
         },
         {
@@ -1644,7 +1643,7 @@ describe("the binding records the module assembles at capture", () => {
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "the capture opens").toBe(0);
     const leaf = (f.x.fm_capture_intern as (k: number, a: number, b: number) => number)(
-      INTERN_KIND_EXTERNREF,
+      INTERN_KIND_I31,
       5,
       0,
     );

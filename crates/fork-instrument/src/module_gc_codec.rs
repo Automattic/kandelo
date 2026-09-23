@@ -37,7 +37,7 @@ use wasm_posix_shared::abi::{
     WPK_FORK_GC_CODEC_SECTION, WPK_FORK_GC_CODEC_VERSION, WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
     WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE, WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT,
     WPK_FORK_REFERENCE_EXPORT_GC_FILL, WPK_FORK_REFERENCE_EXPORT_GC_PROBE,
-    WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF, WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE,
+    WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE,
     WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT, WPK_FORK_REFERENCE_IMPORT_GC_CLAIM,
     WPK_FORK_REFERENCE_IMPORT_GC_DEFINE, WPK_FORK_REFERENCE_IMPORT_GC_I31,
     WPK_FORK_REFERENCE_IMPORT_GC_LOAD, WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP,
@@ -107,7 +107,6 @@ pub const EXPORT_PROBE: &str = WPK_FORK_REFERENCE_EXPORT_GC_PROBE;
 pub const EXPORT_ENCODE_SLOT: &str = WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT;
 pub const EXPORT_ALLOCATE: &str = WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE;
 pub const EXPORT_FILL: &str = WPK_FORK_REFERENCE_EXPORT_GC_FILL;
-pub const EXPORT_PUBLISH_EXTERNREF: &str = WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF;
 pub const LOCAL_ENCODE_ANYREF: &str = "__wpk_fork_ref_encode_anyref";
 pub const LOCAL_DECODE_ANYREF: &str = "__wpk_fork_ref_decode_anyref";
 pub const LOCAL_ENCODE_EXTERNREF: &str = "__wpk_fork_ref_encode_externref";
@@ -259,7 +258,6 @@ pub struct DeclaredGcCodec {
     pub encode_slot: FunctionId,
     pub allocate: FunctionId,
     pub fill: FunctionId,
-    pub publish_externref: FunctionId,
     pub transit: TableId,
     pub memory: MemoryId,
     pub ptr_ty: ValType,
@@ -273,7 +271,6 @@ pub struct DeclaredGcCodec {
     encode_slot_args: Vec<LocalId>,
     allocate_args: Vec<LocalId>,
     fill_args: Vec<LocalId>,
-    publish_externref_args: Vec<LocalId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -286,7 +283,6 @@ pub struct InjectedGcCodec {
     pub encode_slot: FunctionId,
     pub allocate: FunctionId,
     pub fill: FunctionId,
-    pub publish_externref: FunctionId,
     pub transit: TableId,
 }
 
@@ -349,19 +345,12 @@ pub fn declare(module: &mut Module, memory: MemoryId) -> Result<DeclaredGcCodec>
         add_stub(module, &[ValType::I32], &[ValType::I32], EXPORT_ENCODE_SLOT);
     let (allocate, allocate_args) = add_stub(module, &[ValType::I32], &[], EXPORT_ALLOCATE);
     let (fill, fill_args) = add_stub(module, &[ValType::I32], &[], EXPORT_FILL);
-    let (publish_externref, publish_externref_args) = add_stub(
-        module,
-        &[ValType::I32, ValType::Ref(RefType::EXTERNREF)],
-        &[],
-        EXPORT_PUBLISH_EXTERNREF,
-    );
 
     for (name, function) in [
         (EXPORT_PROBE, probe),
         (EXPORT_ENCODE_SLOT, encode_slot),
         (EXPORT_ALLOCATE, allocate),
         (EXPORT_FILL, fill),
-        (EXPORT_PUBLISH_EXTERNREF, publish_externref),
     ] {
         module.exports.add(name, function);
     }
@@ -376,7 +365,6 @@ pub fn declare(module: &mut Module, memory: MemoryId) -> Result<DeclaredGcCodec>
         encode_slot,
         allocate,
         fill,
-        publish_externref,
         transit,
         memory,
         ptr_ty,
@@ -390,7 +378,6 @@ pub fn declare(module: &mut Module, memory: MemoryId) -> Result<DeclaredGcCodec>
         encode_slot_args,
         allocate_args,
         fill_args,
-        publish_externref_args,
     })
 }
 
@@ -840,7 +827,6 @@ pub fn finish_declaration(
     emit_decode_anyref(module, &codec);
     emit_externref_bridge(module, &codec);
     emit_encode_slot(module, &codec);
-    emit_publish_externref(module, &codec);
     // Allocation/fill are deliberately separate. Mutable/defaultable shells
     // are allocated for the entire graph before any edge is filled; immutable
     // and non-defaultable layouts are constructed in dependency order.
@@ -855,7 +841,6 @@ pub fn finish_declaration(
         encode_slot: codec.encode_slot,
         allocate: codec.allocate,
         fill: codec.fill,
-        publish_externref: codec.publish_externref,
         transit: codec.transit,
     })
 }
@@ -1104,7 +1089,9 @@ fn emit_externref_bridge(module: &mut Module, codec: &DeclaredGcCodec) {
         local_get(instrs, codec.encode_externref_args[0]);
         // WHY: extern.convert_any may have exposed a module-local GC identity
         // as externref. Convert it back inside Wasm before classification so
-        // the ordinary typed graph owns it instead of an opaque host handle.
+        // the ordinary typed graph owns it. A genuine host object claims no
+        // layout and reaches `broker_encode`, which refuses the fork
+        // (`EOPNOTSUPP`): fork does not carry raw host externrefs.
         push(instrs, Instr::AnyConvertExtern(AnyConvertExtern {}));
         call(instrs, codec.encode_anyref);
     }
@@ -1128,26 +1115,6 @@ fn emit_encode_slot(module: &mut Module, codec: &DeclaredGcCodec) {
         }),
     );
     call(instrs, codec.encode_anyref);
-}
-
-fn emit_publish_externref(module: &mut Module, codec: &DeclaredGcCodec) {
-    let entry = entry(codec.publish_externref, module);
-    let instrs = instrs_mut(module, codec.publish_externref, entry);
-    local_get(instrs, codec.publish_externref_args[0]);
-    constant_i32(instrs, 1);
-    binop(instrs, BinaryOp::I32Add);
-    local_get(instrs, codec.publish_externref_args[1]);
-    // WHY: JavaScript cannot directly manufacture an `anyref` transit value.
-    // The process owner supplies only its canonical externref token; this
-    // module-local conversion creates the child-side host reference consumed
-    // by the same anyref decoder used for GC graph edges.
-    push(instrs, Instr::AnyConvertExtern(AnyConvertExtern {}));
-    push(
-        instrs,
-        Instr::TableSet(TableSet {
-            table: codec.transit,
-        }),
-    );
 }
 
 fn emit_encode_anyref(module: &mut Module, codec: &DeclaredGcCodec, deps: EmitDependencies) {

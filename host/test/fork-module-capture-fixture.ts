@@ -416,8 +416,6 @@ export function voidSlotThunk(body: () => void): CallableFunction {
 
 
 export interface ChildModuleOptions {
-  /** The single residual externref host seam, when the caller decodes one. */
-  readonly resolveExternref?: (handle: number) => unknown;
   readonly label?: string;
   /**
    * Where this child's module region goes.
@@ -462,9 +460,6 @@ export function childInstance(
     ptrWidth: 4,
     reserve: () => base,
     label: options.label ?? "child module",
-    ...(options.resolveExternref
-      ? { hostImports: { resolve_externref: options.resolveExternref } }
-      : {}),
   });
   const cx = child.exports as Record<string, unknown>;
   (cx.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
@@ -474,7 +469,11 @@ export function childInstance(
 
 /** `fm_capture_intern` kinds, mirrored from the module's `INTERN_KIND_*`. */
 export const INTERN_KIND_FUNCREF = 1;
-export const INTERN_KIND_EXTERNREF = 2;
+/**
+ * The retired host-externref kind (externref stage E2). The module refuses it
+ * with EINVAL; exported only so a test can assert that refusal.
+ */
+export const RETIRED_INTERN_KIND_EXTERNREF = 2;
 export const INTERN_KIND_I31 = 3;
 export const INTERN_KIND_STATIC_ROOT = 4;
 

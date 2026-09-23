@@ -21,8 +21,6 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
-import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
-import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const programBinary = tryResolveBinary("programs/cube_pyramid.wasm") ?? "";
 const kernelBinary = tryResolveBinary("kernel.wasm") ?? "";
@@ -96,7 +94,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
 
       const io = new NodePlatformIO();
       const workerAdapter = new NodeWorkerAdapter();
-      const referenceOwners = new TestProcessReferenceOwners();
       const workers = new Map<
         number,
         ReturnType<NodeWorkerAdapter["createWorker"]>
@@ -165,15 +162,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             kernel.gl.attachCanvas(childPid, fakeCanvas);
 
             const forkBufAddr = continuation.forkBufAddr;
-            // Every process in this harness places its channel at the same
-            // offset, so the parent's control prefix sits where the child's
-            // does.
-            const childReferenceInit = referenceOwners.fork(
-              parentForkPid,
-              childPid,
-              parentMemory,
-              childChannelOffset - FORK_SAVE_BUFFER_SIZE,
-            );
             const forkReplay = new ForkReplayGateCoordinator(
               `DRI cube fork child pid=${childPid}`,
             );
@@ -190,20 +178,17 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               forkBufAddr,
               forkReplayGate: forkReplay.gate,
               ptrWidth,
-              ...childReferenceInit,
             };
 
             const childWorker = workerAdapter.createWorker(childInit);
             workers.set(childPid, childWorker);
             childWorker.on("error", () => {
-              referenceOwners.release(childPid);
               kernel.unregisterProcess(childPid);
               workers.delete(childPid);
             });
             childWorker.on("message", (m: unknown) => {
               const msg = m as WorkerToHostMessage;
               if (msg.type !== "error") return;
-              referenceOwners.release(childPid);
               kernel.unregisterProcess(childPid);
               workers.delete(childPid);
             });
@@ -232,7 +217,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               forkReplay.cancel(error);
               if (workers.get(childPid) === childWorker) {
                 workers.delete(childPid);
-                referenceOwners.release(childPid);
                 kernel.unregisterProcess(childPid);
               }
               childWorker.terminate().catch(() => {});
@@ -245,7 +229,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             // cleanup cannot reenter the export that published this exit.
             queueMicrotask(() => {
               try {
-                referenceOwners.release(exitPid);
                 const w = workers.get(exitPid);
                 if (w) {
                   w.terminate().catch(() => {});
@@ -287,7 +270,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth });
       const heapBase = extractHeapBase(programBytes);
       if (heapBase !== null) kernel.setBrkBase(parentPid, heapBase);
-      const parentReferenceInit = referenceOwners.start(parentPid);
 
       // Attach before the worker starts so eglInitialize → host_gl_bind
       // sees the canvas.
@@ -303,7 +285,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
         argv: ["cube_pyramid", "200"],
         env: [],
         ptrWidth,
-        ...parentReferenceInit,
       };
 
       const mainWorker = workerAdapter.createWorker(initData);
@@ -337,7 +318,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
         for (const [, worker] of workers) {
           await worker.terminate().catch(() => {});
         }
-        referenceOwners.close();
       }
 
       expect(exitCode, `stdout=${stdout}\nstderr=${stderr}`).toBe(0);

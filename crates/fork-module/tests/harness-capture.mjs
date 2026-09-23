@@ -76,7 +76,6 @@ const importObject = {
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),
-    resolve_externref: (_handle) => ({}),
     // `__wpk_fork_host_ref_identity(anyref) -> i32`: a stable integer per
     // distinct GC reference. Wasm can COMPARE references but cannot HASH one,
     // so a reference cannot key a map inside the module; the host can. On a
@@ -206,7 +205,7 @@ function ascii(bytes) {
 
 // ============================================================================
 // 1. A comprehensive graph: every intern kind, a struct<->array cycle sharing an
-//    aliased externref leaf, i31/static-root leaves, and a shared/deduped vector.
+//    aliased i31 leaf, funcref/static-root leaves, and a shared/deduped vector.
 // ============================================================================
 x.fm_capture_begin();
 assert.equal(lastErrno(), 0, "begin sets errno OK");
@@ -214,7 +213,9 @@ assert.equal(lastErrno(), 0, "begin sets errno OK");
 // INTERN_KIND_*, and host/src/fork-reference-capture-module.ts's
 // FORK_INTERN_KIND_*).
 const K_FUNCREF = 1;
-const K_EXTERNREF = 2;
+// 2 was the host-externref kind, retired in externref stage E2: a fork does not
+// carry a raw host externref, so nothing interns one (asserted in section 4).
+const K_RETIRED_EXTERNREF = 2;
 const K_I31 = 3;
 const K_STATIC_ROOT = 4;
 
@@ -224,15 +225,15 @@ const before = x.fm_capture_interned();
 const sId = x.fm_capture_claim_gc(); // 1: struct
 const aId = x.fm_capture_claim_gc(); // 2: array
 const fId = x.fm_capture_intern(K_FUNCREF, 10, 20); // 3
-const xId = x.fm_capture_intern(K_EXTERNREF, 99, 0); // 4
+const xId = x.fm_capture_intern(K_I31, 99, 0); // 4
 const iId = x.fm_capture_intern(K_I31, -5, 0); // 5
 const rId = x.fm_capture_intern(K_STATIC_ROOT, 3, 7); // 6
-const leafId = x.fm_capture_intern(K_EXTERNREF, 0xffffffff >>> 0, 0); // 7 aliased leaf
+const leafId = x.fm_capture_intern(K_I31, 0x3fffffff, 0); // 7 aliased leaf
 assert.deepEqual([sId, aId, fId, xId, iId, rId, leafId], [1, 2, 3, 4, 5, 6, 7]);
 
-// Dedup by coordinate: the same externref handle / funcref coordinate / i31
-// value / static-root coordinate resolve to the SAME recipe id.
-assert.equal(x.fm_capture_intern(K_EXTERNREF, 99, 0), xId, "externref dedups by handle");
+// Dedup by coordinate: the same funcref coordinate / i31 value / static-root
+// coordinate resolve to the SAME recipe id.
+assert.equal(x.fm_capture_intern(K_I31, 99, 0), xId, "i31 dedups by value (99)");
 assert.equal(x.fm_capture_intern(K_FUNCREF, 10, 20), fId, "funcref dedups by coord");
 assert.equal(x.fm_capture_intern(K_I31, -5, 0), iId, "i31 dedups by value");
 assert.equal(x.fm_capture_intern(K_STATIC_ROOT, 3, 7), rId, "static root dedups");
@@ -320,10 +321,10 @@ x.fm_capture_begin();
 x.fm_capture_claim_gc(); // 1
 x.fm_capture_claim_gc(); // 2
 x.fm_capture_intern(K_FUNCREF, 10, 20); // 3
-x.fm_capture_intern(K_EXTERNREF, 99, 0); // 4
+x.fm_capture_intern(K_I31, 99, 0); // 4
 x.fm_capture_intern(K_I31, -5, 0); // 5
 x.fm_capture_intern(K_STATIC_ROOT, 3, 7); // 6
-x.fm_capture_intern(K_EXTERNREF, 0xffffffff >>> 0, 0); // 7
+x.fm_capture_intern(K_I31, 0x3fffffff, 0); // 7
 const sf2 = buildVector([2, 7]); // ordinal 1
 writeBytes(SCRATCH_BASE, [0x78, 0x56, 0x34, 0x12]);
 x.fm_capture_define_gc(1, 7, 2, 12, KIND_STRUCT, SCRATCH_BASE, 4, sf2, 0, 0, 0);
@@ -371,11 +372,16 @@ assert.equal(
 assert.equal(lastErrno(), EINVAL, "serialize reports EINVAL for a pending claim");
 
 // ============================================================================
-// 4. Truthful failure: an invalid coordinate (zero externref handle) is EINVAL,
-//    not a fabricated recipe.
+// 4. Truthful failure: the retired host-externref kind is EINVAL, never a
+//    recipe -- a well-formed handle included.
 // ============================================================================
 x.fm_capture_begin();
-assert.equal(x.fm_capture_intern(K_EXTERNREF, 0, 0), -1, "zero handle is rejected");
+assert.equal(
+  x.fm_capture_intern(K_RETIRED_EXTERNREF, 99, 0),
+  -1,
+  "the retired externref kind is rejected",
+);
+assert.equal(lastErrno(), EINVAL, "the retired externref kind reports EINVAL");
 
 // The kind-discriminated entry's own admission checks. `fm_capture_intern`
 // replaced four per-type exports, so the argument-shape errors those four made
@@ -387,21 +393,16 @@ assert.equal(
   -1,
   "a garbage kind is rejected, not silently treated as a funcref",
 );
-// The `b must be 0` rule for the one-argument kinds. Without it, a caller that
-// passed funcref argument ORDER with an externref kind -- (EXTERNREF,
-// activation, ordinal) -- would silently intern the activation id as a broker
-// handle and capture the wrong reference.
-assert.equal(
-  x.fm_capture_intern(K_EXTERNREF, 99, 7),
-  -1,
-  "externref with a non-zero second argument is rejected",
-);
+// The `b must be 0` rule for the one-argument kind. Without it, a caller that
+// passed funcref argument ORDER with the i31 kind -- (I31, activation,
+// ordinal) -- would silently intern the activation id as an i31 payload and
+// capture the wrong reference.
 assert.equal(
   x.fm_capture_intern(K_I31, -5, 7),
   -1,
   "i31 with a non-zero second argument is rejected",
 );
-assert.equal(lastErrno(), EINVAL, "zero externref handle reports EINVAL");
+assert.equal(lastErrno(), EINVAL, "a non-zero second argument reports EINVAL");
 
 // ---------------------------------------------------------------------------
 // The GUEST-facing reference-vector surface (env.__wpk_fork_ref_vector_*).
@@ -789,7 +790,7 @@ function i31Minter() {
 
   x.fm_capture_begin();
   const payloadA = x.fm_capture_intern(K_I31, 11, 0); // 1
-  const payloadB = x.fm_capture_intern(K_EXTERNREF, 55, 0); // 2
+  const payloadB = x.fm_capture_intern(K_I31, 55, 0); // 2
   const exn = x.fm_capture_claim_gc(); // 3
   assert.deepEqual([payloadA, payloadB, exn], [1, 2, 3], "exception fixture ids");
 
@@ -1005,7 +1006,7 @@ function i31Minter() {
   const REFS = SCRATCH_BASE + 576;
 
   x.fm_capture_begin();
-  const payload = x.fm_capture_intern(K_EXTERNREF, 77, 0); // 1
+  const payload = x.fm_capture_intern(K_I31, 77, 0); // 1
   assert.equal(payload, 1, "payload leaf interned");
 
   // Lookup never hits, so the guest always proceeds to claim.

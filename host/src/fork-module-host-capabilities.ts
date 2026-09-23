@@ -2,7 +2,7 @@
  * The fork-module's host FUNCTION obligations, in one place, shared by both JS
  * hosts.
  *
- * The co-resident fork-module declares ten imports. Five are
+ * The co-resident fork-module declares eight imports. Five are
  * position-independent-code linking boilerplate any `--pie` side module has
  * (`env.memory`, `__indirect_function_table`, `__stack_pointer`,
  * `__memory_base`, `__table_base`). Three are reference-typed tables, which
@@ -20,49 +20,8 @@
  * `forkModuleHostImports` surface budget.
  */
 
-/**
- * Handle -> live host reference. The host owns this registry because the handle
- * space is the host's: the module stores handles in its recipe graph and asks
- * for the value back during replay.
- *
- * Structural on purpose, so the host's real token cache satisfies it without an
- * adapter. `materialize` MUST be idempotent per handle -- the same handle has
- * to give back the identical object, or a child rebuilds two references where
- * the parent had one -- and MUST THROW for a handle it cannot honour rather
- * than return a sentinel.
- */
-export interface ForkExternrefResolver {
-  materialize(handle: number): object;
-  /**
-   * The inverse: live host reference -> the handle it already carries, or
-   * `null`/`undefined` when it carries none.
-   *
-   * READ BACK, never minted. A value with no self-describing handle is a
-   * documented boundary, not an error -- the capture records no externref for
-   * it and the drive plan simply has one fewer step. This is the direction
-   * CAPTURE needs, and the module asks for it at the moment it needs it rather
-   * than having the host remember every value that ever crossed an import.
-   */
-  encode(value: unknown): number | null | undefined;
-}
-
-export interface ForkModuleHostCapabilitiesOptions {
-  readonly tokens: ForkExternrefResolver;
-}
-
 /** The fork-module host imports that are functions. */
 export interface ForkModuleHostImports {
-  /**
-   * `resolve_externref(handle) -> externref`.
-   *
-   * FLOOR: Wasm cannot manufacture an `externref`. Only the host can turn a
-   * handle back into the live value it named.
-   *
-   * Errors PROPAGATE. An invalid handle is a `RangeError` out of the registry,
-   * not a null sentinel: a sentinel would let a replay continue with a
-   * reference it never actually restored.
-   */
-  readonly resolve_externref: (handle: number) => object;
   /**
    * `__wpk_fork_host_ref_identity(anyref) -> i32`.
    *
@@ -83,24 +42,14 @@ export interface ForkModuleHostImports {
    * the same value, so sharing one counter would only couple them.
    */
   readonly __wpk_fork_host_func_identity: (fn: unknown) => number;
-  /**
-   * `__wpk_fork_host_externref_handle(externref) -> i32`, or 0 for a value the
-   * host does not own.
-   *
-   * FLOOR, and the exact reverse of `resolve_externref`: the capture has to
-   * NAME a live host reference, and only the host knows which broker handle
-   * names it. Without it a fork carrying an externref cannot seal -- the
-   * guest's encode answers -1, the reference vector it belongs to never
-   * finishes, and the graph fails validation four layers from the cause
-   * (census section 188).
-   */
-  readonly __wpk_fork_host_externref_handle: (value: unknown) => number;
+  // No externref import. `resolve_externref` and
+  // `__wpk_fork_host_externref_handle` left in externref stage E2: a fork does
+  // not carry a raw host externref, so the module never names a host object or
+  // rebuilds one, and the capture refuses one with EOPNOTSUPP inside the module.
 }
 
 export interface ForkModuleHostCapabilities {
   readonly imports: ForkModuleHostImports;
-  /** Proof-of-use: how many times `resolve_externref` actually ran. */
-  readonly resolvedCount: number;
   /**
    * How many distinct references identity has issued. Diagnostics: a capture
    * that splits one object into two recipes shows up here as a count larger
@@ -153,31 +102,18 @@ function createReferenceIdentity(importName: string) {
   return { identify, issued: () => next - 1 };
 }
 
-export function createForkModuleHostCapabilities(
-  options: ForkModuleHostCapabilitiesOptions,
-): ForkModuleHostCapabilities {
+export function createForkModuleHostCapabilities(): ForkModuleHostCapabilities {
   const identity = createReferenceIdentity("__wpk_fork_host_ref_identity");
-  const { tokens } = options;
-  let resolved = 0;
   const functionIdentity = createReferenceIdentity("__wpk_fork_host_func_identity");
   const imports: ForkModuleHostImports = {
-    resolve_externref: (handle: number) => {
-      const value = tokens.materialize(handle);
-      resolved += 1;
-      return value;
-    },
     __wpk_fork_host_ref_identity: identity.identify,
     // A SEPARATE pool from the reference one: `funcref` and `anyref` are
     // disjoint hierarchies, so a function and a GC object can never be the same
     // value and one counter would only couple two independent numberings.
     __wpk_fork_host_func_identity: functionIdentity.identify,
-    __wpk_fork_host_externref_handle: (value) => tokens.encode(value) ?? 0,
   };
   return {
     imports,
-    get resolvedCount() {
-      return resolved;
-    },
     get distinctReferenceCount() {
       return identity.issued();
     },

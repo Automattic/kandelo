@@ -10,7 +10,7 @@ const preparation =
   "[vfork-mechanism] event=vfork_prepared mode=1 parent=100 child=101 "
   + "memory_identity=same live_memory_delta=0 alias_delta=1 "
   + "parent_channel=1000 child_channel=2000 owner_control=3000 "
-  + "child_prefix=4000 scratch=5000 externref_parent=1 externref_child=2";
+  + "child_prefix=4000 scratch=5000";
 
 function run(name: string, events: readonly string[]): string {
   return [

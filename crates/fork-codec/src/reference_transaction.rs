@@ -36,9 +36,9 @@
 //! half is the reconstruction drive (Phase 6 D6.1+, F5/F6, completed): the
 //! injected binder and the pre-existing JS drive-order (`materializeTypedGraph`)
 //! walk this graph and mint/publish real reference identities directly — a
-//! funcref/static-root resolve is a wasm `table.get`, and the externref round
-//! trip collapses into the injected binder calling the single residual host
-//! import `resolve_externref(handle) -> externref` (M2). No separate
+//! funcref/static-root resolve is a wasm `table.get`. A graph never carries a
+//! raw host `externref`: capture refuses one with `EOPNOTSUPP`, and the wire
+//! kind it once used is rejected here. No separate
 //! `ForkHostCapabilities` engine-floor trait/import seam was needed for this;
 //! an earlier speculative version of that seam existed
 //! (`crates/fork-module/src/host_capabilities.rs`) but was never wired to any
@@ -63,7 +63,11 @@ const MAX_U32: u64 = 0xffff_ffff;
 // `reference_recipes` (same wire vocabulary).
 const KIND_NULL: u8 = 0;
 const KIND_FUNCREF: u8 = 1;
-const KIND_EXTERNREF: u8 = 2;
+/// Retired: the host-`externref` node (a broker handle). Capture refuses a
+/// raw host externref with `EOPNOTSUPP`, so no graph produced since then names
+/// one; a record of this kind is a stale or forged image and fails `EINVAL`.
+/// The discriminant stays reserved so the other kinds keep their numbers.
+const KIND_RETIRED_EXTERNREF: u8 = 2;
 const KIND_EXNREF: u8 = 3;
 const KIND_I31: u8 = 4;
 const KIND_STRUCT: u8 = 5;
@@ -217,8 +221,8 @@ fn decode_node_header(record: &[u8]) -> Result<NodeHeader, Errno> {
         return Err(Errno::EINVAL); // nonzero flags or reserved fields
     }
     let kind = record[0];
-    if kind > KIND_STATIC_ROOT {
-        return Err(Errno::EINVAL); // unknown kind
+    if kind > KIND_STATIC_ROOT || kind == KIND_RETIRED_EXTERNREF {
+        return Err(Errno::EINVAL); // unknown or retired kind
     }
     let u32_at = |off: usize| u32::from_le_bytes([record[off], record[off + 1], record[off + 2], record[off + 3]]);
     let u64_at = |off: usize| {
@@ -250,19 +254,9 @@ fn is_aggregate(kind: u8) -> bool {
     kind == KIND_EXNREF || kind == KIND_STRUCT || kind == KIND_ARRAY
 }
 
-/// Combine the two 32-bit words into an externref broker handle (`1..=2^32-1`).
-/// Mirrors the TS `decodeHandle`.
-fn decode_handle(first: u32, second: u32) -> Result<u32, Errno> {
-    let handle = ((second as u64) << 32) | (first as u64);
-    if handle == 0 || handle > MAX_U32 {
-        return Err(Errno::EINVAL);
-    }
-    Ok(handle as u32)
-}
-
 /// Validate one node header against the canonical append cursors and per-kind
-/// scalar-field rules. Mirrors the TS `validateNodeHeader` (with `decodeHandle`
-/// and the i31 range check folded in).
+/// scalar-field rules. Mirrors the TS `validateNodeHeader` (with the i31 range
+/// check folded in).
 fn validate_node_header(
     header: &NodeHeader,
     id: u64,
@@ -295,12 +289,6 @@ fn validate_node_header(
                 return Err(Errno::EINVAL); // reserved scalar field is nonzero
             }
         }
-        KIND_EXTERNREF => {
-            decode_handle(header.first, header.second)?;
-            if header.third != 0 {
-                return Err(Errno::EINVAL); // reserved scalar field is nonzero
-            }
-        }
         KIND_I31 => {
             if header.second != 0 || header.third != 0 {
                 return Err(Errno::EINVAL); // reserved scalar field is nonzero
@@ -327,9 +315,6 @@ fn build_recipe_node(
         KIND_FUNCREF => ReferenceRecipeNode::Funcref {
             module_activation: header.first,
             function_ordinal: header.second,
-        },
-        KIND_EXTERNREF => ReferenceRecipeNode::Externref {
-            handle: decode_handle(header.first, header.second)?,
         },
         KIND_EXNREF => ReferenceRecipeNode::Exnref {
             module_activation: header.first,
@@ -556,10 +541,45 @@ mod tests {
         }
     }
 
-    fn fixture_memory() -> Vec<u8> {
+    /// The fixture exactly as frozen, before the E2 patch below.
+    fn frozen_fixture_memory() -> Vec<u8> {
         let mut mem = vec![0u8; FIXTURE_ROOT as usize];
         mem.extend_from_slice(FIXTURE);
         mem.resize((FIXTURE_ROOT + FIXTURE_CAPACITY) as usize, 0);
+        mem
+    }
+
+    /// The first 16 bytes of the two host-`externref` node records the frozen
+    /// fixture carries: `kind 2, flags 0, first = handle, second 0, third 0`.
+    const FROZEN_EXTERNREF_HEADS: [[u8; 16]; 2] = [
+        [2, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [2, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0],
+    ];
+
+    /// The frozen fixture with its two retired host-`externref` nodes (wire kind
+    /// 2) rewritten in place to `i31` nodes over the same first word -- 9 and
+    /// -1 -- so every other kind, the cycle, the aliasing and the 32-byte
+    /// segment spill are still decoded field for field.
+    ///
+    /// WHY patch rather than regenerate: the generator
+    /// (`gen-reference-transaction-fixture.mts`) imports TypeScript that has
+    /// since been deleted, so the bytes cannot be re-emitted, and a raw host
+    /// externref is no longer a node any capture produces (stage E2). Each
+    /// node starts on a 32-byte segment boundary (ids 4 and 10, at 192 and 480
+    /// bytes into the node section), so its header is contiguous in the arena
+    /// and the patch is exact; the KFMS/KFRS framing carries no checksum.
+    fn fixture_memory() -> Vec<u8> {
+        let mut mem = frozen_fixture_memory();
+        for head in FROZEN_EXTERNREF_HEADS {
+            let at: Vec<usize> = mem
+                .windows(head.len())
+                .enumerate()
+                .filter(|(_, w)| *w == head)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(at.len(), 1, "frozen fixture must carry exactly one {head:?}");
+            mem[at[0]] = KIND_I31;
+        }
         mem
     }
 
@@ -568,8 +588,11 @@ mod tests {
     /// decoder consumes. Includes the unrelated `Module` record so the reference
     /// decoder's kind filtering is exercised.
     fn owned_fixture_records() -> Vec<(u16, u32, u32, Vec<u8>)> {
-        let mem = fixture_memory();
-        let decoded = decode_module_state(&mem, FIXTURE_ROOT, &wasm32_format()).unwrap();
+        records_from(&fixture_memory())
+    }
+
+    fn records_from(mem: &[u8]) -> Vec<(u16, u32, u32, Vec<u8>)> {
+        let decoded = decode_module_state(mem, FIXTURE_ROOT, &wasm32_format()).unwrap();
         decoded
             .records
             .iter()
@@ -652,7 +675,7 @@ mod tests {
                 },
                 ReferenceRecipeEntry {
                     id: 4,
-                    node: ReferenceRecipeNode::Externref { handle: 9 },
+                    node: ReferenceRecipeNode::I31 { value: 9 },
                 },
                 ReferenceRecipeEntry {
                     id: 5,
@@ -682,9 +705,7 @@ mod tests {
                 },
                 ReferenceRecipeEntry {
                     id: 10,
-                    node: ReferenceRecipeNode::Externref {
-                        handle: 0xffff_ffff,
-                    },
+                    node: ReferenceRecipeNode::I31 { value: -1 },
                 },
             ],
             vectors: vec![vec![], vec![1, 2, 3], vec![4, 6], vec![8, 9, 10, 5]],
@@ -696,6 +717,15 @@ mod tests {
     fn decodes_real_encoder_fixture_field_for_field() {
         let decoded = decode_owned(&owned_fixture_records(), OWNER).unwrap();
         assert_eq!(decoded, expected_fixture());
+    }
+
+    /// The fixture as frozen names two host-`externref` nodes (wire kind 2),
+    /// which no capture can produce since stage E2. The decoder must refuse the
+    /// whole image rather than decode the rest around them.
+    #[test]
+    fn rejects_frozen_fixture_carrying_retired_externref_nodes() {
+        let records = records_from(&frozen_fixture_memory());
+        assert_eq!(decode_owned(&records, OWNER), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -712,7 +742,6 @@ mod tests {
         };
         assert!(has(|node| matches!(node, ReferenceRecipeNode::Null)));
         assert!(has(|node| matches!(node, ReferenceRecipeNode::Funcref { .. })));
-        assert!(has(|node| matches!(node, ReferenceRecipeNode::Externref { .. })));
         assert!(has(|node| matches!(node, ReferenceRecipeNode::Exnref { .. })));
         assert!(has(|node| matches!(node, ReferenceRecipeNode::I31 { .. })));
         assert!(has(|node| matches!(node, ReferenceRecipeNode::Struct { .. })));
@@ -743,9 +772,6 @@ mod tests {
         ));
         assert!(has(
             |node| matches!(node, ReferenceRecipeNode::I31 { value } if *value == MIN_I31)
-        ));
-        assert!(has(
-            |node| matches!(node, ReferenceRecipeNode::Externref { handle } if *handle == 0xffff_ffff)
         ));
 
         // Every interned vector resolves to its ordinal.
@@ -1072,16 +1098,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_externref_handle() {
-        let records = encode(&[scalar_node(KIND_EXTERNREF, 0, 0, 0)], &[], &[], &[]);
-        assert_eq!(decode_owned(&records, OWNER), Err(Errno::EINVAL));
-    }
-
-    #[test]
-    fn rejects_externref_handle_above_u32() {
-        // A nonzero high word forces the combined handle past 2^32-1.
-        let records = encode(&[scalar_node(KIND_EXTERNREF, 1, 1, 0)], &[], &[], &[]);
-        assert_eq!(decode_owned(&records, OWNER), Err(Errno::EINVAL));
+    fn rejects_retired_externref_kind() {
+        // Kind 2 was the host-externref node. A well-formed one (nonzero
+        // handle, zero reserved words) is still refused: nothing may name it.
+        // The same graph with a funcref in its place decodes (the control).
+        let graph = |kind: u8| {
+            encode(
+                &[scalar_node(KIND_NULL, 0, 0, 0), scalar_node(kind, 9, 0, 0)],
+                &[],
+                &[],
+                &[&[1]],
+            )
+        };
+        assert!(decode_owned(&graph(KIND_FUNCREF), OWNER).is_ok());
+        assert_eq!(decode_owned(&graph(KIND_RETIRED_EXTERNREF), OWNER), Err(Errno::EINVAL));
     }
 
     #[test]

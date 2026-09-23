@@ -112,12 +112,8 @@ import {
   readForkModuleStatePointerWidth,
   readForkModuleStateRoot,
 } from "./fork-guest-sections";
-import { writeCapturedExternrefHandover } from "./fork-externref-process-owner";
 import { ForkChildReferences } from "./fork-child-references";
 import { readForkResumeCatalog } from "./fork-resume-catalog";
-import {
-  ForkExternrefTokenCache,
-} from "./fork-reference-broker";
 import { guardFunctionImport, guardImportObject } from "./import-trap-guard";
 import {
   ForkImportIdentity,
@@ -754,7 +750,7 @@ interface ProcessDylinkActivationOwnerOptions {
    * The process's host identity floor, shared by every activation.
    *
    * Process-level rather than per-activation because both members are: the
-   * externref provenance map is keyed by object identity across the whole
+   * reference identity maps are keyed by object identity across the whole
    * capture, and the exception throwers route by owner inside the broker.
    */
   readonly isForkChild: boolean;
@@ -2878,7 +2874,7 @@ function createForkPeerTableCheckpoint(
     capture: () => backend().capturePeerTables(channelBase),
     restore: (root) => {
       // Seed the driver and build the install plan, then make the graph
-      // resident: the plan drive rebuilds the funcref and externref slots the
+      // resident: the plan drive rebuilds the funcref and GC slots the
       // guest table restore is about to read, and the graph is what the
       // reference lookups behind them resolve through.
       const plan = backend().restoreFromArena(root, pid);
@@ -3428,8 +3424,7 @@ export async function centralizedWorkerMain(
       // `continuationMmap`, so its static data and stack never collide with
       // guest data). Its exports are asserted here, never mid-fork.
       let forkModuleInstance: ForkModuleInstance | null = null;
-      // Phase 6 D6.2: the real engine-floor `wpk_fork_host.*` seam backing (the
-      // externref side table + broker token materialization).
+      // The module's host functions (reference and function identity).
       let forkModuleHostCapabilities: ForkModuleHostCapabilities | null = null;
       // Phase 6 D5 step 4b/5: when the fork qualifies, this backend drives the
       // continuation through the co-resident module and the coordinator takes
@@ -3526,19 +3521,6 @@ export async function centralizedWorkerMain(
       // for the parent (its guest was instantiated at parent init, before any
       // fork transaction existed) and for any fork with a non-funcref reference,
       // so those keep the byte-identical JS reference path.
-      // The child worker's externref token cache (broker handle -> canonical
-      // worker-local token). Created BEFORE the fork-module so the D6.2
-      // engine-floor seam can close over it; also owned by the JS reference path
-      // (the still-JS `__wpk_fork_ref_decode_externref` materializes the SAME
-      // idempotent token, so the module and JS agree on identity).
-      if (initData.externrefGenerationId === undefined) {
-        throw new Error(
-          `pid=${pid}: ABI ${ABI_VERSION} fork artifact requires its externref generation`,
-        );
-      }
-      const externrefTokens = new ForkExternrefTokenCache(
-        initData.externrefGenerationId,
-      );
       // Phase 6 item 4: a vfork/borrowed child now ALSO instantiates the
       // co-resident module, so its ONE continuation replay runs through the
       // module (wasm->wasm) instead of the JS engine. The original gate skipped
@@ -3572,23 +3554,10 @@ export async function centralizedWorkerMain(
               `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
           );
         }
-        // M2: the single REAL `env.resolve_externref(handle) -> externref`
-        // import body backing the module's externref reconstruction. It
-        // closes over this worker's externref token cache so
-        // `resolve_externref` re-roots the SAME canonical token the still-JS
-        // `__wpk_fork_ref_decode_externref` returns (identity parity;
-        // `ForkExternrefTokenCache.materialize` is idempotent). The FIVE old
-        // `wpk_fork_host` externref/transit imports (`host_begin_generation`,
-        // the 2-arg `host_resolve_externref`, `host_transit_publish`,
-        // `host_transit_read`, `host_release_generation`) are gone from the
-        // rebuilt module (M2 t1-t4): the injected binder now performs the
-        // decode + anyref-transit `table.set` itself
-        // (`__wpk_fork_ref_decode_externref` export, flipped in below), so
-        // this host seam no longer routes through `activationRegistry`'s
-        // early-GC transit at all.
-        forkModuleHostCapabilities = createForkModuleHostCapabilities({
-          tokens: externrefTokens,
-        });
+        // The module's two host functions: the reference and function
+        // identity oracles (`fork-module-host-capabilities.ts`). There is no
+        // externref import: a fork does not carry a raw host externref.
+        forkModuleHostCapabilities = createForkModuleHostCapabilities();
         // A COPIED fork child INHERITS the parent's co-resident fork-module
         // region through its full memory clone (the region is present both in
         // the inherited bytes and in the inherited kernel mapping table). It
@@ -3637,9 +3606,6 @@ export async function centralizedWorkerMain(
             );
           },
           label: `pid=${pid}: fork-module`,
-          // BOTH host functions, not just the resolver. Passing only
-          // `resolve_externref` left `__wpk_fork_host_ref_identity` a trapping
-          // stub, which a GC capture reaches.
           hostImports: forkModuleHostCapabilities.imports,
         });
         // Publish this worker's co-resident fork-module region so the kernel
@@ -3758,10 +3724,6 @@ export async function centralizedWorkerMain(
       const mainTemplateId = computeForkModuleTemplateId(programBytes);
       let processInstance: WebAssembly.Instance | null = null;
 
-      // WHAT USED TO BE HERE: a `ForkExternrefTokenRecipeProvider`, constructed
-      // and never read. Its constructor only stores its two arguments, so this
-      // was a value nobody asked for -- capture reaches the broker token
-      // directly now, through `__wpk_fork_host_externref_handle`.
       // WHAT THE 2,098-LINE REGISTRY WAS, and where each part went: activation
       // bookkeeping to `ForkActivations`; the capture session and reference
       // transaction to the module, which IS the capture; the table methods to
@@ -4372,14 +4334,14 @@ export async function centralizedWorkerMain(
         // exception descriptor, or a struct/array whose layout the host could not
         // pre-validate), routed the WHOLE fork onto the JS reference engine. That
         // fallback is deleted: native proves the shared module admits and
-        // reconstructs the entire reference kind set (null / funcref / externref /
+        // reconstructs the entire reference kind set (null / funcref /
         // i31 / exnref / struct / array / static-root; see
         // `fork-module/src/lib.rs` "the whole reference kind set the module
         // reconstructs"). The kind-set the module admits is NOT a fresh
         // engine-floor callback per kind; the module re-checks most kinds and
         // fails loud where IT can see the fault — GC layout validity in
-        // `GcCodecHints::require_layout` (`EINVAL`) and externref
-        // production-provenance in `fm_begin_reference_replay`. The exnref
+        // `GcCodecHints::require_layout` (`EINVAL`); a raw host externref never
+        // reaches a graph, because the capture refuses it (`EOPNOTSUPP`). The exnref
         // tag-validity check the module ALSO now re-checks itself: the host seeds
         // each activation's declared exnref tag ordinals
         // (`fm_set_activation_exception_tags`), and the child-install entry
@@ -4394,8 +4356,7 @@ export async function centralizedWorkerMain(
         // `fork_codec::reference_segments`, seeded from the KFMS arena by
         // `fm_begin_reference_replay`), the full topological drive-order
         // (`fm_build_gc_plan` + `fm_drive_execute` over `drive_plan` Phase
-        // 0/0b/3-5 — static-root publish, EVERY externref transit publish, then
-        // typed allocate/fill/exn), and every `fm_ref_*` restore data feed. The
+        // 0/3-5 — static-root publish, then typed allocate/fill/exn), and every `fm_ref_*` restore data feed. The
         // The host's own decode of this arena is GONE. It was last held for
         // the reconstruction wiring it fed; that wiring reads the module's
         // `fm_decoded_*` accessors now, over the graph the module decodes from
@@ -4441,15 +4402,12 @@ export async function centralizedWorkerMain(
                 .decodedNodeModuleActivation(index),
             funcrefOrdinal: (recipeId) =>
               forkModuleExport("fm_funcref_ordinal")(recipeId),
-            externrefHandle: (recipeId) =>
-              forkModuleExport("fm_externref_handle")(recipeId),
             staticRootSlot: (recipeId) =>
               forkModuleExport("fm_static_root_slot")(recipeId),
           },
           {
             functionCatalog: forkModuleInstance!.functionCatalog,
             staticRootCatalog: forkModuleInstance!.staticRootCatalog,
-            resolveExternref: (handle) => externrefTokens.materialize(handle),
           },
           `pid=${pid}: early child references`,
         );
@@ -4997,23 +4955,6 @@ export async function centralizedWorkerMain(
               }
               throw sealError;
             }
-            // Hand the kernel worker the externref handles this capture
-            // interned, so it does not have to decode this parked worker's
-            // arena to re-derive them. Written AFTER the seal (the set is
-            // complete) and BEFORE the syscall (the kernel reads it while
-            // handling the fork). See `fork-externref-process-owner`.
-            if (forkModuleBackend) {
-              const captured = forkModuleBackend.capturedExternrefHandles();
-              const staged = captured.length === 0
-                ? 0
-                : forkModuleBackend.stageExternrefHandover(captured);
-              writeCapturedExternrefHandover(
-                memory,
-                channelOffset - FORK_SAVE_BUFFER_SIZE,
-                staged,
-                captured.length,
-              );
-            }
             const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
               ? forkModule().borrowedReplayWorkspace()
               : undefined;
@@ -5108,16 +5049,15 @@ export async function centralizedWorkerMain(
       // drove the reconstruction rather than the JS reference fallback.
       if ((forkModuleBackend ?? forkModuleFinalStats) && initData.isForkChild) {
         // Per-kind proof-of-use (Phase 6 D6.5): report each reference kind the
-        // module reconstructed — funcref/null, externref, exnref, and typed-GC.
-        // A graph can mix kinds (an exnref whose payload is an externref advances
-        // both), so all four ride one message. Emitted ONLY when at least one is
+        // module reconstructed — funcref/null, exnref, and typed-GC. A graph can
+        // mix kinds (an exnref whose payload is a funcref advances both), so they
+        // ride one message. Emitted ONLY when at least one is
         // positive: a reference-free fork (the common case, e.g. `d_01`) leaves
         // every counter at zero and must stay silent, so it does not add a second
         // `fork-module` diagnostic that could race a consumer waiting for the
         // parent's frame count. A nonzero value is the positive proof the module
         // drove that kind's reconstruction rather than the JS reference fallback.
         const references = forkModuleStat("referencesReconstructed");
-        const externrefs = forkModuleStat("externrefsResolved");
         const exnrefs = forkModuleStat("exnrefsReconstructed");
         const gcNodes = forkModuleStat("gcNodesReconstructed");
         // Phase 6 item 3c DRIVE proof-of-use: the module executed the typed-GC
@@ -5131,7 +5071,6 @@ export async function centralizedWorkerMain(
         const staticRoots = forkModuleStat("staticRootsPublished");
         if (
           references > 0 ||
-          externrefs > 0 ||
           exnrefs > 0 ||
           gcNodes > 0 ||
           driveSteps > 0 ||
@@ -5141,7 +5080,6 @@ export async function centralizedWorkerMain(
             type: "fork_module_references",
             pid,
             references,
-            externrefs,
             exnrefs,
             gcNodes,
             driveSteps,
@@ -5174,7 +5112,6 @@ export async function centralizedWorkerMain(
       if (forkModuleBackend) forkModule().abort();
       resumeTable.clear();
       releaseProcessForkArchiveReader();
-      externrefTokens.clear();
       port.postMessage({
         type: "exit",
         pid,
@@ -6109,7 +6046,6 @@ export async function centralizedThreadWorkerMain(
   // Visible to the worker-tail teardown, which runs outside the block the
   // registry is built in.
   let threadTableReplication: ProcessTableReplicationOwner | null = null;
-  let threadExternrefTokens: ForkExternrefTokenCache | null = null;
   let processDlopenLock: Int32Array | undefined;
   let processDlopenOwner: Int32Array | undefined;
   let pthreadForkLockHeld = false;
@@ -6190,17 +6126,6 @@ export async function centralizedThreadWorkerMain(
     );
 
     const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
-    if (hasForkInstrumentation) {
-      if (initData.externrefGenerationId === undefined) {
-        throw new Error(
-          `pid=${pid} tid=${tid}: ABI ${ABI_VERSION} fork artifact requires its ` +
-            "externref generation",
-        );
-      }
-      threadExternrefTokens = new ForkExternrefTokenCache(
-        initData.externrefGenerationId,
-      );
-    }
     const threadForkCapabilityClaim = readForkInstrumentCapabilityClaim(module);
     const hasDylinkForkRole = forkInstrumentRoleAvailable(
       threadForkCapabilityClaim,
@@ -6275,11 +6200,8 @@ export async function centralizedThreadWorkerMain(
     // the multi-activation RECONSTRUCTION runs in the fresh child on the main
     // worker path. (The earlier `!hasDylinkForkRole` single-activation gate would
     // now leave a dlopen pthread with no capture module and hang its fork.) The
-    // pthread parent never reconstructs references (that happens in the child),
-    // so `resolve_externref` is wired (below, for identity parity) but expected
-    // to stay idle here. (The `wpk_fork_host.*` seam this comment used to
-    // describe was deleted, H3, 2026-09-06 — the module no longer declares those
-    // imports at all.) Phase 3: a catalog past the (raised) module cap now FAILS
+    // pthread parent never reconstructs references (that happens in the child).
+    // Phase 3: a catalog past the (raised) module cap now FAILS
     // LOUD here — the cap is a module-BSS structure that holds every real guest's
     // catalog, so an overflow is a genuine module-capacity boundary, never a
     // silent drop to the (Phase 4: to-be-deleted) JS continuation twin.
@@ -6309,15 +6231,6 @@ export async function centralizedThreadWorkerMain(
         (entry) => entry.functionOrdinal,
       );
       {
-        // M2: wire the same `resolve_externref` body as the process/parent
-        // path (using this pthread's own externref token cache, established
-        // above). The pthread-parent
-        // module never actually reconstructs references (that happens on the
-        // fork CHILD side, in the process worker's module instance) — it only
-        // drives the frame/KFRE journal — so this seam is expected to stay
-        // idle here, but it is wired for real rather than left on the
-        // fail-loud default so identity stays consistent if that ever
-        // changes.
         threadForkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
           memory,
@@ -6330,9 +6243,6 @@ export async function centralizedThreadWorkerMain(
               `pid=${pid} tid=${tid}: fork-module`,
             ),
           label: `pid=${pid} tid=${tid}: fork-module`,
-          // The registry itself, so reference identity is derived alongside
-          // the resolver instead of being left a trapping stub.
-          tokens: threadExternrefTokens!,
         });
         // Stage into the dedicated slab inside this thread's fork-module region
         // rather than a growing channel mmap (see the process-worker path for
@@ -7019,7 +6929,6 @@ export async function centralizedThreadWorkerMain(
     // import above. Keep normal-return cleanup defensive so an unexpected
     // execution exit cannot strand the process-wide writer lock.
     releasePthreadForkLock();
-    threadExternrefTokens?.clear();
 
     // A normal return has not passed through libc's noreturn kernel_exit
     // import, so publish SYS_EXIT here. When kernel_exit already ran it sent
@@ -7062,7 +6971,6 @@ export async function centralizedThreadWorkerMain(
     // The registry's `clear()` released its capture transaction's roots here.
     // The module holds them now and reclaims them with its bump heap on the
     // next fork, so there is no host-side transaction left to unwind.
-    threadExternrefTokens?.clear();
     if (err instanceof ExecRetirement) {
       port.postMessage({
         type: "exec_retired",

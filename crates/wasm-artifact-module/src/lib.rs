@@ -12,7 +12,7 @@
 //! | caller | why no kernel export can serve it |
 //! |---|---|
 //! | `kernel.ts` `#compileKernelModule` | needs the artifact's pointer width to build the import object **before the kernel module is compiled** |
-//! | `worker-main.ts`, `dylink.ts`, `fork-host-import-runtime.ts`, `wasm-module-reflection.ts` | run in the **process worker**, which holds no kernel instance |
+//! | `worker-main.ts`, `dylink-loader.ts`, `import-trap-guard.ts`, `wasm-module-reflection.ts` | run in the **process worker**, which holds no kernel instance |
 //! | `binary-resolver.ts` | validates `kernel.wasm` itself, before any kernel exists |
 //!
 //! That is a bootstrap paradox for a kernel export and a non-problem for a

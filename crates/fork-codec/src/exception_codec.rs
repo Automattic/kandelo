@@ -37,28 +37,17 @@
 //! the record count, a noncanonical tag ordinal, or a reserved/duplicated layout
 //! id) yields `Err(Errno::EINVAL)`; the function never panics.
 //!
-//! The LIVE/engine-floor half is deferred to the co-resident module (Phase 6
-//! D5+): everything in `host/src/fork-exception-provider.ts` and
-//! `host/src/fork-worker-import-exceptions.ts` that is genuinely runtime-instance
-//! state rather than a byte image. Specifically the per-activation
-//! `WebAssembly.Tag` creation and Store-local exact-tag codec resolution
-//! (`forkExceptionProviderFromInstance`, which binds live `encode`/`decode`
-//! function exports and throws/holds real `exnref` values), the cross-activation
-//! `ForkExceptionBroker` (which catches a thrown JavaScript/Wasm value and
-//! re-throws it into the selected owner), and the chunked Worker-exception
-//! normalization protocol (`ForkWorkerExceptionCapabilityOwner` /
-//! `ForkWorkerLocalImportExceptionNormalizer`, which own live thrown values and
-//! session state). Those materialize live exceptions; this decoder reproduces
-//! only the descriptor IMAGE and its structural invariants.
-//!
-//! UPDATE 2026-09-14: most of that list resolved, and not by being rewritten.
-//! `forkExceptionProviderFromInstance` had no caller left once the module drove
-//! `__wpk_fork_exception_materialize` through its drive table, and the broker's
-//! catch-and-reprobe half is served by the module's
-//! `__wpk_fork_ref_exn_broker_encode`, which refuses it with `EOPNOTSUPP`. What
-//! remains in TypeScript is `host/src/fork-exception-broker.ts`: re-throwing a
-//! recipe through the OWNING activation's exported thrower, the owner read from
-//! this crate's decoded graph.
+//! The LIVE/engine-floor half is not here: per-activation `WebAssembly.Tag`
+//! creation, Store-local exact-tag codec resolution, and catching a thrown
+//! value to re-throw it into its owner. Those materialize live exceptions; this
+//! decoder reproduces only the descriptor IMAGE and its structural invariants.
+//! Materializing is the module's job, driving each activation's own
+//! `__wpk_fork_exception_materialize` through its drive table; the cross-
+//! activation catch-and-reprobe is the module's
+//! `__wpk_fork_ref_exn_broker_encode`, which refuses with `EOPNOTSUPP`. The
+//! TypeScript that once held these (`fork-exception-provider.ts`,
+//! `fork-exception-broker.ts`, and the Worker-exception normalization in
+//! `fork-worker-import-exceptions.ts`, removed in externref stage E1) is gone.
 
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::abi;

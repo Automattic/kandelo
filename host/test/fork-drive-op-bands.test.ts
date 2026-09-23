@@ -68,7 +68,7 @@ describe("drive-op numbering, across the two files that must agree", () => {
     // it emits wasm and cannot depend on the crate; nothing but this test has
     // ever compared them.
     expect(ops.size).toBeGreaterThan(0);
-    for (const name of ["ALLOC", "STATIC_ROOT", "EXTERNREF_TRANSIT", "RESTORE", "REWIND_BEGIN", "UNWIND_END"]) {
+    for (const name of ["ALLOC", "STATIC_ROOT", "RESTORE", "REWIND_BEGIN", "UNWIND_END"]) {
       expect(injectorOp(name), `DRIVE_OP_${name}`).toBe(ops.get(name));
     }
   });
@@ -80,7 +80,7 @@ describe("drive-op numbering, across the two files that must agree", () => {
     const activationArg = ["RESTORE", "FINISH_RESTORE", "MODULE_STATE_SAVE"];
     const pointerArg = ["REWIND_BEGIN", "ABORT_BEGIN", "UNWIND_BEGIN"];
     const noArg = ["UNWIND_END", "REWIND_END", "ABORT_END"];
-    const reconstruction = ["ALLOC", "FILL", "EXN", "STATIC_ROOT", "EXTERNREF_TRANSIT"];
+    const reconstruction = ["ALLOC", "FILL", "EXN", "STATIC_ROOT"];
 
     const restore = ops.get("RESTORE")!;
     const rewindBegin = ops.get("REWIND_BEGIN")!;
@@ -109,7 +109,7 @@ describe("drive-op numbering, across the two files that must agree", () => {
     // band its number happens to fall in, which is how an activation-argument
     // op gets called as a void one.
     const classified = new Set([
-      "ALLOC", "FILL", "EXN", "STATIC_ROOT", "EXTERNREF_TRANSIT",
+      "ALLOC", "FILL", "EXN", "STATIC_ROOT",
       "RESTORE", "FINISH_RESTORE", "MODULE_STATE_SAVE",
       "REWIND_BEGIN", "ABORT_BEGIN", "UNWIND_BEGIN",
       "UNWIND_END", "REWIND_END", "ABORT_END",
@@ -118,10 +118,19 @@ describe("drive-op numbering, across the two files that must agree", () => {
     expect(unclassified).toEqual([]);
   });
 
-  it("numbers the ops contiguously from zero", () => {
+  it("numbers the ops contiguously from zero, but for the one retired value", () => {
     // The bands are half-open ranges over the op values, so a gap or a repeat
-    // silently moves a boundary.
-    const values = [...ops.values()].sort((a, b) => a - b);
+    // silently moves a boundary. Exactly one gap is deliberate: op 4 was
+    // DRIVE_OP_EXTERNREF_TRANSIT, retired in externref stage E2 (a fork no
+    // longer carries a raw host externref), and left unused so the ops after
+    // it kept their values. It sits inside the reconstruction band, so it
+    // moves no boundary.
+    const RETIRED = [4];
+    expect(drivePlan, "op 4 is documented as retired").toMatch(/`op` 4 is RETIRED/);
+    expect([...ops.values()], "no op reuses a retired value").not.toContain(4);
+    const values = [...ops.values(), ...RETIRED].sort((a, b) => a - b);
     expect(values).toEqual(values.map((_, i) => i));
+    expect(RETIRED[0]!, "the retired value is inside the reconstruction band")
+      .toBeLessThan(ops.get("RESTORE")!);
   });
 });

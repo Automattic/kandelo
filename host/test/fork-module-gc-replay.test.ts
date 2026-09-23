@@ -1,63 +1,46 @@
-// Phase 6 D6.4a / M2 — typed-GC (struct/array/i31) reference reconstruction
-// ADMITTED by the co-resident fork module, with the injected drive plan doing
-// leaf-identity + transit rooting while the PROVEN topological allocate/fill
-// walk (`fork_codec::build_drive_plan`) drives the guest's own
+// Phase 6 D6.4a — typed-GC (struct/array/i31) reference reconstruction
+// ADMITTED by the co-resident fork module, with the PROVEN topological
+// allocate/fill walk (`fork_codec::build_drive_plan`) driving the guest's own
 // `_gc_allocate`/`_gc_fill` exports through the drive table. Proven end to end
 // in a real WebAssembly engine (Node/V8).
 //
-// This is the typed-GC analogue of `fork-module-exnref-replay.test.ts`. The
-// crucial shape this exercises is a struct↔array CYCLE whose subgraph reaches an
-// ALIASED externref leaf (id 0 is the canonical null every capture requires):
+// The shape this exercises is a struct<->array CYCLE whose subgraph reaches an
+// ALIASED funcref leaf (id 0 is the canonical null every capture requires):
 //
 //   id 0 = null                                        (canonical)
-//   id 1 = struct  -> array(2) + externref(3)          (fields [2, 3])
-//   id 2 = array   -> struct(1) (back-edge) + externref(3) (alias)  (elements [1, 3])
-//   id 3 = externref naming `LEAF_HANDLE`              (reached from BOTH)
+//   id 1 = struct  -> array(2) + funcref(3)            (fields [2, 3])
+//   id 2 = array   -> struct(1) (back-edge) + funcref(3) (alias)  (elements [1, 3])
+//   id 3 = funcref naming activation 0's `LEAF_ORDINAL` (reached from BOTH)
 //
-// Since M2, the module's PHASE-B leaf rooting is no longer a host round-trip:
-// `build_drive_plan` emits a `DRIVE_OP_EXTERNREF_TRANSIT` step for the aliased
-// leaf in Phase 0 (before any allocate/fill), and the injected `fm_drive_execute`
-// shim resolves it through the single residual `env.resolve_externref` host
-// import, internalizes it (`any.convert_extern`), `table.set`s it into the
-// anyref transit at `recipe + 1`, and asserts non-null — the replacement for the
-// retired host `Object.is` R1 read-back guard (see the design ruling in
-// `docs/superpowers/plans/2026-09-03-m2-externref-into-module.md`). The
-// struct/array ALLOC/FILL steps then drive the REAL guest exports (here, the
+// The struct/array ALLOC/FILL steps drive the REAL guest exports (here, the
 // FAITHFUL guest double, which publishes a live identity into STORE #2 on
-// ALLOC — see `fork-module-faithful-guest.ts`). Despite the ALIAS (the leaf is
-// reached from both the struct field and the array element), it must be rooted
-// EXACTLY ONCE (dedup).
+// ALLOC -- see `fork-module-faithful-guest.ts`). The funcref leaf needs no
+// drive step: the injected funcref shim reconstructs it.
+//
+// Before externref stage E2 the leaf was a host externref, and this file also
+// proved the drive re-rooted it through `env.resolve_externref` exactly once
+// and trapped on a lost one (the M2 R1 guard). A fork no longer carries a raw
+// host externref, so that step, that import and that guard are gone.
 //
 // Assertions:
-//   (a) TRANSIT IDENTITY (silent-corruption-critical) — the token the drive
-//       publishes into the real anyref transit reads back `Object.is`-identical
-//       to `tokens.materialize(handle)` (the canonical token the module's lazy
-//       externref decode would also return), rooted ONCE.
-//   (b) PROOF OF USE — `fm_gc_nodes_reconstructed` advanced by the struct+array
-//       count (bookkeeping) and the drive plan resolved the reachable leaf
-//       exactly once through the host seam.
-//   (c) MINT INERT — no exception tag is minted (no exnref; the deleted
-//       `wpk_fork_host.*` `host_mint_exception_tag` seam, H3, is gone — the
+//   (a) PROOF OF USE -- `fm_gc_nodes_reconstructed` advanced by the struct+array
+//       count (bookkeeping) and the guest published both aggregates.
+//   (b) MINT INERT -- no exception tag is minted (no exnref; the deleted
+//       `wpk_fork_host.*` `host_mint_exception_tag` seam, H3, is gone -- the
 //       module no longer even declares the import).
-//   (d) R1 GUARD IS LOAD-BEARING — when the host loses the reachable leaf's
-//       identity (`resolve_externref` returns null for it), the injected
-//       non-null check TRAPS the drive rather than silently rooting a null/wrong
-//       leaf a struct/array fill would then read.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { FORK_MODULE_STATS } from "../src/fork-module-backend";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import { createForkModuleHostCapabilities } from "../src/fork-module-host-capabilities";
-import { ForkExternrefTokenCache } from "../src/fork-reference-broker";
 import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
 import {
   CAPTURE_KIND_ARRAY,
   CAPTURE_KIND_EXNREF,
   CAPTURE_KIND_STRUCT,
-  INTERN_KIND_EXTERNREF,
+  INTERN_KIND_FUNCREF,
   PAGE,
   captureGraph,
   childInstance,
@@ -81,9 +64,8 @@ const PID = 6262;
  * staged where no mapping can land on it.
  */
 const CODEC_SCRATCH = 8192;
-const GENERATION_ID = 11;
-// The durable broker handle the aliased externref leaf names.
-const LEAF_HANDLE = 77;
+// The function-catalog ordinal the aliased funcref leaf names.
+const LEAF_ORDINAL = 77;
 
 /** `fm_stats` field indices, read from the one list the backend pins. */
 const STAT = Object.fromEntries(
@@ -105,12 +87,6 @@ const GC_CODEC = new Uint8Array(
 );
 
 /**
- * Build a sealed KFMS arena holding the struct↔array cycle over an aliased
- * externref leaf described in the file header, plus the GC-codec fixture bytes
- * placed just past it so `fm_set_activation_gc_codec` can copy them from guest
- * memory.
- */
-/**
  * CAPTURE the struct-to-array cycle through the module, and stage the codec.
  *
  * This used to CONSTRUCT the sealed arena in TypeScript with the set-aside
@@ -119,7 +95,7 @@ const GC_CODEC = new Uint8Array(
  * seals now; the ids come back from it, because they are its to assign.
  *
  * The cycle is the point: the struct's fields name the array and the shared
- * externref leaf, the array's elements name the struct back and the same leaf.
+ * funcref leaf, the array's elements name the struct back and the same leaf.
  * Type ordinals and layout ids match the committed KFGC fixture -- struct
  * layout 1 (type ordinal 0), array layout 4 (type ordinal 3), both activation 0.
  */
@@ -132,7 +108,7 @@ function captureGcCycle(f: Fixture): {
 } {
   const { root, recipes, aggregateRecipes } = captureGraph(
     f,
-    [[INTERN_KIND_EXTERNREF, LEAF_HANDLE, 0]],
+    [[INTERN_KIND_FUNCREF, 0, LEAF_ORDINAL]],
     [
       {
         kind: CAPTURE_KIND_STRUCT,
@@ -200,11 +176,8 @@ interface ForkModuleRefExports {
  * parent seals and a fresh child rebuilds. Replaying in the instance that
  * captured would let a graph the module never actually wrote to memory pass.
  */
-function replayChild(
-  f: Fixture,
-  resolveExternref: (handle: number) => unknown,
-) {
-  const fm = childInstance(f, { label: "gc-replay-child", resolveExternref });
+function replayChild(f: Fixture) {
+  const fm = childInstance(f, { label: "gc-replay-child" });
   return { fm, x: fm.exports as unknown as ForkModuleRefExports };
 }
 
@@ -236,19 +209,16 @@ function bindFaithfulGuest(
   return { transitTable, guest, published };
 }
 
-describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting through the module (Phase 6 D6.4a / M2)", () => {
-  it("roots the aliased externref leaf of a struct↔array cycle in the real anyref transit ONCE with identity parity, advances the counters, and never mints a tag", () => {
+describe("fork-module typed-GC (struct/array/i31) admission through the module (Phase 6 D6.4a)", () => {
+  it("drives a struct<->array cycle over an aliased leaf, advances the counters, and never mints a tag", () => {
     const f = fixture();
-    const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    const hostCapabilities = createForkModuleHostCapabilities({ tokens });
 
     const { root, codecPtr, structId, arrayId, leafId } = captureGcCycle(f);
-    const { fm, x } = replayChild(f, hostCapabilities.imports.resolve_externref);
+    const { fm, x } = replayChild(f);
 
     x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
     expect(x.fm_last_errno()).toBe(0);
 
-    const externrefsBefore = Number(x.fm_stats(STAT.externrefsResolved));
     const gcNodesBefore = Number(x.fm_stats(STAT.gcNodesReconstructed));
     const exnrefsBefore = Number(x.fm_stats(STAT.exnrefsReconstructed));
 
@@ -256,21 +226,19 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
-    // (b) PROOF OF USE (graph admission) — two typed-GC nodes admitted (struct +
-    // array), one externref leaf counted, and NO exnref.
+    // (a) PROOF OF USE (graph admission) — two typed-GC nodes admitted (struct +
+    // array), and NO exnref.
     expect(Number(x.fm_stats(STAT.gcNodesReconstructed)) - gcNodesBefore).toBe(2);
-    expect(Number(x.fm_stats(STAT.externrefsResolved)) - externrefsBefore).toBe(1);
     expect(Number(x.fm_stats(STAT.exnrefsReconstructed)) - exnrefsBefore).toBe(0);
 
-    // Build + execute the real drive plan: Phase 0 publishes the aliased
-    // externref leaf into the REAL anyref transit ONCE (dedup) with the
-    // non-null R1 assert, then the struct/array ALLOC/FILL steps drive the
-    // guest's own exports (here, the faithful double) to completion.
+    // Build + execute the real drive plan: the struct/array ALLOC/FILL steps
+    // drive the guest's own exports (here, the faithful double) to completion.
+    // The funcref leaf needs no step.
     const planPtr = x.fm_build_gc_plan(PID);
     expect(x.fm_last_errno()).toBe(0);
     const count = x.fm_gc_plan_count();
 
-    const { transitTable, published } = bindFaithfulGuest(
+    const { published } = bindFaithfulGuest(
       fm,
       x,
       Math.max(structId, arrayId, leafId),
@@ -278,58 +246,15 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
 
     x.fm_drive_execute(planPtr, count);
 
-    // (a) TRANSIT IDENTITY — the token the drive rooted for the leaf is the SAME
-    // object `tokens.materialize(handle)` returns (idempotent cache), and it is
-    // what actually sits in the real anyref transit slot (recipe_id 3 -> slot 4),
-    // rooted EXACTLY ONCE despite the alias. The transit slot is `recipe + 1`,
-    // and the recipe is the module's to assign -- read back, never assumed.
-    const canonical = tokens.materialize(LEAF_HANDLE);
-    expect(transitTable.get(leafId + 1)).toBe(canonical);
-    // Dedup: exactly one externref was re-rooted through the seam despite two
-    // aggregate edges naming it.
-    expect(hostCapabilities.resolvedCount).toBe(1);
-
     // The guest published a live store-#2 identity for both aggregates (struct
     // recipe 1, array recipe 2).
     expect(new Set(published)).toEqual(new Set([structId, arrayId]));
 
-    // (c) MINT INERT — the typed-GC drive never mints an exception tag. This
+    // (b) MINT INERT — the typed-GC drive never mints an exception tag. This
     // used to be proven by spying on a `host_mint_exception_tag` stub
     // (`wpk_fork_host.*` seam); that seam was deleted (H3, 2026-09-06) because
     // it was never wired to any guest, so the proof is now structural: the
     // module no longer even declares the import, so there is nothing to call.
-  });
-
-  it("R1 GUARD (wasm-level): a resolved-but-lost externref leaf TRAPS the drive, never silently mis-roots the cycle's identity", () => {
-    // The retired host `Object.is` R1 guard is replaced, in M2, by the injected
-    // `fm_drive_execute` shim's non-null structural check on the transit slot
-    // (see the design ruling). Simulate the host losing the leaf's identity
-    // (`resolve_externref` returns null for it): the DRIVE_OP_EXTERNREF_TRANSIT
-    // step internalizes null, `table.set`s it, reads it back, and TRAPS — before
-    // any ALLOC/FILL runs (Phase 0 precedes every allocate/fill) — failing loud
-    // rather than letting the struct/array fill consume a null/wrong leaf.
-    const f = fixture();
-    const { root, codecPtr, leafId } = captureGcCycle(f);
-    const { fm, x } = replayChild(f, () => null);
-
-    x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
-    expect(x.fm_last_errno()).toBe(0);
-
-    x.fm_begin_reference_replay(root, PID);
-    expect(x.fm_last_errno()).toBe(0);
-
-    const planPtr = x.fm_build_gc_plan(PID);
-    expect(x.fm_last_errno()).toBe(0);
-    const count = x.fm_gc_plan_count();
-
-    // Presize the transit table (mirrors production's `ensureRecipeSlot`) so the
-    // trap below is the intended non-null structural check, not an unrelated
-    // out-of-bounds `table.set` on a too-small default table. Bind the guest
-    // double too — the trap must fire in Phase 0, BEFORE any `call_indirect`
-    // reaches it, proving the leaf rooting genuinely gates the aggregate drive.
-    bindFaithfulGuest(fm, x, leafId + 1);
-
-    expect(() => x.fm_drive_execute(planPtr, count)).toThrowError(/unreachable/i);
   });
 
   it("notices a decoded graph that belongs to a PREVIOUS fork", () => {
@@ -355,7 +280,7 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     const f = fixture();
     const x = f.x as Record<string, (...a: number[]) => number>;
 
-    const a = captureGraph(f, [[INTERN_KIND_EXTERNREF, 44, 0]], [
+    const a = captureGraph(f, [[INTERN_KIND_FUNCREF, 0, 44]], [
       {
         kind: CAPTURE_KIND_EXNREF,
         activation: 0,
@@ -374,7 +299,7 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     expect(f.errno(), "the first fork ends").toBe(0);
     expect(x.fm_phase(), "and the worker is idle again").toBe(0);
 
-    const b = captureGraph(f, [[INTERN_KIND_EXTERNREF, 45, 0]], [
+    const b = captureGraph(f, [[INTERN_KIND_FUNCREF, 0, 45]], [
       {
         kind: CAPTURE_KIND_STRUCT,
         activation: 0,
@@ -405,8 +330,8 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // A struct node is the case that matters. It CARRIES a module_activation --
     // so the owner lookup below it succeeds and would hand a struct's recipe id
     // to that activation's exception thrower, which expects an exception
-    // recipe. A null/externref/i31 node would not prove this, because the owner
-    // accessor refuses those on its own.
+    // recipe. A null/i31 node would not prove this, because the owner accessor
+    // refuses those on its own.
     //
     // The errno is the assertion, not the trap. Without the kind check this
     // still traps -- the throw slot is unbound in this fixture, so the
@@ -415,7 +340,7 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // EINVAL, and it can only come from the check. Census 192.
     const f = fixture();
     const { root, codecPtr, structId } = captureGcCycle(f);
-    const { x } = replayChild(f, () => null);
+    const { x } = replayChild(f);
     x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
@@ -433,14 +358,11 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // exports. Drive them directly against the module's seeded feed (the guest
     // `_gc_allocate`/`_gc_fill` walk does exactly this at runtime) and prove the
     // MODULE (not the JS provider) produced JS-identical results, in a real
-    // WebAssembly engine. This data feed does not touch the externref transit at
-    // all, so a resolver that is never expected to be called is enough.
+    // WebAssembly engine.
     const f = fixture();
     const memory = f.memory;
     const { root, codecPtr, structId, arrayId, leafId } = captureGcCycle(f);
-    const { x } = replayChild(f, () => {
-      throw new Error("resolve_externref should not be called by the data feed");
-    });
+    const { x } = replayChild(f);
     x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
@@ -468,13 +390,13 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // vector takes ordinal 1.
     expect(structVec).toBe(1);
     expect(x.__wpk_fork_ref_vector_get(structVec, 0)).toBe(arrayId); // field -> array
-    expect(x.__wpk_fork_ref_vector_get(structVec, 1)).toBe(leafId); // field -> externref
+    expect(x.__wpk_fork_ref_vector_get(structVec, 1)).toBe(leafId); // field -> funcref leaf
 
     const arrayDst = structDst + PAGE;
     const arrayVec = x.__wpk_fork_ref_gc_load(arrayId, 0, 3, 4, 2 /* array */, arrayDst, 0);
     expect(arrayVec).toBe(2);
     expect(x.__wpk_fork_ref_vector_get(arrayVec, 0)).toBe(structId); // element -> struct (back-edge)
-    expect(x.__wpk_fork_ref_vector_get(arrayVec, 1)).toBe(leafId); // element -> externref (alias)
+    expect(x.__wpk_fork_ref_vector_get(arrayVec, 1)).toBe(leafId); // element -> funcref leaf (alias)
 
     // A repeated struct load returns the SAME cached ordinal (no duplicate append).
     expect(x.__wpk_fork_ref_gc_load(structId, 0, 0, 1, 1, structDst, 4)).toBe(structVec);

@@ -31,7 +31,7 @@
 //! HOST-ONLY: build/test with an explicit host target (see `Cargo.toml`).
 
 use std::cell::UnsafeCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write as _};
@@ -1061,7 +1061,6 @@ pub struct ForkProofOfUse {
     pub frames_committed: i64,
     pub frames_replayed: i64,
     pub references_reconstructed: i64,
-    pub externrefs_resolved: i64,
     pub exnrefs_reconstructed: i64,
     pub gc_nodes_reconstructed: i64,
     /// N1-I5 Task 3: static roots the `DRIVE_OP_STATIC_ROOT` step published
@@ -1069,8 +1068,8 @@ pub struct ForkProofOfUse {
     /// contains a static-root recipe.
     pub static_roots_published: i64,
     /// N1-I5 Task 3: plan steps `fm_drive_execute`'s injected loop drove
-    /// (ALLOC/FILL/EXN/STATIC_ROOT/EXTERNREF_TRANSIT). Stays `0` for a
-    /// funcref/externref-only fork, which builds a zero-step plan.
+    /// (ALLOC/FILL/EXN/STATIC_ROOT). Stays `0` for a funcref-only fork,
+    /// which builds a zero-step plan.
     pub drive_steps_executed: i64,
 }
 
@@ -1088,9 +1087,6 @@ fn fold_fork_proof_of_use(fm: &ForkModule, store: &mut Store<()>, acc: &mut Fork
     }
     if let Ok(v) = fm.fm_stats.call(&mut *store, FM_STAT_REFERENCES_RECONSTRUCTED) {
         acc.references_reconstructed += v;
-    }
-    if let Ok(v) = fm.fm_stats.call(&mut *store, FM_STAT_EXTERNREFS_RESOLVED) {
-        acc.externrefs_resolved += v;
     }
     if let Ok(v) = fm.fm_stats.call(&mut *store, FM_STAT_EXNREFS_RECONSTRUCTED) {
         acc.exnrefs_reconstructed += v;
@@ -4746,14 +4742,12 @@ fn compute_guest_memory(
 // reference this section ports.
 //
 // This is FRAMES-ONLY (N1-I4 Task 1): it instantiates the module and binds
-// its `fm_*` coordinator exports, but the reference/exception import surface
-// (`wpk_fork_host.*` + `env.resolve_externref`) is stubbed as inert traps
-// that this path never calls. No `SYS_FORK`/kernel wiring happens here
+// its `fm_*` coordinator exports. No `SYS_FORK`/kernel wiring happens here
 // (Task 2); no capture/replay is driven here (Task 3).
 //
-// N1-I5 Task 2: `env.resolve_externref` is no longer part of that inert-trap
-// set — [`define_resolve_externref`] below defines it as a REAL `Func` before
-// `define_unknown_imports_as_traps` runs.
+// Externref stage E2: the module no longer imports `env.resolve_externref`
+// or `env.__wpk_fork_host_externref_handle`. A fork does not carry a raw host
+// externref, so the module never has to name or rebuild one.
 //
 // H3 (host-surface minimization, 2026-09-06): the `wpk_fork_host.*` seam
 // (`crate::fork_host_capabilities::NativeForkHostCapabilities`) this comment
@@ -4768,138 +4762,9 @@ fn compute_guest_memory(
 /// placement policy constant, not part of the wire ABI).
 const FORK_MODULE_SHADOW_STACK_BYTES: usize = 1 << 20;
 
-/// Handle -> `Rooted<ExternRef>` cache backing `env.resolve_externref` (N1-I5
-/// Task 2; `docs/plans/2026-09-05-n1-i5-references-grounding.md` §5).
-///
-/// `resolve_externref(handle)` must return the exact SAME `Rooted<ExternRef>`
-/// for repeat asks with the same `handle` — this is what preserves externref
-/// identity across the injected `__wpk_fork_ref_decode_externref` shim AND the
-/// `DRIVE_OP_EXTERNREF_TRANSIT` drive step, both of which must observe the
-/// identical value for one recipe (grounding §5's "bookkeeping discipline, not
-/// an engine limitation"). This mirrors the idempotent
-/// `ForkExternrefTokenCache.materialize` on Node/browser
-/// (`host/src/fork-reference-broker.ts:590-632`); native has no JS broker to
-/// consult, so the handle itself becomes the backing Rust value wrapped by a
-/// freshly minted `ExternRef` the first time it is asked for (§5: "a native
-/// externref-producing host import would construct it via `ExternRef::new`
-/// wrapping a genuine Rust value").
-///
-/// Lifetime ("the RootScope tied to the fork's generation"): one
-/// `ExternrefRegistry` is created per [`define_resolve_externref`] call, which
-/// [`instantiate_fork_module`] makes exactly once per guest OS thread —
-/// `spawn_guest_thread` creates a fresh `Store<()>` per launched/forked guest,
-/// so one `Store` already brackets exactly "one fork's reconstruction". Every
-/// `Rooted<ExternRef>` this registry mints is rooted directly against that
-/// `Store` rather than through an explicit nested `wasmtime::RootScope`:
-/// because the `Store` is never reused across generations in this
-/// architecture, its own top-level root scope already has the lifetime a
-/// per-generation `RootScope` would provide, and every root this registry
-/// created is reclaimed together when the guest thread's `Store` drops. An
-/// explicit nested `RootScope` would only add value if a single `Store` had
-/// to host more than one generation in sequence, which does not happen today
-/// (Task 3, which actually drives a fork's reference replay, is where this
-/// would be revisited if that assumption changes).
-struct ExternrefRegistry {
-    map: HashMap<u32, wasmtime::OwnedRooted<ExternRef>>,
-}
-
-impl ExternrefRegistry {
-    fn new() -> Self {
-        Self { map: HashMap::new() }
-    }
-
-    /// Look up (or, on the first ask for this `handle` in this registry's
-    /// lifetime, lazily mint) the externref for `handle`. Never constructs a
-    /// second `ExternRef` for a `handle` already in the map — this is the
-    /// idempotence the decode-externref shim and the externref-transit drive
-    /// step both rely on.
-    ///
-    /// Stored as `OwnedRooted<ExternRef>`, not `Rooted<ExternRef>`: Wasmtime
-    /// implicitly scopes every top-level `Func`/`TypedFunc` call to its own
-    /// short-lived root scope, so a `Rooted<ExternRef>` created during one
-    /// call is unrooted (and traps if later dereferenced) the instant that
-    /// call returns — confirmed empirically here (an earlier version of this
-    /// method that cached `Rooted<ExternRef>` directly failed a second call
-    /// with wasmtime's own "attempted to use a garbage-collected object that
-    /// has been unrooted" error). `OwnedRooted<T>` is the type Wasmtime's own
-    /// docs point to for exactly this "hold past the call's scope" case
-    /// (`Rooted::to_owned_rooted`'s doc comment); cloning it is cheap and
-    /// yields the SAME underlying GC object, which is what identity here
-    /// actually means (see `resolve_externref_is_idempotent_per_handle`,
-    /// which asserts `Rooted::ref_eq`, not `Rooted::rooted_eq`, across two
-    /// separate calls for the same handle).
-    fn resolve(
-        &mut self,
-        mut store: impl wasmtime::AsContextMut,
-        handle: u32,
-    ) -> wasmtime::Result<wasmtime::OwnedRooted<ExternRef>> {
-        if let Some(existing) = self.map.get(&handle) {
-            return Ok(existing.clone());
-        }
-        let owned = ExternRef::new(&mut store, handle)?.to_owned_rooted(&mut store)?;
-        self.map.insert(handle, owned.clone());
-        Ok(owned)
-    }
-}
-
-/// N1-F5 Task 2: mint-time externref PROVENANCE index — `(live externref
-/// identity -> handle)`, populated exclusively by
-/// `__wpk_fork_ref_provenance_externref` (bound in `spawn_guest_thread`,
-/// guarded by `guest_declares`) at the exact instant `wasm-fork-instrument`'s
-/// new production-site wrapper pass (`crates/fork-instrument/src/
-/// externref_provenance.rs`) routes a freshly-minted externref through it —
-/// never derived later by inspecting an already-live value. This is the
-/// primitive `docs/plans/2026-09-05-n1-f5-externref-capture-grounding.md` §2
-/// calls out as the ONLY sound way to close the capture-side gap: recording
-/// at production, not reconstructing at capture.
-///
-/// Deliberately NOT folded into [`ExternrefRegistry`]: that map is
-/// handle-keyed (forward, for `resolve_externref`); this one needs the
-/// OPPOSITE direction (value -> handle) and the two have different write
-/// sites (`resolve_externref`'s own body vs. the provenance import's body),
-/// so a sibling structure keeps each map's invariants easy to state
-/// independently — exactly the "sibling identity-keyed index" the plan
-/// calls for rather than widening the existing struct.
-///
-/// Stored as a flat `Vec<(OwnedRooted<ExternRef>, u32)>`, not a `HashMap`:
-/// `wasmtime::Rooted<ExternRef>`/`OwnedRooted<ExternRef>` has no `Hash`/`Eq`
-/// impl usable as a map key, and `ExternRef::to_raw`'s raw `u32` encoding is
-/// explicitly NOT a stable cross-time identity (its own doc comment: the
-/// value is "only valid ... if a GC doesn't happen between when the value is
-/// produced and when it's passed into the store"), so hashing on it would
-/// risk silent aliasing across a collection. A linear scan comparing
-/// `Rooted::ref_eq` has no such risk (every registered entry is kept alive
-/// as an `OwnedRooted`, so identity comparisons stay meaningful for the
-/// whole capture) and is cheap enough for the bounded number of externrefs
-/// actually live during one fork generation. This mirrors option (a) in
-/// grounding §2 ("iterate the whole map comparing `Rooted::ref_eq`"), which
-/// the grounding calls sound for exactly the values that already passed
-/// through a registration point — which, by construction, is every entry
-/// this index ever holds.
-///
-/// Review finding (increment-review.md HIGH-1 / "Finding 1"): every entry
-/// here is an `OwnedRooted`, a STRONG GC root by Wasmtime's own design (see
-/// `PROVENANCE_REGISTRY_CAP`'s doc comment) — so this index, like
-/// [`GcProvenanceRegistry::finalized`], grows for the whole guest OS
-/// thread's lifetime and pins every tracked value permanently, unlike the
-/// TS `ExternrefProvenance`'s `WeakMap` (`host/src/fork-externref-
-/// provenance.ts:25`), which lets a tracked value die once nothing else
-/// references it. [`Self::register`] now caps growth at
-/// [`PROVENANCE_REGISTRY_CAP`] — see that constant's doc comment for the
-/// full residual-risk ruling (wasmtime 48 has no weak-GC-reference
-/// primitive to port the `WeakMap` design to) and why a cap is a sound,
-/// truthful-failure-preserving bound rather than an unsound prune.
-struct ExternrefProvenance {
-    entries: Vec<(wasmtime::OwnedRooted<ExternRef>, u32)>,
-    /// Set once [`Self::register`] first hits [`PROVENANCE_REGISTRY_CAP`],
-    /// so the loud diagnostic fires exactly once per guest OS thread rather
-    /// than once per subsequent mint.
-    capped_warned: bool,
-}
-
 /// Review fix (increment-review.md HIGH-1 / "Finding 1"): a hard ceiling on
-/// how many mint-time provenance entries [`ExternrefProvenance`] and
-/// [`GcProvenanceRegistry`] will each retain for one guest OS thread.
+/// how many mint-time provenance entries [`GcProvenanceRegistry`] will retain
+/// for one guest OS thread.
 ///
 /// INVESTIGATED: wasmtime 48.0.1's GC rooting API
 /// (`wasmtime::runtime::gc::enabled::rooting`) offers exactly two
@@ -4935,68 +4800,6 @@ struct ExternrefProvenance {
 /// mirrors.
 const PROVENANCE_REGISTRY_CAP: usize = 4096;
 
-impl ExternrefProvenance {
-    fn new() -> Self {
-        Self { entries: Vec::new(), capped_warned: false }
-    }
-
-    /// Record `(value -> handle)` at mint time. A repeat registration of a
-    /// value already present (e.g. `resolve_externref`'s own
-    /// idempotent-per-handle cache handing back the same `OwnedRooted` for a
-    /// repeat ask) is a no-op rather than a duplicate entry.
-    ///
-    /// Review fix (Finding 1): once `entries` reaches
-    /// [`PROVENANCE_REGISTRY_CAP`], a genuinely NEW value is no longer
-    /// registered — see that constant's doc comment for why this is a
-    /// sound, truthful-failure-preserving bound (a fork later carrying that
-    /// specific value gates cleanly) rather than an unsound prune.
-    fn register(
-        &mut self,
-        mut store: impl wasmtime::AsContextMut,
-        value: wasmtime::Rooted<ExternRef>,
-        handle: u32,
-    ) -> wasmtime::Result<()> {
-        if self.lookup(&mut store, value)?.is_some() {
-            return Ok(());
-        }
-        if self.entries.len() >= PROVENANCE_REGISTRY_CAP {
-            if !self.capped_warned {
-                self.capped_warned = true;
-                eprintln!(
-                    "[host-native] externref mint-time provenance registry reached its cap \
-                     ({PROVENANCE_REGISTRY_CAP} entries) for this guest OS thread; further \
-                     distinct externref mints will not be tracked and will cleanly gate \
-                     (EOPNOTSUPP) any fork that later carries them live — see \
-                     increment-review.md HIGH-1."
-                );
-            }
-            return Ok(());
-        }
-        let owned = value.to_owned_rooted(&mut store)?;
-        self.entries.push((owned, handle));
-        Ok(())
-    }
-
-    /// Look up the mint-time-recorded handle for `value`, or `None` when it
-    /// was never registered — the SOUNDNESS GUARD boundary: a
-    /// `call_indirect`/`call_ref` residual production site the
-    /// instrumenter's static pass could not identify, or a
-    /// guest-internalized externref (F6), both correctly report "no
-    /// provenance" here rather than a fabricated handle.
-    fn lookup(
-        &self,
-        mut store: impl wasmtime::AsContextMut,
-        value: wasmtime::Rooted<ExternRef>,
-    ) -> wasmtime::Result<Option<u32>> {
-        for (candidate, handle) in &self.entries {
-            if wasmtime::Rooted::ref_eq(&mut store, candidate, &value)? {
-                return Ok(Some(*handle));
-            }
-        }
-        Ok(None)
-    }
-}
-
 /// N1 refcomplete (static root, last gated native kind): the CAPTURE-side
 /// reverse index for a static root — "is this exact harvested `anyref`
 /// identity one of my instance's own canonical static roots, and if so at
@@ -5020,10 +4823,8 @@ impl ExternrefProvenance {
 /// identity and coordinate are fixed for the whole instantiation's lifetime,
 /// harvested before any guest code — including a `kernel_fork` call — could
 /// run, so the SAME index is valid for every fork this OS thread's guest
-/// performs. This mirrors `ExternrefProvenance`'s own lifetime argument
-/// exactly (`:2401-2415` above), for the identical reason: `Rooted<AnyRef>`/
-/// `OwnedRooted<AnyRef>` has no `Hash`/`Eq`, so a flat `Vec` + `Rooted::
-/// ref_eq` linear scan is the correct, already-precedented pattern here too
+/// performs. `Rooted<AnyRef>`/`OwnedRooted<AnyRef>` has no `Hash`/`Eq`, so a
+/// flat `Vec` + `Rooted::ref_eq` linear scan is the correct pattern here
 /// (the number of static roots is bounded by the module's own catalog size,
 /// harvested once, so the linear scan is cheap for the whole guest OS
 /// thread's lifetime).
@@ -5156,17 +4957,14 @@ struct PendingGcProvenance {
     references: Vec<Option<wasmtime::OwnedRooted<AnyRef>>>,
 }
 
-/// N1-F6: native's Wasm-GC analogue of [`ExternrefProvenance`] — see that
-/// struct's doc comment for the shared "flat `Vec` + `Rooted::ref_eq`"
-/// rationale (`Rooted<AnyRef>`/`OwnedRooted<AnyRef>` have the same "no
-/// `Hash`/`Eq`, unstable raw `to_raw` id" shape `ExternRef` does; wasmtime's
-/// GC-rooting API is uniform across GC reference types).
+/// N1-F6: native's mint-time Wasm-GC constructor provenance. A flat `Vec` +
+/// `Rooted::ref_eq` scan, because `Rooted<AnyRef>`/`OwnedRooted<AnyRef>` have
+/// no `Hash`/`Eq` and an unstable raw `to_raw` id.
 ///
 /// Populated at ORDINARY GUEST RUNTIME — whenever a provenance-wrapped
 /// `struct.new $T`/`array.new*` call site executes (`inject_provenance_
 /// wrappers`, `crates/fork-instrument/src/module_gc_codec.rs:397-619`), not
-/// only during a fork's capture walk — so, like `ExternrefProvenance`, this
-/// lives for the WHOLE guest OS thread (one `Store` == one fork generation
+/// only during a fork's capture walk — so it lives for the WHOLE guest OS thread (one `Store` == one fork generation
 /// of activity), not reset per capture. Read at fork-CAPTURE time by
 /// `gc_capture_layout`/`gc_define` to recover constructor-time evidence a
 /// live object's CURRENT state cannot answer for a mutable, non-nullable,
@@ -5178,9 +4976,7 @@ struct GcProvenanceRegistry {
     next_token: i32,
     /// Review fix (increment-review.md HIGH-1 / "Finding 1"): [`Self::end`]
     /// stops growing `finalized` once it reaches [`PROVENANCE_REGISTRY_CAP`]
-    /// — see that constant's doc comment (right above
-    /// [`ExternrefProvenance`], which has the exact same shape) for the full
-    /// ruling. Set once the cap first fires, so the loud diagnostic prints
+    /// — see that constant's doc comment for the full ruling. Set once the cap first fires, so the loud diagnostic prints
     /// exactly once per guest OS thread.
     capped_warned: bool,
     /// N1-F6 Task 5 (array un-gate): per-SPECIALIZED-layout provenance
@@ -5357,8 +5153,7 @@ impl GcProvenanceRegistry {
 
     /// Look up the finalized provenance for `object`, or `None` if it was
     /// never constructed through a provenance-wrapped call site — the
-    /// SOUNDNESS GUARD boundary, mirroring `ExternrefProvenance::lookup`'s
-    /// analogous doc comment: never fabricate constructor evidence for a
+    /// SOUNDNESS GUARD boundary: never fabricate constructor evidence for a
     /// value this registry never recorded.
     fn find(
         &self,
@@ -5419,42 +5214,29 @@ impl GcProvenanceRegistry {
     }
 }
 
-/// Define `env.resolve_externref(handle: i32) -> externref` (nullable
-/// externref, matching the fork-module's declared import type — see
-/// `crates/fork-module-inject/src/main.rs`'s `import_resolve_externref`) as a
-/// REAL `Func`, backed by the given [`ExternrefRegistry`]. Must be called
-/// BEFORE `Linker::define_unknown_imports_as_traps` so that pass does not
-/// shadow this with a trapping stub.
+/// Define `env.native_test_host_externref(handle: i32) -> externref` — a
+/// TEST-ONLY host import, never declared by a real program, that hands the
+/// guest a genuine HOST object: a fresh `ExternRef` wrapping `handle` as its
+/// Rust data. It is the plain local host import the externref fork fixtures
+/// get their host object from, the native mate of the one the JS-host tests
+/// supply (`host/test/fork-host-externref-refusal.test.ts`).
 ///
-/// N1-I5 Task 3: `registry` is now a PARAMETER, not created fresh inside this
-/// function — one `Arc<Mutex<ExternrefRegistry>>` is created once per guest OS
-/// thread (in `spawn_guest_thread`, alongside its `Store`) and passed to BOTH
-/// this call (wiring the fork-module's own `env.resolve_externref`) and the
-/// GUEST's own `env.resolve_externref` import, when the guest declares one
-/// directly (a fixture calling `resolve_externref` itself to obtain a
-/// directly-held externref — see `native_fork_refs.c`). Sharing ONE registry
-/// is what makes "the guest's own call and the fork-module's replay-time
-/// decode both resolve the SAME handle to the IDENTICAL `Rooted<ExternRef>`"
-/// true — a per-call-site-fresh registry would defeat the whole idempotence
-/// contract grounding §5 requires. This is still `resolve_externref_is_
-/// idempotent_per_handle`'s exact guarantee, just shared across two
-/// definitions of the same import name instead of one.
+/// A fork that holds such a value is REFUSED with `EOPNOTSUPP` (externref
+/// stage E2): the fork module has no way to name or rebuild a host object in a
+/// fresh child, so this import keeps no registry and no provenance -- every
+/// call mints a new object, and nothing on the fork path ever looks one up.
+/// [`define_externref_payload_probe`] reads `handle` back so a fixture can
+/// prove the PARENT kept the exact object across the refused fork.
 ///
-/// The closure only receives a transient `Caller<'_, ()>` per call (this
-/// `Store`'s data is `()`, matching every other host import in this file —
-/// see e.g. `define_kernel_host_imports`'s `Arc<Mutex<_>>`-captured-state
-/// pattern), so the registry itself is captured by `Arc<Mutex<_>>`, not
-/// stored in `Store` data.
-fn define_resolve_externref(
-    linker: &mut Linker<()>,
-    registry: Arc<Mutex<ExternrefRegistry>>,
-) -> anyhow::Result<()> {
+/// Wired ONLY when a guest module actually declares it (the
+/// `guest_declares(name)` gating every optional wire in `spawn_guest_thread`
+/// uses), so it is a no-op for every other program.
+fn define_host_externref_source(linker: &mut Linker<()>) -> anyhow::Result<()> {
     linker.func_wrap(
         "env",
-        "resolve_externref",
-        move |mut caller: Caller<'_, ()>, handle: i32| -> wasmtime::Result<Option<wasmtime::OwnedRooted<ExternRef>>> {
-            let mut registry = registry.lock().unwrap();
-            registry.resolve(&mut caller, handle as u32).map(Some)
+        "native_test_host_externref",
+        move |mut caller: Caller<'_, ()>, handle: i32| -> wasmtime::Result<Option<wasmtime::Rooted<ExternRef>>> {
+            ExternRef::new(&mut caller, handle as u32).map(Some)
         },
     )?;
     Ok(())
@@ -5462,16 +5244,14 @@ fn define_resolve_externref(
 
 /// N1-I5 Task 3: define `env.native_test_externref_payload(v: externref) ->
 /// i32` — a TEST-ONLY diagnostic import, never declared by a real program,
-/// that unwraps the `u32` payload [`ExternrefRegistry::resolve`] wrapped an
-/// externref around (via `ExternRef::new(&mut store, handle: u32)`). This is
-/// the observable side channel the `native_fork_refs.c` fixture needs: C has
-/// no operator that can read/compare an opaque `__externref_t` value, so the
-/// fixture's ONLY way to prove "the externref I got back after replaying my
-/// fork still carries the SAME handle I resolved before forking" is to hand
-/// it back to the host and let the host tell it. A null externref (should
-/// never happen for a value `resolve_externref` minted) reports `-1`, a
-/// truthful sentinel distinct from every valid `u32` handle this fixture uses
-/// (which are all small positive constants) — never a silently-wrong `0`.
+/// that unwraps the `u32` payload [`define_host_externref_source`] wrapped an
+/// externref around (via `ExternRef::new(&mut store, handle: u32)`). A fixture
+/// cannot read or compare an opaque externref itself, so its only way to prove
+/// "the object I hold after my fork was refused is the SAME one I held
+/// before" is to hand it back to the host and let the host tell it. A null
+/// externref reports `-1`, a truthful sentinel distinct from every valid
+/// handle a fixture uses (all small positive constants) — never a silently
+/// wrong `0`.
 ///
 /// Wired ONLY when a guest module actually declares this import (mirrors the
 /// `guest_declares(name)` gating every other optional reference wire in
@@ -5977,17 +5757,12 @@ impl ForkCoordState {
 /// PARENT-side abort-replay can hand the SAME identity back instead of a
 /// fabricated `null` — mirrors TS `reserveGatedPlaceholder`'s `capturedValues`
 /// retention (`host/src/fork-reference-transaction.ts:301-331`: "keeping the
-/// LIVE captured value so the PARENT still resumes faithfully"). Two variants
-/// because the two live gate call sites that DO have a real value in hand
-/// observe it through different Wasmtime reference types (a plain externref
-/// at `encode_externref`'s no-provenance gate, an anyref-lineage value at
-/// `gc_broker_encode`'s foreign/cross-activation gate); both convert
-/// losslessly to the other via `AnyRef::convert_extern`/`ExternRef::
-/// convert_any`, so either variant can satisfy either decode path below.
-enum GatedOriginal {
-    Externref(wasmtime::OwnedRooted<ExternRef>),
-    Any(wasmtime::OwnedRooted<AnyRef>),
-}
+/// LIVE captured value so the PARENT still resumes faithfully"). The one live
+/// gate that has a real value in hand is `gc_broker_encode`, which sees it as
+/// an anyref -- a raw host externref arrives there through the guest's own
+/// `any.convert_extern` (externref stage E2), and a foreign/cross-activation
+/// GC value arrives as itself.
+type GatedOriginal = wasmtime::OwnedRooted<AnyRef>;
 
 struct NativeReferenceCapture {
     /// The native port of `ForkReferenceTransaction`'s node/vector tables —
@@ -6019,18 +5794,6 @@ struct NativeReferenceCapture {
     /// mirroring the JS run loop's post-`sealCapture` check
     /// (`worker-main.ts:5109-5139`).
     unsupported_kind: Option<&'static str>,
-    /// N1-I5b Task 2: recipe ids `gated_placeholder` minted — an id in this
-    /// set names a benign leaf node (a canonical `i31` value, NOT real
-    /// reference data) rather than a faithfully captured reference. Consulted
-    /// by the `__wpk_fork_ref_decode_externref` bypass wrapper
-    /// (`spawn_guest_thread`) during a gated fork's own abort-replay so it
-    /// never asks the co-resident module to decode a node whose WIRE KIND
-    /// (`I31`) does not match the WASM TYPE (`externref`) the guest's
-    /// generated rewind code expects there — `fm_externref_handle` "TRAPS on
-    /// any inconsistency" (its own doc comment in `crates/fork-module/src/
-    /// lib.rs`), so this bypass, not a real decode, is what keeps a gated
-    /// fork's PARENT alive through its own resume. Reset alongside `graph`.
-    gated_ids: BTreeSet<u32>,
     /// Review fix (Finding 3): `(recipe id -> preserved live value)` for
     /// every [`Self::gated_placeholder`] call this capture made. `None`
     /// stores for the two "should never happen" DEFENSIVE gate paths
@@ -6038,8 +5801,8 @@ struct NativeReferenceCapture {
     /// transit slot itself held no valid value to preserve in the first
     /// place — a genuine invariant violation elsewhere, not a normal gated
     /// kind, so there is no live identity to hand back regardless of this
-    /// fix. Looked up by [`Self::gated_original`] from the PARENT's own
-    /// abort-replay decode paths. Reset alongside `graph`.
+    /// fix. Republished into the transit by the PARENT's own gated-abort
+    /// path (`gated_originals_iter`). Reset alongside `graph`.
     gated_originals: Vec<(u32, Option<GatedOriginal>)>,
     /// Synthetic i31 payload counter backing [`Self::gated_placeholder`]'s
     /// per-call dedup avoidance. Starts at i31's own minimum representable
@@ -6080,7 +5843,6 @@ impl NativeReferenceCapture {
             graph: fork_codec::ReferenceGraphBuilder::begin(),
             scratch_cursor: 0,
             unsupported_kind: None,
-            gated_ids: BTreeSet::new(),
             gated_originals: Vec::new(),
             next_gated_payload: GATED_PLACEHOLDER_MIN_PAYLOAD,
             gc_claimed: Vec::new(),
@@ -6145,7 +5907,6 @@ impl NativeReferenceCapture {
         // registry.ts:1199`). `take_unsupported_kind`'s read-and-clear is the
         // primary owner; this is the same defense-in-depth belt-and-braces.
         self.unsupported_kind = None;
-        self.gated_ids.clear();
         self.gated_originals.clear();
         self.next_gated_payload = GATED_PLACEHOLDER_MIN_PAYLOAD;
     }
@@ -6200,26 +5961,8 @@ impl NativeReferenceCapture {
             .graph
             .intern_i31(payload)
             .map_err(|e| wasmtime::Error::msg(format!("gated placeholder intern failed: {e:?}")))?;
-        self.gated_ids.insert(id);
         self.gated_originals.push((id, original));
         Ok(id)
-    }
-
-    /// True when `recipe_id` names a [`Self::gated_placeholder`] rather than
-    /// real reference data — see [`Self::gated_ids`]'s doc comment.
-    fn is_gated_id(&self, recipe_id: u32) -> bool {
-        self.gated_ids.contains(&recipe_id)
-    }
-
-    /// The live value preserved for a [`Self::gated_placeholder`] call that
-    /// minted `recipe_id`, or `None` if `recipe_id` is not a gated id, or if
-    /// it is one of the "should never happen" defensive gates that had no
-    /// live value to preserve — see [`Self::gated_originals`]'s doc comment.
-    fn gated_original(&self, recipe_id: u32) -> Option<&GatedOriginal> {
-        self.gated_originals
-            .iter()
-            .find(|(id, _)| *id == recipe_id)
-            .and_then(|(_, original)| original.as_ref())
     }
 
     /// Every `(recipe id, live value)` this capture actually preserved —
@@ -6403,7 +6146,8 @@ fn read_gc_codec_descriptor_section(wasm_bytes: &[u8]) -> anyhow::Result<Option<
 pub const FM_STAT_FRAMES_COMMITTED: u32 = 0;
 pub const FM_STAT_FRAMES_REPLAYED: u32 = 1;
 pub const FM_STAT_REFERENCES_RECONSTRUCTED: u32 = 2;
-pub const FM_STAT_EXTERNREFS_RESOLVED: u32 = 3;
+// Field 3 is retired (it counted host externrefs a fork reconstructed; since
+// externref stage E2 a fork carries none), so it has no constant here.
 pub const FM_STAT_EXNREFS_RECONSTRUCTED: u32 = 4;
 pub const FM_STAT_GC_NODES_RECONSTRUCTED: u32 = 5;
 pub const FM_STAT_STATIC_ROOTS_PUBLISHED: u32 = 6;
@@ -6563,9 +6307,6 @@ pub struct ForkModule {
     /// NOT guest-facing: resolves a static-root recipe to a merged
     /// anyref-catalog index; TRAPS on inconsistency.
     pub fm_static_root_slot: wasmtime::TypedFunc<u32, i32>,
-    /// NOT guest-facing: resolves an externref recipe to its captured
-    /// broker `handle`; TRAPS on inconsistency.
-    pub fm_externref_handle: wasmtime::TypedFunc<u32, i32>,
 
     // -- Coarse per-phase entries (the ONE module API every host drives) ----
     //
@@ -6827,7 +6568,6 @@ pub(crate) fn instantiate_fork_module(
     store: &mut Store<()>,
     guest_mem: &SharedMemory,
     layout: &ProcessLayout,
-    externref_registry: Arc<Mutex<ExternrefRegistry>>,
     seed_empty_module_state_arena: bool,
     gc_codec_descriptor: Option<&[u8]>,
     catalog_ordinal_count: usize,
@@ -6968,10 +6708,7 @@ pub(crate) fn instantiate_fork_module(
     // GC static-root binder, also I5). Reading the declared `TableType` back
     // off the import — rather than assuming a shape — means a future module
     // rebuild that changes these declarations fails loudly here instead of
-    // silently mismatching. `resolve_externref`'s return type (`externref`,
-    // confirmed by probing `module.imports()`) already showed reference
-    // types alone were not the gate here: `env.__wpk_fork_static_root_
-    // catalog` is a table of `(ref null any)` (anyref) — the module also
+    // silently mismatching. `env.__wpk_fork_static_root_catalog` is a table of `(ref null any)` (anyref) — the module also
     // declares this GC-proposal table even though this frames-only path
     // never drives a step that reads it — so its null init is `Ref::Any`,
     // not `Ref::Func`.
@@ -7024,14 +6761,6 @@ pub(crate) fn instantiate_fork_module(
         Val::I32(stack_top as i32),
     )?;
     linker.define(&mut *store, "env", "__stack_pointer", stack_pointer_global)?;
-
-    // N1-I5 Task 2: `env.resolve_externref` is a REAL import now — define it
-    // before the catch-all trap pass below so that pass does not shadow it.
-    // N1-I5 Task 3: shares `externref_registry` with the GUEST's own
-    // `env.resolve_externref` wiring in `spawn_guest_thread` — see
-    // `define_resolve_externref`'s doc comment for why one shared registry
-    // (not a fresh one per definition) is required for identity.
-    define_resolve_externref(&mut linker, externref_registry)?;
 
     // H3 (host-surface minimization, 2026-09-06): the `wpk_fork_host.*`
     // exception-path seam this comment used to describe
@@ -7110,7 +6839,6 @@ pub(crate) fn instantiate_fork_module(
         fm_ref_exn_cache_index: fm_func!("__wpk_fork_ref_exn_cache_index": u32 => i32),
         fm_funcref_ordinal: fm_func!("fm_funcref_ordinal": u32 => i32),
         fm_static_root_slot: fm_func!("fm_static_root_slot": u32 => i32),
-        fm_externref_handle: fm_func!("fm_externref_handle": u32 => i32),
         fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
         fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32, u32, u32) => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
@@ -7597,38 +7325,19 @@ fn spawn_guest_thread(
         // the entry loop at the end of this function — see
         // `ForkCoordState`'s doc comment.
         let coord = ForkCoordState::new();
-        // N1-I5 Task 3: ONE registry per guest OS thread (this `Store`'s own
-        // lifetime is already "one fork generation" — see `ExternrefRegistry`'s
-        // doc comment), shared between the fork-module's own
-        // `env.resolve_externref` (wired inside `instantiate_fork_module`) and
-        // this SAME guest's own `env.resolve_externref` import, if it declares
-        // one directly (a fixture that resolves an externref itself — see
-        // `native_fork_refs.c`). Sharing is what makes both call sites resolve
-        // the same handle to the identical `Rooted<ExternRef>`.
-        let externref_registry = Arc::new(Mutex::new(ExternrefRegistry::new()));
         // N1-I5b Task 1: ONE reference-CAPTURE accumulator per guest OS
         // thread — see `NativeReferenceCapture`'s doc comment. Reset at the
         // start of every capture (`kernel_fork`'s `Idle` arm below), filled
         // by the guest's own per-frame commits, sealed at
         // `drive_fork_capture_seal_and_launch_child`.
         let capture = Arc::new(Mutex::new(NativeReferenceCapture::new()));
-        // N1-F5 Task 2: mint-time externref PROVENANCE index — see
-        // `ExternrefProvenance`'s doc comment. Populated by
-        // `__wpk_fork_ref_provenance_externref` (wired below, guarded by
-        // `guest_declares`) at the exact moment `wasm-fork-instrument`'s
-        // production-site wrapper pass routes a freshly-minted externref
-        // through it; consulted by `encode_externref`'s real capture body.
-        // ONE instance per guest OS thread, matching `ExternrefRegistry`'s
-        // own per-generation lifetime argument.
-        let externref_provenance = Arc::new(Mutex::new(ExternrefProvenance::new()));
         // N1 refcomplete (static root): mint-time (harvest-time) static-root
         // PROVENANCE reverse index — see `StaticRootProvenance`'s doc
         // comment. Populated once, inside the existing "Static-root catalog
         // mirror" block below, right alongside the existing forward-
         // direction `fm.static_root_catalog_table` copy; consulted by
-        // `gc_lookup`'s real capture body. ONE instance per guest OS thread,
-        // matching `ExternrefProvenance`'s own per-generation lifetime
-        // argument (harvested once per instantiation, never reset per fork).
+        // `gc_lookup`'s real capture body. ONE instance per guest OS thread
+        // (harvested once per instantiation, never reset per fork).
         let static_root_provenance = Arc::new(Mutex::new(StaticRootProvenance::new()));
         // N1-F6 (refcomplete FLOOR-2): mint-time Wasm-GC constructor
         // provenance — see `GcProvenanceRegistry`'s doc comment. Populated
@@ -7636,8 +7345,7 @@ fn spawn_guest_thread(
         // `guest_declares`) at the exact moment `inject_provenance_
         // wrappers`'s constructor-call-site rewrite runs; consulted by
         // `gc_capture_layout`/`gc_define`'s real capture bodies. ONE
-        // instance per guest OS thread, matching `ExternrefProvenance`'s own
-        // per-generation lifetime argument.
+        // instance per guest OS thread (one `Store` == one fork generation).
         let gc_provenance =
             Arc::new(Mutex::new(GcProvenanceRegistry::new(fork_format.as_deref())));
         // N1-I5b Task 1: raw `Func::to_raw` pointer -> this guest's own
@@ -7651,8 +7359,7 @@ fn spawn_guest_thread(
         // (confirmed: `wasmtime::Func` derives only `Copy, Clone, Debug`),
         // so identity is compared via `Func::to_raw`'s raw `VMFuncRef`
         // pointer instead — valid for the lifetime of this one `Store`
-        // (one guest OS thread == one fork generation, same lifetime
-        // argument `ExternrefRegistry`'s doc comment already makes).
+        // (one guest OS thread == one fork generation).
         let funcref_catalog_lookup: Arc<Mutex<BTreeMap<usize, u32>>> = Arc::new(Mutex::new(BTreeMap::new()));
         if use_fork_module {
             match instantiate_fork_module(
@@ -7660,7 +7367,6 @@ fn spawn_guest_thread(
                 &mut store,
                 &guest_mem,
                 &layout,
-                Arc::clone(&externref_registry),
                 // A borrowed vfork child's own fork-module instance lands in
                 // a brand-new, never-before-touched region of the SHARED
                 // memory (see `compute_vfork_borrowed_region`'s doc
@@ -8350,9 +8056,9 @@ fn spawn_guest_thread(
                 }
             }
 
-            // The two reference-returning decode shims: raw `Func` lookups
+            // The reference-returning decode shim: a raw `Func` lookup
             // (like the FRAME_IMPORT_NAMES flip above), not `TypedFunc`,
-            // since a funcref-/externref-returning export cannot round-trip
+            // since a funcref-returning export cannot round-trip
             // through a `TypedFunc<Params, Results>` binding the way plain
             // i32/i64 exports do.
             let decode_funcref = match fm.instance.get_func(&mut store, "__wpk_fork_ref_decode_funcref") {
@@ -8362,35 +8068,21 @@ fn spawn_guest_thread(
                     return;
                 }
             };
-            let decode_externref = match fm.instance.get_func(&mut store, "__wpk_fork_ref_decode_externref") {
-                Some(f) => f,
-                None => {
-                    eprintln!("fork-module missing expected export __wpk_fork_ref_decode_externref");
-                    return;
-                }
-            };
 
             // The decode + seven RESTORE data-feed imports, flipped to the
             // module's matching exports. `TypedFunc::func()` hands back the
             // same `Func` handle already bound into `ForkModule` above (no
             // second lookup for the seven `fm_ref_*` exports).
             //
-            // N1-I5b Task 2: `DECODE_EXTERNREF` is deliberately NOT in this
-            // array — it gets its own wrapped binding below (`decode_
-            // externref_typed`) that bypasses this real module export for a
-            // gated fork's own placeholder recipe ids, then falls through to
-            // exactly this same `decode_funcref` export for everything else.
             // The seven reference-feed imports are now exported by the
             // fork-module under the GUEST'S OWN NAMES, so there is nothing to
             // map: look each up by the name the guest asked for and define it
-            // under that same name. `decode_funcref` stays explicit because it
-            // is wrapped (see above), not because its name differs.
+            // under that same name. `decode_funcref` is looked up above.
             let mut flips: Vec<(&str, wasmtime::Func)> = vec![(
                 wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
                 decode_funcref,
             )];
             for name in [
-                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET,
                 wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_ROUTE,
                 wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
                 wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOAD,
@@ -8413,102 +8105,13 @@ fn spawn_guest_thread(
                 }
             }
 
-            // N1-I5b Task 2: `DECODE_EXTERNREF` gets a WRAPPED binding, not a
-            // plain flip like the rest of `flips` above. A gated fork's own
-            // abort-replay (`drive_fork_capture_seal_and_launch_child`) still
-            // rewinds the PARENT's frames — including whichever frame held
-            // the gated externref-typed local — through the SAME resume
-            // machinery a supported fork uses, so this import IS reached even
-            // though the fork carried no real reference data for it. The
-            // sealed graph's entry at that recipe id is `NativeReferenceCapture
-            // ::gated_placeholder`'s canonical `i31` node, NOT a real
-            // `Externref` node — calling the module's real
-            // `__wpk_fork_ref_decode_externref` (which resolves to
-            // `fm_externref_handle`, documented to "TRAP on any
-            // inconsistency") on that id would trap the whole store. This
-            // wrapper checks `NativeReferenceCapture::is_gated_id` FIRST and
-            // short-circuits for exactly those ids, falling through to the
-            // real module export for everything else (a supported fork's
-            // real funcref-adjacent externref decode, if that ever exists,
-            // is unaffected). Converted to a `TypedFunc` once here (not
-            // per-call) purely for a cleaner call site than the untyped
-            // `Val` array API.
-            //
-            // Review fix (increment-review.md MEDIUM-2 / "Finding 3"): the
-            // short-circuit used to unconditionally return `null`, silently
-            // overwriting the PARENT's own live pre-fork value at this local
-            // — a `fork()` failure (`EOPNOTSUPP`) must leave the parent's
-            // state completely unaffected. It now returns the ORIGINAL live
-            // value `NativeReferenceCapture::gated_placeholder` preserved at
-            // capture time (`gated_original`), falling back to `null` only
-            // when no such value was ever recorded (the "should never
-            // happen" defensive gates, which had no live value to begin
-            // with regardless of this fix).
-            let decode_externref_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF;
-            if guest_declares(decode_externref_name) {
-                let typed_result = decode_externref
-                    .typed::<u32, Option<wasmtime::Rooted<ExternRef>>>(&store);
-                match typed_result {
-                    Ok(decode_externref_typed) => {
-                        let capture_for_decode = Arc::clone(&capture);
-                        let result = linker.func_wrap(
-                            "env",
-                            decode_externref_name,
-                            move |mut caller: Caller<'_, ()>,
-                                  recipe_id: i32|
-                                  -> wasmtime::Result<Option<wasmtime::Rooted<ExternRef>>> {
-                                let gated =
-                                    capture_for_decode.lock().unwrap().is_gated_id(recipe_id as u32);
-                                if gated {
-                                    let restored = {
-                                        let guard = capture_for_decode.lock().unwrap();
-                                        match guard.gated_original(recipe_id as u32) {
-                                            Some(GatedOriginal::Externref(owned)) => {
-                                                Some(owned.to_rooted(&mut caller))
-                                            }
-                                            Some(GatedOriginal::Any(owned)) => {
-                                                let anyref = owned.to_rooted(&mut caller);
-                                                drop(guard);
-                                                ExternRef::convert_any(&mut caller, anyref).ok()
-                                            }
-                                            None => None,
-                                        }
-                                    };
-                                    return Ok(restored);
-                                }
-                                decode_externref_typed.call(&mut caller, recipe_id as u32)
-                            },
-                        );
-                        if let Err(e) = result {
-                            eprintln!("wiring env.{decode_externref_name} failed: {e:#}");
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "fork-module export __wpk_fork_ref_decode_externref has an \
-                             unexpected signature: {e:#}"
-                        );
-                        return;
-                    }
-                }
-            }
-
-            // N1-I5 Task 3: the GUEST's OWN direct `env.resolve_externref`
-            // and `env.native_test_externref_payload` imports, when
-            // declared — see `native_fork_refs.wat`'s doc comment and
-            // `define_resolve_externref`'s doc comment for why sharing
-            // `externref_registry` with the fork-module's OWN
-            // `env.resolve_externref` (wired inside `instantiate_fork_
-            // module`, a SEPARATE `Linker`) is what makes a directly-held
-            // externref the guest itself minted BEFORE a fork resolve to
-            // the IDENTICAL `Rooted<ExternRef>` after the module
-            // reconstructs it during rewind. Neither import is declared by
-            // a real (non-test) program, so this is a no-op for every other
-            // fixture.
-            if guest_declares("resolve_externref") {
-                if let Err(e) = define_resolve_externref(&mut linker, Arc::clone(&externref_registry)) {
-                    eprintln!("wiring the guest's own env.resolve_externref failed: {e:#}");
+            // The test-only host-object source and payload probe the externref
+            // fork fixtures declare (see `define_host_externref_source`).
+            // Neither is declared by a real program, so this is a no-op for
+            // every other guest.
+            if guest_declares("native_test_host_externref") {
+                if let Err(e) = define_host_externref_source(&mut linker) {
+                    eprintln!("wiring env.native_test_host_externref failed: {e:#}");
                     return;
                 }
             }
@@ -8572,6 +8175,75 @@ fn spawn_guest_thread(
                 );
                 if let Err(e) = result {
                     eprintln!("wiring env.{encode_funcref_name} failed: {e:#}");
+                    return;
+                }
+            }
+
+            // `__wpk_fork_ref_vector_get(ordinal, index)` reads a reference
+            // vector back during a REWIND. A CHILD reads the graph it inherited,
+            // which the module decoded; a PARENT resuming after its own fork --
+            // including the abort replay of a refused one -- reads back a vector
+            // it interned moments ago. The module draws that line on its phase
+            // (`answering_from_capture`), but on this host the parent's vectors
+            // are not in the module's capture builder: `vector_begin`/`_append`/
+            // `_finish` below intern them into `NativeReferenceCapture::graph`.
+            // So the PARENT's reads are answered from that graph, and a child's
+            // go to the module's feed, split on the same phase the module uses.
+            // A read this worker's own capture never interned also goes to the
+            // module: a fork CHILD's `NativeReferenceCapture` is fresh, and a
+            // child can reach its reference drive before the module enters
+            // `PHASE_CHILD_REPLAY` (the typed-GC child drive does).
+            //
+            // Without this every parent rewind over a frame that held a
+            // reference asked the module's (empty) capture builder, which traps
+            // -- which is how a refused fork (EOPNOTSUPP) used to kill the parent
+            // it was supposed to spare, silently, until the pump's 30s cap.
+            let vector_get_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET;
+            if guest_declares(vector_get_name) {
+                let capture_for_get = Arc::clone(&capture);
+                let module_vector_get = fm.fm_ref_vector_get.clone();
+                let Some(fm_phase) = fm.instance.get_func(&mut store, "fm_phase") else {
+                    eprintln!("fork-module missing expected export fm_phase");
+                    return;
+                };
+                let fm_phase = match fm_phase.typed::<(), i32>(&store) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("fork-module export fm_phase has an unexpected signature: {e:#}");
+                        return;
+                    }
+                };
+                let result = linker.func_wrap(
+                    "env",
+                    vector_get_name,
+                    move |mut caller: Caller<'_, ()>, ordinal: i32, index: i32| -> wasmtime::Result<i32> {
+                        // `PHASE_CHILD_REPLAY` in `crates/fork-module/src/lib.rs`.
+                        const FORK_MODULE_PHASE_CHILD_REPLAY: i32 = 4;
+                        if fm_phase.call(&mut caller, ())? != FORK_MODULE_PHASE_CHILD_REPLAY {
+                            let recipe = capture_for_get
+                                .lock()
+                                .unwrap()
+                                .graph
+                                .vectors()
+                                .get(ordinal as u32 as usize)
+                                .and_then(|vector| vector.get(index as u32 as usize))
+                                .copied();
+                            if let Some(recipe) = recipe {
+                                // The guest ABI has no failure value here; a
+                                // recipe id past i32 is a fault, not a recipe.
+                                return i32::try_from(recipe).map_err(|_| {
+                                    wasmtime::Error::msg(format!(
+                                        "reference vector {ordinal}[{index}] names recipe {recipe}, \
+                                         which does not fit the guest's i32"
+                                    ))
+                                });
+                            }
+                        }
+                        module_vector_get.call(&mut caller, (ordinal as u32, index as u32))
+                    },
+                );
+                if let Err(e) = result {
+                    eprintln!("wiring env.{vector_get_name} failed: {e:#}");
                     return;
                 }
             }
@@ -8693,217 +8365,30 @@ fn spawn_guest_thread(
                 }
             }
 
-            // N1-F5 Task 2: `__wpk_fork_ref_provenance_externref(v) -> v` —
-            // the production-site provenance-recording import
-            // `wasm-fork-instrument`'s new pass (`crates/fork-instrument/
-            // src/externref_provenance.rs`) routes every externref-returning
-            // host-import call site through, immediately after the real
-            // import returns and BEFORE the value reaches the original
-            // caller. Pass-through signature: records `(identity -> handle)`
-            // in `externref_provenance` (see its doc comment) and returns
-            // the SAME value unchanged. This — not a capture-time reverse
-            // map — is the sound half of F5's design (grounding §2); must
-            // run BEFORE the blanket `define_unknown_imports_as_traps` call
-            // below, same as every other conditional wire in this block.
-            let provenance_externref_name =
-                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF;
-            if guest_declares(provenance_externref_name) {
-                let provenance_for_mint = Arc::clone(&externref_provenance);
-                let result = linker.func_wrap(
-                    "env",
-                    provenance_externref_name,
-                    move |mut caller: Caller<'_, ()>,
-                          value: Option<wasmtime::Rooted<ExternRef>>|
-                          -> wasmtime::Result<Option<wasmtime::Rooted<ExternRef>>> {
-                        if let Some(v) = value {
-                            // Native's only externref production site today
-                            // is `env.resolve_externref`, whose backing Rust
-                            // data IS the raw wire handle by construction
-                            // (`ExternrefRegistry::resolve`,
-                            // `ExternRef::new(&mut store, handle: u32)`).
-                            // Reading it back here is sound because this
-                            // call happens synchronously, at the exact
-                            // production site the fork-instrument wrapper
-                            // inserted, immediately after the real import
-                            // returned — not a later inspection of an
-                            // already-live, arbitrarily-obtained value
-                            // (grounding §2's unsound half). A future
-                            // externref-producing host import with no
-                            // self-describing `u32` payload simply has no
-                            // handle to register here; `encode_externref`'s
-                            // soundness guard below (a no-provenance lookup
-                            // gates rather than mis-captures) covers that
-                            // case without this needing to generalize
-                            // further today.
-                            //
-                            // Review finding (increment-review.md LOW-1 /
-                            // "Finding 4", documented not code-fixed —
-                            // scoped as a LOW, structural-duck-type
-                            // assumption): this match is SHAPE-based (any
-                            // externref whose backing data downcasts to
-                            // `u32` is treated as a `resolve_externref`
-                            // handle), not source-tagged. It is sound TODAY
-                            // only because `resolve_externref` is the ONLY
-                            // externref producer with a bare `u32` backing
-                            // value anywhere in this file. If a SECOND host
-                            // import is ever added that also backs its
-                            // externref with a raw `u32` (for a different
-                            // meaning), this would silently register a
-                            // wrong `(value -> handle)` pair instead of
-                            // gating — revisit with a source-specific
-                            // newtype/marker on the backing data before
-                            // adding such an import.
-                            if let Some(&handle) =
-                                v.data(&caller)?.and_then(|data| data.downcast_ref::<u32>())
-                            {
-                                provenance_for_mint.lock().unwrap().register(&mut caller, v, handle)?;
-                            }
-                        }
-                        Ok(value)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{provenance_externref_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // N1-F5 Task 2: `encode_externref`'s REAL capture body — lifted
-            // from the I5b gate stub. Mirrors `encode_funcref`'s null
-            // convention exactly (`fork-reference-transaction.ts:283`: `if
-            // (value === null) return 0`): a null externref is always recipe
-            // 0, the canonical null node every graph seeds at `begin()`,
-            // with no provenance lookup involved. A non-null value is looked
-            // up in `externref_provenance` (populated at mint time by the
-            // provenance import above) and interned via
-            // `fork_codec::ReferenceGraphBuilder::intern_externref`, the
-            // wire-writer that already exists and is the byte-for-byte
-            // inverse of the decoder (grounding §1).
+            // `gc_lookup` is the anyref-transit dedup entry reached for EVERY
+            // non-null anyref-lineage value the guest encodes: a typed Wasm-GC
+            // struct/array, a static root, or a raw host externref the guest's
+            // own `__wpk_fork_ref_encode_externref` handed over through
+            // `any.convert_extern` (`emit_externref_bridge` makes those LOCAL
+            // functions, so the host never sees an encode_externref import).
+            // `emit_encode_anyref` publishes the value into `codec.transit` (the
+            // SAME `fm.gc_transit_table` bound above) at slot 0 and then calls
+            // this with that slot.
             //
-            // SOUNDNESS GUARD: if `value` has NO recorded provenance — a
-            // `call_indirect`/`call_ref`-to-import residual the
-            // instrumenter's static pass could not identify, or a
-            // guest-internalized externref (both out of F5 scope per the
-            // plan's SCOPING RULING; F6's problem) — this MUST NOT
-            // fabricate a handle. It falls back to the exact same
-            // gate-and-placeholder path every other still-gated kind uses
-            // (`NativeReferenceCapture::mark_unsupported` +
-            // `gated_placeholder`), so the fork cleanly aborts with
-            // `EOPNOTSUPP` instead of ever mis-capturing.
-            let encode_externref_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_ENCODE_EXTERNREF;
-            if guest_declares(encode_externref_name) {
-                let capture_for_externref = Arc::clone(&capture);
-                let provenance_for_encode = Arc::clone(&externref_provenance);
-                let result = linker.func_wrap(
-                    "env",
-                    encode_externref_name,
-                    move |mut caller: Caller<'_, ()>,
-                          value: Option<wasmtime::Rooted<ExternRef>>|
-                          -> wasmtime::Result<i32> {
-                        let Some(v) = value else {
-                            // Canonical null recipe — see the doc comment
-                            // above.
-                            return Ok(0);
-                        };
-                        let handle = provenance_for_encode.lock().unwrap().lookup(&mut caller, v)?;
-                        match handle {
-                            Some(handle) => capture_for_externref
-                                .lock()
-                                .unwrap()
-                                .graph
-                                .intern_externref(handle)
-                                .map(|id| id as i32)
-                                .map_err(|e| wasmtime::Error::msg(format!("intern_externref failed: {e:?}"))),
-                            None => {
-                                // Review fix (Finding 3): preserve `v` itself
-                                // so the PARENT's own abort-replay hands this
-                                // exact externref back, not `null`.
-                                let original = v.to_owned_rooted(&mut caller)?;
-                                let mut capture = capture_for_externref.lock().unwrap();
-                                capture.mark_unsupported("externref (no recorded provenance)");
-                                capture
-                                    .gated_placeholder(Some(GatedOriginal::Externref(original)))
-                                    .map(|id| id as i32)
-                            }
-                        }
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{encode_externref_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // N1 refcomplete substrate (2026-09-05): `gc_lookup`, NOT
-            // `__wpk_fork_ref_encode_externref` (the host import wired above),
-            // is the ACTUAL capture-time entry point a plain externref-typed
-            // local reaches in the "linked" co-resident-module architecture
-            // `wasm-fork-instrument` always builds
-            // (`crates/fork-instrument/src/module_gc_codec.rs`'s
-            // `emit_externref_bridge` gives the encode_externref/
-            // decode_externref NAMES to LOCAL wasm functions that
-            // unconditionally `any.convert_extern`/delegate through
-            // `encode_anyref`/`decode_anyref`; the raw host imports of those
-            // names are consequently never declared at all).
-            //
-            // `emit_encode_anyref` (`module_gc_codec.rs`) publishes the
-            // about-to-be-looked-up value into `codec.transit` (the SAME
-            // `fm.gc_transit_table` bound above) at slot 0, THEN calls this
-            // import with that slot — so peeking the transit table at `slot`
-            // recovers the exact `anyref` the guest is asking about, before
-            // falling back to the existing gate. `ExternRef::convert_any` is
-            // the identity-preserving type-hierarchy cast WasmGC's own
-            // `extern.convert_any` performs (not a validating conversion — a
-            // real struct/array/i31 anyref "converts" too, but its resulting
-            // pseudo-externref will not `ref_eq`-match any entry in
-            // `externref_provenance`, so it correctly falls through below;
-            // see grounding doc + task-2-report.md's prototype note).
-            //
-            // A hit re-interns the SAME recipe id `encode_externref` would
-            // (or already has, since `intern_externref` dedupes by handle) —
-            // this is the "already interned, return its recipe" contract a
-            // real dedup hit uses in the retired/dead-here layout-dispatch
-            // path (`emit_encode_anyref`'s `existing`/`fresh` branches), so a
-            // non-zero return here correctly short-circuits the guest's own
-            // layout-dispatch / `broker_encode` fallback (both still gated).
-            // A miss (no anyref at the slot, a real typed-GC value, or an
-            // externref with no recorded provenance) falls through UNCHANGED
-            // to the original unconditional gate below — SOUNDNESS GUARD:
-            // never fabricate a handle. This re-applies the prototype from
-            // N1-F5 Task 2 (task-2-report.md concern #2), now safe to land
-            // because the decode-side gap it was blocked on (directly-held
-            // externref transit publish) is fixed in
-            // `crates/fork-codec::drive_plan::build_drive_plan`.
-            // N1 refcomplete (static root, last gated native kind): `gc_
-            // lookup` also now checks `StaticRootProvenance` (see its doc
-            // comment and the "Static-root catalog mirror" block below,
-            // which populates it) between the per-fork `gc_claim_lookup`
-            // check and the externref fallback — this replaces what used to
-            // be a hardcoded "no static-root catalog on native yet" miss.
-            // N1-F6 (refcomplete FLOOR-2): `gc_lookup` is the anyref-transit
-            // dedup entry reached for EVERY anyref-lineage value (a plain
-            // externref, a static root, or a typed Wasm-GC struct/array) —
-            // see `fork-activation-registry.ts:528-543`'s "cannot honestly
-            // claim 'gc'" note. It answers exactly one question: "is this
-            // EXACT live value already assigned a recipe id?" — checking (1)
-            // THIS capture's own struct/array dedup (`gc_claim_lookup` — a
-            // cycle/alias back onto an already-claimed node) and (2) a plain
-            // host externref with mint-time-recorded provenance (unchanged
-            // from the N1-F5/F6-substrate prototype below). A miss now
-            // returns `0` (real "unknown"), NOT an immediate gate: `0` is
-            // never a valid non-null recipe id (node 0 is the canonical
-            // null, and this import is only ever reached for an
-            // already-non-null value — see `emit_encode_anyref`'s `RefIsNull`
-            // check ahead of every `lookup` call), so the guest's own
-            // dispatch correctly reads it as "try i31/struct/array
-            // construction next" (`encode_anyref`'s `existing`/`fresh`
-            // branch). THIS is the gate LIFT for struct/array/i31: previously
-            // every miss here unconditionally gated the fork before the
-            // guest ever got a chance to try `gc_claim`.
+            // It answers exactly one question: "is this EXACT live value
+            // already assigned a recipe id?" -- checking (1) THIS capture's own
+            // struct/array dedup (`gc_claim_lookup`, a cycle/alias back onto an
+            // already-claimed node) and (2) the harvest-time static-root
+            // reverse index (`StaticRootProvenance`). A miss returns `0` (real
+            // "unknown"; node 0 is the canonical null and this import is only
+            // reached for a non-null value), so the guest's own dispatch goes
+            // on to try i31/struct/array construction, and a value no layout
+            // claims -- a raw host externref -- reaches `broker_encode`, which
+            // gates the fork (`EOPNOTSUPP`). A host externref never has a
+            // recipe: fork does not carry one (externref stage E2).
             let gc_lookup_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP;
             if guest_declares(gc_lookup_name) {
                 let capture_for_gc = Arc::clone(&capture);
-                let provenance_for_gc = Arc::clone(&externref_provenance);
                 let static_root_provenance_for_gc = Arc::clone(&static_root_provenance);
                 let gc_transit_table_for_lookup = fm.gc_transit_table;
                 let result = linker.func_wrap(
@@ -8919,16 +8404,12 @@ fn spawn_guest_thread(
                             {
                                 return Ok(id as i32);
                             }
-                            // N1 refcomplete (static root): check the
-                            // harvest-time reverse index BEFORE the
-                            // externref fallback. The two identity spaces
-                            // are disjoint by construction (a static root is
-                            // always an `AnyRef` participating in `ref.eq` —
-                            // struct/array/i31/eq — which the instrumenter's
-                            // static-root catalog builder deliberately
-                            // excludes externref/funcref from, see
-                            // `can_participate_in_ref_eq`), so trying this
-                            // first never shadows a real externref hit.
+                            // N1 refcomplete (static root): the harvest-time
+                            // reverse index. A static root is always an
+                            // `AnyRef` participating in `ref.eq` (the
+                            // instrumenter's static-root catalog builder
+                            // excludes externref/funcref, see
+                            // `can_participate_in_ref_eq`).
                             if let Some((activation, ordinal)) = static_root_provenance_for_gc
                                 .lock()
                                 .unwrap()
@@ -8944,23 +8425,8 @@ fn spawn_guest_thread(
                                         wasmtime::Error::msg(format!("intern_static_root failed: {e:?}"))
                                     });
                             }
-                            if let Ok(externref) = ExternRef::convert_any(&mut caller, anyref) {
-                                let handle =
-                                    provenance_for_gc.lock().unwrap().lookup(&mut caller, externref)?;
-                                if let Some(handle) = handle {
-                                    return capture_for_gc
-                                        .lock()
-                                        .unwrap()
-                                        .graph
-                                        .intern_externref(handle)
-                                        .map(|id| id as i32)
-                                        .map_err(|e| {
-                                            wasmtime::Error::msg(format!("intern_externref failed: {e:?}"))
-                                        });
-                                }
-                            }
                             // A genuine miss (not yet claimed, not a known
-                            // static root, not a known externref): report
+                            // static root): report
                             // "unknown" and let the guest's own dispatch
                             // proceed (try i31/struct/array construction
                             // next).
@@ -9070,14 +8536,13 @@ fn spawn_guest_thread(
 
             // `broker_encode` is the LAST-resort fallback `encode_anyref`
             // reaches once a value matched neither i31 nor any locally
-            // declared struct/array layout (a genuinely foreign anyref, or a
-            // cross-activation GC value — the multi-activation case is out of
-            // scope for native's current single-activation model). Native has
-            // no generic "arbitrary anyref identity" registry beyond what
-            // `GcProvenanceRegistry`/`ExternrefProvenance` specifically
-            // record, so fabricating a handle here would violate the
-            // SOUNDNESS GUARD (`ExternrefProvenance::lookup`'s doc comment) —
-            // stays gated.
+            // declared struct/array layout: a raw HOST externref (handed over
+            // by the guest's own `any.convert_extern`), or a cross-activation
+            // GC value (the multi-activation case is out of scope for native's
+            // current single-activation model). A fork does not carry a raw
+            // host externref on any host (externref stage E2), so this GATES
+            // the fork: `EOPNOTSUPP`, no child, and the parent's abort replay
+            // gets back the exact live value preserved here.
             let gc_broker_encode_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE;
             if guest_declares(gc_broker_encode_name) {
                 let capture_for_gc = Arc::clone(&capture);
@@ -9095,12 +8560,14 @@ fn spawn_guest_thread(
                         let slot_index = i64::from(slot).max(0) as u64;
                         let original = match gc_transit_table_for_broker.get(&mut caller, slot_index) {
                             Some(wasmtime::Ref::Any(Some(anyref))) => {
-                                Some(GatedOriginal::Any(anyref.to_owned_rooted(&mut caller)?))
+                                Some(anyref.to_owned_rooted(&mut caller)?)
                             }
                             _ => None,
                         };
                         let mut capture = capture_for_gc.lock().unwrap();
-                        capture.mark_unsupported("gc: foreign/cross-activation anyref");
+                        capture.mark_unsupported(
+                            "host externref (or foreign/cross-activation anyref)",
+                        );
                         let id = capture.gated_placeholder(original)?;
                         drop(capture);
                         // `emit_encode_anyref`'s tail unconditionally publishes
@@ -10795,11 +10262,9 @@ fn drive_fork_capture_seal_and_launch_child(
         // own frame rewind (this function's `fm_begin_replay` just above)
         // needs no reference DATA reconstructed for a value the platform
         // contract already says is not preserved across a gated fork, only
-        // that decoding it never traps — which is a per-frame decode-time
-        // concern (the still-open item this same investigation flags: the
-        // guest's own `decode_anyref`/`decode_externref` local functions
-        // have no `is_gated_id`-equivalent bypass yet), not a replay-DRIVING
-        // concern this function needs to resolve.
+        // that decoding it never traps and hands back the live value -- the
+        // guest's own `decode_anyref`/`decode_externref` read
+        // `transit[recipe + 1]`, which the republish below guarantees.
         //
         // Size the transit table (STORE #2) for the SEALED graph before the
         // resume below reaches the frame that held the gated value: its
@@ -10843,27 +10308,10 @@ fn drive_fork_capture_seal_and_launch_child(
             // here: re-set every preserved original explicitly so the
             // PARENT's own `decode_anyref` (`table.get(transit, recipe+1)`)
             // is correct regardless of which call path produced this gated
-            // id, matching the externref decode bypass's identical restore
-            // just above in the sibling `decode_externref` wrapper.
+            // id.
             let capture_guard = capture.lock().unwrap();
             for (id, original) in capture_guard.gated_originals_iter() {
-                let value = match original {
-                    GatedOriginal::Any(owned) => owned.to_rooted(&mut *store),
-                    GatedOriginal::Externref(owned) => {
-                        let externref = owned.to_rooted(&mut *store);
-                        match wasmtime::AnyRef::convert_extern(&mut *store, externref) {
-                            Ok(anyref) => anyref,
-                            Err(e) => {
-                                eprintln!(
-                                    "restoring gated fork-module transit slot for recipe {id} \
-                                     (gated fork abort) failed to convert its externref to an \
-                                     anyref: {e:#}"
-                                );
-                                return false;
-                            }
-                        }
-                    }
-                };
+                let value = original.to_rooted(&mut *store);
                 let slot = u64::from(id) + 1;
                 if let Err(e) =
                     fm.gc_transit_table.set(&mut *store, slot, wasmtime::Ref::Any(Some(value)))
@@ -11217,13 +10665,11 @@ fn run_worker_thread(
     let coord = ForkCoordState::new();
     let capture = Arc::new(Mutex::new(NativeReferenceCapture::new()));
     if use_fork_module {
-        let externref_registry = Arc::new(Mutex::new(ExternrefRegistry::new()));
         let fm = instantiate_fork_module(
             engine,
             &mut store,
             guest_mem,
             &layout,
-            externref_registry,
             // Never re-seed the process's persistent module-state (reference
             // graph) arena from a worker thread's own launch: this thread is
             // not a fresh process launch (the process's OWN main-thread
@@ -14655,7 +14101,6 @@ mod libc_errno {
 mod fork_module_tests {
     use super::*;
     use std::path::PathBuf;
-    use wasmtime::Rooted;
 
     /// Mirrors `lib.rs`'s `kernel_path_or_skip`: a fresh checkout without the
     /// locally-built fork-module artifact skips (with a clear message)
@@ -14702,7 +14147,6 @@ mod fork_module_tests {
             &mut fm_store,
             &guest_mem,
             &layout,
-            Arc::new(Mutex::new(ExternrefRegistry::new())),
             true,
             None,
             0,
@@ -14776,7 +14220,6 @@ mod fork_module_tests {
             store,
             &guest_mem,
             &layout,
-            Arc::new(Mutex::new(ExternrefRegistry::new())),
             true,
             None,
             0,
@@ -14854,48 +14297,6 @@ mod fork_module_tests {
         assert!(
             format!("{err:#}").contains("exports no __wpk_fork_place_resume_thunks"),
             "the refusal must name the missing export, got: {err:#}"
-        );
-
-        Ok(())
-    }
-
-    /// N1-I5 Task 2: `env.resolve_externref` is now a real `Func` (no fork-
-    /// module artifact needed to exercise it — it is a plain host import
-    /// binding, so this defines it into a bare `Linker` the same way
-    /// `instantiate_fork_module` does). Proves the exact identity guarantee
-    /// grounding §5 requires: the SAME `Rooted<ExternRef>` root comes back
-    /// for repeat asks with the same handle, and a DIFFERENT root comes back
-    /// for a different handle.
-    #[test]
-    fn resolve_externref_is_idempotent_per_handle() -> anyhow::Result<()> {
-        let engine = crate::kernel_engine()?;
-        let mut store = Store::new(&engine, ());
-        let mut linker: Linker<()> = Linker::new(&engine);
-        define_resolve_externref(&mut linker, Arc::new(Mutex::new(ExternrefRegistry::new())))?;
-
-        let func = linker
-            .get(&mut store, "env", "resolve_externref")
-            .expect("resolve_externref must be defined")
-            .into_func()
-            .expect("resolve_externref must be a function import");
-        let typed = func.typed::<i32, Option<Rooted<ExternRef>>>(&store)?;
-
-        let first = typed.call(&mut store, 7)?.expect("resolve_externref must not return null");
-        let second = typed.call(&mut store, 7)?.expect("resolve_externref must not return null");
-        // Each top-level call gets its OWN freshly-rooted `Rooted<ExternRef>`
-        // (Wasmtime scopes roots per call — see `ExternrefRegistry::resolve`'s
-        // doc comment), so identity here means "the same underlying GC
-        // object", checked with `ref_eq`, not "the same root", which
-        // `rooted_eq` checks and would always be false across two calls.
-        assert!(
-            Rooted::ref_eq(&store, &first, &second)?,
-            "resolve_externref(7) must resolve to the SAME externref object on repeat asks"
-        );
-
-        let other = typed.call(&mut store, 8)?.expect("resolve_externref must not return null");
-        assert!(
-            !Rooted::ref_eq(&store, &first, &other)?,
-            "resolve_externref must mint a DIFFERENT externref object for a different handle"
         );
 
         Ok(())

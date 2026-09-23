@@ -4,13 +4,13 @@
 //! This is the net-new Rust port of the capture half of the TypeScript
 //! `ForkReferenceTransaction` in `host/src/fork-reference-transaction.ts`: as the
 //! instrumented `wpk_fork_module_state_save` walk discovers Wasm reference values
-//! (funcrefs, externrefs, i31refs, static roots, GC structs/arrays, exception
+//! (funcrefs, i31refs, static roots, GC structs/arrays, exception
 //! references) it interns each into a dense, canonically-ordered recipe graph and
 //! interns the per-activation reference vectors. Where the TS builder interns by
 //! live JavaScript object/primitive identity (`intern`/`lookupId`), the module
 //! path has no live values — only the already-resolved recipe COORDINATES — so
-//! this builder interns by coordinate (funcref `(activation, ordinal)`, externref
-//! `handle`, i31 `value`, static-root `(activation, ordinal)`), which is a
+//! this builder interns by coordinate (funcref `(activation, ordinal)`,
+//! i31 `value`, static-root `(activation, ordinal)`), which is a
 //! faithful mirror: two equal live values always resolve to equal coordinates.
 //!
 //! The built graph reuses the shared decoder vocabulary
@@ -21,7 +21,7 @@
 //! round-trip inverse of the decoder, proven in-crate against it.
 //!
 //! Every method is bounds-checked and panic-free: invalid input (an out-of-domain
-//! i31, a zero externref handle, an edge naming a missing recipe, a duplicate GC
+//! i31, an edge naming a missing recipe, a duplicate GC
 //! definition, an exhausted id space) returns `Err(Errno::EINVAL)` rather than
 //! panicking, matching the `linked_frames_writer` contract.
 
@@ -80,7 +80,6 @@ pub struct ReferenceGraphBuilder {
     vectors: Vec<Vec<u32>>,
     vector_intern: VectorInternIndex,
     funcref_ids: BTreeMap<(u32, u32), u32>,
-    externref_ids: BTreeMap<u32, u32>,
     i31_ids: BTreeMap<i32, u32>,
     static_root_ids: BTreeMap<(u32, u32), u32>,
     pending_gc: BTreeSet<u32>,
@@ -100,7 +99,6 @@ impl ReferenceGraphBuilder {
             vectors,
             vector_intern: VectorInternIndex::default(),
             funcref_ids: BTreeMap::new(),
-            externref_ids: BTreeMap::new(),
             i31_ids: BTreeMap::new(),
             static_root_ids: BTreeMap::new(),
             pending_gc: BTreeSet::new(),
@@ -149,20 +147,6 @@ impl ReferenceGraphBuilder {
         Ok(id)
     }
 
-    /// Intern a durable host externref by broker handle (`1..=0xffff_ffff`).
-    /// Mirrors `encodeExternref`; rejects the zero (unowned) handle.
-    pub fn intern_externref(&mut self, handle: u32) -> Result<u32, Errno> {
-        if handle == 0 {
-            return Err(Errno::EINVAL); // zero handle is not a durable externref
-        }
-        if let Some(&id) = self.externref_ids.get(&handle) {
-            return Ok(id);
-        }
-        let id = self.push_node(ReferenceRecipeNode::Externref { handle })?;
-        self.externref_ids.insert(handle, id);
-        Ok(id)
-    }
-
     /// Intern an `i31ref` by its signed 31-bit payload. Mirrors `encodeI31`;
     /// rejects an out-of-domain value.
     pub fn intern_i31(&mut self, value: i32) -> Result<u32, Errno> {
@@ -191,9 +175,10 @@ impl ReferenceGraphBuilder {
         Ok(id)
     }
 
-    /// Reserve a self-contained placeholder leaf for a GATED capture kind
-    /// (externref / typed Wasm-GC / static-root with no recoverable
-    /// production-site provenance), returning its recipe id. Mirrors the TS
+    /// Reserve a self-contained placeholder leaf for a GATED capture kind (a
+    /// live host `externref`, or a GC value no activation's codec claims),
+    /// returning its recipe id. The capture that reserves one refuses to seal
+    /// (`EOPNOTSUPP`). Mirrors the TS
     /// `reserveGatedPlaceholder` and native's `NativeReferenceCapture::
     /// gated_placeholder`: it pushes a fresh, canonical `i31(0)` leaf — the
     /// cheapest node that passes `validate` without real backing — WITHOUT the

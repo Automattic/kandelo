@@ -62,7 +62,8 @@ const SECTION_VECTOR_ENTRIES: u16 = abi::WPK_FORK_REFERENCE_SECTION_VECTOR_ENTRI
 // the sibling decoder in `reference_transaction` carries them locally.
 const KIND_NULL: u8 = 0;
 const KIND_FUNCREF: u8 = 1;
-const KIND_EXTERNREF: u8 = 2;
+// Kind 2 was the host-externref node; retired in stage E2 (see
+// `reference_transaction::KIND_RETIRED_EXTERNREF`), so nothing writes it.
 const KIND_EXNREF: u8 = 3;
 const KIND_I31: u8 = 4;
 const KIND_STRUCT: u8 = 5;
@@ -289,11 +290,6 @@ fn encode_node_record(
             module_activation,
             function_ordinal,
         } => (KIND_FUNCREF, *module_activation, *function_ordinal, 0, false),
-        ReferenceRecipeNode::Externref { handle } => {
-            // The broker handle is `1..=0xffff_ffff`, so the high word is zero;
-            // this matches the TS `(handle >>> 0, floor(handle / 2^32))` split.
-            (KIND_EXTERNREF, *handle, 0, 0, false)
-        }
         ReferenceRecipeNode::Exnref {
             module_activation,
             tag_ordinal,
@@ -540,10 +536,10 @@ mod tests {
         let a = b.claim_gc().unwrap(); // 2: array
         let e = b.claim_gc().unwrap(); // 3: exnref
         let f = b.intern_funcref(10, 20).unwrap(); // 4
-        let x = b.intern_externref(99).unwrap(); // 5
+        let x = b.intern_i31(99).unwrap(); // 5
         let i = b.intern_i31(-5).unwrap(); // 6
         let sr = b.intern_static_root(3, 7).unwrap(); // 7
-        let leaf = b.intern_externref(0xffff_ffff).unwrap(); // 8: aliased leaf
+        let leaf = b.intern_i31(MAX_I31).unwrap(); // 8: aliased leaf
         assert_eq!((s, a, e, f, x, i, sr, leaf), (1, 2, 3, 4, 5, 6, 7, 8));
 
         // struct 1 -> array 2 (cycle), leaf 8 (alias), exnref 3.
@@ -632,8 +628,8 @@ mod tests {
         let mut b = ReferenceGraphBuilder::begin();
         let a1 = b.intern_funcref(1, 2).unwrap();
         let a2 = b.intern_funcref(1, 2).unwrap();
-        let x1 = b.intern_externref(7).unwrap();
-        let x2 = b.intern_externref(7).unwrap();
+        let x1 = b.intern_i31(7).unwrap();
+        let x2 = b.intern_i31(7).unwrap();
         let i1 = b.intern_i31(42).unwrap();
         let i2 = b.intern_i31(42).unwrap();
         let r1 = b.intern_static_root(3, 4).unwrap();
@@ -714,7 +710,8 @@ mod tests {
 
     /// The exact graph the committed TS-encoded fixture
     /// (`reference-transaction-wasm32.bin`, proven in `reference_transaction`'s
-    /// `decodes_real_encoder_fixture_field_for_field`) reconstructs. Building it
+    /// `decodes_real_encoder_fixture_field_for_field`, with its two retired
+    /// host-externref nodes patched to `i31` 9 and -1) reconstructs. Building it
     /// here, serializing with the RUST encoder, and decoding to the SAME graph
     /// proves the Rust encoder and the real TS encoder are contract-equivalent
     /// through the shared decoder — the bidirectional wire contract.
@@ -723,13 +720,13 @@ mod tests {
         let s = b.claim_gc().unwrap(); // 1
         let a = b.claim_gc().unwrap(); // 2
         let e = b.claim_gc().unwrap(); // 3
-        assert_eq!(b.intern_externref(9).unwrap(), 4);
+        assert_eq!(b.intern_i31(9).unwrap(), 4);
         assert_eq!(b.intern_i31(-17).unwrap(), 5);
         assert_eq!(b.intern_funcref(7, 0).unwrap(), 6);
         assert_eq!(b.intern_static_root(6, 0).unwrap(), 7);
         assert_eq!(b.intern_i31(MAX_I31).unwrap(), 8);
         assert_eq!(b.intern_i31(MIN_I31).unwrap(), 9);
-        assert_eq!(b.intern_externref(0xffff_ffff).unwrap(), 10);
+        assert_eq!(b.intern_i31(-1).unwrap(), 10);
 
         b.define_gc(s, 7, 2, 12, AggregateKind::Struct, &[0x78, 0x56, 0x34, 0x12], &[2, 5, 3], None)
             .unwrap();
@@ -788,12 +785,6 @@ mod tests {
         let mut b = ReferenceGraphBuilder::begin();
         assert_eq!(b.intern_i31(0x4000_0000).map(|_| ()), Err(Errno::EINVAL));
         assert_eq!(b.intern_i31(-0x4000_0001).map(|_| ()), Err(Errno::EINVAL));
-    }
-
-    #[test]
-    fn rejects_zero_externref_handle() {
-        let mut b = ReferenceGraphBuilder::begin();
-        assert_eq!(b.intern_externref(0).map(|_| ()), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -895,7 +886,7 @@ mod tests {
                     b.intern_funcref(rng.below(8), rng.below(8)).unwrap();
                 }
                 1 => {
-                    b.intern_externref(1 + rng.below(1000)).unwrap();
+                    b.intern_i31(1 + rng.below(1000) as i32).unwrap();
                 }
                 2 => {
                     let v = (rng.below(0x8000_0000) as i32).clamp(MIN_I31, MAX_I31);

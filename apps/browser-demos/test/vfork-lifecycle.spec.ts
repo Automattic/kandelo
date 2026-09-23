@@ -290,8 +290,10 @@ function expectPrivatePreparationEvidence(preparation: MechanismTrace): void {
     .not.toBe(preparation.fields.get("owner_control"));
   expect(preparation.fields.get("scratch"), preparation.line)
     .not.toBe(preparation.fields.get("child_prefix"));
-  expect(preparation.fields.get("externref_parent"), preparation.line)
-    .not.toBe(preparation.fields.get("externref_child"));
+  // No externref_parent/externref_child pair: a vfork child no longer gets
+  // its own host-externref generation, because a fork does not carry a raw
+  // host externref (externref stage E2).
+  expect(preparation.fields.has("externref_parent"), preparation.line).toBe(false);
 }
 
 test("observes real browser mode 1 quiescence and mode 0 copy dispatch", async ({

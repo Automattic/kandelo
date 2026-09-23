@@ -3,13 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   ARENA_DIRECTORY_CHUNK_COUNT_FIELD,
   ARENA_RECORD_CHUNK_COUNT_FIELD,
-  INTERN_KIND_EXTERNREF,
   PAGE,
   arenaFixture,
-  captureArena,
-  fixture,
   type ArenaFixture,
-  type Fixture,
 } from "./fork-module-capture-fixture";
 
 /**
@@ -139,77 +135,5 @@ describe("bump heap floor", () => {
     expect(x.mmaps() - mapsBefore, "a fresh chunk after the release").toBe(
       heapChunks,
     );
-  });
-});
-
-/**
- * WHY THIS EXISTS
- *
- * `CapturedExternrefs` is a bump-heap allocation now, and the bump heap is
- * reset at four points during a single fork. `begin_capture_impl` clears the
- * set and calls `begin_unwind_impl`, which may reset the bump -- so a set
- * cleared BEFORE that call, if clearing allocated, would be handed back out
- * to the next allocation. A reclaimed bump region is REUSED, not poisoned,
- * so the failure is a wrong externref lease, not a trap, and nothing else in
- * the suite would see it.
- *
- * The assertion is therefore on the VALUES, not on a count: capture a known
- * set of externrefs and require every one to come back identical -- through
- * more entries than the old 4,096-entry static held, so the set has been
- * moved by bump reallocation several times before it is read.
- *
- * WHAT THE PERTURBATION HAS TO BE, for the batch task: the shipped reset is
- * non-allocating and is also performed inside `reset_bump_heap`, so merely
- * reordering the two calls in `begin_capture_impl` leaves this green. The
- * ordering only carries weight once the reset allocates. To see this red:
- * make `reset_captured_externrefs` allocate (`Vec::with_capacity(8)`),
- * remove it from `reset_bump_heap`, and move it back above
- * `begin_unwind_impl` -- all three, which is the shape the brief described.
- */
-
-const captured = (f: Fixture): { count: number; at: (i: number) => number } => ({
-  count: (f.x.fm_captured_externref_count as () => number)(),
-  at: (i) => Number((f.x.fm_captured_externref as (i: number) => bigint)(i)),
-});
-
-describe("captured externref set on the bump heap", () => {
-  it("reports the externrefs it captured, not whatever reused their storage", () => {
-    // Distinct handles, more of them than the old static held.
-    const known = Array.from({ length: 4_200 }, (_, i) => 11 + i * 7);
-    const f = fixture();
-    captureArena(
-      f,
-      known.map((handle) => [INTERN_KIND_EXTERNREF, handle, 0] as const),
-    );
-    const set = captured(f);
-    expect(set.count, "no cap: every intern is recorded").toBe(known.length);
-    for (let i = 0; i < known.length; i += 1) {
-      expect(set.at(i), `externref ${i}`).toBe(known[i]);
-    }
-    // One past the end is a truthful failure, not a fabricated handle.
-    expect(set.at(known.length)).toBeLessThan(0);
-  });
-
-  it("starts the next capture in the same worker from an empty set", () => {
-    // The set must not carry a previous capture's handles into the next one,
-    // and the next one's storage is cut from the same retained heap chunk the
-    // first one used -- which is the reuse a stale buffer would read through.
-    const f = fixture();
-    captureArena(f, [
-      [INTERN_KIND_EXTERNREF, 5, 0],
-      [INTERN_KIND_EXTERNREF, 6, 0],
-      [INTERN_KIND_EXTERNREF, 7, 0],
-    ]);
-    expect(captured(f).count).toBe(3);
-
-    // Back to idle; a durable worker keeps its heap chunks across this.
-    (f.x.fm_abort as () => void)();
-    expect(f.errno()).toBe(0);
-    captureArena(f, [[INTERN_KIND_EXTERNREF, 9, 0]]);
-
-    const set = captured(f);
-    expect(set.count, "only this capture's handle").toBe(1);
-    expect(set.at(0)).toBe(9);
-    expect(set.at(1)).toBeLessThan(0);
   });
 });

@@ -8,9 +8,10 @@
 //
 // Every method is PURE SCALAR at the module boundary — the module never sees a
 // live reference. The transaction resolves each live value to its recipe
-// COORDINATE (funcref catalog ordinal, externref broker handle, i31 payload,
-// static-root coordinate) with the irreducible per-host identity floor (the V8
-// `WeakMap` provenance + the transit table) and passes only the coordinate here.
+// COORDINATE (funcref catalog ordinal, i31 payload, static-root coordinate)
+// with the irreducible per-host identity floor (the transit table) and passes
+// only the coordinate here. There is no externref coordinate: a fork does not
+// carry a raw host externref (externref stage E2).
 //
 // This module is "staying glue" (like `fork-module-instance.ts` /
 // `-backend.ts`): it drives the module and survives the P6 deletion of the JS
@@ -39,7 +40,7 @@ export const FORK_CAPTURE_KIND_EXNREF = 3;
  * because unlike the aggregate kinds no caller outside this file sends one.
  */
 const K_FUNCREF = 1;
-const K_EXTERNREF = 2;
+// 2 was the host-externref kind, retired in externref stage E2.
 const K_I31 = 3;
 const K_STATIC_ROOT = 4;
 
@@ -92,7 +93,7 @@ export class ForkReferenceCaptureModule {
   /**
    * Intern one leaf reference at a coordinate this host already resolved.
    *
-   * The four named methods below are the call sites; they all reach the single
+   * The named methods below are the call sites; they all reach the single
    * kind-discriminated `fm_capture_intern` export, which replaced four per-type
    * exports and the four marshalling wrappers that went with them. That
    * multiplication -- one concept, four exports, four wrappers -- is why the
@@ -107,10 +108,6 @@ export class ForkReferenceCaptureModule {
 
   internFuncref(act: number, ordinal: number): number {
     return this.intern(K_FUNCREF, act, ordinal, "intern funcref");
-  }
-
-  internExternref(handle: number): number {
-    return this.intern(K_EXTERNREF, handle, 0, "intern externref");
   }
 
   internI31(value: number): number {

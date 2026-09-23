@@ -260,7 +260,7 @@ fn generated_probe_and_local_anyref_codec_validate_without_typed_anyref_imports(
     let printed = wasmprinter::print_bytes(&wasm).expect("print generated module");
     assert!(printed.contains("(export \"__wpk_fork_ref_gc_probe\""));
     assert!(printed.contains("(export \"__wpk_fork_ref_gc_encode_slot\""));
-    assert!(printed.contains("(export \"__wpk_fork_ref_gc_publish_externref\""));
+    assert!(!printed.contains("__wpk_fork_ref_gc_publish_externref"));
     assert!(printed.contains("(table (;"));
     assert!(printed.contains("anyref"), "{printed}");
     assert!(printed.contains("any.convert_extern"), "{printed}");

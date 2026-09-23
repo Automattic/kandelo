@@ -19,7 +19,6 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory,
   type ProcessMemoryLayout,
-  FORK_SAVE_BUFFER_SIZE,
 } from "../src/process-memory";
 import {
   NodeKernelHost,
@@ -32,14 +31,9 @@ import {
   writeVfsBinary,
 } from "../src/vfs/image-helpers";
 import {
-  ForkExternrefProcessOwner,
-  readCapturedExternrefHandover,
-} from "../src/fork-externref-process-owner";
-import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
 } from "../src/fork-replay-gate";
-import type { ForkExternrefGeneration } from "../src/fork-reference-broker";
 import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
@@ -186,6 +180,15 @@ export interface RunProgramOptions {
    *  non-forking-spawn regression tests. Worker-thread mode uses live samples;
    *  main-thread fixtures still return the final value as `forkCount`. */
   captureForkCount?: boolean;
+  /**
+   * A custom process-worker entry (a `file:` URL to a `.ts`/`.js` module),
+   * for a test that has to add something to the guest's import object that
+   * no production import provides -- e.g. a host object for the externref
+   * fork-refusal test (`fixtures/host-object-import-worker-entry.ts`). Forces
+   * main-thread mode, where this helper owns the worker adapter; the kernel
+   * worker's own adapter always uses the production entry.
+   */
+  processWorkerEntry?: URL;
   /** Capture kernel-owned large-spawn retention and memory pages immediately
    * after program exit, before the dedicated kernel worker is destroyed. */
   captureSpawnScratchStats?: boolean;
@@ -335,7 +338,7 @@ function centralizedForkModuleFields(
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
-  if (options.io || options.onKernelReady) {
+  if (options.io || options.onKernelReady || options.processWorkerEntry) {
     return runOnMainThread(options);
   }
   return runInWorkerThread(options);
@@ -593,7 +596,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
   const io = options.io ?? new NodePlatformIO();
-  const workerAdapter = new NodeWorkerAdapter();
+  const workerAdapter = new NodeWorkerAdapter(options.processWorkerEntry);
 
   let resolveExit: (status: number) => void;
   let rejectExit: (err: Error) => void;
@@ -607,13 +610,16 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const processLayouts = new Map<number, ProcessMemoryLayout>();
   const processPtrWidths = new Map<number, 4 | 8>();
   const forkReplayContexts = new Map<number, ForkReplayContext>();
-  const externrefProcessOwner = new ForkExternrefProcessOwner();
   // Capture the co-resident fork-module's per-kind reference proof-of-use posted
   // by a fork CHILD Worker. This is informational success telemetry, not a host
   // problem, so it is surfaced on `forkModuleDiagnostics` (mirroring the
   // Node/browser worker entries' dedicated `fork_module_proof` channel), NOT on
-  // `hostDiagnostics`. Main-thread mode otherwise returns no host diagnostics.
+  // `hostDiagnostics`. Main-thread mode reports only fork aborts there.
   const mainThreadForkModuleDiagnostics: HostDiagnostic[] = [];
+  // A fork the parent's worker aborted (`fork()` returned `-errno`), reported
+  // as the production kernel-worker lifecycle reports it: a `fork` host
+  // diagnostic naming the errno and the reason.
+  const mainThreadHostDiagnostics: HostDiagnostic[] = [];
   const recordForkModuleReferences = (
     forPid: number,
     message: Extract<WorkerToHostMessage, { type: "fork_module_references" }>,
@@ -623,7 +629,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       source: "fork-module",
       message:
         `fork_module_references=${message.references} ` +
-        `externrefs_resolved=${message.externrefs} ` +
         `exnrefs_reconstructed=${message.exnrefs} ` +
         `gc_nodes_reconstructed=${message.gcNodes}`,
     });
@@ -648,7 +653,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           : `fork_module_child_frames=${message.frames}`,
     });
   };
-  const externrefGenerations = new Map<number, ForkExternrefGeneration>();
   let mainThreadForkCount: bigint | undefined;
   let spawnScratchCapacity: number | undefined;
   let kernelMemoryPages: number | undefined;
@@ -690,14 +694,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     if (worker) {
       worker.terminate().catch(() => {});
       workers.delete(childPid);
-    }
-  };
-
-  const releaseProcessReferenceOwner = (releasePid: number): void => {
-    const generation = externrefGenerations.get(releasePid);
-    if (generation) {
-      externrefProcessOwner.releaseGeneration(generation);
-      externrefGenerations.delete(releasePid);
     }
   };
 
@@ -745,7 +741,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           maxAddr: childLayout.maxAddr,
         });
 
-        const childGeneration = externrefProcessOwner.startGeneration(childPid);
         let childWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
@@ -758,19 +753,16 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           argv: program.argv,
           env: envp,
           ptrWidth: childPtrWidth,
-          externrefGenerationId: childGeneration.id,
           ...centralizedForkModuleFields(childPtrWidth),
         };
 
         try {
           childWorker = workerAdapter.createWorker(childInitData);
         } catch (error) {
-          externrefProcessOwner.releaseGeneration(childGeneration);
           kernelWorker.deactivateProcess(childPid);
           throw error;
         }
         workers.set(childPid, childWorker);
-        externrefGenerations.set(childPid, childGeneration);
         processProgramBytes.set(childPid, program.programBytes);
         processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
@@ -787,7 +779,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processMemories.delete(childPid);
           processLayouts.delete(childPid);
           processPtrWidths.delete(childPid);
-          releaseProcessReferenceOwner(childPid);
           childWorker.terminate().catch(() => {});
         };
         childWorker.on("error", finalizeSpawnWorkerError);
@@ -849,28 +840,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         );
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
-        const parentGeneration = externrefGenerations.get(parentPid);
-        if (!parentGeneration) {
-          throw new Error(
-            `Unknown externref generation for fork parent pid ${parentPid}`,
-          );
-        }
-        // The PARENT reports which externref handles its capture interned, in
-        // the handover it wrote beside its fork save buffer. This helper used
-        // to call `forkGenerationFromContinuation`, which re-derived the set by
-        // decoding the parked parent's arena; that method is gone -- the scan
-        // moved to the parent worker -- and this call had been stale ever
-        // since, unreachable because no fork got this far.
-        const childGeneration =
-          externrefProcessOwner.forkGenerationFromCapturedHandles(
-            parentGeneration,
-            childPid,
-            readCapturedExternrefHandover(
-              parentMemory,
-              childLayout.channelOffset - FORK_SAVE_BUFFER_SIZE,
-              `centralized test fork child pid=${childPid}: externref handover`,
-            ),
-          ).generation;
         let childWorker:
           ReturnType<NodeWorkerAdapter["createWorker"]>;
         const childInitData: CentralizedWorkerInitMessage = {
@@ -887,18 +856,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           forkChildThreadFnPtr: forkReplayContext?.fnPtr,
           forkChildThreadArgPtr: forkReplayContext?.argPtr,
           ptrWidth: parentPtrWidth,
-          externrefGenerationId: childGeneration.id,
           ...centralizedForkModuleFields(parentPtrWidth),
         };
 
-        try {
-          childWorker = workerAdapter.createWorker(childInitData);
-        } catch (error) {
-          externrefProcessOwner.releaseGeneration(childGeneration);
-          throw error;
-        }
+        childWorker = workerAdapter.createWorker(childInitData);
         workers.set(childPid, childWorker);
-        externrefGenerations.set(childPid, childGeneration);
         processProgramBytes.set(childPid, parentProgram);
         processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
@@ -921,7 +883,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processLayouts.delete(childPid);
           processPtrWidths.delete(childPid);
           forkReplayContexts.delete(childPid);
-          releaseProcessReferenceOwner(childPid);
           childWorker.terminate().catch(() => {});
         };
         childWorker.on("error", finalizeChildWorkerError);
@@ -978,7 +939,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             processLayouts.delete(childPid);
             processPtrWidths.delete(childPid);
             forkReplayContexts.delete(childPid);
-            releaseProcessReferenceOwner(childPid);
           }
           childWorker.terminate().catch(() => {});
           throw error;
@@ -1014,7 +974,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           throw new Error(`Unknown process memory for exec pid ${execPid}`);
         }
         let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
-        let replacementGeneration: ForkExternrefGeneration | undefined;
         let launchPlanState: "ready" | "discarded" | "started" = "ready";
         return {
           onCommitFailure: () => {
@@ -1035,15 +994,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               );
               const secureExec = transition.secureExec;
               kernelWorker.prepareProcessForExec(execPid, oldMemory);
-              const previousGeneration = externrefGenerations.get(execPid);
-              if (!previousGeneration) {
-                throw new Error(
-                  `Unknown externref generation for exec pid ${execPid}`,
-                );
-              }
-              replacementGeneration =
-                externrefProcessOwner.replaceGeneration(previousGeneration);
-              externrefGenerations.set(execPid, replacementGeneration);
 
               if (transition.addressSpaceResult < 0) {
                 throw new Error("failed to detach the discarded address space");
@@ -1055,9 +1005,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 workers.delete(execPid);
               }
               if (kernelWorker.finalizeExecHandoffTermination(execPid) > 0) {
-                externrefProcessOwner.releaseGeneration(replacementGeneration);
-                externrefGenerations.delete(execPid);
-                replacementGeneration = undefined;
                 return 0;
               }
 
@@ -1088,7 +1035,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 argv,
                 env: envp,
                 ptrWidth: newPtrWidth,
-                externrefGenerationId: replacementGeneration.id,
                 ...centralizedForkModuleFields(newPtrWidth),
               };
 
@@ -1123,7 +1069,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processLayouts.delete(execPid);
               processPtrWidths.delete(execPid);
               forkReplayContexts.delete(execPid);
-              releaseProcessReferenceOwner(execPid);
               const message = err instanceof Error ? err.message : String(err);
               stderr += `[exec] post-commit transition failed: ${message}\n`;
               if (execPid === pid) resolveExit(128 + SIGSEGV);
@@ -1158,13 +1103,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           releaseSlot();
           throw err;
         }
-        const processGeneration = externrefGenerations.get(clonePid);
-        if (!processGeneration) {
-          releaseSlot();
-          throw new Error(
-            `Unknown externref generation for pthread pid ${clonePid}`,
-          );
-        }
         let threadWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
 
         const threadInitData: CentralizedThreadInitMessage = {
@@ -1184,7 +1122,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           tlsOffset: alloc.tlsOffset,
           tlsAllocAddr: alloc.tlsAllocAddr,
           ptrWidth: clonePtrWidth,
-          externrefGenerationId: processGeneration.id,
           // Phase 6 D7b: ship the fork-module to a pthread so a fork issued from
           // it unwinds through the module (parent side of a fork-from-thread),
           // mirroring the process-worker init above.
@@ -1218,7 +1155,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processLayouts.delete(exitPid);
           processPtrWidths.delete(exitPid);
           forkReplayContexts.delete(exitPid);
-          releaseProcessReferenceOwner(exitPid);
           const w = workers.get(exitPid);
           if (w) {
             w.terminate().catch(() => {});
@@ -1240,7 +1176,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processLayouts.delete(exitPid);
               processPtrWidths.delete(exitPid);
               forkReplayContexts.delete(exitPid);
-              releaseProcessReferenceOwner(exitPid);
               // Do NOT terminate the child Worker here — wait for its terminal
               // `exit` message (worker quiescence), mirroring the production
               // hosts, so a fork child's tail-emitted reference proof-of-use is
@@ -1300,8 +1235,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     await options.onKernelReady(kernelWorker, pid);
   }
 
-  const mainGeneration = externrefProcessOwner.startGeneration(pid);
-  externrefGenerations.set(pid, mainGeneration);
   let mainWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -1313,17 +1246,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     env: options.env,
     argv: options.argv ?? [options.programPath],
     ptrWidth,
-    externrefGenerationId: mainGeneration.id,
     ...centralizedForkModuleFields(ptrWidth),
   };
 
-  try {
-    mainWorker = workerAdapter.createWorker(initData);
-  } catch (error) {
-    externrefProcessOwner.releaseGeneration(mainGeneration);
-    externrefGenerations.delete(pid);
-    throw error;
-  }
+  mainWorker = workerAdapter.createWorker(initData);
   workers.set(pid, mainWorker);
 
   if (options.onStarted) {
@@ -1332,15 +1258,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
   const timer = setTimeout(() => {
     for (const [, w] of workers) w.terminate().catch(() => {});
-    for (const livePid of [...externrefGenerations.keys()]) {
-      releaseProcessReferenceOwner(livePid);
-    }
     rejectExit(new Error(`Program timed out after ${timeout}ms`));
   }, timeout);
 
   mainWorker.on("error", (err: Error) => {
     clearTimeout(timer);
-    releaseProcessReferenceOwner(pid);
     rejectExit(err);
   });
 
@@ -1354,10 +1276,15 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     if (m.type === "error" && m.pid === pid) {
       clearTimeout(timer);
       for (const [, w] of workers) w.terminate().catch(() => {});
-      releaseProcessReferenceOwner(pid);
       rejectExit(new Error(m.message));
     } else if (m.type === "fork_module_references" && m.pid === pid) {
       recordForkModuleReferences(pid, m);
+    } else if (m.type === "fork_aborted" && m.pid === pid) {
+      mainThreadHostDiagnostics.push({
+        pid,
+        source: "fork",
+        message: `fork aborted with errno=${m.errno}: ${m.reason}`,
+      });
     } else if (
       (m.type === "fork_module_frames" ||
         m.type === "fork_module_child_frames") &&
@@ -1401,7 +1328,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     stderr,
     // Main-thread mode surfaces no host PROBLEM diagnostics; fork-module
     // proof-of-use rides its own channel below.
-    hostDiagnostics: [],
+    hostDiagnostics: mainThreadHostDiagnostics,
     forkModuleDiagnostics: mainThreadForkModuleDiagnostics,
     stdoutBytes,
     forkCount: mainThreadForkCount,

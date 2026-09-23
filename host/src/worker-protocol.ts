@@ -67,14 +67,6 @@ export interface CentralizedWorkerInitMessage {
   channelOffset: number;
   /** Kernel-owned sticky secure-execution state for this exact image. */
   secureExec: boolean;
-  /**
-   * Exact process-image generation issued by the kernel-side externref owner.
-   * Workers use this scalar only to stamp their externref token cache; the
-   * broker capability and real JavaScript values never cross the Worker edge.
-   * Optional only for direct non-fork harnesses; an instrumented artifact must
-   * reject launch unless it is present.
-   */
-  externrefGenerationId?: number;
   /** Optional env vars to set up in the program */
   env?: string[];
   /** Optional argv */
@@ -170,11 +162,6 @@ export interface CentralizedThreadInitMessage {
   channelOffset: number;
   /** Same sticky image marker as the process worker. */
   secureExec: boolean;
-  /**
-   * Same process-image externref generation as the process's main Worker.
-   * Optional only for direct non-fork harnesses.
-   */
-  externrefGenerationId?: number;
   /**
    * Phase 6 D7b: the pre-compiled `fork-module` matching this process's pointer
    * width, forwarded exactly as for the process worker. A fork issued FROM this
@@ -331,8 +318,6 @@ export interface ForkModuleReferencesMessage {
   pid: number;
   /** Funcref/null count (`fm_stats` ReferencesReconstructed field). */
   references: number;
-  /** Externref count (`fm_stats` ExternrefsResolved field). */
-  externrefs: number;
   /** Exnref-node count (`fm_stats` ExnrefsReconstructed field). */
   exnrefs: number;
   /** Typed-GC node count — struct/array/i31 (`fm_stats` GcNodesReconstructed). */

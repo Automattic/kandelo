@@ -28,6 +28,13 @@ use alloc::vec::Vec;
 /// activation reconstructs one Wasm reference value. Aggregate variants
 /// (`Exnref`/`Struct`/`Array`) carry their exact scalar payload bytes plus the
 /// ordered graph edges (payloads/fields/elements) into other node ids.
+///
+/// There is no host-`externref` node. A fork does not carry a raw host
+/// object: capture refuses one with `EOPNOTSUPP` (see
+/// `docs/fork-reference-support.md`), so no graph names one, and the wire
+/// discriminant it used (kind 2) is rejected by the decoder. An `externref`
+/// that is an `extern.convert_any` view of the program's own GC object is
+/// captured as that GC object and needs no node of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReferenceRecipeNode {
     /// A definitely-null reference.
@@ -37,8 +44,6 @@ pub enum ReferenceRecipeNode {
         module_activation: u32,
         function_ordinal: u32,
     },
-    /// A durable host externref resolved by broker handle (`1..=0xffff_ffff`).
-    Externref { handle: u32 },
     /// A Wasm exception reference: a tag coordinate, an artifact layout id, the
     /// exact scalar payload bits, and the ordered reference payload edges.
     Exnref {
@@ -93,7 +98,6 @@ pub(crate) fn node_edges(node: &ReferenceRecipeNode) -> &[u32] {
         ReferenceRecipeNode::Array { elements, .. } => elements,
         ReferenceRecipeNode::Null
         | ReferenceRecipeNode::Funcref { .. }
-        | ReferenceRecipeNode::Externref { .. }
         | ReferenceRecipeNode::I31 { .. }
         | ReferenceRecipeNode::StaticRoot { .. } => &[],
     }

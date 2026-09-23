@@ -279,7 +279,7 @@ mod tests {
     use super::*;
     use crate::drive_plan::{
         build_drive_plan, drive_table_base, DriveStep, DRIVE_OP_ALLOC, DRIVE_OP_EXN,
-        DRIVE_OP_EXTERNREF_TRANSIT, DRIVE_OP_FILL,
+        DRIVE_OP_FILL,
     };
     use crate::gc_codec::{decode_gc_codec, LAYOUT_FLAG_REQUIRES_PROVENANCE};
     use alloc::vec;
@@ -464,7 +464,7 @@ mod tests {
         let cyclic = vec![
             struct_node(0, 0, 0, 1, vec![1, 2, 2]),
             struct_node(1, 0, 0, 1, vec![0, 2, 2]),
-            entry(2, ReferenceRecipeNode::Externref { handle: 9 }),
+            entry(2, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let hints = GcCodecHints::new(&cyclic, &map, None).unwrap();
         assert_eq!(hints.allocation_dependencies(0)[0], 1, "seed edge is a dependency");
@@ -474,12 +474,12 @@ mod tests {
             "a provenance cycle is an unallocatable constructor cycle",
         );
 
-        // ACYCLIC: struct(1)'s seed is the externref leaf instead, exactly as a
+        // ACYCLIC: struct(1)'s seed is the funcref leaf instead, exactly as a
         // FIRST-wins witness gives — the earliest seed predates both objects.
         let acyclic = vec![
             struct_node(0, 0, 0, 1, vec![1, 2, 2]),
             struct_node(1, 0, 0, 1, vec![2, 2, 2]),
-            entry(2, ReferenceRecipeNode::Externref { handle: 9 }),
+            entry(2, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let hints = GcCodecHints::new(&acyclic, &map, None).unwrap();
         let plan = build_drive_plan(&acyclic, &hints).expect("acyclic provenance plans");
@@ -495,17 +495,17 @@ mod tests {
     fn struct_allocation_dependency_orders_dep_before_dependent() {
         // struct(0) has an immutable allocation-dependency field pointing at
         // struct(1) via reference ordinal 1 (the SECOND ref edge); its FIRST ref
-        // edge (ordinal 0) is a mutable field over externref(2). So struct(0)'s
-        // edge list is [mutable->externref(2), dependency->struct(1)], and struct(1)
+        // edge (ordinal 0) is a mutable field over funcref(2). So struct(0)'s
+        // edge list is [mutable->funcref(2), dependency->struct(1)], and struct(1)
         // MUST be allocated before struct(0). struct(1)'s own dependency edge
-        // (ordinal 1) points at the externref leaf, so its dependency chain ends.
+        // (ordinal 1) points at the funcref leaf, so its dependency chain ends.
         // Mutation guard: an id-order builder would allocate struct(0) first.
         let mut map = BTreeMap::new();
         map.insert(0u32, decode_gc_codec(&struct_dep_descriptor()).unwrap());
         let nodes = vec![
             struct_node(0, 0, 0, 1, vec![2, 1]), // dep ordinal 1 -> struct(1)
-            struct_node(1, 0, 0, 1, vec![2, 2]), // dep ordinal 1 -> externref(2)
-            entry(2, ReferenceRecipeNode::Externref { handle: 9 }),
+            struct_node(1, 0, 0, 1, vec![2, 2]), // dep ordinal 1 -> funcref(2)
+            entry(2, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let hints = GcCodecHints::new(&nodes, &map, None).unwrap();
         // The dependencies the adapter derived from the descriptor.
@@ -519,12 +519,11 @@ mod tests {
             .map(|s| s.recipe)
             .collect();
         assert_eq!(allocs, vec![1, 0]); // dependency struct(1) first, then struct(0)
-        // Full order: the reachable externref leaf (recipe 2) is published into the
-        // transit first, then ALLOC 1, ALLOC 0, then fills in id order (0 then 1).
+        // Full order: the funcref leaf (recipe 2) needs no step, so ALLOC 1,
+        // ALLOC 0, then fills in id order (0 then 1).
         assert_eq!(
             plan.iter().map(|s| (s.op, s.recipe)).collect::<Vec<_>>(),
             vec![
-                (DRIVE_OP_EXTERNREF_TRANSIT, 2),
                 (DRIVE_OP_ALLOC, 1),
                 (DRIVE_OP_ALLOC, 0),
                 (DRIVE_OP_FILL, 0),
@@ -544,7 +543,7 @@ mod tests {
             // each struct's dependency (ref ordinal 1) points at the other.
             struct_node(0, 0, 0, 1, vec![2, 1]),
             struct_node(1, 0, 0, 1, vec![2, 0]),
-            entry(2, ReferenceRecipeNode::Externref { handle: 9 }),
+            entry(2, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let hints = GcCodecHints::new(&nodes, &map, None).unwrap();
         assert_eq!(hints.allocation_dependencies(0), &[1]);
@@ -586,7 +585,7 @@ mod tests {
         let map = codec_map(0);
         let nodes = vec![
             array_node(0, 0, 3, 4, vec![1]),
-            entry(1, ReferenceRecipeNode::Externref { handle: 7 }),
+            entry(1, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let hints = GcCodecHints::new(&nodes, &map, None).unwrap();
         assert!(hints.allocation_dependencies(0).is_empty());
@@ -601,7 +600,7 @@ mod tests {
         let map = codec_map(0);
         let nodes = vec![
             array_node(0, 0, 3, 7, vec![1]),
-            entry(1, ReferenceRecipeNode::Externref { handle: 7 }),
+            entry(1, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let hints = GcCodecHints::new(&nodes, &map, None).unwrap();
         assert_eq!(hints.allocation_dependencies(0), &[1]);
@@ -719,7 +718,7 @@ mod tests {
         // A program (non-host) exnref owns itself: directOwner == module_activation.
         let map = codec_map(0);
         let nodes = vec![
-            entry(0, ReferenceRecipeNode::Externref { handle: 8 }),
+            entry(0, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
             entry(
                 1,
                 ReferenceRecipeNode::Exnref {
@@ -734,12 +733,11 @@ mod tests {
         let hints = GcCodecHints::new(&nodes, &map, None).unwrap();
         assert_eq!(hints.exn_owner(1), Some(4));
         let plan = build_drive_plan(&nodes, &hints).unwrap();
-        // The reachable payload externref (recipe 0) is published into the transit
-        // first, then the exnref materializes in its owner activation (4).
+        // The funcref payload (recipe 0) needs no step, so the exnref
+        // materializes in its owner activation (4) alone.
         assert_eq!(
             plan.iter().map(triple).collect::<Vec<_>>(),
             vec![
-                (DRIVE_OP_EXTERNREF_TRANSIT, 0, 0),
                 (DRIVE_OP_EXN, drive_table_base(4) + DRIVE_OP_EXN, 1),
             ]
         );
@@ -751,7 +749,7 @@ mod tests {
         // remaps to the supplied hostExceptionOwner (here activation 2).
         let map = codec_map(0);
         let nodes = vec![
-            entry(0, ReferenceRecipeNode::Externref { handle: 8 }),
+            entry(0, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
             entry(
                 1,
                 ReferenceRecipeNode::Exnref {

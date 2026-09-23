@@ -4,7 +4,8 @@ import { ForkChildReferences } from "../src/fork-child-references";
 
 const KIND_NULL = 0;
 const KIND_FUNCREF = 1;
-const KIND_EXTERNREF = 2;
+/** The retired host-externref kind (externref stage E2); no graph names it. */
+const KIND_RETIRED_EXTERNREF = 2;
 const KIND_EXNREF = 3;
 const KIND_I31 = 4;
 const KIND_STRUCT = 5;
@@ -19,8 +20,6 @@ const TYPE_I32 = 1;
 function build(nodes: Record<number, { kind: number; activation?: number }>) {
   const functionCatalog = new WebAssembly.Table({ element: "anyfunc", initial: 4 });
   const staticRootCatalog = new WebAssembly.Table({ element: "externref", initial: 4 });
-  const resolved: number[] = [];
-  const token = { the: "host token" };
   const refs = new ForkChildReferences(
     {
       decodedNodeKind: (index) => {
@@ -36,33 +35,24 @@ function build(nodes: Record<number, { kind: number; activation?: number }>) {
         return node.activation;
       },
       funcrefOrdinal: (recipeId) => recipeId,
-      externrefHandle: (recipeId) => recipeId * 10,
       staticRootSlot: (recipeId) => recipeId,
       },
     {
       functionCatalog,
       staticRootCatalog,
-      resolveExternref: (handle) => {
-        resolved.push(handle);
-        return token;
-      },
     },
     "test child references",
   );
-  return { refs, functionCatalog, staticRootCatalog, resolved, token };
+  return { refs, functionCatalog, staticRootCatalog };
 }
 
 describe("fork child references", () => {
   it("names the activation a reference must wait for, and only when there is one", () => {
     const { refs } = build({
       1: { kind: KIND_FUNCREF, activation: 3 },
-      2: { kind: KIND_EXTERNREF },
       3: { kind: KIND_NULL },
     });
     expect(refs.ownerActivation(1, TYPE_FUNCREF)).toBe(3);
-    // A host externref belongs to no activation. Making one a dependency would
-    // order the child against an activation that has nothing to do with it.
-    expect(refs.ownerActivation(2, TYPE_EXTERNREF)).toBeNull();
     expect(refs.ownerActivation(3, TYPE_FUNCREF), "null belongs to nobody").toBeNull();
   });
 
@@ -87,10 +77,16 @@ describe("fork child references", () => {
     );
   });
 
-  it("materializes an externref through the broker handle", () => {
-    const { refs, resolved, token } = build({ 5: { kind: KIND_EXTERNREF } });
-    expect(refs.materialize(5, TYPE_EXTERNREF)).toBe(token);
-    expect(resolved, "the handle the module said, not the recipe id").toEqual([50]);
+  it("refuses the retired host-externref kind at every reference type", () => {
+    // A fork does not carry a raw host externref (externref stage E2), so no
+    // decoded graph names kind 2. Should one appear, the child refuses it
+    // rather than inventing a value.
+    const { refs } = build({ 5: { kind: KIND_RETIRED_EXTERNREF } });
+    for (const type of [TYPE_FUNCREF, TYPE_EXTERNREF, TYPE_EXNREF, TYPE_ANYREF]) {
+      expect(() => refs.materialize(5, type), `type ${type}`).toThrow(
+        /node kind 2, which cannot be imported/,
+      );
+    }
   });
 
   it("materializes a static root through its catalog slot", () => {
@@ -131,13 +127,13 @@ describe("fork child references", () => {
     // binding the wrong reference into an import object is silent.
     const { refs } = build({
       1: { kind: KIND_FUNCREF, activation: 0 },
-      2: { kind: KIND_EXTERNREF },
+      2: { kind: KIND_EXNREF, activation: 0 },
     });
     expect(() => refs.materialize(1, TYPE_EXTERNREF)).toThrow(
       /node kind 1, which cannot be imported at declared type 7/,
     );
     expect(() => refs.materialize(2, TYPE_FUNCREF)).toThrow(
-      /node kind 2, which cannot be imported at declared type 6/,
+      /node kind 3, which cannot be imported at declared type 6/,
     );
     expect(() => refs.materialize(1, TYPE_I32), "not a reference type").toThrow(
       /declared type 1/,

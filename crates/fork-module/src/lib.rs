@@ -152,7 +152,7 @@ mod wasm {
         build_child_import_plan, build_imported_global_bindings, drive_plan,
         encode_imported_global_bindings,
         encode_journal_image, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
-        GcProvenance, LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
+        GcProvenance, LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
         ModuleStateWriter, ReferenceSegmentsWriter, ReferenceTransactionRecord,
         ReplayEventJournal, ResumeSlotTable, RewindDriver, SegmentedReferenceTransaction,
@@ -184,11 +184,10 @@ mod wasm {
     // therefore cannot call the shim directly. Instead it calls this PLACEHOLDER
     // import, which `crates/fork-module-inject` rewrites (`replace_imported_func`)
     // into a thunk that forwards to the injected `fm_drive_execute` shim — the
-    // same injector-wiring seam `resolve_externref` and the decode shims already
-    // use. It is a plain `(ptr, i32) -> ()` import (no reference types), which
+    // same injector-wiring seam the table and atomic thunks below use. It is a plain `(ptr, i32) -> ()` import (no reference types), which
     // Rust CAN emit; after injection it is a local function, so the emitted
     // module carries no unresolved import for it. Before injection (a bare
-    // `cargo build`) it is an unsatisfied import, exactly like `resolve_externref`.
+    // `cargo build`) it is an unsatisfied import, like the other placeholders.
     #[link(wasm_import_module = "env")]
     unsafe extern "C" {
         /// Drive a serialized drive plan of `count` steps at guest address
@@ -220,16 +219,6 @@ mod wasm {
         /// catalog_slot]`, or to null when `clear` is non-zero.
         /// Injector-rewritten into a local thunk.
         fn __wpk_fork_table_apply(dest: u32, catalog_slot: u32, clear: u32);
-        /// The broker handle the host recorded for the EXTERNREF staged in
-        /// transit `slot`, or 0 when the value is not one the host owns.
-        ///
-        /// Injector-wired: the body is
-        /// `host_externref_handle(extern.convert_any(transit[slot]))`, which
-        /// Rust cannot write -- it cannot hold an externref, let alone convert
-        /// one. The host half is the exact reverse of `resolve_externref`, and
-        /// the capture needs both directions: one to NAME a live host
-        /// reference, the other to bring it back.
-        fn __wpk_fork_externref_handle(slot: u32) -> i32;
         /// Grow the module-owned anyref transit table to at least `needed`
         /// slots, answering its size or -1. Injector-wired to the emitted
         /// `fm_transit_grow`, because `table.grow` on an anyref table needs a
@@ -372,18 +361,6 @@ mod wasm {
         // `fm_transit_grow`, which is `table.size` + `table.grow` and nothing
         // else.
         unsafe { __wpk_fork_transit_grow(needed) }
-    }
-
-    /// Safe wrapper over the injector-wired externref-handle placeholder.
-    ///
-    /// Answers "is the value staged in this transit slot a host reference the
-    /// broker owns, and under which handle?" -- 0 for anything else, including
-    /// a GC value that simply matched no layout.
-    fn externref_handle_via_injector(slot: u32) -> i32 {
-        // SAFETY: after injection this is a local thunk doing one `table.get`
-        // on the module's own transit table, an `extern.convert_any`, and one
-        // host call. A null slot answers 0 without calling the host.
-        unsafe { __wpk_fork_externref_handle(slot) }
     }
 
     /// Safe wrapper over the injector-wired probe placeholder.
@@ -3237,11 +3214,7 @@ mod wasm {
     /// `fork_codec::build_drive_plan` over the resident driver's decoded reference
     /// graph, with `GcCodecHints` supplying the per-recipe GC-layout facts from the
     /// seeded per-activation catalogs. Requires `fm_begin_reference_replay` to have
-    /// seeded the driver. Since M2 the externref-transit rooting for reachable
-    /// leaves is a `DRIVE_OP_EXTERNREF_TRANSIT` step THIS function's
-    /// `build_drive_plan` call emits (Phase 0, before any allocate/fill) — not
-    /// something `drive_reconstruction` does at seed time; `drive_reconstruction`
-    /// is now a host-free bookkeeping pass (see its doc).
+    /// seeded the driver.
     ///
     /// The post-allocate integrity guard the injected `fm_drive_execute` shim runs
     /// after each ALLOC step reads STORE #2 — the guest's shared Wasm-GC transit
@@ -3249,7 +3222,7 @@ mod wasm {
     /// `_gc_allocate` publishes into. That is a pure wasm `table.get` + `ref.is_null`
     /// in the shim (Rust holds no `anyref`), so this planner opens no host
     /// generation for it and stores no R1 state.
-    /// Build the topological reconstruction steps (Phase 0/0b/3/4/5) for the
+    /// Build the topological reconstruction steps (Phase 0/3/4/5) for the
     /// resident reference graph. Shared by `build_gc_plan_impl` and the child-
     /// install `attach_from_arena_impl` (which appends the restore/finish steps).
     fn build_reconstruction_steps() -> Result<Vec<drive_plan::DriveStep>, Errno> {
@@ -3268,11 +3241,11 @@ mod wasm {
     /// Grow the anyref transit so every RECONSTRUCTION step in `steps` has its
     /// `recipe + 1` slot before the drive runs.
     ///
-    /// Only the reconstruction ops are considered: an ALLOC, FILL, EXN,
-    /// STATIC_ROOT or EXTERNREF_TRANSIT step's `recipe` field is a recipe id,
-    /// and each publishes its value into the transit at `recipe + 1` -- the
-    /// injected externref publish `table.set`s there itself, and the others'
-    /// guest exports do on the way back. A frame step's `recipe` is NOT a
+    /// Only the reconstruction ops are considered: an ALLOC, FILL, EXN or
+    /// STATIC_ROOT step's `recipe` field is a recipe id, and each publishes its
+    /// value into the transit at `recipe + 1` -- the injected static-root
+    /// publish `table.set`s there itself, and the guest exports do on the way
+    /// back. A frame step's `recipe` is NOT a
     /// recipe: `pack_root` splits a continuation root across that field and
     /// `arg`, so sizing a table from it would ask for gigabytes.
     ///
@@ -3293,7 +3266,6 @@ mod wasm {
                         | drive_plan::DRIVE_OP_FILL
                         | drive_plan::DRIVE_OP_EXN
                         | drive_plan::DRIVE_OP_STATIC_ROOT
-                        | drive_plan::DRIVE_OP_EXTERNREF_TRANSIT
                 )
             })
             .map(|step| step.recipe)
@@ -3702,6 +3674,12 @@ mod wasm {
             drive_plan_via_injector(plan, count);
         }
         finish_unwind_impl()?;
+        // A capture that met a value a fork cannot carry (a raw host externref)
+        // fails HERE: after the journal sealed, so the parent's committed frames
+        // are replayable and the host's abort path turns this errno into
+        // `fork()` = `-errno` with no child; and before anything is written for
+        // a child that will never exist. See `CAPTURE_REFUSAL`.
+        capture_refusal()?;
         // BEFORE the journal image, because the graph must be complete and
         // validated before anything else claims the capture is sealed. The
         // builder owns that validation (pending GC placeholders, open vectors,
@@ -4143,31 +4121,20 @@ mod wasm {
     // advanced; a silent JS fallback leaves it unchanged. Never resets.
     static REFERENCES_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
 
-    // Monotonic count of externrefs this fork's graph reconstructs since worker
-    // start (Phase 6 D6.2, host seam retired M2). Proof-of-use mirror of
-    // `REFERENCES_RECONSTRUCTED` for the externref path: `fm_begin_reference_
-    // replay` bumps this by `drive_reconstruction`'s graph-derived externref-node
-    // count — the GRAPH'S expectation of how many externrefs get resolved, not a
-    // live host round trip (since M2 no Rust `wpk_fork_host` seam performs that
-    // resolve/publish; it is injected wasm). Since the 2026-09-05 substrate fix,
-    // EVERY `Externref` recipe — directly held (frame-vector-only) and
-    // GC/exnref-reachable alike — is resolved+published by a
-    // `DRIVE_OP_EXTERNREF_TRANSIT` step through `fm_externref_handle`; there is
-    // no separate lazy per-value decode import in the built architecture. A
-    // silent JS fallback (the module was never asked to drive the reference
-    // reconstruction) leaves this unchanged. Never resets.
-    static EXTERNREFS_RESOLVED: AtomicU64 = AtomicU64::new(0);
+    // RETIRED STATS SLOT (fm_stats field 3), held so the fields after it keep
+    // their indices. It counted host externrefs a fork's graph reconstructed.
+    // Since externref stage E2 a fork does not carry a raw host externref --
+    // capture refuses one with `EOPNOTSUPP` -- so nothing reconstructs one and
+    // this stays 0.
+    static RETIRED_EXTERNREFS_RESOLVED: AtomicU64 = AtomicU64::new(0);
 
     // Monotonic count of exnref nodes the module has admitted and driven through
     // reference reconstruction since worker start (Phase 6 D6.3a). Proof-of-use
-    // mirror of `EXTERNREFS_RESOLVED` for the exnref path: `fm_begin_reference_
-    // replay` bumps this by the admitted graph's exnref-node count. The DRIVE
-    // itself leaves the Exnref arm inert — the guest export
-    // `__wpk_fork_exception_materialize` mints/throws its own module-local tag —
-    // so this count (not the externref `reconstructed` count) is what proves the
-    // module, not a silent JS fallback, handled an exnref-bearing graph. Its
-    // reachable externref payloads are rooted by the same PHASE B transit path.
-    // Never resets.
+    // for the exnref path: `fm_begin_reference_replay` bumps this by the admitted
+    // graph's exnref-node count. The DRIVE itself leaves the Exnref arm inert —
+    // the guest export `__wpk_fork_exception_materialize` mints/throws its own
+    // module-local tag — so this count is what proves the module, not a silent
+    // JS fallback, handled an exnref-bearing graph. Never resets.
     static EXNREFS_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
 
     // Monotonic count of typed-GC nodes (struct + array + i31) the module has
@@ -4176,10 +4143,8 @@ mod wasm {
     // bumps this by the admitted graph's GC-node count. The DRIVE itself leaves the
     // Struct/Array/I31 arms inert — the module precedes the guest, so the guest
     // export drives the GC allocate/fill under the JS order, and i31 is a scalar
-    // leaf — so this count (not the externref `reconstructed` count) is what proves
-    // the module, not a silent JS fallback, admitted a typed-GC graph. Any
-    // struct/array-reachable externref leaves are rooted by the same PHASE B
-    // transit path. Never resets.
+    // leaf — so this count is what proves the module, not a silent JS fallback,
+    // admitted a typed-GC graph. Never resets.
     static GC_NODES_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
 
     // Monotonic count of static roots the static-root binder has resolved for
@@ -4190,24 +4155,6 @@ mod wasm {
     // value after a flag-on static-root fork proves the module — not a silent JS
     // `publishTransit` fallback — republished the immutable roots. Never resets.
     static STATIC_ROOTS_PUBLISHED: AtomicU64 = AtomicU64::new(0);
-
-    // The bookkeeping result of the last `fm_begin_reference_replay` drive for
-    // this fork. Since M2 `ReconstructionState` carries NO host identities and NO
-    // host generation (that seam retired — see its doc): it is just the
-    // graph-derived externref count already folded into `EXTERNREFS_RESOLVED`.
-    // Held alongside `REFERENCE_STATE`, independent of the frame `ForkModule`
-    // lifecycle, as a diagnostic anchor for the last drive.
-    struct ReconstructionStateCell(UnsafeCell<Option<ReconstructionState>>);
-    // SAFETY: single-threaded per worker (see `Bump`).
-    unsafe impl Sync for ReconstructionStateCell {}
-    static RECONSTRUCTION_STATE: ReconstructionStateCell =
-        ReconstructionStateCell(UnsafeCell::new(None));
-
-    #[allow(clippy::mut_from_ref)]
-    fn reconstruction_state() -> &'static mut Option<ReconstructionState> {
-        // SAFETY: single-threaded per worker; only one guest drives the imports.
-        unsafe { &mut *RECONSTRUCTION_STATE.0.get() }
-    }
 
     // -- Reference RESTORE data-feed (Phase 6 item 3a — minimize host surface)
     //
@@ -4307,12 +4254,11 @@ mod wasm {
     // The encode-side sibling of `REFERENCE_STATE`/`REFERENCE_FEED`. As the
     // parent's instrumented `wpk_fork_module_state_save` walk discovers Wasm
     // reference values, the host's thin capture-import bodies resolve each value
-    // to its recipe COORDINATE using the irreducible per-host identity floor (V8
-    // `WeakMap` externref provenance / the transit `table.get`; native's
-    // `Rooted`+`ref_eq`) and then intern that coordinate here through the SHARED
-    // `fork_codec::ReferenceGraphBuilder` — byte-for-byte the same graph the
-    // decoder reconstructs. This is exactly native's shape (`guest.rs`'s capture
-    // bodies call `graph.intern_externref`, etc.), lifted to a module export so
+    // to its recipe COORDINATE using the irreducible per-host identity floor (the
+    // transit `table.get`; native's `Rooted`+`ref_eq`) and then intern that
+    // coordinate here through the SHARED `fork_codec::ReferenceGraphBuilder` —
+    // byte-for-byte the same graph the decoder reconstructs. This is exactly
+    // native's shape (`guest.rs`'s capture bodies call `graph.intern_*`), lifted to a module export so
     // BOTH V8 hosts route capture interning through the ONE shared builder
     // instead of the per-host TypeScript `ForkReferenceTransaction` capture graph.
     // The floor stays host-side: the module never sees a live reference — only
@@ -4514,7 +4460,7 @@ mod wasm {
         // already clears it, and today every read follows a capture -- but that
         // is a reasoning dependency, and this block exists so a COW child starts
         // clean without anyone having to trace call orders.
-        reset_captured_externrefs();
+        reset_capture_refusal();
         HOST_EXCEPTION_OWNER.store(u32::MAX, Ordering::Relaxed);
         // The dylink archive coordinates reset for the same COW reason as the
         // catalogs above, but with a worse failure mode if they did not: a child
@@ -5099,8 +5045,7 @@ mod wasm {
     /// Clear a resident bump-backed static WITHOUT running its `Drop`.
     ///
     /// This is the reclaim primitive for the module's resident fork statics
-    /// (`DECODED_GRAPH`, `REFERENCE_STATE`, `RECONSTRUCTION_STATE`,
-    /// `REFERENCE_FEED`) at the sites the HOST may reach on a COW child before
+    /// (`DECODED_GRAPH`, `REFERENCE_STATE`, `REFERENCE_FEED`) at the sites the HOST may reach on a COW child before
     /// that child's own `fm_begin_child_replay` bump reset. Each of these statics
     /// lives in the module's BSS at `__memory_base` inside the shared linear
     /// memory, so a COW child's fresh fork-module instance inherits the PARENT's
@@ -5166,15 +5111,6 @@ mod wasm {
         // Bump-backed like the two above. Reading a plan built before the reset
         // would read bytes the next allocation has overwritten.
         abandon_resident(import_plan());
-        // The captured externref set is bump-backed too, and it is abandoned
-        // here for the same class invariant every resident above obeys: NO
-        // bump-backed value survives any reset point. (An earlier comment here
-        // named a push arriving between `fm_capture_begin`'s reset and
-        // `begin_capture_impl`; on both hosts those two calls are adjacent
-        // with no guest execution between them, and the interns arrive during
-        // the unwind drive at the END of `begin_capture_impl`, so that window
-        // cannot open. The call stays for the invariant, not for the window.)
-        reset_captured_externrefs();
         ALLOC.reset();
     }
 
@@ -5890,19 +5826,11 @@ mod wasm {
         // Activation 0: open the fresh capture (reclaims prior fork state) and
         // publish its arena root.
         let root0 = begin_unwind_impl(0, channel_base)?;
-        // A fresh capture records a fresh externref set. Without this a COW child,
-        // which inherits this module's memory, would report the handles its
-        // PARENT interned and lease references it does not hold.
-        //
-        // AFTER `begin_unwind_impl`, not before it, and BEFORE the unwind drive
-        // at the end of this function, which is where the guest's interns
-        // arrive. The set is bump-backed, and `begin_unwind_impl` resets the
-        // bump when no capture session is armed: a set cleared before that
-        // reset is a buffer the reset hands back out, and a reclaimed bump
-        // region is REUSED, not poisoned, so the symptom would be a wrong
-        // externref lease rather than a trap. `capture_peer_tables_impl` has
-        // the same order for the same reason.
-        reset_captured_externrefs();
+        // A fresh capture starts with no refusal, BEFORE the unwind drive at the
+        // end of this function, which is where the guest's encodes arrive.
+        // Without this a refusal from an earlier fork in this worker (or, on a
+        // COW child, the parent's) would refuse this one.
+        reset_capture_refusal();
         // `arena_root == 0` asks the module to allocate the KFMS arena root
         // itself, instead of the host allocating it and handing the address in.
         //
@@ -6994,8 +6922,7 @@ mod wasm {
     /// never drive an unsupported reference through the funcref import.
     // `pid` (the child process image) is retained in the export signature for the
     // host call site's contract, but M2 no longer opens a host root generation
-    // scoped by it — the externref host seam retired (see `ReconstructionState`'s
-    // doc) — so it is unused inside this impl.
+    // scoped by it, so it is unused inside this impl.
     /// Decode a sealed module-state (KFMS) arena rooted at `module_state_root`
     /// from the COPIED guest memory into the canonical reference transaction.
     ///
@@ -7087,7 +7014,6 @@ mod wasm {
         // and traps. See `abandon_resident`. This was the pipeline-in-command-
         // substitution replay-setup trap that remained after the decode-site fix.
         abandon_resident(reference_state());
-        abandon_resident(reconstruction_state());
         abandon_resident(reference_feed());
 
         // Decode the sealed module-state arena into the canonical transaction
@@ -7103,21 +7029,15 @@ mod wasm {
 
         // Module-admissibility gate (defense in depth; the host computes the same
         // predicate, plus a GC-descriptor validity check only the host can see).
-        // Admits null/funcref/externref/exnref, typed GC (struct / array / i31),
-        // and static-root — the whole reference kind set the module reconstructs.
+        // Admits null/funcref/exnref, typed GC (struct / array / i31), and
+        // static-root — the whole reference kind set the module reconstructs
+        // (a graph never names a host externref; capture refuses one).
         // Admitting typed GC adds NO new engine-floor callback and moves NO
         // drive-order into the module: the fork side module is instantiated BEFORE
         // the guest exists, so it cannot import the guest's `_gc_allocate`/
         // `_gc_fill` exports; the PROVEN JS drive-order (reproduced by
         // `build_drive_plan`) keeps the topological allocate/fill walk plus
-        // cycle-breaking and aliases. The module's only GC job is leaf identity +
-        // transit rooting — a `DRIVE_OP_EXTERNREF_TRANSIT` step (`fm_build_gc_plan`
-        // / `build_drive_plan`, Phase 0) roots every struct/array-reachable
-        // externref leaf (`transit_rooted_recipes` seeds from Struct/Array edges)
-        // with the non-null R1 assert, both wasm (`fm_externref_handle` +
-        // `resolve_externref` + `any.convert_extern` + `table.set`, injected in
-        // Task 3) — no host seam beyond the single `resolve_externref` import, and
-        // i31 is a scalar leaf. A static-root is published into the anyref transit
+        // cycle-breaking and aliases; i31 is a scalar leaf. A static-root is published into the anyref transit
         // by a DRIVE_OP_STATIC_ROOT step (`table.get` catalog + `table.set`
         // transit, both wasm) — no host seam. An unadmitted kind is a truthful
         // `EOPNOTSUPP` that keeps the fork on the JS path.
@@ -7153,29 +7073,15 @@ mod wasm {
             }
         }
 
-        // Bookkeeping pass (M2): count the externref nodes this fork's graph
-        // reconstructs. This is now a host-free pass over the decoded graph — it
-        // calls no `wpk_fork_host` import and opens no host generation (that seam
-        // retired; see `ReconstructionState`'s doc). The actual resolve + transit
-        // publish happen later, in injected wasm: EVERY externref recipe —
-        // directly held (frame-vector-only) and GC/exnref-reachable alike — is
-        // published into the anyref transit by a `DRIVE_OP_EXTERNREF_TRANSIT`
-        // drive step (via
-        // `fm_externref_handle`), both driven by the injected `fm_drive_execute`
-        // shim (Task 3), not by this function.
-        let reconstruction = driver.drive_reconstruction()?;
-        EXTERNREFS_RESOLVED.fetch_add(reconstruction.reconstructed() as u64, Ordering::Relaxed);
         // D6.3a proof-of-use: the drive's Exnref arm is inert (the guest export
         // materializes the exception), so count the admitted exnref nodes here.
         EXNREFS_RECONSTRUCTED.fetch_add(driver.exnref_node_count() as u64, Ordering::Relaxed);
         // D6.4a proof-of-use: the Struct/Array/I31 arms are inert (the guest drives
         // the GC allocate/fill under the JS order), so count the admitted typed-GC
-        // nodes here. The struct/array-reachable externref leaves are rooted via
-        // the same PHASE B transit path (`EXTERNREFS_RESOLVED` also advances).
+        // nodes here.
         GC_NODES_RECONSTRUCTED.fetch_add(driver.gc_node_count() as u64, Ordering::Relaxed);
 
         *reference_state() = Some(driver);
-        *reconstruction_state() = Some(reconstruction);
         *reference_feed() = Some(feed);
         Ok(())
     }
@@ -7232,8 +7138,8 @@ mod wasm {
 
     /// The wire node-kind discriminant for a decoded node, mirroring the TS
     /// `WireNodeKind` const enum (`fork-reference-recipes.ts`) and the writer's
-    /// `KIND_*` constants: null 0, funcref 1, externref 2, exnref 3, i31 4,
-    /// struct 5, array 6, static-root 7. This is the same mapping the segment
+    /// `KIND_*` constants: null 0, funcref 1, exnref 3, i31 4, struct 5,
+    /// array 6, static-root 7 (2 was the retired host-externref kind). This is the same mapping the segment
     /// writer uses (`reference_segments_writer.rs`), read back off the decoded
     /// node so the host can filter the graph by kind exactly as the JS decode's
     /// `entry.node.kind` string does.
@@ -7241,7 +7147,6 @@ mod wasm {
         match node {
             ReferenceRecipeNode::Null => 0,
             ReferenceRecipeNode::Funcref { .. } => 1,
-            ReferenceRecipeNode::Externref { .. } => 2,
             ReferenceRecipeNode::Exnref { .. } => 3,
             ReferenceRecipeNode::I31 { .. } => 4,
             ReferenceRecipeNode::Struct { .. } => 5,
@@ -7271,7 +7176,7 @@ mod wasm {
 
     /// The `module_activation` coordinate of the resident decoded graph's node at
     /// `index`. Defined for the kinds that carry one — funcref, exnref, struct,
-    /// array, static-root; a kind without an activation (null, externref, i31) is
+    /// array, static-root; a kind without an activation (null, i31) is
     /// a truthful `EINVAL`, so the host only queries it after filtering by kind
     /// (exactly as the exnref gate and static-root seeding do).
     fn decoded_node_module_activation_impl(index: usize) -> Result<u32, Errno> {
@@ -7291,9 +7196,7 @@ mod wasm {
             | ReferenceRecipeNode::StaticRoot {
                 module_activation, ..
             } => Ok(*module_activation),
-            ReferenceRecipeNode::Null
-            | ReferenceRecipeNode::Externref { .. }
-            | ReferenceRecipeNode::I31 { .. } => Err(Errno::EINVAL),
+            ReferenceRecipeNode::Null | ReferenceRecipeNode::I31 { .. } => Err(Errno::EINVAL),
         })
     }
 
@@ -7301,7 +7204,7 @@ mod wasm {
     /// node at `index`: funcref `function_ordinal`, exnref `tag_ordinal`,
     /// struct/array `type_ordinal`, static-root `static_root_ordinal` — the SAME
     /// `second` word the segment writer emits (`reference_segments_writer.rs`).
-    /// A kind without an ordinal (null, externref, i31) is a truthful `EINVAL`.
+    /// A kind without an ordinal (null, i31) is a truthful `EINVAL`.
     /// This is what the host exnref gate reads as `tagOrdinal` and the static-root
     /// mirror seeding reads as `staticRootOrdinal`.
     fn decoded_node_ordinal_impl(index: usize) -> Result<u32, Errno> {
@@ -7316,9 +7219,7 @@ mod wasm {
                 static_root_ordinal,
                 ..
             } => Ok(*static_root_ordinal),
-            ReferenceRecipeNode::Null
-            | ReferenceRecipeNode::Externref { .. }
-            | ReferenceRecipeNode::I31 { .. } => Err(Errno::EINVAL),
+            ReferenceRecipeNode::Null | ReferenceRecipeNode::I31 { .. } => Err(Errno::EINVAL),
         })
     }
 
@@ -7833,50 +7734,6 @@ mod wasm {
             }
             // A global slot that does not fit a non-negative i32 cannot index the
             // imported anyref catalog table — a corrupt graph, not a value.
-            _ => wasm_intr::unreachable(),
-        }
-    }
-
-    /// Resolve an externref recipe id to its captured broker handle (M2 — the
-    /// externref host seam shrunk to a single `resolve_externref(handle) ->
-    /// externref` import). This is NOT a guest-facing import: it is the helper
-    /// the injected `fm_drive_execute` shim calls on a DRIVE_OP_EXTERNREF_TRANSIT
-    /// step — emitted for EVERY externref recipe, directly held and
-    /// GC/exnref-reachable alike, since the 2026-09-05 substrate fix — to get
-    /// the `u32` handle it passes to the host `resolve_externref` import — a
-    /// Rust function cannot itself return an
-    /// `externref`, exactly why `fm_funcref_ordinal`/`fm_static_root_slot` hand
-    /// back an index rather than a `funcref`/`anyref`. Returns the recipe's
-    /// captured broker handle (the same handle a live host-import adapter minted
-    /// into the broker before the fork) and TRAPS on any inconsistency (missing
-    /// reference state, out-of-range recipe, a non-externref kind, or a handle
-    /// that does not fit a non-negative `i32`) — the host gate should have kept an
-    /// unadmitted/corrupt graph off the module path, so reaching here is
-    /// corruption, never a value the shim should resolve. Mirrors
-    /// `funcref_ordinal_impl`/`static_root_slot_impl`.
-    fn externref_handle_impl(recipe_id: u32) -> i32 {
-        let driver = match reference_state().as_ref() {
-            Some(driver) => driver,
-            None => wasm_intr::unreachable(),
-        };
-        let entry = match driver.transaction().nodes.get(recipe_id as usize) {
-            // The decoder guarantees canonical id == index; assert it so a corrupt
-            // graph reaching here is a loud failure, not a silent mis-resolution.
-            Some(entry) if entry.id == recipe_id => entry,
-            _ => wasm_intr::unreachable(),
-        };
-        let handle = match entry.node {
-            ReferenceRecipeNode::Externref { handle } => handle,
-            // Out-of-range recipe or a non-externref kind: the host gate should
-            // have kept this off the externref-transit step, so reaching here is
-            // corruption, never a value.
-            _ => wasm_intr::unreachable(),
-        };
-        match i32::try_from(handle) {
-            Ok(value) if value >= 0 => value,
-            // A handle that does not fit a non-negative i32 cannot cross the
-            // `resolve_externref` import boundary as this ABI defines it — a
-            // corrupt graph, not a value.
             _ => wasm_intr::unreachable(),
         }
     }
@@ -8402,14 +8259,11 @@ mod wasm {
     /// fork after `fm_begin_child_replay`, before the guest rewind reconstructs
     /// references. `pid` names the child process image; retained in this export's
     /// signature for the host call site, but unused since M2 — the reconstruction
-    /// no longer opens a host root generation (that seam retired, see
-    /// `ReconstructionState`'s doc).
+    /// no longer opens a host root generation.
     ///
     /// On success the guest's `__wpk_fork_ref_decode_funcref` is served by this
-    /// module; EVERY externref recipe — directly held (frame-vector-only) and
-    /// GC/exnref-reachable alike — is published into the anyref transit by a
-    /// `DRIVE_OP_EXTERNREF_TRANSIT` drive step (via `fm_externref_handle`) when
-    /// `fm_drive_execute` runs the plan `fm_build_gc_plan` built. Failure (check
+    /// module, and `fm_drive_execute` reconstructs the typed and static-root
+    /// references from the plan `fm_build_gc_plan` built. Failure (check
     /// `fm_last_errno`: `EOPNOTSUPP` for an unadmitted kind, `EINVAL` for a
     /// malformed arena) means the host must keep the byte-identical JS reference
     /// path for this fork.
@@ -8443,22 +8297,6 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_static_root_slot(recipe_id: u32) -> i32 {
         static_root_slot_impl(recipe_id)
-    }
-
-    /// Resolve an externref recipe id to its captured broker handle (M2 — the
-    /// externref host seam). This is NOT a guest-facing import: it is the helper
-    /// the injected binder calls to get the `u32` handle it passes to the single
-    /// residual host import `resolve_externref(handle) -> externref` (an
-    /// `externref` a Rust function cannot itself return) on a
-    /// DRIVE_OP_EXTERNREF_TRANSIT step (emitted for EVERY externref recipe —
-    /// directly held and GC/exnref-reachable alike — since the 2026-09-05
-    /// substrate fix) before `any.convert_extern` + `table.set`-ing the result
-    /// into the anyref transit at slot `recipe + 1`. Returns a non-negative
-    /// broker handle and TRAPS on any inconsistency. See
-    /// `externref_handle_impl`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_externref_handle(recipe_id: u32) -> i32 {
-        externref_handle_impl(recipe_id)
     }
 
     // -- Reference RESTORE data-feed exports (Phase 6 item 3a) ---------------
@@ -8960,7 +8798,9 @@ mod wasm {
     /// `fm_capture_define_gc` uses. Mirrored by `FORK_INTERN_KIND_*` in
     /// `host/src/fork-reference-capture-module.ts`.
     const INTERN_KIND_FUNCREF: u32 = 1;
-    const INTERN_KIND_EXTERNREF: u32 = 2;
+    // 2 was INTERN_KIND_EXTERNREF (a host-externref broker handle), retired in
+    // externref stage E2: a fork does not carry a raw host externref, so nothing
+    // interns one, and kind 2 is now an unknown kind (`EINVAL`).
     const INTERN_KIND_I31: u32 = 3;
     const INTERN_KIND_STATIC_ROOT: u32 = 4;
 
@@ -9184,12 +9024,12 @@ mod wasm {
     /// | `kind` | meaning | `a` | `b` |
     /// |---|---|---|---|
     /// | `INTERN_KIND_FUNCREF` (1) | function reference | catalog activation | catalog ordinal |
-    /// | `INTERN_KIND_EXTERNREF` (2) | durable host externref | broker handle (`1..=0xffff_ffff`) | must be 0 |
     /// | `INTERN_KIND_I31` (3) | `i31ref` | signed 31-bit payload, bit-cast to `u32` | must be 0 |
     /// | `INTERN_KIND_STATIC_ROOT` (4) | statically-rooted reference | catalog activation | catalog ordinal |
     ///
     /// This ONE entry replaces the four per-type exports
-    /// `fm_capture_intern_{funcref,externref,i31,static_root}`. They expressed a
+    /// `fm_capture_intern_{funcref,externref,i31,static_root}` (the externref
+    /// kind has since been retired). They expressed a
     /// single concept — "intern a leaf reference at a coordinate the host already
     /// resolved" — as four exports with four host-side marshalling wrappers, which
     /// is the per-type-variant multiplication the fork transport is large because
@@ -9197,13 +9037,12 @@ mod wasm {
     /// replaced three same-signature accessors.
     ///
     /// The host resolves every coordinate with its per-host identity floor (the
-    /// funcref catalog, the externref broker's `WeakMap` provenance) BEFORE
-    /// calling. The module never sees a live reference, only scalars.
+    /// funcref catalog) BEFORE calling. The module never sees a live reference, only scalars.
     ///
     /// An unknown `kind`, or a non-zero `b` where the table says it must be 0, is
     /// `EINVAL` and `-1`. The `b` check is not pedantry: it is what stops a caller
-    /// that passes `(EXTERNREF, activation, ordinal)` — funcref argument order,
-    /// wrong kind — from silently interning the activation id as a broker handle.
+    /// that passes `(I31, activation, ordinal)` — funcref argument order, wrong
+    /// kind — from silently interning the activation id as an i31 payload.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_capture_intern(kind: u32, a: u32, b: u32) -> i32 {
         let g = match capture_builder() {
@@ -9216,13 +9055,9 @@ mod wasm {
         let id = match kind {
             INTERN_KIND_FUNCREF => g.intern_funcref(a, b),
             INTERN_KIND_STATIC_ROOT => g.intern_static_root(a, b),
-            INTERN_KIND_EXTERNREF | INTERN_KIND_I31 if b != 0 => {
+            INTERN_KIND_I31 if b != 0 => {
                 set_err(Errno::EINVAL);
                 return -1;
-            }
-            INTERN_KIND_EXTERNREF => {
-                record_captured_externref(a);
-                g.intern_externref(a)
             }
             INTERN_KIND_I31 => g.intern_i31(a as i32),
             _ => {
@@ -9233,80 +9068,44 @@ mod wasm {
         capture_ok_id(id)
     }
 
-    // -- Captured externref handles -----------------------------------------
+    // -- Capture refusal ------------------------------------------------------
     //
-    // Every broker handle interned into this capture, in intern order.
+    // Why this capture may not seal, or 0. Set when the capture meets a value a
+    // fork cannot carry and the save walk has to keep going anyway.
     //
-    // The KERNEL worker needs this set to lease the parent's externrefs to the
-    // child's generation. Today it derives the set itself, by reading the parked
-    // parent's KFMS arena and running the full segmented-transaction parser and
-    // semantic validator over it -- roughly 4,956 lines of host decoder that
-    // duplicate what this module already did when the handle was interned here.
+    // A refusal cannot fail the walk where it is found. The walk is the guest's
+    // own generated code, calling capture imports as it saves each frame; it
+    // has no error path, and an `-1` recipe handed back to it is published and
+    // appended like any other id -- into transit slot 0, which it then clears,
+    // so the parent's own abort replay would read back NULL where its value
+    // was. So the refusing import hands back a real placeholder recipe instead
+    // (the guest publishes the LIVE value beside it, and the parent's replay
+    // reads that value back unchanged), and records the reason here. The seal
+    // reads it once the walk is over: `seal_capture_impl` fails with it after
+    // the journal is sealed, so the host's abort path replays the parent and
+    // `fork()` returns `-errno` with no child.
     //
-    // Recording it at intern time removes that decode entirely rather than
-    // relocating it: the parent knows its own externrefs, and the kernel worker
-    // is the one thread every process's syscalls serialize through, so parsing
-    // there blocks unrelated processes.
-    //
-    // Capture-scoped: cleared when a capture begins, so a child that inherits
-    // this module's memory does not report its parent's handles.
-    //
-    // BUMP-BACKED. The set is per-capture storage, and the per-fork heap is
-    // where per-capture storage belongs: it costs nothing while no capture is
-    // open (it was a 16 KiB static, reserved out of every guest's mmap window
-    // whether a program forked or not) and it has no cap, so the `-1` the host
-    // still handles from `fm_captured_externref_count` -- "more than the module
-    // can record" -- is no longer produced.
-    //
-    // Being bump-backed makes it a RESIDENT in `reset_bump_heap`'s sense: a
-    // buffer that survives a bump reset points into memory the next allocation
-    // reuses, and a reclaimed bump region is REUSED, not poisoned, so a push
-    // through such a buffer is a wrong externref lease rather than a trap. So
-    // the set is abandoned at every bump reset, in `reset_bump_heap` itself,
-    // and the clear sites that follow a bump reset (`begin_capture_impl`,
-    // `capture_peer_tables_impl`) clear AFTER it, never before.
-    struct CapturedExternrefs(UnsafeCell<Vec<u32>>);
-    // SAFETY: single-threaded per worker (see `Bump`).
-    unsafe impl Sync for CapturedExternrefs {}
-    /// The handles this capture interned, in intern order.
-    static CAPTURED_EXTERNREFS: CapturedExternrefs = CapturedExternrefs(UnsafeCell::new(Vec::new()));
+    // Capture-scoped: cleared where a capture begins and in the COW-child
+    // scrub. A scalar, so unlike the bump-backed residents it needs no care at a
+    // bump reset.
+    static CAPTURE_REFUSAL: AtomicI32 = AtomicI32::new(0);
 
-    fn record_captured_externref(handle: u32) {
-        // SAFETY: single-threaded per worker.
-        let set = unsafe { &mut *CAPTURED_EXTERNREFS.0.get() };
-        set.push(handle);
+    fn refuse_capture(errno: Errno) {
+        // First refusal wins: it names the first value the fork cannot carry.
+        let _ = CAPTURE_REFUSAL.compare_exchange(0, errno as i32, Ordering::Relaxed, Ordering::Relaxed);
     }
 
-    /// NON-ALLOCATING, deliberately. This runs in `set_format_impl`, the
-    /// COW-child scrub, BEFORE `CHANNEL_BASE` is stored -- and with no static
-    /// heap floor the first allocation maps through the channel, so a reset
-    /// that allocated there would fail on a path with no way to report. The
-    /// root is emptied and the next `push` allocates. The old buffer is
-    /// forgotten rather than dropped, like every other bump-backed resident
-    /// (see `abandon_resident`): on a COW child it points into the parent's
-    /// reclaimed heap, and `dealloc` is a no-op either way.
-    fn reset_captured_externrefs() {
-        // SAFETY: single-threaded per worker.
-        let set = unsafe { &mut *CAPTURED_EXTERNREFS.0.get() };
-        core::mem::forget(core::mem::take(set));
+    fn reset_capture_refusal() {
+        CAPTURE_REFUSAL.store(0, Ordering::Relaxed);
     }
 
-    /// How many externref handles this capture interned. The set is unbounded
-    /// now, so the `-1` the host handles for an untrustworthy set is produced
-    /// only if the count does not fit an `i32`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_captured_externref_count() -> i32 {
-        // SAFETY: single-threaded per worker.
-        let set = unsafe { &*CAPTURED_EXTERNREFS.0.get() };
-        i32::try_from(set.len()).unwrap_or(-1)
-    }
-
-    /// One recorded handle by index, or -1 if the index is past the count.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_captured_externref(index: u32) -> i64 {
-        // SAFETY: single-threaded per worker.
-        let set = unsafe { &*CAPTURED_EXTERNREFS.0.get() };
-        set.get(index as usize).map_or(-1, |&handle| i64::from(handle))
+    /// `Err` with the latched refusal, if this capture met a value it cannot
+    /// carry.
+    fn capture_refusal() -> Result<(), Errno> {
+        match CAPTURE_REFUSAL.load(Ordering::Relaxed) {
+            0 => Ok(()),
+            errno => Err(Errno::from_u32(errno as u32).unwrap_or(Errno::EINVAL)),
+        }
     }
 
     /// Claim a fresh graph identity for a GC value before its fields are known,
@@ -9324,8 +9123,8 @@ mod wasm {
         }
     }
 
-    /// Reserve a self-contained placeholder leaf for a GATED capture kind (an
-    /// externref/anyref with no recoverable production-site provenance). Returns
+    /// Reserve a self-contained placeholder leaf for a GATED capture kind (a
+    /// value the fork cannot carry). Returns
     /// a fresh distinct recipe id; the host keeps the live value beside it so the
     /// PARENT's own abort-replay hands the exact value back. Mirrors native's
     /// `gated_placeholder`. The soundness gate itself (`EOPNOTSUPP`, no child) is
@@ -10500,10 +10299,11 @@ mod wasm {
     /// find out, and it is bounded by the number of registered activations —
     /// a handful even for a program that dlopens heavily, not a per-object cost.
     ///
-    /// Refuses with `EOPNOTSUPP` when no activation claims the value, rather
-    /// than inventing a recipe. The returned `-1` is not a valid recipe id, so
-    /// an edge naming it is rejected at `define_gc` and the capture cannot seal
-    /// — the same structural refusal `__wpk_fork_ref_exn_broker_encode` uses.
+    /// When no activation claims the value it is a raw host object, and the
+    /// capture is refused with `EOPNOTSUPP` rather than given an invented
+    /// recipe: the refusal is latched for the seal, and the call returns a gated
+    /// placeholder so the parent's abort replay keeps its live value. See the
+    /// fall-through below and `CAPTURE_REFUSAL`.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_gc_broker_encode(slot: u32) -> i32 {
         // Every activation that seeded a codec, in directory order (the order
@@ -10526,33 +10326,34 @@ mod wasm {
             set_ok();
             return recipe;
         }
-        // NOT an unclaimed GC value: a live HOST externref, which is what
-        // `any.convert_extern` in the guest's `__wpk_fork_ref_encode_externref`
-        // hands this path. No activation's codec can ever claim one -- it has
-        // no type to test -- so probing them all and refusing was the wrong
-        // answer to the right question.
+        // NOT an unclaimed GC value: a live HOST object -- a raw externref the
+        // guest got from a host import, reaching here through `any.convert_extern`
+        // in the guest's `__wpk_fork_ref_encode_externref` (directly held, or as
+        // a GC field or element). No activation's codec can claim one: it has no
+        // type to test. An `extern.convert_any` VIEW of the program's own GC
+        // object never gets this far -- the guest converts it back and the
+        // layout probes above claim it.
         //
-        // The host owns its identity and issued its handle, and the module can
-        // now ask for it (the reverse of `resolve_externref`, which brings it
-        // back in the child). With the handle the value is an ordinary
-        // externref recipe, interned exactly as a directly-held one is.
+        // A fork does not carry a raw host externref, on any host. The child
+        // runs in a fresh instance (a fresh Worker on Node and browser), and a
+        // host object cannot be copied into it with its identity intact; a
+        // capability a guest needs across fork belongs behind a kernel object
+        // (an fd or a device), which fork already shares. So the capture is
+        // REFUSED with `EOPNOTSUPP` -- see docs/fork-reference-support.md.
         //
-        // Before this, an externref reachable from a reference LOCAL made the
-        // guest append recipe -1 to its reference vector, which failed the
-        // vector's count check, which left the vector open, which failed the
-        // capture's graph validation at seal -- four layers between the cause
-        // and the errno a reader saw (census section 188).
-        let handle = externref_handle_via_injector(slot);
-        if handle > 0 {
-            let recipe =
-                capture_recipe_publishable(fm_capture_intern(INTERN_KIND_EXTERNREF, handle as u32, 0));
-            if recipe >= 0 {
-                set_ok();
-            }
-            return recipe;
-        }
-        set_err(Errno::EOPNOTSUPP);
-        -1
+        // The refusal is latched, not returned: the guest's save walk has no
+        // error path (see `CAPTURE_REFUSAL`). What it gets back is a gated
+        // placeholder recipe -- a canonical leaf that keeps the graph valid --
+        // and it publishes the LIVE value beside it at `recipe + 1`, so the
+        // parent's own abort replay hands that exact object back. The seal then
+        // fails with the latched errno, and `fork()` returns `-EOPNOTSUPP`.
+        //
+        // Before this, a `-1` here left the parent's abort replay reading
+        // transit slot 0 -- cleared to null by the guest right after this call
+        // -- so the parent would have resumed with NULL where its object was.
+        refuse_capture(Errno::EOPNOTSUPP);
+        let recipe = capture_ok_id(capture_builder().and_then(|g| g.push_gated_placeholder()));
+        capture_recipe_publishable(recipe)
     }
 
     /// Guest-facing `env.__wpk_fork_ref_gc_capture_layout(slot, activation,
@@ -11305,18 +11106,18 @@ mod wasm {
     /// field, the value exceeds `i32::MAX`, or `field` is unknown.
     ///
     /// - 0 `KIND`              — the wire node-kind discriminant (`0..=7`: null 0,
-    ///   funcref 1, externref 2, exnref 3, i31 4, struct 5, array 6,
-    ///   static-root 7). Mirrors the JS decode's `entry.node.kind` so the host
+    ///   funcref 1, exnref 3, i31 4, struct 5, array 6, static-root 7; 2, the
+    ///   retired host-externref kind, never decodes). Mirrors the JS decode's `entry.node.kind` so the host
     ///   can filter the graph by kind. See `decoded_node_kind_impl` /
     ///   `wire_node_kind`.
     /// - 1 `MODULE_ACTIVATION` — the `module_activation` coordinate
-    ///   (funcref/exnref/struct/array/static-root; absent for null/externref/i31).
+    ///   (funcref/exnref/struct/array/static-root; absent for null/i31).
     ///   This is the host's `moduleActivation` for the exnref admission gate and
     ///   the static-root catalog mirror seeding. See
     ///   `decoded_node_module_activation_impl`.
     /// - 2 `ORDINAL`           — the kind-specific ordinal (funcref
     ///   `function_ordinal`, exnref `tag_ordinal`, struct/array `type_ordinal`,
-    ///   static-root `static_root_ordinal`; absent for null/externref/i31). This
+    ///   static-root `static_root_ordinal`; absent for null/i31). This
     ///   is the host's `tagOrdinal` (exnref admission gate) and
     ///   `staticRootOrdinal` (static-root catalog mirror seeding). See
     ///   `decoded_node_ordinal_impl`.
@@ -11524,7 +11325,7 @@ mod wasm {
         *state() = Some(module);
         *capture_state() = Some(ReferenceGraphBuilder::begin());
         CAPTURE_ARMED.store(1, Ordering::Relaxed);
-        reset_captured_externrefs();
+        reset_capture_refusal();
 
         // The arena the publication names. Module-owned, so the module frees
         // exactly what it mapped -- and NOT freed here: the root is handed to
@@ -11588,7 +11389,9 @@ mod wasm {
 
         // Seal: the references the save interned become the `KFRS`/`KFRV`
         // segments a restore decodes. Without this the publication carries
-        // tables whose funcref and externref slots name nothing.
+        // tables whose funcref slots name nothing. A table slot holding a value
+        // no peer can be given (a raw host externref) refuses the checkpoint.
+        capture_refusal()?;
         capture_builder()?.validate()?;
         write_reference_transaction(CAPTURE_SEGMENT_WINDOW)?;
         Ok(arena_root)
@@ -11807,7 +11610,7 @@ mod wasm {
     /// - 0  `FRAMES_COMMITTED`         — frames committed
     /// - 1  `FRAMES_REPLAYED`          — frames replayed (consuming rewind)
     /// - 2  `REFERENCES_RECONSTRUCTED` — funcref/null references reconstructed
-    /// - 3  `EXTERNREFS_RESOLVED`      — externrefs re-rooted via engine-floor seam
+    /// - 3  retired (was `EXTERNREFS_RESOLVED`; always 0 since externref stage E2)
     /// - 4  `EXNREFS_RECONSTRUCTED`    — exnref nodes admitted + driven
     /// - 5  `GC_NODES_RECONSTRUCTED`   — typed-GC nodes (struct/array/i31) driven
     /// - 6  `STATIC_ROOTS_PUBLISHED`   — static roots published into transit
@@ -12197,7 +12000,7 @@ mod wasm {
             &FRAMES_COMMITTED,
             &FRAMES_REPLAYED,
             &REFERENCES_RECONSTRUCTED,
-            &EXTERNREFS_RESOLVED,
+            &RETIRED_EXTERNREFS_RESOLVED,
             &EXNREFS_RECONSTRUCTED,
             &GC_NODES_RECONSTRUCTED,
             &STATIC_ROOTS_PUBLISHED,

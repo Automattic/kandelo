@@ -19,7 +19,6 @@ import {
 } from "../../../../host/src/fork-replay-gate";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
-import { TestProcessReferenceOwners } from "../../../../host/test/process-reference-owner-helper";
 import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
@@ -108,7 +107,6 @@ describe.skipIf(!nginxWasmPath)(
       const ptrWidth = detectPtrWidth(programBytes);
       expect(ptrWidth).toBe(4);
       const workerAdapter = new NodeWorkerAdapter();
-      const referenceOwners = new TestProcessReferenceOwners();
       const io = new NodePlatformIO();
 
       const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
@@ -172,13 +170,6 @@ describe.skipIf(!nginxWasmPath)(
             kw.inheritProcessSharedMappings(parentPid, childPid);
 
             const forkBufAddr = continuation.forkBufAddr;
-            const childReferenceInit = referenceOwners.fork(
-              parentPid,
-              childPid,
-              parentMemory,
-              ptrWidth,
-              forkBufAddr,
-            );
             const forkReplay = new ForkReplayGateCoordinator(
               `nginx fork child pid=${childPid}`,
             );
@@ -195,15 +186,12 @@ describe.skipIf(!nginxWasmPath)(
               forkBufAddr,
               forkReplayGate: forkReplay.gate,
               ptrWidth,
-              ...childReferenceInit,
             };
 
             const childWorker = workerAdapter.createWorker(childInitData);
-            referenceOwners.attach(childPid, childWorker);
             workers.set(childPid, childWorker);
             childWorker.on("error", (error) => {
               recordWorkerFailure(childPid, error);
-              referenceOwners.release(childPid);
               kw.unregisterProcess(childPid);
               workers.delete(childPid);
             });
@@ -211,7 +199,6 @@ describe.skipIf(!nginxWasmPath)(
               const event = message as WorkerToHostMessage;
               if (event.type === "error") {
                 recordWorkerFailure(childPid, event.message);
-                referenceOwners.release(childPid);
               }
             });
             observeForkReplayWorker(
@@ -234,7 +221,6 @@ describe.skipIf(!nginxWasmPath)(
               forkReplay.cancel(error);
               if (workers.get(childPid) === childWorker) {
                 workers.delete(childPid);
-                referenceOwners.release(childPid);
                 kw.unregisterProcess(childPid);
               }
               childWorker.terminate().catch(() => {});
@@ -244,11 +230,9 @@ describe.skipIf(!nginxWasmPath)(
           onExec: async () => -38,
           onExit: (pid, status) => {
             if (pid === masterPid) {
-              referenceOwners.release(pid);
               kw.unregisterProcess(pid);
               resolveExit!(status);
             } else {
-              referenceOwners.release(pid);
               kw.deactivateProcess(pid);
             }
             workers.delete(pid);
@@ -271,7 +255,6 @@ describe.skipIf(!nginxWasmPath)(
       masterPid = kw.createProcess(CAPTURED_STDIO);
       kw.registerProcess(masterPid, memory, [channelOffset], { ptrWidth });
       kw.setCwd(masterPid, nginxPrefix);
-      const masterReferenceInit = referenceOwners.start(masterPid);
 
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
@@ -283,11 +266,9 @@ describe.skipIf(!nginxWasmPath)(
         env: ["HOME=/tmp", "PATH=/usr/bin"],
         argv: ["nginx", "-p", nginxPrefix + "/", "-c", testConf],
         ptrWidth,
-        ...masterReferenceInit,
       };
 
       const masterWorker = workerAdapter.createWorker(initData);
-      referenceOwners.attach(masterPid, masterWorker);
       workers.set(masterPid, masterWorker);
       masterWorker.on("error", (error) => {
         recordWorkerFailure(masterPid, error);
@@ -364,7 +345,6 @@ describe.skipIf(!nginxWasmPath)(
           kw.unregisterProcess(pid);
         }
         workers.clear();
-        referenceOwners.close();
         rmSync(tmpDir, { recursive: true, force: true });
       }
     }, 60_000);

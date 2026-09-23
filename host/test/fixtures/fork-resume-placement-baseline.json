@@ -1,8 +1,8 @@
 {
   "fixture": "vfork-side-module (main program + dlopen'd side module)",
   "fixtureFingerprint": {
-    "program": "d6ebcd9a893052e645e1cd1aa37e96b1426d684ebd941452b26d64f30bdfc485",
-    "library": "27826231916123119d5046d59ff1c6fc0bc2a50c3358461cd56149b7292e7dc2"
+    "program": "050c022a20a174c3ae66b65b74c017a087acb847cf95425aba73a1a4a3c6c5f4",
+    "library": "7c9a3a3a43c8fe82ea45d29574a9b5a5d3e8f9014c0e5afee9e458d232047fb9"
   },
   "activations": {
     "0": [

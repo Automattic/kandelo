@@ -82,11 +82,6 @@ import {
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
-import {
-  ForkExternrefProcessOwner,
-  readCapturedExternrefHandover,
-} from "./fork-externref-process-owner";
-import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import type {
   ForkModuleProofMessage,
   HostDiagnostic,
@@ -267,7 +262,6 @@ export interface ProcessLifecycleInfo<
   layout: ProcessMemoryLayout;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
-  externrefGeneration: ForkExternrefGeneration;
   secureExec: boolean;
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
@@ -768,9 +762,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
   /** PTY index by PID. */
   const ptyByPid = new Map<number, number>();
-
-  /** Exact broker authority for each PID's current Wasm image. */
-  const externrefProcessOwner = new ForkExternrefProcessOwner();
 
   const vforkLifetimes = new VforkLifetimeCoordinator<Info>();
 
@@ -1447,7 +1438,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         return;
       }
 
-      externrefProcessOwner.releaseGeneration(info.externrefGeneration);
       completeVforkGenerationTeardown(
         info,
         exactMemoryTeardown,
@@ -1996,7 +1986,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let workerCreationAttempted = false;
     let createdWorker: W | undefined;
     let createdGeneration: Info | undefined;
-    let createdExternrefGeneration: ForkExternrefGeneration | undefined;
     const kernelWorker = host.kernel();
     try {
       releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
@@ -2088,8 +2077,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         );
       }
 
-      const externrefGeneration = externrefProcessOwner.startGeneration(pid);
-      createdExternrefGeneration = externrefGeneration;
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid,
@@ -2098,7 +2085,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         memory,
         channelOffset,
         secureExec,
-        externrefGenerationId: externrefGeneration.id,
         env: launchEnv,
         argv: msg.argv,
         cwd: msg.cwd,
@@ -2130,20 +2116,15 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ptrWidth,
         secureExec,
         layout,
-        externrefGeneration,
       };
       processes.set(pid, createdGeneration);
 
       host.installProcessWorkerListeners(worker, pid);
       createdMemoryLease = undefined;
       createdPid = undefined;
-      createdExternrefGeneration = undefined;
 
       respond(msg.requestId, pid);
     } catch (e) {
-      if (createdExternrefGeneration) {
-        externrefProcessOwner.releaseGeneration(createdExternrefGeneration);
-      }
       if (createdPid !== undefined) {
         if (createdWorker) await terminateTrackedWorker(createdWorker);
         const lease = createdGeneration?.memoryLease ?? createdMemoryLease;
@@ -2267,7 +2248,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let workerStartAttempted = false;
     let lifecycleTeardownStarted = false;
     let childGeneration: Info | undefined;
-    let externrefGeneration: ForkExternrefGeneration | undefined;
     try {
       // The kernel already created the child Process via kernel_spawn_process.
       // Treat every subsequent host attachment as one rollback-capable
@@ -2281,8 +2261,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       });
       registered = true;
 
-      externrefGeneration = externrefProcessOwner.startGeneration(childPid);
-      const processExternrefGeneration = externrefGeneration;
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid: childPid,
@@ -2291,7 +2269,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         memory,
         channelOffset,
         secureExec,
-        externrefGenerationId: processExternrefGeneration.id,
         argv,
         env: envp,
         ptrWidth,
@@ -2319,7 +2296,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ptrWidth,
         secureExec,
         layout,
-        externrefGeneration: processExternrefGeneration,
       };
       processes.set(childPid, childGeneration);
 
@@ -2364,9 +2340,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     } catch (error) {
       if (lifecycleTeardownStarted) throw error;
       if (newWorker) await terminateTrackedWorker(newWorker);
-      if (externrefGeneration) {
-        externrefProcessOwner.releaseGeneration(externrefGeneration);
-      }
       const generation = childGeneration ?? { memory, memoryLease };
       const detachResult = await detachExactProcessGeneration({
         pid: childPid,
@@ -2457,7 +2430,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let workerStartAttempted = false;
     let lifecycleTeardownStarted = false;
     let childGeneration: Info | undefined;
-    let childExternrefGeneration: ForkExternrefGeneration | undefined;
     const forkReplay = new ForkReplayGateCoordinator(
       `fork child pid=${childPid}`,
     );
@@ -2520,20 +2492,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
             : undefined;
       const forkBufAddr = activeForkBufAddr;
-      // The PARENT reports which externref handles its capture interned; this
-      // worker no longer decodes the parked parent's arena to re-derive them.
-      // See `forkGenerationFromCapturedHandles` for what that trades.
-      const externrefGrant = externrefProcessOwner
-        .forkGenerationFromCapturedHandles(
-          parentInfo.externrefGeneration,
-          childPid,
-          readCapturedExternrefHandover(
-            parentMemory,
-            parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
-            `fork child pid=${childPid}: externref handover`,
-          ),
-        );
-      childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };
       const childInitData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
@@ -2543,7 +2501,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         memory: childMemory,
         channelOffset: childChannelOffset,
         secureExec: kernelWorker.processSecureExec(childPid),
-        externrefGenerationId: externrefGrant.generation.id,
         isForkChild: true,
         forkMode: mode,
         forkBufAddr,
@@ -2585,7 +2542,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         secureExec: childInitData.secureExec,
         layout: childLayout,
         forkReplayContext,
-        externrefGeneration: externrefGrant.generation,
         // The child reuses the parent's fork-module region; seed its
         // generation so a grandchild fork propagates the same base even
         // before the child worker re-reports it at init.
@@ -2661,9 +2617,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       if (lifecycleTeardownStarted) throw error;
       forkReplay.cancel(error);
       if (childWorker) await terminateTrackedWorker(childWorker);
-      if (childExternrefGeneration) {
-        externrefProcessOwner.releaseGeneration(childExternrefGeneration);
-      }
       const generation = childGeneration ?? {
         memory: childMemory,
         memoryLease: childMemoryLease,
@@ -2858,7 +2811,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       processChannelOffset: processInfo.channelOffset,
       channelOffset: alloc.channelOffset,
       secureExec: processInfo.secureExec,
-      externrefGenerationId: processInfo.externrefGeneration.id,
       // Phase 6 D7b: ship the same co-resident fork-module decision the process
       // worker receives, so a fork issued FROM this pthread unwinds through the
       // module (the parent side of a fork-from-thread).
@@ -3193,7 +3145,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     const ptrWidth = parentInfo.ptrWidth;
     let childWorker: (W & { start(): boolean }) | undefined;
     let childGeneration: Info | undefined;
-    let childExternrefGeneration: ForkExternrefGeneration | undefined;
     let registered = false;
     let lifetimeStarted = false;
     let lifetime: VforkLifetime<Info> | undefined;
@@ -3240,17 +3191,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           : parentInfo.forkReplayContext
             ? { ...parentInfo.forkReplayContext, forkBufAddr }
             : undefined;
-      const externrefGrant =
-        externrefProcessOwner.forkGenerationFromCapturedHandles(
-          parentInfo.externrefGeneration,
-          childPid,
-          readCapturedExternrefHandover(
-            parentMemory,
-            parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
-            `fork child pid=${childPid}: externref handover`,
-          ),
-        );
-      childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };
       const childInitData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
@@ -3260,7 +3200,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         memory: parentMemory,
         channelOffset: childChannelOffset,
         secureExec: kernelWorker.processSecureExec(childPid),
-        externrefGenerationId: externrefGrant.generation.id,
         isForkChild: true,
         forkMode: PROCESS_FORK_MODE_VFORK,
         forkMemoryOwnership: "borrowed",
@@ -3306,7 +3245,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         secureExec: childInitData.secureExec,
         layout: childLayout,
         forkReplayContext,
-        externrefGeneration: externrefGrant.generation,
         vforkWorkspace: workspaceOwnership,
       };
       if (memoryStatsBefore && memoryStatsAfterAlias) {
@@ -3321,9 +3259,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           } parent_channel=${parentInfo.channelOffset} child_channel=${childChannelOffset} `
             + `owner_control=${childInitData.forkOwnerControlAddr} `
             + `child_prefix=${childInitData.forkPrivatePrefixAddr} `
-            + `scratch=${childInitData.forkScratchAddr} `
-            + `externref_parent=${parentInfo.externrefGeneration.id} `
-            + `externref_child=${childGeneration.externrefGeneration.id}`,
+            + `scratch=${childInitData.forkScratchAddr}`,
         );
       }
       lifetime = vforkLifetimes.begin(
@@ -3476,9 +3412,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
       forkReplay.cancel(error);
       if (childWorker) await terminateTrackedWorker(childWorker);
-      if (childExternrefGeneration) {
-        externrefProcessOwner.releaseGeneration(childExternrefGeneration);
-      }
       if (childGeneration && registered) {
         const detachResult = await detachExactProcessGeneration({
           pid: childPid,
@@ -3601,7 +3534,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       return addressSpaceResult;
     }
     let replacementWorker: (W & { start(): boolean }) | undefined;
-    let replacementExternrefGeneration: ForkExternrefGeneration | undefined;
     let launchPlanState: "ready" | "discarded" | "started" = "ready";
     const onCommitFailure = (commitResult?: number): void => {
       if (launchPlanState !== "ready") return;
@@ -3664,10 +3596,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         if (!kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)) {
           throw new Error(`Exec pid ${pid} changed generation during commit`);
         }
-        replacementExternrefGeneration = externrefProcessOwner.replaceGeneration(
-          initiatingInfo.externrefGeneration,
-        );
-
         if (transition.addressSpaceResult < 0) {
           throw new Error("failed to detach the discarded address space");
         }
@@ -3714,10 +3642,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         if (handoffExitSignal > 0) {
           prepared.memoryLease.release();
           preparedLeaseConsumed = true;
-          externrefProcessOwner.releaseGeneration(
-            replacementExternrefGeneration,
-          );
-          replacementExternrefGeneration = undefined;
           await awaitFinalizedProcessTeardown(
             pid,
             signalExitStatus(handoffExitSignal),
@@ -3747,7 +3671,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           memory: newMemory,
           channelOffset: newChannelOffset,
           secureExec,
-          externrefGenerationId: replacementExternrefGeneration.id,
           argv: launchArgv,
           env: envp,
           ptrWidth: newPtrWidth,
@@ -3795,7 +3718,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           ptrWidth: newPtrWidth,
           secureExec,
           layout: newLayout,
-          externrefGeneration: replacementExternrefGeneration,
         });
         preparedTransferred = true;
 
@@ -3919,12 +3841,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         kernelWorker.finishProcessExecHandoff(pid);
         return 0;
       } catch (err) {
-        if (replacementExternrefGeneration) {
-          externrefProcessOwner.releaseGeneration(
-            replacementExternrefGeneration,
-          );
-          replacementExternrefGeneration = undefined;
-        }
         // A kernel trap can leave the commit point uncertain. We cannot safely
         // return to the caller, so invalidate the old generation before
         // yielding and report a truthful signal death.
@@ -4409,13 +4325,12 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       // Forward the PER-KIND REFERENCE proof-of-use (Phase 6 D6.5): a nonzero
       // count for a kind confirms the child's carried references of that kind
       // were reconstructed through the module. All kinds ride one string so a
-      // reader can extract any of funcref/externref/exnref/typed-GC.
+      // reader can extract any of funcref/exnref/typed-GC.
       postForkModuleProof({
         pid,
         source: "fork-module",
         message:
           `fork_module_references=${message.references} `
-          + `externrefs_resolved=${message.externrefs} `
           + `exnrefs_reconstructed=${message.exnrefs} `
           + `gc_nodes_reconstructed=${message.gcNodes} `
           + `drive_steps_executed=${message.driveSteps} `
@@ -4561,7 +4476,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     destroyGenerationAccountingComplete,
     dispatchProcessWorkerMessage,
     drainBlockedProcessesForDestroy,
-    externrefProcessOwner,
     handleClone,
     handleExec,
     handleExit,

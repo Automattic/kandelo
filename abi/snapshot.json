@@ -6137,15 +6137,6 @@
         },
         {
           "kind": "func",
-          "name": "__wpk_fork_ref_gc_publish_externref",
-          "params": [
-            "i32",
-            "externref"
-          ],
-          "results": []
-        },
-        {
-          "kind": "func",
           "name": "__wpk_fork_static_root_harvest",
           "params": [],
           "results": []
@@ -6694,17 +6685,6 @@
           ],
           "results": [
             "i32"
-          ]
-        },
-        {
-          "kind": "func",
-          "module": "env",
-          "name": "__wpk_fork_ref_provenance_externref",
-          "params": [
-            "externref"
-          ],
-          "results": [
-            "externref"
           ]
         },
         {

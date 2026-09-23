@@ -28,7 +28,6 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
-import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const fbtestBinary = tryResolveBinary("programs/fbtest.wasm") ?? "";
 const kernelBinary = tryResolveBinary("kernel.wasm") ?? "";
@@ -59,7 +58,6 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
 
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
-    const referenceOwners = new TestProcessReferenceOwners();
     const workers = new Map<
       number,
       ReturnType<NodeWorkerAdapter["createWorker"]>
@@ -92,7 +90,6 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       {
         onExit: (exitPid, exitStatus) => {
           if (exitPid === pid) {
-            referenceOwners.release(exitPid);
             kernel.unregisterProcess(exitPid);
             const w = workers.get(exitPid);
             if (w) {
@@ -128,7 +125,6 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
-    const referenceInit = referenceOwners.start(pid);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
@@ -140,7 +136,6 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       argv: ["fbtest"],
       env: [],
       ptrWidth,
-      ...referenceInit,
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
@@ -215,7 +210,6 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       // test harness in main-thread mode.
     } finally {
       for (const [, w] of workers) await w.terminate().catch(() => {});
-      referenceOwners.close();
       // Avoid an unhandled-promise warning if the program never exits.
       void exitPromise.catch(() => {});
     }

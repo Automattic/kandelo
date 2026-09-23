@@ -30,7 +30,6 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
-import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -73,7 +72,6 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
 
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
-    const referenceOwners = new TestProcessReferenceOwners();
     const workers = new Map<
       number,
       ReturnType<NodeWorkerAdapter["createWorker"]>
@@ -106,7 +104,6 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       {
         onExit: (exitPid, exitStatus) => {
           if (exitPid === pid) {
-            referenceOwners.release(exitPid);
             kernel.unregisterProcess(exitPid);
             const w = workers.get(exitPid);
             if (w) {
@@ -140,7 +137,6 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
-    const referenceInit = referenceOwners.start(pid);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
@@ -152,7 +148,6 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       argv: ["mousetest", "3"],
       env: [],
       ptrWidth,
-      ...referenceInit,
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
@@ -219,7 +214,6 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       }
     } finally {
       for (const [, w] of workers) await w.terminate().catch(() => {});
-      referenceOwners.close();
       void readyPromise.catch(() => {});
       void exitPromise.catch(() => {});
     }

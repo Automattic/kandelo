@@ -15,7 +15,7 @@ description = "Standalone wasm entry point for the WebAssembly artifact reader a
 #   * `host/src/kernel.ts` needs an artifact's pointer width to build the
 #     import object BEFORE the kernel module is compiled -- a genuine bootstrap
 #     floor no kernel export can serve;
-#   * `worker-main.ts`, `dylink.ts`, `fork-host-import-runtime.ts` and
+#   * `worker-main.ts`, `dylink-loader.ts`, `import-trap-guard.ts` and
 #     `wasm-module-reflection.ts` run in the PROCESS worker, which holds no
 #     kernel instance at all;
 #   * `binary-resolver.ts` validates `kernel.wasm` itself, on the main thread,

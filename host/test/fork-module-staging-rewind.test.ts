@@ -4,17 +4,16 @@
 // WHAT THIS REPLACED. This file used to assert a per-fork REWIND: the slab was
 // a bump cursor, because the module kept the POINTER to every durable seed
 // (catalog, codec, section) and read it back at every later fork, so a seed
-// had to stay put for the life of the worker and only the two per-fork stages
-// -- `stageSides()` and `stageExternrefHandover()` -- could be reused. The
+// had to stay put for the life of the worker and only the per-fork stages --
+// `stageSides()`, and the since-deleted externref handover -- could be reused. The
 // cursor never rewound over them, a long-lived forking program exhausted the
 // slab in thousands of forks, and the fix was a mark taken at each fork and
 // dropped by any durable stage above it.
 //
 // None of that survives the module copying its seeds. Catalogs, codecs and
 // sections go into the module's own arena records, the template id into its
-// own table, all during the entry that seeds them; the externref handover is
-// read by the kernel during the fork syscall the worker blocks in next. So the
-// slab holds ONE request at a time, the cursor is gone, and the only two
+// own table, all during the entry that seeds them. So the slab holds ONE
+// request at a time, the cursor is gone, and the only two
 // things left to assert about `stage()` are the two below.
 //
 // THE COPY ITSELF IS PROVEN ELSEWHERE, against the real module:
@@ -84,7 +83,6 @@ describe("staging slab as a per-call scratch", () => {
     const codec = new Uint8Array(128).fill(0xab);
     for (let fork = 0; fork < 32; fork += 1) {
       backend.parentBeginCapture(0, 0, SIDES);
-      backend.stageExternrefHandover([7, 8, 9, 10]);
       // A dlopen between forks: a seed the old cursor had to keep clear of.
       backend.setActivationGcCodec(4 + fork, codec);
     }
@@ -99,14 +97,13 @@ describe("staging slab as a per-call scratch", () => {
 
   it("does not exhaust the slab over more calls than it has room for", () => {
     const { backend } = harness();
-    // 24 bytes of side pairs, 16 of handover and 128 of codec per iteration:
-    // as a cursor, the 8 KiB slab is gone in under fifty.
+    // 24 bytes of side pairs and 128 of codec per iteration: as a cursor, the
+    // 8 KiB slab is gone in under sixty.
     const codec = new Uint8Array(128).fill(0xab);
     expect(() => {
       for (let fork = 0; fork < 2000; fork += 1) {
         backend.parentBeginCapture(0, 0, SIDES);
-        backend.stageExternrefHandover([7, 8, 9, 10]);
-        backend.setActivationGcCodec(4 + fork, codec);
+          backend.setActivationGcCodec(4 + fork, codec);
       }
     }).not.toThrow();
   });

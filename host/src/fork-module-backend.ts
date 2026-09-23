@@ -37,7 +37,9 @@ export const FORK_MODULE_STATS = [
   "framesCommitted",
   "framesReplayed",
   "referencesReconstructed",
-  "externrefsResolved",
+  // Retired: it counted host externrefs a fork reconstructed, and a fork
+  // carries none since externref stage E2. Kept so later indices hold.
+  "retiredExternrefsResolved",
   "exnrefsReconstructed",
   "gcNodesReconstructed",
   "staticRootsPublished",
@@ -704,61 +706,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Every externref broker handle this capture interned, in intern order.
-   *
-   * The kernel worker needs this set to lease the parent's externrefs to the
-   * child's generation. It used to DERIVE the set, by reading the parked
-   * parent's KFMS arena and running the full segmented-transaction parser over
-   * it. The module already had the handles -- they are passed to it on every
-   * `fm_capture_intern` -- so deriving them again was ~4,956 lines of host
-   * decoder duplicating work, on the one thread every process's syscalls
-   * serialize through.
-   *
-   * Throws on overflow rather than returning a short list. A truncated lease
-   * set is silent corruption: the child would hold references the parent
-   * believes it passed on, and nothing would report the difference.
-   */
-  capturedExternrefHandles(): number[] {
-    const count = Number(
-      (this.exports.fm_captured_externref_count as () => number)(),
-    );
-    if (count < 0) {
-      throw new Error(
-        `${this.label}: this capture interned more externref handles than the ` +
-          `module records, so the inherited set cannot be trusted`,
-      );
-    }
-    const read = this.exports.fm_captured_externref as (i: number) => bigint | number;
-    const handles: number[] = [];
-    for (let index = 0; index < count; index++) {
-      const handle = Number(read(index));
-      if (handle < 0) {
-        throw new Error(
-          `${this.label}: externref handle ${index} of ${count} is missing`,
-        );
-      }
-      handles.push(handle);
-    }
-    return handles;
-  }
-
-  /**
-   * Stage the captured handle list into guest memory and return its address.
-   *
-   * THE ONE STAGE THE MODULE DOES NOT READ. The kernel worker reads it while
-   * it handles the fork syscall the caller sends next, and this worker is
-   * blocked in that syscall until the kernel is done -- so nothing can be
-   * staged over it first. Same lifetime as every other stage, then: valid
-   * until this backend stages again.
-   */
-  stageExternrefHandover(handles: readonly number[]): number {
-    const bytes = new Uint8Array(handles.length * 4);
-    const view = new DataView(bytes.buffer);
-    handles.forEach((handle, index) => view.setUint32(index * 4, handle >>> 0, true));
-    return this.stage(bytes, "externref handover");
-  }
-
-  /**
    * Seed the replay driver from a sealed arena and build its install plan.
    *
    * Distinct from `attachChild`: this appends NO guest restore/finish steps,
@@ -933,9 +880,7 @@ export class ForkModuleContinuationBackend {
    * per-fork stages could be reused. The module keeps a COPY of every seed
    * now: catalogs, codecs and sections go into its own arena records and the
    * template id into its own table, all during the entry that seeds them.
-   * The one stage the module does not read, the externref handover, is read
-   * by the kernel during the fork syscall this worker blocks in immediately
-   * after. Nothing outlives its call, so nothing needs a cursor, and the slab
+   * Nothing outlives its call, so nothing needs a cursor, and the slab
    * only has to hold the LARGEST single request rather than the sum of every
    * activation's seeds -- which is what `STAGING_SLAB_BYTES` is sized from.
    *

@@ -2813,10 +2813,6 @@ fn render_ts_module() -> String {
             shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
         ),
         (
-            "WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF",
-            shared::abi::WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF,
-        ),
-        (
             "WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE",
             shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
         ),
@@ -2827,10 +2823,6 @@ fn render_ts_module() -> String {
         (
             "WPK_FORK_REFERENCE_EXPORT_GC_FILL",
             shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL,
-        ),
-        (
-            "WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF",
-            shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF,
         ),
         (
             "WPK_FORK_REFERENCE_EXPORT_GC_PROBE",
@@ -8971,13 +8963,14 @@ mod tests {
         );
 
         let imports = fork["required_imports"].as_array().unwrap();
-        assert_eq!(imports.len(), 48);
-        // The 48th required import is the externref provenance broker
-        // (`WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF`); pin its identity so
-        // the count above is not a blind bump. It is verified by the ABI snapshot
-        // (`abi/snapshot.json`) and the `WPK_FORK_REQUIRED_IMPORTS.len()`
-        // self-test in `crates/shared`.
-        assert!(imports.iter().any(|entry| {
+        assert_eq!(imports.len(), 47);
+        // Externref stage E2 removed the 48th, the externref provenance import
+        // (`__wpk_fork_ref_provenance_externref`): a fork no longer carries a
+        // raw host externref, so nothing records where one came from. Pin its
+        // absence so the count above is not a blind decrement. It is verified by
+        // the ABI snapshot (`abi/snapshot.json`) and the
+        // `WPK_FORK_REQUIRED_IMPORTS.len()` self-test in `crates/shared`.
+        assert!(!imports.iter().any(|entry| {
             entry["name"] == json!("__wpk_fork_ref_provenance_externref")
         }));
         assert_eq!(
@@ -9049,10 +9042,9 @@ mod tests {
                 && entry["params"] == json!(["i32"])
                 && entry["results"] == json!(["i64"])
         }));
-        assert!(exports.iter().any(|entry| {
+        // Removed with the host-externref replay path (externref stage E2).
+        assert!(!exports.iter().any(|entry| {
             entry["name"] == json!("__wpk_fork_ref_gc_publish_externref")
-                && entry["params"] == json!(["i32", "externref"])
-                && entry["results"] == json!([])
         }));
         assert!(exports.iter().any(|entry| {
             entry["name"] == json!("__wpk_fork_static_root_harvest")

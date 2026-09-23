@@ -31,7 +31,6 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
-import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const driSmokeBinary = tryResolveBinary("programs/dri-smoke.wasm") ?? "";
 const kernelBinary = tryResolveBinary("kernel.wasm") ?? "";
@@ -61,7 +60,6 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
 
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
-    const referenceOwners = new TestProcessReferenceOwners();
     const workers = new Map<
       number,
       ReturnType<NodeWorkerAdapter["createWorker"]>
@@ -94,7 +92,6 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
       {
         onExit: (exitPid, exitStatus) => {
           if (exitPid === pid) {
-            referenceOwners.release(exitPid);
             kernel.unregisterProcess(exitPid);
             const w = workers.get(exitPid);
             if (w) {
@@ -129,7 +126,6 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
-    const referenceInit = referenceOwners.start(pid);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
@@ -141,7 +137,6 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
       argv: ["dri-smoke"],
       env: [],
       ptrWidth,
-      ...referenceInit,
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
@@ -206,7 +201,6 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
       if (mainW) {
         await mainW.terminate().catch(() => {});
       }
-      referenceOwners.close();
       await Promise.race([
         exitPromise,
         new Promise<number>((resolve) => setTimeout(() => resolve(0), 1_000)),

@@ -2,8 +2,8 @@
  * What a fresh child can be told about a reference BEFORE anything is
  * instantiated.
  *
- * The child's import objects may carry references -- a funcref, a host
- * externref, a statically rooted value -- and those have to exist before the
+ * The child's import objects may carry references -- a funcref or a
+ * statically rooted value -- and those have to exist before the
  * instance that would otherwise produce them. That is the whole reason this
  * exists, and it is why it is deliberately much smaller than the replay
  * transaction: at this moment no activation is live, so the only answerable
@@ -12,9 +12,10 @@
  *
  * Every fact comes from the module's decoded graph. What the host adds is the
  * one thing wasm cannot do: turn a coordinate into a live JavaScript reference.
- * A funcref becomes a `Table.get` on the merged catalog, an externref becomes a
- * `resolve_externref` on the broker handle -- the identity floor the 2026-09-03
- * probe found and could not move.
+ * A funcref becomes a `Table.get` on the merged catalog, a static root a
+ * `Table.get` on the static-root catalog. There is no host-externref case: a
+ * fork does not carry a raw host externref (externref stage E2), so no graph
+ * names one -- kind 2 never decodes.
  *
  * WHAT IS NOT HERE, against the 1,619-line attic provider it replaces:
  *
@@ -35,7 +36,7 @@
 /** `wire_node_kind` in `crates/fork-module/src/lib.rs`. */
 const KIND_NULL = 0;
 const KIND_FUNCREF = 1;
-const KIND_EXTERNREF = 2;
+// 2 was the host-externref kind, retired in externref stage E2.
 const KIND_EXNREF = 3;
 const KIND_I31 = 4;
 const KIND_STRUCT = 5;
@@ -54,18 +55,14 @@ export interface ForkChildReferenceGraph {
   decodedNodeModuleActivation(index: number): number;
   /** `fm_funcref_ordinal`: the merged-catalog slot a funcref recipe names. */
   funcrefOrdinal(recipeId: number): number;
-  /** `fm_externref_handle`: the broker handle an externref recipe names. */
-  externrefHandle(recipeId: number): number;
   /** `fm_static_root_slot`: the catalog slot a static-root recipe names. */
   staticRootSlot(recipeId: number): number;
 }
 
-/** The two host tables a coordinate resolves through, plus the broker. */
+/** The two host tables a coordinate resolves through. */
 export interface ForkChildReferenceFloor {
   readonly functionCatalog: WebAssembly.Table;
   readonly staticRootCatalog: WebAssembly.Table;
-  /** The canonical host token for a broker handle. */
-  resolveExternref(handle: number): unknown;
 }
 
 export class ForkChildReferences {
@@ -79,13 +76,13 @@ export class ForkChildReferences {
    * The activation that must be instantiated before `recipeId` resolves, or
    * null when nothing must be.
    *
-   * Null is the ordinary answer for a host externref and for a null reference:
-   * neither belongs to any activation, so making one a dependency would order
-   * the child against an activation that has nothing to do with it.
+   * Null is the ordinary answer for a null reference and an i31: neither
+   * belongs to any activation, so making one a dependency would order the
+   * child against an activation that has nothing to do with it.
    */
   ownerActivation(recipeId: number, typeCode: number): number | null {
     const kind = this.requireCompatible(recipeId, typeCode);
-    if (kind === KIND_NULL || kind === KIND_EXTERNREF || kind === KIND_I31) {
+    if (kind === KIND_NULL || kind === KIND_I31) {
       return null;
     }
     return this.graph.decodedNodeModuleActivation(recipeId);
@@ -116,8 +113,6 @@ export class ForkChildReferences {
         }
         return value;
       }
-      case KIND_EXTERNREF:
-        return this.floor.resolveExternref(this.graph.externrefHandle(recipeId));
       case KIND_STATIC_ROOT: {
         const slot = this.graph.staticRootSlot(recipeId);
         return this.floor.staticRootCatalog.get(slot);
@@ -159,7 +154,7 @@ export class ForkChildReferences {
     const admissible = typeCode === TYPE_FUNCREF
       ? kind === KIND_FUNCREF || kind === KIND_STATIC_ROOT
       : typeCode === TYPE_EXTERNREF
-        ? kind === KIND_EXTERNREF || kind === KIND_STATIC_ROOT
+        ? kind === KIND_STATIC_ROOT
         : typeCode === TYPE_EXNREF
           ? kind === KIND_EXNREF
           : typeCode === TYPE_ANYREF

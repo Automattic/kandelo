@@ -73,8 +73,6 @@ import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
 } from "./fork-replay-gate";
-import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
-import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -440,7 +438,6 @@ const {
   settleDestroyedRealmAllocator,
   completeVforkGenerationTeardown,
   handleExec,
-  externrefProcessOwner,
   processes,
   processGenerationDetaches,
   processMemoryCreators,
@@ -1174,9 +1171,6 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   if (info?.worker) {
     await terminateTrackedWorker(info.worker);
   }
-  if (info) {
-    externrefProcessOwner.releaseGeneration(info.externrefGeneration);
-  }
 
   if (info) {
     const detachResult = await detachExactProcessGeneration({
@@ -1314,7 +1308,6 @@ async function performDestroy() {
         );
         await terminateTrackedWorker(info.worker);
       }
-      externrefProcessOwner.releaseGeneration(info.externrefGeneration);
       const detachResult = await detachExactProcessGeneration({
         pid,
         generation: info,

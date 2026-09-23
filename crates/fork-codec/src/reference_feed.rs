@@ -789,7 +789,7 @@ mod tests {
         let tx = transaction(
             vec![
                 entry(0, ReferenceRecipeNode::Null),
-                entry(1, ReferenceRecipeNode::Externref { handle: 8 }),
+                entry(1, ReferenceRecipeNode::I31 { value: 8 }),
                 exnref_node(2, 7, 5, 15, vec![0xde, 0xad, 0xbe, 0xef], vec![1, 0]),
             ],
             vec![vec![]],
@@ -830,7 +830,7 @@ mod tests {
             vec![
                 entry(0, ReferenceRecipeNode::Null),
                 exnref_node(1, 7, 5, 15, vec![], vec![]),
-                entry(2, ReferenceRecipeNode::Externref { handle: 9 }),
+                entry(2, ReferenceRecipeNode::I31 { value: 9 }),
                 exnref_node(3, 7, 6, 16, vec![], vec![]),
             ],
             vec![vec![]],

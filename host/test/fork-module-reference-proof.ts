@@ -4,8 +4,11 @@
 // message carrying one count per reference kind; the kernel worker forwards it
 // as a `fork-module` host diagnostic whose text lists every kind:
 //
-//   fork_module_references=<funcref> externrefs_resolved=<externref>
-//     exnrefs_reconstructed=<exnref> gc_nodes_reconstructed=<gc>
+//   fork_module_references=<funcref> exnrefs_reconstructed=<exnref>
+//     gc_nodes_reconstructed=<gc>
+//
+// There is no externref count: a fork does not carry a raw host externref
+// (externref stage E2), so nothing reconstructs one.
 //
 // `moduleReferenceProof(diagnostics, kind)` returns the reconstructed count for
 // one kind, or `null` when the module never drove a reconstruction (silent JS
@@ -17,7 +20,6 @@ import type { HostDiagnostic } from "../src/host-diagnostic";
 
 export type ModuleReferenceKind =
   | "funcref"
-  | "externref"
   | "exnref"
   | "gc"
   | "drive"
@@ -25,7 +27,6 @@ export type ModuleReferenceKind =
 
 const KIND_PATTERNS: Record<ModuleReferenceKind, RegExp> = {
   funcref: /fork_module_references=(\d+)/,
-  externref: /externrefs_resolved=(\d+)/,
   exnref: /exnrefs_reconstructed=(\d+)/,
   gc: /gc_nodes_reconstructed=(\d+)/,
   // Phase 6 item 3c DRIVE proof-of-use (`fm_drive_steps_executed`): the module

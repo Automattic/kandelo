@@ -29,7 +29,7 @@
 //!
 //! ```text
 //!   +0  op      u32   DRIVE_OP_ALLOC (0) | DRIVE_OP_FILL (1) | DRIVE_OP_EXN (2)
-//!                     | DRIVE_OP_STATIC_ROOT (3) | DRIVE_OP_EXTERNREF_TRANSIT (4)
+//!                     | DRIVE_OP_STATIC_ROOT (3) | 4 (retired, see below)
 //!                     | DRIVE_OP_RESTORE (5) | DRIVE_OP_FINISH_RESTORE (6)
 //!                     | DRIVE_OP_REWIND_BEGIN (7) | DRIVE_OP_ABORT_BEGIN (8)
 //!                     | DRIVE_OP_UNWIND_BEGIN (9) | DRIVE_OP_UNWIND_END (10)
@@ -65,8 +65,8 @@ pub const DRIVE_OP_FILL: u32 = 1;
 /// Like ALLOC/FILL this is a `(i32) -> ()` guest export the shim
 /// `call_indirect`s; UNLIKE ALLOC it runs NO store-#2 transit assert (the
 /// guest export throws/`catch_ref`s against its own module-local tag and the
-/// exnref's reachable externref payloads were already transit-rooted by the
-/// Phase 0 DRIVE_OP_EXTERNREF_TRANSIT steps). Mirrors the JS
+/// exnref's reachable reference payloads were already allocated or published
+/// by earlier steps). Mirrors the JS
 /// `materializeException` -> `exceptions.materialize(recipeId)` call.
 pub const DRIVE_OP_EXN: u32 = 2;
 /// `op` value: publish an immutable static-root reference into the anyref transit
@@ -80,34 +80,17 @@ pub const DRIVE_OP_EXN: u32 = 2;
 /// or a `_gc_fill` edge sees the activation's canonical static-root identity —
 /// mirroring the JS `materializeTypedGraph` static-root publish (phase 2).
 pub const DRIVE_OP_STATIC_ROOT: u32 = 3;
-/// `op` value: publish a reconstructed `externref` into the anyref transit at
-/// slot `recipe + 1` (the externref binder — M2). Like DRIVE_OP_STATIC_ROOT it
-/// drives NO guest export and uses NO drive-table slot (`slot`/`arg` are
-/// 0/unused): the injected shim resolves the externref's live host identity
-/// (`resolve_externref(fm_externref_handle(recipe))`), internalizes it
-/// (`any.convert_extern`), publishes it with `table.set(anyref_transit, recipe +
-/// 1, v)`, and asserts non-null (`ref.is_null` -> truthful trap). `recipe` names
-/// the transit slot (`recipe + 1`); the externref handle is looked up in the
-/// module (`fm_externref_handle`) so it is not carried in the step.
-///
-/// WHY this moved out of Rust: `fork-codec` is `no_std` Rust and CANNOT hold an
-/// `externref`, so the old path resolved+published externrefs through a u32
-/// host seam (`resolve_externref`/`transit_publish`/`transit_read`). Injected
-/// wasm CAN hold an `externref`, so — exactly as item 3c moved GC struct/array
-/// reconstruction into `fm_drive_execute` — externref transit rooting becomes a
-/// drive step executed in wasm, and the host seam methods are deleted. Emitted
-/// in Phase 0 (before any allocate/fill), so an immutable constructor (ALLOC) or
-/// a `_gc_fill` edge that names the externref reads its rooted identity from the
-/// transit. This is the R1 rooting hazard the retired host PHASE-B publish +
-/// read-back guarded, now a wasm `table.set` + non-null check. A directly held
-/// externref (not reached by a GC/exnref consumer) needs NO step: the guest
-/// import `__wpk_fork_ref_decode_externref` resolves it lazily.
-pub const DRIVE_OP_EXTERNREF_TRANSIT: u32 = 4;
+// `op` 4 is RETIRED. It was DRIVE_OP_EXTERNREF_TRANSIT, which re-rooted a
+// captured host `externref` into the child's anyref transit through a host
+// `resolve_externref` import. A fork no longer carries a raw host externref
+// (capture refuses one with `EOPNOTSUPP`, stage E2), so no plan emits it, and
+// the injected `fm_drive_execute` shim has no branch for it. The number stays
+// unused so the ops after it keep their values.
 /// `op` value: run one activation's guest `wpk_fork_module_state_restore(id)`
 /// (the child-install first phase). Like ALLOC/FILL/EXN this is a `(i32) -> ()`
 /// guest export the shim `call_indirect`s, but it drives NO transit and runs NO
 /// store-#2 assert: it reconstructs that activation's GLOBAL/TABLE reference
-/// state (funcref/externref/GC) by reading the values the reconstruction steps
+/// state (funcref/GC) by reading the values the reconstruction steps
 /// (Phase 0/0b/3/4/5, above) already rooted in the transit and the module's
 /// flipped decode imports. UNLIKE ALLOC/FILL/EXN its op value differs from its
 /// drive-table slot offset (`DRIVE_SLOT_RESTORE`), so the plan carries the slot
@@ -520,19 +503,16 @@ impl<'a, H: DrivePlanHints> PlanWalk<'a, H> {
 
     /// Mirror the JS `ensureIdentity`: dispatch by kind. Only the typed-GC
     /// (allocate) and exnref (materialize) arms issue a guest drive step; null /
-    /// funcref / static-root / externref emit nothing HERE. They are reconstructed
-    /// outside the allocate/fill walk: the funcref shim, the lazy guest externref
-    /// decode import, and — for a static root or a GC/exnref-reachable externref —
-    /// the DRIVE_OP_STATIC_ROOT / DRIVE_OP_EXTERNREF_TRANSIT step emitted in Phase 0
-    /// (before this walk), so the reference is already published into the transit
-    /// by the time an edge reads it, exactly as the JS `materializeTypedGraph`
-    /// publishes them first.
+    /// funcref / static-root emit nothing HERE. They are reconstructed outside
+    /// the allocate/fill walk: the funcref shim, and — for a static root — the
+    /// DRIVE_OP_STATIC_ROOT step emitted in Phase 0 (before this walk), so the
+    /// reference is already published into the transit by the time an edge reads
+    /// it, exactly as the JS `materializeTypedGraph` publishes them first.
     fn ensure_identity(&mut self, recipe_id: u32) -> Result<(), Errno> {
         match self.node(recipe_id)? {
             ReferenceRecipeNode::Null
             | ReferenceRecipeNode::Funcref { .. }
-            | ReferenceRecipeNode::StaticRoot { .. }
-            | ReferenceRecipeNode::Externref { .. } => Ok(()),
+            | ReferenceRecipeNode::StaticRoot { .. } => Ok(()),
             ReferenceRecipeNode::Exnref { .. } => self.materialize_exception(recipe_id),
             ReferenceRecipeNode::I31 { .. }
             | ReferenceRecipeNode::Struct { .. }
@@ -612,28 +592,17 @@ impl<'a, H: DrivePlanHints> PlanWalk<'a, H> {
 /// `nodes` is the decoded, canonical (`id == index`) reference-recipe graph;
 /// `hints` supplies the per-recipe GC-layout facts the graph does not carry (see
 /// [`DrivePlanHints`]). The host gate keeps only admitted graphs (null / funcref
-/// / externref / exnref / typed-GC — no static-root) on this path, so a
+/// / exnref / typed-GC — no static-root) on this path, so a
 /// static-root recipe here is a caller error, but it simply emits no step (it is
 /// not a drive kind), exactly as `ensureIdentity` treats it.
 ///
 /// The plan issues, in order:
 ///
 /// 0. **Reference transit publish** (Phase 0): a DRIVE_OP_STATIC_ROOT step for
-///    every immutable static root, then a DRIVE_OP_EXTERNREF_TRANSIT step for
-///    EVERY `Externref` recipe node in the graph — GC/exnref-reachable ones and
-///    directly-held (frame-vector-only) ones alike — each publishing into the
-///    anyref transit at slot `recipe + 1` BEFORE any allocate/fill so an
-///    immutable constructor, a `_gc_fill` edge, or the guest's own per-frame
-///    decode reads the canonical rooted identity. This replaces the retired
-///    Rust host PHASE B (externref publish + read-back) with an in-wasm
-///    `table.set` + non-null check. `fork_codec::ReferenceGraphBuilder::
-///    intern_externref` already guarantees one canonical recipe id per
-///    distinct externref identity, so iterating every `Externref` node is
-///    already deduped by construction — no reachability walk is needed (see
-///    `reference_replay::transit_rooted_recipes`'s doc comment for why an
-///    earlier version of this phase was scoped to a GC/exnref-only
-///    reachability walk, and the substrate grounding doc for the root cause
-///    and fix rationale).
+///    every immutable static root, publishing into the anyref transit at slot
+///    `recipe + 1` BEFORE any allocate/fill so an immutable constructor, a
+///    `_gc_fill` edge, or the guest's own per-frame decode reads the canonical
+///    rooted identity.
 /// 1. **Defaultable-shell pre-allocate** (JS phase 3): an ALLOC step for every
 ///    reachable struct/array whose layout is a defaultable shell, in id order,
 ///    with NO dependency walk — so a shell exists before the identity walk fills
@@ -648,13 +617,8 @@ impl<'a, H: DrivePlanHints> PlanWalk<'a, H> {
 ///    satisfied, so no new steps).
 ///
 /// The null/funcref reconstruction is NOT in this plan: null/funcref stay the
-/// injected funcref shim. EVERY `Externref` recipe node — GC/exnref-reachable
-/// or directly held (frame-vector-only) — enters the plan (Phase 0b
-/// DRIVE_OP_EXTERNREF_TRANSIT), because the guest's own `decode_anyref`/
-/// `decode_externref` local functions read every externref out of the shared
-/// anyref transit table unconditionally (there is no separate lazy per-value
-/// host decode import in the architecture `wasm-fork-instrument` actually
-/// builds — see the substrate grounding doc, §1.1).
+/// injected funcref shim. A graph carries no host `externref` node at all: a
+/// fork that holds one is refused at capture (`EOPNOTSUPP`).
 ///
 /// Returns `Err(Errno::EINVAL)` on a non-canonical graph, a missing i31/exn
 /// owner, or an unallocatable constructor/exception cycle (the JS throw); it
@@ -685,38 +649,6 @@ pub fn build_drive_plan<H: DrivePlanHints>(
         if matches!(entry.node, ReferenceRecipeNode::StaticRoot { .. }) {
             walk.steps.push(DriveStep {
                 op: DRIVE_OP_STATIC_ROOT,
-                slot: 0,
-                recipe: entry.id,
-                arg: 0,
-            });
-        }
-    }
-
-    // Phase 0b — externref transit publish (id order): EVERY `Externref` recipe
-    // node in the graph is published into the anyref transit at slot `recipe + 1`
-    // BEFORE any allocate/fill, so an immutable constructor (ALLOC), a `_gc_fill`
-    // edge, or the guest's own per-frame decode reads its rooted identity.
-    // Mirrors the static-root publish above (and the retired host PHASE B).
-    //
-    // This is an UNCONDITIONAL pass over all nodes, not a reachability walk —
-    // matching Phase 4/5's treatment of Struct/Array/I31 below. A directly held
-    // (frame-vector-only) externref is NOT reachable from any Struct/Array/Exnref
-    // edge, but its decode still reads the SAME shared transit table via the
-    // guest's local `decode_anyref`/`decode_externref` functions (there is no
-    // separate lazy per-value host decode import in the built architecture — see
-    // the substrate grounding doc, §1.1/§1.2), so it must be published here too or
-    // its transit slot is left unset and the guest's `table.get` traps
-    // out-of-bounds. `fork_codec::ReferenceGraphBuilder::intern_externref`
-    // guarantees one canonical recipe id per distinct externref identity, so this
-    // pass is already deduped by construction; the previous GC/exnref-only
-    // reachability walk's output is a strict subset of this one. Like a
-    // static-root step this drives no guest export and uses no drive-table slot
-    // (`slot`/`arg` unused); the injected shim resolves the handle,
-    // `any.convert_extern`s it, `table.set`s the transit, and asserts non-null.
-    for entry in nodes {
-        if matches!(entry.node, ReferenceRecipeNode::Externref { .. }) {
-            walk.steps.push(DriveStep {
-                op: DRIVE_OP_EXTERNREF_TRANSIT,
                 slot: 0,
                 recipe: entry.id,
                 arg: 0,
@@ -1377,19 +1309,18 @@ mod tests {
     }
 
     #[test]
-    fn plain_struct_over_externref_publishes_then_allocs_then_fills() {
-        // struct(0) -> externref(1). The reachable externref is published into the
-        // transit FIRST (Phase 0, DRIVE_OP_EXTERNREF_TRANSIT with slot 0, recipe 1),
-        // THEN the struct allocate + fill read it out of the transit.
+    fn plain_struct_over_funcref_allocs_then_fills() {
+        // struct(0) -> funcref(1). A funcref leaf needs no drive step (the
+        // injected funcref shim reconstructs it), so the plan is the struct's
+        // allocate + fill alone.
         let nodes = vec![
             struct_node(0, 0, vec![1]),
-            entry(1, ReferenceRecipeNode::Externref { handle: 9 }),
+            entry(1, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
         assert_eq!(
             plan.iter().map(triple).collect::<Vec<_>>(),
             vec![
-                (DRIVE_OP_EXTERNREF_TRANSIT, 0, 1),
                 (DRIVE_OP_ALLOC, drive_table_base(0) + DRIVE_OP_ALLOC, 0),
                 (DRIVE_OP_FILL, drive_table_base(0) + DRIVE_OP_FILL, 0),
             ]
@@ -1491,22 +1422,20 @@ mod tests {
     }
 
     #[test]
-    fn struct_array_cycle_over_externref_publishes_then_allocates_all_then_fills() {
+    fn struct_array_cycle_over_funcref_allocates_all_then_fills() {
         // The CYCLIC graph from reference_replay's tests, with MUTABLE fields (no
-        // constructor deps): struct(0) <-> array(1), both reaching externref(2).
-        // The aliased externref leaf is published into the transit ONCE (Phase 0)
-        // before any allocate; allocate-all-first then breaks the cycle: TRANSIT 2,
-        // ALLOC 0, ALLOC 1, FILL 0, FILL 1.
+        // constructor deps): struct(0) <-> array(1), both reaching funcref(2).
+        // The aliased funcref leaf needs no step; allocate-all-first breaks the
+        // cycle: ALLOC 0, ALLOC 1, FILL 0, FILL 1.
         let nodes = vec![
             struct_node(0, 0, vec![1, 2]),
             array_node(1, 0, vec![0, 2]),
-            entry(2, ReferenceRecipeNode::Externref { handle: 12 }),
+            entry(2, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
         assert_eq!(
             plan.iter().map(|s| (s.op, s.recipe)).collect::<Vec<_>>(),
             vec![
-                (DRIVE_OP_EXTERNREF_TRANSIT, 2),
                 (DRIVE_OP_ALLOC, 0),
                 (DRIVE_OP_ALLOC, 1),
                 (DRIVE_OP_FILL, 0),
@@ -1570,12 +1499,11 @@ mod tests {
     }
 
     #[test]
-    fn exnref_over_externref_publishes_payload_then_materializes() {
-        // exnref(1) whose payload is externref(0). The reachable payload externref
-        // is published into the transit FIRST (Phase 0, DRIVE_OP_EXTERNREF_TRANSIT
-        // recipe 0), THEN the exnref emits ONE EXN step in its owner activation.
+    fn exnref_over_funcref_payload_materializes() {
+        // exnref(1) whose payload is funcref(0). The funcref payload needs no
+        // step, so the exnref emits ONE EXN step in its owner activation.
         let nodes = vec![
-            entry(0, ReferenceRecipeNode::Externref { handle: 8 }),
+            entry(0, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
             entry(
                 1,
                 ReferenceRecipeNode::Exnref {
@@ -1593,7 +1521,6 @@ mod tests {
         assert_eq!(
             plan.iter().map(triple).collect::<Vec<_>>(),
             vec![
-                (DRIVE_OP_EXTERNREF_TRANSIT, 0, 0),
                 (DRIVE_OP_EXN, drive_table_base(3) + DRIVE_OP_EXN, 1),
             ]
         );
@@ -1657,7 +1584,7 @@ mod tests {
         // reads exactly what the builder emitted.
         let nodes = vec![
             struct_node(0, 0, vec![1]),
-            entry(1, ReferenceRecipeNode::Externref { handle: 9 }),
+            entry(1, ReferenceRecipeNode::Funcref { module_activation: 0, function_ordinal: 0 }),
         ];
         let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
         let mut bytes = vec![0u8; DRIVE_STEP_SIZE * plan.len()];

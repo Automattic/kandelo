@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
 import {
   CAPTURE_KIND_EXNREF,
-  INTERN_KIND_EXTERNREF,
+  INTERN_KIND_I31,
   captureGraph,
   fixture,
   saveSlotThunk,
@@ -37,7 +37,7 @@ import {
 
 const PID = 8181;
 const OWNER = 1;
-const PAYLOAD_HANDLE = 44;
+const PAYLOAD_I31 = 44;
 
 const THROW_SLOT = FORK_ACTIVATION_DRIVE_BINDINGS.find(
   (binding) => binding.name === "__wpk_fork_ref_exn_throw_recipe",
@@ -77,7 +77,7 @@ describe("the module raises an exception inside the activation that owns it", ()
     // drive table.
     const { root, aggregateRecipes } = captureGraph(
       f,
-      [[INTERN_KIND_EXTERNREF, PAYLOAD_HANDLE, 0]],
+      [[INTERN_KIND_I31, PAYLOAD_I31, 0]],
       [
         {
           kind: CAPTURE_KIND_EXNREF,
@@ -123,7 +123,7 @@ describe("the module raises an exception inside the activation that owns it", ()
     const x = f.x as Record<string, (...a: number[]) => number>;
     const { root, aggregateRecipes } = captureGraph(
       f,
-      [[INTERN_KIND_EXTERNREF, PAYLOAD_HANDLE, 0]],
+      [[INTERN_KIND_I31, PAYLOAD_I31, 0]],
       [
         {
           kind: CAPTURE_KIND_EXNREF,

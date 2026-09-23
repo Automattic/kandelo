@@ -92,46 +92,4 @@ describe.each([
     )
       .toBeGreaterThan(rollbackCancellation);
   });
-
-  it("grants the exact copied externref graph before launch and retires rollback", () => {
-    const handler = ordinaryForkHandlerSource(relativePath);
-    // Unprefixed: the owner registry is the shared module's own state now.
-    // It used to be constructed identically in both entries and handed back
-    // through `ProcessLifecycleHost`, which is why this once read `host.`.
-    // Renamed from `forkGenerationFromContinuation` when the externref-handle
-    // scan moved to the parent worker: this worker no longer derives the set
-    // from the parked parent's KFMS arena, it is handed the list the parent's
-    // capture interned. The ORDERING this test pins is unchanged -- grant before
-    // the child's init data, before the worker starts, and released on rollback
-    // -- which is why only the name here moved.
-    const grant = handler.indexOf(
-      "externrefProcessOwner\n        .forkGenerationFromCapturedHandles(",
-    );
-    const childInit = handler.indexOf(
-      "const childInitData: CentralizedWorkerInitMessage",
-      grant,
-    );
-    const start = handler.indexOf("startProcessWorkerWhenRunnable(", childInit);
-    const rollback = handler.indexOf("} catch (error)", start);
-    const terminate = handler.indexOf(
-      "await terminateTrackedWorker(childWorker)",
-      rollback,
-    );
-    const release = handler.indexOf(
-      "externrefProcessOwner.releaseGeneration(childExternrefGeneration)",
-      rollback,
-    );
-
-    expect(grant).toBeGreaterThanOrEqual(0);
-    expect(childInit).toBeGreaterThan(grant);
-    expect(handler.slice(childInit, start)).toContain(
-      "externrefGenerationId: externrefGrant.generation.id",
-    );
-    expect(start).toBeGreaterThan(childInit);
-    expect(handler.slice(grant, childInit)).toContain(
-      "childExternrefGeneration = externrefGrant.generation",
-    );
-    expect(terminate).toBeGreaterThan(rollback);
-    expect(release).toBeGreaterThan(terminate);
-  });
 });

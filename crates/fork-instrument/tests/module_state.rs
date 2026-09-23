@@ -1304,6 +1304,9 @@ fn node_fresh_instance_restores_no_seed_module_state_and_segment_lifetime() {
         return token;
       }
 
+      // Each instance's anyref transit, so the child side can publish the
+      // externrefs this fixture's stand-in process owner reconstructs.
+      const transitOf = new WeakMap();
       function instantiate(mode, memory, sharedCounter, sharedCallbacks, imports) {
         let cursor = 65536;
         let pending = null;
@@ -1476,13 +1479,10 @@ fn node_fresh_instance_restores_no_seed_module_state_and_segment_lifetime() {
           __wpk_fork_ref_gc_provenance_end: () => {},
           __wpk_fork_ref_scratch_reserve: (size) => allocate(Number(size)),
           __wpk_fork_ref_scratch_release: () => {},
-          // N1-F5 T1: pass-through stub. The real host body (later F5 tasks)
-          // records mint-time provenance as a side effect and returns the
-          // same externref unchanged; this test only needs link-time
-          // callability and identity preservation, not provenance recording.
-          __wpk_fork_ref_provenance_externref: (value) => value,
         };
-        return new WebAssembly.Instance(module, { env });
+        const instance = new WebAssembly.Instance(module, { env });
+        transitOf.set(instance, gcTransit);
+        return instance;
       }
 
       const parentMemory = new WebAssembly.Memory({
@@ -1580,12 +1580,17 @@ fn node_fresh_instance_restores_no_seed_module_state_and_segment_lifetime() {
           immutableToken: childImmutableToken,
         },
       );
+      // This fixture's stand-in process owner can carry an externref, so it
+      // exercises the module-state save/restore of externref globals and
+      // tables end to end. (The real fork module refuses a raw host externref
+      // with EOPNOTSUPP; what survives that is an `extern.convert_any` view of
+      // a GC object, which takes this same global/table path.) The module no
+      // longer exports a publish hook, so the owner writes the transit itself:
+      // JavaScript internalizes an object stored into an anyref table.
+      const childTransit = transitOf.get(child);
       nodes.forEach((node, recipeId) => {
         if (node.kind === "externref") {
-          child.exports.__wpk_fork_ref_gc_publish_externref(
-            recipeId,
-            decodeExternref(recipeId),
-          );
+          childTransit.set(recipeId + 1, decodeExternref(recipeId));
         }
       });
       child.exports.wpk_fork_module_state_restore(7);

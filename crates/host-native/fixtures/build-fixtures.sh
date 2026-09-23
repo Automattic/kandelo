@@ -160,16 +160,15 @@ done
 # -- see native_fork_refs.wat's own doc comment -- so they are assembled by
 # WABT rather than compiled by clang.
 #
-# `native_fork_externref_gate.wat` is deliberately absent: it has no artifact
-# any test loads. Listing only what is consumed keeps this file from producing
-# binaries nobody reads.
+# Listing only what a test loads keeps this file from producing binaries
+# nobody reads.
 WAT_FIXTURES=(
-    native_fork_externref_gate_indirect
-    native_fork_externref_reconstruct
     native_fork_gc_array_cycle
     native_fork_gc_static_root
     native_fork_gc_struct_cycle
     native_fork_gc_two_object_cycle
+    native_fork_host_externref_field_refused
+    native_fork_host_externref_refused
     native_fork_refs
 )
 for name in "${WAT_FIXTURES[@]}"; do
@@ -192,13 +191,13 @@ done
 # what user programs get. The entry is uniform across all of them.
 INSTRUMENTED_FIXTURES=(
     native_fork
-    native_fork_externref_gate_indirect
-    native_fork_externref_reconstruct
     native_fork_from_thread
     native_fork_gc_array_cycle
     native_fork_gc_static_root
     native_fork_gc_struct_cycle
     native_fork_gc_two_object_cycle
+    native_fork_host_externref_field_refused
+    native_fork_host_externref_refused
     native_fork_refs
     native_vfork
     native_vfork_exec

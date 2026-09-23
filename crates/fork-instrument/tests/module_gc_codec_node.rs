@@ -262,7 +262,10 @@ const recipes = new Map();
 const identities = new WeakMap();
 const capturedValues = new Map();
 const provenance = new WeakMap();
-const brokerValues = new Map();
+// Values that reached the broker -- every one a raw host object, which the real
+// fork module refuses (EOPNOTSUPP) -- keyed by the placeholder recipe the
+// refusal hands back.
+const brokerRefusals = new Map();
 const vectors = [{ expected: 0, values: [] }];
 let nextRecipe = 1;
 let nextProvenance = 1;
@@ -297,15 +300,16 @@ function instantiate() {
       }
       return recipe;
     },
+    // Models the fork module after externref stage E2: a value no codec
+    // claims is a raw host object, and the capture is REFUSED. The refusal is
+    // latched (here: recorded) for the seal, and the call hands back a fresh
+    // placeholder recipe so the guest can publish the LIVE value beside it for
+    // the parent's own abort replay.
     __wpk_fork_ref_gc_broker_encode(slot) {
       const value = transit.get(slot);
       if (value === null) throw new Error("broker encode received null");
-      let recipe = identities.get(value);
-      if (recipe === undefined) {
-        recipe = nextRecipe++;
-        identities.set(value, recipe);
-        brokerValues.set(recipe, value);
-      }
+      const recipe = nextRecipe++;
+      brokerRefusals.set(recipe, value);
       while (transit.length <= recipe + 1) transit.grow(1);
       return recipe;
     },
@@ -653,8 +657,14 @@ if (
 }
 
 // `extern.convert_any` is only a view of the same GC identity. Encoding that
-// view must recover the typed object rather than assigning it an opaque host
-// handle, while the token stored inside the object must become one broker leaf.
+// view must recover the typed object rather than treating it as a host object.
+// This is the case most at risk of being refused by mistake.
+//
+// First with a raw HOST object stored inside the GC object: the view is still
+// captured as the typed object, but the host object in its field reaches the
+// broker, which refuses the fork (EOPNOTSUPP on every host). The refusal must
+// not cost the parent anything: its own replay decodes the object and the
+// token it holds back to the exact live values.
 const parentToken = Object.freeze({ owner: "parent-token" });
 const externalizedRoot =
   parent.instance.exports.create_externalized_cycle(parentToken);
@@ -676,14 +686,22 @@ if (
 ) {
   throw new Error("externalized GC recipe did not preserve its self-cycle");
 }
-const tokenRecipe = vectors[externalizedRecord.vector].values[1];
-if (brokerValues.get(tokenRecipe) !== parentToken) {
-  throw new Error("opaque token was not captured as the graph's broker leaf");
+if (brokerRefusals.has(externalizedRecipe)) {
+  throw new Error("the extern.convert_any view itself was refused");
 }
-const directTokenRecipe =
-  parent.instance.exports.__test_encode_externref(parentToken);
-if (directTokenRecipe !== tokenRecipe) {
-  throw new Error("externref/anyref token aliases received different recipes");
+const tokenRecipe = vectors[externalizedRecord.vector].values[1];
+if (brokerRefusals.get(tokenRecipe) !== parentToken) {
+  throw new Error(
+    "the host object inside the GC object did not reach the refusal",
+  );
+}
+if (
+  parent.instance.exports.__test_decode_externref(externalizedRecipe)
+    !== externalizedRoot
+  || parent.instance.exports.__test_decode_externref(tokenRecipe)
+    !== parentToken
+) {
+  throw new Error("a refused capture changed what the parent replays");
 }
 transit.set(0, parent.instance.exports.objects.get(1));
 const directAnyRecipe =
@@ -692,36 +710,30 @@ if (directAnyRecipe !== externalizedRecipe) {
   throw new Error("externalized/direct anyref aliases received different recipes");
 }
 
+// Then with no host object inside: nothing is refused, and a fresh child
+// rebuilds the typed object, its cycle and its scalar from the view's recipe.
+const refusalsBefore = brokerRefusals.size;
+const cleanRoot = parent.instance.exports.create_externalized_cycle(null);
+const cleanRecipe = parent.instance.exports.__test_encode_externref(cleanRoot);
+if (brokerRefusals.size !== refusalsBefore || !recipes.has(cleanRecipe)) {
+  throw new Error("a GC view with no host object was refused");
+}
 for (let index = 0; index < transit.length; index++) transit.set(index, null);
 const externalizedChild = instantiate();
-const childToken = Object.freeze({ owner: "child-token" });
-externalizedChild.instance.exports.__wpk_fork_ref_gc_publish_externref(
-  tokenRecipe,
-  childToken,
-);
-externalizedChild.instance.exports.__wpk_fork_ref_gc_allocate(
-  externalizedRecipe,
-);
-externalizedChild.instance.exports.__wpk_fork_ref_gc_fill(
-  externalizedRecipe,
-);
+externalizedChild.instance.exports.__wpk_fork_ref_gc_allocate(cleanRecipe);
+externalizedChild.instance.exports.__wpk_fork_ref_gc_fill(cleanRecipe);
 const childExternalizedRoot =
-  externalizedChild.instance.exports.__test_decode_externref(
-    externalizedRecipe,
-  );
+  externalizedChild.instance.exports.__test_decode_externref(cleanRecipe);
 if (
-  childExternalizedRoot === externalizedRoot
-  || childToken === parentToken
+  childExternalizedRoot === cleanRoot
   || externalizedChild.instance.exports.verify_externalized_cycle(
     childExternalizedRoot,
   ) !== 1
   || externalizedChild.instance.exports.externalized_cycle_token(
     childExternalizedRoot,
-  ) !== childToken
+  ) !== null
 ) {
-  throw new Error(
-    "fresh child lost externalized GC identity, cycle, or broker token",
-  );
+  throw new Error("fresh child lost externalized GC identity or cycle");
 }
 "#,
     )

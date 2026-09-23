@@ -28,7 +28,6 @@ import {
   CAPTURE_KIND_ARRAY,
   CAPTURE_KIND_EXNREF,
   CAPTURE_KIND_STRUCT,
-  INTERN_KIND_EXTERNREF,
   INTERN_KIND_FUNCREF,
   INTERN_KIND_I31,
   INTERN_KIND_STATIC_ROOT,
@@ -47,7 +46,6 @@ import {
 const DECODED_FIELD_COUNT = 3;
 
 const EINVAL = 22;
-const EXTERNREF_HANDLE = 0xabcd;
 /** Side modules this fork dlopen'd: a node naming one of these would read back
  *  as activation 0 if the accessor dropped the activation it decoded. */
 const SIDE_ACTIVATIONS = [1, 2, 3];
@@ -56,7 +54,7 @@ const SIDE_ACTIVATIONS = [1, 2, 3];
 const WIRE_KIND = {
   null: 0,
   funcref: 1,
-  externref: 2,
+  // 2 was the retired host-externref kind (externref stage E2).
   exnref: 3,
   i31: 4,
   struct: 5,
@@ -90,9 +88,9 @@ interface Expected {
 /**
  * Capture one graph covering every accessor arm: the two primary host consumers
  * (exnref, static-root), the other kinds carrying an activation + ordinal
- * (funcref, struct, array), and the kinds carrying neither (null, externref,
- * i31). Each aggregate names the externref leaf as its one edge, so the graph
- * is connected the way a real one is rather than a list of isolated nodes.
+ * (funcref, struct, array), and the kinds carrying neither (null, i31). Each
+ * aggregate names the funcref leaf as its one edge, so the graph is connected
+ * the way a real one is rather than a list of isolated nodes.
  */
 function captureInto(
   f: ReturnType<typeof fixture>,
@@ -100,7 +98,6 @@ function captureInto(
   const { root, recipes, aggregateRecipes } = captureGraph(
     f,
     [
-      [INTERN_KIND_EXTERNREF, EXTERNREF_HANDLE, 0],
       [INTERN_KIND_FUNCREF, 3, 7],
       [INTERN_KIND_I31, 42, 0],
       [INTERN_KIND_STATIC_ROOT, 2, 11],
@@ -131,14 +128,13 @@ function captureInto(
   const expected = new Map<number, Expected>([
     // Node 0 is the canonical null every capture reserves.
     [0, { kind: WIRE_KIND.null, coordinate: null }],
-    [recipes[0]!, { kind: WIRE_KIND.externref, coordinate: null }],
     [
-      recipes[1]!,
+      recipes[0]!,
       { kind: WIRE_KIND.funcref, coordinate: { activation: 3, ordinal: 7 } },
     ],
-    [recipes[2]!, { kind: WIRE_KIND.i31, coordinate: null }],
+    [recipes[1]!, { kind: WIRE_KIND.i31, coordinate: null }],
     [
-      recipes[3]!,
+      recipes[2]!,
       { kind: WIRE_KIND.staticRoot, coordinate: { activation: 2, ordinal: 11 } },
     ],
     [

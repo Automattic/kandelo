@@ -343,11 +343,9 @@ export const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END = "__wpk_fork_ref_gc_pr
 export const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF = "__wpk_fork_ref_gc_provenance_ref" as const;
 export const WPK_FORK_REFERENCE_IMPORT_GC_ROUTE = "__wpk_fork_ref_gc_route" as const;
 export const WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT = "__wpk_fork_ref_gc_transit" as const;
-export const WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF = "__wpk_fork_ref_provenance_externref" as const;
 export const WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE = "__wpk_fork_ref_gc_allocate" as const;
 export const WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT = "__wpk_fork_ref_gc_encode_slot" as const;
 export const WPK_FORK_REFERENCE_EXPORT_GC_FILL = "__wpk_fork_ref_gc_fill" as const;
-export const WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF = "__wpk_fork_ref_gc_publish_externref" as const;
 export const WPK_FORK_REFERENCE_EXPORT_GC_PROBE = "__wpk_fork_ref_gc_probe" as const;
 export const WPK_FORK_REFERENCE_IMPORT_SCRATCH_RELEASE = "__wpk_fork_ref_scratch_release" as const;
 export const WPK_FORK_REFERENCE_IMPORT_SCRATCH_RESERVE = "__wpk_fork_ref_scratch_reserve" as const;
@@ -400,7 +398,6 @@ export const WPK_FORK_REQUIRED_IMPORTS = [
   { module: "env", name: "__wpk_fork_ref_gc_provenance_end", params: ["i32"], results: [] },
   { module: "env", name: "__wpk_fork_ref_gc_provenance_ref", params: ["i32", "i32", "i32"], results: [] },
   { module: "env", name: "__wpk_fork_ref_gc_route", params: ["i32", "i32"], results: ["i32"] },
-  { module: "env", name: "__wpk_fork_ref_provenance_externref", params: ["externref"], results: ["externref"] },
   { module: "env", name: "__wpk_fork_ref_scratch_release", params: ["ptr", "ptr"], results: [] },
   { module: "env", name: "__wpk_fork_ref_scratch_reserve", params: ["ptr"], results: ["ptr"] },
   { module: "env", name: "__wpk_fork_ref_vector_append", params: ["i32", "i32"], results: [] },
@@ -427,7 +424,6 @@ export const WPK_FORK_REQUIRED_EXPORTS = [
   { name: "__wpk_fork_ref_gc_encode_slot", params: ["i32"], results: ["i32"] },
   { name: "__wpk_fork_ref_gc_fill", params: ["i32"], results: [] },
   { name: "__wpk_fork_ref_gc_probe", params: ["i32"], results: ["i64"] },
-  { name: "__wpk_fork_ref_gc_publish_externref", params: ["i32", "externref"], results: [] },
   { name: "__wpk_fork_static_root_harvest", params: [], results: [] },
   { name: "wpk_fork_abort_begin", params: ["ptr"], results: [] },
   { name: "wpk_fork_abort_end", params: [], results: [] },

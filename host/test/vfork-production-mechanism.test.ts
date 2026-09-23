@@ -25,8 +25,6 @@ function assertPrivatePreparationEvidence(preparation: MechanismTrace): void {
     .not.toBe(preparation.fields.get("owner_control"));
   expect(preparation.fields.get("scratch"), preparation.line)
     .not.toBe(preparation.fields.get("child_prefix"));
-  expect(preparation.fields.get("externref_parent"), preparation.line)
-    .not.toBe(preparation.fields.get("externref_child"));
 }
 
 describe("production fork-mode mechanism evidence", () => {

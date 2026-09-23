@@ -1,20 +1,18 @@
-// Phase 6 item 3c / M2 — the GC drive's post-ALLOC store-#2 integrity check and
-// the M2 R1 externref-transit guard, both against a graph the MODULE captured.
+// Phase 6 item 3c — the GC drive's post-ALLOC store-#2 integrity check,
+// against a graph the MODULE captured.
 //
-// WHAT THESE TWO CHECKS ARE
+// WHAT THIS CHECK IS
 //
 // The drive plan emits a `DRIVE_OP_ALLOC` step for every typed-GC recipe. The
 // injected `fm_drive_execute` shim `call_indirect`s the guest's `gc_allocate`
 // for each, then verifies the guest actually published a live GC object --
 // reading STORE #2, the shared `__wpk_fork_ref_gc_transit` table the guest
-// publishes into at `recipe + 1`, with `table.get` + `ref.is_null`. A
-// `DRIVE_OP_EXTERNREF_TRANSIT` step instead resolves the leaf through the
-// single residual `env.resolve_externref` host import, internalises it, and
-// `table.set`s it into the same transit -- then reads it back and TRAPS if it
-// is null. That non-null read-back is the M2 replacement for the host-side
-// `Object.is` R1 guard: an internalised externref is not `ref.eq`-comparable on
-// any engine, so surviving the slot is the only identity assertion left, and a
-// lost transit slot must fail LOUD rather than reconstruct a null leaf.
+// publishes into at `recipe + 1`, with `table.get` + `ref.is_null`.
+//
+// The M2 R1 guard that used to live here -- a `DRIVE_OP_EXTERNREF_TRANSIT`
+// step resolving a host externref through `env.resolve_externref` and trapping
+// on a null read-back -- went with that step in externref stage E2: a fork no
+// longer carries a raw host externref, so there is nothing to resolve.
 //
 // THE ARENA IS CAPTURED, NOT CONSTRUCTED. Every shape here used to be built in
 // TypeScript with the set-aside `ForkModuleStateArena` and the segmented
@@ -25,7 +23,7 @@
 // for a cycle, i31 getting its own ALLOC, an exnref emitting EXN and no
 // store-#2 check) are asserted directly on captured graphs in
 // `fork-module-gc-replay` and `fork-module-capture-drive`. What is irreducibly
-// here is what only a REAL drive can show: the store-#2 read-back, and the trap.
+// here is what only a REAL drive can show: the store-#2 read-back.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -38,18 +36,15 @@ import {
   CAPTURE_KIND_ARRAY,
   CAPTURE_KIND_STRUCT,
   CHILD_MODULE_BASE,
-  INTERN_KIND_EXTERNREF,
   INTERN_KIND_I31,
   captureGraph,
   fixture,
 } from "./fork-module-capture-fixture";
 
 const PID = 7373;
-const LEAF_HANDLE = 77;
 /** Drive-plan op codes, shared with `fork_codec::drive_plan`. */
 const DRIVE_OP_ALLOC = 0;
 const DRIVE_OP_FILL = 1;
-const DRIVE_OP_EXTERNREF_TRANSIT = 4;
 const STEP_SIZE = 16;
 /** The committed KFGC fixture: layout 1 is a two-reference struct, layout 4 a
  *  one-reference array, both activation 0. */
@@ -74,25 +69,19 @@ interface Trace {
   steps: { op: number; recipe: number }[];
   published: readonly number[];
   liveSlots: number[];
-  resolved: number[];
   threw: boolean;
 }
 
 /**
  * Capture one graph, then drive it in a CHILD with the faithful guest bound and
  * the real transit table, returning everything the drive did.
- *
- * `resolveExternref` is instrumented here only to record what the drive asked
- * for; production binds the same import to the broker's token cache.
  */
 function driveCaptured(
   build: (f: ReturnType<typeof fixture>) => { root: number },
-  options: { readonly resolveNull?: boolean } = {},
 ): Trace {
   const f = fixture();
   const { root } = build(f);
 
-  const resolved: number[] = [];
   // The child's region sits above everything the fixture placed; growing the
   // shared memory to hold it is the caller's job (the fixture's own
   // `childInstance` does the same).
@@ -108,14 +97,6 @@ function driveCaptured(
     ptrWidth: 4,
     reserve: () => CHILD_MODULE_BASE,
     label: "r1 trace child",
-    hostImports: {
-      resolve_externref: (handle: number) => {
-        resolved.push(handle);
-        // A host that LOST the reference answers null, which is the fault the
-        // R1 guard exists to catch.
-        return (options.resolveNull ? null : { handle }) as object;
-      },
-    },
   });
   const x = child.exports as unknown as DriveExports;
   (child.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, 4 * 65536);
@@ -158,10 +139,10 @@ function driveCaptured(
   for (let slot = 1; slot < transit.table.length; slot += 1) {
     if (transit.get(slot) !== null) liveSlots.push(slot);
   }
-  return { steps, published, liveSlots, resolved, threw };
+  return { steps, published, liveSlots, threw };
 }
 
-describe("the GC drive reads store #2, and the R1 guard traps a lost transit slot", () => {
+describe("the GC drive reads store #2", () => {
   it("POSITIVE: every ALLOC recipe publishes a live store-#2 slot and the drive completes", () => {
     // struct -> array -> i31: one of each ALLOC-emitting kind, so the shim's
     // post-ALLOC read-back runs against all three.
@@ -197,57 +178,5 @@ describe("the GC drive reads store #2, and the R1 guard traps a lost transit slo
     expect(new Set(trace.published)).toEqual(new Set(allocs));
     for (const recipe of allocs) expect(trace.liveSlots).toContain(recipe + 1);
     expect(trace.threw, "the drive completed").toBe(false);
-    // No externref in this graph, so the drive never touched the host seam.
-    expect(trace.resolved).toEqual([]);
-  });
-
-  it("publishes an externref leaf into the transit BEFORE the aggregate that holds it", () => {
-    const trace = driveCaptured((f) =>
-      captureGraph(
-        f,
-        [[INTERN_KIND_EXTERNREF, LEAF_HANDLE, 0]],
-        [
-          {
-            kind: CAPTURE_KIND_STRUCT,
-            activation: 0,
-            typeOrdinal: 0,
-            layoutId: 1,
-            scalars: new Uint8Array(4),
-            edges: ({ leaves }) => [leaves[0]!, leaves[0]!],
-          },
-        ],
-      ),
-    );
-
-    const transitAt = trace.steps.findIndex(
-      (s) => s.op === DRIVE_OP_EXTERNREF_TRANSIT,
-    );
-    const allocAt = trace.steps.findIndex((s) => s.op === DRIVE_OP_ALLOC);
-    expect(transitAt, "the leaf is published").toBeGreaterThanOrEqual(0);
-    expect(allocAt, "the aggregate allocates").toBeGreaterThanOrEqual(0);
-    // R1 ROOTING ORDER: the leaf is in the transit before anything that could
-    // reference it is built -- the order the retired host PHASE A/B enforced.
-    expect(transitAt).toBeLessThan(allocAt);
-
-    // The drive resolved the captured handle EXACTLY once, through the one
-    // residual host seam.
-    expect(trace.resolved).toEqual([LEAF_HANDLE]);
-    expect(trace.threw).toBe(false);
-    // Both the leaf and the aggregate are live in the SAME table.
-    expect(trace.liveSlots.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("R1 GUARD: a resolved-but-lost externref transit slot TRAPS the drive", () => {
-    // The host answers null for the handle -- a reference it lost or never
-    // rooted. `any.convert_extern(null)` is a null anyref, so the publish
-    // stores null, the shim reads it back, and traps. It must never
-    // reconstruct a null leaf quietly.
-    const trace = driveCaptured(
-      (f) => captureGraph(f, [[INTERN_KIND_EXTERNREF, LEAF_HANDLE, 0]], []),
-      { resolveNull: true },
-    );
-
-    expect(trace.resolved, "the host was asked").toEqual([LEAF_HANDLE]);
-    expect(trace.threw, "and the drive trapped rather than continuing").toBe(true);
   });
 });

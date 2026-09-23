@@ -1,21 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  createForkModuleHostCapabilities,
-  type ForkExternrefResolver,
-} from "../src/fork-module-host-capabilities";
+import { createForkModuleHostCapabilities } from "../src/fork-module-host-capabilities";
 
 /**
  * The fork-module's HOST OBLIGATION, asserted end to end.
  *
- * `fork-module-host-capabilities.test.ts` is the M2 unit test of
- * `resolve_externref` against the real token cache. This file is the
- * complementary check: that the obligation as a WHOLE is complete and cannot
- * grow silently. It uses a structural stub resolver so it does not depend on
- * the broker, and it proves completeness the only way that cannot pass
- * vacuously -- by instantiating the real fork-module with these capabilities
- * plus placement and nothing else. A missing import is a `LinkError` naming it.
+ * That the obligation as a WHOLE is complete and cannot grow silently, proven
+ * the only way that cannot pass vacuously -- by instantiating the real
+ * fork-module with these capabilities plus placement and nothing else. A
+ * missing import is a `LinkError` naming it.
  *
  * It loads the artifact `crates/fork-module/build-wasm.sh` stages, by explicit
  * path. That is deliberate (master-plan H-9): the resolver prefers
@@ -36,25 +30,6 @@ const PAGE = 65536;
 const MODULE_BASE = 32 * 1024 * 1024;
 const STACK_TOP = MODULE_BASE + 16 * 1024 * 1024 + 1024 * 1024;
 const INITIAL_PAGES = Math.ceil((STACK_TOP + PAGE) / PAGE);
-
-/** A resolver that honours a fixed map and THROWS for anything else. */
-function stubResolver(known: Map<number, object> = new Map()): ForkExternrefResolver {
-  return {
-    materialize(handle: number): object {
-      const value = known.get(handle);
-      if (value === undefined) {
-        throw new RangeError(`no reference for handle ${handle}`);
-      }
-      return value;
-    },
-    encode(value: unknown): number | undefined {
-      for (const [handle, known_value] of known) {
-        if (known_value === value) return handle;
-      }
-      return undefined;
-    },
-  };
-}
 
 /** The three reference-typed tables `fork-module-instance` owns. */
 /**
@@ -184,23 +159,21 @@ function instantiate(env: Record<string, unknown>) {
 
 describe("fork-module host obligation", () => {
   it("names exactly the host FUNCTIONS, so the set cannot drift silently", () => {
-    const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
-    // FOUR, and each is argued where it is declared: two identity imports
-    // (`any` and `func` are disjoint hierarchies, and wasm cannot compare
-    // references in either), and the externref pair -- `resolve_externref`
-    // brings a handle back to life in a child, `__wpk_fork_host_externref_handle`
-    // says which handle names a live value so a parent's capture can record it.
+    const caps = createForkModuleHostCapabilities();
+    // TWO, and each is argued where it is declared: `any` and `func` are
+    // disjoint hierarchies, and wasm cannot compare references in either. The
+    // externref pair (`resolve_externref`, `__wpk_fork_host_externref_handle`)
+    // left in externref stage E2: a fork does not carry a raw host externref,
+    // so the module never names a host object or rebuilds one.
     expect(Object.keys(caps.imports).sort()).toEqual([
-      "__wpk_fork_host_externref_handle",
       "__wpk_fork_host_func_identity",
       "__wpk_fork_host_ref_identity",
-      "resolve_externref",
     ]);
   });
 
   describe("reference identity", () => {
     const identity = () =>
-      createForkModuleHostCapabilities({ tokens: stubResolver() }).imports
+      createForkModuleHostCapabilities().imports
         .__wpk_fork_host_ref_identity;
 
     it("is stable per reference and distinct across references", () => {
@@ -233,40 +206,13 @@ describe("fork-module host obligation", () => {
     });
 
     it("counts distinct references for capture diagnostics", () => {
-      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const caps = createForkModuleHostCapabilities();
       const id = caps.imports.__wpk_fork_host_ref_identity;
       const a = {};
       id(a);
       id(a);
       id({});
       expect(caps.distinctReferenceCount).toBe(2);
-    });
-  });
-
-  describe("resolve_externref", () => {
-    it("returns the identical object the registry materializes", () => {
-      const value = { live: true };
-      const caps = createForkModuleHostCapabilities({
-        tokens: stubResolver(new Map([[42, value]])),
-      });
-      expect(caps.imports.resolve_externref(42)).toBe(value);
-    });
-
-    it("propagates a truthful RangeError rather than a null sentinel", () => {
-      // A sentinel would let a replay continue with a reference it never
-      // actually restored.
-      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
-      expect(() => caps.imports.resolve_externref(9)).toThrow(RangeError);
-    });
-
-    it("advances resolvedCount once per resolve (proof-of-use)", () => {
-      const caps = createForkModuleHostCapabilities({
-        tokens: stubResolver(new Map([[1, {}], [2, {}]])),
-      });
-      expect(caps.resolvedCount).toBe(0);
-      caps.imports.resolve_externref(1);
-      caps.imports.resolve_externref(2);
-      expect(caps.resolvedCount).toBe(2);
     });
   });
 
@@ -279,7 +225,7 @@ describe("fork-module host obligation", () => {
     }
 
     it("these capabilities plus placement satisfy every import", () => {
-      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const caps = createForkModuleHostCapabilities();
       const instance = instantiate({ ...caps.imports, ...moduleTables() });
       // A module that instantiated but exported nothing would satisfy the
       // import check vacuously.
@@ -287,7 +233,7 @@ describe("fork-module host obligation", () => {
     });
 
     it("fails loudly when any one host import is withheld", () => {
-      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const caps = createForkModuleHostCapabilities();
       const full = { ...caps.imports, ...moduleTables() } as Record<string, unknown>;
       for (const name of Object.keys(full)) {
         const withheld = { ...full };
@@ -314,7 +260,7 @@ describe("fork-module host obligation", () => {
       // builds -- the census records that as owed. Its routing is gated in
       // `fork-module-inject`, which checks the emitted `activation * stride +
       // slot` arithmetic exhaustively.
-      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const caps = createForkModuleHostCapabilities();
       const instance = instantiate({ ...caps.imports, ...moduleTables() });
       const throwRecipe = instance.exports[
         "__wpk_fork_ref_exn_broker_throw_recipe"
@@ -351,7 +297,7 @@ describe("fork-module host obligation", () => {
       // implementation that RETURNED would trap one instruction later in the
       // guest's own frame with no errno set. Trapping here sets the errno
       // first, which is the whole reason to do it in the module.
-      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const caps = createForkModuleHostCapabilities();
       const instance = instantiate({ ...caps.imports, ...moduleTables() });
       const ingress = instance.exports[
         "__wpk_fork_ref_exn_ingress_throw"
@@ -367,42 +313,30 @@ describe("fork-module host obligation", () => {
       expect(lastErrno()).toBe(95);
     });
 
-    it("serves the guest's provenance hook, and serves it as an IDENTITY", () => {
-      // `__wpk_fork_ref_provenance_externref` used to be a host import. Its
-      // host body recorded a `WeakMap` nothing ever read, so what was left of
-      // it was `|value| value` -- and the injector emits that, because an
-      // externref cannot cross a Rust signature. Census section 191.
-      //
-      // IDENTITY IS THE WHOLE CONTRACT, and it is easy to miss how load-bearing
-      // that is. `fork-instrument`'s wrapper does not discard this call's
-      // result: `externref_provenance.rs` emits `local.get result; call
-      // provenance; local.set result`, so whatever comes back REPLACES the
-      // value the real host import produced, before the guest's own code ever
-      // sees it. A shim returning null here would substitute null into the
-      // guest's data flow at every externref production site.
-      //
-      // WHY THIS TEST AND NOT A FORK: no fixture in this suite reaches the
-      // shim. The pass rewrites DIRECT calls to externref-returning imports
-      // only; the gated-externref fixture mints through `call_indirect` (the
-      // residual gap `externref_provenance.rs` records in its own header) and
-      // the GC fixtures internalize a guest-allocated `anyref` with no host
-      // call to wrap. Perturbing the shim to return null therefore passed the
-      // whole fork suite. This asserts the contract where it actually lives.
-      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
-      const instance = instantiate({ ...caps.imports, ...moduleTables() });
-      const hook = instance.exports[
-        "__wpk_fork_ref_provenance_externref"
-      ] as (value: unknown) => unknown;
-      expect(typeof hook, "the module must export the guest's hook").toBe(
-        "function",
-      );
-      for (const value of [{ a: 1 }, "a string", 7, null, undefined]) {
-        expect(hook(value)).toBe(value);
+    it("imports no externref, and exports no host-externref surface", () => {
+      // Externref stage E2. A fork refuses a raw host externref inside the
+      // module (EOPNOTSUPP at capture), so nothing crosses the host boundary
+      // as an externref in either direction: no import takes or returns one
+      // for the module's own use, and the guest-facing decode and provenance
+      // hooks that carried host externrefs are gone.
+      const module = new WebAssembly.Module(readFileSync(wasmPath));
+      const imported = WebAssembly.Module.imports(module).map((i) => i.name);
+      const exported = WebAssembly.Module.exports(module).map((e) => e.name);
+      for (const name of [
+        "resolve_externref",
+        "__wpk_fork_host_externref_handle",
+      ]) {
+        expect(imported, `${name} must not be imported`).not.toContain(name);
       }
-      // A fresh object each time: `toBe` on a literal would also pass for an
-      // implementation that returned a cached value of the right shape.
-      const sentinel = Object.freeze({ sentinel: Symbol("provenance") });
-      expect(hook(sentinel)).toBe(sentinel);
+      for (const name of [
+        "fm_externref_handle",
+        "fm_captured_externref",
+        "fm_captured_externref_count",
+        "__wpk_fork_ref_decode_externref",
+        "__wpk_fork_ref_provenance_externref",
+      ]) {
+        expect(exported, `${name} must not be exported`).not.toContain(name);
+      }
     });
   });
 });
