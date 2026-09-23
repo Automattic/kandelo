@@ -84,6 +84,7 @@ import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
+import { readStreamedBody } from "../../../../../web-libs/kandelo-session/src/sized-download";
 import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
@@ -563,7 +564,7 @@ export async function createLiveHost(
     ? undefined
     : createProtectedCandidatePagesVfsPlacement(
       candidateEvidence.vfs,
-      async (source) => {
+      async (source, onProgress) => {
         if (source.pagesLoad === "lazy" && source.optionalImage !== undefined) {
           const resolved = await resolveOptionalDemoVfsUrl(
             source.optionalImage,
@@ -574,7 +575,7 @@ export async function createLiveHost(
             throw new Error("candidate Pages VFS resolver changed its protected URL");
           }
         }
-        return fetchProtectedCandidateVfs(source);
+        return fetchProtectedCandidateVfs(source, fetch, onProgress);
       },
     );
   const protectedProfile = candidateEvidence === undefined
@@ -1239,12 +1240,18 @@ async function bootProfile(
   assertCurrent();
 
   tick("service worker active and cross-origin isolated");
-  tick(`loading ${imageLabel(profile)}...`);
+  const vfsImageLabel = imageLabel(profile);
+  tick(`loading ${vfsImageLabel}...`);
+  const reportVfsImageProgress: VfsImageProgressReport = (report) => {
+    // A superseded boot must not keep driving the current boot screen.
+    if (!isCurrent()) return;
+    host.setBootProgress({ phase: "image", label: vfsImageLabel, ...report });
+  };
   const [kernelBytes, loadedVfs] = await Promise.all([
     fetch(kernelWasmUrl)
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
-    loadVfsImage(profile),
+    loadVfsImage(profile, reportVfsImageProgress),
   ]);
   assertCurrent();
 
@@ -1741,31 +1748,83 @@ interface LoadedVfsImage {
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
 }
 
-async function loadVfsImage(profile: LiveProfile): Promise<LoadedVfsImage> {
+/**
+ * Incremental state of the root image load, for the boot screen's progress
+ * bar. `totalBytes` is absent when no authenticated size is available.
+ */
+type VfsImageProgressReport = (report: {
+  loadedBytes: number;
+  totalBytes?: number;
+  status: "loading" | "complete" | "error";
+  error?: string;
+}) => void;
+
+/**
+ * Fetch the root image for `profile`, reporting byte progress as it lands.
+ *
+ * Each of the three sources knows its own size differently: a Pages product
+ * and a protected candidate both carry an authenticated decoded size, while a
+ * user-supplied `?vfs=` URL has none and falls back to `Content-Length` only
+ * when the response is identity-encoded.
+ */
+async function loadVfsImage(
+  profile: LiveProfile,
+  reportProgress: VfsImageProgressReport,
+): Promise<LoadedVfsImage> {
   if (profile.candidateEvidence !== undefined) {
     if (profile.candidateVfsPlacement === undefined) {
       throw new Error("candidate evidence VFS lacks its Pages placement boundary");
     }
-    return { imageBytes: await profile.candidateVfsPlacement.bytes() };
+    const off = profile.candidateVfsPlacement.subscribeProgress(reportProgress);
+    try {
+      return { imageBytes: await profile.candidateVfsPlacement.bytes() };
+    } finally {
+      off();
+    }
   }
   if (profile.vfsSource !== undefined && CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    const activation = await CANONICAL_PAGES_VFS_LOADER.activate(
-      profile.vfsSource.productId,
-    );
-    return {
-      imageBytes: activation.imageBytes.slice(0),
-      lazyAssets:
-        activation.lazyAssets === undefined
-          ? undefined
-          : Object.freeze({ ...activation.lazyAssets }),
-    };
+    const productId = profile.vfsSource.productId;
+    const off = CANONICAL_PAGES_VFS_LOADER.subscribeProgress((progress) => {
+      if (progress.id !== productId) return;
+      reportProgress(progress);
+    });
+    try {
+      const activation = await CANONICAL_PAGES_VFS_LOADER.activate(productId);
+      return {
+        imageBytes: activation.imageBytes.slice(0),
+        lazyAssets:
+          activation.lazyAssets === undefined
+            ? undefined
+            : Object.freeze({ ...activation.lazyAssets }),
+      };
+    } finally {
+      off();
+    }
   }
   const vfsUrl = await resolveProfileVfsUrl(profile);
-  return {
-    imageBytes: await fetch(vfsUrl)
-      .then(failOn(imageLabel(profile)))
-      .then((r) => r.arrayBuffer()),
-  };
+  const label = imageLabel(profile);
+  try {
+    const response = await fetch(vfsUrl).then(failOn(label));
+    const bytes = await readStreamedBody(
+      response,
+      label,
+      (loadedBytes, totalBytes) =>
+        reportProgress({ loadedBytes, totalBytes, status: "loading" }),
+    );
+    reportProgress({
+      loadedBytes: bytes.byteLength,
+      totalBytes: bytes.byteLength,
+      status: "complete",
+    });
+    return { imageBytes: bytes.buffer as ArrayBuffer };
+  } catch (error) {
+    reportProgress({
+      loadedBytes: 0,
+      status: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {

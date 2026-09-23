@@ -60,6 +60,45 @@ export async function readExactSizedBody(
 }
 
 /**
+ * Read a response whose size is not declared by any authenticated manifest,
+ * reporting progress against `Content-Length` when that header is usable.
+ *
+ * This is the lenient peer of {@link readExactSizedBody}, for user-supplied
+ * `?vfs=` images. It deliberately does not enforce the advertised length: a
+ * header is not an authenticated identity, and failing a boot that previously
+ * worked because a server mis-reports its own body would be a regression.
+ */
+export async function readStreamedBody(
+  response: Response,
+  label: string,
+  onProgress?: (loadedBytes: number, totalBytes: number | undefined) => void,
+): Promise<Uint8Array> {
+  if (response.body === null) throw new Error(`${label} has no response body`);
+  const totalBytes = identityEncodedContentLength(response);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      chunks.push(value);
+      onProgress?.(length, totalBytes);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+/**
  * The advertised body length, but only when the response is identity-encoded.
  *
  * `Content-Length` describes the transferred representation. A CDN that

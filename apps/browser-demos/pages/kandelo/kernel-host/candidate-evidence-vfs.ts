@@ -4,6 +4,10 @@ import {
   type VfsMountIntentV1,
 } from "../../../../../host/src/vfs/product-mount-contract";
 import type { BootDescriptor } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  readExactSizedBody,
+  type SizedDownloadProgress,
+} from "../../../../../web-libs/kandelo-session/src/sized-download";
 
 export type CandidateOptionalDemoVfsImage = "node" | "wordpress" | "lamp";
 
@@ -458,10 +462,28 @@ export async function resolveCandidateOrDefaultOptionalVfsUrl(
   return candidate.url;
 }
 
+/**
+ * Progress of the candidate image load. Scalars only — the main thread must
+ * not retain VFS bytes.
+ */
+export interface CandidateVfsProgress {
+  loadedBytes: number;
+  totalBytes: number;
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
+
 export interface ProtectedCandidatePagesVfsPlacement {
   readonly pagesLoad: "eager" | "lazy" | null;
   activate(): Promise<ArrayBuffer>;
   bytes(): Promise<ArrayBuffer>;
+  /** Latest image-load record, if one has been observed. */
+  progress(): CandidateVfsProgress | undefined;
+  /**
+   * Observe image-load progress. An eager candidate starts loading at
+   * construction, so the retained record is replayed to a late subscriber.
+   */
+  subscribeProgress(cb: (progress: CandidateVfsProgress) => void): () => void;
 }
 
 export function installProtectedCandidatePagesActivation(
@@ -492,13 +514,42 @@ export function createProtectedCandidatePagesVfsPlacement(
   source: ProtectedCandidateVfsSource,
   load: (
     source: ProtectedCandidateVfsSource,
-  ) => Promise<ArrayBuffer> = fetchProtectedCandidateVfs,
+    onProgress?: SizedDownloadProgress,
+  ) => Promise<ArrayBuffer> = (checked, onProgress) =>
+    fetchProtectedCandidateVfs(checked, fetch, onProgress),
 ): ProtectedCandidatePagesVfsPlacement {
   const checked = validateCandidateVfs(source);
   let activated = checked.pagesLoad === null;
   let loaded: Promise<ArrayBuffer> | undefined;
+  let progress: CandidateVfsProgress | undefined;
+  const progressListeners = new Set<(p: CandidateVfsProgress) => void>();
+  const publishProgress = (next: CandidateVfsProgress): void => {
+    progress = next;
+    for (const listener of progressListeners) listener(next);
+  };
   const start = (): Promise<ArrayBuffer> => {
-    loaded ??= load(checked);
+    // WHY: settle progress inside the chain so a caller awaiting activate()
+    // observes the terminal record rather than racing a detached handler.
+    loaded ??= load(checked, (loadedBytes, totalBytes) =>
+      publishProgress({ loadedBytes, totalBytes, status: "loading" })).then(
+        (bytes) => {
+          publishProgress({
+            loadedBytes: checked.bytes,
+            totalBytes: checked.bytes,
+            status: "complete",
+          });
+          return bytes;
+        },
+        (error: unknown) => {
+          publishProgress({
+            loadedBytes: progress?.loadedBytes ?? 0,
+            totalBytes: checked.bytes,
+            status: "error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        },
+      );
     return loaded;
   };
 
@@ -527,12 +578,21 @@ export function createProtectedCandidatePagesVfsPlacement(
       }
       return start();
     },
+    progress(): CandidateVfsProgress | undefined {
+      return progress === undefined ? undefined : { ...progress };
+    },
+    subscribeProgress(cb): () => void {
+      if (progress !== undefined) cb({ ...progress });
+      progressListeners.add(cb);
+      return () => progressListeners.delete(cb);
+    },
   };
 }
 
 export async function fetchProtectedCandidateVfs(
   source: ProtectedCandidateVfsSource,
   fetcher: typeof fetch = fetch,
+  onProgress?: SizedDownloadProgress,
 ): Promise<ArrayBuffer> {
   const checked = validateCandidateVfs(source);
   const response = await fetcher(checked.url, {
@@ -543,10 +603,16 @@ export async function fetchProtectedCandidateVfs(
   if (!response.ok) {
     throw new Error(`candidate VFS fetch failed with status ${response.status}`);
   }
-  const body = await response.arrayBuffer();
-  if (body.byteLength !== checked.bytes) {
-    throw new Error("candidate VFS byte count differs from its protected identity");
-  }
+  // WHY: read incrementally so the boot screen can show real progress. The
+  // reader is the length authority — it rejects an over- or under-length body
+  // against the protected identity before the digest check below.
+  const bytes = await readExactSizedBody(
+    response,
+    checked.bytes,
+    "candidate VFS",
+    onProgress,
+  );
+  const body = bytes.buffer as ArrayBuffer;
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", body));
   const actual = Array.from(digest, (value) => value.toString(16).padStart(2, "0"))
     .join("");

@@ -151,7 +151,10 @@ export function createPagesVfsProductLoaderForBase(
       );
     const prior = activations.get(id);
     if (prior !== undefined) return prior;
-    const pending = (entry.asset_group === undefined
+    // Bind the group to a local so its narrowing survives into the async
+    // callback below; TypeScript drops property narrowing across that boundary.
+    const assetGroup = entry.asset_group;
+    const pending = (assetGroup === undefined
       ? fetchAndValidate(
           entry.path,
           entry.bytes,
@@ -178,7 +181,7 @@ export function createPagesVfsProductLoaderForBase(
               `Pages VFS product ${id} differs from its group image identity`,
             );
           }
-          const manifestUrl = absoluteUrl(entry.asset_group.path);
+          const manifestUrl = absoluteUrl(assetGroup.path);
           const imageUrl = resolveGroupedAssetUrl(
             manifestUrl,
             product.image.path,

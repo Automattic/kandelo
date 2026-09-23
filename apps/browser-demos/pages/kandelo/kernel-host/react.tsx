@@ -10,6 +10,7 @@ import * as React from "react";
 import type {
   KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
   SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent, LazyDownloadSummary,
+  BootProgress,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
 import type { DemoGuideConfig, DemoIngestConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
@@ -55,6 +56,24 @@ export function useDmesg(): DmesgLine[] {
     });
   }, [host]);
   return lines;
+}
+
+/**
+ * Boot-time VFS image progress for the boot screen.
+ *
+ * Seeds from the getter because the boot may already be under way by the time
+ * this component mounts — an eager image starts loading at module load.
+ */
+export function useBootProgress(): BootProgress | null {
+  const host = useKernelHost();
+  const [progress, setProgress] = React.useState<BootProgress | null>(() =>
+    host.getBootProgress()
+  );
+  React.useEffect(() => {
+    setProgress(host.getBootProgress());
+    return host.subscribeBootProgress(setProgress);
+  }, [host]);
+  return progress;
 }
 
 export function useLazyDownloads(): LazyDownloadEvent[] {

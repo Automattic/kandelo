@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   identityEncodedContentLength,
   readExactSizedBody,
+  readStreamedBody,
 } from "../src/sized-download";
 
 const encoder = new TextEncoder();
@@ -116,5 +117,62 @@ describe("identityEncodedContentLength", () => {
         new Response(null, { headers: { "content-length": "not-a-number" } }),
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("readStreamedBody", () => {
+  it("returns the whole body when no size is declared", async () => {
+    const bytes = await readStreamedBody(
+      chunkedResponse([encoder.encode("ab"), encoder.encode("cd")]),
+      "image",
+    );
+
+    expect(new TextDecoder().decode(bytes)).toBe("abcd");
+  });
+
+  it("reports progress against an identity-encoded content length", async () => {
+    const seen: Array<[number, number | undefined]> = [];
+
+    await readStreamedBody(
+      chunkedResponse([encoder.encode("ab"), encoder.encode("cd")], {
+        "content-length": "4",
+      }),
+      "image",
+      (loadedBytes, totalBytes) => seen.push([loadedBytes, totalBytes]),
+    );
+
+    expect(seen).toEqual([[2, 4], [4, 4]]);
+  });
+
+  it("reports an indeterminate total for a compressed response", async () => {
+    // WHY: the header describes compressed transfer bytes; the reader sees
+    // decoded bytes. A determinate bar built on it would overshoot 100%.
+    const seen: Array<number | undefined> = [];
+
+    await readStreamedBody(
+      chunkedResponse([encoder.encode("abcd")], {
+        "content-encoding": "gzip",
+        "content-length": "2",
+      }),
+      "image",
+      (_loadedBytes, totalBytes) => seen.push(totalBytes),
+    );
+
+    expect(seen).toEqual([undefined]);
+  });
+
+  it("never allocates the result in shared memory", async () => {
+    const bytes = await readStreamedBody(
+      chunkedResponse([encoder.encode("abcd")]),
+      "image",
+    );
+
+    expect(bytes.buffer).not.toBeInstanceOf(SharedArrayBuffer);
+  });
+
+  it("rejects a response with no body", async () => {
+    await expect(
+      readStreamedBody(new Response(null, { status: 204 }), "image"),
+    ).rejects.toThrow(/no response body/i);
   });
 });
