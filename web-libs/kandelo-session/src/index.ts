@@ -4,6 +4,7 @@ export * from "./kernel-host";
 export type { TerminalProgram, TerminalSessionPolicy } from "./kernel-host";
 export * from "./lazy-download";
 export * from "./demo-config";
+export * from "./gallery-roster";
 export * from "./demo-config-vfs";
 export * from "./dinit-boot-targets";
 export * from "./demo-guides";
