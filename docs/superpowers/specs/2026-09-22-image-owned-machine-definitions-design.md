@@ -60,7 +60,8 @@ them behind image metadata that falls back to them.
   Auto-run scripts and first-party definitions have different trust
   (see "Trust boundary"), and `#k1=` links remain a user-authoring
   feature layered on top of this one.
-- Making `caps.network` enforcing (see "Known-inert capability flag").
+- Making a network capability enforcing (see "Known-inert capability
+  flag", and its 2026-09-23 resolution).
 - Publishing one image per demo. Images stay multi-profile; a profile
   selector remains, but the app no longer knows any profile names.
 
@@ -199,15 +200,18 @@ and `ingest`:
   "identity": { "title": "WordPress MariaDB",
                 "summary": "WordPress on nginx + PHP-FPM with MariaDB.",
                 "accent": "#5f8f73", "glyph": "wp+",
-                "base": "kandelo:shell@abi<N>",
                 "packages": ["dinit@local", "nginx@local", "..."] },
-  "runtime":  { "features": [], "network": true,
+  "runtime":  { "features": [],
                 "requests": { "memoryPages": 16384, "maxWorkers": 24 } },
   "init":     { "target": "nginx" },
   "web":      { "requiredPorts": [8080, 9000], "probeHttp": true,
                 "probePath": "/..." }
 }
 ```
+
+Every block above belongs to a profile: `version`, `defaultProfile`, and
+`profiles` are the only top-level keys, and a machine block declared at the
+top level is rejected. See "Schema revisions (2026-09-23)".
 
 ### demo.json selects; the image configures
 
@@ -225,7 +229,7 @@ start:
   wordpress-* family) — they happen to share one launcher,
   `dinit --container <target>`, and differ only in which target and
   which image.
-- **`{ program, args?, cwd? }`** — exec a program from the image
+- **`{ program, args?, cwd?, uid, gid }`** — exec a program from the image
   directly as pid 1, no service manager involved. `program` must be an
   absolute, normalized path (validated the same way as
   `ingest.targetPath`), and it is validated against the image the same
@@ -243,8 +247,16 @@ start:
   (`images/vfs/scripts/build-ruby-todo-vfs-image.ts`) and boots its
   Ruby server directly as init. Forcing that image to grow a dinit tree
   and a one-service target just to satisfy a "name a target" schema
-  shape would be the tail wagging the dog. The two shapes are mutually
-  exclusive — declaring both in one `init` block is a validation error.
+  shape would be the tail wagging the dog.
+
+  `uid` and `gid` are required, not defaulted — see "Schema revisions
+  (2026-09-23)".
+- **`{ shellCommand }`** — a command line run in the machine's login shell
+  after boot, added in the 2026-09-23 revisions as the third arm of this
+  union (it used to live in `presentation.autoCommand`).
+
+  The three shapes are mutually exclusive — declaring two in one `init`
+  block is a validation error.
 
 This is not a simplification for its own sake — the duplication is
 already in the tree. `addDinitInit` bakes `/sbin/dinit`,
@@ -410,9 +422,92 @@ but becomes a trap once third-party images declare it, because it reads
 like a sandbox control. **Follow-up (not this work): make `caps.network`
 actually gate the guest socket path, or remove it.**
 
+**Resolved 2026-09-23 by removal.** `runtime.network` is gone from the
+schema, and `descriptorForMachine` emits neither `caps` nor the
+`tcp-bridge` feature. Documenting an inert field as inert still leaves it
+in every third-party image's vocabulary; deleting it means the first image
+to need a real network capability gets a field that gates something.
+Whether the guest socket path should be gated remains open, and remains
+out of scope here.
+
+## Schema revisions (2026-09-23)
+
+A review of the landed schema removed four fields, moved one, and tightened
+one. The project is pre-release, so these are breaking changes to the
+schema made outright rather than deprecated.
+
+1. **`js-workers` removed from `runtime.features`.** It had no consumer:
+   its only appearances were the type, the validator allow-list, one test,
+   and `node-demo.json` declaring it. It used to render as a capability
+   badge in a System Config pane that no longer exists. `framebuffer`,
+   `kms`, and `evdev-input` stay — each changes what the host does.
+2. **`runtime.network` removed.** See "Known-inert capability flag".
+3. **`presentation.autoCommand` moved to `init.shellCommand`.** All three
+   "what runs here" forms — a dinit target, a pid-1 program, a login-shell
+   command — are now arms of one union, so a machine cannot say two
+   different things at once by construction. The cross-block validation
+   rule that used to enforce this (and the resolved-pair rule that had to
+   compensate for top-level fallback) are deleted with it.
+4. **`init.program` requires `uid` and `gid`.** Not optional with a
+   default: 0 would hand root to any third-party image that omitted them,
+   and 1000 would invent an account convention the image may not share.
+   Requiring them puts the privilege in the reviewed file. `ruby-todo` —
+   the only user of this shape — moved from root to uid/gid 1000, matching
+   `images/vfs/products/browser-ruby-todo.toml`'s `[boot]`; the Roda app
+   needs no root (its SQLite database defaults into `/tmp`, mode 1777, it
+   binds the unprivileged port 8080, and `/var/lib/todo` is world-readable).
+   The host derives pid 1's `HOME`/`USER`/`LOGNAME` from the declared uid
+   for the accounts it knows by construction (0 and the `maker` demo
+   account), and states none for any other uid rather than guessing.
+5. **`identity.base` removed.** Nothing validated the declared string, and
+   its two consumers already fell back to `kandelo:shell@abi${ABI_VERSION}`
+   — so the app now simply computes it. Real ABI compatibility is enforced
+   by the strict `__abi_version` check on binaries, and ten tracked files
+   no longer have to be edited on every ABI bump. The tracked-parity test's
+   ABI assertion was removed rather than left with no subject.
+6. **The schema is profile-only.** Every profile field could also be
+   declared at the top level, with each `resolveDemoX(config, id)` falling
+   back to `config.X`. No tracked file used it, it doubled the lookup
+   surface, and independent per-block fallback was the sole cause of a real
+   bug (a profile's `init` resolving alongside a top-level
+   `presentation.autoCommand`, which a same-record check cannot see).
+   `version`, `defaultProfile`, and `profiles` stay at the top level;
+   anything else there is rejected by name. The near-miss key checker
+   (`scripts/check-image-demo-config.ts`) scans one shape instead of two.
+
+## Future work: a generic web form action
+
+`DemoActionKind` includes `web.wordpressLogin`, consumed at
+`apps/browser-demos/pages/kandelo/views/MachineView.tsx` via
+`preview.loginToWordPress(...)` and declared four times across
+`wordpress-demo.json` and `lamp-demo.json`. It is one application's login
+flow enshrined in a generic schema: the host knows WordPress's form field
+names and submit button, so no other image with a login form can express
+itself here.
+
+The login feature stays. The replacement is a generic `web.formFill`-style
+action whose payload carries what the form needs and nothing
+WordPress-specific:
+
+- the form's URL (resolved against the machine's web preview origin, the
+  same way `web.probePath` already is),
+- the field values to fill, as selector/name → value,
+- the submit selector.
+
+That data is legitimately image-owned: an application knows its own login
+form, and a third-party image gets the same capability WordPress has
+instead of a kind named after someone else's product. The host contributes
+only the mechanics — focus the preview, fill, submit — with no knowledge of
+which application it is driving.
+
+Not implemented here. Until it lands, `web.wordpressLogin` remains the one
+application-specific action kind in the schema, and the comment at the
+`DemoActionKind` union in `web-libs/kandelo-session/src/demo-config.ts`
+says so and points at this section.
+
 ## Input attachment
 
-`sdl2` and `evdev` cannot use `autoCommand` today because
+`sdl2` and `evdev` cannot use a plain shell command today because
 `kernel.attachInputSource(...)` must happen before the program starts
 polling `/dev/input/event{0,1}` (`live-setup.ts:1711`, `:1780`). This
 becomes a declared boot step rather than a host special case.
@@ -427,9 +522,10 @@ selector:
 - `evdev-input` alone → pointer from the window, capture scoped to the
   stage.
 
-Attach happens before `autoCommand`, as a defined step. This collapses
-the `framebufferTest → sdl2 → espeak → evdev → runScript → autoCommand`
-else-if ladder into: attach input if declared, then run the command.
+Attach happens before the machine's command, as a defined step. This
+collapses the `framebufferTest → sdl2 → espeak → evdev → runScript →
+autoCommand` else-if ladder into: attach input if declared, then run the
+command.
 
 ### Display dimensions
 
@@ -449,7 +545,7 @@ deleted.
 ## Precedence
 
 When a `#k1=` link carries `runScript` and the image declares
-`autoCommand`, the link's script wins — matching today's ladder — but
+`init.shellCommand`, the link's script wins — matching today's ladder — but
 the host logs a visible line ("boot-link script replaces the machine's
 configured command") rather than silently dropping the image's command.
 

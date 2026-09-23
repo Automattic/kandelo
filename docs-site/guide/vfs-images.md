@@ -153,9 +153,9 @@ Images consumed by the Kandelo UI can include:
 ```
 
 This file lets the image declare presentation preferences, guide actions,
-companion HTML, assets, automatic commands, an optional fixed-path file
-ingest, and whether the demo wants an on-screen touch control overlay on
-coarse-pointer devices (`presentation.touchControls`).
+companion HTML, assets, what the machine runs (`init`), an optional
+fixed-path file ingest, and whether the demo wants an on-screen touch
+control overlay on coarse-pointer devices (`presentation.touchControls`).
 
 The file is not generated at build time. Commit the JSON next to the
 package that owns the image, list it in `TRACKED_DEMO_CONFIG_SOURCES`
@@ -215,16 +215,24 @@ bytes you review are the bytes that ship. The tracked file looks like this:
 }
 ```
 
+Every block below belongs to a profile. Only `version`, `defaultProfile`,
+and `profiles` may appear at the top level; a machine block declared there
+is rejected.
+
 A profile may also declare:
 
 - `identity` — `title`, `summary`, `accent` (`#rrggbb`), `glyph` (1–4
-  characters), and optionally `base` and `packages`.
-- `runtime` — `features` (`framebuffer`, `kms`, `evdev-input`,
-  `js-workers`), a descriptive `network` flag, and `requests`
-  (`memoryPages`, `maxWorkers`), which the host clamps to its own policy.
-- `init` — `target`, a bare dinit service name matching `/etc/dinit.d/<name>`.
-  A profile cannot declare both `init.target` and
-  `presentation.autoCommand`.
+  characters), and optionally `packages`.
+- `runtime` — `features` (`framebuffer`, `kms`, `evdev-input`) and
+  `requests` (`memoryPages`, `maxWorkers`), which the host clamps to its
+  own policy.
+- `init` — what this machine runs, in exactly one of three shapes:
+  `{ "target": "<dinit service>" }` for a bare service name matching
+  `/etc/dinit.d/<name>`; `{ "program", "args", "cwd"?, "uid", "gid" }` to
+  exec a program in the image directly as pid 1 (`uid` and `gid` are
+  required, so the privilege pid 1 gets is stated, not defaulted); or
+  `{ "shellCommand": "..." }` for a command run in the machine's login
+  shell after boot.
 - `web` — `requiredPorts`, `probeHttp` (defaults to true), and an optional
   plain absolute `probePath`.
 - `display` — `minWidth`/`minHeight`, the smallest usable surface.

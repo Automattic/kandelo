@@ -776,8 +776,8 @@ before execution, and then run from the initial interactive shell — `bash`
 when the image ships it, `sh` otherwise. The file is left writable so the
 visitor can experiment: edit it and re-run it after boot. The script's
 source, the invocation, and the script's output are all visible in the
-terminal, and the script takes the image `autoCommand`'s place in the
-launch sequence. Navigating to a different machine from the gallery drops
+terminal, and the script takes the image's own `init.shellCommand`'s place
+in the launch sequence. Navigating to a different machine from the gallery drops
 the fragment.
 
 Links built before boot inputs were folded in could carry a top-level
@@ -836,33 +836,50 @@ byte-compares each single-source image's baked copy against its tracked
 source. Images without
 this file still boot with Kandelo's generic presentation defaults, but the
 Kandelo app does not carry demo-specific presentation fallbacks.
-Any extra files needed by an image-declared `autoCommand` can be declared in
-`assets`; the loader stages those paths generically and hash-verifies them when
+Any extra files needed by an image-declared `init.shellCommand` can be
+declared in `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
 
-Alongside `presentation`, `assets`, `guide`, and `ingest`, a profile (or the
-top level, as a fallback for every profile) may declare these blocks. They
-are validated today and carried in the image; the browser app does not read
-them yet, and the cutover that makes it read them is separate work.
+The schema is PROFILE-ONLY. `version`, `defaultProfile`, and `profiles` are
+the only top-level keys; every machine block below belongs to a
+`profiles.<id>` entry, and declaring one at the top level is a validation
+error naming it. There is no top-level fallback for a profile that omits a
+block — a machine field is read from the selected profile or from nowhere.
+
+Alongside `presentation`, `assets`, `guide`, and `ingest`, a profile may
+declare these blocks.
 
 - `identity` — what a listing shows for this profile: `title`, `summary`,
-  `accent` (`#rrggbb`), `glyph` (1–4 characters), and optionally `base` (the
-  base image reference) and `packages` (a list of package specs, at most 64).
+  `accent` (`#rrggbb`), `glyph` (1–4 characters), and optionally `packages`
+  (a list of package specs, at most 64). There is no `base` field: the app
+  computes `kandelo:shell@abi<N>` from the ABI it was built with, and real
+  ABI compatibility is enforced by the `__abi_version` check on binaries.
 - `runtime` — what the machine needs: `features` (any of `framebuffer`,
-  `kms`, `evdev-input`, `js-workers`), `network` (descriptive only; nothing
-  gates a socket syscall on it today), and `requests`
-  (`memoryPages`, `maxWorkers`) which the host clamps to its own policy.
-- `init` — `target`, a bare dinit service name matching `/etc/dinit.d/<name>`.
-  It selects among init configurations the image already carries; it is not a
-  command vector. A profile cannot declare both `init.target` and
-  `presentation.autoCommand`, at either level, because both answer "what does
-  this machine run".
+  `kms`, `evdev-input`) and `requests` (`memoryPages`, `maxWorkers`) which
+  the host clamps to its own policy. There is no `network` flag: it gated no
+  socket syscall, and a field that reads like a sandbox control without
+  being one is a trap for third-party images.
+- `init` — what this machine runs. Exactly one of three mutually exclusive
+  shapes, so the exclusivity is structural rather than a cross-block rule:
+  - `{ "target": "<name>" }` — a bare dinit service name matching
+    `/etc/dinit.d/<name>`. It selects among init configurations the image
+    already carries; it is not a command vector.
+  - `{ "program", "args", "cwd"?, "uid", "gid" }` — exec a program from the
+    image directly as pid 1, for an image that ships no service manager.
+    `program` must be an absolute normalized path inside the image. `uid`
+    and `gid` are REQUIRED non-negative integers: defaulting to 0 would hand
+    root to any image that omitted them, and defaulting to 1000 would invent
+    an account convention an image may not share.
+  - `{ "shellCommand": "..." }` — a command line (at most 4096 characters)
+    run in the machine's login shell after boot. This is the shape for a
+    machine that is one program over an ordinary shell, such as fbDOOM or
+    the KMS fluid sim; exiting the program returns to that shell.
 - `web` — readiness signalling for the web pane: `requiredPorts` (non-empty,
   at most 64), `probeHttp` (defaults to true), and an optional `probePath`
   that must be a plain absolute path.
 - `display` — `minWidth`/`minHeight`, the smallest surface the machine
   expects to be usable at. A floor the machine states, not a size it imposes.
-- `defaultProfile` (top level only) — which profile a bare `?vfs=` URL boots.
+- `defaultProfile` (top level) — which profile a bare `?vfs=` URL boots.
   An image with exactly one profile needs no declaration; an image with
   several must name one.
 
@@ -916,8 +933,8 @@ shared memory at `/dev/shm`; image acceptance should exercise devices such as
 `/dev/null` only after those runtime mounts exist.
 
 KMS demos use the same metadata path. A profile can set
-`runningPrimary` to include `"kms"` and provide an `autoCommand` such as
-`/usr/local/bin/modeset`; the VFS image must contain that executable. The
+`runningPrimary` to include `"kms"` and declare an `init.shellCommand` such
+as `/usr/local/bin/modeset`; the VFS image must contain that executable. The
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
