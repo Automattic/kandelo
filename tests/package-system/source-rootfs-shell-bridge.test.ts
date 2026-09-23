@@ -28,7 +28,9 @@ import {
 import { SHELL_LAZY_BINARY_SPECS } from "../../images/vfs/lib/init/shell-binaries";
 import {
   NCURSES_TERMINFO_RUNTIME_FILE,
+  registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
+  SHELL_PROFILE_SCRIPT_PATHS,
   type ShellLazyArchiveResolver,
 } from "../../images/vfs/scripts/shell-lazy-archives";
 import {
@@ -458,6 +460,45 @@ describe("canonical source-rootfs shell", () => {
         fixture.label,
       ).toThrow(fixture.error);
     }
+  });
+
+  // WHY THIS ASSERTS AGAINST A BUILT IMAGE: the maker account's interactive
+  // identity (`/etc/profile.d/00-kandelo-shell.sh`) once shipped absent from
+  // this product for weeks while a unit test calling its registrar directly
+  // stayed green — the registrar was simply never reached by THIS builder, so
+  // every shell-family machine showed `-bash-5.2$` instead of `kandelo$`. A
+  // test that exercises a builder helper cannot catch that class of bug; only
+  // reading the bytes the product actually ships can.
+  //
+  // The expectation is derived from `registerShellProfileScripts`, not from a
+  // hand-written list, so a script added there is required here automatically.
+  it("ships every /etc/profile.d script in the built image", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const image = await buildSourceRootfsShellImage({
+      ...paths,
+      outFile: join(root, "profile-d.vfs.zst"),
+      sourceDateEpoch: "0",
+    });
+    const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
+
+    const expectedFs = MemoryFileSystem.create(new SharedArrayBuffer(MiB));
+    registerShellProfileScripts(expectedFs);
+    expect(SHELL_PROFILE_SCRIPT_PATHS).toContain(
+      "/etc/profile.d/00-kandelo-shell.sh",
+    );
+    for (const path of SHELL_PROFILE_SCRIPT_PATHS) {
+      expect(text(readVfsFile(fs, path)), path).toBe(
+        text(readVfsFile(expectedFs, path)),
+      );
+    }
+
+    // Name the one value a user sees, so a rewrite that kept the file but
+    // dropped the prompt still fails here.
+    expect(
+      text(readVfsFile(fs, "/etc/profile.d/00-kandelo-shell.sh")),
+    ).toContain("export PS1='kandelo$ '");
   });
 
   it("preserves ABI, capacity, and lazy identities while adding exact image-owned files", async () => {

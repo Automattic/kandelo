@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { registerDemoShellProfile } from "../../images/vfs/scripts/shell-lazy-archives";
+// Register through the same entry point both image builders call, so this
+// suite exercises the set the images actually ship rather than one helper
+// inside it. Presence in a BUILT image is guarded separately, by
+// tests/package-system/source-rootfs-shell-bridge.test.ts.
+import { registerShellProfileScripts } from "../../images/vfs/scripts/shell-lazy-archives";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
@@ -26,7 +30,7 @@ describe.skipIf(!SHELL_WASM)("Demo shell identity profile", () => {
   it("sets the maker interactive shell identity after login", async () => {
     const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
     ensureDirRecursive(rootfs, "/home/maker");
-    registerDemoShellProfile(rootfs);
+    registerShellProfileScripts(rootfs);
 
     const result = await runCentralizedProgram({
       programPath: SHELL_WASM!,
@@ -71,7 +75,7 @@ printf '%s\\n' \
   it("does nothing for a non-maker HOME", async () => {
     const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
     ensureDirRecursive(rootfs, "/root");
-    registerDemoShellProfile(rootfs);
+    registerShellProfileScripts(rootfs);
 
     const result = await runCentralizedProgram({
       programPath: SHELL_WASM!,

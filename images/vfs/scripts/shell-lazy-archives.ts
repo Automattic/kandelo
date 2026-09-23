@@ -103,6 +103,45 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
+/**
+ * Every `/etc/profile.d` script the shell image ships, in one call.
+ *
+ * WHY THIS EXISTS AS A SINGLE ENTRY POINT: two builders produce shell-family
+ * images — `shell-vfs-build.ts` (the layered service-demo base) and
+ * `source-rootfs-shell-overlay.ts` (the `browser-main-shell` product the
+ * browser actually boots). When they each listed the individual
+ * `register*ShellProfile` calls, adding one script to the set updated only
+ * the builder the author happened to be editing: `00-kandelo-shell.sh` was
+ * added to the first and shipped absent from the second, so every
+ * shell-family machine lost the maker account's prompt, history file, locale,
+ * terminal type, and TLS trust anchors. Adding a script here reaches both
+ * images by construction; there is no second list to keep in step.
+ */
+export function registerShellProfileScripts(fs: MemoryFileSystem): void {
+  for (const script of SHELL_PROFILE_SCRIPTS) script.register(fs);
+}
+
+/**
+ * The one list. Each entry pairs the guest path with the registrar that
+ * writes it, so "what the images ship" and "what a test may assert" are the
+ * same declaration rather than two that can disagree.
+ */
+const SHELL_PROFILE_SCRIPTS = [
+  {
+    path: "/etc/profile.d/00-kandelo-shell.sh",
+    register: registerDemoShellProfile,
+  },
+  { path: "/etc/profile.d/python.sh", register: registerPythonShellProfile },
+  { path: "/etc/profile.d/man.sh", register: registerManShellProfile },
+] as const satisfies ReadonlyArray<{
+  path: string;
+  register: (fs: MemoryFileSystem) => void;
+}>;
+
+/** Guest paths of every script `registerShellProfileScripts` writes. */
+export const SHELL_PROFILE_SCRIPT_PATHS: readonly string[] =
+  SHELL_PROFILE_SCRIPTS.map((script) => script.path);
+
 // The maker account's interactive identity: prompt, history file, locale,
 // terminal type, and the TLS trust anchors curl/wget/etc. expect at their
 // well-known paths. `/usr/bin/login -p -f maker` (the image's
