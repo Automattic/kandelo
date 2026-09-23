@@ -65,4 +65,35 @@ describe("tracked demo-config checker", () => {
       "packages/registry/node/node-demo.json",
     ]);
   });
+
+  // Review finding: the comment stripper is not string-literal aware, so a
+  // smarter stripper would only close one extraction failure mode. Asserting
+  // the SHAPE of every extracted value closes the whole class: anything the
+  // regex picked up that is not a repository-relative path fails loudly
+  // instead of being checked as if it were a tracked source.
+  it("rejects an extracted value that is not a repo-relative path", () => {
+    // A `//` INSIDE a quoted path is the string-literal-awareness gap: the
+    // line-comment stripper truncates that entry mid-string, so the next
+    // line's opening quote closes it and the extracted "path" spans a
+    // newline. The shape assertion catches that; a smarter stripper would
+    // only have closed this one case.
+    const fixture = `
+      export const TRACKED_DEMO_CONFIG_SOURCES = [
+        "packages/registry/node//node-demo.json",
+        "packages/registry/nginx/nginx-demo.json",
+      ] as const;
+    `;
+    expect(() => parseTrackedSourcePaths(fixture))
+      .toThrow(/not a repository-relative path/);
+  });
+
+  it("rejects an absolute extracted path", () => {
+    const fixture = `
+      export const TRACKED_DEMO_CONFIG_SOURCES = [
+        "/etc/kandelo/demo.json",
+      ] as const;
+    `;
+    expect(() => parseTrackedSourcePaths(fixture))
+      .toThrow(/not a repository-relative path/);
+  });
 });

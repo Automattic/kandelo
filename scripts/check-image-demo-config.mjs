@@ -1,11 +1,28 @@
 #!/usr/bin/env node
 /**
- * Assert that every tracked demo-config source is valid, and that any image
- * already built from one carries those exact bytes at /etc/kandelo/demo.json.
+ * Assert that every tracked demo-config source exists, parses, declares
+ * version 1, and carries no block key that is a near miss for a known one.
  *
- * The tracked file is the authority; the baked copy is a verbatim artifact.
- * Images that have not been built are skipped, not failed: this repository
- * builds artifacts on demand and a fresh worktree has none.
+ * WHAT THIS DOES NOT DO: it does not open any built image, and it does not
+ * compare the baked /etc/kandelo/demo.json bytes against the tracked source.
+ * Reading a file out of a `.vfs.zst` needs MemoryFileSystem.fromImage from
+ * host/src/vfs, which is TypeScript; this checker is a plain `.mjs` that
+ * `run.sh` invokes with bare `node`, so it cannot import it. Re-deriving the
+ * image's shared-buffer layout here would be a second, silently divergent
+ * copy of a platform format. The tracked-source-to-image mapping does not
+ * exist in a machine-readable form either: it lives in each
+ * `writeTrackedDemoConfig(...)` call site.
+ *
+ * Baked-equals-tracked therefore remains UNIMPLEMENTED. It is recorded as a
+ * known gap in
+ * docs/superpowers/plans/2026-09-22-image-owned-machine-definitions-1-schema.md
+ * and moves to Plan 2, where images are built.
+ *
+ * When it is implemented it must NOT report success for the source-rootfs
+ * shell image: that image's demo.json is a deterministic merge of two tracked
+ * files (see composeSourceRootfsDemoConfig), so no single tracked file's bytes
+ * are ever baked for it. Byte-identity is a single-source-image property. See
+ * the spec's "Authority and artifact flow".
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
@@ -73,7 +90,16 @@ export function nearMissKeys(profile) {
  * non-empty, so it would silently skip every source after the comment
  * instead of failing loudly — exactly the class of silent gap this checker
  * exists to catch.
+ *
+ * The comment stripper is deliberately NOT string-literal aware — a `//`
+ * inside a quoted path would confuse it, and teaching a regex to tokenize
+ * TypeScript is the wrong trade. Instead every extracted value must look
+ * like a repository-relative path. That is the stronger assertion: it
+ * catches any extraction that picked up the wrong text, not just the one
+ * failure mode a smarter stripper would fix.
  */
+const TRACKED_SOURCE_PATH_RE = /^[A-Za-z0-9._/-]+$/;
+
 export function parseTrackedSourcePaths(source) {
   const stripped = source
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -84,6 +110,15 @@ export function parseTrackedSourcePaths(source) {
   }
   const paths = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   if (paths.length === 0) throw new Error("TRACKED_DEMO_CONFIG_SOURCES is empty");
+  for (const path of paths) {
+    if (path.startsWith("/") || !TRACKED_SOURCE_PATH_RE.test(path)) {
+      throw new Error(
+        `TRACKED_DEMO_CONFIG_SOURCES yielded ${JSON.stringify(path)}, which is `
+          + "not a repository-relative path — the extraction picked up "
+          + "something other than a tracked source",
+      );
+    }
+  }
   return paths;
 }
 

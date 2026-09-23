@@ -93,6 +93,22 @@ export interface DemoRuntimeConfig {
   requests: DemoResourceRequests;
 }
 
+/**
+ * The `runtime` block AS IT APPEARS ON DISK. Every field is optional there —
+ * `nginx-demo.json` declares `network` and `requests` with no `features` —
+ * and `parseKandeloDemoConfig` is a cast, so a required-field declaration
+ * would let a consumer write `profile.runtime.features.includes(...)` and
+ * get a TypeError with no type error to warn them.
+ *
+ * `resolveDemoRuntime` returns the fully-populated `DemoRuntimeConfig`;
+ * reach for that rather than the raw block.
+ */
+export interface DemoRuntimeConfigInput {
+  features?: DemoRuntimeFeature[];
+  network?: boolean;
+  requests?: DemoResourceRequests;
+}
+
 export type DemoRuntimeFeature =
   | "framebuffer"
   | "kms"
@@ -137,6 +153,17 @@ export interface DemoWebConfig {
   probePath?: string;
 }
 
+/**
+ * The `web` block AS IT APPEARS ON DISK: `probeHttp` defaults to true when
+ * omitted, and most tracked files omit it. See `DemoRuntimeConfigInput` for
+ * why the raw and normalized shapes are separate types.
+ */
+export interface DemoWebConfigInput {
+  requiredPorts: number[];
+  probeHttp?: boolean;
+  probePath?: string;
+}
+
 /** What the gallery and machine chrome show for this profile. */
 export interface DemoIdentityConfig {
   title: string;
@@ -165,14 +192,19 @@ export interface DemoGuideConfig {
   companion?: DemoCompanionConfig;
 }
 
+/**
+ * A profile AS IT APPEARS ON DISK. `parseKandeloDemoConfig` only checks
+ * `version`, so these declarations must describe what an author may actually
+ * write, not what a resolver returns after normalization.
+ */
 export interface KandeloDemoProfileConfig {
   presentation?: DemoPresentationConfig;
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
-  runtime?: DemoRuntimeConfig;
+  runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
-  web?: DemoWebConfig;
+  web?: DemoWebConfigInput;
   identity?: DemoIdentityConfig;
   display?: DemoDisplayConfig;
 }
@@ -183,9 +215,9 @@ export interface KandeloDemoConfig {
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
-  runtime?: DemoRuntimeConfig;
+  runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
-  web?: DemoWebConfig;
+  web?: DemoWebConfigInput;
   identity?: DemoIdentityConfig;
   display?: DemoDisplayConfig;
   defaultProfile?: string;
@@ -269,6 +301,22 @@ export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
         throw new Error(`profiles.${profileId} must be an object`);
       }
       validateProfileFields(profile, `profiles.${profileId}`);
+    }
+    // The check inside validateProfileFields is SAME-LEVEL only, and both
+    // blocks fall back independently: a profile that declares `init.target`
+    // while the top level declares `presentation.autoCommand` passes it, yet
+    // resolveDemoInit and resolveDemoPresentation then both answer "this is
+    // what the machine runs" for that profile. Validate the RESOLVED pair.
+    for (const profileId of Object.keys(config.profiles)) {
+      if (resolveDemoInit(config, profileId) === null) continue;
+      if (resolveDemoPresentation(config, profileId)?.autoCommand === undefined) {
+        continue;
+      }
+      throw new Error(
+        `profiles.${profileId} resolves both init.target and`
+          + " presentation.autoCommand — only one thing can be what the"
+          + " machine runs",
+      );
     }
   }
   if (config.defaultProfile !== undefined) {
@@ -447,12 +495,24 @@ function normalizeInit(value: unknown, field: string): DemoInitConfig {
   return { target };
 }
 
+/** Matches MAX_IDENTITY_PACKAGES: an image declaring more than this is
+ *  malformed, not ambitious. */
+const MAX_REQUIRED_PORTS = 64;
+/** Long enough for any real readiness endpoint, short enough that a hostile
+ *  `?vfs=` image cannot bury a megabyte in a probe URL. */
+const MAX_PROBE_PATH_CHARS = 512;
+
 function normalizeWeb(value: unknown, field: string): DemoWebConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);
   }
   if (!Array.isArray(value.requiredPorts) || value.requiredPorts.length === 0) {
     throw new Error(`${field}.requiredPorts must be a non-empty array`);
+  }
+  if (value.requiredPorts.length > MAX_REQUIRED_PORTS) {
+    throw new Error(
+      `${field}.requiredPorts must list at most ${MAX_REQUIRED_PORTS} ports`,
+    );
   }
   const requiredPorts = value.requiredPorts.map((port, index) => {
     if (
@@ -479,13 +539,43 @@ function normalizeWeb(value: unknown, field: string): DemoWebConfig {
 
   const web: DemoWebConfig = { requiredPorts, probeHttp };
   if (value.probePath !== undefined) {
-    const probePath = requiredString(value.probePath, `${field}.probePath`);
-    if (!probePath.startsWith("/")) {
-      throw new Error(`${field}.probePath must be absolute`);
-    }
-    web.probePath = probePath;
+    web.probePath = probePath(value.probePath, `${field}.probePath`);
   }
   return web;
+}
+
+/**
+ * A readiness path, not a URL. `previewUrlForPath` resolves this against the
+ * page origin, so a leading `/` alone is not enough: `//evil.example` is a
+ * protocol-relative URL that resolves to a DIFFERENT ORIGIN, which would let
+ * a hostile `?vfs=` image aim the host's readiness probe off-site. Query and
+ * fragment are rejected because this names a path; backslash and NUL because
+ * URL parsers and the VFS disagree about what they mean.
+ */
+function probePath(value: unknown, field: string): string {
+  const path = requiredString(value, field);
+  if (path.length > MAX_PROBE_PATH_CHARS) {
+    throw new Error(
+      `${field} must be at most ${MAX_PROBE_PATH_CHARS} characters`,
+    );
+  }
+  if (!path.startsWith("/")) {
+    throw new Error(`${field} must be absolute`);
+  }
+  if (path.startsWith("//")) {
+    throw new Error(
+      `${field} must not start with "//" — that is a protocol-relative URL, `
+        + "not a path on this machine",
+    );
+  }
+  for (const forbidden of ["\0", "?", "#", "\\"]) {
+    if (path.includes(forbidden)) {
+      throw new Error(
+        `${field} must be a plain path: no ${JSON.stringify(forbidden)}`,
+      );
+    }
+  }
+  return path;
 }
 
 export function resolveDemoWeb(
@@ -505,6 +595,12 @@ const MAX_DISPLAY_PIXELS = 7680;
 const MAX_IDENTITY_TITLE_CHARS = 64;
 const MAX_IDENTITY_SUMMARY_CHARS = 512;
 const MAX_IDENTITY_PACKAGES = 64;
+/** `base` is an image reference like `kandelo:shell@abi43`, and a package
+ *  entry is a `name@version` spec. Both are short identifiers, so cap them
+ *  the way `title` and `summary` are capped rather than leaving two
+ *  unbounded strings in a block the gallery renders. */
+const MAX_IDENTITY_BASE_CHARS = 128;
+const MAX_IDENTITY_PACKAGE_CHARS = 128;
 
 function normalizeIdentity(value: unknown, field: string): DemoIdentityConfig {
   if (!isRecord(value)) {
@@ -533,7 +629,11 @@ function normalizeIdentity(value: unknown, field: string): DemoIdentityConfig {
 
   const identity: DemoIdentityConfig = { title, summary, accent, glyph };
   if (value.base !== undefined) {
-    identity.base = requiredString(value.base, `${field}.base`);
+    identity.base = cappedString(
+      value.base,
+      `${field}.base`,
+      MAX_IDENTITY_BASE_CHARS,
+    );
   }
   if (value.packages !== undefined) {
     if (!Array.isArray(value.packages)) {
@@ -545,9 +645,21 @@ function normalizeIdentity(value: unknown, field: string): DemoIdentityConfig {
       );
     }
     identity.packages = value.packages.map((entry, index) =>
-      requiredString(entry, `${field}.packages[${index}]`));
+      cappedString(
+        entry,
+        `${field}.packages[${index}]`,
+        MAX_IDENTITY_PACKAGE_CHARS,
+      ));
   }
   return identity;
+}
+
+function cappedString(value: unknown, field: string, max: number): string {
+  const text = requiredString(value, field);
+  if (text.length > max) {
+    throw new Error(`${field} must be at most ${max} characters`);
+  }
+  return text;
 }
 
 function normalizeDisplay(value: unknown, field: string): DemoDisplayConfig {
