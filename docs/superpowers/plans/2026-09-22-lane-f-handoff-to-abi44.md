@@ -84,6 +84,12 @@ they are the deliverable.
    module-driven (Task 3 of Change 2); its third supporting fact was false.
 5. The plan's 17-page endpoint is not reachable by storage work; the 1 MiB
    shadow stack now dominates 12:1. Task 13's record says so.
+6. Pre-existing, not this branch's: `fork-host-import-runtime` stays on
+   the expected-failures baseline because the wasm-artifact reader
+   (`wa_read_facts`) rejects `shared` reference types and canonicalizes
+   `(ref null extern)` to `externref`; two of its eight cases assert the
+   exact form. Fix belongs in `crates/wasm-artifact` or the test's
+   expectation, whichever contract the maintainer wants.
 
 ## PENDING at writing (filled in when the batch lands)
 
