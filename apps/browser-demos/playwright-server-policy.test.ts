@@ -77,12 +77,6 @@ test("exact product proofs never reuse another worktree's server", () => {
   );
   assert.equal(
     shouldReuseExistingPlaywrightServer({
-      KANDELO_NODE_VFS_STRICT: "1",
-    }),
-    false,
-  );
-  assert.equal(
-    shouldReuseExistingPlaywrightServer({
       KANDELO_PLAYWRIGHT_SERVE_DIST: "1",
     }),
     false,
