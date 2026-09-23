@@ -5,6 +5,7 @@ export type { TerminalProgram, TerminalSessionPolicy } from "./kernel-host";
 export * from "./lazy-download";
 export * from "./demo-config";
 export * from "./demo-config-vfs";
+export * from "./dinit-boot-targets";
 export * from "./demo-guides";
 export * from "./experimental-terminal-session";
 export * from "./demo-ingest";

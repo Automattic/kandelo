@@ -119,10 +119,7 @@ import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
 import { createCoiReloadSessionState } from "./coi-reload-session-state";
-import {
-  DinitBootStatusTracker,
-  REQUIRED_DINIT_SERVICES,
-} from "./dinit-boot-status";
+import { DinitBootStatusTracker } from "./dinit-boot-status";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -401,7 +398,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       maxWorkers: 6,
       web: {
         requiredPorts: [HTTP_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES.nginx],
+        // TODO(readiness cutover): sourced from dinit-image-helpers.ts's
+        // addDinitInit() service list until a later task reads this from
+        // the image's own /etc/dinit.d/boot via readDinitBootTargets().
+        requiredServices: ["nginx"],
       },
     },
   },
@@ -414,7 +414,7 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       maxWorkers: 12,
       web: {
         requiredPorts: [HTTP_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-php"]],
+        requiredServices: ["php-fpm", "nginx"],
       },
     },
   },
@@ -449,7 +449,7 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       maxMemoryPages: 4096,
       web: {
         requiredPorts: [HTTP_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES["wordpress-sqlite"]],
+        requiredServices: ["wp-config-init", "smtp-capture", "php-fpm", "nginx"],
       },
     },
   },
@@ -467,7 +467,14 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       maxMemoryPages: 16384,
       web: {
         requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES["wordpress-mariadb"]],
+        requiredServices: [
+          "mariadb",
+          "wp-config-init",
+          "smtp-capture",
+          MARIADB_READY_SERVICE,
+          "php-fpm",
+          "nginx",
+        ],
         probeHttp: true,
         probePath: WORDPRESS_MARIADB_READY_PATH,
       },
