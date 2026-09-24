@@ -101,6 +101,16 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
   },
+  // Append new archives here rather than inserting: populate*Archive in
+  // shell-vfs-build.ts addresses these entries by index.
+  {
+    id: "mc",
+    dependency: "mc-browser-bundle",
+    resolverPath: "programs/wasm32/mc.zip",
+    archiveUrl: "mc.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/mc",
+  },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
 /**

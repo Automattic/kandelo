@@ -1,0 +1,9 @@
+script_path = "packages/registry/mc-browser-bundle/build-mc-browser-bundle.sh"
+inputs = [
+  "packages/registry/mc-browser-bundle/build-mc-browser-bundle.sh",
+  "images/vfs/scripts/build-mc-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
