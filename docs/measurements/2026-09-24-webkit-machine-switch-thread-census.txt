@@ -1,0 +1,40 @@
+=== 1 machine, settled: 19 threads ===
+6 : Heap Helper Thread
+   2 : WebCore: Worker
+   2 : Wasm Worklist Helper Thread
+   1 : com.apple.main-thread  (serial)
+   1 : WebCore: AudioWorklet
+   1 : RemoteAudioDestinationProxy render thread
+   1 : JavaScriptCore libpas scavenger
+   1 : JSC Heap Collector Thread
+   1 : JIT Worklist Helper Thread
+=== after 5 switches, settled 45s: 26 threads ===
+7 : WebCore: Worker
+   6 : Heap Helper Thread
+   2 : Wasm Worklist Helper Thread
+   1 : com.apple.root.default-qos.overcommit  (concurrent)
+   1 : com.apple.main-thread  (serial)
+   1 : com.apple.IPC.ReceiveQueue  (serial)
+   1 : WebCore: AudioWorklet
+   1 : RemoteAudioDestinationProxy render thread
+   1 : JavaScriptCore libpas scavenger
+   1 : JIT Worklist Helper Thread
+EXIT=0
+
+--- Interpretation ---
+AudioWorklet: 1 -> 1 across 5 switches. FIXED (commit 4a0604ece, shared
+AudioContext). Was 1 -> 2 -> 3 -> 4 -> 5 before the fix.
+
+WebCore: Worker: 2 -> 7 across 5 switches, +1/switch, does NOT decay after a
+45s settle. SECOND, SEPARATE, STILL-OPEN LEAK. Corroborated by an independent
+decay run (6 workers after 4 switches; steady one-machine = 2).
+
+Synthetic module-worker teardown does NOT reproduce it: plain, Atomics.waitAsync-
+registered, open-MessageChannel-port, and all-of-the-above variants were flat
+across 8 terminate cycles (.context/modworker-probe.mjs). Nor do wasm-instantiate-
+and-park workers (jswait-inf / wasmwait, flat). So the leak requires something
+the real kernel/process/composer workers do that a bare worker does not.
+
+Prime untested suspect: the image-composer worker (added in this PR) — it is
+created and terminated once per switch. Test it in isolation before broader
+hypotheses.
