@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
+import { KANDELO_REFERENCE_EPOCH_SECONDS } from "../../../host/src/generated/abi";
 import {
   parseZipCentralDirectory,
   extractZipEntry,
@@ -39,7 +40,9 @@ import {
 } from "./validate.ts";
 
 const DEFAULT_SAB_SIZE = 16 * 1024 * 1024;
-const DEFAULT_SOURCE_DATE_EPOCH_SECONDS = 0;
+// Kandelo's reference instant, not 0: 0 is reproducible too, but software
+// reads it as "no timestamp" (PHP's opcache will not cache such a file).
+const DEFAULT_SOURCE_DATE_EPOCH_SECONDS = KANDELO_REFERENCE_EPOCH_SECONDS;
 const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
   Number.MAX_SAFE_INTEGER / 1000,
 );
@@ -68,7 +71,8 @@ export interface BuildOptions {
   metadata?: VfsImageMetadata;
   /**
    * Canonical inode timestamp in whole seconds since the Unix epoch. Defaults
-   * to zero so identical inputs produce byte-identical images.
+   * to Kandelo's reference instant (`KANDELO_REFERENCE_EPOCH_SECONDS`) so
+   * identical inputs produce byte-identical images.
    */
   sourceDateEpochSeconds?: number;
   /** Optional sink for non-fatal audit messages (archive overrides, etc.). */

@@ -21,6 +21,7 @@ import {
   writeVfsBinary,
 } from "../../images/vfs/scripts/vfs-image-helpers";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { KANDELO_REFERENCE_EPOCH_SECONDS } from "../src/generated/abi";
 
 /**
  * THE FIXTURE IS THE PRODUCER THAT SHIPS, 2026-09-17.
@@ -461,7 +462,7 @@ describe("product image capacity and headroom contract", () => {
 
 describe("SOURCE_DATE_EPOCH", () => {
   it.each([
-    [undefined, 0],
+    [undefined, KANDELO_REFERENCE_EPOCH_SECONDS * 1000],
     ["0", 0],
     ["946684800", 946_684_800_000],
   ])("maps %s to a reproducible millisecond timestamp", (value, expected) => {

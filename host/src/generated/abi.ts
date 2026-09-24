@@ -5,6 +5,11 @@ export const ABI_VERSION = 44 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+/* Kandelo's reference instant: the first Kandelo commit's time. Stamped
+* on image files when no time is supplied; never 0, which software
+* reads as "no timestamp" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */
+export const KANDELO_REFERENCE_EPOCH_SECONDS = 1772944691 as const;
+
 /* Opaque channel-record sentinel (wasm_posix_shared::channel_record). */
 export const RECORD_MAGIC = 0x3152434B as const;
 

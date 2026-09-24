@@ -127,7 +127,6 @@
     "test/node-demo-workspace.test.ts",
     "test/node-kernel-pipe-proxy.test.ts",
     "test/non-pty-stdio.test.ts",
-    "test/opcache-prewarm.test.ts",
     "test/ordinary-process-exit.test.ts",
     "test/php-phpt-harness.test.ts",
     "test/process-memory-reclamation-rss.test.ts",

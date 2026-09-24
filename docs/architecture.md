@@ -2180,7 +2180,20 @@ Runtime snapshots preserve the filesystem's POSIX atime, mtime, and ctime by
 default. Reproducible image builders may request a fixed timestamp in the
 detached snapshot copy without mutating the live filesystem. `mkrootfs build`
 uses this facility for every allocated inode, taking whole Unix seconds from
-`SOURCE_DATE_EPOCH` and defaulting to epoch zero when it is unset.
+`SOURCE_DATE_EPOCH` and defaulting to Kandelo's reference instant when it is
+unset.
+
+**Kandelo's reference instant.** Whenever a build needs a fixed time, it uses
+`KANDELO_REFERENCE_EPOCH_SECONDS` (`crates/shared/src/lib.rs`, mirrored into
+`host/src/generated/abi.ts`): 1772944691, the commit time of the first
+Kandelo commit (`b44d42a0d7ff`, 2026-03-07T23:38:11-05:00). The image writer
+(`crates/kandelo-image-module`, `KandeloImageConfig::fixed`) stamps files a
+builder stages with it unless the caller supplies a time, and the TypeScript
+builders use it when `SOURCE_DATE_EPOCH` is unset. It is not 0 because
+software reads a timestamp of 0 as "no timestamp": PHP's opcache refuses to
+cache a file whose mtime is 0, which silently emptied the build-time opcache
+warm-up of the PHP images. Images stay byte-deterministic because the value
+never moves. It is a build convention, not part of the kernel ABI.
 
 Decompressed layout:
 

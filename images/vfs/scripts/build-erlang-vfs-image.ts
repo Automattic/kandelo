@@ -10,6 +10,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { KandeloImageFs } from "../lib/kandelo-image-fs";
+import { KANDELO_REFERENCE_EPOCH_SECONDS } from "../../../host/src/generated/abi";
 import {
   exactVfsImageMetadata,
   ensureDir,
@@ -109,7 +110,9 @@ export async function buildErlangVfsImage(
   });
   console.log(`Wrote ${totalFiles} OTP runtime files (${bytes} bytes)`);
   await saveImage(fs, inputs.outputPath, {
-    normalizeTimestampsMs: 0,
+    // A fixed instant keeps the image reproducible; the reference instant
+    // rather than 0 because 0 reads as "no timestamp".
+    normalizeTimestampsMs: KANDELO_REFERENCE_EPOCH_SECONDS * 1000,
     ...(inputs.targetAbi === undefined
       ? {}
       : {

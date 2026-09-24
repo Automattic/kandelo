@@ -4305,8 +4305,13 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         // walk therefore never re-stamps. A normalised export has to set this
         // too, or the root carries 0 while every other inode carries the
         // requested instant, and the artifact is reproducible everywhere except
-        // its own root directory.
-        now_ms: ROOTFS.with(|state| state.export_timestamp_ms).unwrap_or(0),
+        // its own root directory. With no requested instant it is Kandelo's
+        // reference instant, not 0: directories this walk fills are re-stamped
+        // by the writer as their entries are added, and 0 reads as "no
+        // timestamp" to the software that later stats them.
+        now_ms: ROOTFS
+            .with(|state| state.export_timestamp_ms)
+            .unwrap_or(wasm_posix_shared::KANDELO_REFERENCE_EPOCH_MILLIS),
     })?;
     // The kernel writes its deferred files into the body, so an export with
     // none says so explicitly rather than staying silent — silence is what

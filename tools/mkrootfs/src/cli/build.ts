@@ -29,7 +29,8 @@ Options:
   --help                 print this message
 
 Environment:
-  SOURCE_DATE_EPOCH      canonical inode timestamp in whole Unix seconds (default: 0)
+  SOURCE_DATE_EPOCH      canonical inode timestamp in whole Unix seconds
+                         (default: Kandelo's reference instant, 1772944691)
 `;
 
 interface ParsedArgs {

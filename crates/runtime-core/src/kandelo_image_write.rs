@@ -191,7 +191,10 @@ pub struct KandeloImageConfig {
     /// `max_size_bytes` says. Set it equal to `size_bytes` to model that.
     pub growable_to_bytes: u64,
     /// Value written to every inode's atime/mtime/ctime as it is created.
-    /// The cross-language fixtures pin this to 0 to match
+    /// [`KandeloImageConfig::fixed`] defaults it to Kandelo's reference
+    /// instant ([`wasm_posix_shared::KANDELO_REFERENCE_EPOCH_MILLIS`]), never
+    /// 0: software reads 0 as "no timestamp" (opcache will not cache such a
+    /// file). The cross-language fixtures pin it to 0 explicitly to match
     /// `snapshotBytes({ normalizeTimestampsMs: 0 })`.
     pub now_ms: u64,
 }
@@ -203,7 +206,7 @@ impl KandeloImageConfig {
             size_bytes,
             max_size_bytes: None,
             growable_to_bytes: size_bytes,
-            now_ms: 0,
+            now_ms: wasm_posix_shared::KANDELO_REFERENCE_EPOCH_MILLIS,
         }
     }
 }
@@ -1880,6 +1883,28 @@ mod tests {
             None,
             "Rust writer disagrees with the TypeScript writer"
         );
+    }
+
+    /// A writer the caller gave no time stamps what it creates with Kandelo's
+    /// reference instant. Zero would read as "no timestamp" to whatever later
+    /// stats the file -- PHP's opcache refuses to cache such a file.
+    #[test]
+    fn the_default_clock_is_the_reference_instant_not_zero() {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = w.root();
+        let dir = w.mkdir(root, b"www", 0o755).expect("mkdir");
+        w.create_file(dir, b"index.php", 0o644, Content::Bytes(b"<?php\n"))
+            .expect("create");
+        let image = w.finish().expect("finish");
+        let source = KandeloImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = KandeloImageFs::mount(source).expect("mount");
+        for path in [&b"/"[..], b"/www", b"/www/index.php"] {
+            let st = fs.stat_ino(fs.resolve(path, false).expect("resolve")).expect("stat");
+            assert_eq!(st.mtime_ms, wasm_posix_shared::KANDELO_REFERENCE_EPOCH_MILLIS);
+        }
     }
 
     #[test]

@@ -227,6 +227,9 @@ pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
     // the length of the load -- the exact doubling this entry point exists to
     // avoid.
     release_image();
+    // A loaded image keeps its own times; the clock only stamps what the
+    // builder writes on top of it.
+    use_reference_clock();
     // SAFETY: single-threaded module.
     unsafe { *IMAGE.0.get() = Some((ptr, len)) };
 
@@ -300,6 +303,21 @@ unsafe fn slice<'a>(ptr: usize, len: usize) -> &'a [u8] {
     unsafe { core::slice::from_raw_parts(ptr as *const u8, len) }
 }
 
+/// Point the store's clock at Kandelo's reference instant.
+///
+/// This module imports nothing, so it has no wall clock -- and a build must
+/// not carry one anyway, or identical inputs stop producing identical bytes.
+/// The store's clock therefore stayed at its initial 0, and every file a
+/// builder staged got mtime/atime/ctime 0. Software reads 0 as "no
+/// timestamp": PHP's opcache refuses to cache such a file, so the build-time
+/// opcache warm-up of the WordPress, LAMP and nginx-php images wrote no
+/// cache at all. The reference instant is fixed (deterministic) and real.
+/// A caller that wants a different time says so at export
+/// (`sm_set_image_options`' normalized timestamp), which overrides this.
+fn use_reference_clock() {
+    rootfs::set_now(wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS, 0);
+}
+
 /// Discard the whole tree so the next image starts clean.
 ///
 /// This is the release half of the release-before-create discipline lane Y
@@ -308,6 +326,9 @@ unsafe fn slice<'a>(ptr: usize, len: usize) -> &'a [u8] {
 /// pins that a build after this is indistinguishable from a first build.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm_reset(root_mode: u32, uid: u32, gid: u32) -> i32 {
+    // Before the reset, because the reset creates the root inode and stamps
+    // it from this clock.
+    use_reference_clock();
     rootfs::reset();
     // The image the old tree was built on goes with it. Without this a reset
     // would free every inode and keep 249 MiB of bytes nothing references.
@@ -1366,6 +1387,42 @@ mod tests {
         unsafe { sm_free(ap, al) };
         unsafe { sm_free(bp, bl) };
         r
+    }
+
+    /// A file a builder stages carries Kandelo's reference instant, not 0,
+    /// both in the live tree and in the exported image.
+    ///
+    /// The module has no clock, and for a long time that meant every staged
+    /// file had mtime 0 -- which PHP's opcache reads as "no timestamp" and
+    /// refuses to cache, so the image builds' opcache warm-up wrote nothing.
+    #[test]
+    fn staged_files_carry_the_reference_instant() {
+        use wasm_posix_shared::{KANDELO_REFERENCE_EPOCH_MILLIS, KANDELO_REFERENCE_EPOCH_SECONDS};
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/var", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        let rc = with_two(b"/var/index.php", b"<?php echo 1;\n", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        });
+        assert_eq!(rc, 0);
+
+        let live = rootfs::lstat(b"/var/index.php").expect("staged file exists");
+        assert_eq!(live.st_mtime_sec, KANDELO_REFERENCE_EPOCH_SECONDS);
+        assert_eq!(live.st_ctime_sec, KANDELO_REFERENCE_EPOCH_SECONDS);
+        assert_eq!(live.st_atime_sec, KANDELO_REFERENCE_EPOCH_SECONDS);
+
+        let image = drain_export();
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a real container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
+        for path in [&b"/"[..], b"/var", b"/var/index.php"] {
+            let st = fs.stat_ino(fs.resolve(path, false).expect("path survives")).expect("stat");
+            assert_eq!(
+                st.mtime_ms,
+                KANDELO_REFERENCE_EPOCH_MILLIS,
+                "{} must carry the reference instant, not 0",
+                core::str::from_utf8(path).unwrap(),
+            );
+        }
     }
 
     #[test]

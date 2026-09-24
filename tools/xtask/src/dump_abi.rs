@@ -1777,6 +1777,18 @@ fn render_ts_module() -> String {
         shared::abi::ABI_KERNEL_EXPORT
     ));
 
+    // Not an ABI value: the one fixed instant image builders use when a fixed
+    // time is needed (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). It
+    // lives in this generated module so the TypeScript builders read the same
+    // number the Rust image writer does rather than a second literal.
+    out.push_str(&format!(
+        "/* Kandelo's reference instant: the first Kandelo commit's time. Stamped\n\
+         * on image files when no time is supplied; never 0, which software\n\
+         * reads as \"no timestamp\" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */\n\
+         export const KANDELO_REFERENCE_EPOCH_SECONDS = {} as const;\n\n",
+        shared::KANDELO_REFERENCE_EPOCH_SECONDS,
+    ));
+
     // Phase 2 (Option A) RAW syscall set, projected from
     // wasm_posix_shared::host_raw_syscalls. These syscalls keep raw i64 args and
     // are never carried as an opaque record. The blind record fast-path in

@@ -17,7 +17,10 @@ import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
 import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
+import {
+  ABI_VERSION,
+  KANDELO_REFERENCE_EPOCH_SECONDS,
+} from "../../../host/src/generated/abi";
 
 /**
  * Make the Rust artifact reader available to every VFS image builder.
@@ -185,11 +188,17 @@ const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
   Number.MAX_SAFE_INTEGER / 1000,
 );
 
-/** Resolve reproducible build time from SOURCE_DATE_EPOCH, defaulting to epoch. */
+/**
+ * Resolve reproducible build time from SOURCE_DATE_EPOCH.
+ *
+ * Unset means Kandelo's reference instant, not Unix epoch 0: an image whose
+ * files all carry mtime 0 is reproducible but reads as "no timestamp" to the
+ * software inside it (PHP's opcache will not cache such a file).
+ */
 export function sourceDateEpochMilliseconds(
   value: string | undefined,
 ): number {
-  if (value === undefined) return 0;
+  if (value === undefined) return KANDELO_REFERENCE_EPOCH_SECONDS * 1000;
   if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
     throw new Error(`SOURCE_DATE_EPOCH must be a non-negative whole second: ${value}`);
   }

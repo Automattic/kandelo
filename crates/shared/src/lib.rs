@@ -128,6 +128,36 @@ pub const ABI_VERSION: u32 = 44;
 /// changing this width is an ABI change.
 pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
 
+/// Kandelo's reference instant, in whole seconds since the Unix epoch: the
+/// one fixed time to use whenever a fixed time is needed.
+///
+/// It is the commit time of the first Kandelo commit,
+/// `b44d42a0d7ff9527e660972f99c3e837b284da80`, 2026-03-07T23:38:11-05:00.
+///
+/// # Why a named instant rather than 0
+///
+/// Reproducible artifacts cannot carry the wall clock, so something has to
+/// stand in for "now". Zero is the obvious stand-in and the wrong one: real
+/// software reads a timestamp of 0 as "no timestamp". PHP's opcache is the
+/// case that forced this: `opcache_compile_file` refuses to cache a file
+/// whose mtime is 0, so every file an image builder staged at mtime 0 was
+/// silently uncacheable, and the build-time opcache warm-up wrote nothing.
+/// An instant from Kandelo's own history is plausible to every consumer,
+/// is in the past for every consumer, and says where it came from.
+///
+/// Image builders stamp staged files with it unless the caller supplies a
+/// time; images stay byte-deterministic because the value never moves. It
+/// may later become the first instant of a release cycle, which is why it
+/// is one constant with one name rather than a literal at each use.
+///
+/// This is a build/image convention, not part of the kernel<->process ABI:
+/// changing it changes artifact bytes and cache keys, not compatibility.
+pub const KANDELO_REFERENCE_EPOCH_SECONDS: u64 = 1_772_944_691;
+
+/// [`KANDELO_REFERENCE_EPOCH_SECONDS`] in milliseconds, the unit the VFS
+/// image writer stores.
+pub const KANDELO_REFERENCE_EPOCH_MILLIS: u64 = KANDELO_REFERENCE_EPOCH_SECONDS * 1000;
+
 /// Kandelo's advertised cross-layer POSIX limits.
 ///
 /// Keep these outside any one syscall protocol: libc headers, Rust syscall
