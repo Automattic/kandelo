@@ -52,7 +52,14 @@ describe("process-memory reclamation under real sequential spawn churn", () => {
           timeout: 180_000,
         },
       );
-      expect(stderr).toBe("");
+      // Same allowance as ordinary-process-exit.test.ts: locally built
+      // fixtures are unstamped, and the worker's documented
+      // kandelo.abi.contract warning is not a reclamation diagnostic.
+      const unexpectedStderr = stderr
+        .split("\n")
+        .filter((line) => !line.includes("lacks a kandelo.abi.contract stamp"))
+        .join("\n");
+      expect(unexpectedStderr).toBe("");
 
       const lines = stdout.trim().split("\n");
       const result = JSON.parse(lines.at(-1) ?? "") as HarnessResult;
