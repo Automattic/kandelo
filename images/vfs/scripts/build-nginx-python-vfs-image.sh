@@ -56,4 +56,4 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
   export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
 fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nginx-python-vfs "$VFS"
+install_local_binary nginx-python-vfs "$VFS_DIR/nginx-python-vfs.vfs.zst"

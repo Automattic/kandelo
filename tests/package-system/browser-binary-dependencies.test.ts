@@ -243,10 +243,12 @@ describe("browser binary dependencies", () => {
     );
   });
 
-  it("uses dinit's canonical multi-output projection path in live setup", () => {
-    const expected = "programs/wasm32/dinit/dinit.wasm";
-    expect(browserBinariesImports(repoRoot)).toContain(expected);
-
+  it("keeps dinit's canonical multi-output projection path in the index", () => {
+    // The browser app no longer imports dinit.wasm directly: since
+    // "Browser: Let VFS images describe the machines they contain" (#1409),
+    // dinit ships inside each VFS image and boots as the image's first user
+    // process. The projection index remains the canonical multi-output
+    // contract for every consumer that does resolve the binary.
     const index = JSON.parse(
       readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
     );
@@ -263,7 +265,6 @@ describe("browser binary dependencies", () => {
         mirrorPath: "dinit/dinit.wasm",
       }),
     );
-    expect(`programs/wasm32/${dinit!.mirrorPath}`).toBe(expected);
   });
 
   it("discovers syntax-level imports without treating generated source strings as imports", () => {

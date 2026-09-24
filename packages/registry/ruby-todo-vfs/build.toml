@@ -1,18 +1,21 @@
 script_path = "images/vfs/scripts/build-ruby-todo-vfs-image.sh"
 inputs = [
+  # The script itself is listed literally (the closure contract requires the
+  # exact script_path entry) …
   "images/vfs/scripts/build-ruby-todo-vfs-image.sh",
-  "images/vfs/scripts/build-ruby-todo-vfs-image.ts",
-  "images/vfs/scripts/staged-product-inputs.ts",
-  "images/vfs/scripts/dinit-image-helpers.ts",
-  "images/vfs/scripts/tracked-demo-config.ts",
-  "packages/registry/ruby/ruby-todo-demo.json",
-  "images/vfs/scripts/package-shell-vfs-build.ts",
-  "images/vfs/scripts/shell-lazy-archives.ts",
-  "images/vfs/scripts/source-rootfs-shell-overlay.ts",
-  "images/vfs/scripts/vfs-image-helpers.ts",
+  # … and the build routes through staged-product-inputs.ts, which statically
+  # imports every product image builder, so the real build closure spans the
+  # whole script directory. Track the tree rather than a per-file list that
+  # rots each time a builder gains an import.
+  "images/vfs/scripts",
   "images/vfs/lib/init/shell-binaries.ts",
   "images/vfs/ruby-todo-app",
   "images/rootfs/etc/services",
+  "packages/registry/ruby/ruby-todo-demo.json",
+  # Builders reached through staged-product-inputs.ts import these app-local
+  # runtime-config modules.
+  "apps/browser-demos/lib/init/mysql-benchmark.ts",
+  "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
   "host/src",
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
@@ -20,4 +23,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 6
+revision    = 7
