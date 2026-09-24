@@ -100,6 +100,9 @@ packages/registry/*/*-install/
 packages/registry/*/*-dist/
 packages/registry/*/*-fmt/
 packages/registry/*/*-glue-objs*/
+packages/registry/*/*-stage/
+packages/registry/*/install-stage/
+packages/registry/*/*-runtime.zip
 packages/registry/*/bin/
 
 # VFS images produced by packages/registry/*-vfs/build-*-vfs.sh
