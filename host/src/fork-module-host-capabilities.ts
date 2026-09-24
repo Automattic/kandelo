@@ -2,14 +2,14 @@
  * The fork-module's host FUNCTION obligations, in one place, shared by both JS
  * hosts.
  *
- * The co-resident fork-module declares eight imports. Five are
+ * The co-resident fork-module declares nine imports. Five are
  * position-independent-code linking boilerplate any `--pie` side module has
  * (`env.memory`, `__indirect_function_table`, `__stack_pointer`,
  * `__memory_base`, `__table_base`). Three are reference-typed tables, which
  * `fork-module-instance` owns because it also owns the region reservation and
  * exposes them as `functionCatalog` / `driveTable` / `staticRootCatalog`.
  *
- * The two that remain are this file, and each is a Wasm CAPABILITY FLOOR --
+ * The three that remain are this file, and each is a Wasm CAPABILITY FLOOR --
  * something the module cannot do for itself no matter how much logic moves
  * into Rust. The reason is recorded beside each one, because a responsibility
  * whose reason is not written down is a responsibility that grows.
@@ -42,6 +42,19 @@ export interface ForkModuleHostImports {
    * the same value, so sharing one counter would only couple them.
    */
   readonly __wpk_fork_host_func_identity: (fn: unknown) => number;
+  /**
+   * `__wpk_fork_host_materialize_dlopen_archive(generation: i64) -> errno`:
+   * instantiate, in this worker, every library the published dlopen archive
+   * names that this worker lacks.
+   *
+   * FLOOR: instantiating a module is `WebAssembly.instantiate`, which no Wasm
+   * module can do. The module decides WHEN to ask (its table reconcile found
+   * an activation this worker has not loaded), for WHICH generation, and never
+   * asks while it holds the archive writer. A host answers with its existing
+   * dynamic-loader replay and nothing else. Approved by the maintainer on
+   * 2026-09-23.
+   */
+  readonly __wpk_fork_host_materialize_dlopen_archive: (generation: bigint) => number;
   // No externref import. `resolve_externref` and
   // `__wpk_fork_host_externref_handle` left in externref stage E2: a fork does
   // not carry a raw host externref, so the module never names a host object or
@@ -94,14 +107,17 @@ function createReferenceIdentity(importName: string) {
 }
 
 export function createForkModuleHostCapabilities(): ForkModuleHostCapabilities {
-  const identity = createReferenceIdentity("__wpk_fork_host_ref_identity");
-  const functionIdentity = createReferenceIdentity("__wpk_fork_host_func_identity");
   const imports: ForkModuleHostImports = {
-    __wpk_fork_host_ref_identity: identity,
+    __wpk_fork_host_ref_identity: createReferenceIdentity("__wpk_fork_host_ref_identity"),
     // A SEPARATE pool from the reference one: `funcref` and `anyref` are
     // disjoint hierarchies, so a function and a GC object can never be the same
     // value and one counter would only couple two independent numberings.
-    __wpk_fork_host_func_identity: functionIdentity,
+    __wpk_fork_host_func_identity: createReferenceIdentity("__wpk_fork_host_func_identity"),
+    // ENOSYS (38) until a worker binds its dynamic loader. Only a worker whose
+    // process published a dlopen archive can be asked, and every such JS worker
+    // replaces this (worker-main.ts); the default keeps a module instantiated
+    // for a test or a tool from binding an import it can never answer.
+    __wpk_fork_host_materialize_dlopen_archive: () => 38,
   };
   return { imports };
 }

@@ -279,17 +279,16 @@ describe("function pointers across pthreads after dlopen", () => {
    * then calls into that library through a pointer handed over in shared
    * memory, with no syscall in between.
    *
-   * KNOWN GAP, AWAITING THE MAINTAINER. The older thread's Worker has never
-   * instantiated the library, so its table has no slots for it and the call
-   * traps "table index is out of bounds". Instantiating a module is something
-   * only the host can do, and the only code that does it for a peer's dlopen
-   * (the TypeScript table replica's `replayDlopens`) runs at thread start, at
-   * fork and when this thread takes the loader lock -- never on the guarded
-   * table access. The fork module owns the guard and has no host import to ask
-   * for it. See docs/superpowers/plans/2026-09-23-fork-guest-table-shims.md.
-   * `it.fails` keeps the gap visible: this starts failing the day it is fixed.
+   * The older thread's Worker has never instantiated the library, so its
+   * table has no slots for it. Its first call through the pointer runs the
+   * table guard; the fork module's reconcile sees the published archive name
+   * an activation this Worker lacks, and asks the host to instantiate it
+   * (`__wpk_fork_host_materialize_dlopen_archive`) before applying anything.
+   * Before that import existed this trapped "table index is out of bounds":
+   * nothing instantiated the library in this Worker until its next fork or
+   * loader lock.
    */
-  it.fails("a thread created before dlopen calls the library through a handed-over pointer", {
+  it("a thread created before dlopen calls the library through a handed-over pointer", {
     timeout: 60_000,
   }, async () => {
     const library = sharedLibrary(LIBRARY, "libbefore");

@@ -7,14 +7,8 @@ import type { DylinkLoader, LoaderTableState } from "../src/dylink-loader";
 import type { DylinkTablePatch as DylinkForkTablePatch } from "../src/dylink-planner-wire";
 
 interface TestTableReplicationOwner {
-  beginMutation(): bigint;
-  commit(
-    activationId: number,
-    ownerId: number,
-    firstIndex: number | bigint,
-    length: number | bigint,
-  ): void;
   reconcileNow(): number;
+  materialize(generation: bigint): number;
 }
 
 /**
@@ -22,10 +16,12 @@ interface TestTableReplicationOwner {
  *
  * The record layout, the immutability rules and the generation fence now live
  * in `crates/dylink::archive` and are proved there. What this suite exercises is
- * the ORCHESTRATION above them: when a mutation becomes a patch, when the
- * journal is full enough to force a checkpoint, and which generations a replica
- * applies. So the archive is a stand-in that keeps exactly the state those
- * decisions read.
+ * the host half that remains above them: a replica instantiates a peer's
+ * modules and restores a published checkpoint when the generation moves, and
+ * answers the fork module's request to do so. (Funcref patches are applied by
+ * the fork module now, and published by it; the patch-writer cases that used to
+ * live here went with the TypeScript that did both.) So the archive is a
+ * stand-in that keeps exactly the state those decisions read.
  */
 interface ArchiveFixture {
   readonly loader: DylinkLoader;
@@ -138,89 +134,53 @@ function patch(generation?: number): DylinkForkTablePatch {
   };
 }
 
-describe("process table replication publication", () => {
-  it("uses patches normally and transparently compacts at the journal bound", () => {
+function replica(
+  archive: ArchiveFixture,
+  options: { restoreSnapshots: boolean; borrowed?: boolean; dlopen?: DlopenSupport },
+) {
+  const counts = { materialized: 0, restored: 0 };
+  const owner = __testCreateProcessTableReplicationOwner({
+    generationAddress: 64,
+    tableCheckpoint: {
+      capture: () => 512,
+      restore: () => { counts.restored++; },
+    },
+    dlopen: options.dlopen ?? dlopenFixture(archive),
+    materializeModules: () => { counts.materialized++; },
+    restoreSnapshots: options.restoreSnapshots,
+    ...(options.borrowed ? { borrowedImmutableSnapshot: true } : {}),
+    label: "replica",
+  }) as TestTableReplicationOwner;
+  return { owner, counts };
+}
+
+describe("process table replication", () => {
+  it("skips only the fork child's copied baseline and restores later checkpoints", () => {
     const archive = archiveFixture();
-    const dlopen = dlopenFixture(archive);
-    let checkpoints = 0;
-    let typedFallback = false;
-    const registry = {
-      captureFuncrefTablePatch: () => typedFallback ? null : patch(),
-      applyFuncrefTablePatch: () => {},
-    };
-    // Path-A A3/A4: the full-checkpoint capture/restore moved to the module-backed
-    // `ForkTableSnapshot`; this suite mocks it (it proves the patch-journal /
-    // compaction orchestration, NOT the reference engine — see the real-engine
-    // round-trip test in fork-table-snapshot-roundtrip.test.ts).
-    const tableSnapshot = {
-      capture: () => {
-        checkpoints++;
-        return 512;
-      },
-      restore: () => {},
-    };
-    const owner = __testCreateProcessTableReplicationOwner({
-      generationAddress: 64,
-      tables: registry,
-      tableCheckpoint: tableSnapshot,
-      dlopen,
-      materializeModules: () => {},
-      restoreSnapshots: true,
-      label: "patch writer",
-    }) as TestTableReplicationOwner;
+    archive.loader.publishTableState(256);
+    const { owner, counts } = replica(archive, { restoreSnapshots: false });
 
-    for (let index = 0; index < 256; index++) {
-      owner.beginMutation();
-      owner.commit(0, 1, 0, 1);
-    }
-    expect(archive.read().tablePatches).toHaveLength(256);
-    expect(checkpoints).toBe(0);
-
-    owner.beginMutation();
-    owner.commit(0, 1, 0, 1);
-    expect(checkpoints).toBe(1);
-    expect(archive.read()).toMatchObject({
-      tableStateRoot: 512,
-      tablePatches: [],
+    owner.reconcileNow();
+    expect(counts).toEqual({ materialized: 1, restored: 0 });
+    archive.loader.publishTableState(512);
+    owner.reconcileNow();
+    expect(counts).toEqual({ materialized: 2, restored: 1 });
+    owner.reconcileNow();
+    expect(counts, "an unchanged generation does nothing").toEqual({
+      materialized: 2,
+      restored: 1,
     });
-
-    typedFallback = true;
-    owner.beginMutation();
-    owner.commit(0, 1, 0, 1);
-    expect(checkpoints).toBe(2);
-    expect(archive.read().tablePatches).toEqual([]);
   });
 
-  it("skips only the fork child's copied baseline and applies later patches", () => {
+  it("answers the fork module's materialize request with the generation it reached", () => {
     const archive = archiveFixture();
     archive.publishTablePatch(patch());
-    const applied: number[] = [];
-    const registry = {
-      applyFuncrefTablePatch: (value: DylinkForkTablePatch) => {
-        applied.push(value.generation!);
-      },
-    };
-    const tableSnapshot = {
-      capture: () => 512,
-      restore: () => {
-        throw new Error("fork child must use its normal KFMS capture");
-      },
-    };
-    const child = __testCreateProcessTableReplicationOwner({
-      generationAddress: 64,
-      tables: registry,
-      tableCheckpoint: tableSnapshot,
-      dlopen: dlopenFixture(archive),
-      materializeModules: () => {},
-      restoreSnapshots: false,
-      label: "fork child patch reader",
-    }) as TestTableReplicationOwner;
+    const { owner, counts } = replica(archive, { restoreSnapshots: true });
 
-    child.reconcileNow();
-    expect(applied).toEqual([]);
-    archive.publishTablePatch(patch());
-    child.reconcileNow();
-    expect(applied).toEqual([3]);
+    expect(owner.materialize(BigInt(archive.generation()))).toBe(0);
+    expect(counts.materialized).toBe(1);
+    // A generation the archive has not reached is EAGAIN, not a false success.
+    expect(owner.materialize(BigInt(archive.generation() + 1))).toBe(11);
   });
 
   it("observes a borrowed immutable generation without acquiring its writer", () => {
@@ -236,29 +196,15 @@ describe("process table replication publication", () => {
       writerAcquisitions++;
       throw new Error("borrowed snapshot attempted archive mutation");
     };
-    const child = __testCreateProcessTableReplicationOwner({
-      generationAddress: 64,
-      tables: {
-        applyFuncrefTablePatch: () => {},
-      },
-      tableCheckpoint: {
-        capture: () => 512,
-        restore: () => {},
-      },
-      dlopen,
-      materializeModules: () => {
-        throw new Error("borrowed snapshot was already materialized");
-      },
+    const { owner, counts } = replica(archive, {
       restoreSnapshots: false,
-      borrowedImmutableSnapshot: true,
-      label: "borrowed vfork child",
-    }) as TestTableReplicationOwner;
+      borrowed: true,
+      dlopen,
+    });
 
-    expect(child.reconcileNow()).toBe(archive.generation());
+    expect(owner.reconcileNow()).toBe(archive.generation());
+    expect(owner.materialize(BigInt(archive.generation()))).toBe(0);
     expect(writerAcquisitions).toBe(0);
-    expect(() => child.beginMutation()).toThrow(
-      "borrowed snapshot attempted archive mutation",
-    );
-    expect(writerAcquisitions).toBe(1);
+    expect(counts.materialized).toBe(0);
   });
 });

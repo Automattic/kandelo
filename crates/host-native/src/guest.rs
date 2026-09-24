@@ -6773,6 +6773,19 @@ pub(crate) fn instantiate_fork_module(
     // import this frames-only path does not know about still needs a
     // truthful stub rather than a silent wrong-typed default, so the
     // catch-all trap pass stays.
+    //
+    // `__wpk_fork_host_materialize_dlopen_archive(generation) -> errno`: the
+    // module asks a host to instantiate libraries a PEER dlopened. This host
+    // has no dlopen, passes no archive control block to `fm_set_format`, and so
+    // is never asked -- the module only asks after reading a published
+    // archive. Answered ENOSYS (38), the truthful "this host cannot load
+    // libraries", rather than left to the trap pass, so a future host path that
+    // did publish an archive would see an errno it can report.
+    linker.func_wrap(
+        "env",
+        "__wpk_fork_host_materialize_dlopen_archive",
+        |_generation: i64| -> i32 { 38 },
+    )?;
     linker.define_unknown_imports_as_traps(&module)?;
 
     let instance = linker.instantiate(&mut *store, &module)?;

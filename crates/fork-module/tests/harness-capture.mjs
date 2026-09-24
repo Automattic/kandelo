@@ -57,6 +57,7 @@ const memory = new WebAssembly.Memory({
   shared: true,
 });
 
+const materializeRequests = [];
 const importObject = {
   env: {
     memory,
@@ -83,6 +84,13 @@ const importObject = {
     // disjoint -- so the host answers "are these the same function?" and the
     // module owns the scan and every decision built on the answer. A Map keyed by
     // the exported function object here; wasmtime uses `Func::to_raw`.
+    // The module asks this to instantiate libraries a peer dlopened. The
+    // harness cannot instantiate anything, so it records the request and
+    // answers ENOSYS, and the reconcile case below checks both.
+    __wpk_fork_host_materialize_dlopen_archive: (generation) => {
+      materializeRequests.push(generation);
+      return 38;
+    },
     __wpk_fork_host_func_identity: (() => {
       const ids = new Map();
       let next = 1;
@@ -1121,7 +1129,12 @@ const bindTableShims = (activation, host) => {
     -1,
     "a patch for an absent activation is refused",
   );
-  assert.equal(lastErrno(), 2 /* ENOENT */, "and the reason is ENOENT");
+  assert.deepEqual(
+    materializeRequests,
+    [3n],
+    "after asking the host to instantiate it, for the archive's generation",
+  );
+  assert.equal(lastErrno(), 38 /* ENOSYS */, "and the host's answer is reported");
   assert.equal(applied.length, 0, "a refused reconcile writes nothing");
 
   // Re-pointed at activation 0, which is here.

@@ -259,6 +259,21 @@ mod wasm {
         fn __wpk_fork_atomic_notify(addr: u32, count: u32) -> i32;
     }
 
+    // A REAL host import, not an injector placeholder: nothing rewrites it.
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        /// Instantiate, in THIS worker, every library the published dlopen
+        /// archive names that this worker has not instantiated, up to at least
+        /// `generation`. Returns 0 or an errno.
+        ///
+        /// Host floor: instantiating a module is `WebAssembly.instantiate`,
+        /// which no Wasm module can do. Everything else stays here -- WHEN to
+        /// ask (the reconcile found an activation it lacks), for WHICH
+        /// generation, and never while this module holds the archive writer.
+        /// Maintainer-approved 2026-09-23 (forkModuleHostImports 5 -> 6).
+        fn __wpk_fork_host_materialize_dlopen_archive(generation: u64) -> i32;
+    }
+
     /// Block until the i32 at `addr` stops being `expected`.
     ///
     /// A spin would be correct and unacceptable: the archive writer holds the
@@ -9816,20 +9831,36 @@ mod wasm {
             set_err(Errno::EPERM);
             return -1;
         }
-        if let Err(errno) = acquire_archive_writer() {
-            set_err(errno);
-            return -1;
+        loop {
+            // Instantiate what peers loaded BEFORE taking the writer: the host
+            // takes that writer itself to do it (see `reconcile_impl`).
+            if let Err(errno) = reconcile_impl(true) {
+                set_err(errno);
+                return -1;
+            }
+            if let Err(errno) = acquire_archive_writer() {
+                set_err(errno);
+                return -1;
+            }
+            match reconcile_impl(false) {
+                Ok(reached) => {
+                    set_ok();
+                    return reached as i64;
+                }
+                // A peer dlopened between the two reconciles. Give the writer
+                // back so the host can instantiate it here, and start again.
+                Err(RECONCILE_NEEDS_MATERIALIZE) => {
+                    let _ = release_archive_writer();
+                }
+                Err(errno) => {
+                    // Hold nothing on the way out. A failed begin that kept the
+                    // writer would wedge every other worker in the process.
+                    let _ = release_archive_writer();
+                    set_err(errno);
+                    return -1;
+                }
+            }
         }
-        let reached = __wpk_fork_module_state_table_reconcile();
-        if reached < 0 {
-            // Hold nothing on the way out. A failed begin that kept the writer
-            // would wedge every other worker in the process.
-            let _ = release_archive_writer();
-            // `reconcile` already set the errno that explains this.
-            return -1;
-        }
-        set_ok();
-        reached
     }
 
     /// One guest table's length, read through the guest's own shim rather than
@@ -10119,80 +10150,8 @@ mod wasm {
                 }
             };
         }
-        let head = match archive_head() {
-            Ok(head) => head,
-            Err(errno) => {
-                set_err(errno);
-                return -1;
-            }
-        };
-        let applied = (u64::from(ARCHIVE_APPLIED[1].load(Ordering::Relaxed)) << 32)
-            | u64::from(ARCHIVE_APPLIED[0].load(Ordering::Relaxed));
-        if head == 0 {
-            // Nothing published yet: coherent by definition.
-            set_ok();
-            return applied as i64;
-        }
-        let reconciled = (|| -> Result<u64, Errno> {
-            let pointer_width = format()?.pointer_width;
-            let archive = fork_codec::dylink_archive::decode_dylink_archive(
-                &GuestArchiveBytes,
-                head,
-                pointer_width,
-            )?;
-            let plans =
-                fork_codec::dylink_table_plan::plan_table_patches(&archive.table_patches, applied)?;
-            // The generation this worker has REACHED is the snapshot's. The
-            // guest caches whatever this returns and compares it against the
-            // shared fence on the next table access, so anything below the fence
-            // would re-enter the guard on every table access forever. Applying
-            // every patch up to `archive.generation` is exactly what makes the
-            // worker coherent with that snapshot, which is what the fence names.
-            let reached = archive.generation.max(
-                fork_codec::dylink_table_plan::planned_generation(&archive.table_patches, applied),
-            );
-            // Resolve EVERY patch before writing ANY: a patch this worker cannot
-            // apply (an activation it has not instantiated) must fail the
-            // reconcile without leaving the tables half-way between generations.
-            let mut batches: Vec<(u32, u32, u32, Vec<u32>)> = Vec::with_capacity(plans.len());
-            for plan in &plans {
-                if !activation_is_present(plan.activation_id) {
-                    return Err(Errno::ENOENT);
-                }
-                let mut records: Vec<u32> = Vec::with_capacity(plan.steps.len() * 3);
-                for step in &plan.steps {
-                    let slot = if step.clear {
-                        0
-                    } else {
-                        catalog_slot(step.activation_id, step.ordinal)?
-                    };
-                    records.extend_from_slice(&[step.dest, slot, u32::from(step.clear)]);
-                }
-                batches.push((plan.activation_id, plan.owner_id, plan.table_length, records));
-            }
-            for (activation, owner, length, records) in &batches {
-                // The records live in this module's heap, which is the guest's
-                // shared linear memory, so the guest shim reads them in place.
-                // SAFETY: after injection this `call_indirect`s the guest's
-                // `wpk_fork_module_table_apply` through `activation`'s drive
-                // slot; it traps on an owner the guest does not replicate and on
-                // a slot past a table it could not grow.
-                unsafe {
-                    __wpk_fork_guest_table_apply(
-                        *activation,
-                        *owner,
-                        *length,
-                        records.as_ptr() as usize,
-                        (records.len() / 3) as u32,
-                    );
-                }
-            }
-            Ok(reached)
-        })();
-        match reconciled {
+        match reconcile_impl(true) {
             Ok(reached) => {
-                ARCHIVE_APPLIED[0].store((reached & 0xffff_ffff) as u32, Ordering::Relaxed);
-                ARCHIVE_APPLIED[1].store((reached >> 32) as u32, Ordering::Relaxed);
                 set_ok();
                 reached as i64
             }
@@ -10201,6 +10160,127 @@ mod wasm {
                 -1
             }
         }
+    }
+
+    /// The errno a reconcile reports when the archive names an activation this
+    /// worker has not instantiated and it was not allowed to ask the host to.
+    const RECONCILE_NEEDS_MATERIALIZE: Errno = Errno::EAGAIN;
+
+    /// The archive generation to materialize, when the published archive names
+    /// an activation this worker has not instantiated; `None` when every one it
+    /// names is here.
+    ///
+    /// A library a PEER dlopened exists in this worker only once the host has
+    /// instantiated it here, and instantiating a module is host work (a Wasm
+    /// module cannot instantiate another). A pthread that was already running
+    /// when the peer dlopened has had no other occasion for that to happen, so
+    /// without this a call through a pointer into the library traps "table
+    /// index is out of bounds" in that thread.
+    fn missing_activation_generation(head: u64) -> Result<Option<u64>, Errno> {
+        let archive = fork_codec::dylink_archive::decode_dylink_archive(
+            &GuestArchiveBytes,
+            head,
+            format()?.pointer_width,
+        )?;
+        let missing = archive
+            .modules
+            .iter()
+            .filter_map(|module| module.activation_id)
+            .chain(archive.table_patches.iter().map(|patch| patch.activation_id))
+            .any(|activation| !activation_is_present(activation));
+        Ok(missing.then_some(archive.generation))
+    }
+
+    /// Bring this worker's replicated tables up to the newest published
+    /// generation, first asking the host to instantiate any library the
+    /// archive names that this worker lacks when `materialize` is set.
+    ///
+    /// `materialize` must be false while this module holds the archive
+    /// writer: the host takes the same writer to instantiate, through its own
+    /// per-worker depth count that knows nothing of this module's raw hold, so
+    /// asking under the lock would wait on itself forever. Without it a missing
+    /// activation fails the reconcile with `RECONCILE_NEEDS_MATERIALIZE`, which
+    /// `mutation_begin` answers by releasing the writer and starting again.
+    fn reconcile_impl(materialize: bool) -> Result<u64, Errno> {
+        let head = archive_head()?;
+        let applied = (u64::from(ARCHIVE_APPLIED[1].load(Ordering::Relaxed)) << 32)
+            | u64::from(ARCHIVE_APPLIED[0].load(Ordering::Relaxed));
+        if head == 0 {
+            // Nothing published yet: coherent by definition.
+            return Ok(applied);
+        }
+        if materialize {
+            if let Some(generation) = missing_activation_generation(head)? {
+                // Nothing decoded above is held across this call: the host
+                // re-enters this module to register what it instantiates.
+                // SAFETY: a plain host import taking and returning integers.
+                let errno = unsafe { __wpk_fork_host_materialize_dlopen_archive(generation) };
+                if errno != 0 {
+                    return Err(Errno::from_u32(errno as u32).unwrap_or(Errno::EIO));
+                }
+                // The archive may have moved on while the host held the writer.
+                return reconcile_impl(false);
+            }
+        }
+        let reached = (|| -> Result<u64, Errno> {
+        let pointer_width = format()?.pointer_width;
+        let archive = fork_codec::dylink_archive::decode_dylink_archive(
+            &GuestArchiveBytes,
+            head,
+            pointer_width,
+        )?;
+        let plans =
+            fork_codec::dylink_table_plan::plan_table_patches(&archive.table_patches, applied)?;
+        // The generation this worker has REACHED is the snapshot's. The
+        // guest caches whatever this returns and compares it against the
+        // shared fence on the next table access, so anything below the fence
+        // would re-enter the guard on every table access forever. Applying
+        // every patch up to `archive.generation` is exactly what makes the
+        // worker coherent with that snapshot, which is what the fence names.
+        let reached = archive.generation.max(
+            fork_codec::dylink_table_plan::planned_generation(&archive.table_patches, applied),
+        );
+        // Resolve EVERY patch before writing ANY: a patch this worker cannot
+        // apply (an activation it has not instantiated) must fail the
+        // reconcile without leaving the tables half-way between generations.
+        let mut batches: Vec<(u32, u32, u32, Vec<u32>)> = Vec::with_capacity(plans.len());
+        for plan in &plans {
+            if !activation_is_present(plan.activation_id) {
+                return Err(RECONCILE_NEEDS_MATERIALIZE);
+            }
+            let mut records: Vec<u32> = Vec::with_capacity(plan.steps.len() * 3);
+            for step in &plan.steps {
+                let slot = if step.clear {
+                    0
+                } else {
+                    catalog_slot(step.activation_id, step.ordinal)?
+                };
+                records.extend_from_slice(&[step.dest, slot, u32::from(step.clear)]);
+            }
+            batches.push((plan.activation_id, plan.owner_id, plan.table_length, records));
+        }
+        for (activation, owner, length, records) in &batches {
+            // The records live in this module's heap, which is the guest's
+            // shared linear memory, so the guest shim reads them in place.
+            // SAFETY: after injection this `call_indirect`s the guest's
+            // `wpk_fork_module_table_apply` through `activation`'s drive
+            // slot; it traps on an owner the guest does not replicate and on
+            // a slot past a table it could not grow.
+            unsafe {
+                __wpk_fork_guest_table_apply(
+                    *activation,
+                    *owner,
+                    *length,
+                    records.as_ptr() as usize,
+                    (records.len() / 3) as u32,
+                );
+            }
+        }
+        Ok(reached)
+        })()?;
+        ARCHIVE_APPLIED[0].store((reached & 0xffff_ffff) as u32, Ordering::Relaxed);
+        ARCHIVE_APPLIED[1].store((reached >> 32) as u32, Ordering::Relaxed);
+        Ok(reached)
     }
 
     /// Guest-facing `env.__wpk_fork_ref_gc_broker_encode(slot) -> recipe`.

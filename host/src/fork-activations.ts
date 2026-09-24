@@ -90,7 +90,6 @@ export interface ForkActivationCatalogSink {
  */
 export function forkActivationCatalogSink(records: {
   tables: {
-    registerCatalog(activationId: number, catalog: WebAssembly.Table): void;
     register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
   };
   merged: { take(activationId: number, catalog: WebAssembly.Table): void };
@@ -101,7 +100,6 @@ export function forkActivationCatalogSink(records: {
 }): ForkActivationCatalogSink {
   return {
     registerCatalog: (activationId, catalog) => {
-      records.tables.registerCatalog(activationId, catalog);
       records.merged.take(activationId, catalog);
     },
     registerStaticRoots: (activationId, catalog) => {

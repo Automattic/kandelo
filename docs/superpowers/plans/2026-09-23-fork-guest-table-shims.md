@@ -182,8 +182,14 @@ Implemented as Option A. What landed, and what did not:
   control address (a borrowed vfork child: its owner's). host-native passes
   0 (no dlopen).
 
-Not done, awaiting the maintainer: a pthread already running when another
-thread dlopens cannot call into the library until it next takes the loader
-lock, forks, or restarts. Instantiating the library is host work and the
-guard is served by the module, which has no way to request it
-(`dlopen-pthread-table-replication.test.ts` keeps it as `it.fails`).
+Ruled by the maintainer the same day: the module asks via ONE host import,
+`__wpk_fork_host_materialize_dlopen_archive(generation) -> errno`, which a
+JS host answers with its existing dynamic-loader replay
+(`forkModuleHostImports` 5 -> 6, approved). The module calls it during a
+reconcile, before applying patches, when the archive names an activation this
+worker lacks, and never while holding the archive writer: `mutation_begin`
+reconciles (and materializes) before taking the writer, and releases and
+retries if a peer dlopened in between. The TypeScript funcref patch
+capture/apply and the dead guest-import forwarders are deleted; what remains
+there loads peer side modules and restores checkpoints. Replication in a
+process that never dlopened stays a documented gap.

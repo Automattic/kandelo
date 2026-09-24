@@ -105,6 +105,11 @@ const importObject = {
     // funcref -- wasm cannot compare two of them. This harness never encodes one,
     // so a trap is the honest binding: it fails loud if the path is ever reached
     // rather than returning a plausible id.
+    // Never asked here: the module asks only after reading a published dlopen
+    // archive, and this harness publishes none.
+    __wpk_fork_host_materialize_dlopen_archive: () => {
+      throw new Error("harness publishes no dlopen archive");
+    },
     __wpk_fork_host_func_identity: () => {
       throw new Error("harness: __wpk_fork_host_func_identity is not exercised here");
     },

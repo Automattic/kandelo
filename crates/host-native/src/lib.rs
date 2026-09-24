@@ -244,7 +244,7 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// these as host surface would overstate the obligation and, worse, would make
 /// the number move for reasons that have nothing to do with fork.
 ///
-/// All FIVE are the real obligation, and each is a Wasm capability floor
+/// All SIX are the real obligation, and each is a Wasm capability floor
 /// rather than a design choice:
 ///
 /// * `env.__wpk_fork_host_ref_identity` (function) -- decides whether two
@@ -254,6 +254,12 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// * `env.__wpk_fork_host_func_identity` (function) -- the same question for
 ///   `funcref`, which is a disjoint hierarchy from `anyref`, so one oracle
 ///   cannot serve both.
+/// * `env.__wpk_fork_host_materialize_dlopen_archive` (function) --
+///   instantiates, in the asking worker, libraries a peer dlopened. Loading a
+///   module is `WebAssembly.instantiate`, which no module can do; the module
+///   keeps the sequencing (when, which generation, never under the archive
+///   writer). WENT 5 -> 6 for it on 2026-09-23, maintainer-approved. This host
+///   has no dlopen and answers ENOSYS.
 /// * `env.__wpk_fork_function_catalog`, `env.__wpk_fork_drive_table`,
 ///   `env.__wpk_fork_static_root_catalog` (tables) -- reference-typed tables.
 ///   Rust cannot declare or hold one; the module reaches their contents only
@@ -267,10 +273,10 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// host reads, so it tracks the module whether or not this host implements
 /// each entry.
 ///
-/// If any of the five is ever shown NOT to be a floor, this number and the
+/// If any of the six is ever shown NOT to be a floor, this number and the
 /// matching budget target should both fall. Until then they are equal, which
 /// is why this surface's target is not below its ceiling.
-pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 5;
+pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 6;
 
 /// The number of PIC linking imports excluded from the count above. Pinned so
 /// that a change in linking shape is visible instead of silently rebalancing
@@ -1501,6 +1507,10 @@ mod tests {
                 // 2026-09-13 on the condition that a native host CAN supply it,
                 // which `a_native_host_can_identify_funcrefs` proves.
                 "__wpk_fork_host_func_identity",
+                // Instantiate a library a peer dlopened, in this worker.
+                // Maintainer-approved 2026-09-23: loading a module is host
+                // work; the module decides when and for which generation.
+                "__wpk_fork_host_materialize_dlopen_archive",
                 // The same question for `anyref`, approved earlier.
                 "__wpk_fork_host_ref_identity",
                 // No externref import: `resolve_externref` and

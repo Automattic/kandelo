@@ -1293,14 +1293,17 @@ still carries them: their dirty pages are journaled and the module-state
 save/restore helpers reconstruct them in the child (an `externref` fork
 remains subject to docs/fork-reference-support.md).
 
-Known gaps. A pthread that is already running when another thread dlopens a
-library does not instantiate that library until it next takes the loader
-lock, forks, or is a newly started thread; a call from it through a pointer
-into the library traps "table index is out of bounds" until then. Only the
-host can instantiate a module, and the guarded table access is served by the
-fork module, which has no way to ask the host to do it. A guest `funcref`
-table mutation in a process that has never dlopened has no publication
-archive to append to, so it is not replicated to other threads.
+A pthread that was already running when another thread dlopened a library
+instantiates it on its next guarded table access: the fork module's
+reconcile finds the published archive naming an activation this Worker lacks
+and asks the host (`__wpk_fork_host_materialize_dlopen_archive`, the one
+host step, since only the host can instantiate a module) before applying any
+patch. The module never asks while it holds the archive writer; the host takes
+that writer itself to instantiate.
+
+Known gap. A guest `funcref` table mutation in a process that has never
+dlopened has no publication archive to append to, so it is not replicated to
+other threads.
 
 Fork and non-forking spawn copy each process's descriptor-table shell while
 retaining one exact mutable OFD state object. Offset, status flags, and async
