@@ -14,6 +14,7 @@ import {
   runCentralizedProgram,
 } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -22,8 +23,10 @@ const SYSROOT64 = join(REPO_ROOT, "sysroot64");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasSysroot64 = existsSync(join(SYSROOT64, "lib", "libc.a"));
-const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
-  existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
+// Ask the resolver, the way `runCentralizedProgram` finds the kernel it
+// boots. Probing two fixed paths skipped this whole file whenever the kernel
+// lived only in a source-only generation (`local-binaries/source-only-v1`).
+const hasKernel = tryResolveBinary("kernel.wasm") !== null;
 function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
     execFileSync(compiler, ["--version"], { stdio: "ignore" });
@@ -214,6 +217,96 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
       expect(result.stderr).toBe("");
     },
   );
+
+  // libc's reserved-namespace names (`__errno_location`, `__environ`,
+  // `__sigsetjmp_save`) are ordinary symbols the MAIN program defines and a
+  // side module imports from `env` / `GOT.mem`. PHP's `opcache.so` is the
+  // case that found it: it imports `env.__sigsetjmp_save`, which `php.wasm`
+  // exports, and dlopen failed with `undefined symbol: __sigsetjmp_save`
+  // because the planner dropped every `__`-prefixed main-image export.
+  it("resolves a side module's imports of the main program's __-prefixed libc symbols", { timeout: 30_000 }, async () => {
+    const soPath = buildSharedLib(
+      `
+      #include <errno.h>
+      #include <setjmp.h>
+      #include <string.h>
+
+      extern char **__environ;
+
+      int probe(void) {
+        sigjmp_buf jb;
+        volatile int jumped = 0;
+        errno = 0;
+        if (sigsetjmp(jb, 1) == 0) {
+          errno = 77;
+          siglongjmp(jb, 1);
+        }
+        jumped = 1;
+        int found = 0;
+        for (char **e = __environ; e && *e; e++) {
+          if (strcmp(*e, "DLOPEN_LIBC_PROBE=yes") == 0) found = 1;
+        }
+        return jumped * 1000 + errno * 10 + found;
+      }
+      `,
+      "liblibcprobe",
+    );
+
+    const wasmPath = buildMainProgram(
+      `
+      #include <dlfcn.h>
+      #include <setjmp.h>
+      #include <stdio.h>
+
+      int main(int argc, char *argv[]) {
+        // Link sigsetjmp's helper into the main program, as php.wasm does.
+        sigjmp_buf jb;
+        if (sigsetjmp(jb, 0) != 0) return 9;
+
+        void *lib = dlopen(argv[1], RTLD_NOW);
+        if (!lib) {
+          printf("dlopen failed: %s\\n", dlerror());
+          return 1;
+        }
+        int (*probe)(void) = (int (*)(void))dlsym(lib, "probe");
+        if (!probe) {
+          printf("dlsym failed: %s\\n", dlerror());
+          return 2;
+        }
+        printf("probe=%d\\n", probe());
+        return dlclose(lib);
+      }
+      `,
+      "test-dlopen-libc-probe",
+      // php.wasm links with --export-all so its extensions can import libc
+      // from it. That would also export `fork` and demand fork
+      // instrumentation, so export exactly the libc symbols the probe uses.
+      // --export-dynamic exports the main image's `__c_longjmp` tag, which a
+      // side module's `longjmp` must share (php.wasm exports it too).
+      [
+        "-Wl,--export-dynamic",
+        "-Wl,--export=__errno_location",
+        "-Wl,--export=__environ",
+        "-Wl,--export=__sigsetjmp_save",
+        "-Wl,--export=__siglongjmp_restore",
+        "-Wl,--export=__wasm_setjmp",
+        "-Wl,--export=__wasm_setjmp_test",
+        "-Wl,--export=__wasm_longjmp",
+        "-Wl,--export=strcmp",
+      ],
+    );
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["test-dlopen-libc-probe", soPath],
+      env: ["DLOPEN_LIBC_PROBE=yes"],
+      timeout: 10_000,
+      io: io(),
+    });
+
+    expect(result.exitCode, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+    expect(result.stdout).toBe("probe=1771\n");
+  });
 
   it("reports dlerror for missing library", async () => {
     const wasmPath = buildMainProgram(

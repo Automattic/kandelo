@@ -69,6 +69,30 @@ pub fn is_public_dylink_export(name: &str) -> bool {
     !name.starts_with("__") && !is_fork_runtime_export(name)
 }
 
+/// Is this main-image export a process symbol?
+///
+/// NOT [`is_public_dylink_export`]. That rule is for SIDE MODULES, whose
+/// `__`-prefixed exports are loader and instrumenter entry points
+/// (`__wasm_call_ctors`, `__wasm_apply_data_relocs`, fork helpers). The main
+/// program is where libc lives, and libc's reserved-namespace names are
+/// ordinary ELF symbols a side module imports from `env` and `dlsym` can
+/// find: `__errno_location`, `__cxa_atexit`, `__sigsetjmp_save`,
+/// `__environ`. Dropping them made every such import an undefined symbol --
+/// PHP's `opcache.so` could not load against `php.wasm`, which exports
+/// `__sigsetjmp_save`. The TypeScript loader this ports published every
+/// main-image export except the per-module import names the host already
+/// withholds (`MAIN_IMAGE_RESERVED_EXPORTS` in `host/src/worker-main.ts`).
+///
+/// What stays out is the fork instrumenter's namespace, which is activation
+/// state rather than a symbol: the same rule `bind_env_import` applies to an
+/// instrumented module's `__wpk_fork_*` imports.
+pub fn is_main_image_symbol(name: &str) -> bool {
+    !name.starts_with(FORK_INSTRUMENT_PREFIX) && !is_fork_runtime_export(name)
+}
+
+/// The fork instrumenter's export and import namespace.
+pub const FORK_INSTRUMENT_PREFIX: &str = "__wpk_fork_";
+
 /// How a data symbol's defining global is reached.
 ///
 /// A GOT cell needs only the symbol's ADDRESS, but a direct `env.<sym>`
@@ -236,7 +260,7 @@ impl LinkerScope {
             self.table_index_by_function.entry((instance, export)).or_insert(slot);
         }
         for (name, value) in exports {
-            if !is_public_dylink_export(&name) {
+            if !is_main_image_symbol(&name) {
                 continue;
             }
             let symbol = ResolvedSymbol { value, owner: None, globally_visible: true };

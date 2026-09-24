@@ -113,8 +113,8 @@ pub use plan::{
 };
 pub use session::{MemoryOwnership, ReplayModule, Session};
 pub use scope::{
-    is_fork_runtime_export, is_public_dylink_export, DataBinding, LinkerScope, LoadState,
-    LoadedLibrary, ResolvedSymbol, SymbolValue, MAIN_INSTANCE,
+    is_fork_runtime_export, is_main_image_symbol, is_public_dylink_export, DataBinding,
+    LinkerScope, LoadState, LoadedLibrary, ResolvedSymbol, SymbolValue, MAIN_INSTANCE,
 };
 pub use wire::{
     decode_act_result, decode_plan_step, encode_act_result, encode_plan_step, Reader, Writer,

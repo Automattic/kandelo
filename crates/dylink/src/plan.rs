@@ -64,7 +64,7 @@ use crate::placement::{
 };
 use crate::scope::{
     is_fork_runtime_export, is_public_dylink_export, DataBinding, LinkerScope, LoadState,
-    LoadedLibrary, SymbolValue,
+    LoadedLibrary, SymbolValue, FORK_INSTRUMENT_PREFIX,
 };
 use crate::wasm::{
     read_module_shape, require_passive_data_segments, without_borrowed_replay_start, ExternKind,
@@ -1532,7 +1532,7 @@ impl LinkPlan {
         // a continuation to the wrong activation. A missing one fails here,
         // before the side module executes.
         if self.fork_instrumented
-            && (decl.name == "fork" || decl.name.starts_with("__wpk_fork_"))
+            && (decl.name == "fork" || decl.name.starts_with(FORK_INSTRUMENT_PREFIX))
         {
             return Ok(BindingValue::ActivationEnv { name: decl.name.clone() });
         }

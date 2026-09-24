@@ -363,6 +363,66 @@ fn a_process_supplied_symbol_outranks_a_self_definition() {
     );
 }
 
+/// The main program's reserved-looking (`__`-prefixed) exports are ordinary
+/// ELF symbols, and a side module must resolve against them. libc's own
+/// internal-linkage-named entry points (`__sigsetjmp_save`,
+/// `__errno_location`, `__cxa_atexit`) and data (`__environ`) live in the
+/// main program; a `dlopen`ed extension imports them from `env`. PHP's
+/// `opcache.so` is the case that found this: it imports
+/// `env.__sigsetjmp_save`, which `php.wasm` exports, and the load failed with
+/// `undefined symbol: __sigsetjmp_save`.
+///
+/// The fork instrumenter's own entry points are NOT process symbols, so they
+/// stay out of the scope even when the main image exports them.
+#[test]
+fn a_side_module_resolves_the_main_images_double_underscore_symbols() {
+    let bytes = SideModule {
+        dylink: DylinkSection { memory_size: 16, memory_align: 2, ..Default::default() },
+        imports: vec![
+            Import::func("env", "__sigsetjmp_save"),
+            Import::got("GOT.mem", "__environ"),
+        ],
+        ..Default::default()
+    }
+    .encode();
+
+    let mut linker = process_linker();
+    linker.scope.publish_main_image(
+        [
+            (
+                String::from("__sigsetjmp_save"),
+                SymbolValue::Func { instance: MAIN_INSTANCE, export: "__sigsetjmp_save".into() },
+            ),
+            (String::from("__environ"), SymbolValue::main_data("__environ", 0x5000)),
+            (
+                String::from("__wpk_fork_function_catalog"),
+                SymbolValue::Func {
+                    instance: MAIN_INSTANCE,
+                    export: "__wpk_fork_function_catalog".into(),
+                },
+            ),
+        ],
+        [],
+        4,
+    );
+    let mut executor = Executor::new(4, 0x1000);
+    let mut plan =
+        LinkPlan::begin(&mut linker, LoadRequest::new("opcache.so", bytes)).expect("begin");
+    executor.drive(&mut linker, &mut plan).expect("a main-image __ symbol must resolve");
+    let bindings = plan.bindings().expect("bindings");
+    assert_eq!(
+        bindings[0].value,
+        BindingValue::Export { instance: MAIN_INSTANCE, name: "__sigsetjmp_save".into() }
+    );
+    let BindingValue::Global(environ_cell) = bindings[1].value else {
+        panic!("GOT.mem.__environ must bind a GOT cell, got {:?}", bindings[1].value);
+    };
+    // The cell holds the main image's address for the symbol.
+    assert_eq!(executor.globals[&environ_cell], WasmValue::I32(0x5000));
+    assert!(linker.scope.global_symbol("__sigsetjmp_save").is_some());
+    assert!(linker.scope.global_symbol("__wpk_fork_function_catalog").is_none());
+}
+
 /// An immutable global export is a data address relative to the module's base
 /// and is relocated; a mutable one is instance state and passes through.
 #[test]
