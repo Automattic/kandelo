@@ -14506,6 +14506,80 @@ export class CentralizedKernelWorker {
    * uncatchable — the kernel enforces the default terminate action itself), so
    * the glue treats a queued SIGKILL unambiguously as "exit now".
    */
+  /**
+   * Drive one live process to exit cooperatively before its Worker is killed.
+   *
+   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] `killAllBlockedForTeardown` covers
+   * machine teardown, but that is not where most Workers die. Every exec
+   * replaces a process's Worker, and the host terminates the old one while it
+   * is still parked in `Atomics.wait` on its syscall channel — measured as
+   * `exited=false` on *every* termination in a shell boot, including the
+   * teardown path, because by the time destroy runs the machine's processes
+   * have already exited on their own.
+   *
+   * On JavaScriptCore terminating a parked Worker frees neither its OS thread
+   * nor its working set, so each exec leaked a thread. This is the same
+   * wake-to-`kernel_exit` handshake, scoped to one pid, so the ordinary
+   * replacement path reaches the same reclaimable idle state.
+   *
+   * Returns true when a channel was woken and the caller should expect an
+   * `{exit}`; false when the process was already gone or had no parked
+   * channel, in which case terminating directly loses nothing.
+   */
+  wakeProcessForCooperativeExit(pid: number): Promise<boolean> {
+    if (this.#kernelFatalError !== null) return this.#resolvePromise(false);
+    return new this.#promiseReceiver<boolean>((resolve, reject) => {
+      try {
+        this.#runOrDeferKernelEntry("process replacement wake", (entry) => {
+          let woke = false;
+          const registration = this.processes.get(pid);
+          const getExitStatus = this.#kernelInstanceIfAvailableForEntry(entry)
+            ?.exports.kernel_get_process_exit_status as
+              | ((p: number) => number)
+              | undefined;
+          // Same exclusion as the teardown sweep: never wake a thread whose
+          // process already recorded a real exit status, or our kernel_exit
+          // would clobber it.
+          if (
+            registration && !(getExitStatus && getExitStatus(pid) !== -1)
+          ) {
+            for (const channel of registration.channels) {
+              let status: number;
+              try {
+                const i32 = new Int32Array(
+                  channel.memory.buffer,
+                  channel.channelOffset,
+                );
+                status = Atomics.load(
+                  i32,
+                  CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+                );
+              } catch { continue; }
+              if (status !== CH_PENDING) continue;
+              try {
+                this.wakeChannelForTeardownExit(channel, entry);
+                woke = true;
+              } catch (err) {
+                this.#rethrowKernelEntryFatal(err);
+                console.error(
+                  `[wakeProcessForCooperativeExit] wake failed for pid=${pid}: ${err}`,
+                );
+              }
+            }
+          }
+          entry.deferProtocolEffect(() => {
+            resolve(woke);
+            return undefined;
+          });
+          return undefined;
+        });
+      } catch (cause) {
+        this.#rethrowKernelEntryFatal(cause);
+        reject(cause);
+      }
+    });
+  }
+
   killAllBlockedForTeardown(): Promise<Set<number>> {
     if (this.#kernelFatalError !== null) {
       return this.#resolvePromise(new Set<number>());

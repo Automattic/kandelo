@@ -72,11 +72,21 @@ const GALLERY_INDEX = process.env.GALLERY_INDEX === undefined
 /**
  * Threads in the page's content process — the number that actually moves.
  *
- * Pinned to the largest web process so a later sample cannot silently
- * describe a different one. Excludes the networking and GPU processes, which
- * stayed flat in every run.
+ * PIN THE PID. Choosing the largest web process per sample is not good
+ * enough: after a switch the largest process can be a different one, and the
+ * series then silently describes two processes. That produced an implausible
+ * post-switch reading of 151 MiB in an earlier run. `pinPageProcess()` records
+ * the pid once and every later sample reads that exact process; if it exits,
+ * samples report -1 rather than quietly following a different process.
  */
-function pageProcess() {
+let PINNED_PID = null;
+
+function pinPageProcess() {
+  PINNED_PID = largestWebProcess()?.pid ?? null;
+  return PINNED_PID;
+}
+
+function largestWebProcess() {
   const out = execSync(
     `ps -Ao pid,rss,comm | grep ms-playwright | grep -i ${ENGINE_NAME} | grep -iv networking | grep -iv gpu | grep -v grep || true`,
     { encoding: 'utf8' },
@@ -87,12 +97,23 @@ function pageProcess() {
     if (m) list.push({ pid: Number(m[1]), mib: Math.round(Number(m[2]) / 1024) });
   }
   list.sort((a, b) => b.mib - a.mib);
-  const top = list[0];
-  if (!top) return { pid: -1, mib: 0, threads: -1 };
+  return list[0] ?? null;
+}
+
+function pageProcess() {
+  if (PINNED_PID === null) return { pid: -1, mib: 0, threads: -1 };
+  let mib = 0;
+  try {
+    const out = execSync(`ps -o rss= -p ${PINNED_PID}`, { encoding: 'utf8' }).trim();
+    if (!out) return { pid: PINNED_PID, mib: -1, threads: -1, gone: true };
+    mib = Math.round(Number(out) / 1024);
+  } catch {
+    return { pid: PINNED_PID, mib: -1, threads: -1, gone: true };
+  }
   const threads = Number(
-    execSync(`ps -M ${top.pid} | tail -n +2 | wc -l`, { encoding: 'utf8' }).trim(),
+    execSync(`ps -M ${PINNED_PID} | tail -n +2 | wc -l`, { encoding: 'utf8' }).trim(),
   );
-  return { ...top, threads };
+  return { pid: PINNED_PID, mib, threads };
 }
 
 function browserRssMiB() {
@@ -125,6 +146,19 @@ if (MODE === 'gallery') {
     .catch(() => {});
   await page.waitForTimeout(2_500);
 }
+if (MODE === 'navigate') {
+  // Establish the page process before the first measured round so that round
+  // is comparable with the rest.
+  await page.goto(`${BASE}/?demo=${DEMOS[0]}`, { waitUntil: 'domcontentloaded' });
+  await page
+    .waitForFunction(() => /RUNNING|bash-|MODESET/.test(document.body.innerText), {
+      timeout: 60_000,
+    })
+    .catch(() => {});
+  await page.waitForTimeout(2_500);
+}
+pinPageProcess();
+console.log(`pinned page process pid=${PINNED_PID}`);
 
 for (let i = 0; i < ROUNDS; i++) {
   const demo = DEMOS[i % DEMOS.length];
@@ -158,6 +192,7 @@ for (let i = 0; i < ROUNDS; i++) {
     booted,
     threads: proc.threads,
     pagePid: proc.pid,
+    ...(proc.gone ? { gone: true } : {}),
     ...browserRssMiB(),
   });
   console.log(JSON.stringify(rows.at(-1)));
@@ -166,7 +201,7 @@ await browser.close();
 
 const threads = rows.map((r) => r.threads);
 const monotonic = threads.every((v, i) => i === 0 || v >= threads[i - 1]);
-const pinned = new Set(rows.map((r) => r.pagePid)).size === 1;
+const pinned = rows.every((r) => r.pagePid === PINNED_PID && !r.gone);
 console.log('\n=== threads in the page process (the signal) ===');
 console.log(`  ${threads.join(' -> ')}`);
 console.log(
@@ -175,8 +210,8 @@ console.log(
   } per switch, monotonic=${monotonic}, same process throughout=${pinned}`,
 );
 if (!pinned) {
-  console.log('  NOTE: the page process changed mid-run; thread counts across');
-  console.log('  rounds describe different processes and are not comparable.');
+  console.log('  NOTE: the pinned page process exited mid-run. Samples after');
+  console.log('  that point are invalid — rerun rather than reading them.');
 }
 console.log(monotonic && threads.at(-1) > threads[0]
   ? '  VERDICT: leaking — workers are not being released.'
