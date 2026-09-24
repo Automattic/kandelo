@@ -1,4 +1,4 @@
-Route the GTree key comparator through a correctly-typed function.
+Give two glib callbacks their exact signatures.
 
 mc builds its event-group and event trees with
 
@@ -24,8 +24,17 @@ engine can dispatch a two-parameter function through a three-parameter
 type, so the defect is in mc's cast. glib's own port carries the same
 fix for its internal GCompareFunc-as-GCompareDataFunc casts.
 
-Adds one wrapper with the exact GCompareDataFunc signature and uses it
-at both tree-construction sites.
+The same defect appears a second time in the widget layer:
+
+    g_list_foreach (g->widgets, (GFunc) widget_destroy, NULL);
+
+widget_destroy takes one parameter; GFunc takes two. That runs on
+MSG_DESTROY, so it trapped whenever a group was torn down -- closing any
+dialog, or quitting mc.
+
+Adds a wrapper with the exact signature at each site: one
+GCompareDataFunc for the two tree constructions, one GFunc for the group
+teardown.
 
 --- a/lib/event/internal.h
 +++ b/lib/event/internal.h
@@ -81,3 +90,39 @@ at both tree-construction sites.
                               NULL,
                               (GDestroyNotify) g_free,
                               (GDestroyNotify) mc_event_group_destroy_value);
+--- a/lib/widget/group.c
++++ b/lib/widget/group.c
+@@ -614,6 +614,24 @@
+     w->set_state = group_default_set_state;
+ 
+     g->mouse_status = MOU_UNHANDLED;
++}
++
++/* --------------------------------------------------------------------------------------------- */
++
++/**
++ * Destroy one child widget of a group.
++ *
++ * Exists so the callback has the exact GFunc signature. Casting
++ * widget_destroy (one parameter) to GFunc (two) is undefined behaviour that
++ * native ABIs happen to tolerate; WebAssembly type-checks every indirect
++ * call and traps on it, which killed mc whenever a group was destroyed --
++ * closing any dialog, or quitting.
++ */
++static void
++group_widget_destroy (gpointer data, gpointer user_data)
++{
++    (void) user_data;
++    widget_destroy (WIDGET (data));
+ }
+ 
+ /* --------------------------------------------------------------------------------------------- */
+@@ -647,7 +665,7 @@
+         return MSG_HANDLED;
+ 
+     case MSG_DESTROY:
+-        g_list_foreach (g->widgets, (GFunc) widget_destroy, NULL);
++        g_list_foreach (g->widgets, group_widget_destroy, NULL);
+         g_list_free (g->widgets);
+         g->widgets = NULL;
+         return MSG_HANDLED;
