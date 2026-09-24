@@ -15095,9 +15095,22 @@ pub fn sys_ioctl(
                     proc.terminal.foreground_pgid
                 }
             };
-            // POSIX: TIOCSWINSZ sends SIGWINCH to the foreground process group
+            // POSIX: TIOCSWINSZ sends SIGWINCH to the foreground process
+            // group of the terminal whose size changed — NOT to the caller.
+            // Those are usually different processes: a terminal program sizes
+            // the PTY it owns for the shell running inside it, and only that
+            // shell's group should learn the window changed.
+            //
+            // Raising it on the caller instead made Midnight Commander spin
+            // forever: mc sized its subshell's PTY, received the SIGWINCH
+            // itself, concluded its own window had resized, redrew, sized the
+            // PTY again, and recursed until the stack was exhausted.
+            //
+            // Delivery needs the process table, which `sys_ioctl` cannot
+            // reach from a single borrowed `Process`, so record the target
+            // and let the kernel syscall entry deliver it.
             if fg_pgid > 0 {
-                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+                proc.pending_winch_pgid = fg_pgid;
             }
             Ok(())
         }
@@ -30005,6 +30018,51 @@ mod tests {
         let ws_col = u16::from_le_bytes([buf2[2], buf2[3]]);
         assert_eq!(ws_row, 120);
         assert_eq!(ws_col, 200);
+    }
+
+    #[test]
+    fn test_ioctl_tiocswinsz_targets_terminal_foreground_group_not_caller() {
+        // POSIX sends TIOCSWINSZ's SIGWINCH to the foreground process group of
+        // the terminal being resized. A terminal program sizing the PTY its
+        // subshell runs on is NOT in that group, and must not be signalled:
+        // Midnight Commander recursed until the stack was exhausted when it
+        // received its own subshell's SIGWINCH.
+        let mut fixture = PtyFixture::new();
+        crate::pty::get_pty(fixture.pty_idx)
+            .expect("fixture PTY")
+            .terminal
+            .foreground_pgid = 77;
+        fixture.proc.pgid = 5; // caller sits in a different group
+        // SIGWINCH's default action is Ignore, so a raise on the caller would
+        // leave nothing pending and the assertion below would pass vacuously.
+        // Install a handler to make an errant delivery observable.
+        sys_sigaction(&mut fixture.proc, wasm_posix_shared::signal::SIGWINCH, 0x1234, 0, 0)
+            .expect("install a SIGWINCH handler on the caller");
+
+        let mut buf = [0u8; 8];
+        buf[0..2].copy_from_slice(&40u16.to_le_bytes());
+        buf[2..4].copy_from_slice(&100u16.to_le_bytes());
+        let master_fd = fixture.master_fd;
+        sys_ioctl(
+            &mut fixture.proc,
+            &mut fixture.host,
+            master_fd,
+            0x5414, // TIOCSWINSZ
+            &mut buf,
+        )
+        .expect("TIOCSWINSZ on the PTY master");
+
+        assert!(
+            !fixture
+                .proc
+                .signals
+                .is_pending(wasm_posix_shared::signal::SIGWINCH),
+            "the caller resized someone else's terminal and must not be signalled"
+        );
+        assert_eq!(
+            fixture.proc.pending_winch_pgid, 77,
+            "the terminal's foreground group is the SIGWINCH target"
+        );
     }
 
     #[test]

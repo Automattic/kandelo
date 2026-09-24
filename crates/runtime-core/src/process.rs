@@ -785,6 +785,19 @@ pub struct Process {
     pub main_thread_signals: PerThreadSignalState,
     pub memory: MemoryManager,
     pub terminal: TerminalState,
+    /// Foreground process group that a just-completed `TIOCSWINSZ` must
+    /// send SIGWINCH to, or 0 for none.
+    ///
+    /// WHY THIS IS NOT DELIVERED IN PLACE: POSIX sends that SIGWINCH to the
+    /// *terminal's* foreground process group, which for a PTY master is
+    /// generally some other process (a subshell), not the caller. `sys_ioctl`
+    /// only borrows this one `Process` out of the table, so it cannot reach
+    /// the group. It records the target here and the kernel syscall entry,
+    /// which owns the process table, delivers it and clears this.
+    ///
+    /// Transient: set and drained within a single syscall, so it is
+    /// deliberately not part of fork/exec process-state transport.
+    pub pending_winch_pgid: i32,
     pub environ: Vec<Vec<u8>>,
     pub argv: Vec<Vec<u8>>,
     /// In-progress host replacement, invisible until one token-bound commit
@@ -1091,6 +1104,7 @@ impl Process {
             main_thread_signals: PerThreadSignalState::new(),
             memory: MemoryManager::new(),
             terminal,
+            pending_winch_pgid: 0,
             environ: Vec::new(),
             argv: Vec::new(),
             metadata_replacement: None,
