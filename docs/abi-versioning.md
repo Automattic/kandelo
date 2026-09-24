@@ -1415,6 +1415,16 @@ local content-addressed cache and the source-build path handle the
 transition automatically. Artifacts built under the old ABI remain in the
 cache under their old keys and stay valid for old kernel revisions.
 
+The host's own Wasm modules carry the marker too. `fork_module32.wasm`,
+`fork_module64.wasm`, `dylink_module32.wasm` and `wasi_module32.wasm` are
+compiled from `crates/shared`, and each exports `__abi_version` returning
+`wasm_posix_shared::ABI_VERSION`. The binary resolver judges them with the
+same `expectedAbi` question it asks of guest programs. A module staged for
+another epoch is refused by name instead of loading. Before these modules
+exported the marker, every process launch on Node printed the "artifact
+lacks an `__abi_version` export" rollout warning, and nothing checked the
+modules' epoch. `host/test/standalone-module-abi-marker.test.ts` pins this.
+
 ### Additive changes within an ABI epoch
 
 Pure additions do not bump `ABI_VERSION`. Existing binaries still carry
