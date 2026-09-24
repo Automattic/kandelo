@@ -97,6 +97,11 @@ pub use act::{
     LinkAct, ModuleId, ModuleSource, PointerWidth, TableValue, TagId, WasmValue,
 };
 pub use error::{DylinkError, DylinkResult};
+/// The kernel ABI epoch this planner enforces the fork-instrument contract of.
+/// `crates/dylink-module` exports it as its `__abi_version` marker; re-exported
+/// here so that module needs no second dependency edge (and `Cargo.lock`, a
+/// cache-key input of every package, does not move).
+pub use wasm_posix_shared::ABI_VERSION;
 pub use got::{
     decide_got_cell, refresh_shared_cells, GotCell, GotDecision, GotInit, GotPlacement, GotRequest,
     GotTable, UnresolvedPolicy,

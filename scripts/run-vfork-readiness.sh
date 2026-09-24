@@ -75,7 +75,7 @@ fi
 
 (
   cd host
-  KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E=1 npx vitest run "${host_tests[@]}"
+  KANDELO_REQUIRE_E2E=1 npx vitest run "${host_tests[@]}"
 )
 
 host_target="$(rustc -vV | sed -n 's/^host: //p')"

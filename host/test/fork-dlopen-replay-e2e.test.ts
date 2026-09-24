@@ -23,6 +23,7 @@ import {
   runCentralizedProgram,
 } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -58,8 +59,11 @@ const CC_ENV = process.env.KANDELO_TEST_SYSROOT
 const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
-const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
-  existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
+// Ask the resolver, the way `runCentralizedProgram` finds the kernel it
+// boots. Probing `binaries/` and `local-binaries/` by fixed path skipped this
+// whole file whenever the kernel lived only in a source-only generation
+// (`local-binaries/source-only-v1`), which is where `./run.sh setup` puts it.
+const hasKernel = tryResolveBinary("kernel.wasm") !== null;
 
 // Stage built `.so`/`.wasm` under `<repoRoot>/target` (never an in-kernel
 // tmpfs scratch prefix) so the guest reaches the real host file through
@@ -77,17 +81,49 @@ function findLibcxxPrefix(): string | undefined {
   ) {
     return explicit;
   }
+  const hasPicArchives = (prefix: string): boolean =>
+    existsSync(join(prefix, "lib", "libc++-pic.a"))
+    && existsSync(join(prefix, "lib", "libc++abi-pic.a"));
   const sysrootArchive = join(SYSROOT, "lib", "libc++.a");
-  if (!existsSync(sysrootArchive)) return undefined;
-  const prefix = dirname(dirname(realpathSync(sysrootArchive)));
-  return existsSync(join(prefix, "lib", "libc++-pic.a"))
-      && existsSync(join(prefix, "lib", "libc++abi-pic.a"))
-    ? prefix
-    : undefined;
+  if (existsSync(sysrootArchive)) {
+    const prefix = dirname(dirname(realpathSync(sysrootArchive)));
+    if (hasPicArchives(prefix)) return prefix;
+  }
+  // The sysroot carries only the non-PIC archives. The libcxx package declares
+  // the PIC pair as outputs, so ask the package resolver for it -- the same
+  // way `sdl-dsp-fixtures.ts` provisions its fixtures -- rather than skipping
+  // the C++ case whenever nobody exported KANDELO_LIBCXX_PREFIX by hand. The
+  // resolver serves a cached build and builds on a miss.
+  try {
+    const hostTarget = /^host:\s*(\S+)$/m.exec(
+      execFileSync("rustc", ["-vV"], { cwd: REPO_ROOT, encoding: "utf8" }),
+    )?.[1];
+    if (!hostTarget) return undefined;
+    const resolved = execFileSync(
+      "cargo",
+      [
+        "run", "-p", "xtask", "--target", hostTarget, "--quiet", "--",
+        "build-deps", "resolve", "libcxx", "--arch", "wasm32",
+      ],
+      { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim().split("\n").pop()?.trim();
+    return resolved && hasPicArchives(resolved) ? resolved : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const libcxxPrefix = findLibcxxPrefix();
-const hasCppPrerequisites = hasSysroot && hasKernel && libcxxPrefix !== undefined;
+// Announce the C++ case's skip rather than dropping it silently from the
+// count, and refuse it under KANDELO_REQUIRE_E2E=1.
+const cppGate = artifactGate("fork-dlopen-replay-e2e (C++ throw/catch case)", [
+  {
+    what: "libc++-pic.a / libc++abi-pic.a (libcxx package)",
+    present: libcxxPrefix !== undefined,
+    build: "scripts/dev-shell.sh cargo xtask build-deps resolve libcxx --arch wasm32",
+  },
+]);
+const hasCppPrerequisites = hasSysroot && hasKernel && !cppGate.skip;
 
 if (process.env.KANDELO_REQUIRE_CPP_DYLINK_FORK_E2E === "1" && !hasCppPrerequisites) {
   throw new Error(
@@ -236,10 +272,9 @@ async function pollFramesCommitted(
 const forkDlopenGate = artifactGate("fork-dlopen-replay-e2e", [
   { what: "musl sysroot (libc.a)", present: hasSysroot, build: "scripts/build-musl.sh" },
   {
-    what: "local-binaries/kernel.wasm",
+    what: "kernel.wasm (via the binary resolver)",
     present: hasKernel,
-    build:
-      "./run.sh rebuild kernel && xtask build-deps ... install-local-artifact kernel",
+    build: "scripts/dev-shell.sh ./run.sh setup",
   },
 ]);
 

@@ -1072,6 +1072,40 @@ fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<bool, Str
 /// manifest, or one that carries no fork-module node, is not a staleness error.
 fn verify_fresh_coresident_side_modules(repo: &Path) -> Result<(), String> {
     let output_root = repo.join("local-binaries").join("source-only-v1");
+    coresident_side_module_manifest_freshness(&output_root, |module| {
+        current_side_module_closure_key(repo, module)
+    })
+}
+
+/// A co-resident module's closure digest, recomputed from the current source
+/// tree the same way its build-key stamp is.
+fn current_side_module_closure_key(
+    repo: &Path,
+    module: &CoresidentSideModule,
+) -> Result<String, String> {
+    let crates: Vec<String> = module
+        .closure_crates
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    Ok(crate::util::hex(&crate::cargo_closure::side_module_build_key(
+        repo,
+        &crates,
+        module.script,
+    )?))
+}
+
+/// Check the projection manifest under `output_root` against each co-resident
+/// module's CURRENT closure key, which `current_closure` supplies.
+///
+/// One function for both callers: `verify-fresh`, which reports the failure,
+/// and the local-build no-op fast path, which must re-finalize on it. Two
+/// copies of this rule are how the fast path came to judge the tier current
+/// from bytes alone while `verify-fresh` judged the same tier stale.
+fn coresident_side_module_manifest_freshness(
+    output_root: &Path,
+    current_closure: impl Fn(&CoresidentSideModule) -> Result<String, String>,
+) -> Result<(), String> {
     let manifest_path = output_root
         .join(".kandelo")
         .join("source-only-program-projection-v1.json");
@@ -1084,21 +1118,11 @@ fn verify_fresh_coresident_side_modules(repo: &Path) -> Result<(), String> {
         .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
 
     for module in CORESIDENT_SIDE_MODULES {
-        // Freshness signal 1 (stale vs source): recompute this module's current
-        // closure digest and compare every projected node against it. Computed
-        // here (needs `cargo metadata` on `repo`) and handed to the pure
-        // validator so the validator itself is unit-testable without a Cargo
-        // workspace.
-        let crates: Vec<String> = module
-            .closure_crates
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect();
-        let current_closure = crate::util::hex(&crate::cargo_closure::side_module_build_key(
-            repo,
-            &crates,
-            module.script,
-        )?);
+        // Freshness signal 1 (stale vs source): the caller recomputes this
+        // module's current closure digest (needs `cargo metadata` on the repo)
+        // and the pure validator compares every projected node against it, so
+        // the validator itself is unit-testable without a Cargo workspace.
+        let current_closure = current_closure(module)?;
         check_projected_side_module_freshness(
             module.node_name,
             module.closure_description,
@@ -2929,7 +2953,29 @@ fn ensure_coresident_side_modules_built(repo: &Path) -> Result<(), String> {
 /// `local-binaries/` copies, so a stale or missing projected copy (e.g. a
 /// fork-module source change with an otherwise-unchanged package graph) forces
 /// the finalizer to re-stage rather than leaving a stale module on disk.
+///
+/// Equal bytes are NOT enough. Each module's `build-wasm.sh` copies what it
+/// builds straight into the tier (`scripts/lib/side-module-tier.sh`), outside
+/// the projection lock and without touching the manifest. So after a
+/// side-module-only source change the tier bytes already equal
+/// `local-binaries/`, while the manifest still records the old closure key and
+/// member digest. Judged by bytes alone, every later `./run.sh setup` took the
+/// no-op path, never re-finalized, and `verify-fresh` kept reporting the
+/// projection stale with advice ("rebuild with `./run.sh setup`") that could
+/// not work. The manifest must agree with the current closure too.
 fn coresident_side_module_projection_is_current(output_root: &Path, repo: &Path) -> bool {
+    coresident_side_module_projection_is_current_with(output_root, repo, |module| {
+        current_side_module_closure_key(repo, module)
+    })
+}
+
+/// [`coresident_side_module_projection_is_current`] with the closure-key
+/// computation injected, so it is testable without a Cargo workspace.
+fn coresident_side_module_projection_is_current_with(
+    output_root: &Path,
+    repo: &Path,
+    current_closure: impl Fn(&CoresidentSideModule) -> Result<String, String>,
+) -> bool {
     for (name, _arch, required) in CORESIDENT_SIDE_MODULES
         .iter()
         .flat_map(|module| module.artifacts.iter())
@@ -2943,7 +2989,7 @@ fn coresident_side_module_projection_is_current(output_root: &Path, repo: &Path)
             _ => return false,
         }
     }
-    true
+    coresident_side_module_manifest_freshness(output_root, current_closure).is_ok()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7180,6 +7226,61 @@ materialization = "lazy"
             Path::new("/nonexistent/manifest.json"),
         )
         .expect("no fork-module node -> nothing to verify");
+    }
+
+    /// Equal tier bytes do not make the projection current when the manifest
+    /// still records an older closure key: `build-wasm.sh` stages its bytes
+    /// into the tier itself, so bytes-only comparison skipped the finalizer
+    /// forever after a side-module-only change.
+    #[test]
+    fn coresident_projection_is_not_current_when_the_manifest_key_is_stale() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let output_root = source_only_output_root(repo);
+        fs::create_dir_all(output_root.join(".kandelo")).unwrap();
+        fs::create_dir_all(repo.join("local-binaries")).unwrap();
+        let mut nodes = Vec::new();
+        for module in CORESIDENT_SIDE_MODULES {
+            for (name, arch, required) in module.artifacts {
+                if !required {
+                    continue;
+                }
+                let bytes = format!("{name}-bytes").into_bytes();
+                // The build script's direct tier copy: both locations agree.
+                fs::write(repo.join("local-binaries").join(name), &bytes).unwrap();
+                fs::write(output_root.join(name), &bytes).unwrap();
+                nodes.push(serde_json::json!({
+                    "node": { "kind": "package", "name": module.node_name, "targetArch": arch },
+                    "cacheKeySha256": format!("{}-recorded", module.node_name),
+                    "members": [{
+                        "sourceArtifact": name, "mirrorPath": name, "mode": 420,
+                        "size": bytes.len(), "sha256": sha256_bytes(&bytes)
+                    }]
+                }));
+            }
+        }
+        fs::write(
+            output_root.join(".kandelo/source-only-program-projection-v1.json"),
+            serde_json::to_vec(&serde_json::json!({ "nodes": nodes })).unwrap(),
+        )
+        .unwrap();
+
+        let recorded = |module: &CoresidentSideModule| Ok(format!("{}-recorded", module.node_name));
+        assert!(
+            coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
+            "bytes and manifest both current",
+        );
+        let dylink_changed = |module: &CoresidentSideModule| {
+            Ok(if module.node_name == DYLINK_MODULE_NODE_NAME {
+                String::from("dylink-module-rebuilt")
+            } else {
+                format!("{}-recorded", module.node_name)
+            })
+        };
+        assert!(
+            !coresident_side_module_projection_is_current_with(&output_root, repo, dylink_changed),
+            "a manifest recording an older closure key must force re-finalization",
+        );
     }
 
     #[test]

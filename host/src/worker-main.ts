@@ -922,13 +922,17 @@ function createProcessDylinkActivationOwner(
         env,
         savedMutableGlobalImport(moduleName, importName) {
           if (!options.isForkChild) return undefined;
-          if (!childImportedStatePlanner) {
-            throw new Error(
-              `${request.name}: activation ${activationId} requested saved `
-              + "import state before wrapping its final imports",
-            );
+          // The dylink planner asks for a saved `GOT.func` value while it is
+          // still MAKING the GOT cells, which is before instantiation and so
+          // before `wrapImports`. Resolve the planner lazily here too, as
+          // `wrapImports` does: the fork child built it before replaying any
+          // dlopen. Requiring `wrapImports` first failed every replayed side
+          // module with a `GOT.func` import the request did not carry.
+          const planner = childImportedStatePlanner ?? options.importedStatePlanner?.();
+          if (!planner) {
+            throw new Error(`${request.name}: activation ${activationId} has no imported-state plan`);
           }
-          return childImportedStatePlanner.savedMutableGlobalImport(
+          return planner.savedMutableGlobalImport(
             activationId,
             moduleName,
             importName,

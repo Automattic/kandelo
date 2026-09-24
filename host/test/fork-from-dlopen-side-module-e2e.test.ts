@@ -10,6 +10,8 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
+import { artifactGate } from "./support/artifact-gate";
 import {
   FORK_CAP_DYLINK_MAIN,
   FORK_CAP_SIDE_ENTRY,
@@ -45,18 +47,24 @@ const instrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
 // shell sets `TMPDIR=/tmp/nix-shell.*`), where the empty in-kernel tmpfs would
 // shadow the path and the guest dlopen would fail with "cannot stat library".
 const buildDir = makeHostScratchTempRoot("kandelo-fork-from-side-module-");
-const hasPrerequisites =
-  existsSync(join(sysroot, "lib", "libc.a"))
-  && (
-    existsSync(join(repoRoot, "binaries", "kernel.wasm"))
-    || existsSync(join(repoRoot, "local-binaries", "kernel.wasm"))
-  );
-
-if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisites) {
-  throw new Error(
-    "side-module fork e2e was required but sysroot/libc.a or kernel.wasm is missing",
-  );
-}
+// The kernel comes from the binary resolver, the way `runCentralizedProgram`
+// finds the kernel it boots. Probing `binaries/` and `local-binaries/` by fixed
+// path skipped this whole file whenever the kernel lived only in a source-only
+// generation (`local-binaries/source-only-v1`), which is where
+// `./run.sh setup` puts it. The gate announces a skip, and refuses one under
+// KANDELO_REQUIRE_E2E=1.
+const sideModuleForkGate = artifactGate("fork-from-dlopen-side-module-e2e", [
+  {
+    what: "musl sysroot (libc.a)",
+    present: existsSync(join(sysroot, "lib", "libc.a")),
+    build: "scripts/build-musl.sh",
+  },
+  {
+    what: "kernel.wasm (via the binary resolver)",
+    present: tryResolveBinary("kernel.wasm") !== null,
+    build: "scripts/dev-shell.sh ./run.sh setup",
+  },
+]);
 
 function instrumentInPlace(wasmPath: string, entry?: string): void {
   const output = `${wasmPath}.instrumented`;
@@ -132,7 +140,7 @@ function buildMainProgram(source: string): string {
   return wasmPath;
 }
 
-describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
+describe.skipIf(sideModuleForkGate.skip)("fork from a dlopened side module", () => {
   beforeAll(() => mkdirSync(buildDir, { recursive: true }));
 
   it("preserves the side frame and returns in both parent and child", async () => {

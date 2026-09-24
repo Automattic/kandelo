@@ -474,8 +474,8 @@ enum Phase {
     Activation,
     Instantiate,
     Register,
-    Exports,
     Bootstrap,
+    Exports,
     Tls,
     Relocate,
     Publish,
@@ -913,16 +913,25 @@ impl LinkPlan {
                             Pending::RegisterActivation,
                         );
                     } else {
-                        self.phase = Phase::Exports;
+                        self.phase = Phase::Bootstrap;
                     }
                 }
+                Phase::Bootstrap => self.plan_stage(InitializationStage::Bootstrap, Phase::Exports),
+                // Exports are read AFTER bootstrap, never before. A
+                // fork-instrumented module has no start section:
+                // `wasm-fork-instrument` moves wasm-ld's `__wasm_init_memory`
+                // into `wpk_fork_module_bootstrap`, and that function is what
+                // sets a threaded module's `__tls_base`. Read before it runs,
+                // `__tls_base` is still 0 and `plan_tls` refuses the load with
+                // "invalid side-module TLS base" -- which is how every
+                // instrumented side module with thread-locals (a C++ one
+                // linking libc++abi, for instance) failed to dlopen.
                 Phase::Exports => {
                     self.emit(
                         PlanStep::Act(LinkAct::ReadExports { instance: self.instance }),
                         Pending::ReadExports,
                     );
                 }
-                Phase::Bootstrap => self.plan_stage(InitializationStage::Bootstrap, Phase::Tls),
                 Phase::Tls => {
                     self.plan_tls(linker)?;
                     self.plan_relocations()?;
@@ -1079,16 +1088,16 @@ impl LinkPlan {
             }
             Pending::RegisterActivation => {
                 result.expect_done()?;
-                self.phase = Phase::Exports;
+                self.phase = Phase::Bootstrap;
             }
             Pending::ReadExports => {
                 self.exports = result.expect_exports()?;
-                self.phase = Phase::Bootstrap;
+                self.phase = Phase::Tls;
             }
             Pending::Stage(stage) => {
                 result.expect_done()?;
                 self.phase = match stage {
-                    InitializationStage::Bootstrap => Phase::Tls,
+                    InitializationStage::Bootstrap => Phase::Exports,
                     InitializationStage::Relocations => Phase::Constructors,
                     InitializationStage::Constructors => Phase::Finished,
                 };

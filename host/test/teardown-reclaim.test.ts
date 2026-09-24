@@ -21,15 +21,28 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { ABI_SYSCALLS } from "../src/generated/abi";
+import { tryResolveBinary } from "../src/binary-resolver";
+import { artifactGate } from "./support/artifact-gate";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const blockForeverBinary = join(__dirname, "../../examples/block-forever.wasm");
-const worktreeKernelBinary = join(
-  __dirname,
-  "../../local-binaries/kernel.wasm",
-);
-const hasBinaries =
-  existsSync(blockForeverBinary) && existsSync(worktreeKernelBinary);
+// Ask the resolver for the kernel. Probing `local-binaries/kernel.wasm` by
+// fixed path skipped this whole file whenever the kernel lived only in a
+// source-only generation (`local-binaries/source-only-v1`), which is where
+// `./run.sh setup` puts it.
+const worktreeKernelBinary = tryResolveBinary("kernel.wasm");
+const teardownGate = artifactGate("teardown-reclaim", [
+  {
+    what: "examples/block-forever.wasm",
+    present: existsSync(blockForeverBinary),
+    build: "scripts/dev-shell.sh bash scripts/build-programs.sh",
+  },
+  {
+    what: "kernel.wasm (via the binary resolver)",
+    present: worktreeKernelBinary !== null,
+    build: "scripts/dev-shell.sh ./run.sh setup",
+  },
+]);
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -43,7 +56,7 @@ function loadWasm(path: string): ArrayBuffer {
 // crash status instead.
 const COOPERATIVE_EXIT_STATUS = 137;
 
-describe.skipIf(!hasBinaries)("teardown reclamation of Atomics.wait-blocked workers", () => {
+describe.skipIf(teardownGate.skip)("teardown reclamation of Atomics.wait-blocked workers", () => {
   it("wakes a blocked daemon to a cooperative exit on destroy", async () => {
     const exits = new Map<number, number | undefined>();
     const host = new NodeKernelHost({
@@ -56,7 +69,7 @@ describe.skipIf(!hasBinaries)("teardown reclamation of Atomics.wait-blocked work
     // select a previously published global cache generation whose host
     // manifest predates the dirty worktree, producing an unrelated init
     // failure instead of exercising the teardown code under test.
-    await host.init(loadWasm(worktreeKernelBinary));
+    await host.init(loadWasm(worktreeKernelBinary!));
 
     let pid = -1;
     let resolveBlocked!: () => void;

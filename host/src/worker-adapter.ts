@@ -100,10 +100,11 @@ export class MockWorkerAdapter implements WorkerAdapter {
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NODE_WORKER_INIT_BY_MESSAGE } from "./node-worker-initialization";
+import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
 
 // Wasm guest stacks consume the embedding worker's native stack when engines
 // recurse through Wasm frames. Keep the default high enough for stack-heavy
@@ -206,16 +207,29 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     }
     const href = this.entryUrl.href;
 
+    // A compiled entry is used only when it was built from the current
+    // sources, the same fingerprint gate `node-kernel-host.ts` applies to the
+    // kernel worker. Accepting any existing `dist/worker-entry.js` ran every
+    // process worker from a stale bundle after a `host/src` edit, so Vitest
+    // reported on code that was no longer in the tree.
+    const sourcePath = fileURLToPath(this.entryUrl);
+
     // Check tsup dist output: src/worker-entry.ts → dist/worker-entry.js
     const distUrl = new URL(href.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js"));
-    if (distUrl.href !== href && existsSync(distUrl)) {
+    if (
+      distUrl.href !== href &&
+      compiledWorkerEntryIsCurrent(sourcePath, fileURLToPath(distUrl))
+    ) {
       this._compiledEntry = distUrl;
       return distUrl;
     }
 
     // Check sibling .js file
     const jsUrl = new URL(href.replace(/\.ts$/, ".js"));
-    if (jsUrl.href !== href && existsSync(jsUrl)) {
+    if (
+      jsUrl.href !== href &&
+      compiledWorkerEntryIsCurrent(sourcePath, fileURLToPath(jsUrl))
+    ) {
       this._compiledEntry = jsUrl;
       return jsUrl;
     }

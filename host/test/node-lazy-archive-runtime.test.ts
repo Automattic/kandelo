@@ -15,17 +15,32 @@ import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { tryResolveBinary } from "../src/binary-resolver";
+import { artifactGate } from "./support/artifact-gate";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { parseZipCentralDirectory } from "../src/vfs/zip";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
 const mountProbe = join(repoRoot, "examples/mount_probe_test.wasm");
-const kernel = [
-  join(repoRoot, "local-binaries/kernel.wasm"),
-  join(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"),
-].find(existsSync) ?? join(repoRoot, "local-binaries/kernel.wasm");
-const available = [mountProbe, kernel].every(existsSync);
+// Ask the resolver for the kernel. The fixed-path probe this replaces looked
+// at `local-binaries/kernel.wasm` and then fell back to cargo's raw
+// `target/.../kandelo_kernel.wasm`. The kernel now lives in a source-only
+// generation (`local-binaries/source-only-v1`), so the probe booted whatever
+// cargo last left in `target/`, an artifact nothing checks for freshness.
+const kernel = tryResolveBinary("kernel.wasm");
+const lazyArchiveGate = artifactGate("node-lazy-archive-runtime", [
+  {
+    what: "examples/mount_probe_test.wasm",
+    present: existsSync(mountProbe),
+    build: "scripts/dev-shell.sh bash scripts/build-programs.sh",
+  },
+  {
+    what: "kernel.wasm (via the binary resolver)",
+    present: kernel !== null,
+    build: "scripts/dev-shell.sh ./run.sh setup",
+  },
+]);
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
@@ -41,7 +56,7 @@ function integrity(bytes: Uint8Array): { sha256: string; bytes: number } {
   };
 }
 
-describe.skipIf(!available)("Node lazy archive runtime paths", () => {
+describe.skipIf(lazyArchiveGate.skip)("Node lazy archive runtime paths", () => {
   // Phase 5 cutover: with the in-kernel rootfs overlay owning `/`
   // unconditionally, a closed-source lazy ZIP archive must (a) be fetched from
   // its bound source exactly once even across repeated guest reads of the same
@@ -124,7 +139,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     });
 
     try {
-      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel!))));
       expect(sourceRequests).toBe(0);
 
       // First guest read of the bound archive materializes it (fetch #1).
@@ -209,7 +224,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     });
 
     try {
-      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel!))));
       expect(await host.spawn(arrayBuffer(probeBytes), [
         "mount_probe_test",
         "rootfs",
@@ -245,7 +260,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     });
 
     try {
-      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel!))));
       const payload = new TextEncoder().encode("host-written-body");
       await host.writeFileToVfs("/host-written", payload, 0o644);
       // Host read-back through the overlay round-trips the exact bytes.
@@ -283,7 +298,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     });
 
     try {
-      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel!))));
       // Plant a real executable under `/` that the base image does not contain.
       await host.writeFileToVfs("/planted", probeBytes, 0o755);
       // Exec-resolve it by path from the overlay and run it (it reads itself).

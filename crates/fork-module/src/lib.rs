@@ -137,6 +137,23 @@ extern crate alloc;
 // the host lets `cargo build/test --workspace` on a host target stay green while
 // the real artifact is produced by `cargo build -p fork-module --target
 // wasm32-unknown-unknown`.
+/// The kernel ABI epoch this module was built against.
+///
+/// The fork module interprets the fork-instrument contract and the
+/// fork-codec wire formats, which change under the ABI epoch. It is compiled from `crates/shared`, so it
+/// is bound to one `ABI_VERSION` exactly as a guest program is. The host's
+/// binary resolver applies its ABI-epoch policy to every `.wasm` it resolves,
+/// this module included: with this marker a module staged for another epoch is
+/// refused by name ("ABI 43, expected 44"), and without it the check could
+/// only print a "legacy binary predates the ABI marker" warning on every
+/// process launch. The body must stay a bare constant, because
+/// `wasm_artifact::read_abi_version` reads the value without instantiating.
+#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __abi_version() -> u32 {
+    wasm_posix_shared::ABI_VERSION
+}
+
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 mod wasm {
     use core::alloc::{GlobalAlloc, Layout};
