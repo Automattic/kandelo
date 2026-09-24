@@ -457,7 +457,6 @@ enum Pending {
     ReadExports,
     Stage(InitializationStage),
     RelocatedGlobal(usize),
-    ExportTableGrow(usize),
     ExportTableWrite(usize),
     ExportJournal(usize),
     GotWrite(usize),
@@ -516,6 +515,11 @@ pub struct LinkPlan {
     table_base: u64,
     table_pad: u64,
     table_growth_start: u64,
+    /// First of this module's exported-function table slots, reserved with its
+    /// `dylink.0` table region. See `plan_table_phase`.
+    export_slot_base: u64,
+    /// How many exported-function slots that reservation holds.
+    export_slot_count: u64,
 
     memory_base_global: Option<GlobalId>,
     table_base_global: Option<GlobalId>,
@@ -727,6 +731,8 @@ impl LinkPlan {
             table_base: 0,
             table_pad: 0,
             table_growth_start,
+            export_slot_base: 0,
+            export_slot_count: 0,
             memory_base_global: None,
             table_base_global: None,
             longjmp_tag: linker.longjmp_tag,
@@ -993,6 +999,15 @@ impl LinkPlan {
             }
             Pending::TableReserve => {
                 let previous = result.expect_index()?;
+                if self.request.replay.is_none() {
+                    // A fresh load takes the table as it finds it. The host
+                    // appends staged-call slots the scope never hears about,
+                    // so the length the growth reports is the truth and the
+                    // scope's count is not; only a replay has a parent base
+                    // it must land on exactly.
+                    self.table_base = previous;
+                    self.export_slot_base = previous + self.metadata.table_size;
+                }
                 if previous != self.table_base {
                     return Err(DylinkError::ReplayTablePastBase {
                         library: self.request.name.clone(),
@@ -1000,9 +1015,9 @@ impl LinkPlan {
                         parent: self.table_base,
                     });
                 }
-                linker
-                    .scope
-                    .set_table_length(self.table_base + self.metadata.table_size);
+                linker.scope.set_table_length(
+                    self.table_base + self.metadata.table_size + self.export_slot_count,
+                );
                 for offset in 0..self.metadata.table_size {
                     self.owned_table_entries.insert(self.table_base + offset);
                 }
@@ -1092,31 +1107,6 @@ impl LinkPlan {
                     },
                 );
                 self.relocation_cursor = index + 1;
-            }
-            Pending::ExportTableGrow(index) => {
-                let slot = result.expect_index()?;
-                self.publish[index].table_index = Some(slot);
-                linker.scope.set_table_length(slot + 1);
-                self.owned_table_entries.insert(slot);
-                let name = self.publish[index].name.clone();
-                self.emit(
-                    PlanStep::Act(LinkAct::WriteTable {
-                        index: slot,
-                        value: TableValue::Export { instance: self.instance, name },
-                    }),
-                    Pending::ExportTableWrite(index),
-                );
-                // A host-written slot is journaled into the same
-                // activation-owned sparse table state instrumented `table.set`
-                // writes reach, so fork captures the function as an
-                // activation+ordinal recipe.
-                self.emit(
-                    PlanStep::Host(HostRequest::JournalTableMutation {
-                        first_index: slot,
-                        length: 1,
-                    }),
-                    Pending::ExportJournal(index),
-                );
             }
             Pending::ExportTableWrite(_) => result.expect_done()?,
             Pending::ExportJournal(index) => {
@@ -1260,15 +1250,41 @@ impl LinkPlan {
         )?;
         self.table_base = placement.base;
         self.table_pad = placement.pad;
+        // Every exported function gets a table slot, and those slots are
+        // reserved HERE, contiguous with the module's own `dylink.0` region,
+        // rather than one at a time when the exports are published.
+        //
+        // WHY: publication runs after the Bootstrap stage, and a staged call
+        // makes the host append a slot of its own for the guest to call
+        // through. A replay that runs no stages (a pthread materializing a
+        // peer's `dlopen`, a completed fork replay) never makes that slot, so
+        // slots handed out "at the current length" after it land one lower in
+        // the replica than in the process that loaded the library. The replica
+        // then holds a DIFFERENT function at the index a C function pointer in
+        // shared memory names -- or none, past its end. Reserving the export
+        // slots with the region makes their indices a function of the replayed
+        // base alone, which the replay already reproduces exactly.
+        self.export_slot_count = self
+            .shape
+            .exports
+            .iter()
+            .filter(|export| {
+                export.kind == ExternKind::Func
+                    && is_public_dylink_export(&export.name)
+                    && !is_fork_runtime_export(&export.name)
+            })
+            .count() as u64;
+        self.export_slot_base = placement.base + placement.reserve;
+        let reserve = placement.reserve + self.export_slot_count;
         if placement.pad > 0 {
             self.emit(
                 PlanStep::Act(LinkAct::GrowTable { delta: placement.pad }),
                 Pending::TablePad,
             );
         }
-        if placement.reserve > 0 {
+        if reserve > 0 {
             self.emit(
-                PlanStep::Act(LinkAct::GrowTable { delta: placement.reserve }),
+                PlanStep::Act(LinkAct::GrowTable { delta: reserve }),
                 Pending::TableReserve,
             );
         }
@@ -1804,6 +1820,27 @@ impl LinkPlan {
         }
     }
 
+    /// Write one exported function into its reserved slot, and journal it.
+    fn export_slot_published(&mut self, index: usize, slot: u64) {
+        self.publish[index].table_index = Some(slot);
+        self.owned_table_entries.insert(slot);
+        let name = self.publish[index].name.clone();
+        self.emit(
+            PlanStep::Act(LinkAct::WriteTable {
+                index: slot,
+                value: TableValue::Export { instance: self.instance, name },
+            }),
+            Pending::ExportTableWrite(index),
+        );
+        // A host-written slot is journaled into the same activation-owned
+        // sparse table state instrumented `table.set` writes reach, so fork
+        // captures the function as an activation+ordinal recipe.
+        self.emit(
+            PlanStep::Host(HostRequest::JournalTableMutation { first_index: slot, length: 1 }),
+            Pending::ExportJournal(index),
+        );
+    }
+
     fn plan_publish(&mut self) -> DylinkResult<()> {
         // Every exported function needs a table slot before anything can take
         // its address.
@@ -1812,10 +1849,17 @@ impl LinkPlan {
             if self.publish[index].kind == ExternKind::Func
                 && self.publish[index].table_index.is_none()
             {
-                self.emit(
-                    PlanStep::Act(LinkAct::GrowTable { delta: 1 }),
-                    Pending::ExportTableGrow(index),
-                );
+                // The k-th published function takes the k-th reserved slot.
+                let ordinal = self.publish[..index]
+                    .iter()
+                    .filter(|site| site.kind == ExternKind::Func)
+                    .count() as u64;
+                if ordinal >= self.export_slot_count {
+                    // The instance exported a function the module's own export
+                    // section did not declare; the reservation cannot hold it.
+                    return Err(DylinkError::UnexpectedActSequence);
+                }
+                self.export_slot_published(index, self.export_slot_base + ordinal);
                 return Ok(());
             }
             self.publish_cursor += 1;

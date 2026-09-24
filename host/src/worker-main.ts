@@ -103,10 +103,6 @@ import {
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
 import {
-  type ForkModuleHostCapabilities,
-  createForkModuleHostCapabilities,
-} from "./fork-module-host-capabilities";
-import {
   computeForkModuleTemplateId,
   readForkModuleStatePointerWidth,
   readForkModuleStateRoot,
@@ -2803,31 +2799,29 @@ const RTLD_GLOBAL = 0x100;
 export interface ForkActivationTableReplication {
   /** Immutable pointer-width address of the shared generation fence. */
   readonly generationAddress: WebAssembly.Global;
-  /**
-   * Acquire the process writer, apply the latest snapshot, and return its
-   * exact generation. Ownership stays live until `commit` or `abort`.
-   */
-  beginMutation(): bigint;
-  /** Apply the latest process snapshot and return its exact generation. */
-  reconcile(): bigint;
-  /** Publish a successful guest mutation and release writer ownership. */
-  commit(
-    activationId: number,
-    ownerId: number,
-    firstIndex: number | bigint,
-    length: number | bigint,
-  ): void;
-  /** Release writer ownership after a non-mutating failure or no-op. */
-  abort(): void;
 }
 
+/**
+ * WHAT USED TO BE HERE: the four guest table imports (`beginMutation`,
+ * `reconcile`, `commit`, `abort`), their per-worker forwarders, the
+ * mutation-context stack `abortActiveMutations` unwound, and the funcref
+ * patch capture/apply they drove. The fork module serves those imports, reads
+ * and writes guest tables through the guest's own shims and applies every
+ * published patch itself, so all of it was bound to nothing. What remains
+ * here instantiates a peer's side modules and restores published table
+ * checkpoints -- the half only a host can do.
+ */
 interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   /** Bring this Worker to the latest complete process generation. */
   reconcileNow(): number;
   /** Check the archive fence while the caller already excludes writers. */
   isCurrentUnderLock(): boolean;
-  /** Release any mutation writer depths unwound by a Wasm trap. */
-  abortActiveMutations(): void;
+  /**
+   * The fork module's `__wpk_fork_host_materialize_dlopen_archive`: bring
+   * this Worker up to at least `generation`, which instantiates every library
+   * it lacks. 0, or EAGAIN (11) when the archive has not reached it.
+   */
+  materialize(generation: bigint): number;
 }
 
 /**
@@ -2884,13 +2878,9 @@ function createForkPeerTableCheckpoint(
 
 function createProcessTableReplicationOwner(options: {
   readonly generationAddress: number;
-  readonly tables: ForkTables;
   /**
    * Module-composed peer-table snapshot lifecycle (Path-A A3/A4). Owns the full
-   * table checkpoint capture/restore through the co-resident fork module; the
-   * `registry` above is retained only for the funcref-only patch fast path
-   * (`captureFuncrefTablePatch` / `applyFuncrefTablePatch`), which never touched
-   * the reference engine.
+   * table checkpoint capture/restore through the co-resident fork module.
    */
   readonly tableCheckpoint: ForkPeerTableCheckpoint;
   readonly dlopen: DlopenSupport;
@@ -2909,10 +2899,7 @@ function createProcessTableReplicationOwner(options: {
     { value: "i64", mutable: false },
     BigInt(options.generationAddress),
   );
-  let deferredPublication = false;
-  let replicaMaterializing = false;
   let suppressInitialSnapshotRestore = !options.restoreSnapshots;
-  const mutationContexts: Array<{ readonly deferPublication: boolean }> = [];
 
   // WHAT USED TO RELEASE A SUPERSEDED CHECKPOINT: a host arena attached to the
   // old root purely to free its chunks. The module maps those chunks, so
@@ -2933,20 +2920,16 @@ function createProcessTableReplicationOwner(options: {
         suppressInitialSnapshotRestore = false;
         return;
       }
-      let patchFloor = previousGeneration;
       if (
         snapshot.tableStateRoot !== 0 &&
         snapshot.tableCheckpointGeneration > previousGeneration
       ) {
-        options.tableCheckpoint.restore(snapshot.tableStateRoot);
         // The archive, not this temporary validated view, owns the mappings.
-        patchFloor = snapshot.tableCheckpointGeneration;
+        options.tableCheckpoint.restore(snapshot.tableStateRoot);
       }
-      for (const patch of snapshot.tablePatches) {
-        if (patch.generation! > patchFloor) {
-          options.tables.applyFuncrefTablePatch(patch);
-        }
-      }
+      // Published funcref patches are NOT applied here: the fork module
+      // applies every one, in order, on this Worker's next guarded table
+      // access (`__wpk_fork_module_state_table_reconcile`).
     },
     `${options.label}: table replica`,
   );
@@ -2959,24 +2942,15 @@ function createProcessTableReplicationOwner(options: {
   }
 
   const reconcileLocked = (): number => {
-    replicaMaterializing = true;
-    try {
-      const suppressingInitialRestore = suppressInitialSnapshotRestore;
-      const changed = replica.reconcile();
-      if (suppressingInitialRestore && !changed) {
-        // A child whose copied process has never published a dylink/table
-        // archive still completed its one startup reconciliation. Do not
-        // suppress the first real peer mutation published later.
-        suppressInitialSnapshotRestore = false;
-      }
-      return replica.generation();
-    } finally {
-      replicaMaterializing = false;
-      // Module constructors and loader table writes performed while applying
-      // a validated archive snapshot are effects of that publication, not a
-      // new mutation authored by this Worker.
-      deferredPublication = false;
+    const suppressingInitialRestore = suppressInitialSnapshotRestore;
+    const changed = replica.reconcile();
+    if (suppressingInitialRestore && !changed) {
+      // A child whose copied process has never published a dylink/table
+      // archive still completed its one startup reconciliation. Do not
+      // suppress the first real peer mutation published later.
+      suppressInitialSnapshotRestore = false;
     }
+    return replica.generation();
   };
 
   const publishLocked = (): LoaderTableState => {
@@ -2985,7 +2959,6 @@ function createProcessTableReplicationOwner(options: {
     const root = options.tableCheckpoint.capture();
     const publication = options.dlopen.loader().publishTableState(root);
     replica.adoptPublishedGeneration(publication.state.generation);
-    deferredPublication = false;
     return publication.state;
   };
 
@@ -3003,11 +2976,7 @@ function createProcessTableReplicationOwner(options: {
       // same entries again as a typed KFMS snapshot would turn ordinary dlopen
       // into an O(table closure) operation. Once an overlay exists, a module-set
       // change still needs a fresh exact activation manifest.
-      if (
-        deferredPublication ||
-        (!linkerPublication && tableMutationCommitted) ||
-        hasPriorGuestOverlay
-      ) {
+      if ((!linkerPublication && tableMutationCommitted) || hasPriorGuestOverlay) {
         publishLocked();
       }
     },
@@ -3023,75 +2992,14 @@ function createProcessTableReplicationOwner(options: {
     options.borrowedImmutableSnapshot
       ? replica.generation()
       : options.dlopen.withArchiveWriter(reconcileLocked);
-  const abortActiveMutations = (): void => {
-    while (mutationContexts.length > 0) {
-      mutationContexts.pop();
-      options.dlopen.releaseArchiveWriter();
-    }
-    deferredPublication = false;
-  };
-  options.dlopen.setOperationAbortObserver(abortActiveMutations);
 
   return {
     generationAddress,
-    beginMutation: (): bigint => {
-      const deferPublication = options.dlopen.writerOwned();
-      options.dlopen.acquireArchiveWriter();
-      mutationContexts.push({ deferPublication });
-      return BigInt(replica.generation());
-    },
-    reconcile: (): bigint => BigInt(reconcileNow()),
-    commit: (activationId, ownerId, firstIndex, length): void => {
-      const context = mutationContexts.pop();
-      if (!context) {
-        throw new Error(
-          `${options.label}: table mutation committed without ownership`,
-        );
-      }
-      try {
-        // Dlopen/start mutations occur before the module manifest and handle
-        // graph are publishable. The enclosing linker transaction snapshots
-        // once at its commit. Replica materialization is already represented
-        // by the generation being applied and must not echo a publication.
-        if (context.deferPublication) {
-          if (!replicaMaterializing) deferredPublication = true;
-        } else {
-          const patch = options.tables.captureFuncrefTablePatch(
-            activationId,
-            ownerId,
-            firstIndex,
-            length,
-          );
-          if (
-            patch !== null &&
-            options.dlopen.loader().canPublishTablePatch(patch)
-          ) {
-            const publication = options.dlopen.loader().publishTablePatch(patch);
-            replica.adoptPublishedGeneration(publication.state.generation);
-          } else {
-            // Typed/opaque entries stay on the Wasm codec path. The same full
-            // checkpoint transparently compacts a bounded patch journal; no
-            // table shape or mutation is rejected at either threshold.
-            publishLocked();
-          }
-        }
-      } finally {
-        options.dlopen.releaseArchiveWriter();
-      }
-    },
-    abort: (): void => {
-      const context = mutationContexts.pop();
-      if (!context) {
-        throw new Error(
-          `${options.label}: table mutation aborted without ownership`,
-        );
-      }
-      options.dlopen.releaseArchiveWriter();
-    },
     reconcileNow,
     isCurrentUnderLock: () =>
       replica.generation() === options.dlopen.archiveGeneration(),
-    abortActiveMutations,
+    materialize: (generation) =>
+      BigInt(reconcileNow()) >= generation ? 0 : 11 /* EAGAIN */,
   };
 }
 
@@ -3413,8 +3321,6 @@ export async function centralizedWorkerMain(
       // `continuationMmap`, so its static data and stack never collide with
       // guest data). Its exports are asserted here, never mid-fork.
       let forkModuleInstance: ForkModuleInstance | null = null;
-      // The module's host functions (reference and function identity).
-      let forkModuleHostCapabilities: ForkModuleHostCapabilities | null = null;
       // Phase 6 D5 step 4b/5: when the fork qualifies, this backend drives the
       // continuation through the co-resident module and the coordinator takes
       // its module-backed branches. Null (non-qualifying / flag-off) => the
@@ -3543,10 +3449,6 @@ export async function centralizedWorkerMain(
               `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
           );
         }
-        // The module's two host functions: the reference and function
-        // identity oracles (`fork-module-host-capabilities.ts`). There is no
-        // externref import: a fork does not carry a raw host externref.
-        forkModuleHostCapabilities = createForkModuleHostCapabilities();
         // A COPIED fork child INHERITS the parent's co-resident fork-module
         // region through its full memory clone (the region is present both in
         // the inherited bytes and in the inherited kernel mapping table). It
@@ -3594,7 +3496,9 @@ export async function centralizedWorkerMain(
             );
           },
           label: `pid=${pid}: fork-module`,
-          hostImports: forkModuleHostCapabilities.imports,
+          // The identity oracles are the defaults; this Worker's dynamic
+          // loader answers the module's request to instantiate peer libraries.
+          hostImports: { __wpk_fork_host_materialize_dlopen_archive: (generation) => processTableReplication?.materialize(generation) ?? 38 },
         });
         // Publish this worker's co-resident fork-module region so the kernel
         // host can hand a COPIED fork child the SAME base to reuse (above). A
@@ -3686,6 +3590,7 @@ export async function centralizedWorkerMain(
           // every capture and seal would have asked the module to issue a
           // syscall at address 0.
           channelBase: channelOffset,
+          archiveControlAddr: dlopenArchiveControlAddr,
           label: `pid=${pid}: fork-module`,
         });
         // Seed the linked-frame format + full resume catalog once, now, before
@@ -3780,7 +3685,6 @@ export async function centralizedWorkerMain(
             )(ownerId, firstPage, pageCount),
         },
         processTableStateOwners,
-        () => forkActivations.ordered(),
         `pid=${pid}: fork tables`,
       );
       const importedStateCapture = new ForkImportIdentity(
@@ -3824,20 +3728,6 @@ export async function centralizedWorkerMain(
           { value: "i64", mutable: false },
           BigInt(tableGenerationAddress),
         ),
-        reconcile: (): bigint => processTableReplication?.reconcile() ?? 0n,
-        beginMutation: (): bigint =>
-          processTableReplication?.beginMutation() ?? 0n,
-        commit: (activationId, ownerId, firstIndex, length): void => {
-          processTableReplication?.commit(
-            activationId,
-            ownerId,
-            firstIndex,
-            length,
-          );
-        },
-        abort: (): void => {
-          processTableReplication?.abort();
-        },
       };
       // WHAT USED TO BE HERE: the exception broker and the host identity floor.
       //
@@ -4189,7 +4079,6 @@ export async function centralizedWorkerMain(
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
         generationAddress: tableGenerationAddress,
-        tables: forkTables,
         tableCheckpoint: createForkPeerTableCheckpoint(
           () => requireForkModuleBackend(forkModuleBackend, pid),
           () => forkActivations,
@@ -4544,7 +4433,6 @@ export async function centralizedWorkerMain(
           // before the original start can mutate a table.
           forkActivations.bootstrap(0);
         } catch (error) {
-          processTableReplication.abortActiveMutations();
           forkActivations.forget(0);
           throw error;
         }
@@ -4969,7 +4857,6 @@ export async function centralizedWorkerMain(
           break;
         }
       } catch (e) {
-        processTableReplication.abortActiveMutations();
         releaseProcessForkArchiveReader();
         if (isWasmUnreachableTrap(e) && kernelExitStatus !== null) {
           exitCode = kernelExitStatus;
@@ -6125,7 +6012,6 @@ export async function centralizedThreadWorkerMain(
           )(ownerId, firstPage, pageCount),
       },
       threadTableStateOwners,
-      () => threadForkActivations?.ordered() ?? [],
       `pid=${pid} tid=${tid}: fork tables`,
     );
     let threadImportedStateCapture: ForkImportIdentity | null = null;
@@ -6207,6 +6093,7 @@ export async function centralizedThreadWorkerMain(
               `pid=${pid} tid=${tid}: fork-module`,
             ),
           label: `pid=${pid} tid=${tid}: fork-module`,
+          hostImports: { __wpk_fork_host_materialize_dlopen_archive: (generation) => threadTableReplication?.materialize(generation) ?? 38 },
         });
         // Stage into the dedicated slab inside this thread's fork-module region
         // rather than a growing channel mmap (see the process-worker path for
@@ -6219,6 +6106,8 @@ export async function centralizedThreadWorkerMain(
           format: linkedFrameFormat,
           catalogOrdinals,
           channelBase: channelOffset,
+          // The PROCESS control block: a pthread shares the process archive.
+          archiveControlAddr: processChannelOffset - FORK_BUF_SIZE,
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
@@ -6312,20 +6201,6 @@ export async function centralizedThreadWorkerMain(
         { value: "i64", mutable: false },
         BigInt(processGenerationAddress),
       ),
-      reconcile: (): bigint => threadTableReplication?.reconcile() ?? 0n,
-      beginMutation: (): bigint =>
-        threadTableReplication?.beginMutation() ?? 0n,
-      commit: (activationId, ownerId, firstIndex, length): void => {
-        threadTableReplication?.commit(
-          activationId,
-          ownerId,
-          firstIndex,
-          length,
-        );
-      },
-      abort: (): void => {
-        threadTableReplication?.abort();
-      },
     };
     let forkResult = 0;
     // What a fork-from-thread abort will report. The coordinator used to hold
@@ -6536,7 +6411,6 @@ export async function centralizedThreadWorkerMain(
     if (hasForkInstrumentation) {
       threadTableReplication = createProcessTableReplicationOwner({
         generationAddress: processGenerationAddress,
-        tables: threadForkTables,
         tableCheckpoint: createForkPeerTableCheckpoint(
           () => requireForkModuleBackend(threadForkModuleBackend, pid),
           () => {
@@ -6680,7 +6554,6 @@ export async function centralizedThreadWorkerMain(
         // they do for the process-main bootstrap.
         threadBootstrap();
       } catch (error) {
-        threadTableReplication?.abortActiveMutations();
         threadForkActivations?.forget(0);
         throw error;
       }
@@ -6911,7 +6784,6 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
-    threadTableReplication?.abortActiveMutations();
     releasePthreadForkLock();
     // The registry's `clear()` released its capture transaction's roots here.
     // The module holds them now and reclaims them with its bump heap on the

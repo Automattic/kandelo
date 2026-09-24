@@ -6242,14 +6242,16 @@ pub struct ForkModule {
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
     // not at instantiation) -----------------------------------------------
-    /// `(pointer_width, fixed_prefix_size, archive_control_addr, table_owner)`.
+    /// `(pointer_width, fixed_prefix_size, archive_control_addr, channel_base)`.
     ///
-    /// The last two are the worker's dlopen archive coordinates. This host does
-    /// not implement dlopen -- it runs single-activation guests -- so it passes
-    /// 0, which the module reads as "no archive", not as an error. A host that
-    /// grows dlopen support must pass its real control address here or its
-    /// function table will never reconcile.
-    pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
+    /// `archive_control_addr` is the worker's dlopen control block. This host
+    /// does not implement dlopen -- it runs single-activation guests -- so it
+    /// passes 0, which the module reads as "no archive", not as an error: no
+    /// peer ever publishes a table patch here, so there is nothing to
+    /// reconcile. A host that grows dlopen support must pass its real control
+    /// address (a borrowed vfork child: its OWNER's), as the JS hosts do, or
+    /// its replicated tables will never reconcile.
+    pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
     pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
     pub fm_set_activation_resume_catalog: wasmtime::TypedFunc<(u32, u32, u32), ()>,
     /// `fm_publish_resume_assignment(activation) -> (count << 32) | ptr`, or
@@ -6789,6 +6791,19 @@ pub(crate) fn instantiate_fork_module(
     // import this frames-only path does not know about still needs a
     // truthful stub rather than a silent wrong-typed default, so the
     // catch-all trap pass stays.
+    //
+    // `__wpk_fork_host_materialize_dlopen_archive(generation) -> errno`: the
+    // module asks a host to instantiate libraries a PEER dlopened. This host
+    // has no dlopen, passes no archive control block to `fm_set_format`, and so
+    // is never asked -- the module only asks after reading a published
+    // archive. Answered ENOSYS (38), the truthful "this host cannot load
+    // libraries", rather than left to the trap pass, so a future host path that
+    // did publish an archive would see an errno it can report.
+    linker.func_wrap(
+        "env",
+        "__wpk_fork_host_materialize_dlopen_archive",
+        |_generation: i64| -> i32 { 38 },
+    )?;
     linker.define_unknown_imports_as_traps(&module)?;
 
     let instance = linker.instantiate(&mut *store, &module)?;
@@ -6832,7 +6847,7 @@ pub(crate) fn instantiate_fork_module(
         region_bytes,
         catalog_scratch_base,
         catalog_scratch_bytes,
-        fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32, u32) => ()),
+        fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
         fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
         fm_set_activation_resume_catalog: fm_func!("fm_set_activation_resume_catalog": (u32, u32, u32) => ()),
         fm_publish_resume_assignment: fm_func!("fm_publish_resume_assignment": u32 => i64),
@@ -7474,7 +7489,7 @@ fn spawn_guest_thread(
                     // import goes through the OLD direct-passthrough branch
                     // below).
                     if let Some(fmt) = fork_format.as_ref() {
-                        // THE CHANNEL BASE IS THE FIFTH ARGUMENT, and this host
+                        // THE CHANNEL BASE IS THE LAST ARGUMENT, and this host
                         // used to pass 0. The module needs it to `SYS_MMAP` its
                         // own storage -- the record arena, the resume-slot
                         // assignment, the free-slot bitmap, a catalog or a
@@ -7486,7 +7501,7 @@ fn spawn_guest_thread(
                         // the catalog floor and the publish floor). The Node and
                         // browser hosts have always passed it
                         // (`host/src/fork-module-backend.ts` `setup()`).
-                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, layout.channel_offset as u32)) {
+                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, layout.channel_offset as u32)) {
                             eprintln!("fm_set_format failed: {e:#}");
                             return;
                         }
@@ -9156,7 +9171,7 @@ fn spawn_guest_thread(
                 // typed-GC codec means no allocate/fill, no exception codec
                 // means no materialize or thrower -- and the module emits no
                 // step for what a guest does not have.
-                let bindings: [(u32, &str, bool); 16] = [
+                let bindings: [(u32, &str, bool); 19] = [
                     (slots::DRIVE_OP_ALLOC, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE, false),
                     (slots::DRIVE_OP_FILL, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL, false),
                     (slots::DRIVE_OP_EXN, fork_abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE, false),
@@ -9192,6 +9207,21 @@ fn spawn_guest_thread(
                         slots::DRIVE_SLOT_EXN_THROW_RECIPE,
                         fork_abi::WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE,
                         false,
+                    ),
+                    // The guest's own table shims. The module reaches a guest
+                    // table only through these; with no dlopen here nothing
+                    // publishes a patch, but a guest table mutation still
+                    // commits through them.
+                    (slots::DRIVE_SLOT_TABLE_READ, fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_READ, true),
+                    (
+                        slots::DRIVE_SLOT_TABLE_LENGTH,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_LENGTH,
+                        true,
+                    ),
+                    (
+                        slots::DRIVE_SLOT_TABLE_APPLY,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_APPLY,
+                        true,
                     ),
                 ];
 
@@ -10774,7 +10804,7 @@ fn run_worker_thread(
             // this call states: the module maps its own storage through it, and
             // `channel_base()` answers EINVAL until it is seeded. This thread's
             // own channel, not the layout's -- a worker thread has its own.
-            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, channel_offset as u32))?;
+            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, channel_offset as u32))?;
             let errno = fm.fm_last_errno.call(&mut store, ())?;
             anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
             seed_activation_template_id(&mut store, &fm, guest_mem, &fmt.template_id)?;
@@ -14188,9 +14218,9 @@ mod fork_module_tests {
         // genuinely executable: the call reaches real fork-module code,
         // which itself only works if the module's start function already
         // relocated its passive data segments into the reserved region.
-        fork_module.fm_set_format.call(&mut fm_store, (4, 0, 0, 0, 0))?;
+        fork_module.fm_set_format.call(&mut fm_store, (4, 0, 0, 0))?;
         let errno = fork_module.fm_last_errno.call(&mut fm_store, ())?;
-        assert_eq!(errno, 0, "fm_set_format(4, 0, 0, 0, 0) must succeed on a wasm32 guest");
+        assert_eq!(errno, 0, "fm_set_format(4, 0, 0, 0) must succeed on a wasm32 guest");
 
         Ok(())
     }
@@ -14245,7 +14275,7 @@ mod fork_module_tests {
             None,
             0,
         )?;
-        fm.fm_set_format.call(&mut *store, (4, 0, 0, 0, 0))?;
+        fm.fm_set_format.call(&mut *store, (4, 0, 0, 0))?;
         let errno = fm.fm_last_errno.call(&mut *store, ())?;
         anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
         Ok(fm)

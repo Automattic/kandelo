@@ -10,18 +10,18 @@ of a comment.
 
 ---
 
-## A. Supplied to the fork-module at instantiation — 10
+## A. Supplied to the fork-module at instantiation — 11
 
 *Externref stage E2 (2026-09-23) removed `env.resolve_externref` and
 `env.__wpk_fork_host_externref_handle` from this list; see "Host
 externrefs" below. The current import count is pinned by
-`EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT` (5 fork imports plus 5 PIC
+`EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT` (6 fork imports plus 5 PIC
 imports) and the `forkModuleHostImports` surface budget.*
 
 | import | kind | why the host |
 |---|---|---|
 | `env.memory` | memory | the module shares the guest's linear memory; it cannot define one and still see the guest's frames |
-| `env.__indirect_function_table` | table | shared with the guest so the module can reach guest functions |
+| `env.__indirect_function_table` | table | the module's OWN PIC table, for its own `call_indirect`; it is not the guest's (the guest defines that, and the module reaches it only through the guest's `wpk_fork_module_table_*` shims) |
 | `env.__memory_base` | global | PIC placement. The module cannot place itself before it exists |
 | `env.__table_base` | global | PIC placement |
 | `env.__stack_pointer` | global (mut) | PIC placement |
@@ -30,6 +30,7 @@ imports) and the `forkModuleHostImports` surface budget.*
 | `env.__wpk_fork_static_root_catalog` | anyref table | filled from the guest's static-root harvest, which runs in the host |
 | `env.__wpk_fork_host_func_identity(funcref) -> i32` | **function** | stable id per function. See below |
 | `env.__wpk_fork_host_ref_identity(anyref) -> i32` | **function** | stable id per GC reference. See below |
+| `env.__wpk_fork_host_materialize_dlopen_archive(i64) -> errno` | **function** | instantiate, in this worker, the libraries a peer dlopened up to that generation: `WebAssembly.instantiate` is host work. The module decides when (a reconcile found an activation this worker lacks) and never asks while holding the archive writer. Added 2026-09-23, maintainer-approved |
 
 ## B. Supplied directly to the guest — 4
 
@@ -124,10 +125,18 @@ mutation:
 mutation_begin() -> i64            ;; take the writer lock, return the generation
   ... table.set / copy / fill / init / grow ...
 dirty_mark(owner, first_page, page_count)
-mutation_commit(owner, start, count)   ;; publish the slot range, release the lock
+mutation_commit(activation, owner, start, count)   ;; publish the slot range, release the lock
 mutation_abort()                       ;; release without publishing
 reconcile() -> i64                     ;; apply siblings' mutations, return the generation APPLIED
 ```
+
+(`activation` was added 2026-09-23: an owner id is only unique inside one
+module, so the commit names its table by both. The module reads the written
+slots, and applies a peer's patch, through the guest's own
+`wpk_fork_module_table_{read,length,apply}` exports bound into the
+activation's drive-table slots; the host supplies nothing new. Only plain
+`funcref` tables take this transaction -- see docs/architecture.md, "Only
+`funcref` tables are replicated".)
 
 and a guard the instrumenter injects around ordinary table reads:
 

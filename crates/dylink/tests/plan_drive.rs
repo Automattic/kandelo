@@ -31,6 +31,11 @@ struct Executor {
     /// What `ReadExports` will report.
     exports: Vec<InstanceExport>,
     next_activation: u32,
+    /// Append a slot of the HOST's own when the instance is created, the way
+    /// the JavaScript loader appends a staged-call slot the planner never
+    /// sees. Lets a test separate "where the planner put it" from "whatever
+    /// the table length happened to be".
+    host_slot_on_instantiate: bool,
 }
 
 impl Executor {
@@ -69,7 +74,12 @@ impl Executor {
             }
             LinkAct::GrowMemory { .. } => ActResult::Done,
             LinkAct::NewTag { .. } => ActResult::Done,
-            LinkAct::Instantiate { .. } => ActResult::Done,
+            LinkAct::Instantiate { .. } => {
+                if self.host_slot_on_instantiate {
+                    self.table_length += 1;
+                }
+                ActResult::Done
+            }
             LinkAct::ReadExports { .. } => ActResult::Exports(self.exports.clone()),
             LinkAct::ZeroMemory { address, length } => {
                 self.zeroed.push((address, length));
@@ -194,13 +204,15 @@ fn a_minimal_side_module_produces_an_ordered_act_sequence() {
         vec![
             "Compile",
             "ZeroMemory",
-            "GrowTable",   // the module's own 2-slot reservation
+            // The module's own 2-slot reservation AND a slot for its one
+            // exported function, in one growth, so the export's index depends
+            // only on the base (see `plan_table_phase`).
+            "GrowTable",
             "NewGlobal",   // __memory_base
             "NewGlobal",   // __table_base
             "Instantiate",
             "ReadExports",
-            "GrowTable",   // a slot for the exported function
-            "WriteTable",
+            "WriteTable",  // the exported function, into its reserved slot
         ]
     );
     // `__wasm_call_ctors` is reserved and never published as a symbol, but it
@@ -506,6 +518,79 @@ fn a_complete_replay_reuses_the_parent_and_reruns_nothing() {
     assert!(executor.calls.is_empty(), "a complete replay re-runs no stage");
     // The table was padded from 0 up to the parent's base of 8.
     assert!(executor.acts.contains(&LinkAct::GrowTable { delta: 8 }));
+}
+
+/// An exported function's slot depends only on the library's table base, so
+/// a replay lands every export where the process that loaded it did -- even
+/// though the replay never makes the slot the loader appended for a staged
+/// call in between.
+///
+/// This is what lets a pthread that materializes a peer's `dlopen` call a C
+/// function pointer it read out of shared memory. When export slots were handed
+/// out at "the current length" during publication, the original load put them
+/// AFTER its staged-call slot and the replay (which runs no stages) put them one
+/// lower: the pthread's table then held a DIFFERENT function at the pointer's
+/// index, or nothing past its end ("table index is out of bounds").
+#[test]
+fn export_slots_do_not_move_when_the_host_appends_a_slot_of_its_own() {
+    let bytes = SideModule {
+        dylink: DylinkSection {
+            memory_size: 256,
+            memory_align: 4,
+            table_size: 1,
+            table_align: 0,
+            ..Default::default()
+        },
+        exports: vec![Export::func("first", 0), Export::func("second", 1)],
+        ..Default::default()
+    }
+    .encode();
+    let exported = |executor: &Executor| -> Vec<(u64, String)> {
+        executor
+            .table
+            .iter()
+            .filter_map(|(slot, value)| match value {
+                TableValue::Export { name, .. } => Some((*slot, name.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // The load a process performs: the host appends a slot mid-load.
+    let mut linker = process_linker();
+    let mut original = Executor::new(14, 0x1000);
+    original.host_slot_on_instantiate = true;
+    original.exports = vec![InstanceExport::func("first"), InstanceExport::func("second")];
+    let library =
+        load(&mut linker, &mut original, LoadRequest::new("libslots.so", bytes.clone()))
+            .expect("load");
+    assert_eq!(library.table_base, 14);
+    assert_eq!(
+        exported(&original),
+        vec![(15, "first".to_string()), (16, "second".to_string())],
+        "exports sit right after the module's own one-slot region"
+    );
+
+    // The replay a peer performs: padded up to the same base, and no host
+    // slot.
+    let mut linker = process_linker();
+    let mut replica = Executor::new(0, 0x1000);
+    replica.exports = original.exports.clone();
+    let mut request = LoadRequest::new("libslots.so", bytes);
+    request.replay = Some(dylink::ReplayInputs {
+        memory_base: library.memory_base,
+        table_base: library.table_base,
+        global_visibility: true,
+        allocations: vec![fork_codec::dylink_archive::DylinkAllocation {
+            address: library.memory_base,
+            size: 256,
+            mapping_address: library.memory_base,
+            mapping_size: 256,
+        }],
+        ..Default::default()
+    });
+    load(&mut linker, &mut replica, request).expect("replay");
+    assert_eq!(exported(&replica), exported(&original));
 }
 
 /// A rollback restores the scope and GOT and names the mappings to release, but

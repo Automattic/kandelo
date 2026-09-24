@@ -215,7 +215,7 @@ pub const DRIVE_OP_ABORT_END: u32 = 13;
 /// this count stays consistent as long as every side derives its slots from
 /// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
 /// contract (not a wire/ABI format, not serialized), so growing it is additive.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 16;
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 19;
 
 /// Drive-table slot offset (within an activation's slice) the host binds that
 /// activation's `wpk_fork_module_state_restore` into, and a `DRIVE_OP_RESTORE`
@@ -327,6 +327,22 @@ pub const DRIVE_SLOT_MODULE_TABLE_STATE_SAVE: u32 = 14;
 /// which is a request that arrives mid-replay rather than a step a plan can
 /// schedule ahead of time.
 pub const DRIVE_SLOT_EXN_THROW_RECIPE: u32 = 15;
+
+/// Drive-table slots the host binds the guest's three table shims into:
+/// `wpk_fork_module_table_read`, `wpk_fork_module_table_length` and
+/// `wpk_fork_module_table_apply`.
+///
+/// The module reaches a guest table ONLY through these. It is instantiated
+/// before the guest and so cannot import the guest's tables; the table
+/// replication path (a mutation commit describing what the guest wrote, a
+/// reconcile applying a peer's patch) asks the owning activation to read or
+/// write its own table, the way resume-thunk placement already does. NOT
+/// `DRIVE_OP_*`s: the module calls them directly, not from a plan.
+pub const DRIVE_SLOT_TABLE_READ: u32 = 16;
+/// See [`DRIVE_SLOT_TABLE_READ`].
+pub const DRIVE_SLOT_TABLE_LENGTH: u32 = 17;
+/// See [`DRIVE_SLOT_TABLE_READ`].
+pub const DRIVE_SLOT_TABLE_APPLY: u32 = 18;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -926,6 +942,9 @@ mod tests {
             ("MODULE_STATE_SAVE", DRIVE_SLOT_MODULE_STATE_SAVE),
             ("MODULE_TABLE_STATE_SAVE", DRIVE_SLOT_MODULE_TABLE_STATE_SAVE),
             ("EXN_THROW_RECIPE", DRIVE_SLOT_EXN_THROW_RECIPE),
+            ("TABLE_READ", DRIVE_SLOT_TABLE_READ),
+            ("TABLE_LENGTH", DRIVE_SLOT_TABLE_LENGTH),
+            ("TABLE_APPLY", DRIVE_SLOT_TABLE_APPLY),
         ];
         for (name, offset) in slots {
             assert!(
@@ -948,10 +967,11 @@ mod tests {
 
     #[test]
     fn drive_table_base_reserves_slots_per_activation() {
-        // Fifteen slots per activation (ALLOC, FILL, EXN, RESTORE,
+        // Nineteen slots per activation (ALLOC, FILL, EXN, RESTORE,
         // FINISH_RESTORE, REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END,
         // ABORT_END, UNWIND_BEGIN, GC_ENCODE, GC_PROBE, MODULE_STATE_SAVE,
-        // MODULE_TABLE_STATE_SAVE, EXN_THROW_RECIPE).
+        // MODULE_TABLE_STATE_SAVE, EXN_THROW_RECIPE, TABLE_READ, TABLE_LENGTH,
+        // TABLE_APPLY).
         //
         // The bases are spelled as literals rather than computed from the
         // constant, so that widening the stride cannot quietly agree with
@@ -959,10 +979,10 @@ mod tests {
         // the other two (the host's `bindActivationDrive` and the injector's
         // emitted thunks) are what it stands in for. Census 178 is the drift
         // that happened when one of them kept its own copy.
-        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 16);
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 19);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 16);
-        assert_eq!(drive_table_base(3), 48);
+        assert_eq!(drive_table_base(1), 19);
+        assert_eq!(drive_table_base(3), 57);
     }
 
     #[test]

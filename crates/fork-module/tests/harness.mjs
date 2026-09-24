@@ -105,6 +105,11 @@ const importObject = {
     // funcref -- wasm cannot compare two of them. This harness never encodes one,
     // so a trap is the honest binding: it fails loud if the path is ever reached
     // rather than returning a plausible id.
+    // Never asked here: the module asks only after reading a published dlopen
+    // archive, and this harness publishes none.
+    __wpk_fork_host_materialize_dlopen_archive: () => {
+      throw new Error("harness publishes no dlopen archive");
+    },
     __wpk_fork_host_func_identity: () => {
       throw new Error("harness: __wpk_fork_host_func_identity is not exercised here");
     },
@@ -281,7 +286,7 @@ console.log("  ok: SENTINEL SURVIVED instantiation — module data/BSS/stack are
 // region). Success (errno 0) proves the instance is genuinely executable — the
 // call reaches real fork-module code, which only works if the start function
 // already relocated its passive data into the reserved region.
-x.fm_set_format(4, 128, 0, 0, 0);
+x.fm_set_format(4, 128, 0, 0);
 assert.equal(errno(), 0, "fm_set_format errno");
 assertSentinelIntact("after fm_set_format");
 console.log("  ok: fm_set_format(4, 128, 0, 0) succeeded; SENTINEL SURVIVED a coordinator write");

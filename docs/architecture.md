@@ -1268,6 +1268,42 @@ journal. The same mechanism supports `dlopen`/`dlsym` from a pthread and fork
 from a pthread after dynamic loading; the fork child reconstructs only the
 calling thread but receives the process module/table recipe state. The
 generation fast path avoids reparsing or reinstantiating unchanged state.
+A side module's exported functions occupy table slots reserved with its
+`dylink.0` region, so a replica that runs no initialization stages still
+places every export at the index the loading thread's C pointers name.
+
+Guest writes to a replicated table are published and applied by the fork
+module, not by host code. Fork-instrument routes every runtime
+`table.set`/`fill`/`copy`/`init`/`grow` of a plain `funcref` table through the
+process archive writer; the commit names the table by `(activation, owner)`
+and the module reads the written slots through the guest's own
+`wpk_fork_module_table_read`/`_length` shims. Every guarded read of such a
+table first compares the shared generation fence, and a peer's patch is
+applied through `wpk_fork_module_table_apply` in the reading Worker, so a
+function index handed across threads through an atomic, with no syscall in
+between, reaches the same function. The module reaches these guest shims only
+through each activation's drive-table slots; it never holds a guest table.
+
+Only `funcref` tables are replicated, and that is a platform boundary. A
+peer rebuilds a funcref slot from the function catalog because the same
+function exists in every Worker. An `externref` table holds host objects and a
+GC-typed table holds objects of one instance; neither can exist in another
+Worker, so such tables are per-Worker, exactly as their contents are. Fork
+still carries them: their dirty pages are journaled and the module-state
+save/restore helpers reconstruct them in the child (an `externref` fork
+remains subject to docs/fork-reference-support.md).
+
+A pthread that was already running when another thread dlopened a library
+instantiates it on its next guarded table access: the fork module's
+reconcile finds the published archive naming an activation this Worker lacks
+and asks the host (`__wpk_fork_host_materialize_dlopen_archive`, the one
+host step, since only the host can instantiate a module) before applying any
+patch. The module never asks while it holds the archive writer; the host takes
+that writer itself to instantiate.
+
+Known gap. A guest `funcref` table mutation in a process that has never
+dlopened has no publication archive to append to, so it is not replicated to
+other threads.
 
 Fork and non-forking spawn copy each process's descriptor-table shell while
 retaining one exact mutable OFD state object. Offset, status flags, and async

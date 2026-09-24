@@ -132,7 +132,7 @@ function instantiateFixtureModule(): FixtureModule {
     floor: MMAP_FLOOR,
     counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
   });
-  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
   return {
     stats: (field) => Number((x.fm_stats as (f: number) => bigint)(field)),
     // A fresh view each read: `channel_mmap` GROWS the shared memory, and a

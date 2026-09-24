@@ -321,12 +321,12 @@ mod tests {
         let after = decode_dylink_archive(&mem, FIXTURE_HEAD, FIXTURE_PW).unwrap();
         // A peer already at the OLD generation must now be told to write
         // exactly the slots this patch describes, and nothing else.
-        let steps = crate::dylink_table_plan::plan_table_patches(
-            &after.table_patches,
-            patch.owner_id,
-            before.generation,
-        )
-        .unwrap();
+        let plans =
+            crate::dylink_table_plan::plan_table_patches(&after.table_patches, before.generation)
+                .unwrap();
+        assert_eq!(plans.len(), 1, "exactly the appended patch is new");
+        assert_eq!(plans[0].owner_id, patch.owner_id);
+        let steps = &plans[0].steps;
         assert_eq!(
             steps.len(),
             patch.runs.iter().map(|r| r.length as usize).sum::<usize>(),

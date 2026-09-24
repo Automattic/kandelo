@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { FORK_ACTIVATION_DRIVE_SLOTS } from "../src/fork-module-backend";
+import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
 import { fixture, openCapture, type Fixture } from "./fork-module-capture-fixture";
+
+/** The per-activation drive stride: one slot per binding, as the host binds it. */
+const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
 
 /**
  * `dlclose` releases an activation through the MODULE, including the slots it

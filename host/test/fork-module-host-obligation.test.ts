@@ -160,15 +160,20 @@ function instantiate(env: Record<string, unknown>) {
 describe("fork-module host obligation", () => {
   it("names exactly the host FUNCTIONS, so the set cannot drift silently", () => {
     const caps = createForkModuleHostCapabilities();
-    // TWO, and each is argued where it is declared: `any` and `func` are
-    // disjoint hierarchies, and wasm cannot compare references in either. The
-    // externref pair (`resolve_externref`, `__wpk_fork_host_externref_handle`)
-    // left in externref stage E2: a fork does not carry a raw host externref,
-    // so the module never names a host object or rebuilds one.
+    // THREE, and each is argued where it is declared: `any` and `func` are
+    // disjoint hierarchies, and wasm cannot compare references in either; and
+    // instantiating a library a peer dlopened is `WebAssembly.instantiate`
+    // (maintainer-approved 2026-09-23). The externref pair
+    // (`resolve_externref`, `__wpk_fork_host_externref_handle`) left in
+    // externref stage E2: a fork does not carry a raw host externref, so the
+    // module never names a host object or rebuilds one.
     expect(Object.keys(caps.imports).sort()).toEqual([
       "__wpk_fork_host_func_identity",
+      "__wpk_fork_host_materialize_dlopen_archive",
       "__wpk_fork_host_ref_identity",
     ]);
+    // Unbound, the request answers ENOSYS rather than a false success.
+    expect(caps.imports.__wpk_fork_host_materialize_dlopen_archive(1n)).toBe(38);
   });
 
   describe("reference identity", () => {

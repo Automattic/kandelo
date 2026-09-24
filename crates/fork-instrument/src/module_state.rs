@@ -36,8 +36,12 @@ use walrus::{
 use wasm_posix_shared::abi::{
     WPK_FORK_EXPORT_MODULE_BOOTSTRAP, WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
     WPK_FORK_EXPORT_MODULE_STATE_RESTORE, WPK_FORK_EXPORT_MODULE_STATE_SAVE,
-    WPK_FORK_EXPORT_MODULE_TABLE_STATE_RESTORE, WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
-    WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP, WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
+    WPK_FORK_EXPORT_MODULE_TABLE_APPLY, WPK_FORK_EXPORT_MODULE_TABLE_LENGTH,
+    WPK_FORK_EXPORT_MODULE_TABLE_READ, WPK_FORK_EXPORT_MODULE_TABLE_STATE_RESTORE,
+    WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE, WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
+    WPK_FORK_EXCEPTION_IMPORT_ACTIVATION, WPK_FORK_MODULE_TABLE_APPLY_RECORD_SIZE,
+    WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_FUNCTION,
+    WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_INDEX, WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
     WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE, WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED,
     WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBALS_MAGIC,
     WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBALS_SECTION,
@@ -114,7 +118,19 @@ struct TableState {
     ty: RefType,
     baseline_len: u64,
     baseline_fingerprint: [u8; 32],
+    /// Saved across fork (its dirty pages are journaled and captured).
     synchronized: bool,
+    /// Also REPLICATED across the process's Workers: mutations take the
+    /// process writer and publish a patch, and reads first reconcile.
+    ///
+    /// Only a plain `funcref` table qualifies, and that is a platform boundary
+    /// rather than a missing feature. A peer rebuilds a funcref slot from the
+    /// function catalog, because the same function exists in every Worker. An
+    /// externref slot holds a host object and a GC-typed slot holds an object
+    /// of this instance; neither can exist in another Worker, so there is
+    /// nothing a peer could be given. Such tables stay per-Worker, as their
+    /// contents do, and fork carries them through the save/restore helpers.
+    replicated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +190,12 @@ pub struct ModuleStateImports {
     pub table_mutation_abort: FunctionId,
     pub table_reconcile: FunctionId,
     pub table_generation_addr: GlobalId,
+    /// `(funcref) -> i32`, the module's merged-catalog lookup.
+    pub table_catalog_index: FunctionId,
+    /// `(i32) -> funcref`, the function at one merged-catalog slot.
+    pub table_catalog_function: FunctionId,
+    /// This activation's id, so a commit names the table it changed.
+    pub activation: GlobalId,
 }
 
 /// Plan all state whose owner is a WebAssembly module activation.
@@ -402,6 +424,11 @@ pub fn plan(module: &mut Module) -> ModuleStatePlan {
                 synchronized: table.import.is_some()
                     || process_indirect_tables.contains(&id)
                     || runtime_mutated_tables.contains(&id),
+                replicated: false,
+            })
+            .map(|mut state: TableState| {
+                state.replicated = state.synchronized && state.ty == RefType::FUNCREF;
+                state
             })
         })
         .collect();
@@ -637,11 +664,246 @@ pub fn inject(
         table_save,
         table_restore,
     );
+    emit_guest_table_shims(module, memory, runtime.buf_type, imports, &plan);
     export_global_catalog(module, &plan.global_catalog);
     export_table_catalog(module, &plan.table_catalog);
     replace_imported_globals_section(module, &plan.imported_globals);
     replace_imported_tables_section(module, &plan.imported_tables);
     Ok(bootstrap)
+}
+
+/// The three guest exports the fork module drives to read and write this
+/// activation's REPLICATED tables, each dispatching on the table's owner id.
+///
+/// The module cannot touch a guest table itself: it is instantiated before the
+/// guest, so it cannot import the guest's tables, and Rust cannot emit
+/// `table.get`/`table.set` or hold a `funcref`. So, as with resume-thunk
+/// placement, the module decides and publishes, and a shim emitted HERE does
+/// the table access inside the guest, against the guest's own tables:
+///
+/// * `wpk_fork_module_table_read(owner, index) -> i32`: the merged-catalog
+///   slot of the function at `index` (`-1` null, `-2` uncatalogued), for a
+///   commit describing what the guest wrote;
+/// * `wpk_fork_module_table_length(owner) -> i32`: the table's length, which a
+///   published patch records;
+/// * `wpk_fork_module_table_apply(owner, length, records, count)`: grow the
+///   table to `length`, then write `count` records of
+///   `WPK_FORK_MODULE_TABLE_APPLY_RECORD_SIZE` bytes -- `(dest, catalog_slot,
+///   clear)` as three little-endian `u32`s -- published by the module.
+///
+/// An owner this activation does not replicate TRAPS: the module named a
+/// table that is not here, and writing some other table would be a wrong
+/// answer rather than an error. The functions themselves come from the
+/// module's merged catalog through two module imports, so no function crosses
+/// into JavaScript.
+///
+/// Applied writes are journaled as dirty pages, because a later fork from this
+/// Worker must carry the table as it now is.
+fn emit_guest_table_shims(
+    module: &mut Module,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    imports: ModuleStateImports,
+    plan: &ModuleStatePlan,
+) {
+    let replicated: Vec<TableState> = plan
+        .tables
+        .iter()
+        .filter(|table| table.replicated)
+        .copied()
+        .collect();
+    let index_of = |body: &mut InstrSeqBuilder, table: &TableState, local: LocalId| {
+        body.local_get(local);
+        if table.table64 {
+            body.unop(UnaryOp::I64ExtendUI32);
+        }
+    };
+
+    // read(owner, index) -> i32
+    let owner = module.locals.add(ValType::I32);
+    let index = module.locals.add(ValType::I32);
+    let held = module.locals.add(ValType::Ref(RefType::FUNCREF));
+    let mut builder =
+        FunctionBuilder::new(&mut module.types, &[ValType::I32, ValType::I32], &[ValType::I32]);
+    {
+        let mut body = builder.func_body();
+        for table in &replicated {
+            body.local_get(owner)
+                .i32_const(table.owner as i32)
+                .binop(BinaryOp::I32Eq)
+                .if_else(
+                    None,
+                    |this| {
+                        index_of(this, table, index);
+                        this.instr(TableGet { table: table.id })
+                            .local_tee(held)
+                            .ref_is_null()
+                            .if_else(
+                                None,
+                                |null| {
+                                    null.i32_const(-1).return_();
+                                },
+                                |_| {},
+                            )
+                            .local_get(held)
+                            .call(imports.table_catalog_index)
+                            .return_();
+                    },
+                    |_| {},
+                );
+        }
+        body.unreachable();
+    }
+    let read = builder.finish(vec![owner, index], &mut module.funcs);
+
+    // length(owner) -> i32
+    let owner = module.locals.add(ValType::I32);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    {
+        let mut body = builder.func_body();
+        for table in &replicated {
+            body.local_get(owner)
+                .i32_const(table.owner as i32)
+                .binop(BinaryOp::I32Eq)
+                .if_else(
+                    None,
+                    |this| {
+                        this.instr(TableSize { table: table.id });
+                        if table.table64 {
+                            this.unop(UnaryOp::I32WrapI64);
+                        }
+                        this.return_();
+                    },
+                    |_| {},
+                );
+        }
+        body.unreachable();
+    }
+    let length = builder.finish(vec![owner], &mut module.funcs);
+
+    // apply(owner, length, records, count)
+    let owner = module.locals.add(ValType::I32);
+    let wanted = module.locals.add(ValType::I32);
+    let records = module.locals.add(ptr_ty);
+    let count = module.locals.add(ValType::I32);
+    let cursor = module.locals.add(ValType::I32);
+    let record = module.locals.add(ptr_ty);
+    let dest = module.locals.add(ValType::I32);
+    let record_size = WPK_FORK_MODULE_TABLE_APPLY_RECORD_SIZE as i32;
+    let load = |body: &mut InstrSeqBuilder, offset: u64| {
+        body.local_get(record).load(
+            memory,
+            LoadKind::I32 { atomic: false },
+            MemArg { align: 4, offset },
+        );
+    };
+    let mut builder = FunctionBuilder::new(
+        &mut module.types,
+        &[ValType::I32, ValType::I32, ptr_ty, ValType::I32],
+        &[],
+    );
+    {
+        let mut body = builder.func_body();
+        for table in &replicated {
+            body.local_get(owner)
+                .i32_const(table.owner as i32)
+                .binop(BinaryOp::I32Eq)
+                .if_else(
+                    None,
+                    |this| {
+                        // Grow to the published length first. A refused grow
+                        // leaves the writes below to trap on the table's real
+                        // bounds, which is the loudness a failed grow deserves.
+                        this.local_get(wanted);
+                        this.instr(TableSize { table: table.id });
+                        if table.table64 {
+                            this.unop(UnaryOp::I32WrapI64);
+                        }
+                        this.binop(BinaryOp::I32GtU).if_else(
+                            None,
+                            |grow| {
+                                grow.ref_null(RefType::FUNCREF).local_get(wanted);
+                                grow.instr(TableSize { table: table.id });
+                                if table.table64 {
+                                    grow.unop(UnaryOp::I32WrapI64);
+                                }
+                                grow.binop(BinaryOp::I32Sub);
+                                if table.table64 {
+                                    grow.unop(UnaryOp::I64ExtendUI32);
+                                }
+                                grow.instr(TableGrow { table: table.id }).drop();
+                            },
+                            |_| {},
+                        );
+                        this.i32_const(0).local_set(cursor);
+                        this.block(None, |done| {
+                            let done_id = done.id();
+                            done.loop_(None, |again| {
+                                let again_id = again.id();
+                                again
+                                    .local_get(cursor)
+                                    .local_get(count)
+                                    .binop(BinaryOp::I32GeU)
+                                    .br_if(done_id);
+                                // record = records + cursor * RECORD_SIZE
+                                again.local_get(records).local_get(cursor);
+                                again.i32_const(record_size).binop(BinaryOp::I32Mul);
+                                if ptr_ty == ValType::I64 {
+                                    again
+                                        .unop(UnaryOp::I64ExtendUI32)
+                                        .binop(BinaryOp::I64Add);
+                                } else {
+                                    again.binop(BinaryOp::I32Add);
+                                }
+                                again.local_set(record);
+                                load(again, 0);
+                                again.local_set(dest);
+                                index_of(again, table, dest);
+                                load(again, 8);
+                                again.if_else(
+                                    ValType::Ref(RefType::FUNCREF),
+                                    |clear| {
+                                        clear.ref_null(RefType::FUNCREF);
+                                    },
+                                    |write| {
+                                        load(write, 4);
+                                        write.call(imports.table_catalog_function);
+                                    },
+                                );
+                                again.instr(TableSet { table: table.id });
+                                again
+                                    .i32_const(table.owner as i32)
+                                    .local_get(dest)
+                                    .unop(UnaryOp::I64ExtendUI32)
+                                    .i64_const(i64::from(TABLE_PAGE_SHIFT))
+                                    .binop(BinaryOp::I64ShrU)
+                                    .i64_const(1)
+                                    .call(imports.table_dirty_mark);
+                                again
+                                    .local_get(cursor)
+                                    .i32_const(1)
+                                    .binop(BinaryOp::I32Add)
+                                    .local_set(cursor)
+                                    .br(again_id);
+                            });
+                        });
+                        this.return_();
+                    },
+                    |_| {},
+                );
+        }
+        body.unreachable();
+    }
+    let apply = builder.finish(vec![owner, wanted, records, count], &mut module.funcs);
+
+    for (function, name) in [
+        (read, WPK_FORK_EXPORT_MODULE_TABLE_READ),
+        (length, WPK_FORK_EXPORT_MODULE_TABLE_LENGTH),
+        (apply, WPK_FORK_EXPORT_MODULE_TABLE_APPLY),
+    ] {
+        module.exports.add(name, function);
+        module.funcs.get_mut(function).name = Some(name.into());
+    }
 }
 
 fn export_global_catalog(module: &mut Module, globals: &[(GlobalId, u32)]) {
@@ -858,9 +1120,10 @@ fn inject_record_imports(module: &mut Module, ptr_ty: ValType) -> ModuleStateImp
         .add(&[ValType::I32, ValType::I32], &[ValType::I64]);
     let table_state_owned_ty = module.types.add(&[ValType::I32], &[ValType::I32]);
     let table_mutation_begin_ty = module.types.add(&[], &[ValType::I64]);
-    let table_mutation_commit_ty = module
-        .types
-        .add(&[ValType::I32, ValType::I64, ValType::I64], &[]);
+    let table_mutation_commit_ty = module.types.add(
+        &[ValType::I32, ValType::I32, ValType::I64, ValType::I64],
+        &[],
+    );
     let table_mutation_abort_ty = module.types.add(&[], &[]);
     let table_reconcile_ty = module.types.add(&[], &[ValType::I64]);
     let (reserve, _) = module.add_import_func(
@@ -925,6 +1188,44 @@ fn inject_record_imports(module: &mut Module, ptr_ty: ValType) -> ModuleStateImp
         false,
         false,
     );
+    let catalog_index_ty = module
+        .types
+        .add(&[ValType::Ref(RefType::FUNCREF)], &[ValType::I32]);
+    let (table_catalog_index, _) = module.add_import_func(
+        WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+        WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_INDEX,
+        catalog_index_ty,
+    );
+    let catalog_function_ty = module
+        .types
+        .add(&[ValType::I32], &[ValType::Ref(RefType::FUNCREF)]);
+    let (table_catalog_function, _) = module.add_import_func(
+        WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+        WPK_FORK_MODULE_STATE_IMPORT_TABLE_CATALOG_FUNCTION,
+        catalog_function_ty,
+    );
+    // The same immutable global the exception and GC codecs import: one
+    // declaration, whoever reaches it first.
+    let existing_activation = module.imports.iter().find_map(|import| {
+        (import.module == WPK_FORK_MODULE_STATE_IMPORT_MODULE
+            && import.name == WPK_FORK_EXCEPTION_IMPORT_ACTIVATION)
+            .then_some(&import.kind)
+            .and_then(|kind| match kind {
+                walrus::ImportKind::Global(global) => Some(*global),
+                _ => None,
+            })
+    });
+    let activation = existing_activation.unwrap_or_else(|| {
+        module
+            .add_import_global(
+                WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+                WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+                ValType::I32,
+                false,
+                false,
+            )
+            .0
+    });
     ModuleStateImports {
         reserve,
         commit,
@@ -938,6 +1239,9 @@ fn inject_record_imports(module: &mut Module, ptr_ty: ValType) -> ModuleStateImp
         table_mutation_abort,
         table_reconcile,
         table_generation_addr,
+        table_catalog_index,
+        table_catalog_function,
+        activation,
     }
 }
 
@@ -1009,22 +1313,31 @@ fn inject_table_dirty_markers(
                                         .global_set(last_page);
                                 },
                                 |_| {},
-                            )
+                            );
+                        if table.replicated {
                             // WHY: dirty-page caching is sufficient for one
                             // later fork capture, but another pthread owns a
                             // different Table object and may consume this
                             // mutation immediately. Commit while the process
-                            // writer lock is still held.
-                            .i32_const(table.owner as i32)
-                            .local_get(start)
-                            .local_get(count)
-                            .call(imports.table_mutation_commit);
+                            // writer lock is still held, naming the table by
+                            // (activation, owner): an owner number alone is
+                            // only unique inside one module.
+                            nonempty
+                                .global_get(imports.activation)
+                                .i32_const(table.owner as i32)
+                                .local_get(start)
+                                .local_get(count)
+                                .call(imports.table_mutation_commit);
+                        }
                     },
                     |empty| {
                         // A zero-length fill/copy/init/grow has no state to
                         // publish, but its pre-op reconciliation still owns
-                        // one writer-lock depth that must be balanced.
-                        empty.call(imports.table_mutation_abort);
+                        // one writer-lock depth that must be balanced. A
+                        // table that is not replicated took no writer.
+                        if table.replicated {
+                            empty.call(imports.table_mutation_abort);
+                        }
                     },
                 );
         }
@@ -1052,7 +1365,9 @@ fn inject_table_dirty_markers(
                     |failed| {
                         // table.grow reports failure instead of trapping. End
                         // the mutation transaction without publishing state.
-                        failed.call(imports.table_mutation_abort);
+                        if table.replicated {
+                            failed.call(imports.table_mutation_abort);
+                        }
                     },
                 );
         }
@@ -1148,10 +1463,12 @@ fn rewrite_table_mutations(
     resume_table: Option<TableId>,
 ) {
     let table_states: HashMap<_, _> = plan.tables.iter().map(|table| (table.id, *table)).collect();
-    let synchronized_tables: HashSet<_> = plan
+    // Reads reconcile only for tables that are replicated; a table that is
+    // saved across fork but per-Worker has no peer state to catch up to.
+    let replicated_tables: HashSet<_> = plan
         .tables
         .iter()
-        .filter(|table| table.synchronized)
+        .filter(|table| table.replicated)
         .map(|table| table.id)
         .collect();
     let mut operations = HashSet::new();
@@ -1164,7 +1481,7 @@ fn rewrite_table_mutations(
             local,
             local.entry_block(),
             resume_table,
-            &synchronized_tables,
+            &replicated_tables,
             &mut operations,
             &mut consumers,
         );
@@ -1177,6 +1494,7 @@ fn rewrite_table_mutations(
                 &table_states,
                 markers,
                 mutation_begin,
+                reconcile_guard,
                 operation,
             );
             (operation, helper)
@@ -1230,7 +1548,7 @@ fn rewrite_table_mutations(
             local,
             local.entry_block(),
             resume_table,
-            &synchronized_tables,
+            &replicated_tables,
             &mut transport_operations,
             &mut transport_consumers,
         );
@@ -1272,7 +1590,7 @@ fn collect_table_operations(
     local: &LocalFunction,
     seq: InstrSeqId,
     resume_table: Option<TableId>,
-    synchronized_tables: &HashSet<TableId>,
+    replicated_tables: &HashSet<TableId>,
     operations: &mut HashSet<TableOperation>,
     consumers: &mut HashSet<TableConsumer>,
 ) {
@@ -1282,7 +1600,7 @@ fn collect_table_operations(
                 local,
                 child,
                 resume_table,
-                synchronized_tables,
+                replicated_tables,
                 operations,
                 consumers,
             );
@@ -1306,19 +1624,19 @@ fn collect_table_operations(
         }
         let consumer = match instr {
             Instr::TableGet(get)
-                if Some(get.table) != resume_table && synchronized_tables.contains(&get.table) =>
+                if Some(get.table) != resume_table && replicated_tables.contains(&get.table) =>
             {
                 Some(TableConsumer::Get(get.table))
             }
             Instr::TableSize(size)
                 if Some(size.table) != resume_table
-                    && synchronized_tables.contains(&size.table) =>
+                    && replicated_tables.contains(&size.table) =>
             {
                 Some(TableConsumer::Size(size.table))
             }
             Instr::CallIndirect(call)
                 if Some(call.table) != resume_table
-                    && synchronized_tables.contains(&call.table) =>
+                    && replicated_tables.contains(&call.table) =>
             {
                 Some(TableConsumer::CallIndirect {
                     table: call.table,
@@ -1327,7 +1645,7 @@ fn collect_table_operations(
             }
             Instr::ReturnCallIndirect(call)
                 if Some(call.table) != resume_table
-                    && synchronized_tables.contains(&call.table) =>
+                    && replicated_tables.contains(&call.table) =>
             {
                 Some(TableConsumer::ReturnCallIndirect {
                     table: call.table,
@@ -1379,11 +1697,20 @@ fn collect_source_mutated_tables(module: &Module, functions: &[FunctionId]) -> H
     mutated
 }
 
+/// Open a mutation of `table`: a replicated table takes the process writer
+/// (reconciling first); a per-Worker table has no peer to coordinate with.
+fn begin_table_mutation(body: &mut InstrSeqBuilder, table: TableState, mutation_begin: FunctionId) {
+    if table.replicated {
+        body.call(mutation_begin);
+    }
+}
+
 fn emit_table_operation_helper(
     module: &mut Module,
     tables: &HashMap<TableId, TableState>,
     markers: &HashMap<TableId, TableDirtyMarker>,
     mutation_begin: FunctionId,
+    reconcile_guard: FunctionId,
     operation: TableOperation,
 ) -> FunctionId {
     let (function, name) = match operation {
@@ -1397,8 +1724,8 @@ fn emit_table_operation_helper(
                 FunctionBuilder::new(&mut module.types, &[index_ty, ValType::Ref(table.ty)], &[]);
             {
                 let mut body = builder.func_body();
-                body.call(mutation_begin)
-                    .local_get(index)
+                begin_table_mutation(&mut body, table, mutation_begin);
+                body.local_get(index)
                     .local_get(reference)
                     .instr(TableSet { table: table_id });
                 builder_index_as_i64(&mut body, index_ty, index);
@@ -1423,8 +1750,8 @@ fn emit_table_operation_helper(
             );
             {
                 let mut body = builder.func_body();
-                body.call(mutation_begin)
-                    .local_get(dst)
+                begin_table_mutation(&mut body, table, mutation_begin);
+                body.local_get(dst)
                     .local_get(reference)
                     .local_get(count)
                     .instr(TableFill { table: table_id });
@@ -1455,8 +1782,14 @@ fn emit_table_operation_helper(
                 FunctionBuilder::new(&mut module.types, &[dst_ty, src_ty, count_ty], &[]);
             {
                 let mut body = builder.func_body();
-                body.call(mutation_begin)
-                    .local_get(dst_index)
+                if dst_table.replicated {
+                    body.call(mutation_begin);
+                } else if src_table.replicated {
+                    // Reading a replicated table into a per-Worker one: the
+                    // source must be current, but nothing is published.
+                    body.call(reconcile_guard);
+                }
+                body.local_get(dst_index)
                     .local_get(src_index)
                     .local_get(count)
                     .instr(TableCopy { src, dst });
@@ -1489,8 +1822,8 @@ fn emit_table_operation_helper(
             );
             {
                 let mut body = builder.func_body();
-                body.call(mutation_begin)
-                    .local_get(dst)
+                begin_table_mutation(&mut body, table, mutation_begin);
+                body.local_get(dst)
                     .local_get(src)
                     .local_get(count)
                     .instr(TableInit {
@@ -1520,8 +1853,8 @@ fn emit_table_operation_helper(
             );
             {
                 let mut body = builder.func_body();
-                body.call(mutation_begin)
-                    .local_get(reference)
+                begin_table_mutation(&mut body, table, mutation_begin);
+                body.local_get(reference)
                     .local_get(delta)
                     .instr(TableGrow { table: table_id })
                     .local_set(result);

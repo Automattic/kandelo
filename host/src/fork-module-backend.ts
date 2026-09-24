@@ -84,15 +84,6 @@ export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
 const FORK_MODULE_ENOMEM = 12;
 
 /**
- * Drive-table slots reserved per activation.
- *
- * DUPLICATED from `DRIVE_SLOTS_PER_ACTIVATION` in `fork-codec`; the module
- * derives every slot from `fm_drive_table_base`, so a host that grew the table
- * by a smaller stride would leave later activations overlapping earlier ones.
- */
-export const FORK_ACTIVATION_DRIVE_SLOTS = 16;
-
-/**
  * One activation's guest exports, bound into the module's drive table so the
  * module can `call_indirect` them.
  *
@@ -155,6 +146,11 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   // activation owns an exception recipe to raise it. Not required: a guest with
   // no exception codec has no tags to raise and exports no thrower.
   { slot: 15, name: "__wpk_fork_ref_exn_throw_recipe", required: false },
+  // The guest's own table shims: the module reads and writes a guest table
+  // only by calling these, never by holding the table.
+  { slot: 16, name: "wpk_fork_module_table_read", required: true },
+  { slot: 17, name: "wpk_fork_module_table_length", required: true },
+  { slot: 18, name: "wpk_fork_module_table_apply", required: true },
 ] as const;
 
 /** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
@@ -168,10 +164,11 @@ export interface ForkModuleBackendOptions {
   readonly format: LinkedFrameFormatDescriptor;
   /** The guest's resume-target function ordinals, in slot order. */
   readonly catalogOrdinals: readonly number[];
-  /** The worker's dlopen control address, or 0 when it has no archive. */
+  /**
+   * The dlopen control address, or 0 when there is no archive. A borrowed
+   * vfork child passes its OWNER's: it has no control block of its own.
+   */
   readonly archiveControlAddr?: number;
-  /** The physical table whose patches this worker applies. */
-  readonly tableOwner?: number;
   /**
    * This worker's syscall channel base. Publishing a table patch allocates its
    * record with SYS_MMAP through the same channel the guest uses, so the module
@@ -239,7 +236,6 @@ export class ForkModuleContinuationBackend {
       this.options.ptrWidth,
       this.options.format.fixedPrefixSize,
       this.options.archiveControlAddr ?? 0,
-      this.options.tableOwner ?? 0,
       this.options.channelBase ?? 0,
     );
     // The catalog is seeded AFTER the format, which resets it. Seeding first
@@ -703,7 +699,11 @@ export class ForkModuleContinuationBackend {
     // tail of the slice off the end of the table -- and the next activation's
     // base is past it. Growing to the stride makes the slice exist whether or
     // not this guest fills all of it.
-    const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+    // One slot per binding: the bindings cover the whole stride, which
+    // `host/test/fork-module-backend.test.ts` pins against fork-codec's
+    // `DRIVE_SLOTS_PER_ACTIVATION`, so the host keeps no hand-written copy of
+    // the stride to drift from it.
+    const needed = base + FORK_ACTIVATION_DRIVE_BINDINGS.length;
     if (table.length < needed) table.grow(needed - table.length);
     for (const { slot, name, required } of FORK_ACTIVATION_DRIVE_BINDINGS) {
       const fn = guestExports[name];

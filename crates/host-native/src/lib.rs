@@ -244,7 +244,7 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// these as host surface would overstate the obligation and, worse, would make
 /// the number move for reasons that have nothing to do with fork.
 ///
-/// All FIVE are the real obligation, and each is a Wasm capability floor
+/// All SIX are the real obligation, and each is a Wasm capability floor
 /// rather than a design choice:
 ///
 /// * `env.__wpk_fork_host_ref_identity` (function) -- decides whether two
@@ -254,6 +254,12 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// * `env.__wpk_fork_host_func_identity` (function) -- the same question for
 ///   `funcref`, which is a disjoint hierarchy from `anyref`, so one oracle
 ///   cannot serve both.
+/// * `env.__wpk_fork_host_materialize_dlopen_archive` (function) --
+///   instantiates, in the asking worker, libraries a peer dlopened. Loading a
+///   module is `WebAssembly.instantiate`, which no module can do; the module
+///   keeps the sequencing (when, which generation, never under the archive
+///   writer). WENT 5 -> 6 for it on 2026-09-23, maintainer-approved. This host
+///   has no dlopen and answers ENOSYS.
 /// * `env.__wpk_fork_function_catalog`, `env.__wpk_fork_drive_table`,
 ///   `env.__wpk_fork_static_root_catalog` (tables) -- reference-typed tables.
 ///   Rust cannot declare or hold one; the module reaches their contents only
@@ -267,10 +273,10 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// host reads, so it tracks the module whether or not this host implements
 /// each entry.
 ///
-/// If any of the five is ever shown NOT to be a floor, this number and the
+/// If any of the six is ever shown NOT to be a floor, this number and the
 /// matching budget target should both fall. Until then they are equal, which
 /// is why this surface's target is not below its ceiling.
-pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 5;
+pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 6;
 
 /// The number of PIC linking imports excluded from the count above. Pinned so
 /// that a change in linking shape is visible instead of silently rebalancing
@@ -1501,6 +1507,10 @@ mod tests {
                 // 2026-09-13 on the condition that a native host CAN supply it,
                 // which `a_native_host_can_identify_funcrefs` proves.
                 "__wpk_fork_host_func_identity",
+                // Instantiate a library a peer dlopened, in this worker.
+                // Maintainer-approved 2026-09-23: loading a module is host
+                // work; the module decides when and for which generation.
+                "__wpk_fork_host_materialize_dlopen_archive",
                 // The same question for `anyref`, approved earlier.
                 "__wpk_fork_host_ref_identity",
                 // No externref import: `resolve_externref` and
@@ -3347,6 +3357,54 @@ mod tests {
         assert_eq!(
             proof.gc_nodes_reconstructed, 0,
             "frames-only fork must never reconstruct a typed-GC node: {proof:?}"
+        );
+        Ok(())
+    }
+
+    /// A program that grows and writes its OWN externref table forks, and the
+    /// child sees the table as the parent left it.
+    ///
+    /// The native mate of the externref case in
+    /// `host/test/dlopen-pthread-table-replication.test.ts`. An externref table
+    /// is saved across fork but never replicated across Workers (its host
+    /// objects cannot exist in another one), so its mutations journal dirty
+    /// pages and nothing else: no process writer, no commit, no reconcile. On
+    /// the JS hosts the same program exited 132 before that split. Fixture:
+    /// `native_fork_externref_table.instrumented.wasm` (exit 0 = success, 92 =
+    /// the child's table was not 100 slots, 93 = the parent's was not).
+    ///
+    /// IGNORED, and the reason is a native gap this change did not open: this
+    /// host carries no guest TABLE state across fork. It never seeds the
+    /// module's table-state elections (`fm_set_activation_table_state_owner`,
+    /// which the JS hosts drive from `ForkTableStateOwners`), so every table
+    /// reads as "not owned" at capture; seeding them alone was tried and the
+    /// child still exits nonzero, in the same module-state reconstruction path
+    /// the pre-existing `smoke_fork_reconstructs_references` and
+    /// `smoke_fork_gc_*` failures sit in. Un-ignore when that path works.
+    #[test]
+    #[ignore = "host-native carries no guest table state across fork (see doc comment)"]
+    fn smoke_fork_externref_table() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = crate::fixtures::fixture("native_fork_externref_table.instrumented.wasm");
+        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+        assert_eq!(
+            outcome.exit_code, 0,
+            "the child must see the 100-slot externref table and the parent must reap it \
+             (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert!(
+            outcome.syscall_trace.contains(&wasm_posix_shared::abi::host_intercepted::SYS_FORK),
+            "the fork must really happen: {:?}",
+            outcome.syscall_trace
         );
         Ok(())
     }

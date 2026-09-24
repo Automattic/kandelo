@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  FORK_ACTIVATION_DRIVE_SLOTS,
   ForkModuleContinuationBackend,
+  FORK_ACTIVATION_DRIVE_BINDINGS,
 } from "../src/fork-module-backend";
 import {
   CAPTURE_KIND_ARRAY,
@@ -39,6 +39,9 @@ import {
   voidSlotThunk,
   type Fixture,
 } from "./fork-module-capture-fixture";
+
+/** The per-activation drive stride: one slot per binding. */
+const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
 
 /**
  * Where a test stages the sides vector `fm_parent_begin_capture` reads, and
@@ -821,7 +824,7 @@ describe("the binding records the module assembles at capture", () => {
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect((f.x.fm_phase as () => number)(), "mid-capture").toBe(PHASE_CAPTURE);
-    (f.x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+    (f.x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
     expect(f.errno(), "the format seed is accepted").toBe(0);
     expect(
       (f.x.fm_phase as () => number)(),
