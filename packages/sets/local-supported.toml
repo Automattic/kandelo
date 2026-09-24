@@ -104,6 +104,10 @@ name = "grep"
 class = "user-software"
 
 [[packages]]
+name = "glib"
+class = "platform"
+
+[[packages]]
 name = "gzip"
 class = "user-software"
 
@@ -137,6 +141,10 @@ class = "platform"
 
 [[packages]]
 name = "libdrm"
+class = "platform"
+
+[[packages]]
+name = "libffi"
 class = "platform"
 
 [[packages]]
@@ -190,6 +198,14 @@ class = "user-software"
 [[packages]]
 name = "mariadb-test"
 class = "test-support"
+
+[[packages]]
+name = "mc"
+class = "user-software"
+
+[[packages]]
+name = "mc-browser-bundle"
+class = "browser-product"
 
 [[packages]]
 name = "modeset"
@@ -249,6 +265,10 @@ class = "browser-product"
 
 [[packages]]
 name = "openssl"
+class = "platform"
+
+[[packages]]
+name = "pcre2"
 class = "platform"
 
 [[packages]]

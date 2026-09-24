@@ -481,6 +481,7 @@ export function populateShellEnvironment(
   populateManArchive(fs, resolveArtifact);
   populateCoreutilsDocsArchive(fs, resolveArtifact);
   populateLsofDocsArchive(fs, resolveArtifact);
+  populateMcArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -863,6 +864,17 @@ function populateLsofDocsArchive(
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[8],
+    resolveArtifact,
+  );
+}
+
+function populateMcArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[9],
     resolveArtifact,
   );
 }

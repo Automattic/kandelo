@@ -1,0 +1,62 @@
+# Per-package manifest for GNU Midnight Commander. See
+# docs/package-management.md.
+#
+# mc is a full-screen text-mode file manager: two directory panels, a
+# built-in viewer (mcview), editor (mcedit) and diff viewer (mcdiff), and
+# a command line that runs in a subshell. It is the first registry
+# package that consumes the glib port, so it exercises glib's main loop,
+# GString/GList and GRegex against a real application rather than a smoke
+# test.
+#
+# DEPENDENCIES. mc has exactly two mandatory link-time inputs, glib-2.0
+# (>= 2.32, checked by m4.include/mc-glib.m4) and a screen library. We
+# build against ncursesw rather than S-Lang because ncurses is already a
+# platform package that every other terminal program here links.
+#
+# pcre2 is declared even though mc never calls it directly: glib is a
+# static archive, so the pcre2 symbols that glib's gregex.c references
+# stay undefined until mc's final link resolves them. A static library
+# cannot carry its own dependencies the way a shared object can, so the
+# consumer has to name them.
+#
+# FORK. mc forks for its subshell, for every command typed at its prompt,
+# and for the background file operations enabled by --enable-background,
+# so the build must be fork-instrumented. The resolver's `auto` policy
+# detects the fork closure; see docs/fork-instrumentation.md.
+
+kind = "program"
+name = "mc"
+version = "4.8.32"
+kernel_abi = 43
+depends_on = ["glib@2.84.4", "ncurses@6.5", "pcre2@10.44"]
+
+[source]
+# The midnight-commander.org canonical host does not present a
+# certificate valid for its own download name, so fetch from the OSU Open
+# Source Lab mirror it publishes releases through. Same bytes, verified
+# by the sha256 below.
+url = "https://ftp.osuosl.org/pub/midnightcommander/mc-4.8.32.tar.xz"
+sha256 = "4ddc83d1ede9af2363b3eab987f54b87cf6619324110ce2d3a0e70944d1359fe"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/MidnightCommander/mc/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/mc/build-mc.sh"
+
+[[outputs]]
+name = "mc"
+wasm = "mc.wasm"
+
+# mc refuses to start without its data directory: skins (the default
+# "default" skin defines every colour pair the UI draws with), syntax
+# highlighting rules for mcedit, the help file, and the extfs.d/ext.d
+# helper scripts that back its archive browsing and "open by file type"
+# behaviour. Ship them as a runtime archive rooted for /usr, the way perl
+# ships perl-runtime.zip, so VFS images stage real data instead of a
+# hand-written subset.
+[[runtime_files]]
+artifact = "mc-runtime.zip"
+guest_path = "/usr/share/mc/mc-runtime.zip"

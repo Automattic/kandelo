@@ -73,6 +73,12 @@ export function populateSourceRootfsShellOverlay(
     ["/usr/bin/npx", "/bin/npx"],
     ["/usr/bin/perl", "/bin/perl"],
     ["/usr/bin/man", "/bin/man"],
+    // mc is one binary with four personalities selected from argv[0];
+    // the archive carries the /usr/bin names, these are the /bin aliases.
+    ["/usr/bin/mc", "/bin/mc"],
+    ["/usr/bin/mcedit", "/bin/mcedit"],
+    ["/usr/bin/mcview", "/bin/mcview"],
+    ["/usr/bin/mcdiff", "/bin/mcdiff"],
   ] as const) {
     symlink(fs, target, alias);
   }

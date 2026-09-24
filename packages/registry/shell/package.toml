@@ -36,6 +36,7 @@ depends_on = [
   "node-browser-bundle@0.1.0",
   "perl-browser-bundle@5.40.3",
   "mandoc-browser-bundle@1.14.6",
+  "mc-browser-bundle@4.8.32",
   "coreutils-docs@9.6",
   "lsof-docs@0.1.0",
 ]

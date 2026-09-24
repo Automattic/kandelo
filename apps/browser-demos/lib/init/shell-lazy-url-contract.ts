@@ -21,7 +21,7 @@ export function assertShellLazyUrlsResolved(fs: MemoryFileSystem): void {
     entry.url === "node.zip" ||
     entry.url === "perl.zip" ||
     entry.url === "man.zip" || entry.url === "coreutils-docs.zip" ||
-    entry.url === "lsof-docs.zip"
+    entry.url === "lsof-docs.zip" || entry.url === "mc.zip"
   );
   if (unresolvedFiles.length === 0 && unresolvedArchives.length === 0) return;
   const details = [
