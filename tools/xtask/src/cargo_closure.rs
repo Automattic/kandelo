@@ -5,30 +5,68 @@
 //! (e.g. `.cargo/config.toml`, or a newly-added workspace crate).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
 pub(crate) const CARGO_INPUT_PREFIX: &str = "cargo:";
 
-pub(crate) fn cargo_closure_paths(
-    repo_root: &Path,
-    crate_name: &str,
-) -> Result<Vec<String>, String> {
+type WorkspaceMetadataCache =
+    OnceLock<Mutex<BTreeMap<PathBuf, Result<Arc<serde_json::Value>, String>>>>;
+
+/// `cargo metadata` for `repo_root`, run at most once per xtask process.
+///
+/// WHY: one cache-key computation can expand `cargo:<crate>` closures
+/// dozens of times — generating the program package index ran `cargo
+/// metadata` 48 times, each a ~0.1–0.2 s subprocess, and that index is
+/// re-ensured on every source-checkout `resolveBinary("programs/...")`.
+/// The workspace graph is a property of the checkout's manifests and
+/// lockfile, which no xtask command edits while it computes keys, so
+/// every expansion inside one process reads the same answer. A new xtask
+/// process — the unit every caller invokes — still runs it afresh, so
+/// freshness across edits is unchanged. The lock is held across the
+/// subprocess so concurrent callers share the first run instead of
+/// racing to start their own.
+fn workspace_metadata(repo_root: &Path) -> Result<Arc<serde_json::Value>, String> {
+    static CACHE: WorkspaceMetadataCache = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = cache.get(repo_root) {
+        return cached.clone();
+    }
+    let result = run_workspace_metadata(repo_root);
+    cache.insert(repo_root.to_path_buf(), result.clone());
+    result
+}
+
+fn run_workspace_metadata(repo_root: &Path) -> Result<Arc<serde_json::Value>, String> {
     let output = Command::new("cargo")
         .args(["metadata", "--format-version=1", "--locked"])
         .current_dir(repo_root)
         .output()
-        .map_err(|e| format!("run cargo metadata for `{crate_name}` closure: {e}"))?;
+        .map_err(|e| format!("run cargo metadata in {}: {e}", repo_root.display()))?;
     if !output.status.success() {
         return Err(format!(
-            "cargo metadata for `{crate_name}` closure failed: {}",
+            "cargo metadata in {} failed: {}",
+            repo_root.display(),
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    let meta: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("parse cargo metadata json: {e}"))?;
+    serde_json::from_slice(&output.stdout)
+        .map(Arc::new)
+        .map_err(|e| format!("parse cargo metadata json: {e}"))
+}
+
+pub(crate) fn cargo_closure_paths(
+    repo_root: &Path,
+    crate_name: &str,
+) -> Result<Vec<String>, String> {
+    let meta = workspace_metadata(repo_root)
+        .map_err(|e| format!("cargo metadata for `{crate_name}` closure: {e}"))?;
 
     let packages = meta
         .get("packages")
@@ -292,6 +330,19 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(paths, sorted, "must be sorted and deduped");
+    }
+
+    #[test]
+    fn workspace_metadata_runs_once_per_repo_root() {
+        let repo = crate::repo_root();
+        let first = workspace_metadata(&repo).expect("metadata");
+        cargo_closure_paths(&repo, "kandelo").expect("kandelo closure");
+        cargo_closure_paths(&repo, "fork-instrument").expect("fork-instrument closure");
+        let again = workspace_metadata(&repo).expect("metadata");
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "closure expansions in one process must share one cargo metadata run"
+        );
     }
 
     #[test]
