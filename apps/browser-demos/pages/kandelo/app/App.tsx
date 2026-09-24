@@ -4,6 +4,7 @@
 import * as React from "react";
 import { flushSync } from "react-dom";
 import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
+import { useVfsTools } from "../webmcp/use-vfs-tools";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
@@ -66,6 +67,7 @@ export const App: React.FC = () => {
   const lazyDownloads = useLazyDownloads();
   const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
+  useVfsTools();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
