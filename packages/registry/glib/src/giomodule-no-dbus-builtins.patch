@@ -1,0 +1,28 @@
+--- a/gio/giomodule.c	2026-08-12 12:12:14
++++ b/gio/giomodule.c	2026-08-12 12:12:14
+@@ -1336,7 +1336,9 @@
+       g_type_ensure (g_null_settings_backend_get_type ());
+       g_type_ensure (g_memory_settings_backend_get_type ());
+       g_type_ensure (g_keyfile_settings_backend_get_type ());
++#ifdef GIO_DBUS_BUILTIN_MODULES
+       g_type_ensure (g_power_profile_monitor_dbus_get_type ());
++#endif
+ #if defined(FILE_MONITOR_BACKEND_INOTIFY) || defined(FILE_MONITOR_BACKEND_LIBINOTIFY_KQUEUE)
+       g_type_ensure (g_inotify_file_monitor_get_type ());
+ #endif
+@@ -1356,6 +1358,7 @@
+ #endif
+ #ifdef G_OS_UNIX
+       g_type_ensure (_g_unix_volume_monitor_get_type ());
++#ifdef GIO_DBUS_BUILTIN_MODULES
+       g_type_ensure (g_debug_controller_dbus_get_type ());
+       g_type_ensure (g_fdo_notification_backend_get_type ());
+       g_type_ensure (g_gtk_notification_backend_get_type ());
+@@ -1366,6 +1369,7 @@
+       g_type_ensure (g_power_profile_monitor_portal_get_type ());
+       g_type_ensure (g_proxy_resolver_portal_get_type ());
+ #endif
++#endif
+ #ifdef G_OS_WIN32
+       g_type_ensure (g_win32_notification_backend_get_type ());
+       g_type_ensure (_g_winhttp_vfs_get_type ());

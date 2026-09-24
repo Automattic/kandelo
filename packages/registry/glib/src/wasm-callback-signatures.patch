@@ -1,0 +1,953 @@
+--- a/glib/glist.c	2026-08-12 12:44:52
++++ b/glib/glist.c	2026-08-12 12:44:53
+@@ -159,7 +159,13 @@
+ g_list_free_full (GList          *list,
+                   GDestroyNotify  free_func)
+ {
+-  g_list_foreach (list, (GFunc) free_func, NULL);
++  GList *l;
++
++  /* wasm32-posix-kernel: call free_func through its own type. Casting
++   * GDestroyNotify to GFunc changes the call_indirect arity, which
++   * traps on wasm. */
++  for (l = list; l != NULL; l = l->next)
++    free_func (l->data);
+   g_list_free (list);
+ }
+ 
+@@ -1081,12 +1087,22 @@
+  *
+  * Returns: the (possibly changed) start of the #GList
+  */
++/* wasm32-posix-kernel: adapter so GCompareFunc callers never flow a
++ * two-argument function through a three-argument call_indirect. */
++static gint
++wasm_compare_data_thunk (gconstpointer a,
++                         gconstpointer b,
++                         gpointer      user_data)
++{
++  return ((GCompareFunc) user_data) (a, b);
++}
++
+ GList *
+ g_list_insert_sorted (GList        *list,
+                       gpointer      data,
+                       GCompareFunc  func)
+ {
+-  return g_list_insert_sorted_real (list, data, (GFunc) func, NULL);
++  return g_list_insert_sorted_real (list, data, (GFunc) wasm_compare_data_thunk, (gpointer) func);
+ }
+ 
+ /**
+@@ -1217,7 +1233,7 @@
+ g_list_sort (GList        *list,
+              GCompareFunc  compare_func)
+ {
+-  return g_list_sort_real (list, (GFunc) compare_func, NULL);
++  return g_list_sort_real (list, (GFunc) wasm_compare_data_thunk, (gpointer) compare_func);
+ }
+ 
+ /**
+--- a/glib/gslist.c	2026-08-12 12:44:52
++++ b/glib/gslist.c	2026-08-12 12:44:53
+@@ -146,7 +146,13 @@
+ g_slist_free_full (GSList         *list,
+ 		   GDestroyNotify  free_func)
+ {
+-  g_slist_foreach (list, (GFunc) free_func, NULL);
++  GSList *l;
++
++  /* wasm32-posix-kernel: call free_func through its own type. Casting
++   * GDestroyNotify to GFunc changes the call_indirect arity, which
++   * traps on wasm. */
++  for (l = list; l != NULL; l = l->next)
++    free_func (l->data);
+   g_slist_free (list);
+ }
+ 
+@@ -905,12 +911,22 @@
+  *
+  * Returns: the new start of the #GSList
+  */
++/* wasm32-posix-kernel: adapter so GCompareFunc callers never flow a
++ * two-argument function through a three-argument call_indirect. */
++static gint
++wasm_compare_data_thunk (gconstpointer a,
++                         gconstpointer b,
++                         gpointer      user_data)
++{
++  return ((GCompareFunc) user_data) (a, b);
++}
++
+ GSList*
+ g_slist_insert_sorted (GSList       *list,
+                        gpointer      data,
+                        GCompareFunc  func)
+ {
+-  return g_slist_insert_sorted_real (list, data, (GFunc) func, NULL);
++  return g_slist_insert_sorted_real (list, data, (GFunc) wasm_compare_data_thunk, (gpointer) func);
+ }
+ 
+ /**
+@@ -1017,7 +1033,7 @@
+ g_slist_sort (GSList       *list,
+               GCompareFunc  compare_func)
+ {
+-  return g_slist_sort_real (list, (GFunc) compare_func, NULL);
++  return g_slist_sort_real (list, (GFunc) wasm_compare_data_thunk, (gpointer) compare_func);
+ }
+ 
+ /**
+--- a/glib/gqueue.c	2026-08-12 12:44:52
++++ b/glib/gqueue.c	2026-08-12 12:44:53
+@@ -81,7 +81,13 @@
+ g_queue_free_full (GQueue        *queue,
+                   GDestroyNotify  free_func)
+ {
+-  g_queue_foreach (queue, (GFunc) free_func, NULL);
++  GList *l;
++
++  /* wasm32-posix-kernel: call free_func through its own type. Casting
++   * GDestroyNotify to GFunc changes the call_indirect arity, which
++   * traps on wasm. */
++  for (l = queue->head; l != NULL; l = l->next)
++    free_func (l->data);
+   g_queue_free (queue);
+ }
+ 
+@@ -140,7 +146,14 @@
+   g_return_if_fail (queue != NULL);
+ 
+   if (free_func != NULL)
+-    g_queue_foreach (queue, (GFunc) free_func, NULL);
++    {
++      GList *l;
++
++      /* wasm32-posix-kernel: same call_indirect arity constraint as
++       * g_queue_free_full. */
++      for (l = queue->head; l != NULL; l = l->next)
++        free_func (l->data);
++    }
+ 
+   g_queue_clear (queue);
+ }
+--- a/glib/gasyncqueue.c	2026-08-12 12:44:52
++++ b/glib/gasyncqueue.c	2026-08-12 12:44:53
+@@ -182,7 +182,14 @@
+       g_mutex_clear (&queue->mutex);
+       g_cond_clear (&queue->cond);
+       if (queue->item_free_func)
+-        g_queue_foreach (&queue->queue, (GFunc) queue->item_free_func, NULL);
++        {
++          GList *l;
++
++          /* wasm32-posix-kernel: call the GDestroyNotify through its
++           * own type; the GFunc cast traps on wasm. */
++          for (l = queue->queue.head; l != NULL; l = l->next)
++            queue->item_free_func (l->data);
++        }
+       g_queue_clear (&queue->queue);
+       g_free (queue);
+     }
+--- a/glib/garray.c	2026-08-12 12:44:52
++++ b/glib/garray.c	2026-08-12 12:44:53
+@@ -42,6 +42,16 @@
+ #include "gmem.h"
+ #include "gtestutils.h"
+ #include "gthread.h"
++
++/* wasm32-posix-kernel: adapter so GCompareFunc callers never flow a
++ * two-argument function through a three-argument call_indirect. */
++static gint
++wasm_compare_data_thunk (gconstpointer a,
++                         gconstpointer b,
++                         gpointer      user_data)
++{
++  return ((GCompareFunc) user_data) (a, b);
++}
+ #include "gmessages.h"
+ #include "gqsort.h"
+ #include "grefcount.h"
+@@ -928,8 +938,8 @@
+     g_sort_array (array->data,
+                   array->len,
+                   array->elt_size,
+-                  (GCompareDataFunc) compare_func,
+-                  NULL);
++                  wasm_compare_data_thunk,
++                  (gpointer) compare_func);
+ }
+ 
+ /**
+@@ -2416,8 +2426,8 @@
+     g_sort_array (array->pdata,
+                   array->len,
+                   sizeof (gpointer),
+-                  (GCompareDataFunc) compare_func,
+-                  NULL);
++                  wasm_compare_data_thunk,
++                  (gpointer) compare_func);
+ }
+ 
+ /* Please keep this doc-comment in sync with
+--- a/glib/gtree.c	2026-08-12 12:44:52
++++ b/glib/gtree.c	2026-08-12 12:44:53
+@@ -131,12 +131,22 @@
+  * 
+  * Returns: a newly allocated #GTree
+  */
++/* wasm32-posix-kernel: adapter so GCompareFunc callers never flow a
++ * two-argument function through a three-argument call_indirect. */
++static gint
++wasm_compare_data_thunk (gconstpointer a,
++                         gconstpointer b,
++                         gpointer      user_data)
++{
++  return ((GCompareFunc) user_data) (a, b);
++}
++
+ GTree *
+ g_tree_new (GCompareFunc key_compare_func)
+ {
+   g_return_val_if_fail (key_compare_func != NULL, NULL);
+ 
+-  return g_tree_new_full ((GCompareDataFunc) key_compare_func, NULL,
++  return g_tree_new_full (wasm_compare_data_thunk, (gpointer) key_compare_func,
+                           NULL, NULL);
+ }
+ 
+--- a/gobject/gobject.c	2026-08-12 12:44:52
++++ b/gobject/gobject.c	2026-08-12 12:59:42
+@@ -170,7 +170,8 @@
+ /* --- prototypes --- */
+ static void	g_object_base_class_init		(GObjectClass	*class);
+ static void	g_object_base_class_finalize		(GObjectClass	*class);
+-static void	g_object_do_class_init			(GObjectClass	*class);
++static void	g_object_do_class_init			(gpointer	class_ptr,
++							 gpointer	class_data);
+ static void	g_object_init				(GObject	*object,
+ 							 GObjectClass	*class);
+ static GObject*	g_object_constructor			(GType                  type,
+@@ -863,7 +864,7 @@
+     sizeof (GObjectClass),
+     (GBaseInitFunc) g_object_base_class_init,
+     (GBaseFinalizeFunc) g_object_base_class_finalize,
+-    (GClassInitFunc) g_object_do_class_init,
++    g_object_do_class_init,
+     NULL	/* class_destroy */,
+     NULL	/* class_data */,
+     sizeof (GObject),
+@@ -987,8 +988,11 @@
+ }
+ 
+ static void
+-g_object_do_class_init (GObjectClass *class)
++g_object_do_class_init (gpointer class_ptr,
++                        gpointer class_data G_GNUC_UNUSED)
+ {
++  GObjectClass *class = class_ptr;
++
+   quark_closure_array = g_quark_from_static_string ("GObject-closure-array");
+   quark_weak_notifies = g_quark_from_static_string ("GObject-weak-notifies");
+   quark_weak_locations = g_quark_from_static_string ("GObject-weak-locations");
+@@ -5219,7 +5223,24 @@
+   GClosure *closures[1]; /* flexible array */
+ } CArray;
+ 
++/* wasm32-posix-kernel: GClosureNotify takes two arguments; casting
++ * g_object_ref / g_object_unref (one argument, and ref returns a
++ * value) changes the call_indirect signature, which traps on wasm. */
+ static void
++wasm_closure_object_ref (gpointer  object,
++                         GClosure *closure)
++{
++  g_object_ref (object);
++}
++
++static void
++wasm_closure_object_unref (gpointer  object,
++                           GClosure *closure)
++{
++  g_object_unref (object);
++}
++
++static void
+ object_remove_closure (gpointer  data,
+ 		       GClosure *closure)
+ {
+@@ -5292,8 +5313,8 @@
+   
+   g_closure_add_invalidate_notifier (closure, object, object_remove_closure);
+   g_closure_add_marshal_guards (closure,
+-				object, (GClosureNotify) g_object_ref,
+-				object, (GClosureNotify) g_object_unref);
++				object, wasm_closure_object_ref,
++				object, wasm_closure_object_unref);
+   object_bit_lock (object, OPTIONAL_BIT_LOCK_CLOSURE_ARRAY);
+   carray = g_datalist_id_remove_no_notify (&object->qdata, quark_closure_array);
+   if (!carray)
+--- a/gobject/gtype.h	2026-08-12 12:44:52
++++ b/gobject/gtype.h	2026-08-12 12:59:42
+@@ -2097,6 +2097,14 @@
+  * Since: 2.24
+  */
+ #define G_DEFINE_INTERFACE_WITH_CODE(TN, t_n, T_P, _C_)     _G_DEFINE_INTERFACE_EXTENDED_BEGIN(TN, t_n, T_P) {_C_;} _G_DEFINE_INTERFACE_EXTENDED_END()
++
++/* wasm32-posix-kernel: GInterfaceInitFunc-shaped trampoline that calls
++ * the conventional one-argument interface init function passed as
++ * @init_func. Casting a one-argument init to GInterfaceInitFunc changes
++ * the call_indirect signature, which traps on wasm. */
++GOBJECT_AVAILABLE_IN_ALL
++void  g_wasm_iface_init_thunk (gpointer g_iface,
++                               gpointer init_func);
+ 
+ /**
+  * G_IMPLEMENT_INTERFACE:
+@@ -2114,7 +2122,7 @@
+  */
+ #define G_IMPLEMENT_INTERFACE(TYPE_IFACE, iface_init)       { \
+   const GInterfaceInfo g_implement_interface_info = { \
+-    (GInterfaceInitFunc)(void (*)(void)) iface_init, NULL, NULL \
++    g_wasm_iface_init_thunk, NULL, (gpointer) (void (*)(void)) iface_init \
+   }; \
+   g_type_add_interface_static (g_define_type_id, TYPE_IFACE, &g_implement_interface_info); \
+ }
+@@ -2256,7 +2264,8 @@
+  */
+ #if GLIB_VERSION_MAX_ALLOWED >= GLIB_VERSION_2_38
+ #define _G_DEFINE_TYPE_EXTENDED_CLASS_INIT(TypeName, type_name) \
+-static void     type_name##_class_intern_init (gpointer klass) \
++static void     type_name##_class_intern_init (gpointer klass, \
++                                               gpointer class_data G_GNUC_UNUSED) \
+ { \
+   type_name##_parent_class = g_type_class_peek_parent (klass); \
+   if (TypeName##_private_offset != 0) \
+@@ -2266,7 +2275,8 @@
+ 
+ #else
+ #define _G_DEFINE_TYPE_EXTENDED_CLASS_INIT(TypeName, type_name) \
+-static void     type_name##_class_intern_init (gpointer klass) \
++static void     type_name##_class_intern_init (gpointer klass, \
++                                               gpointer class_data G_GNUC_UNUSED) \
+ { \
+   type_name##_parent_class = g_type_class_peek_parent (klass); \
+   type_name##_class_init ((TypeName##Class*) klass); \
+@@ -2293,6 +2303,13 @@
+ static gint     TypeName##_private_offset; \
+ \
+ _G_DEFINE_TYPE_EXTENDED_CLASS_INIT(TypeName, type_name) \
++\
++static void \
++type_name##_intern_instance_init (GTypeInstance *instance, \
++                                  gpointer       g_class G_GNUC_UNUSED) \
++{ \
++  type_name##_init ((TypeName *) instance); \
++} \
+ \
+ G_GNUC_UNUSED \
+ static inline gpointer \
+@@ -2325,9 +2342,9 @@
+         g_type_register_static_simple (TYPE_PARENT, \
+                                        g_intern_static_string (#TypeName), \
+                                        sizeof (TypeName##Class), \
+-                                       (GClassInitFunc)(void (*)(void)) type_name##_class_intern_init, \
++                                       type_name##_class_intern_init, \
+                                        sizeof (TypeName), \
+-                                       (GInstanceInitFunc)(void (*)(void)) type_name##_init, \
++                                       type_name##_intern_instance_init, \
+                                        (GTypeFlags) flags); \
+     { /* custom code follows */
+ #define _G_DEFINE_TYPE_EXTENDED_END()	\
+@@ -2348,6 +2365,13 @@
+ #define _G_DEFINE_INTERFACE_EXTENDED_BEGIN(TypeName, type_name, TYPE_PREREQ) \
+ \
+ static void     type_name##_default_init        (TypeName##Interface *klass); \
++\
++static void \
++type_name##_default_intern_init (gpointer klass, \
++                                 gpointer class_data G_GNUC_UNUSED) \
++{ \
++  type_name##_default_init ((TypeName##Interface *) klass); \
++} \
+ \
+ GType \
+ type_name##_get_type (void) \
+@@ -2359,7 +2383,7 @@
+         g_type_register_static_simple (G_TYPE_INTERFACE, \
+                                        g_intern_static_string (#TypeName), \
+                                        sizeof (TypeName##Interface), \
+-                                       (GClassInitFunc)(void (*)(void)) type_name##_default_init, \
++                                       type_name##_default_intern_init, \
+                                        0, \
+                                        (GInstanceInitFunc)NULL, \
+                                        (GTypeFlags) 0); \
+--- a/gobject/gtype.c	2026-08-12 12:44:52
++++ b/gobject/gtype.c	2026-08-12 12:59:42
+@@ -2628,6 +2628,14 @@
+   return type;
+ }
+ 
++void
++g_wasm_iface_init_thunk (gpointer g_iface,
++                         gpointer init_func)
++{
++  if (init_func)
++    ((void (*) (gpointer)) init_func) (g_iface);
++}
++
+ /**
+  * g_type_add_interface_static:
+  * @instance_type: #GType value of an instantiatable type
+--- a/gobject/gtypemodule.h	2026-08-12 12:44:52
++++ b/gobject/gtypemodule.h	2026-08-12 12:59:42
+@@ -181,6 +181,20 @@
+ static gint     TypeName##_private_offset; \
+ \
+ _G_DEFINE_TYPE_EXTENDED_CLASS_INIT(TypeName, type_name) \
++\
++static void \
++type_name##_class_intern_finalize (gpointer klass, \
++                                   gpointer class_data G_GNUC_UNUSED) \
++{ \
++  type_name##_class_finalize ((TypeName##Class *) klass); \
++} \
++\
++static void \
++type_name##_intern_instance_init (GTypeInstance *instance, \
++                                  gpointer       g_class G_GNUC_UNUSED) \
++{ \
++  type_name##_init ((TypeName *) instance); \
++} \
+ \
+ G_GNUC_UNUSED \
+ static inline gpointer \
+@@ -202,12 +216,12 @@
+     sizeof (TypeName##Class), \
+     (GBaseInitFunc) NULL, \
+     (GBaseFinalizeFunc) NULL, \
+-    (GClassInitFunc)(void (*)(void)) type_name##_class_intern_init, \
+-    (GClassFinalizeFunc)(void (*)(void)) type_name##_class_finalize, \
++    type_name##_class_intern_init, \
++    type_name##_class_intern_finalize, \
+     NULL,   /* class_data */ \
+     sizeof (TypeName), \
+     0,      /* n_preallocs */ \
+-    (GInstanceInitFunc)(void (*)(void)) type_name##_init, \
++    type_name##_intern_instance_init, \
+     NULL    /* value_table */ \
+   }; \
+   type_name##_type_id = g_type_module_register_type (type_module, \
+@@ -237,7 +251,7 @@
+  */
+ #define G_IMPLEMENT_INTERFACE_DYNAMIC(TYPE_IFACE, iface_init)       { \
+   const GInterfaceInfo g_implement_interface_info = { \
+-    (GInterfaceInitFunc)(void (*)(void)) iface_init, NULL, NULL      \
++    g_wasm_iface_init_thunk, NULL, (gpointer) (void (*)(void)) iface_init \
+   }; \
+   g_type_module_add_interface (type_module, g_define_type_id, TYPE_IFACE, &g_implement_interface_info); \
+ }
+--- a/gobject/gtypemodule.c	2026-08-12 12:44:52
++++ b/gobject/gtypemodule.c	2026-08-12 12:59:42
+@@ -123,8 +123,11 @@
+ }
+ 
+ static void
+-g_type_module_class_init (GTypeModuleClass *class)
++g_type_module_class_init (gpointer class_ptr,
++                          gpointer class_data G_GNUC_UNUSED)
+ {
++  GTypeModuleClass *class = class_ptr;
++
+   GObjectClass *gobject_class = G_OBJECT_CLASS (class);
+ 
+   parent_class = G_OBJECT_CLASS (g_type_class_peek_parent (class));
+@@ -134,8 +137,11 @@
+ }
+ 
+ static void
+-g_type_module_iface_init (GTypePluginClass *iface)
++g_type_module_iface_init (gpointer iface_ptr,
++                          gpointer iface_data G_GNUC_UNUSED)
+ {
++  GTypePluginClass *iface = iface_ptr;
++
+   iface->use_plugin = g_type_module_use_plugin;
+   iface->unuse_plugin = (void (*) (GTypePlugin *))g_type_module_unuse;
+   iface->complete_type_info = g_type_module_complete_type_info;
+@@ -153,7 +159,7 @@
+         sizeof (GTypeModuleClass),
+         NULL,           /* base_init */
+         NULL,           /* base_finalize */
+-        (GClassInitFunc) g_type_module_class_init,
++        g_type_module_class_init,
+         NULL,           /* class_finalize */
+         NULL,           /* class_data */
+         sizeof (GTypeModule),
+@@ -162,7 +168,7 @@
+         NULL,           /* value_table */
+       };
+       const GInterfaceInfo iface_info = {
+-        (GInterfaceInitFunc) g_type_module_iface_init,
++        g_type_module_iface_init,
+         NULL,               /* interface_finalize */
+         NULL,               /* interface_data */
+       };
+--- a/gobject/gparam.c	2026-08-12 12:44:52
++++ b/gobject/gparam.c	2026-08-12 12:59:42
+@@ -1481,6 +1481,22 @@
+  *
+  * Returns: The new type identifier.
+  */
++/* wasm32-posix-kernel: GParamSpecTypeInfo.instance_init takes one
++ * argument; GInstanceInitFunc takes two, and the cast traps on wasm.
++ * Pspec types registered here always derive directly from G_TYPE_PARAM
++ * and are leaves, so the exact instance type keys the real init. */
++static void
++param_spec_instance_init_thunk (GTypeInstance *instance,
++                                gpointer       g_class G_GNUC_UNUSED)
++{
++  void (*instance_init) (GParamSpec *pspec);
++
++  instance_init = g_type_get_qdata (G_TYPE_FROM_INSTANCE (instance),
++                                    g_quark_from_static_string ("g-param-spec-wasm-instance-init"));
++  if (instance_init)
++    instance_init ((GParamSpec *) instance);
++}
++
+ GType
+ g_param_type_register_static (const gchar              *name,
+ 			      const GParamSpecTypeInfo *pspec_info)
+@@ -1510,7 +1526,7 @@
+ 
+   info.instance_size = pspec_info->instance_size;
+   info.n_preallocs = pspec_info->n_preallocs;
+-  info.instance_init = (GInstanceInitFunc) pspec_info->instance_init;
++  info.instance_init = pspec_info->instance_init ? param_spec_instance_init_thunk : NULL;
+   cinfo = g_new (ParamSpecClassInfo, 1);
+   cinfo->value_type = pspec_info->value_type;
+   cinfo->finalize = pspec_info->finalize;
+@@ -1519,7 +1535,15 @@
+   cinfo->values_cmp = pspec_info->values_cmp ? pspec_info->values_cmp : default_values_cmp;
+   info.class_data = cinfo;
+ 
+-  return g_type_register_static (G_TYPE_PARAM, name, &info, 0);
++  {
++    GType type = g_type_register_static (G_TYPE_PARAM, name, &info, 0);
++
++    if (pspec_info->instance_init)
++      g_type_set_qdata (type,
++                        g_quark_from_static_string ("g-param-spec-wasm-instance-init"),
++                        (gpointer) (void (*)(void)) pspec_info->instance_init);
++    return type;
++  }
+ }
+ 
+ /**
+--- a/gio/gcancellable.c	2026-08-12 12:44:53
++++ b/gio/gcancellable.c	2026-08-12 12:44:53
+@@ -597,6 +597,32 @@
+  *
+  * Since: 2.22
+  */
++typedef struct {
++  void (*callback) (GCancellable *cancellable, gpointer user_data);
++  gpointer data;
++  GDestroyNotify destroy;
++} WasmConnectData;
++
++static void
++wasm_connect_data_cancelled (GCancellable *cancellable,
++                             gpointer      user_data)
++{
++  WasmConnectData *cd = user_data;
++
++  cd->callback (cancellable, cd->data);
++}
++
++static void
++wasm_connect_data_destroy (gpointer  data,
++                           GClosure *closure)
++{
++  WasmConnectData *cd = data;
++
++  if (cd->destroy)
++    cd->destroy (cd->data);
++  g_free (cd);
++}
++
+ gulong
+ g_cancellable_connect (GCancellable   *cancellable,
+ 		       GCallback       callback,
+@@ -640,10 +666,20 @@
+   else
+     {
+       GClosure *closure;
++      WasmConnectData *cd;
+ 
+-      closure = g_cclosure_new (callback, g_steal_pointer (&data),
+-                                (GClosureNotify) g_steal_pointer (&data_destroy_func));
++      /* wasm32-posix-kernel: GClosureNotify takes two arguments;
++       * casting the one-argument GDestroyNotify changes the
++       * call_indirect signature, which traps on wasm. Route the
++       * callback and destroy through typed trampolines. */
++      cd = g_new0 (WasmConnectData, 1);
++      cd->callback = (void (*) (GCancellable *, gpointer)) callback;
++      cd->data = g_steal_pointer (&data);
++      cd->destroy = g_steal_pointer (&data_destroy_func);
+ 
++      closure = g_cclosure_new (G_CALLBACK (wasm_connect_data_cancelled), cd,
++                                wasm_connect_data_destroy);
++
+       id = g_signal_connect_closure_by_id (cancellable, signals[CANCELLED],
+                                            0, closure, FALSE);
+     }
+@@ -747,6 +783,15 @@
+   g_assert (callback_was_not_called);
+ 
+   g_source_unref (source);
++}
++
++/* wasm32-posix-kernel: two-argument GClosureNotify wrapper around
++ * g_free; the direct cast traps on wasm. */
++static void
++wasm_closure_free_data (gpointer  data,
++                        GClosure *closure)
++{
++  g_free (data);
+ }
+ 
+ static gboolean
+@@ -896,7 +941,7 @@
+         g_signal_connect_data (cancellable, "cancelled",
+                                G_CALLBACK (cancellable_source_cancelled),
+                                cancellable_source->self_ptr,
+-                               (GClosureNotify) g_free, G_CONNECT_DEFAULT);
++                               wasm_closure_free_data, G_CONNECT_DEFAULT);
+       if (g_cancellable_is_cancelled (cancellable))
+         g_source_set_ready_time (source, 0);
+     }
+--- a/gobject/gclosure.c
++++ b/gobject/gclosure.c
+@@ -1017,7 +1017,26 @@
+   return closure;
+ }
+ 
++/* wasm: class/iface vtable handlers have the exact signature
++ * ret (instance, p1..pn) — no trailing closure data. The stock
++ * per-type marshals call callback (instance, p1..pn, data), an
++ * arity-changing cast that traps wasm call_indirect. The meta
++ * marshals below route the vtable handler through libffi with its
++ * true arity instead of delegating to the per-type marshal. */
+ static void
++g_wasm_vtable_meta_marshal (GValue       *return_value,
++			    guint         n_param_values,
++			    const GValue *param_values,
++			    gpointer      callback);
++static void
++g_wasm_vtable_meta_marshal_va (GValue   *return_value,
++			       gpointer  instance,
++			       va_list   args_list,
++			       gpointer  callback,
++			       int       n_params,
++			       GType    *param_types);
++
++static void
+ g_type_class_meta_marshal (GClosure       *closure,
+ 			   GValue /*out*/ *return_value,
+ 			   guint           n_param_values,
+@@ -1029,15 +1048,13 @@
+   gpointer callback;
+   /* GType itype = (GType) closure->data; */
+   guint offset = GPOINTER_TO_UINT (marshal_data);
+-  
++
+   class = G_TYPE_INSTANCE_GET_CLASS (g_value_peek_pointer (param_values + 0), itype, GTypeClass);
+   callback = G_STRUCT_MEMBER (gpointer, class, offset);
+   if (callback)
+-    closure->marshal (closure,
+-		      return_value,
+-		      n_param_values, param_values,
+-		      invocation_hint,
+-		      callback);
++    g_wasm_vtable_meta_marshal (return_value,
++				n_param_values, param_values,
++				callback);
+ }
+ 
+ static void
+@@ -1049,23 +1066,19 @@
+ 			    int       n_params,
+ 			    GType    *param_types)
+ {
+-  GRealClosure *real_closure;
+   GTypeClass *class;
+   gpointer callback;
+   /* GType itype = (GType) closure->data; */
+   guint offset = GPOINTER_TO_UINT (marshal_data);
+ 
+-  real_closure = G_REAL_CLOSURE (closure);
+-
+   class = G_TYPE_INSTANCE_GET_CLASS (instance, itype, GTypeClass);
+   callback = G_STRUCT_MEMBER (gpointer, class, offset);
+   if (callback)
+-    real_closure->va_marshal (closure,
+-			      return_value,
+-			      instance, args,
+-			      callback,
+-			      n_params,
+-			      param_types);
++    g_wasm_vtable_meta_marshal_va (return_value,
++				   instance, args,
++				   callback,
++				   n_params,
++				   param_types);
+ }
+ 
+ static void
+@@ -1084,11 +1097,9 @@
+   class = G_TYPE_INSTANCE_GET_INTERFACE (g_value_peek_pointer (param_values + 0), itype, GTypeClass);
+   callback = G_STRUCT_MEMBER (gpointer, class, offset);
+   if (callback)
+-    closure->marshal (closure,
+-		      return_value,
+-		      n_param_values, param_values,
+-		      invocation_hint,
+-		      callback);
++    g_wasm_vtable_meta_marshal (return_value,
++				n_param_values, param_values,
++				callback);
+ }
+ 
+ gboolean
+@@ -1136,23 +1147,19 @@
+ 			    int       n_params,
+ 			    GType    *param_types)
+ {
+-  GRealClosure *real_closure;
+   GTypeClass *class;
+   gpointer callback;
+   GType itype = (GType) closure->data;
+   guint offset = GPOINTER_TO_UINT (marshal_data);
+ 
+-  real_closure = G_REAL_CLOSURE (closure);
+-
+   class = G_TYPE_INSTANCE_GET_INTERFACE (instance, itype, GTypeClass);
+   callback = G_STRUCT_MEMBER (gpointer, class, offset);
+   if (callback)
+-    real_closure->va_marshal (closure,
+-			      return_value,
+-			      instance, args,
+-			      callback,
+-			      n_params,
+-			      param_types);
++    g_wasm_vtable_meta_marshal_va (return_value,
++				   instance, args,
++				   callback,
++				   n_params,
++				   param_types);
+ }
+ 
+ /**
+@@ -1673,6 +1680,163 @@
+ 	g_object_unref (storage[i]._gpointer);
+     }
+   
++  if (return_value && G_VALUE_TYPE (return_value))
++    value_from_ffi_type (return_value, rvalue);
++}
++
++/* wasm: exact-arity libffi invocation of a class/iface vtable handler —
++ * ret (instance, p1..pn), no trailing closure data. Mirrors
++ * g_cclosure_marshal_generic minus the data argument. */
++static void
++g_wasm_vtable_meta_marshal (GValue       *return_value,
++			    guint         n_param_values,
++			    const GValue *param_values,
++			    gpointer      callback)
++{
++  ffi_type *rtype;
++  void *rvalue;
++  int n_args;
++  ffi_type **atypes;
++  void **args;
++  int i;
++  ffi_cif cif;
++  gint *enum_tmpval;
++  gboolean tmpval_used = FALSE;
++
++  enum_tmpval = g_alloca (sizeof (gint));
++  if (return_value && G_VALUE_TYPE (return_value))
++    {
++      rtype = value_to_ffi_type (return_value, &rvalue, enum_tmpval, &tmpval_used);
++    }
++  else
++    {
++      rtype = &ffi_type_void;
++    }
++
++  rvalue = g_alloca (MAX (rtype->size, sizeof (ffi_arg)));
++
++  n_args = n_param_values;
++  atypes = g_alloca (sizeof (ffi_type *) * n_args);
++  args = g_alloca (sizeof (gpointer) * n_args);
++
++  for (i = 0; i < n_args; i++)
++    {
++      if (tmpval_used)
++	enum_tmpval = g_alloca (sizeof (gint));
++
++      atypes[i] = value_to_ffi_type (param_values + i,
++				     &args[i],
++				     enum_tmpval,
++				     &tmpval_used);
++    }
++
++  if (ffi_prep_cif (&cif, FFI_DEFAULT_ABI, n_args, rtype, atypes) != FFI_OK)
++    return;
++
++  ffi_call (&cif, callback, rvalue, args);
++
+   if (return_value && G_VALUE_TYPE (return_value))
+     value_from_ffi_type (return_value, rvalue);
+ }
++
++/* wasm: va variant. Mirrors g_cclosure_marshal_generic_va minus the
++ * data argument. */
++static void
++g_wasm_vtable_meta_marshal_va (GValue   *return_value,
++			       gpointer  instance,
++			       va_list   args_list,
++			       gpointer  callback,
++			       int       n_params,
++			       GType    *param_types)
++{
++  ffi_type *rtype;
++  void *rvalue;
++  int n_args;
++  ffi_type **atypes;
++  void **args;
++  va_arg_storage *storage;
++  int i;
++  ffi_cif cif;
++  gint *enum_tmpval;
++  gboolean tmpval_used = FALSE;
++  va_list args_copy;
++
++  enum_tmpval = g_alloca (sizeof (gint));
++  if (return_value && G_VALUE_TYPE (return_value))
++    {
++      rtype = value_to_ffi_type (return_value, &rvalue, enum_tmpval, &tmpval_used);
++    }
++  else
++    {
++      rtype = &ffi_type_void;
++    }
++
++  rvalue = g_alloca (MAX (rtype->size, sizeof (ffi_arg)));
++
++  n_args = n_params + 1;
++  atypes = g_alloca (sizeof (ffi_type *) * n_args);
++  args = g_alloca (sizeof (gpointer) * n_args);
++  storage = g_alloca (sizeof (va_arg_storage) * n_params);
++
++  atypes[0] = &ffi_type_pointer;
++  args[0] = &instance;
++
++  va_copy (args_copy, args_list);
++
++  /* Box non-primitive arguments */
++  for (i = 0; i < n_params; i++)
++    {
++      GType type = param_types[i] & ~G_SIGNAL_TYPE_STATIC_SCOPE;
++      GType fundamental = G_TYPE_FUNDAMENTAL (type);
++
++      atypes[i+1] = va_to_ffi_type (type,
++				    &args_copy,
++				    &storage[i]);
++      args[i+1] = &storage[i];
++
++      if ((param_types[i] & G_SIGNAL_TYPE_STATIC_SCOPE) == 0)
++	{
++	  if (fundamental == G_TYPE_STRING && storage[i]._gpointer != NULL)
++	    storage[i]._gpointer = g_strdup (storage[i]._gpointer);
++	  else if (fundamental == G_TYPE_PARAM && storage[i]._gpointer != NULL)
++	    storage[i]._gpointer = g_param_spec_ref (storage[i]._gpointer);
++	  else if (fundamental == G_TYPE_BOXED && storage[i]._gpointer != NULL)
++	    storage[i]._gpointer = g_boxed_copy (type, storage[i]._gpointer);
++	  else if (fundamental == G_TYPE_VARIANT && storage[i]._gpointer != NULL)
++	    storage[i]._gpointer = g_variant_ref_sink (storage[i]._gpointer);
++	}
++      if (fundamental == G_TYPE_OBJECT && storage[i]._gpointer != NULL)
++	storage[i]._gpointer = g_object_ref (storage[i]._gpointer);
++    }
++
++  va_end (args_copy);
++
++  if (ffi_prep_cif (&cif, FFI_DEFAULT_ABI, n_args, rtype, atypes) != FFI_OK)
++    return;
++
++  ffi_call (&cif, callback, rvalue, args);
++
++  /* Unbox non-primitive arguments */
++  for (i = 0; i < n_params; i++)
++    {
++      GType type = param_types[i] & ~G_SIGNAL_TYPE_STATIC_SCOPE;
++      GType fundamental = G_TYPE_FUNDAMENTAL (type);
++
++      if ((param_types[i] & G_SIGNAL_TYPE_STATIC_SCOPE) == 0)
++	{
++	  if (fundamental == G_TYPE_STRING && storage[i]._gpointer != NULL)
++	    g_free (storage[i]._gpointer);
++	  else if (fundamental == G_TYPE_PARAM && storage[i]._gpointer != NULL)
++	    g_param_spec_unref (storage[i]._gpointer);
++	  else if (fundamental == G_TYPE_BOXED && storage[i]._gpointer != NULL)
++	    g_boxed_free (type, storage[i]._gpointer);
++	  else if (fundamental == G_TYPE_VARIANT && storage[i]._gpointer != NULL)
++	    g_variant_unref (storage[i]._gpointer);
++	}
++      if (fundamental == G_TYPE_OBJECT && storage[i]._gpointer != NULL)
++	g_object_unref (storage[i]._gpointer);
++    }
++
++  if (return_value && G_VALUE_TYPE (return_value))
++    value_from_ffi_type (return_value, rvalue);
++}
+--- a/gobject/gobject.c
++++ b/gobject/gobject.c
+@@ -3783,15 +3783,22 @@
+  * thread if the object's last g_object_unref() might happen in another
+  * thread. Use #GWeakRef if thread-safety is required.
+  */
++static void
++g_wasm_nullify_pointer_weak_notify (gpointer data,
++                                    GObject *where_the_object_was)
++{
++  g_nullify_pointer (data);
++}
++
+ void
+-g_object_add_weak_pointer (GObject  *object, 
++g_object_add_weak_pointer (GObject  *object,
+                            gpointer *weak_pointer_location)
+ {
+   g_return_if_fail (G_IS_OBJECT (object));
+   g_return_if_fail (weak_pointer_location != NULL);
+ 
+-  g_object_weak_ref (object, 
+-                     (GWeakNotify) g_nullify_pointer, 
++  g_object_weak_ref (object,
++                     g_wasm_nullify_pointer_weak_notify,
+                      weak_pointer_location);
+ }
+ 
+@@ -3812,8 +3819,8 @@
+   g_return_if_fail (G_IS_OBJECT (object));
+   g_return_if_fail (weak_pointer_location != NULL);
+ 
+-  g_object_weak_unref (object, 
+-                       (GWeakNotify) g_nullify_pointer, 
++  g_object_weak_unref (object,
++                       g_wasm_nullify_pointer_weak_notify,
+                        weak_pointer_location);
+ }
+ 
