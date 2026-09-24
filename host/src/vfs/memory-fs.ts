@@ -25,6 +25,9 @@ import {
   type DirEntry,
   type MountConfig,
   type MountSetIdCapability,
+  type VfsChangeEvent,
+  type VfsChangeKind,
+  type VfsChangeListener,
 } from "./types";
 import {
   EROFS,
@@ -497,6 +500,7 @@ const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4
 const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
 const { DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK } = DIRENT_TYPES;
 const O_RDONLY = OPEN_FLAGS.O_RDONLY;
+const O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
 const IMMUTABLE_PRODUCT_O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
 const IMMUTABLE_PRODUCT_O_CREAT = OPEN_FLAGS.O_CREAT;
 const IMMUTABLE_PRODUCT_O_TRUNC = OPEN_FLAGS.O_TRUNC;
@@ -3192,6 +3196,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     LazyTreeDefinitionSnapshot
   >();
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
+  private changeListeners = new Set<VfsChangeListener>();
+  private writableHandlePaths = new Map<number, string>();
   /** One in-flight fetch/commit per lazy file or archive group. */
   private lazyPreparations = new Map<object, LazyPreparation>();
   private lazyTransport: LazyTransport = {
@@ -4299,6 +4305,11 @@ export class MemoryFileSystem implements FileSystemBackend {
     return () => this.lazyDownloadListeners.delete(listener);
   }
 
+  subscribeChanges(listener: VfsChangeListener): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
   /**
    * Install the host-specific transport used for lazy file and archive URLs.
    * Register a signal here rather than closing over one invisibly: Fetch
@@ -4321,6 +4332,18 @@ export class MemoryFileSystem implements FileSystemBackend {
     for (const listener of this.lazyDownloadListeners) {
       try {
         listener(stamped);
+      } catch {
+        /* listener errors must not break VFS I/O */
+      }
+    }
+  }
+
+  private emitChange(kind: VfsChangeKind, path: string): void {
+    if (this.changeListeners.size === 0) return;
+    const event: VfsChangeEvent = { kind, path, t: monotonicNow() };
+    for (const listener of this.changeListeners) {
+      try {
+        listener(event);
       } catch {
         /* listener errors must not break VFS I/O */
       }
@@ -7372,6 +7395,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       this.guardSynchronousLazyAccess(path);
     }
     const handle = this.fs.open(path, flags, mode);
+    if ((flags & O_ACCMODE) !== O_RDONLY) this.writableHandlePaths.set(handle, path);
     if ((flags & O_TRUNC) !== 0) {
       // O_TRUNC
       this.invalidateLazyData(this.fs.fstat(handle));
@@ -7381,6 +7405,10 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   close(handle: number): number {
     this.fs.close(handle);
+    const written = this.writableHandlePaths.get(handle);
+    if (written === undefined) return 0;
+    this.writableHandlePaths.delete(handle);
+    this.emitChange("modify", written);
     return 0;
   }
 
@@ -7536,6 +7564,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   unlink(path: string): void {
     const removed = this.fs.unlink(path);
+    this.emitChange("delete", path);
     const key = memoryFileSystemInodeKey(removed.ino, removed.generation);
     if (
       removed.linkCount > 1 &&
@@ -7598,6 +7627,8 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   rename(oldPath: string, newPath: string): void {
     const { source, replaced } = this.fs.rename(oldPath, newPath);
+    this.emitChange("delete", oldPath);
+    this.emitChange("modify", newPath);
 
     if (
       replaced &&
