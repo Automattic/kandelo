@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { hostBuildFingerprintBanner } from "../src/compiled-worker-entry";
 import { NodeWorkerAdapter, type WorkerHandle } from "../src/worker-adapter";
 
 function waitForMessage(handle: WorkerHandle): Promise<unknown> {
@@ -80,6 +81,41 @@ describe("NodeWorkerAdapter", () => {
       if (bundledDir !== undefined) {
         rmSync(bundledDir, { recursive: true, force: true });
       }
+    }
+  });
+
+  // A process worker must not run a `dist/` bundle built from older sources.
+  // The adapter took any existing `dist/worker-entry.js`, so after a
+  // `host/src` edit every process worker in Vitest ran the previous build and
+  // reported on code no longer in the tree. The kernel worker already checked
+  // the build-input fingerprint; process workers now apply the same gate.
+  it("uses a compiled entry only when it was built from the current sources", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-worker-compiled-test-"));
+    try {
+      for (const file of ["package-lock.json", "tsconfig.json", "tsup.config.ts"]) {
+        writeFileSync(join(root, file), `${file}\n`);
+      }
+      writeFileSync(join(root, "package.json"), "{}\n");
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "dist"));
+      const entryPath = join(root, "src", "worker-entry.ts");
+      writeFileSync(entryPath, 'export const entry = "source";\n');
+      const compiled = join(root, "dist", "worker-entry.js");
+      const compiledEntry = (): URL | null =>
+        (
+          new NodeWorkerAdapter(pathToFileURL(entryPath)) as unknown as {
+            resolveCompiledEntry: () => URL | null;
+          }
+        ).resolveCompiledEntry();
+
+      writeFileSync(compiled, `${hostBuildFingerprintBanner(root)}\n`);
+      expect(compiledEntry()?.href).toBe(pathToFileURL(compiled).href);
+
+      // Edit the source after the build: the bundle is stale.
+      writeFileSync(entryPath, 'export const entry = "edited source";\n');
+      expect(compiledEntry()).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
