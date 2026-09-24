@@ -3858,7 +3858,6 @@ async function handleReadVfsDir(
     } finally {
       io.closedir(handle);
     }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     respond(msg.requestId, entries);
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
