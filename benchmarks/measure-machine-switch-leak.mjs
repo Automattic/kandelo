@@ -19,6 +19,7 @@
  *   ENGINE  webkit | chromium (default webkit — JSC is where this reproduces)
  *   GALLERY_INDEX  pin one gallery item (gallery mode) so each round repeats
  *                  an identical boot; omit to rotate through the gallery
+ *   SETTLE_MS      ms to wait before sampling (default 25000; see below)
  *   MODE    navigate | gallery (default navigate)
  *             navigate — page.goto each round, i.e. what typing a URL or
  *                        reloading does. Still expected to leak.
@@ -43,6 +44,16 @@ const ROUNDS = Number(process.env.ROUNDS || 8);
 const ENGINE = process.env.ENGINE === 'chromium' ? chromium : webkit;
 const ENGINE_NAME = process.env.ENGINE === 'chromium' ? 'chromium' : 'webkit';
 const MODE = process.env.MODE === 'gallery' ? 'gallery' : 'navigate';
+/**
+ * Settle time before sampling, in ms.
+ *
+ * CRITICAL: reclamation of a torn-down machine's workers is SLOW — measured at
+ * roughly 13 seconds after a switch on WebKit. Sampling sooner measures both
+ * machines at once and reports a leak that is really a transient. The default
+ * is deliberately generous; lower it only if you have re-established that
+ * reclamation has landed by then.
+ */
+const SETTLE_MS = Number(process.env.SETTLE_MS || 25_000);
 // Pin one gallery item so every round boots the same machine. Rotating items
 // changes the worker count between rounds, which makes thread counts
 // incomparable — the comparison against `navigate` mode only means something
@@ -139,7 +150,7 @@ for (let i = 0; i < ROUNDS; i++) {
   } catch {
     booted = false;
   }
-  await page.waitForTimeout(2_500);
+  await page.waitForTimeout(SETTLE_MS);
   const proc = pageProcess();
   rows.push({
     round: i + 1,
