@@ -11,12 +11,15 @@ import {
   MemoryFileSystem,
   type LazyDownloadEvent,
 } from "./vfs/memory-fs";
+import type { VfsChangeEvent } from "./vfs/types";
+import { vfsPathIsWithin } from "./vfs/vfs";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  VfsDirEntry,
   VfsFileSnapshot,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
@@ -255,6 +258,7 @@ export class BrowserKernel {
   private pendingPtyOutputChunks = 0;
   private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
   private pcmTransport: PcmTransportDescriptor | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
 
@@ -812,6 +816,27 @@ export class BrowserKernel {
     };
   }
 
+  /**
+   * Subscribe to changes of paths under `prefix` in the worker-owned VFS. The
+   * worker forwards events only while a prefix is watched, so nothing crosses
+   * the worker boundary when nobody's listening.
+   */
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    let listeners = this.vfsChangeListeners.get(prefix);
+    if (!listeners) {
+      listeners = new Set();
+      this.vfsChangeListeners.set(prefix, listeners);
+      this.sendToKernel({ type: "watch_vfs_changes", prefix, enabled: true });
+    }
+    listeners.add(cb);
+    return () => {
+      const current = this.vfsChangeListeners.get(prefix);
+      if (!current?.delete(cb) || current.size > 0) return;
+      this.vfsChangeListeners.delete(prefix);
+      this.sendToKernel({ type: "watch_vfs_changes", prefix, enabled: false });
+    };
+  }
+
   private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
   private syscallPollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1241,6 +1266,20 @@ export class BrowserKernel {
   }
 
   /**
+   * List a directory in the kernel-owned VFS from the main thread. Returns
+   * every entry with its stat metadata, or `null` if the path does not exist.
+   */
+  async readDirFromVfs(path: string): Promise<VfsDirEntry[] | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_dir",
+      requestId,
+      path,
+    });
+    return (result as VfsDirEntry[] | null) ?? null;
+  }
+
+  /**
    * Read a file and its permission bits from the worker-owned VFS. This is
    * useful for callers that temporarily replace a path between process spawns
    * and must restore the exact prior state afterward.
@@ -1353,6 +1392,7 @@ export class BrowserKernel {
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
     this.lazyDownloadListeners.clear();
+    this.vfsChangeListeners.clear();
     // Release every main-thread reference to shared buffers this kernel held.
     // `fbMemoryByPid`/`framebuffers` retain typed-array views over process
     // `WebAssembly.Memory` (up to 1 GiB max each) posted from the worker for
@@ -1470,6 +1510,15 @@ export class BrowserKernel {
     try { this.options.onLazyDownload?.(event); } catch { /* host callbacks should not break delivery */ }
     for (const cb of this.lazyDownloadListeners) {
       try { cb(event); } catch { /* listener errors don't break the loop */ }
+    }
+  }
+
+  private emitVfsChange(event: VfsChangeEvent): void {
+    for (const [prefix, listeners] of this.vfsChangeListeners) {
+      if (!vfsPathIsWithin(prefix, event.path)) continue;
+      for (const cb of listeners) {
+        try { cb(event); } catch { /* listener errors don't break the loop */ }
+      }
     }
   }
 
@@ -1698,6 +1747,9 @@ export class BrowserKernel {
         break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
+        break;
+      case "vfs_change":
+        this.emitVfsChange(msg.event);
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol

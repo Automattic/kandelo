@@ -14,6 +14,7 @@
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { VfsChangeEvent } from "./vfs/types";
 import type {
   ClosedLazyAsset,
   ClosedLazyAssetSource,
@@ -301,6 +302,15 @@ export interface DrainSyscallTraceMessage {
   requestId: number;
 }
 
+/** Start or stop forwarding VFS change events for paths under `prefix`. Off
+ * by default — the worker subscribes to its VFS while at least one prefix is
+ * watched. */
+export interface WatchVfsChangesMessage {
+  type: "watch_vfs_changes";
+  prefix: string;
+  enabled: boolean;
+}
+
 /** Send an HTTP request to a server running in the kernel and wait for the
  *  response. Reply arrives as a `response` message whose `result` is an
  *  {@link HttpResponse}, or with `error` set if no listener was found. */
@@ -402,6 +412,7 @@ export type MainToKernelMessage =
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage
+  | WatchVfsChangesMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
@@ -470,6 +481,12 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+/** A path under a watched prefix changed in the worker-owned VFS. */
+export interface VfsChangeMessage {
+  type: "vfs_change";
+  event: VfsChangeEvent;
+}
+
 /**
  * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
  * browser-side ProcEventMessage. Exit events come via the existing
@@ -492,4 +509,5 @@ export type KernelToMainMessage =
   | PtyOutputMessage
   | ResolveExecRequestMessage
   | ProcEventMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | VfsChangeMessage;

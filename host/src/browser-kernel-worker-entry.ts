@@ -36,6 +36,7 @@ import type {
 import {
   readPreparedPlatformFile,
   VirtualPlatformIO,
+  vfsPathIsWithin,
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
@@ -92,6 +93,7 @@ import type {
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
+  DIRENT_TYPES,
   FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
@@ -127,6 +129,7 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  VfsDirEntry,
 } from "./browser-kernel-protocol";
 import {
   initializeBrowserCorsProxyForWorker,
@@ -141,6 +144,8 @@ let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
 let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
+const watchedVfsPrefixes = new Set<string>();
+let offVfsChanges: (() => void) | null = null;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
@@ -3806,6 +3811,84 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
   }
 }
 
+async function handleReadVfsDir(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_dir" }>,
+) {
+  if (!io) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    // Listing can materialize a lazy tree, so it is serialized with snapshots.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "read or materialize a rootfs directory",
+    );
+    await io.preparePath?.(msg.path);
+    const handle = io.opendir(msg.path);
+    const entries: VfsDirEntry[] = [];
+    try {
+      for (;;) {
+        const entry = io.readdir(handle);
+        if (!entry) break;
+        if (entry.name === "." || entry.name === "..") continue;
+        const described = describeVfsDirEntry(msg.path, entry);
+        if (described) entries.push(described);
+      }
+    } finally {
+      io.closedir(handle);
+    }
+    respond(msg.requestId, entries);
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
+const { DT_LNK } = DIRENT_TYPES;
+
+function describeVfsDirEntry(
+  dir: string,
+  entry: { name: string; type: number },
+): VfsDirEntry | null {
+  const path = dir.endsWith("/") ? dir + entry.name : `${dir}/${entry.name}`;
+  let stat;
+  try {
+    stat = io.stat(path);
+  } catch {
+    // A dangling symlink or an entry unlinked mid-listing is not an error for
+    // the whole directory.
+    return null;
+  }
+  let target: string | undefined;
+  if (entry.type === DT_LNK) {
+    try { target = io.readlink(path); } catch { target = undefined; }
+  }
+  return {
+    name: entry.name,
+    type: entry.type,
+    mode: stat.mode,
+    size: stat.size,
+    uid: stat.uid,
+    gid: stat.gid,
+    target,
+  };
+}
+
+function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_vfs_changes" }>) {
+  if (msg.enabled) watchedVfsPrefixes.add(msg.prefix);
+  else watchedVfsPrefixes.delete(msg.prefix);
+  if (watchedVfsPrefixes.size === 0) {
+    offVfsChanges?.();
+    offVfsChanges = null;
+    return;
+  }
+  if (offVfsChanges) return;
+  offVfsChanges = io.subscribeChanges((event) => {
+    const watched = [...watchedVfsPrefixes].some((prefix) => vfsPathIsWithin(prefix, event.path));
+    if (watched) post({ type: "vfs_change", event });
+  });
+}
+
 function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
@@ -4389,6 +4472,7 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
+    case "read_vfs_dir": void handleReadVfsDir(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
@@ -4466,6 +4550,7 @@ sw.onmessage = (e: MessageEvent) => {
       else kernelWorker.disableSyscallTrace();
       break;
     }
+    case "watch_vfs_changes": handleWatchVfsChanges(msg); break;
     case "drain_syscall_trace": {
       try {
         respond(msg.requestId, kernelWorker.drainSyscallTrace());

@@ -794,6 +794,57 @@ describe("BrowserKernel", () => {
     expect(await readPromise).toEqual(bytes);
   });
 
+  it("readDirFromVfs round-trips a path to the worker and back", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    void kernel.boot({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0), argv: ["/init"] });
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const listPromise = kernel.readDirFromVfs("/home/maker/mcp");
+    await new Promise((r) => setTimeout(r, 0));
+    const list = w.lastMessage("read_vfs_dir");
+    expect(list).toBeDefined();
+    expect(list.path).toBe("/home/maker/mcp");
+    const entries = [
+      { name: "run_command.json", type: 8, mode: 0o100644, size: 12, uid: 0, gid: 0 },
+    ];
+    w.simulateMessage({ type: "response", requestId: list.requestId, result: entries });
+    expect(await listPromise).toEqual(entries);
+  });
+
+  it("subscribeVfsChanges watches a prefix in the worker and fans out matching events", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    void kernel.boot({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0), argv: ["/init"] });
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const seen: unknown[] = [];
+    const off = kernel.subscribeVfsChanges("/home/maker/mcp", (event) => seen.push(event));
+    const offOther = kernel.subscribeVfsChanges("/home/maker/mcp", () => {});
+    expect(w.sent.filter(({ data }) => (data as any).type === "watch_vfs_changes").map(({ data }) => data)).toEqual([
+      { type: "watch_vfs_changes", prefix: "/home/maker/mcp", enabled: true },
+    ]);
+
+    const inside = { kind: "modify", path: "/home/maker/mcp/foo.json", t: 1 };
+    const outside = { kind: "delete", path: "/home/maker/foo.json", t: 2 };
+    w.simulateMessage({ type: "vfs_change", event: inside });
+    w.simulateMessage({ type: "vfs_change", event: outside });
+    expect(seen).toEqual([inside]);
+
+    off();
+    expect(w.lastMessage("watch_vfs_changes").enabled).toBe(true);
+    offOther();
+    expect(w.lastMessage("watch_vfs_changes")).toEqual({ type: "watch_vfs_changes", prefix: "/home/maker/mcp", enabled: false });
+    w.simulateMessage({ type: "vfs_change", event: inside });
+    expect(seen).toEqual([inside]);
+  });
+
   it("signalProcess round-trips through the browser kernel worker", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
