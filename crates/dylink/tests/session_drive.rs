@@ -1192,6 +1192,98 @@ fn an_archive_published_at_bootstrap_reads_back() {
     assert!(decoded.modules[0].initialization.is_some());
 }
 
+/// An instrumented object's `__tls_base` is read after bootstrap sets it.
+///
+/// `wasm-fork-instrument` removes a threaded side module's start section and
+/// calls `__wasm_init_memory` from `wpk_fork_module_bootstrap` instead, and
+/// `__wasm_init_memory` is what sets `__tls_base` to the module's memory base.
+/// So until the bootstrap staged call returns, the instance's `__tls_base` is
+/// still 0. The planner read exports BEFORE bootstrap, saw 0, and refused
+/// every instrumented side module with thread-locals as "invalid side-module
+/// TLS base". A C++ side module linked against libc++abi is one: its exception
+/// globals are thread-local.
+///
+/// This executor models the instance faithfully: `__tls_base` reads 0 until
+/// the bootstrap call, then the module's memory base.
+#[test]
+fn an_instrumented_objects_tls_base_is_read_after_bootstrap_sets_it() {
+    const MEMORY_BASE: u64 = 0x1000;
+    let mut session = Session::new(LinkerConfig {
+        memory_bytes: 1 << 20,
+        fork_activation_available: true,
+        library_search_paths: vec![],
+        ..LinkerConfig::default()
+    });
+    let mut executor = Executor::new(4, MEMORY_BASE);
+    session.linker.scope.set_table_length(4);
+
+    let mut exports = vec![
+        Export::func("a", 0),
+        Export::global("__tls_base", 0),
+        Export::global("__tls_size", 1),
+        Export::global("__tls_align", 2),
+    ];
+    let mut functions = vec![InstanceExport::func("a")];
+    for (index, required) in wasm_posix_shared::abi::WPK_FORK_REQUIRED_EXPORTS.iter().enumerate() {
+        exports.push(Export::func(required.name, index as u32 + 1));
+        functions.push(InstanceExport::func(required.name));
+    }
+    let instance_exports = |tls_base: u64| {
+        let mut reported = functions.clone();
+        reported.push(InstanceExport::global("__tls_base", WasmValue::I32(tls_base as u32), true));
+        reported.push(InstanceExport::global("__tls_size", WasmValue::I32(16), false));
+        reported.push(InstanceExport::global("__tls_align", WasmValue::I32(4), false));
+        reported
+    };
+    executor.exports.insert(1, instance_exports(0));
+
+    let bytes = SideModule {
+        dylink: DylinkSection {
+            memory_size: 64,
+            memory_align: 4,
+            table_size: 1,
+            table_align: 0,
+            ..Default::default()
+        },
+        imports: vec![
+            Import::Memory { module: "env".into(), field: "memory".into() },
+            Import::immutable_global("env", "__memory_base"),
+            Import::immutable_global("env", "__table_base"),
+        ],
+        exports,
+        ..Default::default()
+    }
+    .encode();
+
+    let token = session
+        .open_begin(LoadRequest::new("libtls.so", bytes))
+        .expect("begin");
+    let mut bootstrapped = false;
+    loop {
+        let result = match session.step(token).expect("step") {
+            PlanStep::Finished => break,
+            PlanStep::Act(act) => executor.perform(act),
+            PlanStep::Host(request) => executor.perform_host(request),
+            PlanStep::Call(call) => {
+                if call.stage == dylink::plan::InitializationStage::Bootstrap {
+                    // What `__wasm_init_memory` does: `__tls_base = __memory_base`.
+                    executor.exports.insert(1, instance_exports(MEMORY_BASE));
+                    bootstrapped = true;
+                }
+                executor.calls.push(call);
+                ActResult::Done
+            }
+        };
+        session.resume(token, result).expect("resume");
+    }
+    session.open_finish(token, None).expect("finish");
+
+    assert!(bootstrapped, "an instrumented object is bootstrapped");
+    let library = session.linker.scope.library("libtls.so").expect("loaded");
+    assert_eq!(library.memory_base, MEMORY_BASE);
+    assert_eq!(library.tls_base, Some(MEMORY_BASE));
+}
+
 /// A second publication reuses the records whose bytes did not change, and the
 /// child still reads the whole image.
 #[test]
