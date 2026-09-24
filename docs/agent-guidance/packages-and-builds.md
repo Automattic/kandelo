@@ -89,6 +89,18 @@ test fails the build if any `packages/registry/*/build.toml` package compiles
 a workspace crate directly without declaring the matching `cargo:<crate>`
 input, so this class of gap cannot reappear undetected.
 
+The same rule covers a package whose build merely LOADS a co-resident module
+rather than compiling it: the image builders drive
+`kandelo_image_module32.wasm`, every program write goes through
+`wasm_artifact_module32.wasm`, and the PHP image builds (and
+`coreutils-docs`) boot a kernel host whose workers load `fork_module32.wasm`
+and `dylink_module32.wasm`. Such a package declares each module's closure
+crates as `cargo:<crate>` inputs plus its `build-wasm.sh` recipe — the same
+closure the module's own build key uses (`CORESIDENT_SIDE_MODULES` in
+`tools/xtask/src/local_build.rs`). The
+`packages_whose_build_loads_a_side_module_declare_its_closure` test there
+fails when a package declares a known loader without the module's closure.
+
 ### Adding a wasm module that is not a registry package
 
 A correct `build-wasm.sh` and a correct build-key stamp are **not enough to

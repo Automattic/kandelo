@@ -5983,6 +5983,8 @@ fn insert_projection_identity(
 }
 
 fn serialize_program_package_index(root: &Path, registry: &Registry) -> Result<String, String> {
+    // One pass keys every package; see `cargo_closure::KeyingPass`.
+    let _pass = crate::cargo_closure::KeyingPass::begin();
     let mut json = serde_json::to_string_pretty(&program_package_index_for_root(root, registry)?)
         .map_err(|e| format!("serialize program package index: {e}"))?;
     json.push('\n');
@@ -7751,13 +7753,15 @@ fn build_input_digests_from_repo(
             }
             for rel in crate::cargo_closure::cargo_closure_paths(main_repo_root, crate_name)? {
                 let path = resolve_build_input_path_from_repo(target, registry, &rel, main_repo_root)?;
-                let digest = if validate_declared_source_inputs {
-                    let authority_root =
-                        repository_source_authority_root(&path, registry, main_repo_root)?;
-                    strict_source_build_input_digest(&authority_root, &path)?
-                } else {
-                    hash_build_input(&path)?
-                };
+                let digest = crate::cargo_closure::closure_member_digest(&path, validate_declared_source_inputs, || {
+                    if validate_declared_source_inputs {
+                        let authority_root =
+                            repository_source_authority_root(&path, registry, main_repo_root)?;
+                        strict_source_build_input_digest(&authority_root, &path)
+                    } else {
+                        hash_build_input(&path)
+                    }
+                })?;
                 out.push(BuildInputDigest {
                     label: format!("{input}::{rel}"),
                     digest,

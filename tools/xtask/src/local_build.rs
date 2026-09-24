@@ -8427,4 +8427,75 @@ materialization = "lazy"
         assert!(!manifests["legacy"].source.provider_was_explicit);
         validate_registry_partition(&set, &manifests, root).unwrap();
     }
+
+    /// A package whose build LOADS a co-resident module must key on that
+    /// module's build closure, not only on the TypeScript that loads it.
+    ///
+    /// The image builders drive `kandelo_image_module32.wasm`, and the PHP
+    /// image builds boot a kernel host whose workers load `fork_module32.wasm`
+    /// and `dylink_module32.wasm`. Those packages declared the loaders and
+    /// `host/src` but not the modules, so a fix to the module's Rust left the
+    /// images cached -- and the cache is shared across worktrees. Each row
+    /// names a loader a build.toml declares and the module it loads; the
+    /// crates and recipe come from [`CORESIDENT_SIDE_MODULES`], the same
+    /// closure the module's own build key uses, never a second list here.
+    #[test]
+    fn packages_whose_build_loads_a_side_module_declare_its_closure() {
+        const LOADERS: &[(&str, &str)] = &[
+            ("images/vfs/lib/kandelo-image-fs.ts", "crates/kandelo-image-module/build-wasm.sh"),
+            ("host/src/wasm-artifact-driver.ts", "crates/wasm-artifact-module/build-wasm.sh"),
+            ("images/vfs/scripts/opcache-prewarm.ts", "crates/fork-module/build-wasm.sh"),
+            ("images/vfs/scripts/opcache-prewarm.ts", "crates/dylink-module/build-wasm.sh"),
+            ("images/vfs/scripts/wordpress-preinstall.ts", "crates/fork-module/build-wasm.sh"),
+            ("images/vfs/scripts/wordpress-preinstall.ts", "crates/dylink-module/build-wasm.sh"),
+            ("images/vfs/scripts/generate-coreutils-man.ts", "crates/fork-module/build-wasm.sh"),
+        ];
+        let repo = crate::repo_root();
+        let mut failures = Vec::new();
+        for (loader, script) in LOADERS {
+            let module = CORESIDENT_SIDE_MODULES
+                .iter()
+                .find(|m| m.script == *script)
+                .unwrap_or_else(|| panic!("{script} is not a co-resident side module recipe"));
+            // The row must stay true: the loader really names the artifact (or,
+            // for a boot driver, the fork/dylink module it injects). A row whose
+            // loader stopped loading the module would otherwise force inputs
+            // nothing needs.
+            let loader_text = fs::read_to_string(repo.join(loader))
+                .unwrap_or_else(|e| panic!("read {loader}: {e}"));
+            let artifact = module.artifacts[0].0;
+            let named = loader_text.contains(artifact)
+                || (artifact == "fork_module32.wasm" && loader_text.contains("forkModuleBytesByWidth"));
+            assert!(named, "{loader} no longer loads {artifact}; update this table");
+
+            for entry in fs::read_dir(repo.join("packages/registry")).unwrap() {
+                let dir = entry.unwrap().path();
+                let Ok(text) = fs::read_to_string(dir.join("build.toml")) else {
+                    continue;
+                };
+                let build = crate::pkg_manifest::BuildToml::parse(&text)
+                    .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+                if !build.inputs.iter().any(|input| input == loader) {
+                    continue;
+                }
+                let mut want: Vec<String> = module
+                    .closure_crates
+                    .iter()
+                    .map(|name| format!("{}{name}", crate::cargo_closure::CARGO_INPUT_PREFIX))
+                    .collect();
+                want.push(module.script.to_string());
+                for input in want {
+                    if !build.inputs.contains(&input) {
+                        failures.push(format!(
+                            "{}: declares {loader}, which loads {artifact}, but not {input:?}",
+                            dir.display()
+                        ));
+                    }
+                }
+            }
+        }
+        failures.sort();
+        failures.dedup();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 }

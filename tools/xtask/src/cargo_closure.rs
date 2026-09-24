@@ -12,10 +12,101 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const CARGO_INPUT_PREFIX: &str = "cargo:";
 
-pub(crate) fn cargo_closure_paths(
+/// Memo for one keying pass over the registry: `cargo metadata` per
+/// workspace root, and the digest of each `cargo:<crate>` closure member.
+///
+/// # Why
+///
+/// One pass keys every package, and the image and boot packages each declare
+/// several `cargo:<crate>` inputs whose closures overlap (`runtime-core` and
+/// `shared` sit under almost all of them). Recomputing both for every package
+/// tripled the resolver's program-index pass, which every host boot pays.
+///
+/// # Why scoped, not process-global
+///
+/// A process-global memo would answer a second question about a tree that
+/// changed in between with the first answer -- exactly what a test that edits
+/// `.cargo/config.toml` and re-keys the kernel checks for. Within one pass the
+/// tree is read, not written, so the memo lives only as long as a
+/// [`KeyingPass`] guard; outside one, nothing is cached.
+#[derive(Default)]
+struct KeyingPassMemo {
+    metadata: BTreeMap<std::path::PathBuf, std::rc::Rc<serde_json::Value>>,
+    digests: BTreeMap<(std::path::PathBuf, bool), [u8; 32]>,
+}
+
+thread_local! {
+    static KEYING_PASS: std::cell::RefCell<Option<KeyingPassMemo>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// While alive, closure expansion and closure-member digests are memoized.
+/// Nested guards are inert; the outermost one clears the memo on drop.
+pub(crate) struct KeyingPass {
+    owns: bool,
+}
+
+impl KeyingPass {
+    pub(crate) fn begin() -> KeyingPass {
+        let owns = KEYING_PASS.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_some() {
+                false
+            } else {
+                *slot = Some(KeyingPassMemo::default());
+                true
+            }
+        });
+        KeyingPass { owns }
+    }
+}
+
+impl Drop for KeyingPass {
+    fn drop(&mut self) {
+        if self.owns {
+            KEYING_PASS.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+}
+
+/// The digest of one closure member, memoized within a [`KeyingPass`].
+/// `strict` is part of the key because the two digests are different
+/// functions of the same path.
+pub(crate) fn closure_member_digest(
+    path: &Path,
+    strict: bool,
+    compute: impl FnOnce() -> Result<[u8; 32], String>,
+) -> Result<[u8; 32], String> {
+    let key = (path.to_path_buf(), strict);
+    let hit = KEYING_PASS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|memo| memo.digests.get(&key).copied())
+    });
+    if let Some(digest) = hit {
+        return Ok(digest);
+    }
+    let digest = compute()?;
+    KEYING_PASS.with(|slot| {
+        if let Some(memo) = slot.borrow_mut().as_mut() {
+            memo.digests.insert(key, digest);
+        }
+    });
+    Ok(digest)
+}
+
+fn cargo_metadata_json(
     repo_root: &Path,
     crate_name: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<std::rc::Rc<serde_json::Value>, String> {
+    let hit = KEYING_PASS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|memo| memo.metadata.get(repo_root).cloned())
+    });
+    if let Some(meta) = hit {
+        return Ok(meta);
+    }
     let output = Command::new("cargo")
         .args(["metadata", "--format-version=1", "--locked"])
         .current_dir(repo_root)
@@ -27,8 +118,24 @@ pub(crate) fn cargo_closure_paths(
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    let meta: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("parse cargo metadata json: {e}"))?;
+    let meta = std::rc::Rc::new(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .map_err(|e| format!("parse cargo metadata json: {e}"))?,
+    );
+    KEYING_PASS.with(|slot| {
+        if let Some(memo) = slot.borrow_mut().as_mut() {
+            memo.metadata
+                .insert(repo_root.to_path_buf(), std::rc::Rc::clone(&meta));
+        }
+    });
+    Ok(meta)
+}
+
+pub(crate) fn cargo_closure_paths(
+    repo_root: &Path,
+    crate_name: &str,
+) -> Result<Vec<String>, String> {
+    let meta = cargo_metadata_json(repo_root, crate_name)?;
 
     let packages = meta
         .get("packages")

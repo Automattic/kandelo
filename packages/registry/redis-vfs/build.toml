@@ -20,6 +20,17 @@ inputs = [
   "host/src/wasm-artifact-driver.ts",
   "host/src/wasm-artifact-module-registry.ts",
   "images/vfs/lib/kandelo-image-fs.ts",
+  # The image writer these builders drive (images/vfs/lib/kandelo-image-fs.ts
+  # loads local-binaries/kandelo_image_module32.wasm): its cargo closure and
+  # recipe, so a writer change invalidates the images it wrote.
+  "cargo:kandelo-image-module",
+  "cargo:runtime-core",
+  "crates/kandelo-image-module/build-wasm.sh",
+  # The artifact reader every program write and launch goes through
+  # (wasm_artifact_module32.wasm).
+  "cargo:wasm-artifact-module",
+  "cargo:wasm-artifact",
+  "crates/wasm-artifact-module/build-wasm.sh",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"

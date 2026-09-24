@@ -28,6 +28,26 @@ inputs = [
   "web-libs/kandelo-session/src/vfs-capacity.ts",
   "images/vfs/lib/kandelo-image-fs.ts",
   "images/vfs/scripts/shell-runtime-layout.ts",
+  # The image writer these builders drive (images/vfs/lib/kandelo-image-fs.ts
+  # loads local-binaries/kandelo_image_module32.wasm): its cargo closure and
+  # recipe, so a writer change invalidates the images it wrote.
+  "cargo:kandelo-image-module",
+  "cargo:runtime-core",
+  "crates/kandelo-image-module/build-wasm.sh",
+  # The artifact reader every program write and launch goes through
+  # (wasm_artifact_module32.wasm).
+  "cargo:wasm-artifact-module",
+  "cargo:wasm-artifact",
+  "crates/wasm-artifact-module/build-wasm.sh",
+  # The build boots a kernel host whose process workers load the fork module
+  # (fork_module32.wasm) ...
+  "cargo:fork-module",
+  "cargo:fork-module-inject",
+  "crates/fork-module/build-wasm.sh",
+  # ... and the dynamic-linking planner (dylink_module32.wasm) for dlopen.
+  "cargo:dylink-module",
+  "cargo:dylink",
+  "crates/dylink-module/build-wasm.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
