@@ -430,65 +430,12 @@ async function awaitFinalizedProcessTeardown(
   await processTeardowns.get(expectedWorker);
 }
 
-/**
- * How long to let a woken Worker reach its own exit before terminating it.
- *
- * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] The wake completes the parked syscall with
- * EINTR and queues SIGKILL; the guest glue then runs `kernel_exit`, traps, and
- * the Worker returns to an idle event loop that `terminate()` can reclaim.
- * That round trip is a few milliseconds. This bound only caps the pathological
- * case — exceeding it costs a leaked thread on JSC, not correctness.
- */
-const COOPERATIVE_EXIT_WAIT_MS = 250;
-const COOPERATIVE_EXIT_POLL_MS = 5;
-
 async function terminateTrackedWorker(
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
   settleMs = 0,
-  pid?: number,
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
   forkHostImportsByWorker.get(worker as object)?.close();
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Terminating a Worker parked in
-  // `Atomics.wait` frees neither its thread nor its working set on
-  // JavaScriptCore. Every exec replaces a process's Worker, so without this
-  // the ordinary replacement path leaks a thread per exec — measured as
-  // `exited=false` on every termination in a shell boot. Drive the process to
-  // its own exit first; on V8 this is a bounded no-op.
-  // Find the owning pid when the caller did not name one. Termination sites
-  // are spread across fork, exec, vfork and teardown; deriving the pid here
-  // covers all of them rather than relying on each to remember.
-  const owningPid = pid ?? (() => {
-    for (const [candidate, generation] of processes) {
-      if (generation.worker === worker) return candidate;
-    }
-    return undefined;
-  })();
-  if (owningPid !== undefined) {
-    try {
-      // NEVER await the wake unbounded. `terminateTrackedWorker` runs from
-      // inside kernel callbacks (fork, exec, vfork); `wakeProcessForCooperative
-      // Exit` opens a kernel entry, which DEFERS when one is already active and
-      // only resolves once that outer entry completes. Awaiting it from within
-      // that entry deadlocks. Racing a timer keeps the leak mitigation
-      // best-effort and the teardown path always live.
-      const woke = await Promise.race([
-        kernelWorker.wakeProcessForCooperativeExit(owningPid),
-        delay(COOPERATIVE_EXIT_WAIT_MS).then(() => false as const),
-      ]);
-      if (woke) {
-        const deadline = Date.now() + COOPERATIVE_EXIT_WAIT_MS;
-        while (processes.get(owningPid)?.worker === worker && Date.now() < deadline) {
-          await delay(COOPERATIVE_EXIT_POLL_MS);
-        }
-      }
-    } catch (err) {
-      // A wake failure must never block teardown; fall through to terminate.
-      console.warn(
-        `[kernel-worker] cooperative exit wake failed pid=${owningPid}: ${err}`,
-      );
-    }
-  }
   const teardown = (async () => {
     await worker.terminate().catch(() => {});
     if (settleMs > 0) await delay(settleMs);
