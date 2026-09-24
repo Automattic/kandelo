@@ -99,6 +99,12 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Staging verified mc $MC_VERSION source..."
     kandelo_package_stage_verified_source mc "$SRC_DIR" \
         "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    # mc casts g_ascii_strcasecmp (two parameters) to GCompareDataFunc
+    # (three) when building its event GTrees. That is undefined behaviour
+    # in C; native ABIs tolerate it, and WebAssembly's typed call_indirect
+    # traps on it, so mc aborted during events_init before drawing
+    # anything. See the patch header for the full stack.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-signatures.patch"
     printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
