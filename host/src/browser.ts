@@ -46,3 +46,5 @@ export type {
   CentralizedWorkerInitMessage,
 } from "./worker-protocol";
 export { VirtualPlatformIO } from "./vfs/vfs";
+
+export type { VfsChangeEvent, VfsChangeKind, VfsChangeListener } from "./vfs/types";

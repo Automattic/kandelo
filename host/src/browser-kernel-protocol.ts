@@ -1,3 +1,4 @@
+import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
 export type {
@@ -412,7 +413,6 @@ export type MainToKernelMessage =
   | OwnedJobMessage
   | SpawnMessage
   | TerminateProcessMessage
-  | ListVfsDirectoryMessage
   | ReadVfsFileMessage
   | ReadVfsDirMessage
   | StatVfsPathMessage
@@ -451,6 +451,7 @@ export type MainToKernelMessage =
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage
+  | WatchVfsChangesMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
@@ -595,6 +596,12 @@ export interface DestroyProgressMessage {
   event: DestroyProgressEvent;
 }
 
+/** A path under a watched prefix changed in the worker-owned VFS. */
+export interface VfsChangeMessage {
+  type: "vfs_change";
+  event: VfsChangeEvent;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -615,4 +622,9 @@ export type KernelToMainMessage =
   | ProcEventMessage
   | HttpBridgePendingMessage
   | LazyDownloadMessage
-  | DestroyProgressMessage;
+  | DestroyProgressMessage
+  | VfsChangeMessage;
+
+export interface WatchVfsChangesMessage {
+  type: "watch_vfs_changes"; prefix: string; enabled: boolean;
+}

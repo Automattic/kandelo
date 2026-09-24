@@ -39,6 +39,7 @@ import type {
 import {
   readPreparedPlatformFile,
   VirtualPlatformIO,
+  vfsPathIsWithin,
 } from "./vfs/vfs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
@@ -99,6 +100,7 @@ import type {
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
+  DIRENT_TYPES,
   FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
@@ -160,6 +162,8 @@ const O_WRONLY_CREAT_TRUNC =
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
+const watchedVfsPrefixes = new Set<string>();
+let offVfsChanges: (() => void) | null = null;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
@@ -3719,18 +3723,19 @@ async function handleStatVfsPath(
 // Mutate the mounted filesystem from inside its owning worker. This keeps the
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
-async function handleListVfsDirectory(msg: Extract<MainToKernelMessage, { type: "list_vfs_directory" }>) {
-  if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
-  let release: (() => void) | undefined;
-  try {
-    release = rootfsSnapshotGate.beginMutation("list or materialize a rootfs directory");
-    const entries = await retryKernelEntryResult(() => kernelWorker.rootfsReadDirectory(msg.path));
-    respond(msg.requestId, entries.map(entry => ({
-      ...entry,
-      type: ({ 0x4000: "directory", 0x8000: "file", 0xa000: "symlink" } as Record<number, string>)[entry.mode & 0xf000] ?? "other",
-    })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  } catch (error) { respondError(msg.requestId, formatError(error)); }
-  finally { release?.(); }
+function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_vfs_changes" }>) {
+  if (msg.enabled) watchedVfsPrefixes.add(msg.prefix);
+  else watchedVfsPrefixes.delete(msg.prefix);
+  if (watchedVfsPrefixes.size === 0) {
+    offVfsChanges?.();
+    offVfsChanges = null;
+    return;
+  }
+  if (offVfsChanges) return;
+  offVfsChanges = io.subscribeChanges((event) => {
+    const watched = [...watchedVfsPrefixes].some((prefix) => vfsPathIsWithin(prefix, event.path));
+    if (watched) post({ type: "vfs_change", event });
+  });
 }
 
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
@@ -4445,7 +4450,6 @@ sw.onmessage = (e: MessageEvent) => {
         .catch((error) => respondError(msg.requestId, formatError(error)));
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
-    case "list_vfs_directory": void handleListVfsDirectory(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
     case "read_vfs_dir": void handleReadVfsDir(msg); break;
     case "stat_vfs_path": void handleStatVfsPath(msg); break;
@@ -4529,6 +4533,7 @@ sw.onmessage = (e: MessageEvent) => {
       else kernelWorker.disableSyscallTrace();
       break;
     }
+    case "watch_vfs_changes": handleWatchVfsChanges(msg); break;
     case "drain_syscall_trace": {
       try {
         respond(msg.requestId, kernelWorker.drainSyscallTrace());
