@@ -1,6 +1,7 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
@@ -547,7 +548,34 @@ const COI_RELOAD_SESSION_STATE = createCoiReloadSessionState(
   SW_SCOPE,
   sessionStorage,
 );
-const PHP_FPM_WORKERS = 6;
+/**
+ * Read the `?memoryProfile=` dev override from the page URL. Passed through to
+ * `BrowserKernel` (which otherwise auto-detects) and used for app-side sizing
+ * below, so one query parameter drives the whole machine's memory posture —
+ * e.g. `?memoryProfile=constrained` reproduces the iOS budget on a desktop.
+ * An unknown id fails loudly in `detectRuntimeMemoryProfile`.
+ */
+function memoryProfileOverride(): string | undefined {
+  return new URLSearchParams(location.search).get("memoryProfile") ?? undefined;
+}
+
+const HOST_MEMORY_PROFILE = detectRuntimeMemoryProfile(
+  typeof navigator === "undefined"
+    ? {}
+    : {
+      userAgent: navigator.userAgent,
+      maxTouchPoints: navigator.maxTouchPoints,
+    },
+  memoryProfileOverride(),
+);
+
+// Sized to the device's memory budget, not a constant: each static php-fpm
+// child is a full process address space, and on WebKit a declared memory
+// ceiling is charged against the ~6 GiB iOS reservation pool at construction.
+// Six workers fit the desktop pool; the constrained profile's smaller pool
+// only fits four — the difference between the nginx-php demo booting and
+// Safari throwing "Out of memory" on iOS.
+const PHP_FPM_WORKERS = HOST_MEMORY_PROFILE.preforkServiceProcesses;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -1588,6 +1616,9 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      // Keep the host on the same memory profile as the app-side sizing
+      // above (BrowserKernel auto-detects when this is undefined).
+      memoryProfile: memoryProfileOverride(),
       ...(profile.candidateEvidence === undefined
         ? {}
         : {

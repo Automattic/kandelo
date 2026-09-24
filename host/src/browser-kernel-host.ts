@@ -31,10 +31,15 @@ export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 import {
-  DEFAULT_MAX_PAGES,
   DEFAULT_MAX_WORKERS,
   WASM_PAGE_SIZE,
 } from "./constants";
+import {
+  clampProcessMaxPages,
+  DESKTOP_MEMORY_PROFILE,
+  detectRuntimeMemoryProfile,
+  type RuntimeMemoryProfile,
+} from "./runtime-memory-profile";
 import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
@@ -57,9 +62,25 @@ const defaultPcmWorkletUrl = new URL(
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
-  /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
-   *  guest brk/mmap growth; initial process memory is computed separately. */
+  /**
+   * Maximum wasm memory pages per process. This caps guest brk/mmap growth;
+   * initial process memory is computed separately.
+   *
+   * Defaults to this host's runtime memory profile (1 GiB on engines that
+   * reserve address space lazily, 256 MiB on WebKit, which charges declared
+   * ceilings against a reservation pool). A request above the profile's
+   * budget is clamped to it and reported through `onHostDiagnostic`, because
+   * silently handing a guest less address space than a demo asked for would
+   * hide the real platform boundary.
+   */
   maxMemoryPages?: number;
+  /**
+   * Override the detected runtime memory profile by id ("desktop" or
+   * "constrained"). Intended for tests and deliberate product decisions; the
+   * chosen id is reported through `onHostDiagnostic` when it is not the
+   * default desktop budget.
+   */
+  memoryProfile?: string;
   /**
    * Allocation-admission budget sampled from simultaneously live process
    * address spaces before each new allocation.
@@ -214,6 +235,9 @@ export class BrowserKernel {
    *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
+  private readonly memoryProfile: RuntimeMemoryProfile;
+  /** Set when a caller asked for more per-process pages than the budget allows. */
+  private readonly clampedProcessMaxPagesFrom: number | undefined;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
@@ -259,7 +283,24 @@ export class BrowserKernel {
   private pcmDriver: BrowserPcmDriver | null = null;
 
   constructor(options: BrowserKernelOptions = {}) {
-    this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
+    // Resolve the reservation budget before anything sizes an address space.
+    // On WebKit a declared ceiling is charged whether or not it is used, so
+    // this is a real allocation decision, not presentation.
+    this.memoryProfile = detectRuntimeMemoryProfile(
+      typeof navigator === "undefined"
+        ? {}
+        : {
+          userAgent: navigator.userAgent,
+          maxTouchPoints: navigator.maxTouchPoints,
+        },
+      options.memoryProfile,
+    );
+    const clampedPages = clampProcessMaxPages(
+      options.maxMemoryPages,
+      this.memoryProfile,
+    );
+    this.maxPages = clampedPages.pages;
+    this.clampedProcessMaxPagesFrom = clampedPages.clampedFrom;
     const corsProxy = validateBrowserCorsProxyConfig(options.corsProxy);
     this.options = {
       maxWorkers: DEFAULT_MAX_WORKERS,
@@ -282,6 +323,43 @@ export class BrowserKernel {
     // nothing large accumulates on the main thread across image switches.
     this.shmSab = new SharedArrayBuffer(1024 * 1024);
     MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
+  }
+
+  /**
+   * Surface a non-default memory budget, and any address space a caller asked
+   * for but did not get.
+   *
+   * A clamp is a real capability reduction — a guest that would have been able
+   * to grow to 1 GiB now cannot — so it must be visible rather than silently
+   * applied. The default desktop budget changes nothing and stays quiet.
+   */
+  private reportMemoryProfile(): void {
+    const notes: string[] = [];
+    if (this.memoryProfile.id !== DESKTOP_MEMORY_PROFILE.id) {
+      notes.push(
+        `memory profile "${this.memoryProfile.id}": ` +
+          `${this.memoryProfile.processMaxPages} pages per process, ` +
+          `${this.memoryProfile.kernelMaxPages} kernel pages, ` +
+          `${Math.round(this.memoryProfile.imageMemfsMaxBytes / (1024 * 1024))} MiB rootfs budget`,
+      );
+    }
+    if (this.clampedProcessMaxPagesFrom !== undefined) {
+      notes.push(
+        `requested ${this.clampedProcessMaxPagesFrom} pages per process, ` +
+          `capped at ${this.maxPages} by this host's memory budget`,
+      );
+    }
+    if (notes.length === 0) return;
+    const diagnostic: HostDiagnostic = {
+      pid: 0,
+      source: "kernel host",
+      message: `[BrowserKernel] ${notes.join("; ")}`,
+    };
+    try {
+      this.options.onHostDiagnostic?.(diagnostic);
+    } catch (callbackError) {
+      console.error("[BrowserKernel] onHostDiagnostic callback failed:", callbackError);
+    }
   }
 
   /**
@@ -432,6 +510,8 @@ export class BrowserKernel {
       }
     };
 
+    this.reportMemoryProfile();
+
     try {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -487,6 +567,9 @@ export class BrowserKernel {
           config: {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
+            kernelMaxPages: this.memoryProfile.kernelMaxPages,
+            imageMemfsMaxBytes: this.memoryProfile.imageMemfsMaxBytes,
+            memoryProfileId: this.memoryProfile.id,
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
               ?? this.options.maxWorkers * this.maxPages * WASM_PAGE_SIZE,

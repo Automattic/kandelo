@@ -84,6 +84,12 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxMemoryPages: number;
+    /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
+    kernelMaxPages: number;
+    /** Upper bound on the image-backed rootfs reservation, in bytes. */
+    imageMemfsMaxBytes: number;
+    /** Identifier of the runtime memory profile these budgets came from. */
+    memoryProfileId: string;
     /**
      * Sampled live-allocation admission budget. Unmediated memory.grow can
      * cross it until the next allocation observes current byte lengths.

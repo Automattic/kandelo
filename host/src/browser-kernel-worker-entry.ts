@@ -1051,6 +1051,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,
     msg.rootfsMountSpec,
+    msg.config.imageMemfsMaxBytes,
   );
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("rootfs mount spec missing / mount");
@@ -1114,6 +1115,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       dataBufferSize: PAGE_SIZE,
       useSharedMemory: true,
       defaultThreadSlots,
+      kernelMaxPages: msg.config.kernelMaxPages,
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
     },
@@ -3860,6 +3862,60 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   const pid = msg.pid;
   const info = processes.get(pid);
   if (info) vmInterruptTimers.clear(pid, info);
+
+  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Wake the target to a cooperative exit
+  // before any hard `Worker.terminate()` below. WHY: a live process worker is
+  // never idle in its JS event loop — it is parked in an in-wasm `Atomics.wait`
+  // on its syscall channel (a blocked read/accept/wait, or musl's
+  // post-exit_group `_Exit` loop). On JavaScriptCore (Safari, and Bun),
+  // `Worker.terminate()` cannot reap a worker parked in `Atomics.wait`: its OS
+  // thread and committed working set survive the call. `terminate_process` is
+  // how a terminal session's process is torn down, so every machine switch that
+  // went straight to `terminateTrackedWorker` leaked one `WebCore: Worker`
+  // thread (measured +1 per switch, non-decaying) until Safari/iOS threw "Out
+  // of memory". Delivering SIGKILL through the normal kernel signal path
+  // completes each parked channel with EINTR and queues SIGKILL so the guest
+  // glue runs `kernel_exit`; worker-main then returns to its JS event loop and
+  // posts `{exit}`, whose `finishProcessExit` terminates the now-idle worker — a
+  // state JSC *can* reclaim. This mirrors `performDestroy`'s Phase-1 wake, but
+  // scoped to a single pid so sibling processes (e.g. php-test tearing down
+  // several servers) keep running. Delivering SIGKILL through the ordinary
+  // signal path is not enough: it wakes only *registered* blockers (signal
+  // waits, futex, wait4, pipe readers), never a channel merely parked at
+  // CH_PENDING on a blocked read/accept, which is where an idle shell sits. See
+  // docs/jsc-terminate-atomics-wait-workaround.md.
+  //
+  // A bounded drain, not an unbounded wait: a guest wedged in a non-syscalling
+  // wasm loop never reaches a checkpoint to observe the wake, so after the
+  // deadline we fall through to the force-terminate path below. That path still
+  // leaks the one worker on JSC — the truthful cost of an unresponsive guest,
+  // not the common case this fix addresses.
+  if (info?.worker && processes.get(pid) === info) {
+    try {
+      await kernelWorker.killBlockedProcessForTeardown(pid);
+    } catch (error) {
+      console.warn(
+        `[browser-kernel-worker] terminate_process could not wake pid ${pid} ` +
+        `for cooperative exit; forcing: ${formatError(error)}`,
+      );
+    }
+    const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
+    while (processes.get(pid) === info && Date.now() < drainDeadline) {
+      await delay(DESTROY_KILL_DRAIN_POLL_MS);
+    }
+    // The SIGKILL-woken worker ran its exit path and `finishProcessExit`
+    // already terminated it (while idle) and detached its generation. Nothing
+    // is left to tear down or detach here.
+    if (!processes.has(pid)) {
+      respond(msg.requestId, true);
+      return;
+    }
+    console.warn(
+      `[browser-kernel-worker] terminate_process pid=${pid} did not exit ` +
+      `cooperatively within ${DESTROY_KILL_DRAIN_TIMEOUT_MS}ms; force-terminating ` +
+      `(this can leak one worker thread on JavaScriptCore)`,
+    );
+  }
 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);

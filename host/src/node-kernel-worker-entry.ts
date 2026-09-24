@@ -3323,6 +3323,15 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   const info = processes.get(pid);
   if (info) vmInterruptTimers.clear(pid, info);
 
+  // Parity note: the browser host wakes the target to a cooperative exit
+  // before this hard terminate (killBlockedProcessForTeardown in
+  // browser-kernel-worker-entry.ts's handleTerminateProcess). Node does not
+  // need it — on V8 `Worker.terminate()` reaps a worker parked in
+  // `Atomics.wait`, so terminating a blocked process worker directly frees its
+  // thread. That reap is the real platform boundary: only JavaScriptCore
+  // (Safari, Bun) leaks the thread, which is why the wake is browser-only. See
+  // docs/jsc-terminate-atomics-wait-workaround.md.
+
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
   if (threads) {

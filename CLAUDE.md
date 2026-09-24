@@ -174,6 +174,20 @@ incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
 Node-first or browser-later host changes.
 
+A declared memory ceiling is a spent resource. WebKit/JavaScriptCore charges a
+shared `WebAssembly.Memory`'s `maximum` and a growable `SharedArrayBuffer`'s
+`maxByteLength` against one process-wide reservation pool at construction,
+whether or not the space is used; V8 and SpiderMonkey do not. Do not add or
+raise a ceiling without accounting for that cost, and never reserve past a
+capacity the resource cannot actually reach. Host budgets live in
+`host/src/runtime-memory-profile.ts`.
+
+The main thread must never own a VFS `SharedArrayBuffer`. Only
+`Worker.terminate()` reclaims shared memory deterministically on WebKit, so
+main-thread VFS buffers accumulate across machine boots until Safari throws
+`Out of memory`. Compose images in a worker and hand the main thread plain,
+transferable bytes.
+
 Shared files are cross-host changes by default. Changes to
 `host/src/kernel-worker.ts`, `host/src/worker-main.ts`, VFS behavior,
 networking, framebuffer, generated ABI constants, or worker protocol types need

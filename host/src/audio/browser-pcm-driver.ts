@@ -21,6 +21,29 @@ export interface BrowserPcmDriverOptions {
   ) => AudioWorkletNode;
 }
 
+/**
+ * One AudioContext for every machine this page ever boots.
+ *
+ * [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] On WebKit, closing an AudioContext that
+ * loaded an AudioWorklet module does not reap the worklet's rendering thread:
+ * the context reaches "closed" and one "WebCore: AudioWorklet" thread stays
+ * parked in the content process anyway. One machine per context therefore
+ * leaks one realtime audio thread per machine switch, measured 1 -> 2 -> 3 ->
+ * 4 threads across three switches with `close()` observed completing each
+ * time. V8/Chromium reaps the thread.
+ *
+ * Sharing one context sidesteps the engine bug deterministically: the worklet
+ * module is registered once, each machine creates and tears down only its
+ * AudioWorkletNode, and the single rendering thread is a fixed cost instead
+ * of a per-switch leak. It also preserves the user's audio activation across
+ * machine switches, since browser autoplay policy attaches to the context.
+ *
+ * `options.createContext` callers (tests, embedders) keep a private context
+ * and the old close-the-context behavior.
+ */
+let sharedAudioContext: AudioContext | null = null;
+const sharedRegisteredWorklets = new Set<string>();
+
 const DEFAULT_RENDER_QUANTUM_FRAMES = 128;
 const UNREPORTED_OUTPUT_LATENCY_FALLBACK_MS = 100;
 const MAX_OUTPUT_PIPELINE_SETTLE_MS = 1000;
@@ -33,6 +56,9 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   private transport: PcmTransportDescriptor | null = null;
   private state: PcmOutputState = "unprepared";
   private preparing: Promise<void> | null = null;
+  /** True when this driver created a private context it must close. */
+  private ownsContext = false;
+  private contextStateHandler: (() => void) | null = null;
   private readonly onContextError = () => this.fail();
 
   constructor(private readonly options: BrowserPcmDriverOptions) {}
@@ -149,10 +175,18 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       node.port.close();
     }
     if (context) {
-      context.onstatechange = null;
+      if (context.onstatechange === this.contextStateHandler) {
+        context.onstatechange = null;
+      }
       context.removeEventListener?.("error", this.onContextError);
     }
-    if (context && context.state !== "closed") await context.close();
+    if (this.ownsContext) {
+      if (context && context.state !== "closed") await context.close();
+    }
+    // A shared context stays open on purpose — closing it is exactly the
+    // engine-bug trigger this driver exists to avoid, and the next machine
+    // will reuse it. It is suspended (or was never resumed), so an open idle
+    // context costs one rendering thread total, not one per machine.
     this.setState("closed");
     this.listeners.clear();
   }
@@ -184,11 +218,22 @@ export class BrowserPcmDriver implements PcmOutputDriver {
 
     let context: AudioContext;
     try {
-      context = this.options.createContext
-        ? this.options.createContext()
-        : new (AudioContextCtor as typeof AudioContext)({
+      if (this.options.createContext) {
+        context = this.options.createContext();
+        this.ownsContext = true;
+      } else {
+        // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] reuse the page-wide context; see
+        // the sharedAudioContext declaration for why closing per-machine
+        // contexts leaks a rendering thread on WebKit.
+        if (!sharedAudioContext || sharedAudioContext.state === "closed") {
+          sharedAudioContext = new (AudioContextCtor as typeof AudioContext)({
             latencyHint: "interactive",
           });
+          sharedRegisteredWorklets.clear();
+        }
+        context = sharedAudioContext;
+        this.ownsContext = false;
+      }
     } catch (error) {
       this.markFatalError();
       this.transport = null;
@@ -196,14 +241,22 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       throw error;
     }
     this.context = context;
-    context.onstatechange = () => this.syncContextState();
+    // Store the handler so close() can prove it is unhooking its own. With a
+    // shared context, blindly nulling onstatechange would clobber a handler a
+    // later driver installed if teardown ordering ever overlapped.
+    this.contextStateHandler = () => this.syncContextState();
+    context.onstatechange = this.contextStateHandler;
     // Web Audio 1.1 defines AudioContext's `error` event for audio-system
     // resource failures. TypeScript's current DOM declarations do not yet
     // include the event in AudioContextEventMap, so use the string overload.
     context.addEventListener?.("error", this.onContextError);
 
     try {
-      await context.audioWorklet.addModule(String(this.options.workletUrl));
+      const workletUrl = String(this.options.workletUrl);
+      if (this.ownsContext || !sharedRegisteredWorklets.has(workletUrl)) {
+        await context.audioWorklet.addModule(workletUrl);
+        if (!this.ownsContext) sharedRegisteredWorklets.add(workletUrl);
+      }
       const options: AudioWorkletNodeOptions = {
         numberOfInputs: 0,
         numberOfOutputs: 1,
@@ -254,9 +307,20 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       this.node = null;
       this.context = null;
       this.transport = null;
-      context.onstatechange = null;
+      if (context.onstatechange === this.contextStateHandler) {
+        context.onstatechange = null;
+      }
       context.removeEventListener?.("error", this.onContextError);
-      if (context.state !== "closed") await context.close().catch(() => {});
+      if (this.ownsContext) {
+        if (context.state !== "closed") await context.close().catch(() => {});
+      } else if (sharedAudioContext === context) {
+        // A context that failed to prepare must not be handed to the next
+        // machine. Drop the cache; closing it may leak the worklet thread on
+        // WebKit, but a broken context would strand every later machine.
+        sharedAudioContext = null;
+        sharedRegisteredWorklets.clear();
+        if (context.state !== "closed") await context.close().catch(() => {});
+      }
       this.setState("error");
       throw error;
     }

@@ -1,0 +1,48 @@
+=== 1 machine, settled: 19 threads ===
+6 : Heap Helper Thread
+   2 : WebCore: Worker
+   2 : Wasm Worklist Helper Thread
+   1 : com.apple.main-thread  (serial)
+   1 : WebCore: AudioWorklet
+   1 : RemoteAudioDestinationProxy render thread
+   1 : JavaScriptCore libpas scavenger
+   1 : JSC Heap Collector Thread
+   1 : JIT Worklist Helper Thread
+=== after 5 switches, settled 45s: 26 threads ===
+7 : WebCore: Worker
+   6 : Heap Helper Thread
+   2 : Wasm Worklist Helper Thread
+   1 : com.apple.root.default-qos.overcommit  (concurrent)
+   1 : com.apple.main-thread  (serial)
+   1 : com.apple.IPC.ReceiveQueue  (serial)
+   1 : WebCore: AudioWorklet
+   1 : RemoteAudioDestinationProxy render thread
+   1 : JavaScriptCore libpas scavenger
+   1 : JIT Worklist Helper Thread
+EXIT=0
+
+--- Interpretation ---
+AudioWorklet: 1 -> 1 across 5 switches. FIXED (commit 4a0604ece, shared
+AudioContext). Was 1 -> 2 -> 3 -> 4 -> 5 before the fix.
+
+WebCore: Worker: 2 -> 7 across 5 switches, +1/switch, does NOT decay after a
+45s settle. SECOND, SEPARATE LEAK — now FIXED (see below). Corroborated by an
+independent decay run (6 workers after 4 switches; steady one-machine = 2).
+
+Synthetic module-worker teardown does NOT reproduce it: plain, Atomics.waitAsync-
+registered, open-MessageChannel-port, and all-of-the-above variants were flat
+across 8 terminate cycles (.context/modworker-probe.mjs). Nor do wasm-instantiate-
+and-park workers (jswait-inf / wasmwait, flat). Not the composer worker either
+(it is page-level and closes cleanly; steady = 2 confirms its initial-boot
+thread did not leak). The leaked worker was the bash PROCESS worker.
+
+RESOLVED (per-pid killBlockedProcessForTeardown; kernel-worker.ts +
+handleTerminateProcess): a machine switch tears down the previous terminal
+session's process via the terminate_process RPC, which hard-terminated the bash
+worker while it was parked in an in-wasm Atomics.wait on its syscall channel
+(a blocked PTY read). On JSC Worker.terminate() cannot reap an Atomics.wait-
+parked worker, so its thread + committed working set leaked. Waking it first
+(so it runs the guest glue's cooperative kernel_exit and returns to its JS
+event loop) makes it reclaimable. After the fix, this exact census run is flat:
+threads 19 -> 19, WebCore: Worker 2 -> 2 across 5 switches. See
+docs/jsc-terminate-atomics-wait-workaround.md.

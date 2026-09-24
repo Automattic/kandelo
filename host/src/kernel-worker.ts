@@ -14605,6 +14605,134 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Per-pid counterpart of {@link killAllBlockedForTeardown}: wake exactly one
+   * process (all its threads) parked in `Atomics.wait` on its syscall channel
+   * so it runs the guest glue's cooperative `kernel_exit` and returns to its JS
+   * event loop, where a subsequent `Worker.terminate()` can actually reclaim it.
+   *
+   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] `terminate_process` (host force-kill; how
+   * a terminal session's process is torn down on every machine switch) used to
+   * hard-terminate the worker while it was still parked in `Atomics.wait`. On
+   * JavaScriptCore (Safari, Bun) `Worker.terminate()` cannot reap an
+   * `Atomics.wait`-parked worker, so its OS thread + committed working set
+   * leaked — one per switch, until Safari/iOS OOMed. `killAllBlockedForTeardown`
+   * fixes the same class at whole-machine destroy, but is unusable for a single
+   * `kill(pid)` because it wakes (and thus exits) *every* live process. This
+   * variant is scoped so sibling processes keep running (e.g. tearing down one
+   * of several servers). Delivering SIGKILL through the ordinary signal path is
+   * not sufficient: it only wakes *registered* blockers (signal-waits, futex,
+   * wait4, pipe readers), never a channel merely parked at `CH_PENDING` on a
+   * blocked `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as
+   * the global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
+   */
+  killBlockedProcessForTeardown(pid: number): Promise<Set<number>> {
+    if (this.#kernelFatalError !== null) {
+      return this.#resolvePromise(new Set<number>());
+    }
+    return new this.#promiseReceiver<Set<number>>((resolve, reject) => {
+      try {
+        this.#runOrDeferKernelEntry(
+          `blocked-process teardown wake pid=${pid}`,
+          (entry) => {
+            const woken = this.#killBlockedProcessForTeardownWithinKernelEntry(
+              pid,
+              entry,
+            );
+            entry.deferProtocolEffect(() => {
+              resolve(woken);
+              return undefined;
+            });
+            return undefined;
+          },
+        );
+      } catch (cause) {
+        this.#rethrowKernelEntryFatal(cause);
+        reject(cause);
+      }
+    });
+  }
+
+  #killBlockedProcessForTeardownWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): Set<number> {
+    const woken = new Set<number>();
+    const registration = this.processes.get(pid);
+    if (!registration) return woken;
+
+    // Drop this pid's pending-retry bookkeeping so a timer cannot re-arm a
+    // syscall behind the wake. Scoped to the target's channels — sibling
+    // processes' entries are left untouched. The wake itself is driven off
+    // CH_STATUS below, not these maps (a blocked read/accept may not appear in
+    // any of them, but always sits at CH_PENDING). Mirrors the global method's
+    // pre-wake sweep, filtered by pid.
+    const ownsChannel = (channel: ChannelInfo): boolean => channel.pid === pid;
+    const dropChannelKeyed = <V extends { timer?: ReturnType<typeof setTimeout> }>(
+      map: Map<ChannelInfo, V>,
+    ): void => {
+      for (const [channel, value] of [...map]) {
+        if (!ownsChannel(channel)) continue;
+        if (value.timer) this.#cancelRegisteredTimeout(value.timer);
+        map.delete(channel);
+      }
+    };
+    dropChannelKeyed(this.pendingPollRetries);
+    if (this.pendingAdvisoryLockRetries) {
+      dropChannelKeyed(this.pendingAdvisoryLockRetries);
+    }
+    dropChannelKeyed(this.pendingSelectRetries);
+    dropChannelKeyed(this.pendingSleeps);
+    for (const [key, value] of [...this.pendingSignalWaits]) {
+      if (value.channel.pid !== pid) continue;
+      this.#cancelRegisteredTimeout(value.timer);
+      this.pendingSignalWaits.delete(key);
+      this.signalWaitDeadlines.delete(key);
+    }
+    for (const [pipeIdx, waiters] of [...this.pendingPipeReaders]) {
+      const kept = waiters.filter((w) => w.pid !== pid);
+      if (kept.length) this.pendingPipeReaders.set(pipeIdx, kept);
+      else this.pendingPipeReaders.delete(pipeIdx);
+    }
+    for (const [pipeIdx, waiters] of [...this.pendingPipeWriters]) {
+      const kept = waiters.filter((w) => w.pid !== pid);
+      if (kept.length) this.pendingPipeWriters.set(pipeIdx, kept);
+      else this.pendingPipeWriters.delete(pipeIdx);
+    }
+    for (const [channel] of [...this.pendingFutexWaits]) {
+      if (ownsChannel(channel)) this.pendingFutexWaits.delete(channel);
+    }
+    for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
+      if (ownsChannel(channel)) {
+        this.#releaseBlockingRetrySnapshot(channel, entry);
+      }
+    }
+
+    // Skip a process the kernel already marked Exited (a sibling thread's
+    // exit_group set the real status); forcing kernel_exit on a still-parked
+    // thread would clobber it. Only genuinely-live processes need waking.
+    const getExitStatus = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (getExitStatus && getExitStatus(pid) !== -1) return woken;
+
+    for (const channel of registration.channels) {
+      let status: number;
+      try {
+        const i32 = new Int32Array(channel.memory.buffer, channel.channelOffset);
+        status = Atomics.load(i32, CH_STATUS / Int32Array.BYTES_PER_ELEMENT);
+      } catch { continue; }
+      if (status !== CH_PENDING) continue;
+      try {
+        this.wakeChannelForTeardownExit(channel, entry);
+        woken.add(channel.pid);
+      } catch (err) {
+        this.#rethrowKernelEntryFatal(err);
+        console.error(`[killBlockedProcessForTeardown] wake failed for pid=${channel.pid} off=${channel.channelOffset}: ${err}`);
+      }
+    }
+    return woken;
+  }
+
+  /**
    * Cooperatively unwind the exact browser Worker generation discarded by
    * exec without exiting the persistent kernel Process.
    *
