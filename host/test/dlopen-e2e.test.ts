@@ -15,6 +15,7 @@ import {
 } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { artifactGate } from "./support/artifact-gate";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -74,7 +75,21 @@ function buildMainProgram(
   return wasmPath;
 }
 
-describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end", () => {
+const dlopenGate = artifactGate("dlopen-e2e", [
+  { what: "musl sysroot (libc.a)", present: hasSysroot, build: "scripts/build-musl.sh" },
+  {
+    what: "kernel.wasm (via the binary resolver)",
+    present: hasKernel,
+    build: "scripts/dev-shell.sh ./run.sh setup",
+  },
+  {
+    what: "wasm32posix-cc on PATH",
+    present: hasCompiler(),
+    build: "run inside scripts/dev-shell.sh",
+  },
+]);
+
+describe.skipIf(dlopenGate.skip)("dlopen end-to-end", () => {
   beforeAll(() => {
     mkdirSync(BUILD_DIR, { recursive: true });
   });
