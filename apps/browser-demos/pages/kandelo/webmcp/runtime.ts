@@ -3,6 +3,9 @@ import type { BrowserKernel } from "@host/browser-kernel-host";
 import type { KernelHost } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { guestPath, ToolError } from "./contract";
 
+/** Linux `d_type` values the VFS reports, as the tool names them. */
+const DIRENT_TYPE_NAMES: Record<number, string> = { 4: "directory", 8: "file", 10: "symlink" };
+
 // References only: lifecycle and process ownership remain with the existing host.
 type Runtime = { kernel: BrowserKernel; unsubscribe: () => void };
 const runtimes = new WeakMap<KernelHost, Runtime>();
@@ -82,9 +85,20 @@ export async function writeGuestFile(host: KernelHost, path: string, bytes: Uint
 export async function listGuestDirectory(host: KernelHost, path: string) {
   guestPath(path);
   const runtime = requireRuntime(host);
-  const entries = await runtime.kernel.listDirectoryFromVfs(path);
+  const entries = await runtime.kernel.readDirFromVfs(path);
   assertCurrent(host, runtime);
-  return entries;
+  if (entries === null) {
+    throw new ToolError("FILE_NOT_FOUND", "The path does not identify a readable guest directory.", { path });
+  }
+  return entries.map(({ name, type, mode, size, uid, gid, target }) => ({
+    name,
+    type: DIRENT_TYPE_NAMES[type] ?? "other",
+    mode,
+    size,
+    uid,
+    gid,
+    ...(target === undefined ? {} : { target }),
+  }));
 }
 
 export async function startGuestJob(host: KernelHost, id: string, args: { script: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }) {

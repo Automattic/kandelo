@@ -42,6 +42,7 @@ import {
   DEFAULT_MOUNT_SPEC,
   HostFileSystem,
   readPreparedPlatformFile,
+  vfsPathIsWithin,
 } from "./vfs";
 import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
@@ -216,6 +217,8 @@ let rootfsLazyFetcher: LazyFetch | undefined;
  *  kernel-owned `/` (session-seed trees, extra host mounts). Handed to the
  *  kernel's rootfs so it does not claim their paths. */
 let rootfsForeignPrefixes: string[] = [];
+const watchedVfsPrefixes = new Set<string>();
+let offVfsChanges: (() => void) | null = null;
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -3812,6 +3815,29 @@ function handleWriteVfsFile(
 
 // --- Message dispatch ---
 
+function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_vfs_changes" }>) {
+  if (msg.enabled) watchedVfsPrefixes.add(msg.prefix);
+  else watchedVfsPrefixes.delete(msg.prefix);
+  if (watchedVfsPrefixes.size === 0) {
+    offVfsChanges?.();
+    offVfsChanges = null;
+    return;
+  }
+  if (offVfsChanges) return;
+  if (!(vfsExecIO instanceof VirtualPlatformIO)) {
+    reportHostDiagnostic({
+      pid: 0,
+      source: "vfs change watch",
+      message: `[kernel-worker] cannot watch ${msg.prefix}: the kernel has no virtual filesystem`,
+    }, "warn");
+    return;
+  }
+  offVfsChanges = vfsExecIO.subscribeChanges((event) => {
+    const watched = [...watchedVfsPrefixes].some((prefix) => vfsPathIsWithin(prefix, event.path));
+    if (watched) post({ type: "vfs_change", event });
+  });
+}
+
 port.on("message", (msg: MainToKernelMessage) => {
   switch (msg.type) {
     case "init":
@@ -4009,6 +4035,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       else kernelWorker.disableSyscallTrace();
       break;
     }
+    case "watch_vfs_changes": handleWatchVfsChanges(msg); break;
     case "drain_syscall_trace": {
       try {
         post({ type: "response", requestId: msg.requestId, result: kernelWorker.drainSyscallTrace() });

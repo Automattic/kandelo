@@ -6,6 +6,7 @@
 export {
   readPreparedPlatformFile,
   VirtualPlatformIO,
+  vfsPathIsWithin,
 } from "./vfs";
 export type { HostFileOffset } from "../types";
 export type {
@@ -55,6 +56,9 @@ export type {
   MountConfig,
   MountSetIdCapability,
   DirEntry,
+  VfsChangeEvent,
+  VfsChangeKind,
+  VfsChangeListener,
 } from "./types";
 export { PATHCONF_NAMES } from "../generated/abi";
 export { backendPathconf } from "../pathconf";

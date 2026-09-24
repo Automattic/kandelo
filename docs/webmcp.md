@@ -67,7 +67,7 @@ parameter bounds and required fields. Unknown fields and invalid types are rejec
 | `switch_terminal` | `terminalId` | Selects and reveals the terminal without restarting its shell. |
 | `send_terminal_input` | `terminalId`, exactly one of `text` / `key` | Writes to this PTY, serialized against other tool writes to it. `delivered` means input delivered, not command completed. |
 | `read_terminal_output` | `terminalId`, `cursor?`, `byteLimit?` | `output`, bytesRead, nextCursor, truncated, hasMore. ANSI sequences and merged streams remain intact. |
-| `list_files` | absolute `path`, `offset?`, `limit?` | Sorted directory entries (name, type, inode), nextOffset, hasMore. Each call is a fresh listing. |
+| `list_files` | absolute `path`, `offset?`, `limit?` | Sorted directory entries (name, type, mode, size, uid, gid, and `target` on a symlink), nextOffset, hasMore. Each call is a fresh listing. |
 | `read_file` | absolute `path`, `encoding?`, `offset?`, `byteLimit?` | UTF-8 or base64 `content`, bytesRead, nextOffset, eof, truncated. |
 | `write_file` | absolute `path`, `content`, `encoding?`, explicit `overwrite` | `overwrite:true` creates or replaces; returns bytesWritten. `false` uses atomic O_EXCL creation and returns `FILE_EXISTS` without altering an existing path. Parent must exist. |
 | `navigate_preview` | guest URL `path` | Reveals and requests navigation within the existing guest bridge; returns requestedPath, preview and previewProgress. Poll status for HTTP/load/render observations. |
