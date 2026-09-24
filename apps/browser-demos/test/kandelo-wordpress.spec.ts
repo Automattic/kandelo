@@ -1,17 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
+import {
+  gotoInPreview,
+  gotoMachineOrSkip,
+  machineAppPrefix,
+  previewFrame,
+} from "./support/kandelo-machine";
 
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+// The machine's own identity.title from its image's /etc/kandelo/demo.json.
+const MACHINE_TITLE = "WordPress MariaDB";
 
 // The demo dock auto-opens a guide/theme popover whose full-screen dismiss
 // layer overlays the iframe and intercepts pointer events (a real user's first
@@ -46,13 +42,26 @@ async function readPersistedCookieJar(
     }
     const cache = await caches.open(cacheName);
     const keys = await cache.keys();
-    const authorityReq = keys.find((r) =>
-      (new URL(r.url).pathname.split("/").pop() ?? "") ===
-        "bridge-authority-v1",
+    // Each machine owns its own authority record, keyed
+    // `bridge-authority-v1/<machine-name>` (see bridgeAuthorityKeyFor in
+    // public/service-worker.js). Match the PREFIX, not a whole-segment
+    // equality on the old single-instance key — that equality silently
+    // matched nothing once routing became per-machine, which turns a real
+    // "cookies were not persisted" failure into an empty list that reads
+    // like one.
+    const authorityReqs = keys.filter((r) =>
+      new URL(r.url).pathname.includes("/bridge-authority-v1/"),
     );
-    if (!authorityReq) return [];
-    const resp = await cache.match(authorityReq);
-    if (!resp) return [];
+    if (authorityReqs.length !== 1) {
+      throw new Error(
+        `expected exactly one machine authority record in ${cacheName}, got `
+          + JSON.stringify(keys.map((r) => new URL(r.url).pathname)),
+      );
+    }
+    const resp = await cache.match(authorityReqs[0]);
+    if (!resp) {
+      throw new Error(`machine authority record has no response body`);
+    }
     const authority = JSON.parse(await resp.text());
     return authority?.version === 1 && Array.isArray(authority.cookies)
       ? authority.cookies
@@ -60,19 +69,21 @@ async function readPersistedCookieJar(
   });
 }
 
-/** Boot the WordPress demo and sign into wp-admin. Returns the app frame. */
+/**
+ * Boot the WordPress demo and sign into wp-admin. Returns the app frame and
+ * the prefix the service worker minted for this machine's web preview, which
+ * later navigations need to name an absolute app path.
+ */
 async function loginToWpAdmin(page: Page) {
-  await gotoOrSkip(page, "/?demo=wordpress-mariadb");
-  await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
+  await gotoMachineOrSkip(page, "wordpress-mariadb");
+  const appPrefix = await machineAppPrefix(page, MACHINE_TITLE);
 
-  const frame = page.frameLocator('iframe[src*="/app/"]');
+  const frame = previewFrame(page, MACHINE_TITLE);
   await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
     timeout: 240_000,
   });
 
-  await frame.locator("body").evaluate(() => {
-    window.location.href = "/app/wp-login.php";
-  });
+  await gotoInPreview(frame, appPrefix, "wp-login.php");
   await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
   await frame.locator("#user_login").fill("admin");
   await frame.locator("#user_pass").fill("password");
@@ -83,7 +94,7 @@ async function loginToWpAdmin(page: Page) {
   await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
     timeout: 180_000,
   });
-  return frame;
+  return { frame, appPrefix };
 }
 
 test("@slow Kandelo WordPress/MariaDB mysqli transport benchmark returns", async ({
@@ -91,15 +102,24 @@ test("@slow Kandelo WordPress/MariaDB mysqli transport benchmark returns", async
 }) => {
   test.setTimeout(240_000);
 
-  await gotoOrSkip(page, "/?demo=wordpress-mariadb");
-  await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
+  await gotoMachineOrSkip(page, "wordpress-mariadb");
+  const appPrefix = await machineAppPrefix(page, MACHINE_TITLE);
 
-  const result = await page.evaluate(async () => {
+  // The preview pane mounts as soon as the bridge has a prefix, which is
+  // before MariaDB has finished starting. Benchmarking the mysqli transports
+  // at that moment measures a database that is not up yet ("Connection
+  // refused"), so wait for the site to actually render first — the same
+  // readiness signal every other test in this file uses.
+  await expect(
+    previewFrame(page, MACHINE_TITLE).locator("body"),
+  ).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 240_000 });
+
+  const result = await page.evaluate(async (prefix) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort("timeout"), 90_000);
     try {
       const response = await fetch(
-        `/app/kandelo-mysql-bench.php?connect_iters=1&query_iters=1&include_persistent=1&ts=${Date.now()}`,
+        `${prefix}kandelo-mysql-bench.php?connect_iters=1&query_iters=1&include_persistent=1&ts=${Date.now()}`,
         { cache: "no-store", signal: controller.signal },
       );
       const text = await response.text();
@@ -117,7 +137,7 @@ test("@slow Kandelo WordPress/MariaDB mysqli transport benchmark returns", async
     } finally {
       clearTimeout(timer);
     }
-  });
+  }, appPrefix);
 
   expect(result.ok, result.text).toBe(true);
   const data = JSON.parse(result.text);
@@ -139,18 +159,16 @@ test("@slow Kandelo WordPress/MariaDB preinstalled site logs into wp-admin", asy
 }) => {
   test.setTimeout(420_000);
 
-  await gotoOrSkip(page, "/?demo=wordpress-mariadb");
-  await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
+  await gotoMachineOrSkip(page, "wordpress-mariadb");
+  const appPrefix = await machineAppPrefix(page, MACHINE_TITLE);
 
-  const frame = page.frameLocator('iframe[src*="/app/"]');
+  const frame = previewFrame(page, MACHINE_TITLE);
   await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
     timeout: 240_000,
   });
   await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
 
-  await frame.locator("body").evaluate(() => {
-    window.location.href = "/app/wp-login.php";
-  });
+  await gotoInPreview(frame, appPrefix, "wp-login.php");
 
   await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
   await frame.locator("#user_login").fill("admin");
@@ -170,7 +188,7 @@ test("@slow Kandelo WordPress login survives a service worker restart", async ({
   test.skip(browserName !== "chromium", "requires CDP ServiceWorker.stopWorker");
   test.setTimeout(420_000);
 
-  const frame = await loginToWpAdmin(page);
+  const { frame, appPrefix } = await loginToWpAdmin(page);
 
   // The auth cookie must be durably persisted to Cache Storage, not just held
   // in the SW's in-memory jar. WordPress auth cookies are session cookies (no
@@ -216,9 +234,7 @@ test("@slow Kandelo WordPress login survives a service worker restart", async ({
   // Re-enter wp-admin. This wakes the freshly-restarted SW, which restores
   // the cookie jar from Cache Storage and forwards the auth cookie — so we
   // land on the dashboard, not the login form.
-  await frame.locator("body").evaluate(() => {
-    window.location.href = "/app/wp-admin/index.php";
-  });
+  await gotoInPreview(frame, appPrefix, "wp-admin/index.php");
   await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
     timeout: 180_000,
   });
@@ -235,22 +251,27 @@ test("@slow Kandelo WordPress site editor loads assets through the bridge (no bl
   // interceptor their asset requests (load-scripts.php/load-styles.php) escape
   // the bridge and 404 against the static origin. The interceptor rewrites
   // such iframes to about:srcdoc, which the SW controls. Assert that no editor
-  // asset 404s and nothing under /app escapes to the origin.
+  // asset 404s and nothing under this machine's app prefix escapes to the
+  // origin. The prefix is minted per machine, so the listener reads it from a
+  // binding the login fills in; the window that matters starts after the reset
+  // below, by which time it is set.
+  let appPrefix = "";
   const badAssets: string[] = [];
   page.on("response", (resp) => {
     const url = resp.url();
-    if (resp.status() >= 400 && (/load-scripts|load-styles/.test(url) || url.includes("/app/"))) {
+    const underApp = appPrefix !== "" && url.includes(appPrefix);
+    if (resp.status() >= 400 && (/load-scripts|load-styles/.test(url) || underApp)) {
       badAssets.push(`${resp.status()} ${url}`);
     }
   });
 
-  const frame = await loginToWpAdmin(page);
+  const login = await loginToWpAdmin(page);
+  const frame = login.frame;
+  appPrefix = login.appPrefix;
 
   // Open the site editor and let its canvas iframe issue its asset requests.
   badAssets.length = 0;
-  await frame.locator("body").evaluate(() => {
-    window.location.href = "/app/wp-admin/site-editor.php";
-  });
+  await gotoInPreview(frame, appPrefix, "wp-admin/site-editor.php");
   await expect(frame.locator("iframe").first()).toBeVisible({ timeout: 180_000 });
   await page.waitForTimeout(20_000);
 

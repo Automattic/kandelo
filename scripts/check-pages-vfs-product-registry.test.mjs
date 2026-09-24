@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -12,10 +13,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertNoAppMachineIdentityTables,
   checkPagesVfsProductRegistry,
   isVfsSpecifier,
   readPagesRegistry,
 } from "./check-pages-vfs-product-registry.mjs";
+import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogPath = join(repoRoot, "images/vfs/products/generated/catalog.json");
@@ -31,7 +34,7 @@ const galleryPath = join(
   repoRoot,
   "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
 );
-const presentationPath = join(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts");
+const rosterPath = join(repoRoot, "apps/browser-demos/pages/kandelo/gallery-roster.json");
 const browserDepsPath = join(repoRoot, "run.sh");
 const browserSources = [
   join(repoRoot, "host/src/browser-kernel-default-artifacts.ts"),
@@ -44,7 +47,7 @@ const paths = {
   registryPath,
   generatedRegistryPath,
   galleryPath,
-  presentationPath,
+  rosterPath,
   browserDepsPath,
   browserSources,
 };
@@ -125,8 +128,8 @@ test("rejects source-only and generated-only Pages registry mutations", () => {
     writeFileSync(
       sourceOnly,
       readFileSync(registryPath, "utf8").replace(
-        'id = "browser-node"',
-        'id = "browser-node-source-only"',
+        'id = "browser-nginx"',
+        'id = "browser-nginx-source-only"',
       ),
     );
     assert.throws(
@@ -148,13 +151,20 @@ test("rejects source-only and generated-only Pages registry mutations", () => {
   });
 });
 
-test("rejects gallery product, preset, and VFS-image mapping drift", () => {
+test("rejects gallery product, roster, and VFS-image mapping drift", () => {
   withTempDir((directory) => {
     const mutateGallery = (name, mutate) => {
       const gallery = JSON.parse(readFileSync(galleryPath, "utf8"));
       mutate(gallery);
       const path = join(directory, name);
       writeFileSync(path, canonicalBytes(gallery));
+      return path;
+    };
+    const mutateRoster = (name, mutate) => {
+      const roster = JSON.parse(readFileSync(rosterPath, "utf8"));
+      mutate(roster);
+      const path = join(directory, name);
+      writeFileSync(path, canonicalBytes(roster));
       return path;
     };
     assert.throws(
@@ -164,23 +174,27 @@ test("rejects gallery product, preset, and VFS-image mapping drift", () => {
       }),
       /gallery.*Pages product set/i,
     );
+    // pages-vfs-product-gallery.json does deployment scoping only (no
+    // `gallery_entries`); the roster is the sole membership authority, so
+    // the drift this schema can no longer express is a roster entry naming
+    // a product that does not exist at all.
     assert.throws(
       () => checkPagesVfsProductRegistry({
         ...paths,
-        galleryPath: mutateGallery("unknown.json", (gallery) => {
-          gallery.products.find(({ id }) => id === "browser-node").gallery_entries = ["rogue"];
+        rosterPath: mutateRoster("unknown-product.json", (roster) => {
+          roster.entries[0].product = "browser-rogue";
         }),
       }),
-      /gallery entries differ.*preset/i,
+      /gallery roster references unknown product browser-rogue/i,
     );
     assert.throws(
       () => checkPagesVfsProductRegistry({
         ...paths,
         galleryPath: mutateGallery("wrong-image.json", (gallery) => {
-          gallery.products.find(({ id }) => id === "browser-node").vfs_image = "shell";
+          gallery.products.find(({ id }) => id === "browser-nginx").vfs_image = "shell";
         }),
       }),
-      /gallery entry node.*VFS image node/i,
+      /gallery product browser-nginx declares VFS image shell, not nginx/i,
     );
   });
 });
@@ -198,7 +212,7 @@ test("rejects product-owned Pages intent and a missing product output", () => {
 
     const outputCatalog = writeCatalog(directory, (catalog) => {
       const product = catalog.products.find(
-        ({ manifest }) => manifest.id === "browser-node",
+        ({ manifest }) => manifest.id === "browser-nginx",
       );
       delete product.manifest.output;
       product.sha256 = digest(product.manifest);
@@ -226,11 +240,11 @@ test("enforces eager static imports and lazy glob-only imports", () => {
 
     const lazyStatic = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("live-setup.ts")) return contents;
-      return `import nodeVfs from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";\n${contents}`;
+      return `import nginxVfs from "@binaries/programs/wasm32/nginx-vfs.vfs.zst?url";\n${contents}`;
     });
     assert.throws(
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: lazyStatic }),
-      /browser-node.*lazy.*static import/is,
+      /browser-nginx.*lazy.*static import/is,
     );
   });
 });
@@ -239,11 +253,11 @@ test("rejects absent, unregistered, and unselected VFS source paths", () => {
   withTempDir((directory) => {
     const absent = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("optional-demo-vfs.ts")) return contents;
-      return contents.replaceAll("node-vfs.vfs.zst", "node-vfs.absent");
+      return contents.replaceAll("wordpress.vfs.zst", "wordpress.absent");
     });
     assert.throws(
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: absent }),
-      /browser-node.*glob/is,
+      /browser-wordpress.*glob/is,
     );
 
     const rogue = copyBrowserSources(directory, (source, contents) => {
@@ -312,11 +326,11 @@ test("keeps canonical resolution ahead of legacy fallback for every Pages produc
 
     const missingProduct = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("live-setup.ts")) return contents;
-      return contents.replace('productId: "browser-node"', 'productId: "browser-rogue"');
+      return contents.replace('productId: "browser-nginx"', 'productId: "browser-rogue"');
     });
     assert.throws(
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: missingProduct }),
-      /canonical product mapping.*browser-node/i,
+      /canonical product mapping.*browser-nginx/i,
     );
 
     const fallback = copyBrowserSources(directory, (source, contents) => {
@@ -330,5 +344,174 @@ test("keeps canonical resolution ahead of legacy fallback for every Pages produc
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: fallback }),
       /evaluate fallback in canonical mode/i,
     );
+  });
+});
+
+// Task B6: assert the app holds no built-in machine identities. These tests
+// scan an isolated temp directory tree (never the real apps/browser-demos or
+// web-libs/kandelo-session sources), so the "reintroduce a table, watch it
+// fail" case never mutates this repository's real files.
+const realCatalog = loadVfsProductCatalog(catalogPath);
+// A minimal catalog whose product ids share nothing with any tracked
+// profile id, so these tests exercise the SCANNING logic (and the named
+// exemptions) rather than the "admit catalog products" carve-out.
+const fakeCatalog = { productIds: ["browser-main-shell", "browser-node", "platform-rootfs"] };
+
+function writeFixture(root, relPath, contents) {
+  const target = join(root, relPath);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, contents);
+  return target;
+}
+
+test("the real browser app and web-libs hold no machine-identity tables", () => {
+  assert.doesNotThrow(() => assertNoAppMachineIdentityTables(realCatalog));
+});
+
+// THE TEST THAT MATTERS MOST: reintroduce a table shaped like the deleted
+// LIVE_DEMO_SPECS, keyed by profile id, and confirm the checker rejects it
+// by name. This never touches the real tree — the fixture lives in a temp
+// directory that assertNoAppMachineIdentityTables scans in place of the
+// real apps/browser-demos.
+test("rejects a reintroduced LIVE_DEMO_SPECS-shaped table keyed by profile id", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/kernel-host/reintroduced-live-demo-specs.ts",
+      `
+      export const LIVE_DEMO_SPECS = {
+        doom: { argv: ["/usr/bin/fbdoom"], memoryPages: 4096 },
+        sdl2: { argv: ["/usr/bin/sdl2_demo"], memoryPages: 4096 },
+      };
+      `,
+    );
+    assert.throws(
+      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
+      /machine-identity table[\s\S]*reintroduced-live-demo-specs\.ts.*object literal.*\[(doom, sdl2|sdl2, doom)\]/,
+    );
+  });
+});
+
+test("rejects a reintroduced id union type keyed by profile id", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/kernel-host/reintroduced-live-demo-id.ts",
+      `export type LiveDemoId = "doom" | "sdl2" | "modeset";`,
+    );
+    assert.throws(
+      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
+      /union type/,
+    );
+  });
+});
+
+test("rejects a reintroduced id-selection switch statement", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/kernel-host/reintroduced-switch.ts",
+      `
+      function pick(id: string) {
+        switch (id) {
+          case "doom": return 1;
+          case "sdl2": return 2;
+          default: return 0;
+        }
+      }
+      `,
+    );
+    assert.throws(
+      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
+      /switch statement/,
+    );
+  });
+});
+
+test("does not flag a single incidental profile-id key (below the >=2 threshold)", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/app/theme.ts",
+      `type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";`,
+    );
+    assert.doesNotThrow(() => assertNoAppMachineIdentityTables(fakeCatalog, directory));
+  });
+});
+
+test("admits product-id-keyed plumbing (not a machine-identity table)", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+      `
+      const VFS_PRODUCTS = {
+        "browser-main-shell": { kind: "url", url: "shell.vfs.zst" },
+        "browser-wordpress": { kind: "optional-demo", image: "wordpress" },
+      };
+      `,
+    );
+    // "browser-main-shell" and "browser-wordpress" ARE in realCatalog.productIds,
+    // so this must pass against the real catalog admission rule too.
+    assert.doesNotThrow(() => assertNoAppMachineIdentityTables(realCatalog, directory));
+  });
+});
+
+test("exempts OPTIONAL_DEMO_VFS_PATHS in optional-demo-vfs.ts by name", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts",
+      `
+      export const OPTIONAL_DEMO_VFS_PATHS = {
+        node: { label: "node-vfs.vfs.zst", relPaths: [] },
+        wordpress: { label: "wordpress.vfs.zst", relPaths: [] },
+        lamp: { label: "lamp.vfs.zst", relPaths: [] },
+      };
+      `,
+    );
+    assert.doesNotThrow(() => assertNoAppMachineIdentityTables(fakeCatalog, directory));
+  });
+});
+
+test("does NOT exempt a differently-named table in the same exempted file", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts",
+      `
+      export const OPTIONAL_DEMO_VFS_PATHS = {
+        node: { label: "node-vfs.vfs.zst", relPaths: [] },
+      };
+      export const SNUCK_IN_TABLE = {
+        doom: { argv: ["/usr/bin/fbdoom"] },
+        sdl2: { argv: ["/usr/bin/sdl2_demo"] },
+      };
+      `,
+    );
+    assert.throws(
+      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
+      /SNUCK_IN_TABLE/,
+    );
+  });
+});
+
+test("exempts candidate-evidence-vfs.ts's protected ABI-staging admission tables by name", () => {
+  withTempDir((directory) => {
+    writeFixture(
+      directory,
+      "apps/browser-demos/pages/kandelo/kernel-host/candidate-evidence-vfs.ts",
+      `
+      export type CandidateEvidenceLiveDemoId =
+        | "shell" | "node" | "nginx" | "nginx-php"
+        | "wordpress-sqlite" | "wordpress-mariadb" | "doom" | "modeset";
+      const LIVE_DEMO_BY_EVIDENCE_PROFILE = {
+        shell: "shell", doom: "doom", modeset: "modeset", node: "node",
+        nginx: "nginx", "nginx-php": "nginx-php",
+        "wordpress-sqlite": "wordpress-sqlite", "wordpress-mariadb": "wordpress-mariadb",
+      };
+      `,
+    );
+    assert.doesNotThrow(() => assertNoAppMachineIdentityTables(fakeCatalog, directory));
   });
 });

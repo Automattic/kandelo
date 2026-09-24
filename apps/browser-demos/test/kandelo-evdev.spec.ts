@@ -1,17 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
@@ -20,7 +8,7 @@ async function terminalText(page: Page): Promise<string> {
 test("Kandelo evdev demo forwards keystrokes + pointer through /dev/input/event{0,1}", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=evdev");
+  await gotoMachineOrSkip(page, "evdev");
 
   // The evdev_demo binary prints "ready:" once both /dev/input/event0
   // and /dev/input/event1 have been opened and EVIOCGNAME has succeeded

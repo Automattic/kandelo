@@ -27,13 +27,17 @@ import {
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS } from "../../images/vfs/lib/init/shell-binaries";
 import {
+  NCURSES_TERMINFO_RUNTIME_FILE,
+  registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
+  SHELL_PROFILE_SCRIPT_PATHS,
   type ShellLazyArchiveResolver,
 } from "../../images/vfs/scripts/shell-lazy-archives";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoInit,
   resolveDemoPresentation,
   validateKandeloDemoConfig,
 } from "../../web-libs/kandelo-session/src/demo-config";
@@ -215,6 +219,10 @@ function fixturePaths(root: string) {
   const bashPath = join(root, "bash.wasm");
   const fbdoomPath = join(root, "fbdoom.wasm");
   const modesetPath = join(root, "modeset.wasm");
+  const sdl2Path = join(root, "sdl2.wasm");
+  const evdevDemoPath = join(root, "evdev_demo.wasm");
+  const espeakNgPath = join(root, "espeak-ng.wasm");
+  const espeakNgDataPath = join(root, "espeak-ng-data.zip");
   const demoConfigPath = join(
     repoRoot,
     "packages/registry/shell/source-rootfs-shell-demo.json",
@@ -229,6 +237,15 @@ function fixturePaths(root: string) {
   );
   writeFileSync(fbdoomPath, new Uint8Array([0xfa, 0xbd, 0x00, 0x01]));
   writeFileSync(modesetPath, new Uint8Array([0x6d, 0x6f, 0x64, 0x65]));
+  writeFileSync(sdl2Path, new Uint8Array([0x73, 0x64, 0x6c, 0x32]));
+  writeFileSync(evdevDemoPath, new Uint8Array([0x65, 0x76, 0x64, 0x65]));
+  writeFileSync(espeakNgPath, new Uint8Array([0x65, 0x73, 0x70, 0x6b]));
+  writeFileSync(
+    espeakNgDataPath,
+    zipSync({
+      "en/en_dict": new TextEncoder().encode("espeak voice data fixture"),
+    }),
+  );
   const dependencyRoots = new Map<string, string>();
   for (const dependency of SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES) {
     const dir = join(root, "dependencies", dependency);
@@ -256,6 +273,19 @@ function fixturePaths(root: string) {
       }),
     );
   }
+  // WHY: populateTerminfoDatabase unpacks this eagerly (unlike the lazy
+  // archives above) and requires its one declared entry unconditionally.
+  writeFileSync(
+    join(
+      dependencyRoots.get(NCURSES_TERMINFO_RUNTIME_FILE.dependency)!,
+      NCURSES_TERMINFO_RUNTIME_FILE.resolverPath.split("/").at(-1)!,
+    ),
+    zipSync({
+      [NCURSES_TERMINFO_RUNTIME_FILE.requiredEntry]: new TextEncoder().encode(
+        "ncurses terminfo fixture",
+      ),
+    }),
+  );
   const resolveArtifact: ShellLazyArchiveResolver = (
     resolverPath,
     requestedDependency,
@@ -275,6 +305,10 @@ function fixturePaths(root: string) {
     bashPath,
     fbdoomPath,
     modesetPath,
+    sdl2Path,
+    evdevDemoPath,
+    espeakNgPath,
+    espeakNgDataPath,
     demoConfigPath,
     demoProfileOverlayPath,
     dependencyRoots,
@@ -348,7 +382,7 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*30$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*34$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",
@@ -427,6 +461,45 @@ describe("canonical source-rootfs shell", () => {
         fixture.label,
       ).toThrow(fixture.error);
     }
+  });
+
+  // WHY THIS ASSERTS AGAINST A BUILT IMAGE: the maker account's interactive
+  // identity (`/etc/profile.d/00-kandelo-shell.sh`) once shipped absent from
+  // this product for weeks while a unit test calling its registrar directly
+  // stayed green — the registrar was simply never reached by THIS builder, so
+  // every shell-family machine showed `-bash-5.2$` instead of `kandelo$`. A
+  // test that exercises a builder helper cannot catch that class of bug; only
+  // reading the bytes the product actually ships can.
+  //
+  // The expectation is derived from `registerShellProfileScripts`, not from a
+  // hand-written list, so a script added there is required here automatically.
+  it("ships every /etc/profile.d script in the built image", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const image = await buildSourceRootfsShellImage({
+      ...paths,
+      outFile: join(root, "profile-d.vfs.zst"),
+      sourceDateEpoch: "0",
+    });
+    const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
+
+    const expectedFs = MemoryFileSystem.create(new SharedArrayBuffer(MiB));
+    registerShellProfileScripts(expectedFs);
+    expect(SHELL_PROFILE_SCRIPT_PATHS).toContain(
+      "/etc/profile.d/00-kandelo-shell.sh",
+    );
+    for (const path of SHELL_PROFILE_SCRIPT_PATHS) {
+      expect(text(readVfsFile(fs, path)), path).toBe(
+        text(readVfsFile(expectedFs, path)),
+      );
+    }
+
+    // Name the one value a user sees, so a rewrite that kept the file but
+    // dropped the prompt still fails here.
+    expect(
+      text(readVfsFile(fs, "/etc/profile.d/00-kandelo-shell.sh")),
+    ).toContain("export PS1='kandelo$ '");
   });
 
   it("preserves ABI, capacity, and lazy identities while adding exact image-owned files", async () => {
@@ -510,6 +583,58 @@ describe("canonical source-rootfs shell", () => {
     );
     expect(fs.stat("/usr/local/bin/fbdoom").mode & 0o777).toBe(0o755);
     expect(fs.stat("/usr/local/bin/modeset").mode & 0o777).toBe(0o755);
+
+    // WHY: sdl2, evdev_demo, and espeak-ng were previously fetched from the
+    // page origin and written into the image at browser boot. An image the
+    // host has to complete after the fact is not self-describing, so this
+    // asserts they ship inside the built image itself.
+    expect(readVfsFile(fs, "/usr/local/bin/sdl2")).toEqual(
+      new Uint8Array(readFileSync(paths.sdl2Path)),
+    );
+    expect(fs.stat("/usr/local/bin/sdl2").mode & 0o777).toBe(0o755);
+    expect(readVfsFile(fs, "/usr/local/bin/evdev_demo")).toEqual(
+      new Uint8Array(readFileSync(paths.evdevDemoPath)),
+    );
+    expect(fs.stat("/usr/local/bin/evdev_demo").mode & 0o777).toBe(0o755);
+    expect(readVfsFile(fs, "/usr/bin/espeak-ng")).toEqual(
+      new Uint8Array(readFileSync(paths.espeakNgPath)),
+    );
+    expect(fs.stat("/usr/bin/espeak-ng").mode & 0o777).toBe(0o755);
+    // PATH_ESPEAK_DATA is compiled into the binary as /usr/share, so the
+    // voice-data zip must land unpacked rather than staying a lazy archive.
+    expect(text(readVfsFile(fs, "/usr/share/espeak-ng-data/en/en_dict"))).toBe(
+      "espeak voice data fixture",
+    );
+    // Assert byte-for-byte equality against the tracked source for one
+    // image shader and one sound shader: a loose "non-empty" check would
+    // pass for a truncated or stubbed preset, which is exactly the kind of
+    // silent corruption this composer must not introduce when it moves
+    // these files off the browser's Vite ?raw import path.
+    for (const shaderPath of [
+      "image/plasma.frag",
+      "sound/chord.frag",
+    ]) {
+      const expected = readFileSync(
+        join(repoRoot, "programs/sdl2/presets", shaderPath),
+        "utf8",
+      );
+      expect(
+        text(readVfsFile(fs, `/usr/share/shaders/${shaderPath}`)),
+        shaderPath,
+      ).toBe(expected);
+    }
+    for (const shaderPath of [
+      "/usr/share/shaders/image/plasma.frag",
+      "/usr/share/shaders/image/audio_bars.frag",
+      "/usr/share/shaders/image/tunnelwisp.frag",
+      "/usr/share/shaders/sound/tunnelwisp.frag",
+      "/usr/share/shaders/sound/sine.frag",
+      "/usr/share/shaders/sound/fm_bell.frag",
+      "/usr/share/shaders/sound/noise_sweep.frag",
+      "/usr/share/shaders/sound/chord.frag",
+    ]) {
+      expect(readVfsFile(fs, shaderPath).length, shaderPath).toBeGreaterThan(0);
+    }
     expect(text(readVfsFile(fs, "/etc/gitconfig"))).toContain(
       "defaultBranch = main",
     );
@@ -532,12 +657,10 @@ describe("canonical source-rootfs shell", () => {
     const demo = parseKandeloDemoConfig(text(demoBytes));
     expect(demo).not.toBeNull();
     validateKandeloDemoConfig(demo!);
-    expect(
-      resolveDemoPresentation(demo!, "shell")?.autoCommand,
-    ).toBeUndefined();
-    expect(resolveDemoPresentation(demo!, "doom")?.autoCommand).toBe(
-      "/usr/local/bin/fbdoom -iwad /doom1.wad",
-    );
+    expect(resolveDemoInit(demo!, "shell")).toBeNull();
+    expect(resolveDemoInit(demo!, "doom")).toEqual({
+      shellCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+    });
     expect(resolveDemoPresentation(demo!, "doom")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
       "framebuffer",
@@ -550,12 +673,11 @@ describe("canonical source-rootfs shell", () => {
         url: DOOM_WAD_URL,
         sha256: DOOM_WAD_SHA256,
         mode: 0o644,
-        devCorsProxy: true,
       },
     ]);
-    expect(resolveDemoPresentation(demo!, "modeset")?.autoCommand).toBe(
-      "/usr/local/bin/modeset",
-    );
+    expect(resolveDemoInit(demo!, "modeset")).toEqual({
+      shellCommand: "/usr/local/bin/modeset",
+    });
     expect(resolveDemoPresentation(demo!, "modeset")?.runningPrimary).toEqual([
       "kms",
       "terminal",
@@ -746,8 +868,8 @@ describe("canonical source-rootfs shell", () => {
     writeFileSync(
       demoProfileOverlayPath,
       readFileSync(paths.demoProfileOverlayPath, "utf8").replace(
-        '"autoCommand": "/usr/local/bin/modeset"',
-        '"autoCommand": "/usr/local/bin/not-modeset"',
+        '"shellCommand": "/usr/local/bin/modeset"',
+        '"shellCommand": "/usr/local/bin/not-modeset"',
       ),
     );
 
@@ -795,6 +917,9 @@ describe("canonical source-rootfs shell", () => {
     const bashDir = join(root, "bash");
     const fbdoomDir = join(root, "fbdoom");
     const modesetDir = join(root, "modeset");
+    const sdl2Dir = join(root, "sdl2-demo");
+    const evdevDemoDir = join(root, "evdev-demo");
+    const espeakNgDir = join(root, "espeak-ng");
     const toolDir = join(root, "tools");
     const extendedDependencyDirs = new Map<string, string>();
     for (const dir of [
@@ -804,6 +929,9 @@ describe("canonical source-rootfs shell", () => {
       bashDir,
       fbdoomDir,
       modesetDir,
+      sdl2Dir,
+      evdevDemoDir,
+      espeakNgDir,
       toolDir,
     ]) {
       ensureDirRecursiveOnHost(dir);
@@ -817,6 +945,10 @@ describe("canonical source-rootfs shell", () => {
     writeFileSync(join(bashDir, "bash.wasm"), "bash");
     writeFileSync(join(fbdoomDir, "fbdoom.wasm"), "fbdoom");
     writeFileSync(join(modesetDir, "modeset.wasm"), "modeset");
+    writeFileSync(join(sdl2Dir, "sdl2.wasm"), "sdl2");
+    writeFileSync(join(evdevDemoDir, "evdev_demo.wasm"), "evdev_demo");
+    writeFileSync(join(espeakNgDir, "espeak-ng.wasm"), "espeak-ng");
+    writeFileSync(join(espeakNgDir, "espeak-ng-data.zip"), "espeak-ng-data");
     const logPath = join(root, "composer.log");
     const fakeNode = join(toolDir, "node");
     writeFileSync(
@@ -876,6 +1008,9 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
         WASM_POSIX_DEP_BASH_DIR: bashDir,
         WASM_POSIX_DEP_FBDOOM_DIR: fbdoomDir,
         WASM_POSIX_DEP_MODESET_DIR: modesetDir,
+        WASM_POSIX_DEP_SDL2_DEMO_DIR: sdl2Dir,
+        WASM_POSIX_DEP_EVDEV_DEMO_DIR: evdevDemoDir,
+        WASM_POSIX_DEP_ESPEAK_NG_DIR: espeakNgDir,
         ...dependencyEnv,
       },
       stdio: "pipe",
@@ -890,6 +1025,12 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(`--bash ${bashDir}/bash.wasm`);
     expect(invocation).toContain(`--fbdoom ${fbdoomDir}/fbdoom.wasm`);
     expect(invocation).toContain(`--modeset ${modesetDir}/modeset.wasm`);
+    expect(invocation).toContain(`--sdl2 ${sdl2Dir}/sdl2.wasm`);
+    expect(invocation).toContain(`--evdev-demo ${evdevDemoDir}/evdev_demo.wasm`);
+    expect(invocation).toContain(`--espeak-ng ${espeakNgDir}/espeak-ng.wasm`);
+    expect(invocation).toContain(
+      `--espeak-ng-data ${espeakNgDir}/espeak-ng-data.zip`,
+    );
     expect(invocation).toContain(
       `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,
     );

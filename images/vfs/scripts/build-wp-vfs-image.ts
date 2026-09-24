@@ -27,10 +27,7 @@ import {
   type DinitService,
 } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
-import {
-  webPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import {
   populateSmtpCaptureConfig,
   smtpCaptureService,
@@ -429,13 +426,7 @@ export async function buildWordPressVfsImage(
       "/var/www/html/wp-includes/SimplePie/autoloader.php",
     ],
   });
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      "wordpress-sqlite": { presentation: webPresentation() },
-      wordpress: { presentation: webPresentation() },
-    },
-  });
+  writeTrackedDemoConfig(fs, "packages/registry/wordpress/wordpress-demo.json");
 
   // Save image
   await saveShellDerivedVfsImage(fs, inputs.outputPath);

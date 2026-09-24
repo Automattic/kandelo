@@ -20,13 +20,6 @@ import {
 } from "../src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../src/demo-config-vfs";
 import {
-  DOOM_COMMAND,
-  builtinDemoAssets,
-  builtinDemoGuide,
-  builtinDemoPresentation,
-  nodeGuide,
-} from "../src/demo-guides";
-import {
   experimentalTerminalSessionPolicy,
   parseExperimentalTerminalSession,
 } from "../src/experimental-terminal-session";
@@ -1885,23 +1878,24 @@ describe("Kandelo demo config", () => {
     });
   });
 
-  it("resolves profile presentation over image defaults", () => {
+  it("resolves the selected profile's presentation, and only that profile's", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      },
       profiles: {
+        shell: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["terminal", "syslog"],
+            terminalAccess: "primary",
+            internalsAccess: "drawer",
+          },
+        },
         doom: {
           presentation: {
             bootPrimary: "syslog",
             runningPrimary: ["framebuffer", "terminal", "syslog"],
             terminalAccess: "drawer",
             internalsAccess: "drawer",
-            autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
             touchControls: true,
           },
         },
@@ -1912,8 +1906,9 @@ describe("Kandelo demo config", () => {
     const presentation = resolveDemoPresentation(config!, "doom");
     expect(presentation.runningPrimary).toEqual(["framebuffer", "terminal", "syslog"]);
     expect(presentation.terminalAccess).toBe("drawer");
-    expect(presentation.autoCommand).toContain("fbdoom");
     expect(presentation.touchControls).toBe(true);
+    // A sibling profile's block is not a fallback for this one.
+    expect(resolveDemoPresentation(config!, "unknown")).toBeNull();
   });
 
   it("throws when profile metadata is incomplete", () => {
@@ -1991,21 +1986,19 @@ describe("Kandelo demo config", () => {
   it("resolves and validates profile assets", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      assets: [
-        { path: "/common.dat", url: "https://example.invalid/common.dat" },
-      ],
       profiles: {
         doom: {
           assets: [
+            { path: "/common.dat", url: "https://example.invalid/common.dat" },
             {
               path: "/doom1.wad",
               url: "https://example.invalid/doom1.wad",
               sha256: "abc123",
               mode: 420,
-              devCorsProxy: true,
             },
           ],
         },
+        shell: {},
       },
     }));
     expect(config).not.toBeNull();
@@ -2017,9 +2010,10 @@ describe("Kandelo demo config", () => {
         url: "https://example.invalid/doom1.wad",
         sha256: "abc123",
         mode: 420,
-        devCorsProxy: true,
       },
     ]);
+    // Assets belong to the profile that declares them; no sibling inherits.
+    expect(resolveDemoAssets(config!, "shell")).toEqual([]);
   });
 
   it("throws when profile assets use a relative path", () => {
@@ -2069,50 +2063,24 @@ describe("Kandelo demo config", () => {
     expect(resolveDemoGuide(config!, "missing")).toBeNull();
   });
 
-  it("provides built-in Node guide metadata for stale VFS images", () => {
-    const guide = builtinDemoGuide("node");
-
-    expect(guide).toEqual(nodeGuide());
-    expect(guide?.title).toBe("SpiderMonkey Node.js demo");
-    expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("install-cowsay");
-    expect(builtinDemoGuide("wordpress-sqlite")?.groups?.[0].actions[0]).toMatchObject({
-      id: "wp-admin-login",
-      kind: "web.wordpressLogin",
-    });
-  });
-
-  it("provides built-in presentation and assets for stale VFS images", () => {
-    expect(builtinDemoPresentation("shell")).toMatchObject({
-      runningPrimary: ["terminal", "syslog"],
-    });
-    expect(builtinDemoPresentation("wordpress-mariadb")).toMatchObject({
-      runningPrimary: ["web", "terminal", "syslog"],
-    });
-    expect(builtinDemoPresentation("doom")).toMatchObject({
-      runningPrimary: ["framebuffer", "terminal", "syslog"],
-      autoCommand: DOOM_COMMAND,
-    });
-
-    expect(builtinDemoAssets("doom")).toEqual([
-      expect.objectContaining({ path: "/doom1.wad", devCorsProxy: true }),
-    ]);
-    expect(builtinDemoAssets("node")).toEqual([]);
-  });
-
   it("rejects duplicate guide action ids", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      guide: {
-        title: "Bad guide",
-        groups: [
-          {
-            title: "Actions",
-            actions: [
-              { id: "dup", label: "One", kind: "terminal.run", payload: "echo one" },
-              { id: "dup", label: "Two", kind: "terminal.write", payload: "two\n" },
+      profiles: {
+        shell: {
+          guide: {
+            title: "Bad guide",
+            groups: [
+              {
+                title: "Actions",
+                actions: [
+                  { id: "dup", label: "One", kind: "terminal.run", payload: "echo one" },
+                  { id: "dup", label: "Two", kind: "terminal.write", payload: "two\n" },
+                ],
+              },
             ],
           },
-        ],
+        },
       },
     }));
     expect(config).not.toBeNull();

@@ -1,16 +1,28 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
+  bindImageOwnedRuntimeUrls,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
+import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_URL_MU_PLUGIN,
+  patchWordPressMysqliPersistentSource,
+  renderWordPressConfig,
+  wordpressConfigTemplate,
+  type WordPressDatabaseKind,
+} from "../../../lib/init/wordpress-runtime-config";
 import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
 import {
+  WORDPRESS_MARIADB_READY_FILE,
   WORDPRESS_MARIADB_READY_PATH,
+  WORDPRESS_MARIADB_READY_PHP,
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
@@ -18,8 +30,15 @@ import {
   resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
 import {
+  finalizeKernelOwnedImage,
   settleWebKitReclaim,
+  trackTransientImageBuffer,
 } from "../../../lib/kernel-owned-boot";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+  writeVfsFile,
+} from "../../../../../host/src/vfs/image-helpers";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import {
   LiveKernelHost,
@@ -32,32 +51,54 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
+import { resolveInitArgv } from "../../../../../web-libs/kandelo-session/src/init-boot-identity";
 import {
   materializeBootInputs,
+  type BootInputManifest,
 } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
 import {
+  KANDELO_DEMO_CONFIG_PATH,
   genericDemoPresentation,
+  resolveDefaultProfileId,
+  resolveDemoAssets,
+  resolveDemoDisplay,
   resolveDemoGuide,
+  resolveDemoIdentity,
   resolveDemoIngest,
+  resolveDemoInit,
   resolveDemoPresentation,
+  resolveDemoRuntime,
+  resolveDemoWeb,
+  type DemoDisplayConfig,
+  type DemoIdentityConfig,
+  type DemoInitConfig,
+  type DemoRuntimeConfig,
+  type DemoWebConfig,
+  type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
+import { readDinitBootTargets } from "../../../../../web-libs/kandelo-session/src/dinit-boot-targets";
 import {
+  parseGalleryRoster,
+  resolveEntryAvailability,
+  type EntryAvailability,
+  type RosterEntry,
+} from "../../../../../web-libs/kandelo-session/src/gallery-roster";
+import {
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+  MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
   experimentalTerminalSessionPolicy,
+  parseExperimentalTerminalSession,
+  type ExperimentalTerminalProgram,
+  type ExperimentalTerminalSession,
 } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
   CUSTOM_VFS_PROFILE_MAX_BYTES,
-  DEFAULT_VFS_PROFILE_MAX_BYTES,
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
-import {
-  builtinDemoGuide,
-  builtinDemoPresentation,
-} from "../../../../../web-libs/kandelo-session/src/demo-guides";
-import { PRESET_LIBRARY } from "../presets";
 import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
@@ -66,12 +107,8 @@ import {
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
 } from "../url-state";
-import { failOn, optionalBinaryUrl } from "./binary-urls";
-import { composeImageInWorker } from "./image-composer-client";
-import {
-  detectRuntimeMemoryProfile,
-  type RuntimeMemoryProfile,
-} from "@host/runtime-memory-profile";
+import { TRACKED_DEMO_CONFIG_BY_PRODUCT } from "./tracked-demo-configs";
+import galleryRosterSource from "../gallery-roster.json?raw";
 import { verifyImportedSealsForCurrentBoot } from "./boot-current-boundary";
 import {
   candidateEvidenceBootDescriptor,
@@ -86,6 +123,7 @@ import {
   type ProtectedCandidatePagesVfsPlacement,
 } from "./candidate-evidence-vfs";
 import {
+  optionalDemoVfsIsBuilt,
   resolveOptionalDemoVfsUrl,
   type OptionalDemoVfsImage,
 } from "./optional-demo-vfs";
@@ -98,14 +136,10 @@ import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
 import { createCoiReloadSessionState } from "./coi-reload-session-state";
-import {
-  DinitBootStatusTracker,
-  REQUIRED_DINIT_SERVICES,
-} from "./dinit-boot-status";
+import { DinitBootStatusTracker } from "./dinit-boot-status";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
-import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 // @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
 import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
 
@@ -119,8 +153,84 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
     (url, init) => fetch(url, init),
   );
 
+const OPTIONAL_BINARY_URLS = {
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
+    query: "?url",
+    import: "default",
+  }),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+} as Record<string, () => Promise<string>>;
+
+async function optionalBinaryUrl(
+  relPaths: string[],
+  label: string,
+): Promise<string> {
+  for (const relPath of relPaths) {
+    const loader = OPTIONAL_BINARY_URLS[relPath];
+    if (loader) return loader();
+  }
+  throw new Error(
+    `${label} is not built. Run: ./run.sh build programs, ` +
+      `or for package-owned binaries: ` +
+      `cargo xtask build-deps resolve <package>`,
+  );
+}
+
 const HTTP_PORT = 8080;
-const PHP_FPM_PORT = 9000;
 const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
 const MARIADB_READY_SERVICE = "mariadb-ready";
 const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
@@ -136,19 +246,80 @@ const DEMO_GID = 1000;
 const DEMO_USER = "maker";
 const DEMO_HOME = "/home/maker";
 
+/**
+ * The accounts the host can name by construction: uid 0, and the `maker`
+ * demo account every Kandelo image is built with
+ * (`configureDemoLogin`, host/src/demo-login-image.ts, and `ensureDemoHomes`
+ * below). For any OTHER uid an image declares, the host states no
+ * HOME/USER/LOGNAME rather than inventing one — it does not know that
+ * account's home, and guessing would put a wrong path in pid 1's
+ * environment. Such an image owns that part of its environment through its
+ * own profile scripts.
+ */
+const KNOWN_PID1_ACCOUNTS = new Map<number, { user: string; home: string }>([
+  [ROOT_UID, { user: "root", home: ROOT_HOME }],
+  [DEMO_UID, { user: DEMO_USER, home: DEMO_HOME }],
+]);
+
+// pid 1's environment, as HOST POLICY rather than machine identity.
+//
+// A machine booted through `init.target` gets its real per-service
+// environment from the image's own dinit env-file
+// (`/etc/dinit.d/env`, see images/vfs/scripts/dinit-image-helpers.ts), so
+// dinit itself needs nothing from the host. A machine booted through
+// `init.program` has no service manager at all (see
+// images/vfs/products/browser-ruby-todo.toml, which deliberately ships no
+// dinit tree), so nothing inside the image would otherwise establish the
+// POSIX baseline every program expects. The host supplies that baseline
+// uniformly, for every direct-program machine, never per machine id — and it
+// is deliberately identical to the image-owned dinit baseline so the two
+// shapes agree. The account part follows the uid the IMAGE declared, because
+// `init.program` machines no longer all run as root.
+function pid1BaselineEnv(uid: number): string[] {
+  const account = KNOWN_PID1_ACCOUNTS.get(uid);
+  return [
+    ...(account === undefined ? [] : [
+      `HOME=${account.home}`,
+      `USER=${account.user}`,
+      `LOGNAME=${account.user}`,
+    ]),
+    "TMPDIR=/tmp",
+    "TERM=xterm-256color",
+    "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+    "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+    "SSL_CERT_DIR=/etc/ssl/certs",
+  ];
+}
+
+/**
+ * The two env vars no baked artifact can know: they are computed from THIS
+ * page's deployment prefix and protocol at boot time. Supplied to every
+ * machine's init uniformly rather than to a list of WordPress ids, so the
+ * host holds no machine identities. Unused names are inert.
+ */
+function hostSuppliedInitEnv(): string[] {
+  return [`WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`];
+}
+
+/**
+ * The single launcher that turns an image-declared dinit TARGET into a
+ * command. `demo.json` names which target to bring up; composing the
+ * `dinit --container` invocation is the host's job, and it is one constant
+ * shared by every dinit machine rather than an argv copied per machine.
+ */
+function dinitContainerArgv(target: string): string[] {
+  return ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", target];
+}
+
 class BootSuperseded extends Error {
   constructor() {
     super("boot superseded");
   }
 }
 
-type LiveVfsImage =
-  "shell" | "node" | "nginx" | "nginx-php" | "nginx-python" | "wordpress" | "lamp" | "ruby-todo";
-
 type PagesVfsProductId =
   | "platform-rootfs"
   | "browser-main-shell"
-  | "browser-node"
   | "browser-nginx"
   | "browser-nginx-php"
   | "browser-nginx-python"
@@ -156,49 +327,39 @@ type PagesVfsProductId =
   | "browser-lamp"
   | "browser-ruby-todo";
 
-type LiveVfsSource =
-  | { kind: "url"; productId: PagesVfsProductId; url: string }
-  | { kind: "optional-demo"; image: OptionalDemoVfsImage; productId: PagesVfsProductId }
+/** Every product the gallery can list, i.e. every one except the kernel's
+ *  own platform rootfs. */
+type GalleryProductId = Exclude<PagesVfsProductId, "platform-rootfs">;
+
+/**
+ * Where a product's VFS bytes come from in THIS deployment.
+ *
+ * This is artifact plumbing, not machine identity: it maps a product id to
+ * the bytes on disk (or the Pages activation that serves them) and says
+ * nothing about what machine those bytes contain. Everything a machine IS
+ * comes from its own `/etc/kandelo/demo.json`.
+ */
+type VfsProductSource =
+  | { kind: "url"; productId: GalleryProductId; url: string }
+  | {
+    kind: "optional-demo";
+    image: OptionalDemoVfsImage;
+    productId: GalleryProductId;
+  }
   | {
     kind: "optional-binary";
     label: string;
-    productId: PagesVfsProductId;
+    productId: GalleryProductId;
     relPaths: string[];
   };
 
-type ShellProfile = "default" | "node";
-type InitEnvProfile = "service" | "python-service" | "wordpress";
-
-interface LiveDemoSpec {
-  image: LiveVfsImage;
-  shell?: ShellProfile;
-  autoCommand?: string;
-  memoryPages?: number;
-  maxVfsByteLength?: number;
-  network?: boolean;
-  features?: string[];
-  init?: {
-    argv: string[];
-    env?: InitEnvProfile;
-    cwd?: string;
-    programUrl?: string;
-    uid?: number;
-    gid?: number;
-    maxWorkers?: number;
-    maxMemoryPages?: number;
-    web?: {
-      requiredPorts: number[];
-      requiredServices?: string[];
-      probeHttp?: boolean;
-      probePath?: string;
-    };
-  };
-}
-
-const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
-  shell: { kind: "url", productId: "browser-main-shell", url: shellVfsUrl },
-  node: { kind: "optional-demo", image: "node", productId: "browser-node" },
-  nginx: {
+const VFS_PRODUCTS: Record<GalleryProductId, VfsProductSource> = {
+  "browser-main-shell": {
+    kind: "url",
+    productId: "browser-main-shell",
+    url: shellVfsUrl,
+  },
+  "browser-nginx": {
     kind: "optional-binary",
     label: "nginx-vfs.vfs.zst",
     productId: "browser-nginx",
@@ -207,7 +368,7 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
       "../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst",
     ],
   },
-  "nginx-php": {
+  "browser-nginx-php": {
     kind: "optional-binary",
     label: "nginx-php-vfs.vfs.zst",
     productId: "browser-nginx-php",
@@ -216,7 +377,7 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
       "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
     ],
   },
-  "nginx-python": {
+  "browser-nginx-python": {
     kind: "optional-binary",
     label: "nginx-python-vfs.vfs.zst",
     productId: "browser-nginx-python",
@@ -225,13 +386,17 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
       "../../../../../binaries/programs/wasm32/nginx-python-vfs.vfs.zst",
     ],
   },
-  wordpress: {
+  "browser-wordpress": {
     kind: "optional-demo",
     image: "wordpress",
     productId: "browser-wordpress",
   },
-  lamp: { kind: "optional-demo", image: "lamp", productId: "browser-lamp" },
-  "ruby-todo": {
+  "browser-lamp": {
+    kind: "optional-demo",
+    image: "lamp",
+    productId: "browser-lamp",
+  },
+  "browser-ruby-todo": {
     kind: "optional-binary",
     label: "ruby-todo-vfs.vfs.zst",
     productId: "browser-ruby-todo",
@@ -242,31 +407,53 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
   },
 };
 
-const DINIT_NGINX_ARGV = [
-  "/sbin/dinit",
-  "--container",
-  "-p",
-  "/tmp/dinitctl",
-  "nginx",
-];
+/**
+ * HOST POLICY for how large a product's live filesystem may grow. An image
+ * asks for nothing here; the host decides, so an untrusted `?vfs=` image
+ * cannot declare its own ceiling. The base shell image carries the full
+ * utility set, so it gets the larger allowance; everything derived from it
+ * gets the shell-derived allowance; anything the host does not recognise
+ * gets the custom-image allowance.
+ */
+function maxVfsByteLengthForProduct(
+  productId: GalleryProductId | null,
+): number {
+  if (productId === null) return CUSTOM_VFS_PROFILE_MAX_BYTES;
+  return productId === "browser-main-shell"
+    ? MAIN_SHELL_VFS_PROFILE_MAX_BYTES
+    : SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
+}
 
-const LIVE_DEMO_IDS = [
-  "shell",
-  "node",
-  "nginx",
-  "nginx-php",
-  "nginx-python",
-  "ruby-todo",
-  "wordpress-sqlite",
-  "wordpress-mariadb",
-  "doom",
-  "modeset",
-  "sdl2",
-  "evdev",
-  "espeak",
-] as const;
+/**
+ * HOST POLICY ceilings clamped over `runtime.requests` in `demo.json`. The
+ * image REQUESTS; the host decides. `demo-config.ts` already rejects values
+ * above its own parse-time ceiling; these are the narrower runtime limits
+ * this deployment is willing to hand out.
+ */
+const HOST_MAX_WORKERS = 24;
+const HOST_MAX_MEMORY_PAGES = 16384;
+const HOST_DEFAULT_WORKERS = 4;
+const HOST_DEFAULT_DESCRIPTOR_MEMORY_PAGES = 2048;
 
-type LiveDemoId = (typeof LIVE_DEMO_IDS)[number];
+function clampRequest(
+  requested: number | undefined,
+  ceiling: number,
+): number | undefined {
+  return requested === undefined ? undefined : Math.min(requested, ceiling);
+}
+
+/**
+ * The curated gallery roster. Membership only: every displayed byte comes
+ * from the named product's own tracked/baked `demo.json`, never from here,
+ * and an image cannot put itself on this list.
+ */
+const GALLERY_ROSTER = parseGalleryRoster(galleryRosterSource);
+
+function galleryProductSource(productId: string): VfsProductSource | undefined {
+  return Object.hasOwn(VFS_PRODUCTS, productId)
+    ? VFS_PRODUCTS[productId as GalleryProductId]
+    : undefined;
+}
 
 // Boot-resource reclamation (worker-owned live filesystems and transient
 // image-build buffers) lives in the shared helper so every kernel-owned demo
@@ -275,219 +462,61 @@ async function settleAfterBootResourcesReleased(): Promise<void> {
   await settleWebKitReclaim();
 }
 
-const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
-  shell: {
-    image: "shell",
-  },
-  node: {
-    image: "node",
-    shell: "node",
-    memoryPages: 4096,
-    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    network: true,
-    features: ["js-workers"],
-  },
-  nginx: {
-    image: "nginx",
-    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    network: true,
-    init: {
-      argv: DINIT_NGINX_ARGV,
-      env: "service",
-      programUrl: dinitWasmUrl,
-      maxWorkers: 6,
-      web: {
-        requiredPorts: [HTTP_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES.nginx],
-      },
-    },
-  },
-  "nginx-php": {
-    image: "nginx-php",
-    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    network: true,
-    init: {
-      argv: DINIT_NGINX_ARGV,
-      env: "service",
-      programUrl: dinitWasmUrl,
-      maxWorkers: 12,
-      web: {
-        requiredPorts: [HTTP_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-php"]],
-      },
-    },
-  },
-  "nginx-python": {
-    image: "nginx-python",
-    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    network: true,
-    init: {
-      argv: DINIT_NGINX_ARGV,
-      env: "python-service",
-      programUrl: dinitWasmUrl,
-      maxWorkers: 12,
-      web: {
-        requiredPorts: [HTTP_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-python"]],
-      },
-    },
-  },
-  "ruby-todo": {
-    image: "ruby-todo",
-    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    network: true,
-    init: {
-      // Single-process server: boot the resident Ruby directly as init (no
-      // dinit needed for one long-running process).
-      argv: ["/usr/bin/ruby", "/var/lib/todo/server.rb"],
-      env: "service",
-      cwd: "/var/lib/todo",
-      maxWorkers: 12,
-      maxMemoryPages: 4096,
-      web: {
-        requiredPorts: [HTTP_PORT],
-      },
-    },
-  },
-  "wordpress-sqlite": {
-    image: "wordpress",
-    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    network: true,
-    init: {
-      argv: DINIT_NGINX_ARGV,
-      env: "wordpress",
-      programUrl: dinitWasmUrl,
-      maxWorkers: 12,
-      maxMemoryPages: 4096,
-      web: {
-        requiredPorts: [HTTP_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES["wordpress-sqlite"]],
-      },
-    },
-  },
-  "wordpress-mariadb": {
-    image: "lamp",
-    // MariaDB's Aria recovery can grow beyond the 4096-page cap used by
-    // lighter PHP presets.
-    memoryPages: 16384,
-    maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    network: true,
-    init: {
-      argv: DINIT_NGINX_ARGV,
-      env: "wordpress",
-      programUrl: dinitWasmUrl,
-      maxWorkers: 24,
-      maxMemoryPages: 16384,
-      web: {
-        requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
-        requiredServices: [...REQUIRED_DINIT_SERVICES["wordpress-mariadb"]],
-        probeHttp: true,
-        probePath: WORDPRESS_MARIADB_READY_PATH,
-      },
-    },
-  },
-  doom: {
-    image: "shell",
-    features: ["framebuffer"],
-  },
-  modeset: {
-    image: "shell",
-    features: ["kms"],
-  },
-  sdl2: {
-    image: "shell",
-    features: ["kms"],
-  },
-  evdev: {
-    image: "shell",
-  },
-  espeak: {
-    image: "shell",
-  },
-};
-
-const DEFAULT_DEMO_FOR_VFS_IMAGE: Record<LiveVfsImage, LiveDemoId> = {
-  shell: "shell",
-  node: "node",
-  nginx: "nginx",
-  "nginx-php": "nginx-php",
-  "nginx-python": "nginx-python",
-  "ruby-todo": "ruby-todo",
-  wordpress: "wordpress-sqlite",
-  lamp: "wordpress-mariadb",
-};
-
-const DEMO_ALIASES: Record<string, LiveDemoId> = {
-  spidermonkey: "node",
-  "spidermonkey-node": "node",
-  wordpress: "wordpress-sqlite",
-  lamp: "wordpress-mariadb",
-};
-
-const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
-  "nginx",
-  "nginx-php",
-  "nginx-python",
-  "wordpress-sqlite",
-  "wordpress-mariadb",
-]);
-
+/**
+ * Everything the host knows about the machine it is ABOUT to boot, before
+ * that machine's image has been read.
+ *
+ * Deliberately almost empty: which image, which profile of it was asked for,
+ * and the host policy that applies to those bytes. What the machine IS — its
+ * init, features, resource requests, panes, guide, readiness probe — comes
+ * out of the image's own `/etc/kandelo/demo.json` inside `bootProfile`, and
+ * from nowhere else.
+ */
 interface LiveProfile {
-  id: string;
-  /** Canonical built-in image family, or null for custom images. */
-  image: LiveVfsImage | null;
+  /**
+   * The profile id the caller asked for, or `null` to boot the image's own
+   * declared `defaultProfile`. An id here that the image does not declare is
+   * a LOUD failure, never a silent fall back to the default.
+   */
+  requestedProfileId: string | null;
+  /** Which channel supplied `requestedProfileId`, so a rejection can name
+   *  the thing the caller should fix. */
+  requestedProfileSource:
+    | "&profile="
+    | "the boot descriptor"
+    | null;
+  /** Resolved product id when the image is one this deployment ships. */
+  productId: GalleryProductId | null;
   vfsUrl: string;
-  vfsSource?: LiveVfsSource;
+  vfsSource?: VfsProductSource;
   candidateEvidence?: InjectedProtectedCandidateVfsV1;
   candidateVfsPlacement?: ProtectedCandidatePagesVfsPlacement;
   descriptor: BootDescriptor;
-  shell: ShellProfile;
   maxVfsByteLength: number;
-  maxMemoryPages?: number;
-  autoCommand?: string;
-  fallbackPresentation?: DemoPresentation;
-  init?: {
-    argv: string[];
-    env?: string[];
-    cwd?: string;
-    programUrl?: string;
-    uid?: number;
-    gid?: number;
-    maxWorkers?: number;
-    maxMemoryPages?: number;
-    web?: {
-      label: string;
-      requiredPorts: number[];
-      requiredServices?: string[];
-      probeHttp: boolean;
-      probePath?: string;
-    };
-  };
+  /** App-level dev toggle (`?fb=test`). Explicitly NOT part of demo.json. */
   framebufferTest: boolean;
-  /**
-   * Stage the SDL2 GLSL playground at `/usr/local/bin/sdl2` with its
-   * shader presets, attach a `BrowserInputSource` for the keyboard and
-   * wheel (the Modeset pane owns the pointer through `sendPointerAbs`),
-   * and run the binary from bash. Audio rides the /dev/dsp path every
-   * other sound demo uses.
-   */
-  sdl2Demo: boolean;
-  /**
-   * Stage `evdev_demo` into `/usr/local/bin`, attach a `BrowserInputSource`
-   * to the window so keyboard/pointer events flow into the kernel's
-   * `/dev/input/event{0,1}`, and run the binary from bash so its event
-   * log streams to the user's Shell pane.
-   */
-  evdevDemo: boolean;
-  /**
-   * Spawn `espeak-ng "..."` from the booted shell. espeak-ng links
-   * upstream pcaudiolib built with only its OSS backend, so
-   * `create_audio_device_object` falls through to `/dev/dsp` and a
-   * single binary invocation produces audible synthesised speech
-   * without any host-side pipeline. The binary + data dir are baked
-   * into the image via `stageEspeakRuntime`.
-   */
-  espeakDemo: boolean;
+}
+
+/**
+ * The machine, as the image itself declares it. Every field here was read
+ * out of the booting image's `/etc/kandelo/demo.json`.
+ */
+interface ImageMachine {
+  profileId: string;
+  identity: DemoIdentityConfig | null;
+  runtime: DemoRuntimeConfig;
+  init: DemoInitConfig | null;
+  web: DemoWebConfig | null;
+  display: DemoDisplayConfig | null;
+}
+
+/** How the host launches the machine's pid 1. */
+interface InitLaunch {
+  argv: string[];
+  cwd: string;
+  uid: number;
+  gid: number;
+  env: string[];
 }
 
 interface WebReadinessState {
@@ -519,7 +548,34 @@ const COI_RELOAD_SESSION_STATE = createCoiReloadSessionState(
   SW_SCOPE,
   sessionStorage,
 );
-const PHP_FPM_WORKERS = 6;
+/**
+ * Read the `?memoryProfile=` dev override from the page URL. Passed through to
+ * `BrowserKernel` (which otherwise auto-detects) and used for app-side sizing
+ * below, so one query parameter drives the whole machine's memory posture —
+ * e.g. `?memoryProfile=constrained` reproduces the iOS budget on a desktop.
+ * An unknown id fails loudly in `detectRuntimeMemoryProfile`.
+ */
+function memoryProfileOverride(): string | undefined {
+  return new URLSearchParams(location.search).get("memoryProfile") ?? undefined;
+}
+
+const HOST_MEMORY_PROFILE = detectRuntimeMemoryProfile(
+  typeof navigator === "undefined"
+    ? {}
+    : {
+      userAgent: navigator.userAgent,
+      maxTouchPoints: navigator.maxTouchPoints,
+    },
+  memoryProfileOverride(),
+);
+
+// Sized to the device's memory budget, not a constant: each static php-fpm
+// child is a full process address space, and on WebKit a declared memory
+// ceiling is charged against the ~6 GiB iOS reservation pool at construction.
+// Six workers fit the desktop pool; the constrained profile's smaller pool
+// only fits four — the difference between the nginx-php demo booting and
+// Safari throwing "Out of memory" on iOS.
+const PHP_FPM_WORKERS = HOST_MEMORY_PROFILE.preforkServiceProcesses;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -536,7 +592,14 @@ slowlog = /dev/null
 request_slowlog_trace_depth = 0
 `;
 
-const SHELL_ENV: string[] = [
+// fbtest is spawned directly by path+bytes (see spawnLazy below), not
+// through the login/bash path that sources /etc/profile.d, so it still
+// needs an explicit env from the caller. Every other shell and service
+// identity now comes entirely from the image: the base shell's own
+// /etc/profile.d/00-kandelo-shell.sh and its siblings (see
+// shell-lazy-archives.ts) cover the interactive shells; dinit's
+// per-service env-file covers the service demos.
+const FBTEST_ENV: string[] = [
   `HOME=${DEMO_HOME}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
@@ -544,78 +607,19 @@ const SHELL_ENV: string[] = [
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
   `USER=${DEMO_USER}`,
   `LOGNAME=${DEMO_USER}`,
-  "PS1=kandelo$ ",
-  `HISTFILE=${DEMO_HOME}/.bash_history`,
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
 ];
-
-const NODE_SHELL_ENV: string[] = [
-  `HOME=${DEMO_HOME}`,
-  `PWD=${DEMO_HOME}`,
-  "TMPDIR=/tmp",
-  "TERM=xterm-256color",
-  "LANG=en_US.UTF-8",
-  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-  `USER=${DEMO_USER}`,
-  `LOGNAME=${DEMO_USER}`,
-  "PS1=spidermonkey-node$ ",
-  `HISTFILE=${DEMO_HOME}/.bash_history`,
-  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-  "SSL_CERT_DIR=/etc/ssl/certs",
-  "npm_config_cache=/tmp/.npm-cache",
-  "npm_config_registry=https://registry.npmjs.org/",
-  "npm_config_fund=false",
-  "npm_config_audit=false",
-  "npm_config_progress=false",
-  "npm_config_update_notifier=false",
-  "NPM_CONFIG_FUND=false",
-  "NPM_CONFIG_AUDIT=false",
-  "NPM_CONFIG_PROGRESS=false",
-  "NPM_CONFIG_UPDATE_NOTIFIER=false",
-];
-
-const SERVICE_ENV: string[] = [
-  `HOME=${ROOT_HOME}`,
-  "TMPDIR=/tmp",
-  "TERM=xterm-256color",
-  "USER=root",
-  "LOGNAME=root",
-  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-  "SSL_CERT_DIR=/etc/ssl/certs",
-];
-
-const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
-  default: { env: SHELL_ENV, cwd: DEMO_HOME },
-  node: { env: NODE_SHELL_ENV, cwd: DEMO_HOME },
-};
-
-const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
-  service: () => SERVICE_ENV,
-  // WHY: the interpreter must see the same PYTHONHOME/PYTHONDONTWRITEBYTECODE
-  // contract declared for this product in
-  // images/vfs/products/browser-nginx-python.toml's [boot.env]. Without it,
-  // first-run stdlib imports compile *and write* bytecode caches for every
-  // module wsgiref pulls in, which is real extra depth the browser's fixed
-  // (non-configurable) worker JS stack does not have the headroom Node's
-  // worker gets from nodeWorkerStackSizeMb().
-  "python-service": () => [
-    ...SERVICE_ENV,
-    "PYTHONHOME=/usr",
-    "PYTHONDONTWRITEBYTECODE=1",
-  ],
-  wordpress: () => [
-    ...SERVICE_ENV,
-    `WP_APP_PATH=${APP_PATH}`,
-    `WP_PROTO=${PROTO}`,
-  ],
-};
 
 export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
-  demo?: string | null;
+  /**
+   * `&profile=<id>` — which machine inside the image to boot. The app knows
+   * no profile names; an id the image does not declare is a loud boot error,
+   * never a silent fall back to the image's default.
+   */
+  profile?: string | null;
   vfsUrl?: string | null;
   fb?: FbDemo;
   /** Boot inputs from a #k1= boot link (e.g. a script input). */
@@ -643,27 +647,6 @@ export async function createLiveHost(
   }
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
-  // Tear the machine down before the document goes away.
-  //
-  // Gallery switching boots in place now, but typing a URL, reloading, and
-  // back/forward are still real navigations. None of those run the in-page
-  // teardown, so without this the
-  // browser is left to terminate the machine's workers itself — and on JSC a
-  // worker parked in `Atomics.wait` does not release its thread or working
-  // set when terminated. Every navigation then leaks a whole machine until the
-  // tab throws "Out of memory". `destroy()` is what wakes those workers so
-  // they exit on their own; see
-  // docs/jsc-terminate-atomics-wait-workaround.md.
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK]
-  window.addEventListener("pagehide", () => {
-    const kernel = currentKernel;
-    if (!kernel) return;
-    currentKernel = null;
-    // Cannot await inside pagehide: the teardown has to be started here and
-    // race the document's destruction. Starting it is what gives the woken
-    // workers a chance to exit before the browser terminates them.
-    void kernel.destroy().catch(() => {});
-  });
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const candidateEvidence = readInjectedProtectedBrowserEvidence(
     window.__KANDELO_ABI_STAGING_BROWSER_EVIDENCE__,
@@ -694,7 +677,7 @@ export async function createLiveHost(
     : [];
 
   let initialDescriptor = protectedProfile?.descriptor ??
-    await descriptorForBootQuery(opts.vfsUrl, opts.demo);
+    await descriptorForBootQuery(opts.vfsUrl, opts.profile);
   if (opts.inputs || opts.parameters) {
     if (protectedProfile !== undefined) {
       // Protected candidate boots pin their descriptor byte-for-byte;
@@ -734,7 +717,10 @@ export async function createLiveHost(
         await activateProtectedProfile();
         return;
       }
-      await startBoot(h, profileForDescriptor(desc, "none"), desc);
+      // A descriptor applied in place (gallery launch, pasted link) carries
+      // its own profile. The page's `&profile=` belongs to the machine the
+      // visitor ARRIVED on and must not follow them onto a different image.
+      await startBoot(h, profileForDescriptor(desc, "none", null), desc);
     },
   });
 
@@ -790,7 +776,7 @@ export async function createLiveHost(
   if (protectedProfile === undefined) {
     void startBoot(
       host,
-      profileForDescriptor(initialDescriptor, opts.fb),
+      profileForDescriptor(initialDescriptor, opts.fb, opts.profile ?? null),
       initialDescriptor,
       opts.legacyScriptIgnored ?? false,
     );
@@ -900,234 +886,342 @@ function bootElapsedMs(bootStartedAt: number): number {
   return Math.max(0, performance.now() - bootStartedAt);
 }
 
+/**
+ * The boot descriptor for the requested URL, BEFORE the image has been read.
+ *
+ * Almost nothing here is machine identity: a first boot descriptor can only
+ * describe which image to fetch and which profile of it was asked for. Title,
+ * packages, features, argv, and caps are placeholders that `bootProfile`
+ * replaces the moment the image's own `/etc/kandelo/demo.json` has been
+ * parsed. That order is deliberate — the gallery's aggregate of tracked
+ * sources never feeds the boot path, so the listing and the machine cannot
+ * disagree about what runs.
+ */
 async function descriptorForBootQuery(
   vfsUrl: string | null | undefined,
-  demo: string | null | undefined,
+  profileId: string | null | undefined,
 ): Promise<BootDescriptor> {
-  const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl);
-  if (!normalizedVfsUrl) return descriptorFor(normalizeDemoId(demo) ?? "shell");
-
-  const liveId = await liveDemoIdForVfsImageUrl(normalizedVfsUrl, demo);
-  const base = descriptorFor(liveId ?? "shell");
-  return descriptorWithVfsImageUrl(
-    base,
-    normalizedVfsUrl,
-    liveId
-      ? {
-          id: liveId,
-          title: base.title,
-          packages: base.packages,
-        }
-      : {
-          id: demoIdFromVfsImageUrl(normalizedVfsUrl),
-          title: titleFromVfsImageUrl(normalizedVfsUrl),
-          packages: [],
-        },
-  );
+  const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl)
+    ?? await defaultVfsImageUrl();
+  const base = provisionalDescriptor(normalizedVfsUrl);
+  const selected = nonEmptyId(profileId);
+  return descriptorWithVfsImageUrl(base, normalizedVfsUrl, {
+    id: selected ?? demoIdFromVfsImageUrl(normalizedVfsUrl),
+    title: titleFromVfsImageUrl(normalizedVfsUrl),
+    packages: [],
+  });
 }
 
-function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
-  const vfsUrl = vfsImageUrlFromDescriptor(desc);
-  if (!vfsUrl) return profileFor(desc.id, fb);
+/**
+ * With no `?vfs=` at all, boot the first machine on the curated roster. The
+ * app picks a ROSTER POSITION, not a machine: what that entry is comes from
+ * its product's own image. The roster's first entry's declared profile
+ * (`shell`) matches the shell image's own `defaultProfile`, so no profile id
+ * needs to travel with this URL — the image's own declared default resolves
+ * it identically to `&profile=` naming it explicitly.
+ */
+async function defaultVfsImageUrl(): Promise<string> {
+  const entry = GALLERY_ROSTER.entries[0];
+  const source = galleryProductSource(entry.product);
+  if (source === undefined) {
+    throw new Error(
+      `gallery roster's first entry names unknown product ${
+        JSON.stringify(entry.product)
+      }`,
+    );
+  }
+  return await resolveVfsProductUrl(source);
+}
 
-  const knownDemo = normalizeDemoId(desc.id);
-  const profile = knownDemo
-    ? profileFor(knownDemo, fb)
-    : customVfsProfile(desc, vfsUrl, fb);
-
+/**
+ * A descriptor shaped enough to satisfy `validateBootDescriptor` before any
+ * image bytes exist. `boot.argv` must be non-empty there, so this carries the
+ * default interactive login session every Kandelo image can run; `bootProfile`
+ * overwrites the whole boot block with the image's declared init as soon as
+ * `/etc/kandelo/demo.json` is parsed.
+ */
+function provisionalDescriptor(vfsImageUrl: string): BootDescriptor {
   return {
-    ...profile,
-    id: knownDemo ?? desc.id,
+    version: 1,
+    id: demoIdFromVfsImageUrl(vfsImageUrl),
+    title: titleFromVfsImageUrl(vfsImageUrl),
+    base: `kandelo:shell@abi${ABI_VERSION}`,
+    runtime: {
+      arch: "wasm32",
+      kernel: "kernel@local",
+      memoryPages: HOST_DEFAULT_DESCRIPTOR_MEMORY_PAGES,
+      features: ["shared-array-buffer", "pty"],
+      time: "real",
+    },
+    packages: [],
+    mounts: [
+      { path: "/", source: "image", ref: vfsImageUrl, readonly: false },
+      { path: "/tmp", source: "scratch", ephemeral: true },
+    ],
+    boot: {
+      argv: ["bash", "-l", "-i"],
+      cwd: DEMO_HOME,
+      env: {},
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    },
+    caps: { network: false },
+  };
+}
+
+function profileForDescriptor(
+  desc: BootDescriptor,
+  fb: FbDemo | undefined,
+  queryProfileId: string | null,
+): LiveProfile {
+  const vfsUrl = vfsImageUrlFromDescriptor(desc) ?? "";
+  // A descriptor applied in place carries its profile as its id. Ignore the
+  // id when it is only the placeholder `descriptorForBootQuery` derived from
+  // the image FILENAME — that is not a profile anybody asked for, and
+  // treating it as one would fail a bare `?vfs=` boot that should have used
+  // the image's declared default.
+  const descriptorProfileId = vfsUrl && desc.id === demoIdFromVfsImageUrl(vfsUrl)
+    ? null
+    : nonEmptyId(desc.id);
+  const requestedProfileId = queryProfileId ?? descriptorProfileId;
+  return {
+    requestedProfileId,
+    requestedProfileSource: queryProfileId !== null
+      ? "&profile="
+      : descriptorProfileId !== null
+      ? "the boot descriptor"
+      : null,
+    // Which product (if any) these bytes are is resolved asynchronously in
+    // `bootProfile`, because matching a URL to a product may have to activate
+    // a Pages product to learn its URL. Until then the host assumes the
+    // widest, least trusting policy.
+    productId: null,
+    maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     vfsUrl,
     descriptor: desc,
-    init: profile.init === undefined
-      ? undefined
-      : {
-        ...profile.init,
-        // WHY: an explicit VFS image is a complete product closure. Fetching
-        // the built-in init binary would hide an incomplete image and makes
-        // canonical Pages depend on the forbidden legacy binary graph.
-        programUrl: undefined,
-      },
+    framebufferTest: fb === "test",
   };
+}
+
+/**
+ * Bind the image URL to a product this deployment ships, when it is one, and
+ * apply that product's host policy.
+ *
+ * A third-party `?vfs=` URL simply has no product: it travels the SAME code
+ * path under the custom-image policy, and its machine still comes entirely
+ * from its own `demo.json`. There is no separate "custom VFS" profile any
+ * more — that asymmetry is what this work removes.
+ */
+async function bindVfsProduct(profile: LiveProfile): Promise<LiveProfile> {
+  if (profile.candidateEvidence !== undefined) return profile;
+  // A descriptor that names no image (an older pasted link that carried only
+  // a script) gets the same image a bare page load gets: the roster's first
+  // entry. That is the app choosing a DEFAULT MACHINE, which it is allowed to
+  // do — not inventing one, which it is not.
+  profile = profile.vfsUrl
+    ? profile
+    : { ...profile, vfsUrl: await defaultVfsImageUrl() };
+  // Fast path for a product whose URL is statically known (the base shell
+  // image). The asynchronous match has to resolve EVERY product to compare
+  // URLs, and under a Pages deployment resolving a product activates it —
+  // i.e. fetches and verifies its image. Answering the common case without
+  // that avoids pulling six images the visitor did not ask for.
+  const productId = eagerProductIdForVfsUrl(profile.vfsUrl)
+    ?? await matchTrustedVfsProductId(profile.vfsUrl);
+  return {
+    ...profile,
+    productId,
+    ...(productId === null ? {} : { vfsSource: VFS_PRODUCTS[productId] }),
+    maxVfsByteLength: maxVfsByteLengthForProduct(productId),
+  };
+}
+
+function nonEmptyId(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
 }
 
 function profileForCandidateEvidence(
   evidence: InjectedProtectedCandidateVfsV1,
   placement: ProtectedCandidatePagesVfsPlacement,
 ): LiveProfile {
-  const liveDemoId = candidateEvidenceLiveDemoId(evidence.vfs.profile);
-  const base = profileFor(liveDemoId, "none");
-  const descriptor = candidateEvidenceBootDescriptor(base.descriptor, evidence);
+  // The allow-list here is a protected-path boundary, not a machine table:
+  // it decides which evidence profiles the live Kandelo page will host at
+  // all. The machine itself still comes from the candidate image.
+  const profileId = candidateEvidenceLiveDemoId(evidence.vfs.profile);
+  const productId = Object.hasOwn(VFS_PRODUCTS, evidence.vfs.productId)
+    ? (evidence.vfs.productId as GalleryProductId)
+    : null;
+  const descriptor = candidateEvidenceBootDescriptor(
+    provisionalDescriptor(evidence.vfs.url),
+    evidence,
+  );
   return {
-    ...base,
+    requestedProfileId: profileId,
+    requestedProfileSource: null,
+    productId,
     vfsUrl: evidence.vfs.url,
     vfsSource: undefined,
     descriptor,
+    maxVfsByteLength: maxVfsByteLengthForProduct(productId),
     candidateEvidence: evidence,
     candidateVfsPlacement: placement,
-    init: base.init === undefined
-      ? undefined
-      : {
-        ...base.init,
-        argv: evidence.boot.argv.slice(),
-        env: envArray(evidence.boot.env),
-        cwd: evidence.boot.cwd,
-        uid: evidence.boot.uid,
-        gid: evidence.boot.gid,
-        // Candidate products own their complete executable closure. Pulling
-        // dinit or another program from the default Vite graph would make
-        // evidence pass with an incomplete candidate image.
-        programUrl: undefined,
-      },
+    framebufferTest: false,
   };
 }
 
-function customVfsProfile(
-  desc: BootDescriptor,
-  vfsUrl: string,
-  fb?: FbDemo,
-): LiveProfile {
-  return {
-    id: desc.id,
-    image: null,
-    vfsUrl,
-    descriptor: desc,
-    shell: "default",
-    maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
-    framebufferTest: fb === "test",
-    sdl2Demo: false,
-    evdevDemo: false,
-    espeakDemo: false,
-  };
-}
-
-function profileFor(id: string, fb?: FbDemo): LiveProfile {
-  const normalized = normalizeDemoId(id) ?? "shell";
-  const spec = LIVE_DEMO_SPECS[normalized];
-  const desc = descriptorFor(normalized);
-  const vfsSource = VFS_SOURCES[spec.image];
-  return {
-    id: normalized,
-    image: spec.image,
-    vfsUrl: vfsSource.kind === "url" ? vfsSource.url : "",
-    vfsSource,
-    descriptor: desc,
-    shell: spec.shell ?? "default",
-    maxVfsByteLength:
-      spec.maxVfsByteLength ??
-      (spec.image === "shell"
-        ? MAIN_SHELL_VFS_PROFILE_MAX_BYTES
-        : DEFAULT_VFS_PROFILE_MAX_BYTES),
-    // WHY: memoryPages is a runtime cap, not just descriptor presentation.
-    // Preserve Node's WebKit-safe 256 MiB process ceiling when it is launched
-    // through the shared boot assembler.
-    maxMemoryPages: spec.memoryPages,
-    autoCommand: spec.autoCommand,
-    init: spec.init && {
-      argv: spec.init.argv.slice(),
-      env: initEnv(spec.init.env),
-      cwd: spec.init.cwd,
-      // Canonical Pages products own their complete executable closure just
-      // like an explicit VFS descriptor does. The legacy URL is available
-      // only when the ordinary checked-out binary graph owns the image.
-      programUrl: CANONICAL_PAGES_VFS_LOADER === undefined
-        ? spec.init.programUrl
-        : undefined,
-      uid: spec.init.uid,
-      gid: spec.init.gid,
-      maxWorkers: spec.init.maxWorkers,
-      maxMemoryPages: spec.init.maxMemoryPages,
-      web: spec.init.web && {
-        label: desc.title,
-        requiredPorts: spec.init.web.requiredPorts.slice(),
-        requiredServices: spec.init.web.requiredServices?.slice(),
-        probeHttp: spec.init.web.probeHttp ?? true,
-        probePath: spec.init.web.probePath,
-      },
-    },
-    framebufferTest: fb === "test",
-    sdl2Demo: normalized === "sdl2",
-    evdevDemo: normalized === "evdev",
-    espeakDemo: normalized === "espeak",
-  };
-}
-
-function initEnv(profile: InitEnvProfile | undefined): string[] | undefined {
-  if (!profile) return undefined;
-  return INIT_ENV_PROFILES[profile]();
-}
-
-function shellEnvFor(profile: ShellProfile): string[] {
-  return SHELL_PROFILES[profile].env;
-}
-
-function shellCwdFor(profile: ShellProfile): string {
-  return SHELL_PROFILES[profile].cwd;
-}
-
-function shellIdentityForProfile(
+/**
+ * Which profile of the image to boot, per the spec's resolution order:
+ * `&profile=`, else the image's own `defaultProfile`. An id the image does
+ * not declare is a loud failure.
+ */
+function resolveImageProfileId(
+  config: KandeloDemoConfig,
   profile: LiveProfile,
-  boot?: BootDescriptor["boot"],
-): {
-  env: string[];
-  cwd: string;
-  uid: number;
-  gid: number;
-} {
-  let identity: { env: string[]; cwd: string; uid: number; gid: number };
-  if (profile.shell === "node") {
-    identity = {
-      env: shellEnvFor(profile.shell),
-      cwd: shellCwdFor(profile.shell),
-      uid: DEMO_UID,
-      gid: DEMO_GID,
-    };
-  } else {
-    identity = {
-      env: shellEnvFor(profile.shell),
-      cwd: shellCwdFor(profile.shell),
-      uid: DEMO_UID,
-      gid: DEMO_GID,
+): string {
+  const declared = declaredProfileIds(config);
+  const requested = profile.requestedProfileId;
+  if (requested !== null) {
+    if (declared.includes(requested)) return requested;
+    // A profile id nobody declared is a real boundary: refusing to guess is
+    // what keeps `&profile=` from silently booting a different machine.
+    throw new Error(
+      `${profile.requestedProfileSource ?? "the request"} selected profile ${
+        JSON.stringify(requested)
+      }, which this image's ${KANDELO_DEMO_CONFIG_PATH} does not declare`
+        + ` (declared: ${declared.length > 0 ? declared.join(", ") : "none"})`,
+    );
+  }
+  if (declared.length === 0) return TOP_LEVEL_PROFILE_ID;
+  const defaultProfileId = resolveDefaultProfileId(config);
+  if (defaultProfileId === null) {
+    throw new Error(
+      `${KANDELO_DEMO_CONFIG_PATH} declares ${declared.length} profiles but no`
+        + ` defaultProfile; select one with &profile= (declared: ${
+          declared.join(", ")
+        })`,
+    );
+  }
+  return defaultProfileId;
+}
+
+/**
+ * An image may put its whole machine at the top level with no `profiles`
+ * block at all. The resolvers already fall back to the top level for an
+ * unknown profile id, so this sentinel selects exactly that.
+ */
+const TOP_LEVEL_PROFILE_ID = "";
+
+function declaredProfileIds(config: KandeloDemoConfig): string[] {
+  const profiles = config.profiles;
+  return profiles !== undefined && profiles !== null && !Array.isArray(profiles)
+    ? Object.keys(profiles)
+    : [];
+}
+
+/** Read the whole machine out of the image, for one selected profile. */
+function imageMachine(
+  config: KandeloDemoConfig,
+  profileId: string,
+): ImageMachine {
+  return {
+    profileId,
+    identity: resolveDemoIdentity(config, profileId),
+    runtime: resolveDemoRuntime(config, profileId),
+    init: resolveDemoInit(config, profileId),
+    web: resolveDemoWeb(config, profileId),
+    display: resolveDemoDisplay(config, profileId),
+  };
+}
+
+/**
+ * Turn the image's declared `init` into the pid-1 launch, or `null` when the
+ * machine declares no pid 1 of its own.
+ *
+ * `demo.json` SELECTS (which dinit target, or which program in the image);
+ * the host composes the launcher and supplies pid 1's baseline environment as
+ * policy. No shape lets anything outside the image name what runs.
+ *
+ * `{ shellCommand }` has no pid-1 launch by construction: it is a command for
+ * the machine's ordinary login session, so the image's default init stands.
+ */
+function initLaunchForMachine(init: DemoInitConfig): InitLaunch | null {
+  if ("shellCommand" in init) return null;
+  if ("target" in init) {
+    return {
+      argv: dinitContainerArgv(init.target),
+      cwd: ROOT_HOME,
+      uid: ROOT_UID,
+      gid: ROOT_GID,
+      // dinit's services read the image's own /etc/dinit.d/env, so the only
+      // thing the host adds is what no baked artifact can know.
+      env: hostSuppliedInitEnv(),
     };
   }
-  if (!boot) return identity;
   return {
-    env: mergeEnvArrays(identity.env, envArray(boot.env)),
-    cwd: boot.cwd || identity.cwd,
-    uid: boot.uid ?? identity.uid,
-    gid: boot.gid ?? identity.gid,
+    argv: [init.program, ...init.args],
+    cwd: init.cwd ?? ROOT_HOME,
+    // The privilege pid 1 runs with is the IMAGE'S declaration, not a host
+    // default: `init.program` requires uid/gid precisely so no machine gets
+    // root by omission.
+    uid: init.uid,
+    gid: init.gid,
+    env: [...pid1BaselineEnv(init.uid), ...hostSuppliedInitEnv()],
   };
 }
+
+/** The command an image asked its login shell to run, if it asked for one. */
+function shellCommandForMachine(init: DemoInitConfig | null): string | null {
+  return init !== null && "shellCommand" in init ? init.shellCommand : null;
+}
+
+/**
+ * The readiness service list, derived from the image's own dinit tree
+ * instead of a hand-maintained copy: the transitive `depends-on` closure of
+ * the target `demo.json` selected, including the target itself. A dependency
+ * with no `/etc/dinit.d/<name>` file throws, naming it — a machine that can
+ * never become ready is a defect, not something to wait out.
+ */
+function dinitServiceClosure(
+  fs: MemoryFileSystem,
+  target: string,
+): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const pending = [target];
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    ordered.push(name);
+    if (seen.size > MAX_DINIT_SERVICE_CLOSURE) {
+      throw new Error(
+        `image dinit tree exceeds ${MAX_DINIT_SERVICE_CLOSURE} services`,
+      );
+    }
+    for (const dependency of readDinitBootTargets(fs, name)) {
+      pending.push(dependency);
+    }
+  }
+  return ordered;
+}
+
+/** Far above any real service tree; a hostile image cannot spin this. */
+const MAX_DINIT_SERVICE_CLOSURE = 256;
 
 function envArray(env: Record<string, string>): string[] {
   return Object.entries(env).map(([key, value]) => `${key}=${value}`);
 }
 
-function mergeEnvArrays(base: string[], override: string[]): string[] {
-  const out = new Map<string, string>();
-  for (const kv of base) {
-    const idx = kv.indexOf("=");
-    if (idx > 0) out.set(kv.slice(0, idx), kv.slice(idx + 1));
-  }
-  for (const kv of override) {
-    const idx = kv.indexOf("=");
-    if (idx > 0) out.set(kv.slice(0, idx), kv.slice(idx + 1));
-  }
-  return Array.from(out, ([key, value]) => `${key}=${value}`);
-}
-
-function presentationForProfile(
-  profile: LiveProfile,
+function presentationForWebMachine(
+  web: DemoWebConfig | null,
   presentation: DemoPresentation,
 ): DemoPresentation {
   // Older released VFS images put Terminal before Syslog for web demos,
   // which briefly focuses a shell while dinit is still bringing services up.
-  const demoId = normalizeDemoId(profile.id);
+  // Keyed on the machine DECLARING a web readiness probe, not on an id list.
   if (
-    !demoId ||
-    !WEB_BOOT_LOG_DEMO_IDS.has(demoId) ||
-    !profile.init?.web ||
+    web === null ||
     presentation.bootPrimary !== "syslog" ||
     presentation.runningPrimary[0] !== "web"
   ) {
@@ -1148,14 +1242,14 @@ function presentationForProfile(
 
 function reportInitError(
   host: LiveKernelHost,
-  profile: LiveProfile,
+  webPaneLabel: string | null,
   message: string,
   tick: (msg: string) => void,
 ): void {
   tick(message);
-  if (profile.init?.web) {
+  if (webPaneLabel !== null) {
     host.setWebPreview({
-      label: profile.init.web.label,
+      label: webPaneLabel,
       url: APP_PREFIX,
       port: HTTP_PORT,
       status: "error",
@@ -1213,6 +1307,9 @@ async function runLinkScript(
 
 async function bootProfile(
   host: LiveKernelHost,
+  // Reassigned once the image URL has been matched to a product; see
+  // `bindVfsProduct`.
+  // eslint-disable-next-line prefer-const
   profile: LiveProfile,
   requestedDescriptor: BootDescriptor,
   bootStartedAt: number,
@@ -1249,9 +1346,9 @@ async function bootProfile(
     mounts: requestedDescriptor.mounts,
     boot: effectiveBoot,
   });
-  const genericPresentation =
-    profile.fallbackPresentation ?? genericPresentationForProfile(profile);
-  host.setPresentation(genericPresentation);
+  // Nothing is known about the machine yet; the image has not been fetched.
+  // The real presentation lands as soon as /etc/kandelo/demo.json is parsed.
+  host.setPresentation(genericDemoPresentation("terminal"));
   host.setStatus("booting");
 
   const tick = (msg: string) => {
@@ -1284,9 +1381,11 @@ async function bootProfile(
     failed: false,
   };
   let maybeUpdateWebReadiness = () => {};
-  const requiredServices = new Set(
-    profile.init?.web?.requiredServices ?? [],
-  );
+  // Filled from the image's own dinit tree once it has been read. It is a
+  // live set rather than a value so the tracker, which must exist before the
+  // image is fetched, watches the services the image actually declares.
+  const requiredServices = new Set<string>();
+  let webPaneLabel: string | null = null;
   const dinitBootTracker = new DinitBootStatusTracker(tick, (completion) => {
     if (
       completion.outcome === "failed" &&
@@ -1296,7 +1395,7 @@ async function bootProfile(
       webReadiness.failed = true;
       reportInitError(
         host,
-        profile,
+        webPaneLabel,
         `Required service ${completion.serviceName} failed to start`,
         tick,
       );
@@ -1313,8 +1412,14 @@ async function bootProfile(
   await requireServiceWorker(tick);
   assertCurrent();
 
+  // Resolve which product these bytes are BEFORE fetching them: a Pages
+  // deployment serves its products through an integrity-checked activation,
+  // and the host's capacity policy depends on the same answer.
+  profile = await bindVfsProduct(profile);
+  assertCurrent();
+
   tick("service worker active and cross-origin isolated");
-  tick(`loading ${profile.id} profile...`);
+  tick(`loading ${imageLabel(profile)}...`);
   const [kernelBytes, loadedVfs] = await Promise.all([
     fetch(kernelWasmUrl)
       .then(failOn("kernel.wasm"))
@@ -1328,17 +1433,16 @@ async function bootProfile(
   );
   const fetchedVfsImageBytes = new Uint8Array(loadedVfs.imageBytes);
   const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
-  const vfsCapacity = MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes);
   assertVfsImageFitsProfile(
-    vfsCapacity,
+    MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes),
     profile.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
-    `${profile.id}.vfs.zst`,
+    imageLabel(profile),
   );
   MemoryFileSystem.assertImageKernelAbi(
     fetchedVfsImageBytes,
     ABI_VERSION,
-    `${profile.id}.vfs.zst`,
+    imageLabel(profile),
   );
   // Assemble the demo image in a TRANSIENT build-time filesystem. Its
   // SharedArrayBuffer never becomes the machine's live VFS — after
@@ -1347,63 +1451,139 @@ async function bootProfile(
   // out of the live-VFS ownership set so WebKit reclaims it on teardown via
   // Worker.terminate() rather than lazy GC — the root fix for the Safari
   // image-switch OOM.
-  // Reserve what the image's SharedFS superblock can actually use, not the
-  // whole profile budget: `SharedFS.grow()` refuses to pass the recorded
-  // capacity, so any reservation beyond it buys no staging room — and on
-  // WebKit it is charged against a process-wide pool whether used or not.
-  // Reuse the capacity already read above rather than decompressing again.
-  // Compose the image in a DISPOSABLE WORKER. Composition needs a live
-  // MemoryFileSystem, which means a SharedArrayBuffer; on WebKit only
-  // Worker.terminate() reclaims shared memory deterministically, so a
-  // staging buffer held by this persistent realm would accumulate across
-  // boots until Safari throws "Out of memory". The main thread never touches
-  // the staged filesystem — only the serialized bytes that come back.
-  const memoryProfile = hostMemoryProfile();
-  const composed = await composeImageInWorker(
-    {
-      profile: {
-        id: profile.id,
-        maxVfsByteLength: profile.maxVfsByteLength,
-        hasCandidateEvidence: profile.candidateEvidence !== undefined,
-        init: profile.init && {
-          argv: profile.init.argv.slice(),
-          programUrl: profile.init.programUrl,
-        },
-        sdl2Demo: profile.sdl2Demo,
-        espeakDemo: profile.espeakDemo,
-        evdevDemo: profile.evdevDemo,
-      },
-      descriptor: requestedDescriptor,
-      imageBytes: fetchedVfsImageBytes,
-      lazyAssets: loadedVfs.lazyAssets,
-      appPath: APP_PATH,
-      proto: PROTO,
-      preforkServiceProcesses: memoryProfile.preforkServiceProcesses,
-    },
-    {
-      onTick: tick,
-      isCurrent,
-      supersededError: () => new BootSuperseded(),
-    },
-  );
+  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
+    maxByteLength: profile.maxVfsByteLength,
+  });
+  // Track as soon as the caller owns the staged filesystem. This covers every
+  // later fetch, staging, supersession, and serialization failure; finalizing
+  // the image is intentionally an idempotent second registration.
+  trackTransientImageBuffer(buildFs.sharedBuffer);
+  // WHY: register cleanup before rejecting a composition superseded while its
+  // asynchronous layer loads were in flight. Otherwise its completed buffer
+  // becomes unreachable without entering the WebKit reclamation ledger.
   assertCurrent();
-  const { terminalSession, imageConfig, bootInputManifest } = composed;
-  const rawPresentation =
-    (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null) ??
-    builtinDemoPresentation(profile.id) ??
-    genericPresentation;
-  const presentation = presentationForProfile(profile, rawPresentation);
+  // WHY: establish cleanup ownership first, then reject forged imported seals
+  // before URL rewriting or asset registration can trust their lazy metadata.
+  await verifyImportedSealsForCurrentBoot(buildFs);
+  // WHY: this check must live in the same continuation as the effects below.
+  // Moving it into an async helper creates a microtask gap where a newer boot
+  // can take ownership before this boot resumes mutating its staged image.
+  assertCurrent();
+  const terminalSession = readImageExperimentalTerminalSession(buildFs);
+  if (profile.candidateEvidence === undefined) {
+    // Keyed on what the image ACTUALLY CONTAINS, never on a machine id: an
+    // image that ships a PHP-FPM config gets the host's worker-pool patch, and
+    // one that ships WordPress gets the runtime wp-config this page's prefix
+    // and protocol determine (which no baked artifact can know). Whether that
+    // WordPress talks to MariaDB is likewise read off the image's own dinit
+    // tree.
+    if (vfsPathExists(buildFs, "/etc/php-fpm.conf")) {
+      writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+      ensureDirRecursive(buildFs, "/var/cache/opcache");
+    }
+    if (vfsPathExists(buildFs, "/var/www/html/wp-includes")) {
+      if (vfsPathExists(buildFs, "/etc/dinit.d/mariadb")) {
+        patchMariaDbUnixSocketConfig(buildFs);
+        patchWordPressRuntimeConfig(buildFs, "mariadb");
+      } else {
+        patchWordPressRuntimeConfig(buildFs, "sqlite");
+      }
+    }
+    ensureDemoHomes(buildFs);
+  }
+  assertImageTerminalProgram(buildFs, terminalSession.initial);
+  if (terminalSession.afterExit !== undefined) {
+    assertImageTerminalProgram(buildFs, terminalSession.afterExit);
+  }
+  // ── The machine, read from the image it lives in ────────────────────────
+  //
+  // Nothing below consults an app-side table. An image with no
+  // /etc/kandelo/demo.json, or a malformed one, fails the boot here with the
+  // real reason: there is no fallback machine to synthesize any more.
+  const imageConfig = readImageConfig(buildFs);
+  if (imageConfig === null) {
+    throw new Error(
+      `VFS image has no ${KANDELO_DEMO_CONFIG_PATH}, so it does not describe`
+        + " a machine. Kandelo boots what the image declares; it does not"
+        + " invent a default.",
+    );
+  }
+  const machine = imageMachine(
+    imageConfig,
+    resolveImageProfileId(imageConfig, profile),
+  );
+  const profileId = machine.profileId;
+  const machineTitle = machine.identity?.title
+    ?? (profile.vfsUrl ? titleFromVfsImageUrl(profile.vfsUrl) : profileId);
+  const rawPresentation = resolveDemoPresentation(imageConfig, profileId)
+    ?? genericPresentationForMachine(machine, profile.framebufferTest);
+  const presentation = presentationForWebMachine(machine.web, rawPresentation);
   host.setPresentation(presentation);
-  const demoGuide =
-    (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null) ??
-    builtinDemoGuide(profile.id);
-  host.setDemoGuide(demoGuide);
+  host.setDemoGuide(resolveDemoGuide(imageConfig, profileId));
   // Ingest is an image-owned capability. Absence is valid and must not be
   // replaced with a package- or profile-name-specific UI promise.
-  host.setDemoIngest(
-    imageConfig ? resolveDemoIngest(imageConfig, profile.id) : null,
+  host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
+  const assets = resolveDemoAssets(imageConfig, profileId);
+  // The one command this machine asked its login shell to run, if any. Read
+  // once here: `init` is the single block that says what a machine runs.
+  const machineShellCommand = shellCommandForMachine(machine.init);
+  const initLaunch = machine.init === null
+    ? null
+    : profile.candidateEvidence === undefined
+    ? initLaunchForMachine(machine.init)
+    : {
+      // A protected ABI-staging candidate pins its whole boot block as
+      // evidence; honouring the image's init instead would measure a
+      // different machine than the one the evidence attests.
+      argv: profile.candidateEvidence.boot.argv.slice(),
+      cwd: profile.candidateEvidence.boot.cwd,
+      uid: profile.candidateEvidence.boot.uid,
+      gid: profile.candidateEvidence.boot.gid,
+      env: envArray(profile.candidateEvidence.boot.env),
+    };
+  if (machine.init !== null && "target" in machine.init) {
+    for (const service of dinitServiceClosure(buildFs, machine.init.target)) {
+      requiredServices.add(service);
+    }
+  }
+  if (machine.web !== null) webPaneLabel = machineTitle;
+  host.setDescriptor(
+    descriptorForMachine(profile, machine, machineTitle, requestedDescriptor),
   );
-  const vfsImageBytes = composed.imageBytes;
+  if (profile.candidateEvidence === undefined) {
+    await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
+    assertCurrent();
+  }
+
+  // Boot inputs (e.g. a #k1= link's script) are untrusted, URL-carried
+  // payloads. Materialize the whole declared set now, at the same
+  // image-staging point as the asset patches above: every input must verify
+  // its byte length and sha256 before anything is written, and a
+  // materialization failure must fail the boot loudly rather than silently
+  // continue without the input the link promised.
+  let bootInputManifest: BootInputManifest | undefined;
+  if (requestedDescriptor.boot.inputs?.length) {
+    tick("materializing boot inputs...");
+    bootInputManifest = await materializeBootInputs(requestedDescriptor, {
+      resolvers: {},
+      mkdir: (p) => ensureDirRecursive(buildFs, p),
+      writeFile: (p, b, m) => writeVfsBinary(buildFs, p, b, m),
+    });
+    assertCurrent();
+  }
+
+  // Serialize the assembled image to transferable bytes, then let `buildFs`
+  // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
+  // `MemoryFileSystem.fromImage` restores directly in the worker.
+  // WHY: this is the final synchronous image mutation. Binding before any
+  // later staging could leave newly-added lazy metadata outside the manifest
+  // authority copied from the authenticated product activation.
+  bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets);
+  tick("assembling kernel-owned VFS image...");
+  // Serialize to transferable bytes + register the transient build buffer for
+  // reclamation tracking, then let `buildFs` fall out of scope when bootProfile
+  // returns. `settleAfterKernelDestroy` reclaims it on WebKit.
+  const vfsImageBytes = await finalizeKernelOwnedImage(buildFs);
   assertCurrent();
 
   tick("instantiating kernel...");
@@ -1420,7 +1600,9 @@ async function bootProfile(
   maybeUpdateWebReadiness = () => {
     maybeMarkWebReady(
       host,
-      profile,
+      machine.web,
+      machineTitle,
+      requiredServices,
       seenPorts,
       bridgeSent,
       machineAppPrefix,
@@ -1434,10 +1616,9 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      // Pass the budget this boot already resolved, so the kernel and the
-      // image composition agree on one profile rather than detecting
-      // separately. `?memoryProfile=` overrides it; see hostMemoryProfile().
-      memoryProfile: memoryProfile.id,
+      // Keep the host on the same memory profile as the app-side sizing
+      // above (BrowserKernel auto-detects when this is undefined).
+      memoryProfile: memoryProfileOverride(),
       ...(profile.candidateEvidence === undefined
         ? {}
         : {
@@ -1448,9 +1629,16 @@ async function bootProfile(
       // transports. The live shell must explicitly give its kernel the same
       // deployment proxy or release-hosted lazy bottles bypass it under COEP.
       corsProxy: BROWSER_CORS_PROXY,
-      maxWorkers: profile.init?.maxWorkers ?? 4,
-      maxMemoryPages:
-        profile.init?.maxMemoryPages ?? profile.maxMemoryPages,
+      // The image REQUESTS; the host clamps. An untrusted `?vfs=` image
+      // cannot hand itself a worker flood or a gigabyte ceiling.
+      maxWorkers: clampRequest(
+        machine.runtime.requests.maxWorkers,
+        HOST_MAX_WORKERS,
+      ) ?? HOST_DEFAULT_WORKERS,
+      maxMemoryPages: clampRequest(
+        machine.runtime.requests.memoryPages,
+        HOST_MAX_MEMORY_PAGES,
+      ),
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onHostDiagnostic: (diagnostic) => {
@@ -1495,7 +1683,7 @@ async function bootProfile(
       experimentalTerminalSessionPolicy(terminalSession),
     );
 
-    if (profile.init?.web) {
+    if (machine.web !== null) {
       tick("initializing HTTP bridge...");
       try {
         // Unique id for this machine instance. Scopes the service worker's
@@ -1525,7 +1713,7 @@ async function bootProfile(
         // address this machine's minted prefix, not the bare /computer/ constant.
         machineAppPrefix = appPrefix;
         host.setWebPreview({
-          label: profile.init.web.label,
+          label: machineTitle,
           url: appPrefix,
           port: HTTP_PORT,
           status: "starting",
@@ -1553,7 +1741,7 @@ async function bootProfile(
         const message = err instanceof Error ? err.message : String(err);
         tick(`HTTP bridge failed: ${message}`);
         host.setWebPreview({
-          label: profile.init.web.label,
+          label: machineTitle,
           url: APP_PREFIX,
           port: HTTP_PORT,
           status: "error",
@@ -1562,9 +1750,15 @@ async function bootProfile(
       }
     }
 
-    if (profile.init) {
-      const initArgv =
-        effectiveBoot.argv.length > 0 ? effectiveBoot.argv : profile.init.argv;
+    if (initLaunch !== null) {
+      // BOOT IDENTITY COMES FROM THE IMAGE — see resolveInitArgv's doc
+      // comment for why a caller-supplied argv is ignored rather than
+      // rejected.
+      const { argv: initArgv, ignoredMessage } = resolveInitArgv(
+        requestedDescriptor.boot.argv,
+        initLaunch.argv,
+      );
+      if (ignoredMessage !== null) tick(ignoredMessage);
       tick(`spawning ${initArgv[0]}...`);
       // The init binary lives in the kernel-owned VFS; spawn it by path rather
       // than shipping bytes the kernel already has.
@@ -1572,13 +1766,10 @@ async function bootProfile(
         initArgv[0],
         initArgv,
         {
-          env: mergeEnvArrays(
-            profile.init.env ?? [],
-            envArray(effectiveBoot.env),
-          ),
-          cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
-          uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
-          gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
+          env: initLaunch.env,
+          cwd: initLaunch.cwd,
+          uid: initLaunch.uid,
+          gid: initLaunch.gid,
           stdin: new Uint8Array(),
         },
       );
@@ -1591,7 +1782,7 @@ async function bootProfile(
           if (!isCurrent()) return;
           reportInitError(
             host,
-            profile,
+            webPaneLabel,
             `${initArgv[0] ?? "init"} exited with code ${code}`,
             tick,
           );
@@ -1600,7 +1791,7 @@ async function bootProfile(
           if (!isCurrent()) return;
           reportInitError(
             host,
-            profile,
+            webPaneLabel,
             `init failed: ${err instanceof Error ? err.message : String(err)}`,
             tick,
           );
@@ -1610,7 +1801,21 @@ async function bootProfile(
 
     maybeUpdateWebReadiness();
 
+    // ── Input, then the command ─────────────────────────────────────────
+    //
+    // The old ladder (framebufferTest → sdl2 → espeak → evdev → runScript →
+    // the machine's command) named six machines. It collapses to: attach an input
+    // source when the image DECLARES it needs one, then run the one command.
+    // Attachment has to precede the command because a program that polls
+    // /dev/input/event{0,1} misses everything delivered before it starts.
+    if (machine.runtime.features.includes("evdev-input")) {
+      attachDeclaredInputSource(kernel, machine, tick);
+    }
+
     if (profile.framebufferTest) {
+      // `?fb=test` is an APP-LEVEL DEV TOGGLE, deliberately not expressible
+      // in demo.json: it spawns a host-fetched framebuffer probe over
+      // whatever machine is booting.
       const fbtestWasmUrl = await optionalBinaryUrl(
         [
           "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
@@ -1627,123 +1832,6 @@ async function bootProfile(
         tick,
         assertCurrent,
       );
-    } else if (profile.sdl2Demo) {
-      // autoCommand can't run this: the InputSource must be attached before
-      // the binary starts polling /dev/input/event{0,1}. The binary and its
-      // shader presets are already in the image; see stageSdl2Runtime.
-      const kernelForSdl2 = kernel;
-      void (async () => {
-        try {
-          tick("attaching input source...");
-          // Keyboard goes through BrowserInputSource (typing, ESC → evdev
-          // event0). The POINTER is owned by the Modeset pane, which feeds
-          // framebuffer-positioned pointer events into evdev event1 via
-          // `sendPointerAbs` — so this source's pointer feed is disabled
-          // (its window-relative coordinates would fight the pane's
-          // correct ones). WHEEL stays enabled: REL_WHEEL carries no
-          // absolute coordinates, so it doesn't fight the pane, and it
-          // drives the editor's mouse-scroll (SDL_MOUSEWHEEL).
-          // The dims set EVIOCGABS's ABS_X/Y.maximum. SDL treats event1
-          // as a relative mouse (it advertises REL_X/Y) and clamps the
-          // cursor to the window rather than this range, but the
-          // framebuffer size (1920×1080, matching
-          // host/src/dri/kms-registry.ts and the Modeset canvas) keeps
-          // the bounds sane for any ABS-aware consumer.
-          const SDL2_FB_W = 1920;
-          const SDL2_FB_H = 1080;
-          kernelForSdl2.attachInputSource(
-            // Bind to window for global reach, but scope capture to the
-            // playground's own Modeset canvas surface so keyboard/wheel
-            // over the "New" menu, dialogs, and the sibling terminal and
-            // Inspector surfaces stay usable while the playground runs.
-            // See demoSurfaceCaptureGate.
-            new BrowserInputSource(window, {
-              pointer: false,
-              wheel: true,
-              shouldCapture: demoSurfaceCaptureGate(
-                () => document.querySelector(".kmodeset-surface"),
-              ),
-            }),
-            { width: SDL2_FB_W, height: SDL2_FB_H },
-          );
-          tick("running sdl2...");
-          // The playground runs until ESC; runShellCommand resolves when
-          // the bash prompt reappears or rejects after its internal
-          // 5-minute timeout. Both are expected — log neutrally.
-          await host.runShellCommand("/usr/local/bin/sdl2");
-          tick("sdl2 exited");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (/timed out waiting for PTY prompt/.test(msg)) {
-            tick("sdl2 running (long-tail; no further status updates)");
-          } else {
-            tick(`sdl2 failed: ${msg}`);
-          }
-        }
-      })();
-    } else if (profile.espeakDemo) {
-      // The binary and its voice data are already in the image; see
-      // stageEspeakRuntime. Playback rides the /dev/dsp path every other
-      // sound demo uses.
-      void (async () => {
-        try {
-          tick("running espeak-ng...");
-          await host.runShellCommand(
-            `/usr/bin/espeak-ng "Welcome to Kandelo, the WebAssembly POSIX kernel"`,
-          );
-          tick("espeak-ng exited");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          tick(`espeak-ng failed: ${msg}`);
-        }
-      })();
-    } else if (profile.evdevDemo) {
-      // autoCommand can't run this: the InputSource must be attached before
-      // the binary starts polling /dev/input/event{0,1}. The binary itself is
-      // already in the image; see stageEvdevDemo.
-      const kernelForEvdev = kernel;
-      void (async () => {
-        try {
-          tick("attaching input source...");
-          kernelForEvdev.attachInputSource(
-            // Re-publish canvas dims on resize so EVIOCGABS maxima track the
-            // viewport (injected clientX/clientY grow with the window). The
-            // resize listener lives inside BrowserInputSource, so it is
-            // removed when the host stops the source on teardown/reboot.
-            new BrowserInputSource(window, {
-              onResize: () =>
-                kernelForEvdev.setInputCanvasDims(
-                  window.innerWidth,
-                  window.innerHeight,
-                ),
-              // evdev is the global-input logger, so it captures across the
-              // whole demo stage (<main>) by design; the gate still releases
-              // the out-of-<main> chrome (the "New" menu, dialogs) so the
-              // dock stays usable while it runs. See demoSurfaceCaptureGate.
-              shouldCapture: demoSurfaceCaptureGate(
-                () => document.querySelector("main"),
-              ),
-            }),
-            {
-              width: window.innerWidth,
-              height: window.innerHeight,
-            },
-          );
-          tick("running evdev_demo...");
-          // evdev_demo runs forever; runShellCommand resolves when the
-          // bash prompt reappears (it never will) or rejects after its
-          // internal 5-minute timeout. Both are expected — log neutrally.
-          await host.runShellCommand("/usr/local/bin/evdev_demo");
-          tick("evdev_demo exited");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (/timed out waiting for PTY prompt/.test(msg)) {
-            tick("evdev_demo running (long-tail; no further status updates)");
-          } else {
-            tick(`evdev_demo failed: ${msg}`);
-          }
-        }
-      })();
     } else if (requestedDescriptor.boot.parameters?.runScript !== undefined) {
       const runScriptId = requestedDescriptor.boot.parameters.runScript;
       const scriptInput = typeof runScriptId === "string"
@@ -1759,13 +1847,21 @@ async function bootProfile(
           webReadiness.failed = true;
           reportInitError(
             host,
-            profile,
+            webPaneLabel,
             `boot-link script failed: boot.parameters.runScript names an ` +
               `unmaterialized input: ${JSON.stringify(runScriptId)}`,
             tick,
           );
         }
       } else {
+        if (machineShellCommand !== null) {
+          // The link wins, matching what the ladder always did — but the
+          // machine's own command is not dropped in silence.
+          tick(
+            "boot-link script replaces the machine's configured command: "
+              + machineShellCommand,
+          );
+        }
         // ⚠️ CONSENT REQUIRED BEFORE PERSISTENT MACHINES ⚠️
         // This auto-runs a URL-supplied script with no confirmation, which is
         // acceptable ONLY because every machine this app boots is ephemeral: a
@@ -1784,20 +1880,23 @@ async function bootProfile(
           );
         });
       }
-    } else if (presentation?.autoCommand) {
-      tick("starting configured command from the default shell...");
-      void host.runShellCommand(presentation.autoCommand).catch((err) => {
-        tick(
-          `configured command failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    } else if (profile.autoCommand) {
-      tick(`running ${profile.autoCommand}...`);
-      void host.runShellCommand(profile.autoCommand).catch((err) => {
-        tick(
-          `command failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
+    } else if (machineShellCommand !== null) {
+      const autoCommand = machineShellCommand;
+      tick(`running ${autoCommand}...`);
+      void host.runShellCommand(autoCommand).then(
+        () => tick(`${autoCommand} exited`),
+        (err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          // A machine whose configured command never returns (an editor, an
+          // input logger) trips runShellCommand's own prompt timeout. That is
+          // the expected shape for those machines, not a failure.
+          tick(
+            /timed out waiting for PTY prompt/.test(message)
+              ? `${autoCommand} running (long-tail; no further status updates)`
+              : `configured command failed: ${message}`,
+          );
+        },
+      );
     }
 
     if (!webReadiness.failed) {
@@ -1813,20 +1912,280 @@ async function bootProfile(
   }
 }
 
-function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
-  if (profile.init?.web) return genericDemoPresentation("web");
-  if (profile.descriptor.runtime.features.includes("kms")) {
+/**
+ * The pane layout for an image that declares no `presentation` block, derived
+ * from what it DOES declare: a readiness probe means a web machine, a
+ * display feature means that display's pane.
+ */
+function genericPresentationForMachine(
+  machine: ImageMachine,
+  framebufferTest: boolean,
+): DemoPresentation {
+  if (machine.web !== null) return genericDemoPresentation("web");
+  if (machine.runtime.features.includes("kms")) {
     return genericDemoPresentation("kms");
   }
-  if (
-    profile.framebufferTest ||
-    profile.descriptor.runtime.features.includes("framebuffer")
-  ) {
+  if (framebufferTest || machine.runtime.features.includes("framebuffer")) {
     return genericDemoPresentation("framebuffer");
   }
   return genericDemoPresentation("terminal");
 }
 
+/**
+ * Attach a `BrowserInputSource` for an image that declares `evdev-input`.
+ *
+ * Everything about HOW is derived from the declared feature set, never from a
+ * selector an image names: an image must not be able to reach into the app's
+ * DOM.
+ *
+ * - `evdev-input` WITH a display feature: that pane owns the pointer (it
+ *   feeds framebuffer-positioned absolute events through `sendPointerAbs`, so
+ *   this source's window-relative coordinates would fight it). The wheel
+ *   stays on — REL_WHEEL carries no coordinates. Capture is scoped to the
+ *   display pane so the dock and sibling panes stay usable.
+ * - `evdev-input` ALONE: a global input consumer. Pointer comes from the
+ *   window and capture is scoped to the demo stage.
+ *
+ * The viewport is the browser window. `display` in demo.json is a FLOOR the
+ * machine states, not a size it imposes, so the published canvas dimensions
+ * (which set EVIOCGABS's ABS_X/Y maxima) are the window clamped up to that
+ * minimum, republished on resize.
+ */
+function attachDeclaredInputSource(
+  kernel: BrowserKernel,
+  machine: ImageMachine,
+  tick: (msg: string) => void,
+): void {
+  const displaySelector = machine.runtime.features.includes("kms")
+    ? ".kmodeset-surface"
+    : machine.runtime.features.includes("framebuffer")
+    ? ".kframebuffer-surface"
+    : null;
+  const dims = () => ({
+    width: Math.max(window.innerWidth, machine.display?.minWidth ?? 0),
+    height: Math.max(window.innerHeight, machine.display?.minHeight ?? 0),
+  });
+  tick("attaching input source...");
+  kernel.attachInputSource(
+    // Bound to the window for global reach; `shouldCapture` is what keeps the
+    // out-of-stage chrome (the "New" menu, dialogs) usable. See
+    // demoSurfaceCaptureGate.
+    new BrowserInputSource(window, {
+      ...(displaySelector === null ? {} : { pointer: false }),
+      wheel: true,
+      onResize: () => {
+        const { width, height } = dims();
+        kernel.setInputCanvasDims(width, height);
+      },
+      shouldCapture: demoSurfaceCaptureGate(
+        () => document.querySelector(displaySelector ?? "main"),
+      ),
+    }),
+    dims(),
+  );
+}
+
+function stageShellUtilities(
+  fs: MemoryFileSystem,
+  dashBytes: ArrayBuffer,
+  bashBytes: ArrayBuffer,
+): void {
+  ensureDemoHomes(fs);
+  ensureDirRecursive(fs, "/bin");
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
+  try {
+    fs.symlink("/bin/dash", "/bin/sh");
+  } catch {
+    /* exists */
+  }
+  try {
+    fs.symlink("/bin/dash", "/usr/bin/dash");
+  } catch {
+    /* exists */
+  }
+  try {
+    fs.symlink("/bin/dash", "/usr/bin/sh");
+  } catch {
+    /* exists */
+  }
+  writeVfsBinary(fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
+  try {
+    fs.symlink("/bin/bash", "/usr/bin/bash");
+  } catch {
+    /* exists */
+  }
+}
+
+function ensureDemoHomes(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/home");
+  ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
+  ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
+}
+
+function ensureOwnedDir(
+  fs: MemoryFileSystem,
+  path: string,
+  mode: number,
+  uid: number,
+  gid: number,
+): void {
+  ensureDirRecursive(fs, path);
+  fs.chown(path, uid, gid);
+  fs.chmod(path, mode);
+}
+
+function patchWordPressRuntimeConfig(
+  fs: MemoryFileSystem,
+  kind: WordPressDatabaseKind,
+): void {
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
+  writeVfsFile(
+    fs,
+    "/etc/wp-config-template.php",
+    wordpressConfigTemplate(kind),
+  );
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-config.php",
+    renderWordPressConfig(kind, APP_PATH, PROTO),
+  );
+  if (kind === "sqlite") {
+    ensureOwnedDir(
+      fs,
+      "/var/www/html/wp-content/database",
+      0o775,
+      PHP_FPM_UID,
+      PHP_FPM_GID,
+    );
+  } else if (kind === "mariadb") {
+    for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
+      ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
+    }
+    patchWordPressPersistentMysqli(fs);
+    writeVfsFile(
+      fs,
+      "/var/www/html/kandelo-mysql-bench.php",
+      MYSQL_BENCHMARK_PHP,
+    );
+  }
+  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
+    WORDPRESS_URL_MU_PLUGIN,
+  );
+}
+
+function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/tmp");
+  fs.chmod("/tmp", 0o1777);
+  ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
+  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
+
+  const phpIniPath = "/etc/php.ini";
+  const phpIni = readOptionalVfsText(fs, phpIniPath);
+  if (phpIni !== null) {
+    let patched = phpIni;
+    if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
+      patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (!/^mysqli\.allow_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.allow_persistent=1\n`;
+    }
+    if (!/^mysqli\.max_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.max_persistent=-1\n`;
+    }
+    if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
+      patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (patched !== phpIni) writeVfsFile(fs, phpIniPath, patched);
+  }
+
+  const mariadbServicePath = "/etc/dinit.d/mariadb";
+  const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
+  if (mariadbService !== null) {
+    const patched = mariadbService
+      .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
+      .replace(/\s*--thread-handling=no-threads\b/g, "");
+    if (patched !== mariadbService)
+      writeVfsFile(fs, mariadbServicePath, patched);
+  }
+
+  ensureMariaDbReadyService(fs);
+  patchPhpFpmMariaDbDependency(fs);
+}
+
+function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
+  writeVfsFile(
+    fs,
+    MARIADB_READY_SCRIPT_PATH,
+    `#!/bin/sh
+set -u
+
+i=0
+while [ "$i" -lt 60 ]; do
+    if [ -S "${MARIADB_SOCKET_PATH}" ] || [ -e "${MARIADB_SOCKET_PATH}" ]; then
+        exit 0
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+
+echo "MariaDB readiness timed out waiting for ${MARIADB_SOCKET_PATH}" >&2
+exit 1
+`,
+    0o755,
+  );
+  writeVfsFile(
+    fs,
+    `/etc/dinit.d/${MARIADB_READY_SERVICE}`,
+    `type = scripted
+command = /bin/sh ${MARIADB_READY_SCRIPT_PATH}
+depends-on = mariadb
+restart = false
+`,
+  );
+}
+
+function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
+  const phpFpmServicePath = "/etc/dinit.d/php-fpm";
+  const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
+  if (phpFpmService === null) return;
+  if (
+    new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(
+      phpFpmService,
+    )
+  ) {
+    return;
+  }
+  const patched = phpFpmService.replace(
+    /^depends-on\s*=\s*mariadb\s*$/m,
+    `depends-on = ${MARIADB_READY_SERVICE}`,
+  );
+  if (patched !== phpFpmService) {
+    writeVfsFile(fs, phpFpmServicePath, patched);
+  } else {
+    writeVfsFile(
+      fs,
+      phpFpmServicePath,
+      `${phpFpmService}${phpFpmService.endsWith("\n") ? "" : "\n"}depends-on = ${MARIADB_READY_SERVICE}\n`,
+    );
+  }
+}
+
+function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+  for (const path of [
+    "/var/www/html/wp-includes/class-wpdb.php",
+    "/var/www/html/wp-includes/wp-db.php",
+  ]) {
+    const source = readOptionalVfsText(fs, path);
+    if (source === null) continue;
+    const patched = patchWordPressMysqliPersistentSource(source);
+    if (patched !== source) writeVfsFile(fs, path, patched);
+  }
+}
 
 interface LoadedVfsImage {
   imageBytes: ArrayBuffer;
@@ -1855,43 +2214,24 @@ async function loadVfsImage(profile: LiveProfile): Promise<LoadedVfsImage> {
   const vfsUrl = await resolveProfileVfsUrl(profile);
   return {
     imageBytes: await fetch(vfsUrl)
-      .then(failOn(`${profile.id}.vfs.zst`))
+      .then(failOn(imageLabel(profile)))
       .then((r) => r.arrayBuffer()),
   };
 }
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
-  if (profile.vfsSource) return resolveLiveVfsSourceUrl(profile.vfsSource);
+  if (profile.vfsSource) return resolveVfsProductUrl(profile.vfsSource);
   if (profile.vfsUrl) return profile.vfsUrl;
-  throw new Error(`No VFS image URL configured for ${profile.id}`);
+  throw new Error("this boot descriptor names no VFS image to load");
 }
 
-/**
- * Read `?memoryProfile=` from the page URL.
- *
- * The host detects the right budget for the device on its own; this exists so
- * a device that misbehaves under one budget can be retried under the other
- * without a different build. An unknown id fails the boot loudly rather than
- * silently falling back.
- */
-function hostMemoryProfile(): RuntimeMemoryProfile {
-  // Resolve once per boot and share it: composition needs the budget before a
-  // BrowserKernel exists, and detecting twice could drift.
-  return detectRuntimeMemoryProfile(
-    typeof navigator === "undefined"
-      ? {}
-      : {
-        userAgent: navigator.userAgent,
-        maxTouchPoints: navigator.maxTouchPoints,
-      },
-    memoryProfileOverride(),
-  );
-}
-
-function memoryProfileOverride(): string | undefined {
-  if (typeof location === "undefined") return undefined;
-  const value = new URLSearchParams(location.search).get("memoryProfile");
-  return value === null || value === "" ? undefined : value;
+/** What to call this image in a boot log or a failure. Never a machine id:
+ *  the machine is not known until the image has been read. */
+function imageLabel(profile: LiveProfile): string {
+  if (profile.productId !== null) return `${profile.productId} image`;
+  return profile.vfsUrl
+    ? `${demoIdFromVfsImageUrl(profile.vfsUrl)}.vfs.zst`
+    : "VFS image";
 }
 
 function dirname(path: string): string {
@@ -1945,7 +2285,7 @@ async function spawnLazy(
     assertCurrent();
     tick(`spawning ${argv[0]}...`);
     await kernel.spawn(bytes, argv, {
-      env: SHELL_ENV,
+      env: FBTEST_ENV,
       cwd: DEMO_HOME,
       uid: DEMO_UID,
       gid: DEMO_GID,
@@ -1961,7 +2301,9 @@ async function spawnLazy(
 
 function maybeMarkWebReady(
   host: LiveKernelHost,
-  profile: LiveProfile,
+  web: DemoWebConfig | null,
+  label: string,
+  requiredServices: Set<string>,
   seenPorts: Set<number>,
   bridgeSent: boolean,
   appPrefix: string,
@@ -1970,11 +2312,10 @@ function maybeMarkWebReady(
   tick: (msg: string) => void,
   isCurrent: () => boolean,
 ): void {
-  const web = profile.init?.web;
-  if (!web) return;
+  if (web === null) return;
   if (readiness.failed) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
-  const servicesReady = (web.requiredServices ?? []).every((serviceName) =>
+  const servicesReady = [...requiredServices].every((serviceName) =>
     dinitBootTracker.hasSucceeded(serviceName),
   );
   if (!portsReady || !servicesReady || !bridgeSent) return;
@@ -1984,7 +2325,7 @@ function maybeMarkWebReady(
   if (readiness.ready) {
     if (!isCurrent()) return;
     host.setWebPreview({
-      label: web.label,
+      label,
       url: appPrefix,
       port: HTTP_PORT,
       status: "running",
@@ -1996,7 +2337,7 @@ function maybeMarkWebReady(
     readiness.ready = true;
     tick("Web preview ready");
     host.setWebPreview({
-      label: web.label,
+      label,
       url: appPrefix,
       port: HTTP_PORT,
       status: "running",
@@ -2008,7 +2349,7 @@ function maybeMarkWebReady(
   readiness.probing = true;
   const probeUrl = previewUrlForPath(appPrefix, web.probePath ?? "/");
   host.setWebPreview({
-    label: web.label,
+    label,
     url: appPrefix,
     port: HTTP_PORT,
     status: "starting",
@@ -2025,7 +2366,7 @@ function maybeMarkWebReady(
         readiness.ready = true;
         tick("HTTP preview ready");
         host.setWebPreview({
-          label: web.label,
+          label,
           url: appPrefix,
           port: HTTP_PORT,
           status: "running",
@@ -2036,7 +2377,7 @@ function maybeMarkWebReady(
         if (!isCurrent()) return;
         const message = err instanceof Error ? err.message : String(err);
         host.setWebPreview({
-          label: web.label,
+          label,
           url: appPrefix,
           port: HTTP_PORT,
           status: "error",
@@ -2102,41 +2443,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function descriptorBootIdentity(
-  id: string,
-  shell: ShellProfile,
-): { env: string[]; cwd: string; uid: number; gid: number } {
-  const serviceIds = new Set([
-    "nginx",
-    "nginx-php",
-    "nginx-python",
-    "wordpress-sqlite",
-    "wordpress-mariadb",
-  ]);
-  if (serviceIds.has(id)) {
-    return {
-      env: SERVICE_ENV,
-      cwd: ROOT_HOME,
-      uid: ROOT_UID,
-      gid: ROOT_GID,
-    };
-  }
-  if (id === "node" || shell === "node") {
-    return {
-      env: shellEnvFor(shell),
-      cwd: shellCwdFor(shell),
-      uid: DEMO_UID,
-      gid: DEMO_GID,
-    };
-  }
-  return {
-    env: shellEnvFor(shell),
-    cwd: shellCwdFor(shell),
-    uid: DEMO_UID,
-    gid: DEMO_GID,
-  };
-}
-
 function envRecord(env: string[]): Record<string, string> {
   return Object.fromEntries(
     env.map((kv) => {
@@ -2146,128 +2452,177 @@ function envRecord(env: string[]): Record<string, string> {
   );
 }
 
-function descriptorFor(id: string): BootDescriptor {
-  const normalized = normalizeDemoId(id) ?? "shell";
-  const spec = LIVE_DEMO_SPECS[normalized];
-  const item =
-    liveGalleryItems().find((p) => p.id === normalized) ??
-    liveGalleryItems()[0];
-  const shell = spec.shell ?? "default";
-  const network = spec.network ?? false;
-  const bootIdentity = descriptorBootIdentity(normalized, shell);
+/**
+ * The machine's real descriptor, built from the image that is booting.
+ *
+ * Identity, features, caps, requested memory, and the init argv all come out
+ * of `/etc/kandelo/demo.json`. The caller's descriptor contributes only the
+ * mounts it named (which image to boot) — never what the machine is.
+ */
+function descriptorForMachine(
+  profile: LiveProfile,
+  machine: ImageMachine,
+  title: string,
+  requestedDescriptor: BootDescriptor,
+): BootDescriptor {
+  const identity = machine.identity;
+  const init = machine.init === null ? null : initLaunchForMachine(machine.init);
   return {
     version: 1,
-    id: item.id,
-    title: item.title,
-    base: item.base,
+    id: machine.profileId || profile.descriptor.id,
+    title,
+    // The ABI this build speaks, computed here rather than restated by every
+    // image: the binaries' own `__abi_version` check is what actually
+    // enforces compatibility, so a declared string could only agree or lie.
+    base: `kandelo:shell@abi${ABI_VERSION}`,
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: spec.memoryPages ?? 2048,
-      features: [
-        "shared-array-buffer",
-        "pty",
-        ...(spec.features ?? []),
-        ...(network ? ["tcp-bridge"] : []),
-      ],
+      memoryPages: machine.runtime.requests.memoryPages
+        ?? HOST_DEFAULT_DESCRIPTOR_MEMORY_PAGES,
+      features: ["shared-array-buffer", "pty", ...machine.runtime.features],
       time: "real",
     },
-    packages: item.packages,
-    mounts: [
-      {
-        path: "/",
-        source: "image",
-        ref: `${item.id}.vfs@local`,
-        readonly: false,
+    packages: identity?.packages ?? [],
+    mounts: requestedDescriptor.mounts,
+    boot: init === null
+      ? profile.descriptor.boot
+      : {
+        argv: init.argv,
+        cwd: init.cwd,
+        env: envRecord(init.env),
+        uid: init.uid,
+        gid: init.gid,
       },
-      { path: "/tmp", source: "scratch", ephemeral: true },
-    ],
-    boot: {
-      argv: item.bootCommand,
-      cwd: bootIdentity.cwd,
-      env: envRecord(bootIdentity.env),
-      uid: bootIdentity.uid,
-      gid: bootIdentity.gid,
-    },
-    caps: { network },
+    // No `caps`: the machine declares no capability the host enforces, and a
+    // flag that reads like a sandbox control but gates nothing is worse than
+    // an absent one.
   };
 }
 
+/**
+ * The gallery listing: one item per curated roster entry, in roster order.
+ *
+ * Membership comes from `gallery-roster.json`; every displayed byte comes
+ * from the named product's own tracked `demo.json`. The app supplies neither.
+ * An entry whose product cannot be resolved, is not served here, or has not
+ * been built is still LISTED — `resolveEntryAvailability` names the specific
+ * boundary, and `resolveVfsImageUrl` rejects with that same reason instead of
+ * a generic "not built".
+ */
 function liveGalleryItems(): GalleryItem[] {
-  return PRESET_LIBRARY.map((p) => ({
-    id: p.id,
-    title: p.title,
-    summary: p.summary,
-    base: p.base,
-    packages: p.packages,
-    bootCommand: p.bootCommand,
-    vfsImageUrl: vfsImageUrlForPreset(p.id),
-    resolveVfsImageUrl: vfsImageUrlResolverForPreset(p.id),
-    accent: p.accent,
-    glyph: p.glyph,
-    estimatedUrlBytes: p.estimatedUrlBytes,
-  }));
+  return GALLERY_ROSTER.entries.flatMap((entry) => {
+    const item = galleryItemForRosterEntry(entry);
+    return item === null ? [] : [item];
+  });
 }
 
-function vfsImageUrlForPreset(id: string): string | undefined {
-  const liveId = normalizeDemoId(id);
-  if (!liveId) return undefined;
-  const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
-  if (source.kind !== "url") return undefined;
-  const url = new URL(source.url, location.href);
-  url.hash = liveId;
-  return url.href;
-}
-
-function vfsImageUrlResolverForPreset(
-  id: string,
-): (() => Promise<string>) | undefined {
-  const liveId = normalizeDemoId(id);
-  if (!liveId) return undefined;
-  const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
-  // A "url" source already yields an eager vfsImageUrl via
-  // vfsImageUrlForPreset. Every other kind (optional-demo AND
-  // optional-binary) needs a lazy resolver so the gallery can produce a
-  // shareable/navigable ?demo=&vfs= URL — resolveLiveVfsSourceUrl handles all
-  // of them. Without this, optional-binary items (nginx, nginx-php) had no
-  // way to resolve their image, so Launch fell back to an in-place descriptor
-  // apply that never updated the address bar and Copy produced a dead link.
-  if (source.kind === "url") return undefined;
-  return async () => {
-    const url = new URL(
-      await resolveLiveVfsSourceUrl(source),
-      location.href,
+function galleryItemForRosterEntry(entry: RosterEntry): GalleryItem | null {
+  const config = TRACKED_DEMO_CONFIG_BY_PRODUCT[entry.product];
+  const identity = config === undefined
+    ? null
+    : resolveDemoIdentity(config, entry.profile);
+  if (config === undefined || identity === null) {
+    // No tracked machine metadata means nothing truthful to display. Log the
+    // gap rather than inventing a title for a machine the repo does not
+    // describe.
+    console.warn(
+      `gallery roster entry ${entry.product}/${entry.profile} has no tracked`
+        + ` demo-config identity; it cannot be listed`,
     );
-    url.hash = liveId;
-    return url.href;
+    return null;
+  }
+  const availability = galleryEntryAvailability(entry);
+  const source = galleryProductSource(entry.product);
+  const init = resolveDemoInit(config, entry.profile);
+  // A `shellCommand` machine has no pid 1 of its own, so `initLaunchForMachine`
+  // answers null and the listing shows the login session it really boots —
+  // the command runs in that session, after it.
+  const bootCommand = (init === null ? null : initLaunchForMachine(init))?.argv
+    ?? DEFAULT_LOGIN_SESSION_ARGV;
+  const eagerUrl = source !== undefined && source.kind === "url"
+    ? new URL(source.url, location.href).href
+    : undefined;
+  const item: GalleryItem = {
+    id: entry.profile,
+    title: identity.title,
+    summary: identity.summary,
+    base: `kandelo:shell@abi${ABI_VERSION}`,
+    packages: identity.packages ?? [],
+    bootCommand,
+    ...(eagerUrl === undefined ? {} : { vfsImageUrl: eagerUrl }),
+    accent: identity.accent,
+    glyph: identity.glyph,
+    estimatedUrlBytes: 0,
   };
+  item.estimatedUrlBytes = JSON.stringify(item).length;
+  if (eagerUrl === undefined) {
+    item.resolveVfsImageUrl = async () => {
+      if (availability.state !== "available" || source === undefined) {
+        throw new Error(
+          availability.reason
+            ?? `product ${JSON.stringify(entry.product)} cannot be launched here`,
+        );
+      }
+      return new URL(await resolveVfsProductUrl(source), location.href).href;
+    };
+  }
+  return item;
 }
 
-async function liveDemoIdForVfsImageUrl(
-  vfsUrl: string,
-  demo: string | null | undefined,
-): Promise<LiveDemoId | null> {
-  const image = await matchTrustedVfsSourceId(
-    vfsUrl,
-    (Object.keys(VFS_SOURCES) as LiveVfsImage[]).map((id) => ({
-      id,
-      resolveVfsImageUrl: () => resolveTrustedLiveVfsSourceUrl(VFS_SOURCES[id]),
-    })),
-  );
-  if (!image) return null;
+/** The interactive login session an image boots when it declares no `init`.
+ *  Display-only: the actual session is the image's own terminal-session
+ *  contract, which the kernel starts from `/etc/kandelo/terminal-session.json`. */
+const DEFAULT_LOGIN_SESSION_ARGV = ["bash", "-l", "-i"];
 
-  const fragmentDemo = normalizeDemoId(
-    new URL(vfsUrl, location.href).hash.slice(1),
-  );
-  const requestedDemo = normalizeDemoId(demo) ?? fragmentDemo;
-  if (!requestedDemo) return DEFAULT_DEMO_FOR_VFS_IMAGE[image];
-
-  // WHY: a demo selects launch behavior, while the matched image owns the VFS
-  // bytes and capacity. Never apply a launch profile to a different image.
-  return LIVE_DEMO_SPECS[requestedDemo].image === image ? requestedDemo : null;
+/**
+ * Whether a roster entry can be launched in THIS deployment, expressed with
+ * the shared availability model so the reason names a specific boundary.
+ */
+function galleryEntryAvailability(entry: RosterEntry): EntryAvailability {
+  const source = galleryProductSource(entry.product);
+  if (source === undefined) {
+    return resolveEntryAvailability(entry, {
+      known: false,
+      servedHere: false,
+      built: false,
+    });
+  }
+  if (CANONICAL_PAGES_VFS_PRODUCTS !== null) {
+    const served = CANONICAL_PAGES_VFS_PRODUCTS.some(
+      (product) => product.id === source.productId,
+    );
+    return resolveEntryAvailability(entry, {
+      known: true,
+      servedHere: served,
+      built: served,
+    });
+  }
+  return resolveEntryAvailability(entry, {
+    known: true,
+    servedHere: true,
+    built: localProductArtifactExists(source),
+    buildCommand: localProductBuildCommand(source),
+  });
 }
 
-async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
+function localProductArtifactExists(source: VfsProductSource): boolean {
+  if (source.kind === "url") return true;
+  if (source.kind === "optional-demo") {
+    return optionalDemoVfsIsBuilt(source.image);
+  }
+  return source.relPaths.some((relPath) => relPath in OPTIONAL_BINARY_URLS);
+}
+
+function localProductBuildCommand(source: VfsProductSource): string | undefined {
+  if (source.kind === "url") return undefined;
+  return source.kind === "optional-demo"
+    ? "./run.sh fetch"
+    : "./run.sh build programs";
+}
+
+/** Resolve a product's image URL through whichever channel serves it here. */
+async function resolveVfsProductUrl(source: VfsProductSource): Promise<string> {
   if (source.kind === "url") {
     if (CANONICAL_PAGES_VFS_LOADER === undefined) return source.url;
     return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
@@ -2288,23 +2643,183 @@ async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
   return optionalBinaryUrl(source.relPaths, source.label);
 }
 
-async function resolveTrustedLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
+async function resolveTrustedVfsProductUrl(
+  source: VfsProductSource,
+): Promise<string> {
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
     return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
   }
-  return resolveLiveVfsSourceUrl(source);
+  return resolveVfsProductUrl(source);
 }
 
-function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
-  if (!id) return null;
-  const normalized = DEMO_ALIASES[id] ?? id;
-  return isLiveDemoId(normalized) ? normalized : null;
+/**
+ * Match a `?vfs=` URL against the products whose URL this page already knows
+ * without resolving anything. Fails closed: an ambiguous or absent match
+ * returns `null`, which only defers to the authoritative asynchronous match.
+ *
+ * Fragments name a profile, not a file, so they are excluded from the
+ * comparison exactly as `matchTrustedVfsSourceId` excludes them.
+ */
+function eagerProductIdForVfsUrl(vfsUrl: string): GalleryProductId | null {
+  let requested: string;
+  try {
+    requested = withoutUrlHash(vfsUrl);
+  } catch {
+    return null;
+  }
+  const matches = (Object.keys(VFS_PRODUCTS) as GalleryProductId[]).filter(
+    (productId) => {
+      const source = VFS_PRODUCTS[productId];
+      return source.kind === "url" && withoutUrlHash(source.url) === requested;
+    },
+  );
+  return matches.length === 1 ? matches[0] : null;
 }
 
-function isLiveDemoId(id: string): id is LiveDemoId {
-  return Object.hasOwn(LIVE_DEMO_SPECS, id);
+function withoutUrlHash(rawUrl: string): string {
+  const url = new URL(rawUrl, location.href);
+  url.hash = "";
+  return url.href;
 }
 
+/**
+ * Which product, if any, a `?vfs=` URL is. Used only to pick host policy
+ * (capacity, Pages activation) — never to decide what machine boots.
+ */
+async function matchTrustedVfsProductId(
+  vfsUrl: string,
+): Promise<GalleryProductId | null> {
+  return matchTrustedVfsSourceId(
+    vfsUrl,
+    (Object.keys(VFS_PRODUCTS) as GalleryProductId[]).map((id) => ({
+      id,
+      resolveVfsImageUrl: () => resolveTrustedVfsProductUrl(VFS_PRODUCTS[id]),
+    })),
+  );
+}
+
+function readImageExperimentalTerminalSession(
+  fs: MemoryFileSystem,
+): ExperimentalTerminalSession {
+  let stat;
+  try {
+    stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
+  } catch (err) {
+    if (isMissingVfsPath(err)) {
+      throw new Error(
+        `VFS image is missing ${EXPERIMENTAL_TERMINAL_SESSION_PATH}`,
+      );
+    }
+    throw err;
+  }
+  if ((stat.mode & 0xf000) !== 0x8000) {
+    throw new Error(
+      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} must be a regular file`,
+    );
+  }
+  if (stat.size > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
+    throw new Error(
+      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} exceeds ` +
+        `${MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES} bytes`,
+    );
+  }
+  const json = new TextDecoder("utf-8", { fatal: true }).decode(
+    new Uint8Array(readVfsFile(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH)),
+  );
+  return parseExperimentalTerminalSession(json);
+}
+
+function assertImageTerminalProgram(
+  fs: MemoryFileSystem,
+  program: ExperimentalTerminalProgram,
+): void {
+  const path = program.path;
+  let stat;
+  try {
+    stat = fs.stat(path);
+  } catch {
+    throw new Error(`VFS image terminal program is missing: ${path}`);
+  }
+  if ((stat.mode & 0xf000) !== 0x8000) {
+    throw new Error(`VFS image terminal program is not a regular file: ${path}`);
+  }
+  if ((stat.mode & 0o111) === 0) {
+    throw new Error(`VFS image terminal program is not executable: ${path}`);
+  }
+}
+
+function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
+  return readKandeloDemoConfigFromVfs(fs);
+}
+
+function readOptionalVfsText(
+  fs: MemoryFileSystem,
+  path: string,
+): string | null {
+  const bytes = readOptionalVfsFile(fs, path);
+  return bytes === null
+    ? null
+    : new TextDecoder().decode(new Uint8Array(bytes));
+}
+
+function readOptionalVfsFile(
+  fs: MemoryFileSystem,
+  path: string,
+): ArrayBuffer | null {
+  try {
+    return readVfsFile(fs, path);
+  } catch (err) {
+    if (isMissingVfsPath(err)) return null;
+    throw err;
+  }
+}
+
+/** Does this image actually contain that path? The host's staging patches
+ *  key off what the image CONTAINS, never off a machine id. */
+function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
+  try {
+    fs.stat(path);
+    return true;
+  } catch (err) {
+    if (isMissingVfsPath(err)) return false;
+    throw err;
+  }
+}
+
+function isMissingVfsPath(err: unknown): boolean {
+  if (typeof err === "object" && err !== null) {
+    const code = (err as { code?: unknown }).code;
+    if (code === -2 || code === "ENOENT") return true;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (/\bENOENT\b/.test(message)) return true;
+  return message.includes("No such file or directory");
+}
+
+function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
+  const st = fs.stat(path);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const out = new Uint8Array(st.size);
+    let off = 0;
+    while (off < out.byteLength) {
+      const n = fs.read(fd, out.subarray(off), null, out.byteLength - off);
+      if (n <= 0) break;
+      off += n;
+    }
+    return out.buffer.slice(out.byteOffset, out.byteOffset + off);
+  } finally {
+    fs.close(fd);
+  }
+}
+
+function failOn(label: string): (r: Response) => Response {
+  return (r) => {
+    if (!r.ok)
+      throw new Error(`fetch failed for ${label}: ${r.status} ${r.statusText}`);
+    return r;
+  };
+}
 
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(0)} KiB`;

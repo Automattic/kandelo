@@ -274,7 +274,7 @@ async function shareUrlForGalleryItem(
   // item's VFS image the same way onLaunchGalleryItem does: prefer the eager
   // vfsImageUrl, then fall back to the lazy resolver (optional-demo /
   // optional-binary images). galleryItemUrl() builds the working
-  // ?demo=&vfs= link on this origin.
+  // ?vfs=<image>&profile=<id> link on this origin.
   let vfsImageUrl = item.vfsImageUrl;
   if (!vfsImageUrl && item.resolveVfsImageUrl) {
     vfsImageUrl = await item.resolveVfsImageUrl();

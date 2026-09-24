@@ -4,8 +4,8 @@ inputs = [
   "images/vfs/scripts/build-nginx-python-vfs-image.ts",
   "images/vfs/scripts/python-bytecode-prewarm.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
-  "images/vfs/scripts/kandelo-demo-config.ts",
-  "images/vfs/scripts/kandelo-demo-guides.ts",
+  "images/vfs/scripts/tracked-demo-config.ts",
+  "packages/registry/nginx-python-vfs/nginx-python-demo.json",
   "images/vfs/scripts/package-shell-vfs-build.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
@@ -17,9 +17,8 @@ inputs = [
   # whole tree so cache identity cannot outlive either contract.
   "host/src",
   "web-libs/kandelo-session/src/demo-config.ts",
-  "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 2
+revision = 3

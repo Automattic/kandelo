@@ -78,7 +78,8 @@ part of the task. Build or fetch what is missing:
    --init libc/musl`.
 2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
    builds the musl sysroot from scratch on a fresh checkout (or just
-   re-syncs overlay headers when a sysroot already exists), then the
+   re-syncs overlay headers and refreshes the sysroot's DRI/GL archives
+   when a sysroot already exists), then the
    kernel, every package, and the rootfs, producing
    `local-binaries/kernel.wasm` (the binary resolver prefers it over
    `binaries/`) and `host/wasm/rootfs.vfs`:

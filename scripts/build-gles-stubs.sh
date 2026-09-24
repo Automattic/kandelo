@@ -13,6 +13,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 
+# shellcheck source=build-step-input-hash.sh
+source "$REPO_ROOT/scripts/build-step-input-hash.sh"
+
 # Auto-detect LLVM from the declared environment or ordinary PATH.
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ]; then echo "$LLVM_BIN"; return; fi
@@ -46,6 +49,30 @@ CFLAGS=(
 
 OUT_DIR="$SYSROOT/lib"
 PC_DIR="$OUT_DIR/pkgconfig"
+STAMP="$SYSROOT/.kandelo-gles-stubs.input-hash"
+
+# Same freshness contract as scripts/build-dri-stubs.sh: a sysroot that
+# already has libc.a is only header-resynced by `xtask bootstrap sysroot`,
+# so without a recorded digest these archives can stay older than the glue
+# they are built from. `-Wl,--allow-undefined` then turns each entry point
+# the stale archive lacks into an `env.*` import that traps at call time
+# instead of failing the link.
+GLES_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
+    scripts/build-gles-stubs.sh \
+    scripts/write-graphics-pkgconfig.sh \
+    scripts/build-step-input-hash.sh \
+    libc/glue \
+    libc/musl-overlay/include)"
+
+if [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&
+   [ -f "$OUT_DIR/libGLESv2.a" ] &&
+   [ -f "$PC_DIR/egl.pc" ] &&
+   [ -f "$PC_DIR/glesv2.pc" ] &&
+   build_step_is_current "$OUT_DIR/libEGL.a" "$STAMP" "$GLES_INPUT_HASH"; then
+    echo "==> sysroot GL stubs up to date ($GLES_INPUT_HASH)"
+    exit 0
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$OUT_DIR" "$PC_DIR"
@@ -62,3 +89,5 @@ echo "GL stubs installed:"
 ls -la "$OUT_DIR/libEGL.a" "$OUT_DIR/libGLESv2.a"
 
 bash "$REPO_ROOT/scripts/write-graphics-pkgconfig.sh" gles "$PC_DIR"
+
+write_build_stamp "$STAMP" "$GLES_INPUT_HASH"

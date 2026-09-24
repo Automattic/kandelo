@@ -347,6 +347,7 @@ Located in `apps/browser-demos/pages/`:
 | erlang | OTP 28 BEAM | legacy spawn | Erlang VM, message passing |
 | nginx | nginx | dinit | Static file serving via service worker |
 | nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
+| nginx-python | nginx + Python (wsgiref) | dinit | Reverse proxy to a standard-library WSGI JSON API over SQLite |
 | mariadb | MariaDB 10.5 | dinit | SQL database with threads (Aria/InnoDB) |
 | redis | Redis 7.2 | dinit | In-memory store with threads |
 | wordpress | nginx + PHP-FPM + WP | dinit | Full stack with SQLite |
@@ -677,16 +678,65 @@ artifact lookup continues to support relocated build inputs and local source
 overrides, but those paths do not carry enough identity to authorize a Wasm
 validation exception without a separate content-bound receipt.
 
-Gallery launch URLs retain both the logical demo id and the resolved VFS image
-URL. Each built-in VFS image has one trusted source and resource identity; the
-logical id separately selects launch behavior. This lets the shell, Doom, and
-modeset demos reuse the same shell image without creating multiple trusted
-image profiles. The loader verifies that the URL exactly matches the current
-built-in image before granting its larger resource limit. A query parameter or
-URL fragment cannot give an unrelated image that limit; images consumed by the
-general live host use the bounded custom-image profile when they do not match.
-The specialized Node host always boots its fixed built-in image rather than
-consuming a `vfs` override.
+### Selecting a machine: `?vfs=` and `&profile=`
+
+A Kandelo VFS image describes the machine it contains, in a tracked
+`/etc/kandelo/demo.json` baked into the image
+(`web-libs/kandelo-session/src/demo-config.ts`). The browser app holds no
+machine identities: no id list, no per-id switch, no per-id spec table. `?vfs=`
+alone is therefore enough to boot a first-party machine or a stranger's image,
+and both travel one code path.
+
+An image may declare several profiles — the shell image carries `shell`,
+`doom`, `modeset`, `sdl2`, `evdev`, and `espeak` — so one channel selects one:
+
+1. `&profile=<id>` on the page URL.
+2. else the image's own `defaultProfile`.
+
+`&profile=` is the *only* channel a profile id travels on. A fragment on the
+`?vfs=` image URL itself (e.g. `?vfs=https://cdn/shell.vfs.zst%23doom`) is
+never read as a profile id, and the app never writes one: `galleryItemUrl`
+and every other link the app generates carry `&profile=` alone, with no
+fragment appended to the image URL. (URL-identity matching still ignores any
+fragment a hand-written `?vfs=` URL happens to carry — a fragment is never
+part of a resource's identity — but that is ordinary URL hygiene, not a second
+profile channel.)
+
+An id no profile in the image declares is a **loud boot error** naming the
+profiles the image does declare — never a silent fall back to its default. An
+image with no `/etc/kandelo/demo.json`, or a malformed one, fails the boot
+with that reason; nothing synthesizes a fallback machine.
+
+The older `?demo=<id>` parameter is **removed**. It named one of a dozen ids
+the app held, which is exactly what image-owned machine definitions delete. It
+is ignored rather than rejected, so links in the wild degrade instead of
+breaking: `galleryItemUrl` has always written `?vfs=` alongside it, so such a
+link still resolves its image and boots that image's declared default profile.
+
+A link shared before the fragment channel was removed may look like
+`?demo=doom&vfs=https://cdn/shell.vfs.zst%23doom`: the now-dead `?demo=` and
+the now-ignored image-URL fragment both named `doom`. Opening that link today
+still resolves the `?vfs=` image, but — since neither `?demo=` nor the
+fragment is read — boots the image's declared `defaultProfile` instead of the
+profile either of them named. For the shell image that means such a link now
+boots plain `shell`, not `doom`. This is an accepted, deliberate cost of
+removing the second channel, not a bug: re-sharing the link with `&profile=`
+produces a URL that keeps working.
+
+Each built-in VFS image has one trusted source and resource identity. The
+loader verifies that the URL exactly matches the current built-in image before
+granting its larger resource limit. A query parameter or URL fragment cannot
+give an unrelated image that limit; images consumed by the general live host
+use the bounded custom-image profile when they do not match. The specialized
+Node host always boots its fixed built-in image rather than consuming a `vfs`
+override.
+
+Resource ceilings are host policy, not image authority: `runtime.requests` in
+`demo.json` is a REQUEST that `live-setup.ts` clamps (worker count, memory
+pages, VFS byte ceiling). Gallery membership is likewise curated, in
+`apps/browser-demos/pages/kandelo/gallery-roster.json`; an image cannot claim a
+place in the gallery by declaring one. Every displayed byte — title, summary,
+accent, glyph — still comes from the named product's own tracked demo config.
 
 ```typescript
 // Typical demo pattern
@@ -708,7 +758,8 @@ const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 ### Script-carrying share links
 
 The Share button in the dock produces links of the form
-`…/?demo=<id>#k1=<payload>`. The fragment is a versioned, gzip-compressed
+`…/?vfs=<image>&profile=<id>#k1=<payload>`. The fragment is a versioned,
+gzip-compressed
 boot descriptor (`web-libs/kandelo-session/src/boot-descriptor.ts`) that may
 carry optional `inputs` and `parameters` fields. The payload is validated
 with hard caps and loud `BootDescriptorError` failures. A malformed or
@@ -738,8 +789,8 @@ before execution, and then run from the initial interactive shell — `bash`
 when the image ships it, `sh` otherwise. The file is left writable so the
 visitor can experiment: edit it and re-run it after boot. The script's
 source, the invocation, and the script's output are all visible in the
-terminal, and the script takes the image `autoCommand`'s place in the
-launch sequence. Navigating to a different machine from the gallery drops
+terminal, and the script takes the image's own `init.shellCommand`'s place
+in the launch sequence. Navigating to a different machine from the gallery drops
 the fragment.
 
 Links built before boot inputs were folded in could carry a top-level
@@ -787,13 +838,63 @@ preferences with the image instead of hardcoding them in the page loader.
 }
 ```
 
-Use `writeKandeloDemoConfig()` from
-`images/vfs/scripts/kandelo-demo-config.ts` in VFS build scripts. Images
-without this file still boot with Kandelo's generic presentation defaults, but
-the Kandelo app does not carry demo-specific presentation fallbacks.
-Any extra files needed by an image-declared `autoCommand` can be declared in
-`assets`; the loader stages those paths generically and hash-verifies them when
+The tracked JSON file **is** the artifact. A VFS build script never
+constructs this object in TypeScript: it calls `writeTrackedDemoConfig(fs,
+"packages/registry/<image>/<name>-demo.json")` from
+`images/vfs/scripts/tracked-demo-config.ts`, which copies the reviewed file
+byte-for-byte to `/etc/kandelo/demo.json`. Every tracked source is listed in
+`TRACKED_DEMO_CONFIG_SOURCES` in that same module, and
+`scripts/check-image-demo-config.ts` validates all of them and
+byte-compares each single-source image's baked copy against its tracked
+source. Images without
+this file still boot with Kandelo's generic presentation defaults, but the
+Kandelo app does not carry demo-specific presentation fallbacks.
+Any extra files needed by an image-declared `init.shellCommand` can be
+declared in `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
+
+The schema is PROFILE-ONLY. `version`, `defaultProfile`, and `profiles` are
+the only top-level keys; every machine block below belongs to a
+`profiles.<id>` entry, and declaring one at the top level is a validation
+error naming it. There is no top-level fallback for a profile that omits a
+block — a machine field is read from the selected profile or from nowhere.
+
+Alongside `presentation`, `assets`, `guide`, and `ingest`, a profile may
+declare these blocks.
+
+- `identity` — what a listing shows for this profile: `title`, `summary`,
+  `accent` (`#rrggbb`), `glyph` (1–4 characters), and optionally `packages`
+  (a list of package specs, at most 64). There is no `base` field: the app
+  computes `kandelo:shell@abi<N>` from the ABI it was built with, and real
+  ABI compatibility is enforced by the `__abi_version` check on binaries.
+- `runtime` — what the machine needs: `features` (any of `framebuffer`,
+  `kms`, `evdev-input`) and `requests` (`memoryPages`, `maxWorkers`) which
+  the host clamps to its own policy. There is no `network` flag: it gated no
+  socket syscall, and a field that reads like a sandbox control without
+  being one is a trap for third-party images.
+- `init` — what this machine runs. Exactly one of three mutually exclusive
+  shapes, so the exclusivity is structural rather than a cross-block rule:
+  - `{ "target": "<name>" }` — a bare dinit service name matching
+    `/etc/dinit.d/<name>`. It selects among init configurations the image
+    already carries; it is not a command vector.
+  - `{ "program", "args", "cwd"?, "uid", "gid" }` — exec a program from the
+    image directly as pid 1, for an image that ships no service manager.
+    `program` must be an absolute normalized path inside the image. `uid`
+    and `gid` are REQUIRED non-negative integers: defaulting to 0 would hand
+    root to any image that omitted them, and defaulting to 1000 would invent
+    an account convention an image may not share.
+  - `{ "shellCommand": "..." }` — a command line (at most 4096 characters)
+    run in the machine's login shell after boot. This is the shape for a
+    machine that is one program over an ordinary shell, such as fbDOOM or
+    the KMS fluid sim; exiting the program returns to that shell.
+- `web` — readiness signalling for the web pane: `requiredPorts` (non-empty,
+  at most 64), `probeHttp` (defaults to true), and an optional `probePath`
+  that must be a plain absolute path.
+- `display` — `minWidth`/`minHeight`, the smallest surface the machine
+  expects to be usable at. A floor the machine states, not a size it imposes.
+- `defaultProfile` (top level) — which profile a bare `?vfs=` URL boots.
+  An image with exactly one profile needs no declaration; an image with
+  several must name one.
 
 A profile may also declare one fixed-path file-ingest capability. The current
 Kandelo browser UI presents it on the framebuffer surface as a file picker and
@@ -826,11 +927,18 @@ capability; the loader does not infer one from a package or profile name.
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a
-malformed unselected profile cannot hide behind the current URL. Producers
-that already have a reviewed canonical JSON file may copy those exact bytes;
-the package-built main shell uses
-`packages/registry/shell/source-rootfs-shell-demo.json` as its single reviewed
-source.
+malformed unselected profile cannot hide behind the current URL. Every
+first-party image bakes a reviewed tracked file verbatim, so the baked bytes
+and the tracked bytes are identical.
+
+The source-rootfs shell image is the one documented exception. Its
+`/etc/kandelo/demo.json` is a deterministic merge of two tracked files —
+`packages/registry/shell/source-rootfs-shell-demo.json` (the package-owned
+base) and `packages/registry/shell/source-rootfs-shell-demo-profiles.json`
+(the image-owned profile overlay) — so the baked bytes are a superset of
+either one. The overlay may declare only `version` and `profiles`; the
+builder rejects any other top-level key, because composition takes every
+other field from the base and would otherwise discard it silently.
 
 VFS images do not need to serialize placeholder device nodes. Both Node and
 browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
@@ -838,8 +946,8 @@ shared memory at `/dev/shm`; image acceptance should exercise devices such as
 `/dev/null` only after those runtime mounts exist.
 
 KMS demos use the same metadata path. A profile can set
-`runningPrimary` to include `"kms"` and provide an `autoCommand` such as
-`/usr/local/bin/modeset`; the VFS image must contain that executable. The
+`runningPrimary` to include `"kms"` and declare an `init.shellCommand` such
+as `/usr/local/bin/modeset`; the VFS image must contain that executable. The
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
@@ -948,7 +1056,6 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded, while sudo and the ordinary command set remain first-use package outputs |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -999,7 +1106,8 @@ Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI identity, package-backed lazy transports
 and seals, and record the exact shell digest and byte count in their own
 metadata. A revision bump on the shell therefore changes the cache key of
-`node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress` through the
+`nginx-vfs`, `nginx-php-vfs`, `nginx-python-vfs`, `lamp`, and `wordpress`
+through the
 normal dependency graph.
 
 Hosted GitHub Pages publication is disabled. Its retained workflow is outside
@@ -1019,7 +1127,11 @@ lazy formats do not gain compatibility shims.
 
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
-3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
+3. If the image is consumed by Kandelo, add a tracked
+   `packages/registry/<image>/<name>-demo.json`, list it in
+   `TRACKED_DEMO_CONFIG_SOURCES`, and bake it with
+   `writeTrackedDemoConfig(fs, "<that path>")` from
+   `images/vfs/scripts/tracked-demo-config.ts`
 4. If the image is consumed by the Kandelo UI, expose it through a gallery
    manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst`
    image and await `restoreVerifiedVfsImage()` before inspecting or booting it

@@ -2,12 +2,31 @@
   "version": 1,
   "profiles": {
     "doom": {
+      "identity": {
+        "title": "fbDOOM",
+        "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
+        "accent": "#b5301c",
+        "glyph": "D",
+        "packages": [
+          "fbdoom@local",
+          "doom-shareware@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad",
         "touchControls": true
       },
       "assets": [
@@ -15,8 +34,7 @@
           "path": "/doom1.wad",
           "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
           "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
-          "mode": 420,
-          "devCorsProxy": true
+          "mode": 420
         }
       ],
       "ingest": {
@@ -30,12 +48,30 @@
       }
     },
     "modeset": {
+      "identity": {
+        "title": "DRM/KMS fluid sim",
+        "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
+        "accent": "#4f8fd6",
+        "glyph": "K",
+        "packages": [
+          "modeset@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/modeset"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/modeset"
+        "internalsAccess": "drawer"
       }
     }
   }

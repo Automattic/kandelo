@@ -59,36 +59,6 @@ process.argv.splice(2, 0, 'npx');
 require('/usr/local/lib/kandelo/npm-runner.js');
 `;
 
-export const NODE_WORKSPACE_PROFILE_PATH =
-  "/etc/profile.d/kandelo-node-workspace.sh";
-
-export const NODE_WORKSPACE_PROFILE = `# Initialize the Node demo in its mounted canonical home.
-if [ "\${HOME:-}" = /home/maker ]; then
-  # login owns the account environment; this derived image owns the Node/npm
-  # defaults that distinguish its interactive session from the base shell.
-  export PS1='spidermonkey-node$ '
-  export HISTFILE="$HOME/.bash_history"
-  export TMPDIR=/tmp
-  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-  export SSL_CERT_DIR=/etc/ssl/certs
-  export npm_config_cache=/tmp/.npm-cache
-  export npm_config_registry=https://registry.npmjs.org/
-  export npm_config_fund=false
-  export npm_config_audit=false
-  export npm_config_progress=false
-  export npm_config_update_notifier=false
-  export NPM_CONFIG_FUND=false
-  export NPM_CONFIG_AUDIT=false
-  export NPM_CONFIG_PROGRESS=false
-  export NPM_CONFIG_UPDATE_NOTIFIER=false
-  cd "$HOME" || return 1
-  if [ ! -e package.json ]; then
-    umask 022
-    printf '%s\\n' '{' '  "name": "demo",' '  "version": "0.0.1"' '}' > package.json || return 1
-  fi
-fi
-`;
-
 export const NPM_DISPLAY_SHIM = `function plain(...args) {
   return args.map((arg) => String(arg)).join(' ');
 }
@@ -138,7 +108,6 @@ export function stageSpiderMonkeyNpmRuntime(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/usr/bin");
   ensureDirRecursive(fs, "/usr/local/bin");
   ensureDirRecursive(fs, "/usr/local/lib/kandelo");
-  ensureDirRecursive(fs, "/etc/profile.d");
 
   writeVfsFile(fs, "/usr/local/lib/kandelo/npm-runner.js", NPM_RUNNER, 0o644);
   writeVfsFile(fs, "/usr/local/lib/kandelo/npm-display-shim.js", NPM_DISPLAY_SHIM, 0o644);
@@ -151,7 +120,6 @@ export function stageSpiderMonkeyNpmRuntime(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/npm", "/usr/local/bin/npm");
   symlink(fs, "/usr/bin/npx", "/bin/npx");
   symlink(fs, "/usr/bin/npx", "/usr/local/bin/npx");
-  writeVfsFile(fs, NODE_WORKSPACE_PROFILE_PATH, NODE_WORKSPACE_PROFILE, 0o644);
 }
 
 export function patchNpmForSpiderMonkey(fs: MemoryFileSystem): void {

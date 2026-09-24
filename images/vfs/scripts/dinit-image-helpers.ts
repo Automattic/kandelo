@@ -182,6 +182,46 @@ export interface DinitService {
   /** Extra raw lines, appended verbatim. Use for fields this helper
    *  hasn't grown a typed setter for yet. */
   extra?: string[];
+  /**
+   * Opt this service out of the shared baseline `env-file` (see
+   * {@link DINIT_SERVICE_ENV_PATH}) that {@link renderService} attaches to
+   * every non-internal service by default. Set when a service supplies its
+   * own complete environment and the shared baseline would be redundant or
+   * wrong for it.
+   */
+  noDefaultEnvFile?: boolean;
+}
+
+/**
+ * Path to the env file every dinit-managed process service reads by
+ * default (see {@link renderService}). One shared file, rather than one
+ * per service, because every service demo's processes today want the same
+ * baseline identity: root's HOME, a sane PATH, and the TLS trust anchors
+ * curl/wget-alikes expect. dinit's `env-file` directive ADDS to (and can
+ * override) the process's inherited environment — it does not replace it —
+ * so this coexists with whatever env the browser host still passes to
+ * dinit's own pid1 spawn (e.g. WordPress's host-supplied WP_APP_PATH).
+ */
+export const DINIT_SERVICE_ENV_PATH = "/etc/dinit.d/env";
+
+/** The baseline env every dinit service gets via {@link DINIT_SERVICE_ENV_PATH}. */
+export const DINIT_SERVICE_ENV: Readonly<Record<string, string>> = {
+  HOME: "/root",
+  TMPDIR: "/tmp",
+  TERM: "xterm-256color",
+  USER: "root",
+  LOGNAME: "root",
+  PATH: "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  SSL_CERT_FILE: "/etc/ssl/certs/ca-certificates.crt",
+  SSL_CERT_DIR: "/etc/ssl/certs",
+};
+
+function renderDinitEnvFile(env: Readonly<Record<string, string>>): string {
+  return (
+    Object.entries(env)
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n") + "\n"
+  );
 }
 
 /**
@@ -194,6 +234,12 @@ function renderService(svc: DinitService): string {
   lines.push(`type = ${svc.type ?? "process"}`);
   if (svc.command) lines.push(`command = ${svc.command}`);
   if (svc.workingDir) lines.push(`working-dir = ${svc.workingDir}`);
+  // Internal (dependency-only) services run no command, so an env-file
+  // would be meaningless for them. Every real process/bgprocess/scripted
+  // service gets the shared baseline unless it opts out.
+  if (svc.type !== "internal" && !svc.noDefaultEnvFile) {
+    lines.push(`env-file = ${DINIT_SERVICE_ENV_PATH}`);
+  }
   for (const dep of svc.dependsOn ?? []) lines.push(`depends-on = ${dep}`);
   for (const dep of svc.waitsFor ?? []) lines.push(`waits-for = ${dep}`);
   // Always emit restart explicitly. dinit's compiled-in default is
@@ -421,6 +467,11 @@ export function addDinitInit(
 
   // Service tree
   ensureDirRecursive(fs, "/etc/dinit.d");
+
+  // Shared baseline env-file every non-internal service reads by default
+  // (see renderService). Written unconditionally: harmless when unused,
+  // and every current service demo wants it.
+  writeVfsFile(fs, DINIT_SERVICE_ENV_PATH, renderDinitEnvFile(DINIT_SERVICE_ENV));
 
   const bootOpt = opts.boot ?? true;
   if (bootOpt !== false) {

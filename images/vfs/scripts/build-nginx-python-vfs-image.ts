@@ -20,15 +20,18 @@ import {
   symlink,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { addDinitInit, type DinitBinaryInputs } from "./dinit-image-helpers";
+import {
+  addDinitInit,
+  DINIT_SERVICE_ENV,
+  type DinitBinaryInputs,
+} from "./dinit-image-helpers";
 import {
   loadShellBaseFileSystem,
   loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
 } from "./package-shell-vfs-build";
 import { SHELL_DERIVED_VFS_PROFILE_MAX_BYTES } from "../../../web-libs/kandelo-session/src/vfs-capacity";
-import { webPresentation, writeKandeloDemoConfig } from "./kandelo-demo-config";
-import { nginxPythonGuide } from "./kandelo-demo-guides";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import { prewarmPythonBytecode } from "./python-bytecode-prewarm";
 
 const PYTHON_STDLIB = "python3.13";
@@ -48,6 +51,32 @@ const OUT_FILE = join(
 );
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
+
+/**
+ * The Python interpreter's own service environment, baked into the image.
+ *
+ * `PYTHONHOME=/usr` is what makes `/usr/bin/python3` find the stdlib this
+ * image installs; `PYTHONDONTWRITEBYTECODE=1` stops first-run stdlib imports
+ * from compiling *and writing* a `.pyc` per module on top of the bytecode
+ * this build already prewarms (see python-bytecode-prewarm.ts) — real extra
+ * depth in the fork/exec continuation path, which the browser kernel
+ * worker's fixed JS stack does not have headroom for.
+ *
+ * It lives HERE, in the image, rather than in a host-side per-machine env
+ * table, because a machine booted through `init.target` gets its per-service
+ * environment from its own dinit tree: the browser host hands pid 1 only
+ * what no baked artifact can know (see `initLaunchForMachine` in
+ * apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts). Only the
+ * Python service needs these, so it gets its own env-file — the shared
+ * baseline at DINIT_SERVICE_ENV_PATH stays the same file every other service
+ * demo reads, with the same contents.
+ */
+const PYTHON_SERVICE_ENV_PATH = "/etc/dinit.d/env-python";
+const PYTHON_SERVICE_ENV: Readonly<Record<string, string>> = {
+  ...DINIT_SERVICE_ENV,
+  PYTHONHOME: "/usr",
+  PYTHONDONTWRITEBYTECODE: "1",
+};
 
 // Directories and file suffixes that are legitimate to have on disk next to
 // the app sources (e.g. from running `python3 -m unittest` locally) but must
@@ -220,6 +249,11 @@ export async function buildNginxPythonVfsImage(
       command: "/usr/bin/python3 /var/www/notes/app.py",
       logfile: "/var/log/notes-app.log",
       restart: false,
+      // The shared baseline env-file carries no PYTHONHOME, and dinit reads
+      // a single env-file per service, so this service takes the superset
+      // (PYTHON_SERVICE_ENV) instead of the baseline.
+      noDefaultEnvFile: true,
+      extra: [`env-file = ${PYTHON_SERVICE_ENV_PATH}`],
     },
     {
       name: "nginx",
@@ -231,15 +265,18 @@ export async function buildNginxPythonVfsImage(
     },
   ], { binaries: inputs.dinit });
 
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      "nginx-python": {
-        presentation: webPresentation(),
-        guide: nginxPythonGuide(),
-      },
-    },
-  });
+  writeVfsFile(
+    fs,
+    PYTHON_SERVICE_ENV_PATH,
+    `${Object.entries(PYTHON_SERVICE_ENV)
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n")}\n`,
+  );
+
+  writeTrackedDemoConfig(
+    fs,
+    "packages/registry/nginx-python-vfs/nginx-python-demo.json",
+  );
 
   // Prewarm CPython bytecode: precompile the stdlib and the app to .pyc so
   // the browser loads bytecode via marshal instead of compiling from source

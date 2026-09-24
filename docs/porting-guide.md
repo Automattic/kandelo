@@ -824,31 +824,31 @@ source_roles = []
 That dependency entry does not itself make a product selectable. A product
 also needs a VFS-producing package whose declared output filename equals the
 product manifest's `output`, plus a `[[products]]` binding in
-`packages/sets/local-supported.toml`. The checked-in Node product is the
+`packages/sets/local-supported.toml`. The checked-in Ruby todo product is the
 executable example:
 
 ```toml
-# images/vfs/products/browser-node.toml
-id = "browser-node"
-output = "node-vfs.vfs.zst"
+# images/vfs/products/browser-ruby-todo.toml
+id = "browser-ruby-todo"
+output = "ruby-todo-vfs.vfs.zst"
 ```
 
 ```toml
-# packages/registry/node-vfs/package.toml
-name = "node-vfs"
+# packages/registry/ruby-todo-vfs/package.toml
+name = "ruby-todo-vfs"
 
 [[outputs]]
-name = "node-vfs"
-wasm = "node-vfs.vfs.zst"
+name = "ruby-todo-vfs"
+wasm = "ruby-todo-vfs.vfs.zst"
 fork_instrumentation = "disabled"
 ```
 
 ```toml
 # packages/sets/local-supported.toml
 [[products]]
-id = "browser-node"
-package = "node-vfs"
-manifest = "images/vfs/products/browser-node.toml"
+id = "browser-ruby-todo"
+package = "ruby-todo-vfs"
+manifest = "images/vfs/products/browser-ruby-todo.toml"
 ```
 
 Exercise that registered product through the same local DAG used by other
@@ -862,7 +862,7 @@ scripts/dev-shell.sh bash -lc '
     --set packages/sets/local-supported.toml \
     --source-cache-root "$HOME/.cache/kandelo/source-only" \
     --output-root "$PWD/local-binaries/source-only-v1" \
-    --product browser-node \
+    --product browser-ruby-todo \
     --jobs 16
 '
 ```

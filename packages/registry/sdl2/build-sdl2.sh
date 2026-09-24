@@ -162,6 +162,56 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM and evdev backends..."
 sed -i.bak 's|^prefix=.*|prefix=${pcfiledir}/../..|' \
     "$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
 rm -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc.bak"
+
+# Rewrite `Libs:` so the metadata is both relocatable and complete.
+#
+# Relocatable: configure copies LIBDRM_LIBS / LIBGBM_LIBS through verbatim,
+# so the generated line carries absolute `-L` paths into this build machine's
+# resolver cache and *its own worktree's* sysroot. This .pc is a cached
+# package output shared by every worktree on the machine, so a consumer would
+# link whatever libgbm.a some other checkout happens to hold — the same
+# stale-sysroot failure that shipped a broken sdl2.wasm. Drop the absolute
+# search paths and let the SDK's `--sysroot` resolve `-ldrm`/`-lgbm` from the
+# consumer's own sysroot, where scripts/build-dri-stubs.sh installs them.
+# (Dropping them also makes this output byte-identical across machines.)
+#
+# Complete: CFLAGS below define SDL_VIDEO_STATIC_ANGLE=1, which makes
+# src/video/SDL_egl.c bind `eglFoo` as a direct symbol reference instead of
+# an SDL_LoadFunction lookup. libSDL2.a therefore has hard undefined
+# references to EGL and GLES2, and consumers that link through this file must
+# be told so. Without it, `-Wl,--allow-undefined` turns each one into an
+# `env.*` import that traps the first time a window is created.
+sdl2_pc="$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
+awk '
+    /^Libs:/ {
+        line = "Libs:"
+        has_egl = 0
+        has_gles = 0
+        for (i = 2; i <= NF; i++) {
+            if ($i ~ /^-L\//) continue
+            if ($i == "-lEGL")    has_egl = 1
+            if ($i == "-lGLESv2") has_gles = 1
+            line = line " " $i
+        }
+        if (!has_egl)  line = line " -lEGL"
+        if (!has_gles) line = line " -lGLESv2"
+        print line
+        next
+    }
+    { print }
+' "$sdl2_pc" > "$sdl2_pc.next"
+mv "$sdl2_pc.next" "$sdl2_pc"
+if grep -q -- '-L/' "$sdl2_pc"; then
+    echo "ERROR: sdl2.pc still names an absolute library search path" >&2
+    grep -- '-L/' "$sdl2_pc" >&2
+    exit 1
+fi
+for flag in -lSDL2 -ldrm -lgbm -lEGL -lGLESv2; do
+    grep -q -- "$flag" "$sdl2_pc" || {
+        echo "ERROR: sdl2.pc does not declare $flag" >&2
+        exit 1
+    }
+done
 rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/share" "$INSTALL_DIR/lib/cmake"
 rm -f "$INSTALL_DIR/lib/"*.la
 

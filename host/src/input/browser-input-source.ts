@@ -47,7 +47,9 @@ const {
 
 export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
-  private bindings: Array<[EventTarget, string, EventListener]> = [];
+  private bindings: Array<
+    [EventTarget, string, EventListener, AddEventListenerOptions | undefined]
+  > = [];
   // Previous absolute pointer position (rounded clientX/Y), used to derive
   // REL deltas outside pointer lock. `null` means "no baseline yet" — the
   // next non-lock move only re-establishes it and emits no motion.
@@ -93,8 +95,18 @@ export class BrowserInputSource implements InputSource {
 
   start(dispatch: (ev: InputEvent) => void): void {
     this.dispatch = dispatch;
-    this.bind("keydown", this.onKeyDown);
-    this.bind("keyup", this.onKeyUp);
+    // Keyboard in the CAPTURE phase. This source binds to `window` for
+    // global reach and lets `shouldCapture` decide what the demo owns, but a
+    // focused widget inside the demo stage gets the event first and can end
+    // it: xterm.js calls `stopPropagation()` on every key it handles, so a
+    // bubbling keydown never reaches window while the Shell pane holds focus
+    // — and keyup, which xterm does not cancel, still does. That asymmetry
+    // handed `/dev/input/event0` a key release with no matching press, which
+    // is worse for an evdev consumer than receiving neither. Capture phase
+    // sees the event before any target handler can cancel it; the gate still
+    // decides whether this demo wants it.
+    this.bind("keydown", this.onKeyDown, { capture: true });
+    this.bind("keyup", this.onKeyUp, { capture: true });
     if (this.opts.pointer !== false) {
       this.bind("pointermove", this.onPointerMove);
       this.bind("pointerdown", this.onPointerDown);
@@ -112,12 +124,15 @@ export class BrowserInputSource implements InputSource {
     // it can't go through this.bind which is parametric over `target`.
     // Tracked in `bindings` for symmetric removal in stop().
     const lockHandler = this.onPointerLockChange.bind(this) as EventListener;
-    this.bindings.push([document, "pointerlockchange", lockHandler]);
+    this.bindings.push([document, "pointerlockchange", lockHandler, undefined]);
     document.addEventListener("pointerlockchange", lockHandler);
   }
 
   stop(): void {
-    for (const [t, n, l] of this.bindings) t.removeEventListener(n, l);
+    // `removeEventListener` matches on the capture flag as well as the
+    // callback, so the options a binding was registered with have to come
+    // back with it or a capture-phase listener outlives stop().
+    for (const [t, n, l, o] of this.bindings) t.removeEventListener(n, l, o);
     this.bindings = [];
     this.dispatch = null;
   }
@@ -129,7 +144,7 @@ export class BrowserInputSource implements InputSource {
   ) {
     const wrapped = handler.bind(this);
     this.target.addEventListener(name, wrapped as EventListener, options);
-    this.bindings.push([this.target, name, wrapped as EventListener]);
+    this.bindings.push([this.target, name, wrapped as EventListener, options]);
   }
 
   private emit(

@@ -94,7 +94,7 @@ export function useMachineSurfaceController(): MachineSurfaceController {
 
   React.useEffect(() => {
     setPrimaryMode("following-demo");
-  }, [presentation.runningPrimary, presentation.autoCommand]);
+  }, [presentation.runningPrimary]);
 
   const choosePrimary = React.useCallback((surface: PrimarySurface) => {
     if (status !== "running" && surface !== "syslog") return;
