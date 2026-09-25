@@ -1437,59 +1437,80 @@ git commit -m "Browser: Show machine switch progress in a centred full-page over
 
 - [ ] **Step 1: Write the failing test**
 
+Targets the REAL app page, not the boot-progress fixture. The fixture mounts
+the overlay in isolation and never renders `App.tsx`, so the wrapper this task
+adds cannot exist there. The initial boot of a machine is itself a switch in
+flight, which makes it a usable surface for the assertion.
+
 ```ts
+// apps/browser-demos/test/machine-progress-modal.spec.ts
 import { expect, test } from "@playwright/test";
 
-const fixturePageUrl = "/test/fixtures/boot-progress-fixture.html";
-const fixtureModuleUrl = "/test/fixtures/boot-progress-fixture.ts";
+const appUrl = (path: string): string => {
+  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
+  return baseUrl ? new URL(path, baseUrl).href : path;
+};
 
-test("the overlay is modal while a switch is in flight", async ({ page }) => {
-  await page.goto(fixturePageUrl);
-  await page.evaluate(async (moduleUrl) => {
-    const { mountBootScreen } = await import(moduleUrl);
-    const root = document.createElement("div");
-    document.body.append(root);
-    (window as unknown as { fixture: unknown }).fixture = mountBootScreen(root);
-  }, fixtureModuleUrl);
+test("the overlay is modal while a switch is in flight @slow", async ({
+  browserName,
+  context,
+  page,
+}) => {
+  test.skip(browserName !== "chromium", "needs CDP network emulation");
+  test.setTimeout(400_000);
 
-  await page.evaluate(() => {
-    (window as unknown as {
-      fixture: { setProgress(v: unknown): void };
-    }).fixture.setProgress({
-      phase: "destroying",
-      label: "Bare shell",
-      completed: 3,
-      total: 7,
-      totalProvisional: true,
-      unit: "processes",
-      status: "loading",
-    });
+  // Slow the image transfer so the overlay is observable; without this a
+  // locally served image lands before the first assertion runs.
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("Network.enable");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 40,
+    downloadThroughput: (4 * 1024 * 1024) / 8,
+    uploadThroughput: (1 * 1024 * 1024) / 8,
   });
 
-  await expect(page.locator("[role=progressbar]")).toBeVisible();
-  await expect(page.locator(".kmprogress-card")).toBeVisible();
-  // The content behind the overlay must not be reachable by keyboard.
+  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+
+  // While the overlay is up, the app content behind it must be inert, so a
+  // keyboard user cannot tab into a machine that is not there.
+  await expect(page.locator(".kmprogress-card")).toBeVisible({
+    timeout: 60_000,
+  });
   await expect(page.locator("[data-machine-content][inert]")).toHaveCount(1);
+
+  // And it must be released once the machine is up.
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+    timeout: 240_000,
+  });
+  await expect(page.locator(".kmprogress-card")).toHaveCount(0);
+  await expect(page.locator("[data-machine-content][inert]")).toHaveCount(0);
+  await expect(page.locator("[data-machine-content]")).toHaveCount(1);
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=5487 npx playwright test machine-progress-modal --project=chromium --reporter=list`
+```bash
+cd apps/browser-demos && \
+WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
+WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$(git rev-parse --show-toplevel)/local-binaries/source-only-v1" \
+KANDELO_PLAYWRIGHT_PORT=5487 \
+npx playwright test machine-progress-modal --project=chromium --reporter=list
+```
 Expected: FAIL — no element matches `[data-machine-content][inert]`.
 
 - [ ] **Step 3: Write minimal implementation**
 
 In `apps/browser-demos/pages/kandelo/app/App.tsx`, read the progress at the App
-root and mark the content inert while it is non-null:
+root:
 
 ```tsx
   const machineProgress = useMachineProgress();
 ```
 
-Add `data-machine-content` and the conditional `inert` attribute to the element
-that wraps the app's interactive content (the one currently holding `<main>`
-and `<Dock ... />`):
+Add `data-machine-content` and a conditional `inert` to the element wrapping the
+app's interactive content (the one holding `<main>` and `<Dock ... />`):
 
 ```tsx
     <div
@@ -1498,13 +1519,12 @@ and `<Dock ... />`):
     >
 ```
 
-Keep `<MachineProgressOverlay />` a **sibling** of that wrapper, not a child —
-an inert ancestor would make the overlay itself unreachable.
+Keep `<MachineProgressOverlay />` a SIBLING of that wrapper, never a child — an
+inert ancestor would make the overlay itself unreachable.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=5487 npx playwright test machine-progress-modal --project=chromium --reporter=list`
-Expected: PASS, 1 test.
+Same command as Step 2. Expected: PASS, 1 test.
 
 - [ ] **Step 5: Commit**
 
