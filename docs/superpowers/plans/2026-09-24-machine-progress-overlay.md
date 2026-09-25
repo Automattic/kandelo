@@ -442,12 +442,20 @@ git commit -m "Host: Report teardown progress from performDestroy in both hosts"
 ### Task 3: Expose `subscribeDestroyProgress` on both hosts
 
 **Files:**
-- Modify: `host/src/browser-kernel-host.ts` (listener set near line 281;
-  `emitLazyDownload` near line 1552; dispatch `case "lazy_download"` near
-  line 1782; `subscribeLazyDownloads` near line 891)
-- Modify: `host/src/node-kernel-host.ts` (listener set near line 228;
-  `subscribeLazyDownloads` near line 926; listener clear near line 1032)
+- Modify: `host/src/browser-kernel-host.ts` (`subscribeLazyDownloads` near
+  line 891 — add the peer method beside it)
+- Modify: `host/src/node-kernel-host.ts` (`subscribeLazyDownloads` near
+  line 926 — same)
 - Test: `host/test/destroy-progress-subscription.test.ts` (create)
+
+**NOTE — reduced by a controller ruling during execution.** Task 1 already
+created `host/src/destroy-progress-fanout.ts`, added the
+`private destroyProgress = createDestroyProgressFanout()` field to both hosts,
+wired `case "destroy_progress"` in both dispatches to `emit`, and added the
+`clear()` calls. Task 1 did that because adding the union member broke the
+`never` exhaustiveness check immediately, and a silent stub was rejected in
+review. This task therefore adds ONLY the public subscribe method on each
+host. Do not recreate the fan-out module or the dispatch cases.
 
 **Interfaces:**
 - Consumes: `DestroyProgressEvent`, `DestroyProgressMessage` (Task 1).
@@ -456,121 +464,76 @@ git commit -m "Host: Report teardown progress from performDestroy in both hosts"
 
 - [ ] **Step 1: Write the failing test**
 
+Both hosts must satisfy the optional `subscribeDestroyProgress` shape that
+`KernelLike` declares, and must do so identically. A compile-time test pins
+that: it fails to typecheck until both methods exist with the right signature.
+
 ```ts
 // host/test/destroy-progress-subscription.test.ts
 import { describe, expect, it } from "vitest";
 import type { DestroyProgressEvent } from "../src/browser-kernel-protocol";
+import type { BrowserKernel } from "../src/browser-kernel-host";
+import type { NodeKernelHost } from "../src/node-kernel-host";
 
-// The emit/fan-out rule, exercised against the same helper both hosts use.
-import { createDestroyProgressFanout } from "../src/destroy-progress-reporter";
+/** The shape both hosts must expose. */
+type DestroyProgressSubscriber = {
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void;
+};
 
-describe("destroy progress fan-out", () => {
-  it("delivers each event to every subscriber", () => {
-    const fanout = createDestroyProgressFanout();
-    const a: DestroyProgressEvent[] = [];
-    const b: DestroyProgressEvent[] = [];
-    fanout.subscribe((e) => a.push(e));
-    fanout.subscribe((e) => b.push(e));
-    fanout.emit({ phase: "draining", completed: 1, total: 4, totalProvisional: true });
-    expect(a).toHaveLength(1);
-    expect(b).toHaveLength(1);
+describe("destroy progress subscription", () => {
+  it("is exposed by the browser host", () => {
+    type Check = BrowserKernel extends DestroyProgressSubscriber ? true : false;
+    const satisfied: Check = true;
+    expect(satisfied).toBe(true);
   });
 
-  it("stops delivering after unsubscribe", () => {
-    const fanout = createDestroyProgressFanout();
-    const seen: DestroyProgressEvent[] = [];
-    const off = fanout.subscribe((e) => seen.push(e));
-    off();
-    fanout.emit({ phase: "draining", completed: 1, total: 4, totalProvisional: true });
-    expect(seen).toEqual([]);
-  });
-
-  it("keeps delivering to healthy subscribers when one throws", () => {
-    const fanout = createDestroyProgressFanout();
-    const seen: DestroyProgressEvent[] = [];
-    fanout.subscribe(() => { throw new Error("subscriber blew up"); });
-    fanout.subscribe((e) => seen.push(e));
-    fanout.emit({ phase: "terminating", completed: 4, total: 4, totalProvisional: false });
-    expect(seen).toHaveLength(1);
+  it("is exposed by the node host with the same signature", () => {
+    type Check = NodeKernelHost extends DestroyProgressSubscriber ? true : false;
+    const satisfied: Check = true;
+    expect(satisfied).toBe(true);
   });
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd host && npx vitest run test/destroy-progress-subscription.test.ts`
-Expected: FAIL — `createDestroyProgressFanout` is not exported.
+Run: `cd host && npm run typecheck`
+Expected: FAIL — `Type 'false' is not assignable to type 'true'` for each host,
+because neither exposes `subscribeDestroyProgress` yet. (The assertion is a
+compile-time one; `npx vitest run` alone would not catch it.)
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `host/src/destroy-progress-reporter.ts`:
+In `host/src/browser-kernel-host.ts`, beside `subscribeLazyDownloads`:
 
 ```ts
-export interface DestroyProgressFanout {
-  subscribe(cb: (event: DestroyProgressEvent) => void): () => void;
-  emit(event: DestroyProgressEvent): void;
-  clear(): void;
-}
-
-/** Shared listener set so both hosts fan out identically. */
-export function createDestroyProgressFanout(): DestroyProgressFanout {
-  const listeners = new Set<(event: DestroyProgressEvent) => void>();
-  return {
-    subscribe(cb) {
-      listeners.add(cb);
-      return () => { listeners.delete(cb); };
-    },
-    emit(event) {
-      for (const cb of listeners) {
-        try { cb(event); } catch { /* listener errors don't break the loop */ }
-      }
-    },
-    clear() { listeners.clear(); },
-  };
-}
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
+  }
 ```
 
-In `host/src/browser-kernel-host.ts`:
-
-```ts
-// near line 281, beside lazyDownloadListeners
-private destroyProgress = createDestroyProgressFanout();
-
-// beside subscribeLazyDownloads (near line 891)
-subscribeDestroyProgress(cb: (event: DestroyProgressEvent) => void): () => void {
-  return this.destroyProgress.subscribe(cb);
-}
-
-// in handleWorkerMessage, beside case "lazy_download" (near line 1782)
-case "destroy_progress":
-  this.destroyProgress.emit(msg.event);
-  break;
-```
-
-Apply the same three edits to `host/src/node-kernel-host.ts` (listener field
-near line 228, method near line 926, dispatch case beside its `lazy_download`
-handling), and add `this.destroyProgress.clear();` next to the existing
-`this.lazyDownloadListeners.clear();` near line 1032.
-
-Import `createDestroyProgressFanout` and the `DestroyProgressEvent` type in
-both host files.
+Add the identical method to `host/src/node-kernel-host.ts` beside its own
+`subscribeLazyDownloads`. The `destroyProgress` field, the dispatch case and
+the `clear()` calls already exist — Task 1 added them.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd host && npx vitest run test/destroy-progress-subscription.test.ts`
-Expected: PASS, 3 tests.
-
-- [ ] **Step 5: Verify the protocol dispatch is exhaustive**
-
 Run: `cd host && npm run typecheck`
-Expected: no errors. Both dispatches have a `never` exhaustiveness check, so a
-missing `case "destroy_progress"` fails compilation here.
+Expected: no errors.
 
-- [ ] **Step 6: Commit**
+Run: `cd host && npx vitest run test/destroy-progress-subscription.test.ts test/destroy-progress-fanout.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add host/src/destroy-progress-reporter.ts host/src/browser-kernel-host.ts \
-  host/src/node-kernel-host.ts host/test/destroy-progress-subscription.test.ts
+git add host/src/browser-kernel-host.ts host/src/node-kernel-host.ts \
+  host/test/destroy-progress-subscription.test.ts
 git commit -m "Host: Expose destroy progress subscription on both kernel hosts"
 ```
 
