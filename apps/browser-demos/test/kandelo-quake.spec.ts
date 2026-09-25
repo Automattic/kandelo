@@ -100,13 +100,19 @@ test("Kandelo quake software demo boots the shareware first scene", async ({
     })
     .toBeGreaterThan(8);
 
-  // Drive a key through the framebuffer keyboard path and confirm the engine
-  // keeps rendering (input reaches the game; no crash). ESC toggles the menu.
+  // Drive keys through the framebuffer keyboard path and confirm the engine
+  // keeps rendering (input reaches the game; no crash). Enter is a regression
+  // guard: its Linux keycode is 28 (0x1C = the tty VQUIT control char), so
+  // before in_fbdev put stdin in raw mode the tty turned Enter into SIGQUIT and
+  // killed the engine. ESC then toggles the menu.
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Escape");
   await expect
     .poll(() => distinctColors(canvas), { timeout: 30_000 })
     .toBeGreaterThan(8);
 
-  // The machine must not have reported a failed launch.
-  expect(await syslogText(page)).not.toMatch(/quake.*failed/i);
+  // The machine must not have reported a failed launch or an early exit.
+  const sys = await syslogText(page);
+  expect(sys).not.toMatch(/quake.*failed/i);
+  expect(sys).not.toMatch(/quake exited/i);
 });

@@ -35,10 +35,10 @@ index 5709a79..12f36f1 100644
  CL_LIBS += sndio
 diff --git a/common/in_fbdev.c b/common/in_fbdev.c
 new file mode 100644
-index 0000000..c319888
+index 0000000..8d3dfeb
 --- /dev/null
 +++ b/common/in_fbdev.c
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,257 @@
 +/*
 +Copyright (C) 1996-1997 Id Software, Inc.
 +
@@ -68,6 +68,7 @@ index 0000000..c319888
 +// its own).
 +
 +#include <fcntl.h>
++#include <termios.h>
 +#include <unistd.h>
 +
 +#include "client.h"
@@ -88,6 +89,9 @@ index 0000000..c319888
 +
 +static int mice_fd = -1;
 +static int mouse_buttons = 0;
++
++static struct termios saved_term;
++static qboolean have_saved_term = false;
 +
 +/*
 + * Linux input-event keycode (input-event-codes.h) -> TyrQuake keysym.
@@ -173,6 +177,24 @@ index 0000000..c319888
 +
 +    mouse_available = COM_CheckParm("-nomouse") ? false : true;
 +
++    /*
++     * The framebuffer pane delivers one-byte Linux keycodes on stdin. Many
++     * keycodes fall in the ASCII control range (e.g. Enter = 28 = 0x1C = ^\),
++     * so the tty line discipline must NOT interpret them: with ISIG on, keycode
++     * 0x1C is VQUIT and would send SIGQUIT (killing the engine on Enter), 0x03
++     * would be VINTR, etc. Put stdin in raw mode so every keycode byte is
++     * delivered verbatim, and restore the previous settings on shutdown.
++     */
++    if (tcgetattr(STDIN_FILENO, &saved_term) == 0) {
++	struct termios raw = saved_term;
++	raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
++	raw.c_iflag &= ~(IXON | ICRNL | INLCR | IGNCR | ISTRIP | BRKINT | INPCK);
++	raw.c_cc[VMIN] = 0;
++	raw.c_cc[VTIME] = 0;
++	tcsetattr(STDIN_FILENO, TCSANOW, &raw);
++	have_saved_term = true;
++    }
++
 +    /* Keyboard arrives on stdin; never block the game loop waiting for it. */
 +    flags = fcntl(STDIN_FILENO, F_GETFL, 0);
 +    if (flags != -1)
@@ -195,6 +217,10 @@ index 0000000..c319888
 +	mice_fd = -1;
 +    }
 +    mouse_available = false;
++    if (have_saved_term) {
++	tcsetattr(STDIN_FILENO, TCSANOW, &saved_term);
++	have_saved_term = false;
++    }
 +}
 +
 +void
