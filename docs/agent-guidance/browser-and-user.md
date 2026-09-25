@@ -9,22 +9,21 @@ implement alternate runtime behavior.
 metadata, and sharing behavior. App-specific React wiring and page fixtures
 belong under `apps/browser-demos`.
 
-The main thread must never own a live VFS `SharedArrayBuffer`. The kernel
-worker owns the live filesystem (`kernelOwnedFs`), and `Worker.terminate()` is
-the only mechanism that reclaims a shared buffer deterministically on WebKit —
-a buffer the persistent main thread holds is released only if a garbage
-collection happens to run, and reserved shared memory creates almost no heap
-pressure to trigger one, so main-thread VFS buffers accumulate across machine
-boots until Safari throws `Out of memory` (#863). One known exception remains:
-the per-boot image-build filesystem in `live-setup.ts` is staged on the main
-thread and reclaimed best-effort via the tracked GC nudge in
-`apps/browser-demos/lib/kernel-owned-boot.ts` (`trackTransientImageBuffer` /
-`settleWebKitReclaim`), which can time out under pressure. That is an interim
-compromise slated to move into a disposable composition worker — do not extend
-it, and do not introduce any new main-thread `MemoryFileSystem` or
-`SharedArrayBuffer` in a boot path: put new composition work in a worker and
-hand the main thread plain, transferable bytes. A buffer that is merely
-dropped rather than worker-owned is reclaimed lazily at best.
+The main thread must never own a VFS `SharedArrayBuffer` — live or staging.
+The kernel worker owns the live filesystem (`kernelOwnedFs`), and boot-time
+image composition runs in a disposable worker
+(`apps/browser-demos/pages/kandelo/kernel-host/image-composer.ts`) whose
+staging buffer dies with its realm. `Worker.terminate()` is the only mechanism
+that reclaims a shared buffer deterministically on WebKit — a buffer the
+persistent main thread merely dropped is released only if a garbage collection
+happens to run, and reserved shared memory creates almost no heap pressure to
+trigger one, so main-thread VFS buffers accumulate across machine boots until
+Safari throws `Out of memory` (#863). Treat any new main-thread
+`MemoryFileSystem` or `SharedArrayBuffer` in a boot path as a defect: compose
+in a worker and hand the main thread plain, transferable bytes. A GC nudge
+(`settleWebKitReclaim` in `apps/browser-demos/lib/kernel-owned-boot.ts`, still
+used by the benchmark page's main-thread build path) is best-effort with a
+deadline and does not count as reclamation.
 
 `KernelHost` is a compatibility surface. UI surfaces should consume machine
 state through that contract: status, boot descriptor, dmesg, process events,
