@@ -105,6 +105,14 @@ pub struct ProcessTable {
     current_tid_pid: u32,
     /// Round-robin cursor for host-bridged TCP listener target selection.
     tcp_listener_rr: BTreeMap<u16, usize>,
+    /// The one kernel-completed vfork child borrowing each address space.
+    ///
+    /// An entry lives from `kernel_fork_process(.., VFORK | kernel
+    /// completion)` until the host releases the address space (or the launch
+    /// rolls back). It deliberately outlives the child's exec or exit: the
+    /// parent may not reuse the image until the host proves the child's
+    /// realm stopped touching it. See `crate::fork_lifecycle`.
+    vfork_borrowers: BTreeMap<crate::fork_lifecycle::AddressSpaceId, crate::fork_lifecycle::VforkBorrow>,
 }
 
 /// Outcome of `ProcessTable::remove_process`. Bundles the side effects the
@@ -417,6 +425,7 @@ impl ProcessTable {
             current_tid: 0,
             current_tid_pid: 0,
             tcp_listener_rr: BTreeMap::new(),
+            vfork_borrowers: BTreeMap::new(),
         }
     }
 
@@ -1049,7 +1058,26 @@ impl ProcessTable {
         caller_tid: u32,
         mode: wasm_posix_shared::fork_contract::Mode,
     ) -> Result<u32, Errno> {
-        let (serialized_parent, caller_blocked) = {
+        self.fork_process_for_caller_with_request(parent_pid, caller_tid, mode, false)
+    }
+
+    /// Fork on behalf of a validated parent task.
+    ///
+    /// `kernel_completes` is `fork_contract::LAUNCH_KERNEL_COMPLETES`: the
+    /// kernel then records the launch on the child (and, for vfork, the
+    /// borrowed address space) and reports the parent's result through the
+    /// fork-lifecycle event queue instead of leaving it to the host.
+    pub fn fork_process_for_caller_with_request(
+        &mut self,
+        parent_pid: u32,
+        caller_tid: u32,
+        mode: wasm_posix_shared::fork_contract::Mode,
+        kernel_completes: bool,
+    ) -> Result<u32, Errno> {
+        use crate::fork_lifecycle::{ForkLaunchPhase, PendingForkLaunch, VforkBorrow, VforkParentLink};
+        use wasm_posix_shared::fork_contract::Mode;
+
+        let (serialized_parent, caller_blocked, parent_address_space) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
             if matches!(
                 parent.state,
@@ -1063,9 +1091,19 @@ impl ProcessTable {
             if parent.vfork_child {
                 return Err(Errno::EAGAIN);
             }
+            // One borrower per address space. A sibling thread of a parked
+            // vfork parent shares its image; lending that image to a second
+            // child while the first may still touch it would give two
+            // children one stack and heap. Refuse before any child state or
+            // PID exists, the same EAGAIN the host reported for a busy
+            // workspace.
+            if mode == Mode::Vfork && self.vfork_borrowers.contains_key(&parent.address_space) {
+                return Err(Errno::EAGAIN);
+            }
             (
                 serialize_fork_state_with_growing_buffer(parent)?,
                 parent.blocked_for(caller_tid),
+                parent.address_space,
             )
         };
 
@@ -1090,7 +1128,27 @@ impl ProcessTable {
         // the mask of the task that called fork rather than the process
         // leader's mask.
         child.signals.blocked = caller_blocked;
-        child.vfork_child = mode == wasm_posix_shared::fork_contract::Mode::Vfork;
+        child.vfork_child = mode == Mode::Vfork;
+        // A vfork child runs on its parent's image; every other child got a
+        // fresh address space with its record.
+        if mode == Mode::Vfork {
+            child.address_space = parent_address_space;
+        }
+        if kernel_completes {
+            child.fork_launch = Some(PendingForkLaunch {
+                parent_pid,
+                parent_tid: caller_tid,
+                mode,
+                phase: ForkLaunchPhase::Launching,
+            });
+            if mode == Mode::Vfork {
+                child.vfork_parent = Some(VforkParentLink {
+                    parent_pid,
+                    parent_tid: caller_tid,
+                    address_space: parent_address_space,
+                });
+            }
+        }
 
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
@@ -1103,6 +1161,16 @@ impl ProcessTable {
         child.fork_pipe_replay = build_fork_pipe_replay(&child);
 
         self.processes.insert(child_pid, child);
+        if kernel_completes && mode == Mode::Vfork {
+            self.vfork_borrowers.insert(
+                parent_address_space,
+                VforkBorrow {
+                    child_pid,
+                    parent_pid,
+                    parent_tid: caller_tid,
+                },
+            );
+        }
 
         // Parent's fork-counter regression guardrail. The non-forking spawn
         // tests assert this stays put across a SYS_SPAWN, proving the new
@@ -1112,6 +1180,216 @@ impl ProcessTable {
         }
 
         Ok(child_pid)
+    }
+
+    /// `SYS_FORK_REPLAY_READY` from `child_pid`: its replay reached the
+    /// inherited fork site.
+    ///
+    /// The caller must be a live child of a kernel-completed launch that has
+    /// not reported ready before. This single check replaces the host's
+    /// Worker-generation comparison and its pending-child liveness probe: the
+    /// channel that issued the syscall is bound to exactly this process, and
+    /// the process table is the authority on whether it is still alive.
+    ///
+    /// An ordinary fork commits: the parent's SYS_FORK completes with the
+    /// child pid. A vfork child starts running on the borrowed image; its
+    /// parent stays parked until the address space is released.
+    ///
+    /// Errors: `ESRCH` no live process; `EINVAL` not a kernel-completed fork
+    /// child (or its launch record ended with an exec); `EALREADY` readiness
+    /// was already reported or the launch already resolved.
+    pub fn fork_replay_ready(&mut self, child_pid: u32) -> Result<(), Errno> {
+        use crate::fork_lifecycle::{ForkLaunchPhase, ForkLifecycleEvent};
+        use wasm_posix_shared::fork_contract::Mode;
+
+        let child = self.get_mut(child_pid).ok_or(Errno::ESRCH)?;
+        if matches!(
+            child.state,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+        ) {
+            return Err(Errno::ESRCH);
+        }
+        let launch = child.fork_launch.as_mut().ok_or(Errno::EINVAL)?;
+        if launch.phase != ForkLaunchPhase::Launching {
+            return Err(Errno::EALREADY);
+        }
+        match launch.mode {
+            Mode::Fork => {
+                launch.phase = ForkLaunchPhase::Committed;
+                crate::fork_lifecycle::push(ForkLifecycleEvent::parent_complete(
+                    Mode::Fork,
+                    child_pid,
+                    launch.parent_pid,
+                    launch.parent_tid,
+                    child_pid as i32,
+                ));
+            }
+            Mode::Vfork => launch.phase = ForkLaunchPhase::ReplayReady,
+        }
+        Ok(())
+    }
+
+    /// The host could not launch `child_pid` (Worker construction failed, or
+    /// the Worker errored or exited before its replay reported ready, before
+    /// any vfork child realm could touch the borrowed memory).
+    ///
+    /// A child still launching is rolled back exactly as the host's own
+    /// rollback did: removed from the table, so the parent never observes
+    /// the PID, and the parent's SYS_FORK/SYS_VFORK completes with `-errno`.
+    /// A child that already died stays the reapable zombie POSIX promises the
+    /// parent, and a committed child is already the parent's result; both
+    /// report `AlreadyResolved` and change nothing.
+    ///
+    /// On `RolledBack` the caller must finish the returned removal (host
+    /// handle closes) as `kernel_remove_process` does.
+    pub fn fork_launch_failed(
+        &mut self,
+        child_pid: u32,
+        errno: u32,
+    ) -> Result<(crate::fork_lifecycle::LaunchFailedOutcome, Option<RemoveProcessResult>), Errno> {
+        use crate::fork_lifecycle::{ForkLaunchPhase, ForkLifecycleEvent, LaunchFailedOutcome};
+
+        if errno == 0 || errno > 4095 {
+            return Err(Errno::EINVAL);
+        }
+        let child = self.get(child_pid).ok_or(Errno::ESRCH)?;
+        let launch = child.fork_launch.ok_or(Errno::EINVAL)?;
+        let live = !matches!(
+            child.state,
+            crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+        );
+        if !live || launch.phase != ForkLaunchPhase::Launching {
+            return Ok((LaunchFailedOutcome::AlreadyResolved, None));
+        }
+        let borrowed = child.vfork_parent.map(|link| link.address_space);
+        if let Some(space) = borrowed {
+            if self
+                .vfork_borrowers
+                .get(&space)
+                .is_some_and(|borrow| borrow.child_pid == child_pid)
+            {
+                self.vfork_borrowers.remove(&space);
+            }
+        }
+        let removed = self.remove_process(child_pid).ok_or(Errno::ESRCH)?;
+        crate::fork_lifecycle::push(ForkLifecycleEvent::parent_complete(
+            launch.mode,
+            child_pid,
+            launch.parent_pid,
+            launch.parent_tid,
+            -(errno as i32),
+        ));
+        Ok((LaunchFailedOutcome::RolledBack, Some(removed)))
+    }
+
+    /// Whether `space` has a kernel-completed vfork borrower whose release
+    /// the host has not reported yet.
+    pub fn vfork_address_space_borrowed(&self, space: crate::fork_lifecycle::AddressSpaceId) -> bool {
+        self.vfork_borrowers.contains_key(&space)
+    }
+
+    /// The host finished tearing down a vfork child's use of its parent's
+    /// address space.
+    ///
+    /// `Resume`: the child must have stopped running on the borrowed image
+    /// (exec or exit, which queued the awaiting-quiescence event); the
+    /// borrow ends and the parent's SYS_VFORK completes with the child pid.
+    /// `EBUSY` while the child still runs on the image.
+    ///
+    /// `Contain`: teardown was ambiguous, so neither image may keep running.
+    /// Allowed in any phase. The borrow ends and the parent and, if still
+    /// live, the child are terminated by SIGSEGV through the ordinary
+    /// signal-termination path; the parent's SYS_VFORK is never completed.
+    ///
+    /// `ESRCH` when `child_pid` is not a recorded borrower (never was, or
+    /// was already released).
+    pub fn vfork_address_space_released(
+        &mut self,
+        child_pid: u32,
+        disposition: crate::fork_lifecycle::VforkReleaseDisposition,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<Option<crate::fork_lifecycle::VforkContainment>, Errno> {
+        use crate::fork_lifecycle::{
+            ForkLaunchPhase, ForkLifecycleEvent, VforkContainment, VforkReleaseDisposition,
+        };
+        use wasm_posix_shared::fork_contract::Mode;
+
+        let (space, borrow) = self
+            .vfork_borrowers
+            .iter()
+            .find(|(_, borrow)| borrow.child_pid == child_pid)
+            .map(|(space, borrow)| (*space, *borrow))
+            .ok_or(Errno::ESRCH)?;
+        // The link on the child is the "still borrowing" fact. Exec and exit
+        // take it; a reaped (or reused) PID cannot carry this space's link.
+        let still_borrowing = self.processes.get(&child_pid).is_some_and(|child| {
+            child
+                .vfork_parent
+                .is_some_and(|link| link.address_space == space)
+        });
+
+        match disposition {
+            VforkReleaseDisposition::Resume => {
+                if still_borrowing {
+                    return Err(Errno::EBUSY);
+                }
+                self.vfork_borrowers.remove(&space);
+                if let Some(launch) = self
+                    .processes
+                    .get_mut(&child_pid)
+                    .and_then(|child| child.fork_launch.as_mut())
+                {
+                    launch.phase = ForkLaunchPhase::Committed;
+                }
+                crate::fork_lifecycle::push(ForkLifecycleEvent::parent_complete(
+                    Mode::Vfork,
+                    child_pid,
+                    borrow.parent_pid,
+                    borrow.parent_tid,
+                    child_pid as i32,
+                ));
+                Ok(None)
+            }
+            VforkReleaseDisposition::Contain => {
+                self.vfork_borrowers.remove(&space);
+                // Detach the child from the lifetime first, so terminating it
+                // does not queue a second awaiting-quiescence event for a
+                // borrow that just ended.
+                let mut child_live = false;
+                if let Some(child) = self.processes.get_mut(&child_pid) {
+                    if child
+                        .vfork_parent
+                        .is_some_and(|link| link.address_space == space)
+                    {
+                        child.vfork_parent = None;
+                    }
+                    if let Some(launch) = child.fork_launch.as_mut() {
+                        launch.phase = ForkLaunchPhase::Committed;
+                    }
+                    child_live = !matches!(
+                        child.state,
+                        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+                    );
+                }
+                let signum = wasm_posix_shared::signal::SIGSEGV;
+                if child_live {
+                    if let Some((child, locks)) = self.process_and_advisory_locks(child_pid) {
+                        crate::signal::terminate_process_by_signal_with_locks(
+                            child, locks, host, signum,
+                        );
+                    }
+                }
+                if let Some((parent, locks)) = self.process_and_advisory_locks(borrow.parent_pid) {
+                    crate::signal::terminate_process_by_signal_with_locks(
+                        parent, locks, host, signum,
+                    );
+                }
+                Ok(Some(VforkContainment {
+                    parent_pid: borrow.parent_pid,
+                    child_pid: child_live.then_some(child_pid),
+                }))
+            }
+        }
     }
 
     /// Non-forking spawn on behalf of a kernel-validated task in the parent.

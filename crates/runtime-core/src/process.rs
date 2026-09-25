@@ -1061,6 +1061,20 @@ pub struct Process {
     /// state. It prevents the borrower from creating another address-space or
     /// pthread owner before successful exec replaces the borrowed image.
     pub vfork_child: bool,
+    /// The address space (Wasm image and memory) this process runs on.
+    ///
+    /// Fresh for every new process record and replaced at exec; a vfork child
+    /// is given its parent's id, which is what makes the borrow visible to
+    /// the kernel.
+    pub address_space: crate::fork_lifecycle::AddressSpaceId,
+    /// Kernel-owned launch record for a child created with
+    /// `fork_contract::LAUNCH_KERNEL_COMPLETES`; `None` for every other
+    /// process. See `crate::fork_lifecycle`.
+    pub fork_launch: Option<crate::fork_lifecycle::PendingForkLaunch>,
+    /// Present while a kernel-completed vfork child runs on its parent's
+    /// address space; cleared by exec or exit, which queue the
+    /// awaiting-quiescence event.
+    pub vfork_parent: Option<crate::fork_lifecycle::VforkParentLink>,
     /// Nested signal-mask-swapping waits owned by the process leader.
     pub mask_waits: Vec<crate::signal::SignalMaskWaitContext>,
     /// Caught-handler bookkeeping for the process leader. Pthreads keep the
@@ -1357,6 +1371,9 @@ impl Process {
             thread_name: [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
             fork_child: false,
             vfork_child: false,
+            address_space: crate::fork_lifecycle::AddressSpaceId::fresh(),
+            fork_launch: None,
+            vfork_parent: None,
             mask_waits: Vec::new(),
             caught_handler_depth: 0,
             returned_handler_depths: Vec::new(),
@@ -1567,6 +1584,9 @@ impl Process {
             wasm_posix_shared::wait::CLD_EXITED,
             status,
         );
+        self.note_fork_lifecycle_image_end(
+            wasm_posix_shared::fork_lifecycle_event_wire::QUIESCENCE_REASON_EXIT,
+        );
         true
     }
 
@@ -1585,7 +1605,64 @@ impl Process {
             wasm_posix_shared::wait::CLD_KILLED,
             signum as i32,
         );
+        self.note_fork_lifecycle_image_end(
+            wasm_posix_shared::fork_lifecycle_event_wire::QUIESCENCE_REASON_EXIT,
+        );
         true
+    }
+
+    /// Resolve kernel-owned fork state when this process's image ends: it
+    /// becomes a zombie, or exec commits a replacement image.
+    ///
+    /// Every exit, whether by `_exit`, a fatal signal, or a host-reported
+    /// Worker death, reaches this through `record_normal_exit` or
+    /// `record_signal_exit`, and every exec through the exec commit, so no
+    /// path can strand a parked parent.
+    ///
+    /// * An ordinary fork child whose image ends before its replay reported
+    ///   ready still existed: POSIX gives the parent its pid (and, for an
+    ///   exit, a reapable zombie). The launch commits here with the child
+    ///   pid.
+    /// * A vfork borrower stops using the parent's image; the parent may
+    ///   resume only after the host proves quiescence, so the lifetime moves
+    ///   to awaiting quiescence and the parent's result waits for
+    ///   `kernel_vfork_address_space_released`.
+    pub(crate) fn note_fork_lifecycle_image_end(&mut self, reason: i32) {
+        use crate::fork_lifecycle::{ForkLaunchPhase, ForkLifecycleEvent};
+        use wasm_posix_shared::fork_contract::Mode;
+
+        let pid = self.pid;
+        if let Some(launch) = self.fork_launch.as_mut() {
+            if launch.mode == Mode::Fork && launch.phase == ForkLaunchPhase::Launching {
+                launch.phase = ForkLaunchPhase::Committed;
+                crate::fork_lifecycle::push(ForkLifecycleEvent::parent_complete(
+                    Mode::Fork,
+                    pid,
+                    launch.parent_pid,
+                    launch.parent_tid,
+                    pid as i32,
+                ));
+            }
+        }
+        self.end_vfork_borrow(reason);
+    }
+
+    /// Stop borrowing the vfork parent's image (exec or exit) and ask the
+    /// host for its quiescence proof. Idempotent: the link is taken once.
+    fn end_vfork_borrow(&mut self, reason: i32) {
+        use crate::fork_lifecycle::ForkLifecycleEvent;
+        use wasm_posix_shared::fork_lifecycle_event_wire as wire;
+
+        if let Some(link) = self.vfork_parent.take() {
+            crate::fork_lifecycle::push(ForkLifecycleEvent {
+                kind: wire::KIND_VFORK_AWAITING_QUIESCENCE,
+                mode: wasm_posix_shared::fork_contract::Mode::Vfork,
+                child_pid: self.pid,
+                parent_pid: link.parent_pid,
+                parent_tid: link.parent_tid,
+                value: reason,
+            });
+        }
     }
 
     pub fn clear_signal_everywhere(&mut self, signum: u32) {

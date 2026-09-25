@@ -1095,6 +1095,64 @@
       "__abi_"
     ]
   },
+  "fork_lifecycle_event_wire": {
+    "fields": [
+      {
+        "name": "kind",
+        "offset": 0,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "mode",
+        "offset": 4,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "childPid",
+        "offset": 8,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "parentPid",
+        "offset": 12,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "parentTid",
+        "offset": 16,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "value",
+        "offset": 20,
+        "size": 4,
+        "type": "i32"
+      }
+    ],
+    "kinds": {
+      "parentComplete": 1,
+      "vforkAwaitingQuiescence": 2
+    },
+    "launch_failed_results": {
+      "alreadyResolved": 1,
+      "rolledBack": 0
+    },
+    "launch_kernel_completes": 256,
+    "quiescence_reasons": {
+      "exec": 1,
+      "exit": 2
+    },
+    "record_size": 24,
+    "release_dispositions": {
+      "contain": 1,
+      "resume": 0
+    }
+  },
   "host_adapter": {
     "manifest": {
       "abi_version": 44,
@@ -2044,6 +2102,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_drain_fork_lifecycle_events",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_drain_wakeup_events",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -2155,6 +2218,11 @@
     {
       "kind": "func",
       "name": "kernel_find_listener_fd_by_accept_wake",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fork_launch_failed",
       "signature": "(i32,i32) -> (i32)"
     },
     {
@@ -3011,6 +3079,11 @@
       "kind": "func",
       "name": "kernel_vblank",
       "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_vfork_address_space_released",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -9886,6 +9959,10 @@
     {
       "name": "ThreadCancel",
       "number": 415
+    },
+    {
+      "name": "ForkReplayReady",
+      "number": 416
     }
   ],
   "vfs_metadata": {

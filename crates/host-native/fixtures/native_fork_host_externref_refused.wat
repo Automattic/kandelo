@@ -98,6 +98,23 @@
     memory.atomic.notify
     drop
 
+    ;; Park on the status word until the host answers, as musl's `_exit`
+    ;; does. The native host answers an exit by recording it and then
+    ;; publishing `CH_TEARDOWN` here, so the `unreachable` below runs only
+    ;; once the exit is recorded, and the host reads it as that unwind.
+    ;; Trapping straight after the notify, as this once did, races the host
+    ;; and is indistinguishable from a guest fault (SIGILL).
+    (loop $park
+      local.get $base
+      i32.const 1 ;; still PENDING
+      i64.const -1
+      memory.atomic.wait32
+      drop
+      local.get $base
+      i32.atomic.load
+      i32.const 1
+      i32.eq
+      br_if $park)
     unreachable)
 
   (func $refuse_local
