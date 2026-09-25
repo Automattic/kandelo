@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../src/binary-resolver";
 import { detectPtrWidth } from "../src/constants";
+import { computeProcessMemoryLayout } from "../src/process-memory";
 import { FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT as FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT }
   from "../src/fork-guest-imports";
 import { WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME }
@@ -125,8 +126,18 @@ describe("ABI version marker", () => {
 
     // User programs import kernel channel functions + memory. Provide
     // minimal stubs.
+    // Sized the way a real process is: the program's declared minimum grows
+    // with its stack (8 MiB since the SDK default changed), so a fixed page
+    // count goes stale and fails at instantiation before the marker is read.
+    const layout = computeProcessMemoryLayout({
+      ptrWidth: 4,
+      programBytes: userProg.buffer.slice(
+        userProg.byteOffset,
+        userProg.byteOffset + userProg.byteLength,
+      ) as ArrayBuffer,
+    });
     const memory = new WebAssembly.Memory({
-      initial: 17,
+      initial: layout.initialPages,
       maximum: 16384,
       shared: true,
     });
