@@ -3004,8 +3004,21 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             verify_cache,
         )?;
         let actual_cache_receipt = before.cache_receipt_sha256.clone();
-        if receipt.manifest_sha256 != before.manifest_sha256
-            || receipt.cache_key_sha256 != before.cache_key_sha256
+        // `manifest_sha256` is the digest of the package.toml FILE, and it is
+        // recorded as provenance rather than compared here. It is a fact about
+        // one input file, while a cache entry's identity is the recipe the key
+        // describes — the merged view of package.toml and build.toml. Gating
+        // on the file bytes conflated the two: editing a comment, or any field
+        // the key does not model, changed the recorded digest without changing
+        // the key, so the package was neither rebuilt nor its receipt
+        // refreshed and finalization failed with no way to recover short of a
+        // manual revision bump.
+        //
+        // The fields that do determine a build are keyed instead, including
+        // host_tools and target_arches, so a change to any of them yields a
+        // different key, a different cache directory, and a fresh build whose
+        // receipt agrees. That is the check this comparison was reaching for.
+        if receipt.cache_key_sha256 != before.cache_key_sha256
             || receipt.cache_receipt_sha256 != actual_cache_receipt
         {
             return Err(format!(
@@ -6928,6 +6941,51 @@ fn compute_sha_with_identity_context_for_platform(
             // adjacent strings unambiguous (e.g. lib `"a"` + `"bc"` ≠
             // lib `"ab"` + `"c"`). A section tag (`"libs:"`, etc.)
             // before each list prevents cross-section collisions.
+            // Fold in the two manifest fields that determine a build but
+            // were otherwise unkeyed. Hashed only when they depart from the
+            // default, so the packages declaring neither keep byte-identical
+            // identity — the same conditional shape as the source-extract
+            // exclusions above.
+            //
+            // `host_tools` names the host programs a build probes for and the
+            // versions it demands; `target_arches` names the arches the
+            // package may be built for. Both change what a build does, so an
+            // entry produced under different values is not reusable, and the
+            // cached receipt refuses it. Keying them is what lets that refusal
+            // resolve itself by rebuilding instead of wedging the build.
+            //
+            // Deliberately absent: `license`, `kernel_abi`, and the manifest's
+            // free text. None of them determine the artifact. `license` is
+            // metadata; `kernel_abi` is recorded but not yet enforced, and an
+            // ABI bump already rebuilds every artifact through the
+            // `__abi_version` equality check; comments would rebuild a package
+            // and everything downstream for a documentation edit.
+            if !target.host_tools.is_empty() {
+                h.update(b"kandelo-host-tools-v1\n");
+                for tool in &target.host_tools {
+                    h.update(tool.name.as_bytes());
+                    h.update(b"|");
+                    let min = &tool.version_constraint.min;
+                    h.update(min.major.to_le_bytes());
+                    h.update(min.minor.to_le_bytes());
+                    h.update(min.patch.unwrap_or(0).to_le_bytes());
+                    h.update(b"|");
+                    for arg in &tool.probe.args {
+                        h.update(arg.as_bytes());
+                        h.update(b",");
+                    }
+                    h.update(b"|");
+                    h.update(tool.probe.version_regex.as_bytes());
+                    h.update(b"|");
+                }
+            }
+            if target.target_arches != [TargetArch::Wasm32] {
+                h.update(b"kandelo-target-arches-v1\n");
+                for arch_entry in &target.target_arches {
+                    h.update(arch_entry.as_str().as_bytes());
+                    h.update(b"|");
+                }
+            }
             h.update(b"outputs.libs:\n");
             for s in &target.outputs.libs {
                 h.update(s.as_bytes());
@@ -29541,6 +29599,97 @@ fork_instrumentation = "disabled"
             error.contains("package name \"different-name\"")
                 && error.contains("registry directory \"directory-name\""),
             "got: {error}",
+        );
+    }
+
+    /// Identity covers what determines a build, and nothing else.
+    ///
+    /// The cached package receipt refuses an entry whose recorded identity no
+    /// longer matches, so whatever decides that refusal has to be in the key —
+    /// otherwise two manifests share one key, hence one cache directory, and
+    /// the refusal cannot be resolved by rebuilding. It previously wedged the
+    /// build until someone bumped build.toml.revision by hand.
+    ///
+    /// The converse matters just as much: a comment does not change what a
+    /// build produces, so keying it would rebuild a package and everything
+    /// downstream for a documentation edit.
+    #[test]
+    fn package_identity_tracks_build_determining_manifest_fields_only() {
+        let dir = tempdir("identity-manifest-fields");
+        let pkg = dir.join("libIdentity");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let registry = Registry {
+            roots: vec![dir.clone()],
+        };
+
+        let base = r#"
+kind = "library"
+name = "libIdentity"
+version = "1.0.0"
+depends_on = []
+
+[source]
+url = "https://example.test/libIdentity-1.0.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/libidentity.a"]
+"#;
+        let key_of = |text: &str| -> [u8; 32] {
+            std::fs::write(pkg.join("package.toml"), text).unwrap();
+            let manifest = registry.load("libIdentity").unwrap();
+            compute_sha(
+                &manifest,
+                &registry,
+                TargetArch::Wasm32,
+                4,
+                &mut Default::default(),
+                &mut Default::default(),
+            )
+            .unwrap()
+        };
+
+        let baseline = key_of(base);
+
+        // A comment is not part of the build.
+        let commented = key_of(&format!("# an explanatory comment
+{base}"));
+        assert_eq!(
+            baseline, commented,
+            "a comment must not change package identity"
+        );
+
+        // `license` is metadata, not a build input.
+        let relicensed = key_of(&base.replace("TestLicense", "OtherTestLicense"));
+        assert_eq!(
+            baseline, relicensed,
+            "license is metadata and must not change package identity"
+        );
+
+        // `host_tools` decides which host programs a build probes for.
+        let with_host_tool = key_of(&format!(
+            "{base}
+[[host_tools]]
+name = \"python3\"
+version_constraint = \">=3.8\"
+"
+        ));
+        assert_ne!(
+            baseline, with_host_tool,
+            "declaring a host tool changes what the build requires"
+        );
+
+        // `arches` decides which targets the package may be built for.
+        let with_arches = key_of(&base.replace(
+            "depends_on = []",
+            "depends_on = []\narches = [\"wasm32\", \"wasm64\"]",
+        ));
+        assert_ne!(
+            baseline, with_arches,
+            "declaring extra arches changes what the build produces"
         );
     }
 
