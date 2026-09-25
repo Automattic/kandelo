@@ -2,6 +2,16 @@
 
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
+import { composeImageInWorker } from "./image-composer-client";
+import { imageMachine, type ImageMachine } from "./image-composer";
+import {
+  CUSTOM_VFS_PROFILE_MAX_BYTES,
+  MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
+import {
+  experimentalTerminalSessionPolicy,
+} from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
@@ -11,34 +21,8 @@ import {
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
 import {
-  WORDPRESS_CONFIG_INIT_SCRIPT,
-  WORDPRESS_URL_MU_PLUGIN,
-  patchWordPressMysqliPersistentSource,
-  renderWordPressConfig,
-  wordpressConfigTemplate,
-  type WordPressDatabaseKind,
-} from "../../../lib/init/wordpress-runtime-config";
-import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
-import {
-  WORDPRESS_MARIADB_READY_FILE,
-  WORDPRESS_MARIADB_READY_PATH,
-  WORDPRESS_MARIADB_READY_PHP,
-  WORDPRESS_MARIADB_SOCKET_PATH,
-} from "../../../lib/init/wordpress-mariadb-readiness";
-import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
-import {
   resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
-import {
-  finalizeKernelOwnedImage,
-  settleWebKitReclaim,
-  trackTransientImageBuffer,
-} from "../../../lib/kernel-owned-boot";
-import {
-  ensureDirRecursive,
-  writeVfsBinary,
-  writeVfsFile,
-} from "../../../../../host/src/vfs/image-helpers";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import {
   LiveKernelHost,
@@ -53,52 +37,22 @@ import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/
 import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
 import { resolveInitArgv } from "../../../../../web-libs/kandelo-session/src/init-boot-identity";
 import {
-  materializeBootInputs,
-  type BootInputManifest,
-} from "../../../../../web-libs/kandelo-session/src/boot-inputs";
-import {
-  KANDELO_DEMO_CONFIG_PATH,
   genericDemoPresentation,
-  resolveDefaultProfileId,
-  resolveDemoAssets,
-  resolveDemoDisplay,
   resolveDemoGuide,
   resolveDemoIdentity,
   resolveDemoIngest,
   resolveDemoInit,
   resolveDemoPresentation,
-  resolveDemoRuntime,
-  resolveDemoWeb,
-  type DemoDisplayConfig,
-  type DemoIdentityConfig,
   type DemoInitConfig,
-  type DemoRuntimeConfig,
   type DemoWebConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
-import { readDinitBootTargets } from "../../../../../web-libs/kandelo-session/src/dinit-boot-targets";
 import {
   parseGalleryRoster,
   resolveEntryAvailability,
   type EntryAvailability,
   type RosterEntry,
 } from "../../../../../web-libs/kandelo-session/src/gallery-roster";
-import {
-  EXPERIMENTAL_TERMINAL_SESSION_PATH,
-  MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
-  experimentalTerminalSessionPolicy,
-  parseExperimentalTerminalSession,
-  type ExperimentalTerminalProgram,
-  type ExperimentalTerminalSession,
-} from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
-import {
-  CUSTOM_VFS_PROFILE_MAX_BYTES,
-  MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
-  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-  assertVfsImageFitsProfile,
-  declaredVfsMaxByteLength,
-} from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
 import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
@@ -109,7 +63,6 @@ import {
 } from "../url-state";
 import { TRACKED_DEMO_CONFIG_BY_PRODUCT } from "./tracked-demo-configs";
 import galleryRosterSource from "../gallery-roster.json?raw";
-import { verifyImportedSealsForCurrentBoot } from "./boot-current-boundary";
 import {
   candidateEvidenceBootDescriptor,
   candidateEvidenceKernelInitOptions,
@@ -131,7 +84,6 @@ import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
-import { stageConfiguredAssets } from "./configured-assets";
 import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
@@ -231,16 +183,9 @@ async function optionalBinaryUrl(
 }
 
 const HTTP_PORT = 8080;
-const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
-const MARIADB_READY_SERVICE = "mariadb-ready";
-const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
 const ROOT_UID = 0;
 const ROOT_GID = 0;
 const ROOT_HOME = "/root";
-const PHP_FPM_UID = 65534;
-const PHP_FPM_GID = 65534;
-const MYSQL_UID = 101;
-const MYSQL_GID = 101;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 const DEMO_USER = "maker";
@@ -455,12 +400,6 @@ function galleryProductSource(productId: string): VfsProductSource | undefined {
     : undefined;
 }
 
-// Boot-resource reclamation (worker-owned live filesystems and transient
-// image-build buffers) lives in the shared helper so every kernel-owned demo
-// shares one implementation, including failures before a kernel exists.
-async function settleAfterBootResourcesReleased(): Promise<void> {
-  await settleWebKitReclaim();
-}
 
 /**
  * Everything the host knows about the machine it is ABOUT to boot, before
@@ -501,15 +440,6 @@ interface LiveProfile {
  * The machine, as the image itself declares it. Every field here was read
  * out of the booting image's `/etc/kandelo/demo.json`.
  */
-interface ImageMachine {
-  profileId: string;
-  identity: DemoIdentityConfig | null;
-  runtime: DemoRuntimeConfig;
-  init: DemoInitConfig | null;
-  web: DemoWebConfig | null;
-  display: DemoDisplayConfig | null;
-}
-
 /** How the host launches the machine's pid 1. */
 interface InitLaunch {
   argv: string[];
@@ -568,29 +498,6 @@ const HOST_MEMORY_PROFILE = detectRuntimeMemoryProfile(
     },
   memoryProfileOverride(),
 );
-
-// Sized to the device's memory budget, not a constant: each static php-fpm
-// child is a full process address space, and on WebKit a declared memory
-// ceiling is charged against the ~6 GiB iOS reservation pool at construction.
-// Six workers fit the desktop pool; the constrained profile's smaller pool
-// only fits four — the difference between the nginx-php demo booting and
-// Safari throwing "Out of memory" on iOS.
-const PHP_FPM_WORKERS = HOST_MEMORY_PROFILE.preforkServiceProcesses;
-const PATCHED_PHP_FPM_CONF = `[global]
-daemonize = no
-error_log = /dev/stderr
-log_level = notice
-
-[www]
-user = nobody
-group = nobody
-listen = 127.0.0.1:9000
-pm = static
-pm.max_children = ${PHP_FPM_WORKERS}
-clear_env = no
-slowlog = /dev/null
-request_slowlog_trace_depth = 0
-`;
 
 // fbtest is spawned directly by path+bytes (see spawnLazy below), not
 // through the login/bash path that sources /etc/profile.d, so it still
@@ -805,8 +712,11 @@ export async function createLiveHost(
     // superseded activation would detach that newer generation on resume.
     h.detachKernel();
     if (previousKernel) {
+      // No reclamation nudge needed after destroy: the previous machine's
+      // workers are terminated inside destroy(), and this boot path leaves no
+      // main-thread SharedArrayBuffer behind — image composition runs in a
+      // disposable worker whose buffer dies with its realm.
       await previousKernel.destroy().catch(() => {});
-      await settleAfterBootResourcesReleased();
     }
     const bootStartedAt = performance.now();
 
@@ -822,15 +732,13 @@ export async function createLiveHost(
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
-        await settleAfterBootResourcesReleased();
         return;
       }
       currentKernel = kernel;
     } catch (err) {
-      // Failed composition can abandon a private staged filesystem before a
-      // BrowserKernel exists. Its discard hook registered the buffer; run the
-      // same bounded WebKit reclamation pass used after worker teardown.
-      await settleAfterBootResourcesReleased();
+      // A failed or superseded composition frees its own staging filesystem:
+      // the composer worker is terminated on every non-success path, which is
+      // WebKit's deterministic reclamation. Nothing to nudge here.
       if (err instanceof BootSuperseded || seq !== bootSeq) return;
       currentKernel = null;
       h.detachKernel();
@@ -1070,69 +978,13 @@ function profileForCandidateEvidence(
   };
 }
 
-/**
- * Which profile of the image to boot, per the spec's resolution order:
- * `&profile=`, else the image's own `defaultProfile`. An id the image does
- * not declare is a loud failure.
- */
-function resolveImageProfileId(
-  config: KandeloDemoConfig,
-  profile: LiveProfile,
-): string {
-  const declared = declaredProfileIds(config);
-  const requested = profile.requestedProfileId;
-  if (requested !== null) {
-    if (declared.includes(requested)) return requested;
-    // A profile id nobody declared is a real boundary: refusing to guess is
-    // what keeps `&profile=` from silently booting a different machine.
-    throw new Error(
-      `${profile.requestedProfileSource ?? "the request"} selected profile ${
-        JSON.stringify(requested)
-      }, which this image's ${KANDELO_DEMO_CONFIG_PATH} does not declare`
-        + ` (declared: ${declared.length > 0 ? declared.join(", ") : "none"})`,
-    );
-  }
-  if (declared.length === 0) return TOP_LEVEL_PROFILE_ID;
-  const defaultProfileId = resolveDefaultProfileId(config);
-  if (defaultProfileId === null) {
-    throw new Error(
-      `${KANDELO_DEMO_CONFIG_PATH} declares ${declared.length} profiles but no`
-        + ` defaultProfile; select one with &profile= (declared: ${
-          declared.join(", ")
-        })`,
-    );
-  }
-  return defaultProfileId;
-}
 
 /**
  * An image may put its whole machine at the top level with no `profiles`
  * block at all. The resolvers already fall back to the top level for an
  * unknown profile id, so this sentinel selects exactly that.
  */
-const TOP_LEVEL_PROFILE_ID = "";
 
-function declaredProfileIds(config: KandeloDemoConfig): string[] {
-  const profiles = config.profiles;
-  return profiles !== undefined && profiles !== null && !Array.isArray(profiles)
-    ? Object.keys(profiles)
-    : [];
-}
-
-/** Read the whole machine out of the image, for one selected profile. */
-function imageMachine(
-  config: KandeloDemoConfig,
-  profileId: string,
-): ImageMachine {
-  return {
-    profileId,
-    identity: resolveDemoIdentity(config, profileId),
-    runtime: resolveDemoRuntime(config, profileId),
-    init: resolveDemoInit(config, profileId),
-    web: resolveDemoWeb(config, profileId),
-    display: resolveDemoDisplay(config, profileId),
-  };
-}
 
 /**
  * Turn the image's declared `init` into the pid-1 launch, or `null` when the
@@ -1175,39 +1027,6 @@ function shellCommandForMachine(init: DemoInitConfig | null): string | null {
   return init !== null && "shellCommand" in init ? init.shellCommand : null;
 }
 
-/**
- * The readiness service list, derived from the image's own dinit tree
- * instead of a hand-maintained copy: the transitive `depends-on` closure of
- * the target `demo.json` selected, including the target itself. A dependency
- * with no `/etc/dinit.d/<name>` file throws, naming it — a machine that can
- * never become ready is a defect, not something to wait out.
- */
-function dinitServiceClosure(
-  fs: MemoryFileSystem,
-  target: string,
-): string[] {
-  const seen = new Set<string>();
-  const ordered: string[] = [];
-  const pending = [target];
-  while (pending.length > 0) {
-    const name = pending.pop()!;
-    if (seen.has(name)) continue;
-    seen.add(name);
-    ordered.push(name);
-    if (seen.size > MAX_DINIT_SERVICE_CLOSURE) {
-      throw new Error(
-        `image dinit tree exceeds ${MAX_DINIT_SERVICE_CLOSURE} services`,
-      );
-    }
-    for (const dependency of readDinitBootTargets(fs, name)) {
-      pending.push(dependency);
-    }
-  }
-  return ordered;
-}
-
-/** Far above any real service tree; a hostile image cannot spin this. */
-const MAX_DINIT_SERVICE_CLOSURE = 256;
 
 function envArray(env: Record<string, string>): string[] {
   return Object.entries(env).map(([key, value]) => `${key}=${value}`);
@@ -1431,88 +1250,47 @@ async function bootProfile(
   tick(
     `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(loadedVfs.imageBytes.byteLength)}`,
   );
-  const fetchedVfsImageBytes = new Uint8Array(loadedVfs.imageBytes);
-  const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
-  assertVfsImageFitsProfile(
-    MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes),
-    profile.maxVfsByteLength,
-    declaredVfsMaxByteLength(vfsMetadata),
-    imageLabel(profile),
+  // Compose the boot image in a DISPOSABLE worker, never on this thread.
+  // Composition needs a live MemoryFileSystem — a SharedArrayBuffer — and on
+  // WebKit only Worker.terminate() reclaims shared memory deterministically;
+  // a buffer this persistent thread merely dropped waits on a GC that
+  // reserved shared memory rarely provokes, accumulating across machine
+  // switches until Safari throws "Out of memory". The worker returns plain
+  // transferable bytes plus the image-read machine data; the kernel worker
+  // then rebuilds and owns the live VFS (kernelOwnedFs). Supersession is
+  // enforced by terminating the worker, which also frees its staging buffer.
+  // See image-composer.ts for the composition itself.
+  const composed = await composeImageInWorker(
+    {
+      imageBytes: new Uint8Array(loadedVfs.imageBytes),
+      maxVfsByteLength: profile.maxVfsByteLength,
+      imageLabel: imageLabel(profile),
+      requestedProfileId: profile.requestedProfileId,
+      requestedProfileSource: profile.requestedProfileSource,
+      hasCandidateEvidence: profile.candidateEvidence !== undefined,
+      descriptor: requestedDescriptor,
+      lazyAssets: loadedVfs.lazyAssets,
+      appPath: APP_PATH,
+      proto: PROTO,
+      preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
+    },
+    {
+      onTick: tick,
+      isCurrent,
+      supersededError: () => new BootSuperseded(),
+    },
   );
-  MemoryFileSystem.assertImageKernelAbi(
-    fetchedVfsImageBytes,
-    ABI_VERSION,
-    imageLabel(profile),
-  );
-  // Assemble the demo image in a TRANSIENT build-time filesystem. Its
-  // SharedArrayBuffer never becomes the machine's live VFS — after
-  // `saveImage()` it is dropped, and the kernel worker rebuilds+owns the live
-  // FS from the serialized bytes (kernelOwnedFs). This keeps the main thread
-  // out of the live-VFS ownership set so WebKit reclaims it on teardown via
-  // Worker.terminate() rather than lazy GC — the root fix for the Safari
-  // image-switch OOM.
-  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
-    maxByteLength: profile.maxVfsByteLength,
-  });
-  // Track as soon as the caller owns the staged filesystem. This covers every
-  // later fetch, staging, supersession, and serialization failure; finalizing
-  // the image is intentionally an idempotent second registration.
-  trackTransientImageBuffer(buildFs.sharedBuffer);
-  // WHY: register cleanup before rejecting a composition superseded while its
-  // asynchronous layer loads were in flight. Otherwise its completed buffer
-  // becomes unreachable without entering the WebKit reclamation ledger.
   assertCurrent();
-  // WHY: establish cleanup ownership first, then reject forged imported seals
-  // before URL rewriting or asset registration can trust their lazy metadata.
-  await verifyImportedSealsForCurrentBoot(buildFs);
-  // WHY: this check must live in the same continuation as the effects below.
-  // Moving it into an async helper creates a microtask gap where a newer boot
-  // can take ownership before this boot resumes mutating its staged image.
-  assertCurrent();
-  const terminalSession = readImageExperimentalTerminalSession(buildFs);
-  if (profile.candidateEvidence === undefined) {
-    // Keyed on what the image ACTUALLY CONTAINS, never on a machine id: an
-    // image that ships a PHP-FPM config gets the host's worker-pool patch, and
-    // one that ships WordPress gets the runtime wp-config this page's prefix
-    // and protocol determine (which no baked artifact can know). Whether that
-    // WordPress talks to MariaDB is likewise read off the image's own dinit
-    // tree.
-    if (vfsPathExists(buildFs, "/etc/php-fpm.conf")) {
-      writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
-      ensureDirRecursive(buildFs, "/var/cache/opcache");
-    }
-    if (vfsPathExists(buildFs, "/var/www/html/wp-includes")) {
-      if (vfsPathExists(buildFs, "/etc/dinit.d/mariadb")) {
-        patchMariaDbUnixSocketConfig(buildFs);
-        patchWordPressRuntimeConfig(buildFs, "mariadb");
-      } else {
-        patchWordPressRuntimeConfig(buildFs, "sqlite");
-      }
-    }
-    ensureDemoHomes(buildFs);
-  }
-  assertImageTerminalProgram(buildFs, terminalSession.initial);
-  if (terminalSession.afterExit !== undefined) {
-    assertImageTerminalProgram(buildFs, terminalSession.afterExit);
-  }
+  const { imageConfig, profileId, terminalSession, bootInputManifest } =
+    composed;
+  const vfsImageBytes = composed.imageBytes;
   // ── The machine, read from the image it lives in ────────────────────────
   //
-  // Nothing below consults an app-side table. An image with no
-  // /etc/kandelo/demo.json, or a malformed one, fails the boot here with the
-  // real reason: there is no fallback machine to synthesize any more.
-  const imageConfig = readImageConfig(buildFs);
-  if (imageConfig === null) {
-    throw new Error(
-      `VFS image has no ${KANDELO_DEMO_CONFIG_PATH}, so it does not describe`
-        + " a machine. Kandelo boots what the image declares; it does not"
-        + " invent a default.",
-    );
-  }
-  const machine = imageMachine(
-    imageConfig,
-    resolveImageProfileId(imageConfig, profile),
-  );
-  const profileId = machine.profileId;
+  // The composer already failed the boot if the image declares no machine
+  // (no /etc/kandelo/demo.json) or the requested profile does not exist.
+  // `imageMachine` is a pure read over the returned config, recomputed here
+  // so the presentation layer keeps working with the same object shape.
+  const machine = imageMachine(imageConfig, profileId);
   const machineTitle = machine.identity?.title
     ?? (profile.vfsUrl ? titleFromVfsImageUrl(profile.vfsUrl) : profileId);
   const rawPresentation = resolveDemoPresentation(imageConfig, profileId)
@@ -1523,7 +1301,6 @@ async function bootProfile(
   // Ingest is an image-owned capability. Absence is valid and must not be
   // replaced with a package- or profile-name-specific UI promise.
   host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
-  const assets = resolveDemoAssets(imageConfig, profileId);
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
   const machineShellCommand = shellCommandForMachine(machine.init);
@@ -1541,50 +1318,15 @@ async function bootProfile(
       gid: profile.candidateEvidence.boot.gid,
       env: envArray(profile.candidateEvidence.boot.env),
     };
-  if (machine.init !== null && "target" in machine.init) {
-    for (const service of dinitServiceClosure(buildFs, machine.init.target)) {
-      requiredServices.add(service);
-    }
+  // The dinit readiness closure was read off the staged image's own
+  // /etc/dinit.d tree inside the composer.
+  for (const service of composed.requiredServices) {
+    requiredServices.add(service);
   }
   if (machine.web !== null) webPaneLabel = machineTitle;
   host.setDescriptor(
     descriptorForMachine(profile, machine, machineTitle, requestedDescriptor),
   );
-  if (profile.candidateEvidence === undefined) {
-    await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
-    assertCurrent();
-  }
-
-  // Boot inputs (e.g. a #k1= link's script) are untrusted, URL-carried
-  // payloads. Materialize the whole declared set now, at the same
-  // image-staging point as the asset patches above: every input must verify
-  // its byte length and sha256 before anything is written, and a
-  // materialization failure must fail the boot loudly rather than silently
-  // continue without the input the link promised.
-  let bootInputManifest: BootInputManifest | undefined;
-  if (requestedDescriptor.boot.inputs?.length) {
-    tick("materializing boot inputs...");
-    bootInputManifest = await materializeBootInputs(requestedDescriptor, {
-      resolvers: {},
-      mkdir: (p) => ensureDirRecursive(buildFs, p),
-      writeFile: (p, b, m) => writeVfsBinary(buildFs, p, b, m),
-    });
-    assertCurrent();
-  }
-
-  // Serialize the assembled image to transferable bytes, then let `buildFs`
-  // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
-  // `MemoryFileSystem.fromImage` restores directly in the worker.
-  // WHY: this is the final synchronous image mutation. Binding before any
-  // later staging could leave newly-added lazy metadata outside the manifest
-  // authority copied from the authenticated product activation.
-  bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets);
-  tick("assembling kernel-owned VFS image...");
-  // Serialize to transferable bytes + register the transient build buffer for
-  // reclamation tracking, then let `buildFs` fall out of scope when bootProfile
-  // returns. `settleAfterKernelDestroy` reclaims it on WebKit.
-  const vfsImageBytes = await finalizeKernelOwnedImage(buildFs);
-  assertCurrent();
 
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
@@ -1985,207 +1727,13 @@ function attachDeclaredInputSource(
   );
 }
 
-function stageShellUtilities(
-  fs: MemoryFileSystem,
-  dashBytes: ArrayBuffer,
-  bashBytes: ArrayBuffer,
-): void {
-  ensureDemoHomes(fs);
-  ensureDirRecursive(fs, "/bin");
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
-  try {
-    fs.symlink("/bin/dash", "/bin/sh");
-  } catch {
-    /* exists */
-  }
-  try {
-    fs.symlink("/bin/dash", "/usr/bin/dash");
-  } catch {
-    /* exists */
-  }
-  try {
-    fs.symlink("/bin/dash", "/usr/bin/sh");
-  } catch {
-    /* exists */
-  }
-  writeVfsBinary(fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
-  try {
-    fs.symlink("/bin/bash", "/usr/bin/bash");
-  } catch {
-    /* exists */
-  }
-}
 
-function ensureDemoHomes(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, "/home");
-  ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
-  ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
-}
 
-function ensureOwnedDir(
-  fs: MemoryFileSystem,
-  path: string,
-  mode: number,
-  uid: number,
-  gid: number,
-): void {
-  ensureDirRecursive(fs, path);
-  fs.chown(path, uid, gid);
-  fs.chmod(path, mode);
-}
 
-function patchWordPressRuntimeConfig(
-  fs: MemoryFileSystem,
-  kind: WordPressDatabaseKind,
-): void {
-  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
-  writeVfsFile(
-    fs,
-    "/etc/wp-config-template.php",
-    wordpressConfigTemplate(kind),
-  );
-  writeVfsFile(
-    fs,
-    "/var/www/html/wp-config.php",
-    renderWordPressConfig(kind, APP_PATH, PROTO),
-  );
-  if (kind === "sqlite") {
-    ensureOwnedDir(
-      fs,
-      "/var/www/html/wp-content/database",
-      0o775,
-      PHP_FPM_UID,
-      PHP_FPM_GID,
-    );
-  } else if (kind === "mariadb") {
-    for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
-      ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
-    }
-    patchWordPressPersistentMysqli(fs);
-    writeVfsFile(
-      fs,
-      "/var/www/html/kandelo-mysql-bench.php",
-      MYSQL_BENCHMARK_PHP,
-    );
-  }
-  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
-  writeVfsFile(
-    fs,
-    "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
-    WORDPRESS_URL_MU_PLUGIN,
-  );
-}
 
-function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, "/tmp");
-  fs.chmod("/tmp", 0o1777);
-  ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
-  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
 
-  const phpIniPath = "/etc/php.ini";
-  const phpIni = readOptionalVfsText(fs, phpIniPath);
-  if (phpIni !== null) {
-    let patched = phpIni;
-    if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
-      patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
-    }
-    if (!/^mysqli\.allow_persistent\s*=/m.test(patched)) {
-      patched += `mysqli.allow_persistent=1\n`;
-    }
-    if (!/^mysqli\.max_persistent\s*=/m.test(patched)) {
-      patched += `mysqli.max_persistent=-1\n`;
-    }
-    if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
-      patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
-    }
-    if (patched !== phpIni) writeVfsFile(fs, phpIniPath, patched);
-  }
 
-  const mariadbServicePath = "/etc/dinit.d/mariadb";
-  const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
-  if (mariadbService !== null) {
-    const patched = mariadbService
-      .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
-      .replace(/\s*--thread-handling=no-threads\b/g, "");
-    if (patched !== mariadbService)
-      writeVfsFile(fs, mariadbServicePath, patched);
-  }
 
-  ensureMariaDbReadyService(fs);
-  patchPhpFpmMariaDbDependency(fs);
-}
-
-function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
-  writeVfsFile(
-    fs,
-    MARIADB_READY_SCRIPT_PATH,
-    `#!/bin/sh
-set -u
-
-i=0
-while [ "$i" -lt 60 ]; do
-    if [ -S "${MARIADB_SOCKET_PATH}" ] || [ -e "${MARIADB_SOCKET_PATH}" ]; then
-        exit 0
-    fi
-    sleep 1
-    i=$((i + 1))
-done
-
-echo "MariaDB readiness timed out waiting for ${MARIADB_SOCKET_PATH}" >&2
-exit 1
-`,
-    0o755,
-  );
-  writeVfsFile(
-    fs,
-    `/etc/dinit.d/${MARIADB_READY_SERVICE}`,
-    `type = scripted
-command = /bin/sh ${MARIADB_READY_SCRIPT_PATH}
-depends-on = mariadb
-restart = false
-`,
-  );
-}
-
-function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
-  const phpFpmServicePath = "/etc/dinit.d/php-fpm";
-  const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
-  if (phpFpmService === null) return;
-  if (
-    new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(
-      phpFpmService,
-    )
-  ) {
-    return;
-  }
-  const patched = phpFpmService.replace(
-    /^depends-on\s*=\s*mariadb\s*$/m,
-    `depends-on = ${MARIADB_READY_SERVICE}`,
-  );
-  if (patched !== phpFpmService) {
-    writeVfsFile(fs, phpFpmServicePath, patched);
-  } else {
-    writeVfsFile(
-      fs,
-      phpFpmServicePath,
-      `${phpFpmService}${phpFpmService.endsWith("\n") ? "" : "\n"}depends-on = ${MARIADB_READY_SERVICE}\n`,
-    );
-  }
-}
-
-function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
-  for (const path of [
-    "/var/www/html/wp-includes/class-wpdb.php",
-    "/var/www/html/wp-includes/wp-db.php",
-  ]) {
-    const source = readOptionalVfsText(fs, path);
-    if (source === null) continue;
-    const patched = patchWordPressMysqliPersistentSource(source);
-    if (patched !== source) writeVfsFile(fs, path, patched);
-  }
-}
 
 interface LoadedVfsImage {
   imageBytes: ArrayBuffer;
@@ -2234,10 +1782,6 @@ function imageLabel(profile: LiveProfile): string {
     : "VFS image";
 }
 
-function dirname(path: string): string {
-  const idx = path.lastIndexOf("/");
-  return idx <= 0 ? "/" : path.slice(0, idx);
-}
 
 async function reportTcpListener(
   kernel: BrowserKernel,
@@ -2698,120 +2242,13 @@ async function matchTrustedVfsProductId(
   );
 }
 
-function readImageExperimentalTerminalSession(
-  fs: MemoryFileSystem,
-): ExperimentalTerminalSession {
-  let stat;
-  try {
-    stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
-  } catch (err) {
-    if (isMissingVfsPath(err)) {
-      throw new Error(
-        `VFS image is missing ${EXPERIMENTAL_TERMINAL_SESSION_PATH}`,
-      );
-    }
-    throw err;
-  }
-  if ((stat.mode & 0xf000) !== 0x8000) {
-    throw new Error(
-      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} must be a regular file`,
-    );
-  }
-  if (stat.size > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
-    throw new Error(
-      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} exceeds ` +
-        `${MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES} bytes`,
-    );
-  }
-  const json = new TextDecoder("utf-8", { fatal: true }).decode(
-    new Uint8Array(readVfsFile(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH)),
-  );
-  return parseExperimentalTerminalSession(json);
-}
 
-function assertImageTerminalProgram(
-  fs: MemoryFileSystem,
-  program: ExperimentalTerminalProgram,
-): void {
-  const path = program.path;
-  let stat;
-  try {
-    stat = fs.stat(path);
-  } catch {
-    throw new Error(`VFS image terminal program is missing: ${path}`);
-  }
-  if ((stat.mode & 0xf000) !== 0x8000) {
-    throw new Error(`VFS image terminal program is not a regular file: ${path}`);
-  }
-  if ((stat.mode & 0o111) === 0) {
-    throw new Error(`VFS image terminal program is not executable: ${path}`);
-  }
-}
 
-function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
-  return readKandeloDemoConfigFromVfs(fs);
-}
 
-function readOptionalVfsText(
-  fs: MemoryFileSystem,
-  path: string,
-): string | null {
-  const bytes = readOptionalVfsFile(fs, path);
-  return bytes === null
-    ? null
-    : new TextDecoder().decode(new Uint8Array(bytes));
-}
 
-function readOptionalVfsFile(
-  fs: MemoryFileSystem,
-  path: string,
-): ArrayBuffer | null {
-  try {
-    return readVfsFile(fs, path);
-  } catch (err) {
-    if (isMissingVfsPath(err)) return null;
-    throw err;
-  }
-}
 
-/** Does this image actually contain that path? The host's staging patches
- *  key off what the image CONTAINS, never off a machine id. */
-function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
-  try {
-    fs.stat(path);
-    return true;
-  } catch (err) {
-    if (isMissingVfsPath(err)) return false;
-    throw err;
-  }
-}
 
-function isMissingVfsPath(err: unknown): boolean {
-  if (typeof err === "object" && err !== null) {
-    const code = (err as { code?: unknown }).code;
-    if (code === -2 || code === "ENOENT") return true;
-  }
-  const message = err instanceof Error ? err.message : String(err);
-  if (/\bENOENT\b/.test(message)) return true;
-  return message.includes("No such file or directory");
-}
 
-function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
-  const st = fs.stat(path);
-  const fd = fs.open(path, 0, 0);
-  try {
-    const out = new Uint8Array(st.size);
-    let off = 0;
-    while (off < out.byteLength) {
-      const n = fs.read(fd, out.subarray(off), null, out.byteLength - off);
-      if (n <= 0) break;
-      off += n;
-    }
-    return out.buffer.slice(out.byteOffset, out.byteOffset + off);
-  } finally {
-    fs.close(fd);
-  }
-}
 
 function failOn(label: string): (r: Response) => Response {
   return (r) => {

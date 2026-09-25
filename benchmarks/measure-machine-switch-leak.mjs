@@ -140,7 +140,7 @@ const rows = [];
 if (MODE === 'gallery') {
   await page.goto(`${BASE}/?demo=${DEMOS[0]}`, { waitUntil: 'domcontentloaded' });
   await page
-    .waitForFunction(() => /RUNNING|bash-|MODESET/.test(document.body.innerText), {
+    .waitForFunction(() => /RUNNING|kandelo\$|bash-|MODESET/.test(document.body.innerText), {
       timeout: 60_000,
     })
     .catch(() => {});
@@ -151,7 +151,7 @@ if (MODE === 'navigate') {
   // is comparable with the rest.
   await page.goto(`${BASE}/?demo=${DEMOS[0]}`, { waitUntil: 'domcontentloaded' });
   await page
-    .waitForFunction(() => /RUNNING|bash-|MODESET/.test(document.body.innerText), {
+    .waitForFunction(() => /RUNNING|kandelo\$|bash-|MODESET/.test(document.body.innerText), {
       timeout: 60_000,
     })
     .catch(() => {});
@@ -178,7 +178,7 @@ for (let i = 0; i < ROUNDS; i++) {
   let booted = true;
   try {
     await page.waitForFunction(
-      () => /RUNNING|bash-|MODESET/.test(document.body.innerText),
+      () => /RUNNING|kandelo\$|bash-|MODESET/.test(document.body.innerText),
       { timeout: 45_000 },
     );
   } catch {
