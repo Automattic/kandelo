@@ -647,6 +647,13 @@ describe("canonical source-rootfs shell", () => {
     });
     expect(fs.stat("/home/.nethack").mode & 0o777).toBe(0o777);
 
+    // The quake basedir and its id1 game dir must exist and be writable by the
+    // unprivileged demo user: the profile stages quake106.zip into the basedir,
+    // the launch wrapper extracts id1/pak0.pak, and the bring-your-own-pak
+    // ingest writes id1/pak0.pak directly (writeFile requires the parent dir).
+    expect(fs.stat("/usr/share/quake").mode & 0o777).toBe(0o777);
+    expect(fs.stat("/usr/share/quake/id1").mode & 0o777).toBe(0o777);
+
     const terminalSessionBytes = readVfsFile(
       fs,
       EXPERIMENTAL_TERMINAL_SESSION_PATH,

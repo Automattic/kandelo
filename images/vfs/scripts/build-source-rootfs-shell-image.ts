@@ -834,6 +834,11 @@ export async function buildSourceRootfsShellImage(
   // the extracted pak.
   ensureDirRecursive(fs, "/usr/share");
   ensureDirRecursive(fs, "/usr/share/quake", 0o777);
+  // Create the id1 game dir too: the bring-your-own-pak ingest writes
+  // /usr/share/quake/id1/pak0.pak directly (host.writeFile requires the parent
+  // to exist), and that path must work even offline when no quake106.zip was
+  // staged and the wrapper's own `mkdir -p id1` never ran.
+  ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
   ensureDirRecursive(fs, "/usr/bin");
   writeVfsBinary(fs, "/usr/bin/espeak-ng", espeakNg, 0o755);
   writeEspeakVoiceData(fs, espeakNgData);
