@@ -27,6 +27,7 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
   ResolveExecRequestMessage,
+  DestroyProgressEvent,
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
@@ -930,6 +931,13 @@ export class NodeKernelHost {
     return () => {
       this.lazyDownloadListeners.delete(cb);
     };
+  }
+
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
   }
 
   /**

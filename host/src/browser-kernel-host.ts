@@ -19,6 +19,7 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
   VfsFileSnapshot,
+  DestroyProgressEvent,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import {
@@ -917,6 +918,13 @@ export class BrowserKernel {
     return () => {
       this.lazyDownloadListeners.delete(cb);
     };
+  }
+
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
   }
 
   private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
