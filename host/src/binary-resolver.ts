@@ -229,8 +229,8 @@ function packagedBinaryCandidates(
 ): string[] {
   const adjusted = applyDefaultArch(relPath);
   const candidates = [join(root, adjusted)];
-  if (relPath === "rootfs.vfs") {
-    candidates.push(join(root, "rootfs.vfs"));
+  if (relPath === "rootfs.vfs.zst") {
+    candidates.push(join(root, "rootfs.vfs.zst"));
   }
   return candidates;
 }

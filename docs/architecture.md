@@ -1760,7 +1760,7 @@ The browser host layers two additional, host-specific mounts on top: `/dev/shm` 
 
 `/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`,
 `/etc/resolv.conf`, and static OpenSSL policy/trust files under `/etc/ssl` are
-real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. Any
+real files inside `host/wasm/rootfs.vfs.zst`, served through the `/` mount. Any
 program that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's
 default configuration/trust lookup reads the same image bytes that `cat` would.
 The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
@@ -1800,7 +1800,7 @@ VFS images can also carry image-level metadata outside the guest file tree. The 
 `NodeKernelHost` accepts
 `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With
 `"default"` (the path used by the vitest suite), the worker reads
-`host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via the private-session
+`host/wasm/rootfs.vfs.zst`, applies `DEFAULT_MOUNT_SPEC` via the private-session
 Node resolver, and constructs a `VirtualPlatformIO` for the kernel. The image
 supplies both `/etc/ssl/cert.pem` and
 `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to
@@ -1829,7 +1829,7 @@ The browser test runner and Git test assemble small kernel-owned VFS images with
 serialize them with `finalizeKernelOwnedImage` and boot them through
 `BrowserKernel.boot`. Before serialization, the shared host helper
 `overlayEtcFromRootfs` in `host/src/vfs/rootfs-overlay.ts` recursively merges
-`/etc/**` from the canonical `rootfs.vfs`. Existing leaves and directory
+`/etc/**` from the canonical `rootfs.vfs.zst`. Existing leaves and directory
 metadata remain caller-owned, while missing canonical descendants such as
 `/etc/ssl/openssl.cnf` retain their source modes and ownership. Missing
 canonical `/etc` state, short reads, and target capacity failures abort image
@@ -2636,7 +2636,7 @@ order:
 3. `sysroot64` — provisions the wasm64 musl sysroot the same way
 4. `sdk` — verifies the `wasm32posix-cc` toolchain wrappers resolve against `sysroot`
 5. `engine` — builds every package in the local-build graph, including the kernel: `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`, then copies `kandelo-kernel.wasm` to `host/wasm/`
-6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
+6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs.zst`
 7. `host-dist` — builds the TypeScript host via `npm run build` (tsup → ESM + CJS)
 
 ```bash
@@ -2650,7 +2650,7 @@ step that `./run.sh setup` does not run: use `./run.sh build programs`
 (`scripts/build-programs.sh`) when you need them, e.g. for the wasm64
 Vitest cases or benchmark suites.
 
-`host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
+`host/wasm/` is gitignored — `rootfs.vfs.zst`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 
 Manifest node paths and archive mount points use canonical absolute POSIX
 paths. ZIP archives ingested by `mkrootfs` require byte-exact UTF-8 canonical

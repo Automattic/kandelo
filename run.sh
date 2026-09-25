@@ -2001,8 +2001,8 @@ clean_target() {
             rm -rf "$REPO_ROOT/host/dist"
             warn "Cleaned host" ;;
         rootfs)
-            rm -f "$REPO_ROOT/host/wasm/rootfs.vfs"
-            warn "Cleaned rootfs.vfs" ;;
+            rm -f "$REPO_ROOT/host/wasm/rootfs.vfs.zst"
+            warn "Cleaned rootfs.vfs.zst" ;;
         programs)
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
@@ -2863,7 +2863,7 @@ cmd_list() {
     echo "  sysroot64   musl libc sysroot (wasm64)           $([ -f "$REPO_ROOT/sysroot64/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sdk         SDK cross-compilation tools           $(command -v wasm32posix-cc &>/dev/null && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  host        TypeScript host (tsup)                $([ -d "$REPO_ROOT/host/dist" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  rootfs      Canonical host rootfs.vfs             $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  rootfs      Canonical host rootfs.vfs.zst         $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs.zst" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  bash        bash 5.2 shell                         $(has_bash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

@@ -160,7 +160,7 @@ npm install wasm-posix-host wasm-posix-sdk
 ```
 
 `wasm-posix-host` ships the compiled host runtime JS, worker entry
-points, `kernel.wasm`, and `rootfs.vfs`. `wasm-posix-sdk` ships the
+points, `kernel.wasm`, and `rootfs.vfs.zst`. `wasm-posix-sdk` ships the
 compiler wrappers, musl sysroot, and host glue files used when linking
 your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
 `WASM_POSIX_LLVM_DIR`) because the SDK wraps clang rather than

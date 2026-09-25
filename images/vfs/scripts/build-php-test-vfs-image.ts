@@ -425,8 +425,8 @@ async function main(): Promise<void> {
   const intlPath = runtime?.closureHostPaths.get("php/intl.so") ??
     [...extensionDirectories].reverse().map((dir) => join(dir, "intl.so"))
       .find((path) => existsSync(path));
-  const rootfsPath = process.env.ROOTFS_VFS ?? tryResolveBinary("rootfs.vfs") ??
-    tryResolveBinary("programs/rootfs.vfs") ?? join(repositoryRoot, "host/wasm/rootfs.vfs");
+  const rootfsPath = process.env.ROOTFS_VFS ?? tryResolveBinary("rootfs.vfs.zst") ??
+    tryResolveBinary("programs/rootfs.vfs.zst") ?? join(repositoryRoot, "host/wasm/rootfs.vfs.zst");
   const sourceRoot = process.env.PHP_SOURCE_DIR ?? ensureSourceExtract(
     "php",
     repositoryRoot,

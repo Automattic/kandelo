@@ -7,6 +7,7 @@
 // unexpected exceptions are re-thrown so Node prints a real backtrace.
 
 import { writeFileSync } from "node:fs";
+import { constants as zlibConstants, zstdCompressSync } from "node:zlib";
 import { buildImage } from "../builder.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs build <MANIFEST> <sourceTree> -o <output.vfs> [options]
@@ -271,8 +272,21 @@ export async function runBuild(args: string[]): Promise<number> {
     return 1;
   }
 
+  // WHY the extension decides: `.vfs.zst` is already how every other VFS
+  // product declares a compressed artifact (see images/vfs/scripts
+  // /vfs-image-helpers.ts, which requires that suffix). Honouring it here lets
+  // the canonical rootfs ship compressed like its peers instead of being the
+  // one product published raw. Level 19 costs build time only — decompression
+  // speed does not vary with level — and `MemoryFileSystem.fromImage()`
+  // detects the zstd frame magic, so no consumer needs to know which it got.
+  const encoded = parsed.output.endsWith(".zst")
+    ? zstdCompressSync(image, {
+        params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
+      })
+    : image;
+
   try {
-    writeFileSync(parsed.output, image);
+    writeFileSync(parsed.output, encoded);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`mkrootfs build: failed to write ${parsed.output}: ${msg}\n`);

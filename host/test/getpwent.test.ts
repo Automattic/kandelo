@@ -1,5 +1,5 @@
 /**
- * Task 4.6 — getpwent + friends round-trip via the rootfs.vfs mount.
+ * Task 4.6 — getpwent + friends round-trip via the rootfs.vfs.zst mount.
  *
  * After Task 4.5 removed static `/etc` interception from the kernel, the only
  * path for a user program to read /etc/passwd, /etc/group, /etc/services et
@@ -23,12 +23,12 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const smokeWasm = join(repoRoot, "examples/getpwent_smoke.wasm");
-const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
+const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs.zst");
 
 const haveSmoke = existsSync(smokeWasm);
 const haveRootfs = existsSync(rootfsImage);
 
-describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () => {
+describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs.zst mount", () => {
   it("iterates all 7 /etc/passwd entries and looks up by name + uid", async () => {
     const result = await runCentralizedProgram({
       programPath: smokeWasm,

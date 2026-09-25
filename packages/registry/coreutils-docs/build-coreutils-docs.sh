@@ -36,8 +36,8 @@ KERNEL_DIR="${WASM_POSIX_DEP_KERNEL_DIR:?kernel dependency dir required}"
 KERNEL_WASM="$KERNEL_DIR/kandelo-kernel.wasm"
 [ -f "$KERNEL_WASM" ] || { echo "kandelo-kernel.wasm not found under $KERNEL_DIR" >&2; exit 2; }
 ROOTFS_DIR="${WASM_POSIX_DEP_ROOTFS_DIR:?rootfs dependency dir required}"
-ROOTFS_VFS="$ROOTFS_DIR/rootfs.vfs"
-[ -f "$ROOTFS_VFS" ] || { echo "rootfs.vfs not found under $ROOTFS_DIR" >&2; exit 2; }
+ROOTFS_VFS="$ROOTFS_DIR/rootfs.vfs.zst"
+[ -f "$ROOTFS_VFS" ] || { echo "rootfs.vfs.zst not found under $ROOTFS_DIR" >&2; exit 2; }
 
 CAP="$WORK/help-capture"; rm -rf "$CAP"
 # Point TMPDIR at a short /tmp scratch dir so tsx's IPC socket path stays

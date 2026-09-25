@@ -142,8 +142,8 @@ excludes runtime-owned `wp-content/database` state and `wp-content/debug.log`.
 Resolver-selected paths are retained alongside the logical artifact names;
 browser VFS evidence reflects the public asset that the benchmark page selects
 first. Kernel fingerprints use the same policy-aware binary resolver as each
-host. Node rootfs evidence records which of the runtime's `rootfs.vfs` then
-`programs/rootfs.vfs` fallback requests won, and is required for the
+host. Node rootfs evidence records which of the runtime's `rootfs.vfs.zst` then
+`programs/rootfs.vfs.zst` fallback requests won, and is required for the
 `syscall-io` and established `process-lifecycle` suites that boot that default
 image. The Node `spawn-scratch` suite supplies both of its executables and
 explicitly uses an empty VFS, so it neither resolves nor records a rootfs.

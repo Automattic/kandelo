@@ -16,9 +16,9 @@ if [ "$#" -ne 0 ]; then
     esac
 fi
 
-# Build the canonical rootfs.vfs image from the top-level MANIFEST +
+# Build the canonical rootfs.vfs.zst image from the top-level MANIFEST +
 # images/rootfs/ source tree, using the mkrootfs CLI under tools/mkrootfs/.
-# Output defaults to host/wasm/rootfs.vfs (gitignored — built artifact).
+# Output defaults to host/wasm/rootfs.vfs.zst (gitignored — built artifact).
 #
 # This is a Node.js/TypeScript invocation, not a wasm cross-compile,
 # so it does not need scripts/dev-shell.sh — only `node` and `npx`
@@ -30,7 +30,7 @@ cd "$REPO_ROOT"
 # shellcheck source=build-step-input-hash.sh
 source "$REPO_ROOT/scripts/build-step-input-hash.sh"
 
-OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs}"
+OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs.zst}"
 STAMP="$OUT.input-hash"
 
 # Resolve the manifest path, source-tree path, and target kernel ABI version
@@ -40,7 +40,7 @@ STAMP="$OUT.input-hash"
 # the digest must track the RESOLVED value, not the literal default —
 # otherwise a caller that overrides one of these while still writing to the
 # default $ROOTFS_OUT would get a false "up to date" skip against a
-# rootfs.vfs built from different inputs.
+# rootfs.vfs.zst built from different inputs.
 ROOTFS_MANIFEST_PATH="${ROOTFS_MANIFEST:-MANIFEST}"
 ROOTFS_SOURCE_TREE_PATH="${ROOTFS_SOURCE_TREE:-images/rootfs}"
 if [ -n "${ROOTFS_ABI_VERSION:-}" ]; then
@@ -64,7 +64,7 @@ if [ -n "${ROOTFS_ABI_SNAPSHOT_SHA256:-}" ] &&
     exit 2
 fi
 
-# The exact input set for host/wasm/rootfs.vfs. The engine's per-package
+# The exact input set for host/wasm/rootfs.vfs.zst. The engine's per-package
 # projection file carries a content hash (`cacheKeys`) of the fully resolved
 # binary set the image bundles, so hashing it stands in for hashing every
 # resolved package artifact directly; the projection is guaranteed current
@@ -93,7 +93,7 @@ ROOTFS_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
 
 if [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&
    build_step_is_current "$OUT" "$STAMP" "$ROOTFS_INPUT_HASH"; then
-    echo "==> rootfs.vfs up to date ($ROOTFS_INPUT_HASH)"
+    echo "==> rootfs.vfs.zst up to date ($ROOTFS_INPUT_HASH)"
     exit 0
 fi
 
@@ -183,7 +183,7 @@ elif [ -n "${ROOTFS_RESOLVED_OUTPUT_MAP:-}" ]; then
 fi
 node scripts/generate-rootfs-package-manifest.mjs "${generator_args[@]}"
 
-echo "==> Building rootfs.vfs from MANIFEST + images/rootfs/ + packages..."
+echo "==> Building rootfs.vfs.zst from MANIFEST + images/rootfs/ + packages..."
 if [ "${ROOTFS_SEALED_BUILD:-0}" = "1" ]; then
     # WHY: the wrapper uses npx, which is allowed to install missing tools.
     # Package builds instead execute the already-installed lockfile version so

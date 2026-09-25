@@ -110,7 +110,7 @@ let rootfsBytesPromise: Promise<Uint8Array> | null = null;
 /**
  * Fetch the canonical rootfs image bytes (cached). Demos that previously
  * started from an empty FS and relied on the legacy `kernel.init()` overlay of
- * `/etc/{passwd,group,hosts,services}` from rootfs.vfs should seed their
+ * `/etc/{passwd,group,hosts,services}` from rootfs.vfs.zst should seed their
  * build-time FS through `overlayEtcFromRootfs`, which authenticates imported
  * atomic seals before reading the source image.
  */
@@ -118,7 +118,7 @@ export function fetchRootfsBytes(): Promise<Uint8Array> {
   if (!rootfsBytesPromise) {
     rootfsBytesPromise = fetch(rootfsVfsUrl as string)
       .then((r) => {
-        if (!r.ok) throw new Error(`rootfs.vfs fetch failed: ${r.status}`);
+        if (!r.ok) throw new Error(`rootfs.vfs.zst fetch failed: ${r.status}`);
         return r.arrayBuffer();
       })
       .then((b) => new Uint8Array(b))

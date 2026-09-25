@@ -31,11 +31,11 @@ function resolveKernelArtifactsAlias(): Plugin {
       }
 
       if (pathPart === ROOTFS) {
-        const file = tryResolveBinary("rootfs.vfs")
-          ?? tryResolveBinary("programs/rootfs.vfs");
+        const file = tryResolveBinary("rootfs.vfs.zst")
+          ?? tryResolveBinary("programs/rootfs.vfs.zst");
         if (file) return file + query;
         this.error(
-          "rootfs.vfs was not accepted from the standard local, fetched, or packaged locations. " +
+          "rootfs.vfs.zst was not accepted from the standard local, fetched, or packaged locations. " +
           "Run `bash build.sh` from the repo root or fetch the rootfs package.",
         );
       }

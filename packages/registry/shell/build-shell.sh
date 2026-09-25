@@ -116,7 +116,7 @@ for dependency in "${EXTENDED_DEPENDENCIES[@]}"; do
     require_real_directory "$env_key" "$dependency_dir"
 done
 
-ROOTFS="$ROOTFS_DIR/rootfs.vfs"
+ROOTFS="$ROOTFS_DIR/rootfs.vfs.zst"
 BASH="$BASH_DIR/bash.wasm"
 FBDOOM="$FBDOOM_DIR/fbdoom.wasm"
 MODESET="$MODESET_DIR/modeset.wasm"

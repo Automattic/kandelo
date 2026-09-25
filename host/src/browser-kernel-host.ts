@@ -156,7 +156,7 @@ export interface BrowserKernelBootOptions {
   kernelWasm?: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}, OR
-   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs`
+   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs.zst`
    * shipped with the worker entry. The worker takes ownership; the main
    * thread no longer has FS access.
    */

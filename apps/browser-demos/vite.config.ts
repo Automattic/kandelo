@@ -145,7 +145,7 @@ const sourceOnlyViteAssets = configuredSourceOnlyRoot === null
     createSourceOnlyBinarySnapshotSession(),
     [
       "kernel.wasm",
-      "programs/wasm32/rootfs.vfs",
+      "programs/wasm32/rootfs.vfs.zst",
       ...authoredBrowserBinaryRelPaths,
     ],
     {
@@ -324,7 +324,7 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
  * installed-package tiers). There is no legacy fallback path; a missing
  * kernel fails loudly instead.
  *
- * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs` (built by
+ * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs.zst` (built by
  * mkrootfs during `./run.sh setup`).
  *
  * Resolution is deferred until import time so pages that don't consume
@@ -361,21 +361,21 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
       if (pathPart === ROOTFS) {
         if (configuredSourceOnlyRoot !== null) {
           return sourceOnlyViteAssets!.resolve(
-            "programs/wasm32/rootfs.vfs",
+            "programs/wasm32/rootfs.vfs.zst",
           );
         }
         const candidates = [
-          path.resolve(repoRoot, "host/wasm/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs"),
+          path.resolve(repoRoot, "host/wasm/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "local-binaries/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "binaries/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs.zst"),
         ];
         for (const file of candidates) {
           if (fs.existsSync(file)) return access.approve(file) + query;
         }
         this.error(
-          "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
+          "rootfs.vfs.zst not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
             candidates.map((file) => `  Looked at: ${file}`).join("\n"),
         );
       }

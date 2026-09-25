@@ -38,7 +38,7 @@ From the repo root:
 
 ```bash
 node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
-  -o host/wasm/rootfs.vfs \
+  -o host/wasm/rootfs.vfs.zst \
   --kernel-abi 11
 ```
 

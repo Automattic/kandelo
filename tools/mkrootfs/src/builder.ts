@@ -122,6 +122,10 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   return await mfs.saveImage({
     metadata: opts.metadata,
     normalizeTimestampsMs: sourceDateEpochSeconds * 1000,
+    // WHY: `build` writes a product artifact, so the allocator's unused tail
+    // must not become download bytes. `--sab-size` states the capacity a
+    // machine may grow into, not the size of the image it boots from.
+    trimFreeCapacity: true,
   });
 }
 

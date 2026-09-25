@@ -34,10 +34,10 @@ export function browserAssetImportsForPolicy(
 
 function resolveRootfsVfs(): string {
   if (process.env.WASM_POSIX_RESOLUTION_POLICY === "source-only-v1") {
-    return resolveBinary("programs/wasm32/rootfs.vfs");
+    return resolveBinary("programs/wasm32/rootfs.vfs.zst");
   }
-  return tryResolveBinary("rootfs.vfs")
-    ?? resolveBinary("programs/wasm32/rootfs.vfs");
+  return tryResolveBinary("rootfs.vfs.zst")
+    ?? resolveBinary("programs/wasm32/rootfs.vfs.zst");
 }
 
 function resolveAssetImport(spec: string): string {

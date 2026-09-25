@@ -2830,7 +2830,7 @@ exit 2
     chmodSync(xtask, 0o755);
 
     for (const relPath of [
-      "host/wasm/rootfs.vfs",
+      "host/wasm/rootfs.vfs.zst",
       "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
       "examples/wait_lifecycle_test.wasm",

@@ -372,7 +372,7 @@ pub(crate) struct BootstrapStep {
 /// resolution models, so nothing rebuilds it as a side effect of building a
 /// package node; `sdk` itself only checks that `sysroot`'s toolchain wrappers
 /// resolve, so it must run after `sysroot`); `rootfs` must follow `engine`
-/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs` image
+/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs.zst` image
 /// from packages the engine step just built) and precede `host-dist` (the
 /// TypeScript host build should see a fresh rootfs image, even though it
 /// does not currently read it at build time); `host-dist` must follow
