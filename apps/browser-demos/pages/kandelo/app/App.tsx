@@ -2,7 +2,7 @@
 // switches machine views and opens exploratory panes for gallery and overlays.
 
 import * as React from "react";
-import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
+import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
@@ -61,6 +61,7 @@ export const App: React.FC = () => {
   const host = useKernelHost();
   const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
+  const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
@@ -343,94 +344,99 @@ export const App: React.FC = () => {
 
   return (
     <div className={appClassName} style={appStyle} data-audio-state={audioState}>
-      <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
-        {isEmpty ? (
-          <EmptyState
-            onLaunchItem={onLaunchGalleryItem}
-            onBrowseAll={() => setDockPane("gallery")}
-            onApplyDescriptor={applyDescriptor}
-          />
-        ) : (
-          <MachineView
-            surface={surface}
-            demoGuideOpen={demoGuideOpen}
-            onDemoGuideOpenChange={setDemoGuideOpen}
-            onDemoDockControlsChange={setDemoDockControls}
-            onDemoGuidePopupChange={setDemoGuidePopup}
-            internalsTab={internalsTab}
-            terminals={terminals}
-            activeTerminalId={activeTerminalId}
-            onActiveTerminalId={setActiveTerminalId}
-            onAddTerminal={onAddTerminal}
+      <div
+        data-machine-content
+        {...(machineProgress === null ? {} : { inert: true })}
+      >
+        <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
+          {isEmpty ? (
+            <EmptyState
+              onLaunchItem={onLaunchGalleryItem}
+              onBrowseAll={() => setDockPane("gallery")}
+              onApplyDescriptor={applyDescriptor}
+            />
+          ) : (
+            <MachineView
+              surface={surface}
+              demoGuideOpen={demoGuideOpen}
+              onDemoGuideOpenChange={setDemoGuideOpen}
+              onDemoDockControlsChange={setDemoDockControls}
+              onDemoGuidePopupChange={setDemoGuidePopup}
+              internalsTab={internalsTab}
+              terminals={terminals}
+              activeTerminalId={activeTerminalId}
+              onActiveTerminalId={setActiveTerminalId}
+              onAddTerminal={onAddTerminal}
+            />
+          )}
+        </main>
+
+        {dockPane && meta && (
+          <>
+            <div
+              className="kdock-pane-dismiss-layer"
+              aria-hidden="true"
+              onPointerDown={closeDockPane}
+            />
+            <DockPane
+              pane={dockPane}
+              title={meta.title}
+              subtitle={meta.subtitle}
+              onClose={closeDockPane}
+            >
+              {dockPane === "gallery" && (
+                <Gallery
+                  compact
+                  onLaunch={onLaunchGalleryItem}
+                />
+              )}
+            </DockPane>
+          </>
+        )}
+
+        <LazyDownloadToasts downloads={lazyDownloads} />
+        {surface.status === "running" && audioState !== "running" && (
+          <AudioStatusToast
+            state={audioState}
+            error={audioError}
+            onEnable={activateAudio}
           />
         )}
-      </main>
 
-      {dockPane && meta && (
-        <>
-          <div
-            className="kdock-pane-dismiss-layer"
-            aria-hidden="true"
-            onPointerDown={closeDockPane}
-          />
-          <DockPane
-            pane={dockPane}
-            title={meta.title}
-            subtitle={meta.subtitle}
-            onClose={closeDockPane}
-          >
-            {dockPane === "gallery" && (
-              <Gallery
-                compact
-                onLaunch={onLaunchGalleryItem}
-              />
-            )}
-          </DockPane>
-        </>
-      )}
+        {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
 
-      <LazyDownloadToasts downloads={lazyDownloads} />
-      {surface.status === "running" && audioState !== "running" && (
-        <AudioStatusToast
-          state={audioState}
-          error={audioError}
-          onEnable={activateAudio}
+        <Dock
+          activePane={dockPane}
+          activeView={dockActiveView}
+          viewControls={viewControls}
+          guidePopup={demoGuidePopup}
+          internalsPopup={internalsPopup}
+          themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
+          guideAvailable={!isEmpty && demoGuide !== null}
+          guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
+          internalsAvailable={!isEmpty && surface.canUseInternals}
+          internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
+          themeOpen={themeOpen}
+          shareAvailable={!isEmpty}
+          status={surface.status}
+          machineTitle={desc.title}
+          viewDisabled={{
+            demo: !surface.canOpenDemo,
+            terminal: !surface.canUseTerminal,
+          }}
+          onSelectPane={selectDockPane}
+          onSelectView={selectMachineView}
+          onToggleGuide={toggleDemoGuide}
+          onToggleInternals={toggleInternals}
+          onToggleTheme={toggleTheme}
+          onOpenShare={() => setShareOpen(true)}
+          onCloseGuide={() => setDemoGuideOpen(false)}
+          onCloseInternals={() => setInternalsOpen(false)}
+          onCloseTheme={() => setThemeOpen(false)}
+          onHeightChange={setDockHeight}
+          onLayoutChange={onDockLayoutChange}
         />
-      )}
-
-      {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
-
-      <Dock
-        activePane={dockPane}
-        activeView={dockActiveView}
-        viewControls={viewControls}
-        guidePopup={demoGuidePopup}
-        internalsPopup={internalsPopup}
-        themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
-        guideAvailable={!isEmpty && demoGuide !== null}
-        guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
-        internalsAvailable={!isEmpty && surface.canUseInternals}
-        internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
-        themeOpen={themeOpen}
-        shareAvailable={!isEmpty}
-        status={surface.status}
-        machineTitle={desc.title}
-        viewDisabled={{
-          demo: !surface.canOpenDemo,
-          terminal: !surface.canUseTerminal,
-        }}
-        onSelectPane={selectDockPane}
-        onSelectView={selectMachineView}
-        onToggleGuide={toggleDemoGuide}
-        onToggleInternals={toggleInternals}
-        onToggleTheme={toggleTheme}
-        onOpenShare={() => setShareOpen(true)}
-        onCloseGuide={() => setDemoGuideOpen(false)}
-        onCloseInternals={() => setInternalsOpen(false)}
-        onCloseTheme={() => setThemeOpen(false)}
-        onHeightChange={setDockHeight}
-        onLayoutChange={onDockLayoutChange}
-      />
+      </div>
 
       <MachineProgressOverlay />
     </div>

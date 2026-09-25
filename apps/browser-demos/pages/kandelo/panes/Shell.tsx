@@ -9,7 +9,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-import { useBootProgress, useKernelHost, useStatus } from "../kernel-host/react";
+import { useMachineProgress, useKernelHost, useStatus } from "../kernel-host/react";
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import type { TerminalLinkContext } from "../../../../../web-libs/kandelo-session/src/terminal-links";
 import { registerTerminalLinks } from "../../../lib/terminal-links";
@@ -293,7 +293,7 @@ const ShellTerminalHost: React.FC<{
 };
 
 const PreBoot: React.FC<{ status: string }> = ({ status }) => {
-  const progress = useBootProgress();
+  const progress = useMachineProgress();
   // Name the image actually being loaded. Before the load starts there is
   // nothing truthful to show, so say so rather than printing a stand-in.
   const image = progress?.label ?? "(not loaded yet)";
