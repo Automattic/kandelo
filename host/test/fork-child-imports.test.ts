@@ -76,18 +76,6 @@ function planSource(plans: ReadonlyMap<number, readonly Row[]>) {
   };
 }
 
-function sections() {
-  const seeded: number[] = [];
-  return {
-    seeded,
-    sink: {
-      seedActivationSections(activationId: number): void {
-        seeded.push(activationId);
-      },
-    },
-  };
-}
-
 const noReferences = {
   ownerActivation: () => null,
   materialize: () => {
@@ -113,16 +101,14 @@ function build(
   references: Parameters<typeof makeImports>[0] = noReferences,
 ) {
   const { source, builds } = planSource(plans);
-  const { sink, seeded } = sections();
   const imports = new ForkChildImports(
     source,
-    sink,
     modules,
     4096,
     references,
     "test child imports",
   );
-  return { imports, builds, seeded };
+  return { imports, builds };
 }
 
 // Only used for its parameter type above.
@@ -143,16 +129,13 @@ const BASE: ForkWasmImports = {
 };
 
 describe("fork child imports", () => {
-  it("seeds every activation's sections before asking for a plan", () => {
-    // The module cannot plan an activation's imports without its KFIG/KFIT
-    // sections, and the child asks for the plan before it instantiates
-    // anything -- so the seed has to happen here, earlier than the parent path
-    // seeds. Census 175.
-    const { builds, seeded } = build(
+  it("asks for every activation's plan from the inherited root", () => {
+    // The sections a plan needs (KFIG/KFIT) arrive with each activation's
+    // admission, which the child makes before building this. Census 175.
+    const { builds } = build(
       new Map([[0, []], [1, []]]),
       new Map([[0, CONSUMER], [1, PROVIDER]]),
     );
-    expect(seeded.sort(), "both activations seeded").toEqual([0, 1]);
     expect(builds, "and both plans built from the inherited root").toEqual([
       4096, 4096,
     ]);

@@ -1,79 +1,99 @@
 /**
- * The three facts the host reads out of a fork-instrumented GUEST module.
+ * What the host reads out of a fork-instrumented GUEST module, and the one
+ * buffer it hands the fork module about it.
  *
- * Named for the guest deliberately. An earlier name put it under
- * `fork-module-*`, which is the co-resident Rust module's namespace and a
- * different thing entirely -- and the surface budget noticed before a reader
- * did, filing 165 lines of guest-section reading onto the module-facing
- * surface. "Module" here means the wasm module behind an activation.
+ * Named for the guest deliberately: "module" here means the wasm module behind
+ * an activation, not the co-resident Rust fork-module.
  *
  * Each is here because only the host holds what it reads:
  *
- *  - the module's `kandelo.wpk_fork.module_state` custom section, reachable
- *    only through `WebAssembly.Module.customSections`;
+ *  - the module's `kandelo.wpk_fork.*` custom sections, reachable only through
+ *    `WebAssembly.Module.customSections` -- the image itself never enters guest
+ *    memory (node.wasm is 53 MB);
  *  - a pointer word in guest memory, which the host is the one with a
  *    `DataView` over;
- *  - the SHA-256 of the module's own bytes, which never enter guest memory.
+ *  - the SHA-256 of the module's own bytes.
  *
- * What did NOT come back with them is the 60-line descriptor DECODER the attic
- * had. `worker-main` asked that decoder exactly one question -- does this side
- * module's pointer width match the process? -- and `fork_codec`'s
- * `module_state.rs` already validates the same descriptor field for field when
- * it reads an arena. Two implementations of one format is what this lane
- * removes, so this reads the one byte the question needs and leaves the
- * validation where the arena reader already does it.
+ * The host LOCATES sections and copies their bytes; it decodes none of them.
+ * `encodeForkAdmission` lays them out as the `KFAA` descriptor
+ * `fork_codec::activation_admission` defines, and `fm_admit_activation`
+ * decodes and validates every one (lane F stage 1b). What this file used to
+ * carry instead -- a module-state pointer-width reader here, a linked-frame
+ * decoder in `fork-continuation.ts` and a resume-catalog decoder in
+ * `fork-resume-catalog.ts` -- were second decoders of module-owned formats.
  */
 
 import {
-  WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE,
-  WPK_FORK_MODULE_STATE_FORMAT_MAGIC,
+  WPK_FORK_EXCEPTION_CODEC_SECTION,
+  WPK_FORK_GC_CODEC_SECTION,
+  WPK_FORK_IMPORTED_GLOBALS_SECTION,
+  WPK_FORK_IMPORTED_TABLES_SECTION,
+  WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
   WPK_FORK_MODULE_STATE_FORMAT_SECTION,
-  WPK_FORK_MODULE_STATE_FORMAT_VERSION,
   WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
 } from "./generated/abi";
 
 const WASM_PAGE_SIZE = 65_536;
 
 /**
- * The pointer width one activation's module-state format declares.
+ * The `KFAA` section kinds, in wire order: kind `i + 1` is `[i]`.
  *
- * Framing is checked -- magic, version, declared size -- because a wrong
- * pointer width read out of the wrong bytes is a number that looks fine.
+ * DUPLICATED from `AdmissionSectionKind` in
+ * `crates/fork-codec/src/activation_admission.rs`, like the header layout
+ * below; `host/test/fork-module-backend.test.ts` pins both against that file,
+ * and `host/test/fork-module-admission.test.ts` has the module admit what this
+ * writes for a real guest.
  */
-export function readForkModuleStatePointerWidth(
+export const FORK_ADMISSION_SECTIONS = [
+  WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+  WPK_FORK_MODULE_STATE_FORMAT_SECTION,
+  "kandelo.wpk_fork.resume_catalog",
+  WPK_FORK_GC_CODEC_SECTION,
+  WPK_FORK_EXCEPTION_CODEC_SECTION,
+  WPK_FORK_IMPORTED_GLOBALS_SECTION,
+  WPK_FORK_IMPORTED_TABLES_SECTION,
+] as const;
+
+/** `ADMISSION_FLAG_BORROWED_CHILD` / `ADMISSION_FLAG_FORK_CHILD`. */
+export const FORK_ADMISSION_BORROWED_CHILD = 1;
+export const FORK_ADMISSION_FORK_CHILD = 2;
+
+/**
+ * One activation's `KFAA` admission descriptor: a 64-byte header, a 12-byte
+ * `{kind, offset, len}` ref per located section, then the sections verbatim.
+ *
+ * EVERY located copy of every section goes in, duplicates included, and none
+ * is required here: a duplicate or a missing required section is the module's
+ * refusal to make, by name, rather than a second rule on this side.
+ */
+export function encodeForkAdmission(
+  activationId: number,
+  flags: number,
+  templateId: Uint8Array,
   module: WebAssembly.Module,
-): 4 | 8 {
-  const sections = WebAssembly.Module.customSections(
-    module,
-    WPK_FORK_MODULE_STATE_FORMAT_SECTION,
-  );
-  if (sections.length !== 1) {
-    throw new Error(
-      `expected one ${WPK_FORK_MODULE_STATE_FORMAT_SECTION} section, `
-        + `found ${sections.length}`,
-    );
-  }
-  const bytes = new Uint8Array(sections[0]!);
-  if (bytes.byteLength !== WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE) {
-    throw new Error(
-      `module-state descriptor has ${bytes.byteLength} bytes, `
-        + `expected ${WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE}`,
-    );
-  }
-  if (WPK_FORK_MODULE_STATE_FORMAT_MAGIC.some((b, i) => bytes[i] !== b)) {
-    throw new Error("module-state descriptor has invalid magic");
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const version = view.getUint16(4, true);
-  if (version !== WPK_FORK_MODULE_STATE_FORMAT_VERSION) {
-    throw new Error(`unsupported module-state descriptor version ${version}`);
-  }
-  if (view.getUint16(6, true) !== WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE) {
-    throw new Error("module-state descriptor declares an invalid size");
-  }
-  const ptrWidth = view.getUint8(8);
-  if (ptrWidth === 4 || ptrWidth === 8) return ptrWidth;
-  throw new Error(`unsupported module-state pointer width ${ptrWidth}`);
+): Uint8Array {
+  const sections = FORK_ADMISSION_SECTIONS.flatMap((name, index) =>
+    WebAssembly.Module.customSections(module, name).map(
+      (bytes) => [index + 1, new Uint8Array(bytes)] as const,
+    ));
+  let offset = 64 + sections.length * 12;
+  const out = new Uint8Array(sections.reduce((n, [, b]) => n + b.length, offset));
+  const view = new DataView(out.buffer);
+  out.set([0x4b, 0x46, 0x41, 0x41]); // "KFAA"
+  view.setUint16(4, 1, true); // version
+  view.setUint16(6, 64, true); // header size
+  view.setUint32(8, activationId, true);
+  view.setUint32(12, flags, true);
+  out.set(templateId, 16);
+  view.setUint32(48, sections.length, true);
+  sections.forEach(([kind, bytes], i) => {
+    view.setUint32(64 + i * 12, kind, true);
+    view.setUint32(68 + i * 12, offset, true);
+    view.setUint32(72 + i * 12, bytes.length, true);
+    out.set(bytes, offset);
+    offset += bytes.length;
+  });
+  return out;
 }
 
 /**

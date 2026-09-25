@@ -17,13 +17,14 @@
  * module entry that failed silently would surface as a wrong fork much later.
  */
 
-import type { ForkSideActivation } from "./fork-activations";
+import type { ForkActivationRow } from "./fork-activations";
 import type { ForkModuleInstance } from "./fork-module-instance";
-import type { ForkResumeAssignment } from "./fork-resume-table";
+import { ContinuationAllocationError } from "./fork-continuation";
 import {
-  ContinuationAllocationError,
-  type LinkedFrameFormatDescriptor,
-} from "./fork-continuation";
+  encodeForkAdmission,
+  FORK_ADMISSION_BORROWED_CHILD,
+  FORK_ADMISSION_FORK_CHILD,
+} from "./fork-guest-sections";
 
 /**
  * Field indices into the module's `fm_stats` array, in its order.
@@ -161,9 +162,9 @@ export interface ForkModuleBackendOptions {
   readonly instance: ForkModuleInstance;
   readonly memory: WebAssembly.Memory;
   readonly ptrWidth: 4 | 8;
-  readonly format: LinkedFrameFormatDescriptor;
-  /** The guest's resume-target function ordinals, in slot order. */
-  readonly catalogOrdinals: readonly number[];
+  /** This worker is a fork child, and (`borrowedChild`) a vfork borrowed one. */
+  readonly forkChild?: boolean;
+  readonly borrowedChild?: boolean;
   /**
    * The dlopen control address, or 0 when there is no archive. A borrowed
    * vfork child passes its OWNER's: it has no control block of its own.
@@ -223,9 +224,13 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * The once-per-worker seed, which also RESETS every per-activation catalog --
-   * so it must run before any of the `setActivation*` calls below, and exactly
-   * once. A second call would silently discard their seeds.
+   * The once-per-worker format seed, which also RESETS every per-activation
+   * record -- so it must run before any `admitActivation`, and exactly once. A
+   * second call would silently discard their admissions.
+   *
+   * The fixed-prefix argument is 0: the host no longer decodes the linked-frame
+   * section, and activation 0's admission supplies the prefix instead. Stage 1d
+   * takes the argument (and the pointer width) out of this call.
    */
   setup(): void {
     if (this.didSetup) {
@@ -234,16 +239,43 @@ export class ForkModuleContinuationBackend {
     this.call(
       "fm_set_format",
       this.options.ptrWidth,
-      this.options.format.fixedPrefixSize,
+      0,
       this.options.archiveControlAddr ?? 0,
       this.options.channelBase ?? 0,
     );
-    // The catalog is seeded AFTER the format, which resets it. Seeding first
-    // would be silently discarded -- the bug the module's own reset comment
-    // records having been hit on real forks. Activation 0 seeds through the
-    // same entry as every dlopen side module; the module keeps one store.
-    this.setActivationResumeCatalog(0, this.options.catalogOrdinals);
     this.didSetup = true;
+  }
+
+  /**
+   * Admit one activation, before its instantiation: every `kandelo.wpk_fork.*`
+   * section of `module`, located and copied verbatim, plus the facts only the
+   * host has -- the activation id, this worker's fork-child flags and the
+   * template id (the SHA-256 of the module's bytes). The module decodes and
+   * validates every section here, so a malformed one is refused at admission
+   * rather than at the capture that would finally read it.
+   *
+   * Re-admitting identical facts is a no-op in the module, which is what lets a
+   * fork child admit every archived activation up front and its dlopen replay
+   * admit each one again.
+   */
+  admitActivation(activationId: number, module: WebAssembly.Module, templateId: Uint8Array): void {
+    const flags = (this.options.forkChild ? FORK_ADMISSION_FORK_CHILD : 0)
+      | (this.options.borrowedChild ? FORK_ADMISSION_BORROWED_CHILD : 0);
+    const desc = encodeForkAdmission(activationId, flags, templateId, module);
+    this.call("fm_admit_activation", this.stage(desc, `activation ${activationId} admission`), desc.length);
+  }
+
+  /**
+   * Place an admitted, now instantiated, activation and read the module's row:
+   * its drive base, its two merged-catalog bases and its published resume
+   * assignment. Read out at once, because the module rewrites the row -- and
+   * the assignment buffer it points at -- on the next bind.
+   */
+  bindActivation(activationId: number, funcCatalogLength: number, staticRootLength: number): ForkActivationRow {
+    const at = this.call("fm_bind_activation", activationId, funcCatalogLength, staticRootLength);
+    const [driveBase, funcCatalogBase, staticRootBase, ptr, count] =
+      new Uint32Array(this.options.memory.buffer.slice(at, at + 20));
+    return { driveBase: driveBase!, funcCatalogBase: funcCatalogBase!, staticRootBase: staticRootBase!, resume: { ptr: ptr!, count: count! } };
   }
 
   /**
@@ -296,74 +328,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Seed one activation's 32-byte module template id.
-   *
-   * The module writes a `Module` record per activation into the capture arena,
-   * and that record carries this id -- so without the seed a capture refuses
-   * with `EINVAL` rather than writing a record with a zero id. The bytes are
-   * a hash of the module the host holds, which is why they are seeded rather
-   * than computed.
-   */
-  setActivationTemplateId(activationId: number, templateId: Uint8Array): void {
-    if (templateId.byteLength !== 32) {
-      throw new Error(
-        `${this.label}: activation ${activationId} template id has ` +
-          `${templateId.byteLength} bytes, expected 32`,
-      );
-    }
-    const at = this.stage(templateId, "activation template id");
-    this.call("fm_set_activation_template_id", activationId, at);
-  }
-
-  /** Where the module places (or placed) a catalog in its merged table. */
-  placeActivationCatalog(activationId: number, length: number): number {
-    return this.call("fm_place_activation_catalog", activationId, length);
-  }
-
-  placeActivationStaticRoots(activationId: number, length: number): number {
-    return this.call("fm_place_activation_static_roots", activationId, length);
-  }
-
-  /**
-   * One activation's own resume-target ordinals.
-   *
-   * Activation 0's is what `setup()` seeds; a side module loaded by `dlopen`
-   * brings its own resume targets, and its slot numbering has to match the
-   * funcref table the module indexes for it. No cap: the module stores the
-   * catalog on its arena and answers the channel's own errno when it cannot.
-   */
-  setActivationResumeCatalog(
-    activationId: number,
-    ordinals: readonly number[],
-  ): void {
-    const bytes = new Uint8Array(ordinals.length * 4);
-    const view = new DataView(bytes.buffer);
-    ordinals.forEach((ordinal, i) => view.setUint32(i * 4, ordinal >>> 0, true));
-    const at = this.stage(bytes, `activation ${activationId} resume catalog`);
-    this.call(
-      "fm_set_activation_resume_catalog",
-      activationId,
-      at,
-      ordinals.length,
-    );
-  }
-
-  setHostExceptionOwner(owner: number): void {
-    this.call("fm_set_host_exception_owner", owner);
-  }
-
-  /**
-   * Hand the module one activation's raw GC codec section.
-   *
-   * The module COPIES it into an arena record during the call, so the staged
-   * bytes are dead once it returns; see `stage()`.
-   */
-  setActivationGcCodec(activationId: number, bytes: Uint8Array): void {
-    const at = this.stage(bytes, `activation ${activationId} GC codec`);
-    this.call("fm_set_activation_gc_codec", activationId, at, bytes.length);
-  }
-
-  /**
    * Publish which `(activation, owner)` coordinate WRITES a physical table's
    * sparse state, which the module then serves to the guest's
    * `__wpk_fork_module_state_table_state_owned` import.
@@ -385,18 +349,6 @@ export class ForkModuleContinuationBackend {
       ownerId,
       owns ? 1 : 0,
     );
-  }
-
-  /**
-   * Hand the module one activation's raw import declarations: the KFIG section
-   * for `space` 0, the KFIT section for 1.
-   *
-   * Raw and undecoded, like the two codec sections above. The module refuses a
-   * malformed one HERE rather than at the capture that finally reads it.
-   */
-  setActivationImports(space: number, activationId: number, bytes: Uint8Array): void {
-    const at = this.stage(bytes, `activation ${activationId} imports ${space}`);
-    this.call("fm_set_activation_imports", space, activationId, at, bytes.length);
   }
 
   /**
@@ -442,23 +394,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Hand the module one activation's raw exception codec section.
-   *
-   * Raw, not decoded: the module derives the tag ordinals itself. The host used
-   * to decode this section to produce a `u32` array, which made it a second
-   * decoder of a module-owned format.
-   */
-  setActivationExceptionCodec(activationId: number, bytes: Uint8Array): void {
-    const at = this.stage(bytes, `activation ${activationId} exception codec`);
-    this.call(
-      "fm_set_activation_exception_codec",
-      activationId,
-      at,
-      bytes.length,
-    );
-  }
-
-  /**
    * Open this fork's reference-capture builder (`fm_capture_begin`).
    *
    * The first module call of a capture fork, issued before the guest unwinds:
@@ -486,7 +421,7 @@ export class ForkModuleContinuationBackend {
   parentBeginCapture(
     channelBase: number,
     arenaRoot: number,
-    sides: readonly ForkSideActivation[],
+    sides: readonly number[],
   ): number {
     // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
     // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
@@ -536,10 +471,10 @@ export class ForkModuleContinuationBackend {
    * which the guest reads as a page header at address 0 and traps on. The
    * seed's only caller was the fork coordinator; census 183.
    *
-   * Each side activation carries the ONE fact the host owns: its `fixedPrefix`,
-   * a static property of the module this child loaded. Its continuation root is
-   * a per-fork address the parent recorded in the arena's
-   * `ActivationContinuations` manifest, and the module reads that back itself.
+   * Each side activation is named by id only: its fixed prefix is the module's,
+   * from its admission, and its continuation root is a per-fork address the
+   * parent recorded in the arena's `ActivationContinuations` manifest, which
+   * the module reads back itself.
    *
    * ONE call for both child shapes. A COW child and a vfork BORROWED child
    * share an identical install plan -- the only borrowed-specific work is the
@@ -554,7 +489,7 @@ export class ForkModuleContinuationBackend {
     moduleStateRoot: number,
     act0Root: number,
     pid: number,
-    sides: readonly ForkSideActivation[],
+    sides: readonly number[],
     /**
      * A vfork BORROWED child's admitted replay workspace: where the kernel put
      * it and how big it is. That is the whole of what a host knows about it and
@@ -689,13 +624,13 @@ export class ForkModuleContinuationBackend {
    */
   bindActivationDrive(
     activationId: number,
+    base: number,
     guestExports: Record<string, unknown>,
   ): void {
-    const base = this.call("fm_drive_table_base", activationId);
     const table = this.options.instance.driveTable;
     // Grow by the FULL per-activation stride, not by the highest slot this
-    // activation happens to bind. The module derives every slot from
-    // `fm_drive_table_base`, so a table grown to the last BOUND slot leaves the
+    // activation happens to bind. The module derives every slot from the
+    // drive base (`fm_bind_activation`'s row), so a table grown to the last BOUND slot leaves the
     // tail of the slice off the end of the table -- and the next activation's
     // base is past it. Growing to the stride makes the slice exist whether or
     // not this guest fills all of it.
@@ -744,51 +679,10 @@ export class ForkModuleContinuationBackend {
   // is the same arena by construction. Its last caller went with the broker
   // (census 192), and a method the host keeps for nobody is host surface.
 
-  // WHAT USED TO BE HERE: `resumeSlot(activation, ordinal)`, wrapping
-  // `fm_resume_slots` op 0. It answered "which slot did this ONE coordinate
-  // get", because the host placed each thunk itself. Placement asks for a
-  // whole activation at once now, so it had no production caller, and the
-  // module arm behind it is deleted in the same change -- a wrapper kept past
-  // the entry it wraps is how a host surface outlives its reason.
-
-  /**
-   * Publish one activation's WHOLE `(ordinal, slot)` assignment, for the guest
-   * shim to apply.
-   *
-   * This is the host's entire remaining part in placement. The module decides
-   * every slot when the catalog is seeded and writes the decision into a
-   * buffer in the memory the co-resident guest shares; the guest's own
-   * `__wpk_fork_place_resume_thunks` then copies each thunk out of its catalog
-   * table into the process resume table. Neither the pointer nor a single
-   * thunk crosses into JavaScript.
-   *
-   * What it replaces is one `fm_resume_slots` op-0 call plus a
-   * `table.get`/`table.set` pair PER FORK-INSTRUMENTED FUNCTION -- 19,025
-   * crossings per php process start, the figure `docs/surface-budget.json`
-   * records -- with one call.
-   *
-   * NOTHING IS DECODED HERE. This used to walk the buffer and copy out each
-   * record's slot, because `ForkResumeTable` had to null exactly those entries
-   * when `dlclose` released them. The module nulls them itself now, so the
-   * pair of numbers passes straight through and the host never learns which
-   * slots an activation got -- which is also why there is no stale-view
-   * hazard left to warn about: there is one published buffer per worker and
-   * the next publish overwrites it, and nothing on this side holds a view of
-   * it past the call.
-   */
-  publishResumeAssignment(activationId: number): ForkResumeAssignment {
-    // `call()` cannot carry this one: it is typed `number` and this export
-    // returns `i64`, which reaches JavaScript as a `bigint`. The errno check
-    // is therefore repeated here rather than shared. Written tight, and the
-    // throw as one expression, for the reason `call()` gives about itself:
-    // this surface's ceiling has no slack, so every line has to earn itself.
-    const packed = (this.exports.fm_publish_resume_assignment as (a: number) => bigint)(activationId);
-    if (packed === -1n) throw new Error(`${this.label}: fm_publish_resume_assignment failed for activation ${activationId} with errno ${this.lastErrno()}`);
-    // COUNT HIGH, POINTER LOW, as the export's own doc comment gives it: a
-    // pointer in the high half would make any buffer above 2 GiB decode as a
-    // negative i64, which is this call's failure signal.
-    return { ptr: Number(packed & 0xffff_ffffn), count: Number(packed >> 32n) };
-  }
+  // WHAT USED TO BE HERE: `publishResumeAssignment`, and before it
+  // `resumeSlot`. Placement asks for a whole activation's `(ordinal, slot)`
+  // decision at once, and since lane F stage 1b it arrives in the
+  // `fm_bind_activation` row with the activation's other bases.
 
   /**
    * Release everything the module holds for an activation -- resume slots,
@@ -869,23 +763,15 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Stage a side-activation list as `(id, fixedPrefix)` u32 pairs.
-   *
-   * The SAME layout serves capture and child seed, because the host owns the
-   * same one fact in both: `fixedPrefix`, a static property of the loaded
-   * module. Everything else about a side activation -- above all its per-fork
-   * continuation root -- the module recorded itself and reads back itself.
-   * Where the pairs are written is this wrapper's business, not the caller's.
+   * Stage a side-activation list as the `(id, fixed_prefix)` u32 pairs the
+   * capture and both child seeds read, with 0 for every prefix: the module
+   * answers each from the activation's admission. Stage 1d drops the word.
    */
-  private stageSides(sides: readonly ForkSideActivation[]): number {
+  private stageSides(sides: readonly number[]): number {
     if (sides.length === 0) return 0;
-    const bytes = new Uint8Array(sides.length * 8);
-    const view = new DataView(bytes.buffer);
-    sides.forEach((side, index) => {
-      view.setUint32(index * 8, side.id >>> 0, true);
-      view.setUint32(index * 8 + 4, side.fixedPrefix >>> 0, true);
-    });
-    return this.stage(bytes, `${sides.length} side activation(s)`);
+    const words = new Uint32Array(sides.length * 2);
+    sides.forEach((id, index) => { words[index * 2] = id >>> 0; });
+    return this.stage(new Uint8Array(words.buffer), `${sides.length} side activation(s)`);
   }
 
   /**

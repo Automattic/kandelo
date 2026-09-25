@@ -6,6 +6,12 @@ import {
   FORK_ACTIVATION_DRIVE_BINDINGS,
   FORK_MODULE_STATS,
 } from "../src/fork-module-backend";
+import {
+  encodeForkAdmission,
+  FORK_ADMISSION_BORROWED_CHILD,
+  FORK_ADMISSION_FORK_CHILD,
+  FORK_ADMISSION_SECTIONS,
+} from "../src/fork-guest-sections";
 
 /** The per-activation drive stride: one slot per binding. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
@@ -229,7 +235,7 @@ describe("activation drive bindings", () => {
   });
 
   it("reserves the stride fork-codec reserves", () => {
-    // The module derives every slot from fm_drive_table_base. A host growing by
+    // The module derives every slot from the drive base. A host growing by
     // a smaller stride would leave later activations overlapping earlier ones.
     expect(FORK_ACTIVATION_DRIVE_SLOTS).toBe(constant("DRIVE_SLOTS_PER_ACTIVATION"));
   });
@@ -239,6 +245,56 @@ describe("activation drive bindings", () => {
     // into the NEXT activation's slice and pass the mapping test above.
     for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {
       expect(slot, name).toBeLessThan(FORK_ACTIVATION_DRIVE_SLOTS);
+    }
+  });
+});
+
+describe("activation admission descriptor", () => {
+  // The host WRITES `KFAA` and the module decodes it, so every number the TS
+  // writer hard-codes is a duplicate of `fork_codec::activation_admission`.
+  // A drifted kind number files a GC codec as a resume catalog -- refused, at
+  // best -- and a drifted header offset moves the template id; both are pinned
+  // here against the Rust source. `fork-module-admission.test.ts` has the
+  // real module admit what the writer produces for a real guest.
+  const admission = readFileSync(
+    join(import.meta.dirname, "..", "..", "crates/fork-codec/src/activation_admission.rs"),
+    "utf8",
+  );
+  function constant(name: string): string {
+    const match = new RegExp(`pub const ${name}: [a-z0-9;\\[\\] ]+ = ([^;]+);`).exec(admission);
+    if (!match) throw new Error(`activation_admission.rs no longer defines ${name}`);
+    return match[1]!.trim();
+  }
+
+  it("writes the codec's header layout and flag bits", () => {
+    expect(constant("ADMISSION_MAGIC")).toBe('*b"KFAA"');
+    expect(constant("ADMISSION_VERSION")).toBe("1");
+    expect(constant("ADMISSION_HEADER_SIZE")).toBe("64");
+    expect(constant("ADMISSION_SECTION_REF_SIZE")).toBe("12");
+    expect(constant("ADMISSION_TEMPLATE_ID_OFFSET")).toBe("16");
+    expect(constant("ADMISSION_TEMPLATE_ID_SIZE")).toBe("32");
+    expect(constant("ADMISSION_FLAG_BORROWED_CHILD")).toBe(`1 << ${Math.log2(FORK_ADMISSION_BORROWED_CHILD)}`);
+    expect(constant("ADMISSION_FLAG_FORK_CHILD")).toBe(`1 << ${Math.log2(FORK_ADMISSION_FORK_CHILD)}`);
+    // And the writer puts them where the constants say.
+    const empty = new WebAssembly.Module(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]));
+    const desc = encodeForkAdmission(9, 3, new Uint8Array(32).fill(7), empty);
+    const view = new DataView(desc.buffer);
+    expect(desc.length).toBe(64);
+    expect(new TextDecoder().decode(desc.subarray(0, 4))).toBe("KFAA");
+    expect([view.getUint16(4, true), view.getUint16(6, true)]).toEqual([1, 64]);
+    expect([view.getUint32(8, true), view.getUint32(12, true), view.getUint32(48, true)]).toEqual([9, 3, 0]);
+    expect([...desc.subarray(16, 48)].every((b) => b === 7)).toBe(true);
+  });
+
+  it("numbers each section kind as the codec does", () => {
+    // Each `AdmissionSectionKind` variant carries its section name in its doc
+    // comment and its wire number as its discriminant.
+    const variants = [...admission.matchAll(
+      /\/\/\/ `(kandelo\.wpk_fork\.[a-z_]+)`[^\n]*\n\s*([A-Z][A-Za-z]+) = ([0-9]+),/g,
+    )].map((m) => [Number(m[3]), m[1]] as const);
+    expect(variants.length).toBe(FORK_ADMISSION_SECTIONS.length);
+    for (const [kind, name] of variants) {
+      expect(FORK_ADMISSION_SECTIONS[kind - 1], `kind ${kind}`).toBe(name);
     }
   });
 });

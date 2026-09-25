@@ -15,7 +15,6 @@ import {
   WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT,
   WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER,
   WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE,
-  WPK_FORK_IMPORTED_GLOBALS_SECTION,
   WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
 } from "../src/generated/abi";
 
@@ -30,7 +29,7 @@ import {
  */
 
 interface Seed {
-  readonly call: "imports" | "identity" | "provenance";
+  readonly call: "identity" | "provenance";
   readonly args: readonly (number | bigint)[];
   readonly bytes?: Uint8Array;
 }
@@ -40,8 +39,6 @@ function recordingSink(): { seeds: Seed[]; sink: ForkImportSeedSink } {
   return {
     seeds,
     sink: {
-      setActivationImports: (space, activation, bytes) =>
-        void seeds.push({ call: "imports", args: [space, activation], bytes }),
       setIdentityGroup: (space, activation, owner, group) =>
         void seeds.push({ call: "identity", args: [space, activation, owner, group] }),
       setImportProvenance: (space, consumer, ordinal, kind, group, bits) =>
@@ -311,23 +308,6 @@ describe("what only JavaScript can see about an activation's imports", () => {
       seeds.some((s) => s.call === "provenance" && s.args[2] === ORDINAL_NUM + 1),
       "the imports after it are still published",
     ).toBe(true);
-  });
-
-  it("seeds a section it finds and stays silent about one it does not", () => {
-    // The module cannot reach a guest's `WebAssembly.Module` at all, so a
-    // section it is not handed does not exist as far as the capture is
-    // concerned. Seeding an empty one instead would put a record in the arena
-    // saying an activation imports nothing, which is not the same claim.
-    const { seeds, sink } = recordingSink();
-    const identity = new ForkImportIdentity(sink, "test");
-    const kfig = new Uint8Array([0x4b, 0x46, 0x49, 0x47, 1, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    const bytes = compile(WAT, [[WPK_FORK_IMPORTED_GLOBALS_SECTION, kfig]]);
-    prepared(identity, 0, bytes, importsFor(mutableI32(1), mutableI32(2)));
-
-    const sections = seeds.filter((s) => s.call === "imports");
-    expect(sections).toHaveLength(1);
-    expect(sections[0].args).toEqual([FORK_IMPORT_SPACE_GLOBAL, 0]);
-    expect(sections[0].bytes).toEqual(kfig);
   });
 });
 

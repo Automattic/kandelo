@@ -1739,7 +1739,8 @@ Two mechanisms gained a check they did not have:
    pre-2026-09-20 toolchain used to pass; it is now named and refused.
 2. **Process admission.** `host/src/worker-main.ts` refuses a guest carrying
    some but not all of them, before `_start`. The same stale guest used to
-   reach `ForkResumeTable.registerActivation` and fail there instead --
+   reach resume placement (then `ForkResumeTable.registerActivation`,
+   now `placeForkResumeThunks`) and fail there instead --
    which does name the export, so the gain is not a better message but an
    earlier and cheaper one: refused at publication and at process start
    rather than at the first `fork()`.

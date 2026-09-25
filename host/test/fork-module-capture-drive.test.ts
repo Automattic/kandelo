@@ -408,8 +408,6 @@ describe("the backend's lifecycle methods, against a live module", () => {
       instance: f.instance,
       memory: f.memory,
       ptrWidth: 4,
-      format: { ptrWidth: 4 } as never,
-      catalogOrdinals: [],
       // The seal serializes the journal image into a freshly channel-mmap'd
       // chunk, so the backend needs the same channel the responder services.
       channelBase: CHANNEL_BASE,
@@ -923,8 +921,6 @@ describe("the binding records the module assembles at capture", () => {
       instance: f.instance,
       memory: f.memory,
       ptrWidth: 4,
-      format: { fixedPrefixSize: 0 } as never,
-      catalogOrdinals: [],
       channelBase: CHANNEL_BASE,
       label: "sealed arena",
     });

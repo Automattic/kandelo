@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import {
+  encodeForkAdmission,
+  FORK_ADMISSION_BORROWED_CHILD,
+  FORK_ADMISSION_FORK_CHILD,
+} from "../src/fork-guest-sections";
+import {
   CHANNEL_BASE,
   MMAP_FLOOR,
   MODULE_BASE,
@@ -67,7 +72,11 @@ function locate(module: WebAssembly.Module): Map<Kind, Uint8Array> {
   return out;
 }
 
-/** The `KFAA` layout `fork_codec::encode_activation_admission` writes. */
+/**
+ * The `KFAA` layout `fork_codec::encode_activation_admission` writes, over a
+ * section map a case can perturb. The production writer takes a whole
+ * `WebAssembly.Module`; the first case below pins the two against each other.
+ */
 function encode(
   activation: number,
   templateId: Uint8Array,
@@ -215,6 +224,31 @@ describe("fm_admit_activation / fm_bind_activation", () => {
   it("the real guest carries every section, and a non-trivial catalog", () => {
     expect([...sections.keys()].sort()).toEqual(Object.keys(KIND).sort());
     expect(ordinals(sections.get("resumeCatalog")!).length).toBeGreaterThan(100);
+  });
+
+  it("the production writer lays out exactly this, and the module admits it", () => {
+    // `encodeForkAdmission` is what both JS hosts stage. Byte-equal to the
+    // codec-shaped encoding of the located sections, with the flags a host
+    // passes, and admitted for real.
+    const template = templateId(0x3c);
+    const flags = FORK_ADMISSION_FORK_CHILD | FORK_ADMISSION_BORROWED_CHILD;
+    const written = encodeForkAdmission(2, flags, template, guest);
+    expect(written).toEqual(encode(2, template, sections, flags));
+    const m = freshModule("production writer");
+    m.call("fm_set_format", 4, prefix, 0, CHANNEL_BASE);
+    expect(m.admit(written)).toBe(0);
+    expect(m.bind(2, 1, 1).errno).toBe(0);
+  });
+
+  it("takes activation 0's prefix from its admission when fm_set_format gives none", () => {
+    // A host that admits no longer decodes the linked-frame section, so it
+    // passes 0 for the prefix and activation 0's admission supplies it. A
+    // non-zero prefix is still checked (the case below).
+    const m = freshModule("prefix from admission");
+    m.call("fm_set_format", 4, 0, 0, CHANNEL_BASE);
+    expect(m.admit(encodeForkAdmission(0, 0, templateId(0), guest))).toBe(0);
+    // Re-admitting the same module is the usual no-op.
+    expect(m.admit(encodeForkAdmission(0, 0, templateId(0), guest))).toBe(0);
   });
 
   it("produces the same resume assignment and bases as the per-fact entries", () => {

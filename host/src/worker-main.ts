@@ -60,8 +60,6 @@ import {
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
-  WPK_FORK_EXCEPTION_CODEC_SECTION,
-  WPK_FORK_GC_CODEC_SECTION,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
   ABI_VERSION,
@@ -75,7 +73,6 @@ import {
 } from "./process-memory";
 import {
   ContinuationAllocationError,
-  readLinkedFrameFormat,
   writeForkContinuationAnchor,
 } from "./fork-continuation";
 import { ForkMergedStaticRoots } from "./fork-merged-static-roots";
@@ -89,7 +86,6 @@ import {
   requireForkUnwindTag,
 } from "./fork-guest-imports";
 import { forkPhase } from "./fork-phase";
-import { ForkResumeTable } from "./fork-resume-table";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
   type ForkModuleInstance,
@@ -104,11 +100,9 @@ import {
 } from "./fork-module-backend";
 import {
   computeForkModuleTemplateId,
-  readForkModuleStatePointerWidth,
   readForkModuleStateRoot,
 } from "./fork-guest-sections";
 import { ForkChildReferences } from "./fork-child-references";
-import { readForkResumeCatalog } from "./fork-resume-catalog";
 import { guardFunctionImport, guardImportObject } from "./import-trap-guard";
 import {
   ForkImportIdentity,
@@ -727,11 +721,9 @@ export interface DlopenSupport {
 }
 
 interface ProcessDylinkActivationOwnerOptions {
-  readonly ptrWidth: 4 | 8;
-  readonly resumeTable: ForkResumeTable;
   readonly importedStateCapture?: ForkImportIdentity;
   /** The host's record of live activations; see `fork-activations.ts`. */
-  readonly activations?: ForkActivations;
+  readonly activations: ForkActivations;
   readonly tableReplication: ForkActivationTableReplication;
   /**
    * The child planner needs the copied dlopen archive, while the archive
@@ -758,9 +750,8 @@ interface ProcessDylinkActivationOwnerOptions {
   /**
    * Phase 6 D7a.1a: when present (a qualifying module-backed dlopen fork), each
    * side activation's five frozen frame/resume imports are flipped to its own
-   * trampoline (wasm->wasm), and its resume catalog is seeded into the module so
-   * its slot numbering matches its JS `__wpk_fork_resume_table`. Null keeps the
-   * byte-identical JS continuation closures for the activation's frames.
+   * trampoline (wasm->wasm), and the activation is admitted into the module
+   * (`admitActivation`) before it instantiates.
    */
   readonly forkModuleFrameFlip?: {
     /**
@@ -837,41 +828,6 @@ function createProcessDylinkActivationOwner(
       let childImportedStatePlanner: ForkChildImports | null = null;
       let importedStateRegistered = false;
       let importsWrapped = false;
-      // The co-resident Rust module owns all linked frames, journal and resume
-      // storage. What the host reads out of this activation's module is its
-      // linked-frame FORMAT, and only two fields of it.
-      const format = readLinkedFrameFormat(request.module);
-      if (format.ptrWidth !== options.ptrWidth) {
-        throw new Error(
-          `${request.name}: linked continuation pointer width ` +
-            `${format.ptrWidth} does not match the process ` +
-            `pointer width ${options.ptrWidth}`,
-        );
-      }
-      const moduleStatePtrWidth = readForkModuleStatePointerWidth(request.module);
-      if (moduleStatePtrWidth !== options.ptrWidth) {
-        throw new Error(
-          `${request.name}: module-state pointer width ${moduleStatePtrWidth} ` +
-            `does not match the process pointer width ${options.ptrWidth}`,
-        );
-      }
-      const templateId = computeForkModuleTemplateId(request.moduleBytes);
-
-      // Phase 6 D7a.1a: seed THIS side activation's resume catalog into the
-      // module once, at instantiation (before any fork drives it), so the
-      // module numbers its resume slots from the SAME ordinals as its JS
-      // `__wpk_fork_resume_table`. Done on both the parent (dlopen) and the child
-      // (replayDlopens), each seeding its own module instance.
-      if (options.forkModuleFrameFlip) {
-        const activationOrdinals = readForkResumeCatalog(request.module).map(
-          (entry) => entry.functionOrdinal,
-        );
-        options.forkModuleFrameFlip.backend.setActivationResumeCatalog(
-          activationId,
-          activationOrdinals,
-        );
-      }
-
       // The co-resident module is the ONLY capture/replay implementation on this
       // path (Phase 4 point of no return), so a side activation without one is a
       // programming error rather than a reason to fall back.
@@ -881,6 +837,17 @@ function createProcessDylinkActivationOwner(
             "there is no JavaScript continuation to fall back to",
         );
       }
+      // ADMITTED before anything is instantiated, on the parent (dlopen) and
+      // the child (replayDlopens) alike: every section of the side module goes
+      // to the module, which decodes and checks it here -- pointer width
+      // against this worker, the resume catalog, both codecs, KFIG/KFIT. A
+      // child's pre-instantiation planner already admitted the same facts, so
+      // this is its no-op. The host decodes none of it.
+      options.forkModuleFrameFlip.backend.admitActivation(
+        activationId,
+        request.module,
+        computeForkModuleTemplateId(request.moduleBytes),
+      );
       const activationLabel = `${request.name}: fork activation`;
       const guestImports = buildForkGuestImports({
           moduleExports: options.forkModuleFrameFlip.moduleExports,
@@ -1003,17 +970,13 @@ function createProcessDylinkActivationOwner(
               `${request.name}: child activation ${activationId} did not wrap its final imports`,
             );
           }
-          options.resumeTable.registerActivation(activationId, instance);
-          // Remembering it here also BINDS its drive slots, so the module can
-          // `call_indirect` this guest's unwind/rewind/abort entry points. That
-          // used to happen in one sweep over the registry during the child
-          // install, which left a parent's slots unbound until it forked.
-          options.activations?.register({
-            activationId,
-            instance,
-            fixedPrefixSize: format.fixedPrefixSize,
-            templateId,
-          });
+          // Remembering it here also BINDS it (`fm_bind_activation`): its
+          // drive slots, so the module can `call_indirect` this guest's
+          // unwind/rewind/abort entry points, and its resume thunks, which the
+          // guest places itself from the row. The drive bind used to happen in
+          // one sweep during the child install, which left a parent's slots
+          // unbound until it forked.
+          options.activations.register({ activationId, instance });
           registered = true;
           childImportedStatePlanner?.registerInstance(activationId, instance);
           if (
@@ -1048,7 +1011,7 @@ function createProcessDylinkActivationOwner(
             // seeds but no placed thunks. The id is not given back (see the
             // function comment).
             try {
-              if (registered) options.activations?.forget(activationId);
+              if (registered) options.activations.forget(activationId);
               else options.forkModuleFrameFlip?.backend.releaseResumeSlots(activationId, true);
             } catch (error) {
               failure = error;
@@ -3303,23 +3266,11 @@ export async function centralizedWorkerMain(
     }
 
     if (hasForkInstrumentation) {
-      const linkedFrameFormat = readLinkedFrameFormat(module);
-      // The module-state descriptor is NOT re-validated here. `check_module_state`
-      // in `crates/wasm-artifact/src/fork_contract.rs` already parsed it, made
-      // this exact pointer-width comparison against the linked-frame descriptor,
-      // and cross-checked both against the module's actual memories -- and this
-      // program reached this line only by passing
-      // `describeWasmArtifactPolicyFailures` during exec
-      // (`process-lifecycle.ts`), which the artifact policy's own preamble calls
-      // "the question asked on every `exec`".
-      //
-      // The Rust check is also the better one to keep: it names the field that
-      // failed, where the message deleted from here read identically for a
-      // stale artifact and a byte-corrupted one.
-      //
-      // This does NOT generalise to the dlopen side-activation path, which
-      // re-checks the descriptor itself because the artifact policy is never
-      // asked about a side module. See census section 103.
+      // Neither frame-format descriptor is decoded here. The main program's
+      // passed `check_module_state` (`crates/wasm-artifact`) at exec, and the
+      // fork module decodes both again when it admits activation 0 below --
+      // including the pointer-width check against this worker.
+      const mainTemplateId = computeForkModuleTemplateId(programBytes);
       // The co-resident fork module, instantiated once at process init into a
       // host-reserved region of shared memory (placed through
       // `continuationMmap`, so its static data and stack never collide with
@@ -3336,17 +3287,6 @@ export async function centralizedWorkerMain(
       // frames route to its own writer/driver in the shared module. Null unless
       // the module-backed path is active.
       let forkModuleFrameExports: Record<string, unknown> | null = null;
-      /**
-       * The funcref table the guest imports as `__wpk_fork_resume_table`, and
-       * the module indexes through `fm_resume_peek`.
-       *
-       * Host floor: it is a live `WebAssembly.Table` holding the guest's own
-       * exported thunks, which the module cannot hold for it. The coordinator
-       * used to own one and hand it out through `continuationImports`; this is
-       * the same table with the coordinator removed from between.
-       */
-      const resumeTable = new ForkResumeTable(`pid=${pid}: fork resume table`);
-
       /**
        * The module backend, narrowed. Every fork path that reaches a lifecycle
        * call has one by construction; this is where that stops being an
@@ -3447,12 +3387,6 @@ export async function centralizedWorkerMain(
               "fork module",
           );
         }
-        if (ptrWidth !== linkedFrameFormat.ptrWidth) {
-          throw new Error(
-            `pid=${pid}: fork-module width mismatch: process ptrWidth ` +
-              `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
-          );
-        }
         // A COPIED fork child INHERITS the parent's co-resident fork-module
         // region through its full memory clone (the region is present both in
         // the inherited bytes and in the inherited kernel mapping table). It
@@ -3538,9 +3472,6 @@ export async function centralizedWorkerMain(
         // `wpk_fork_resume_thread` export: fork-instrument emits it for every
         // guest exporting `__indirect_function_table`, so a child without it
         // is a stale artifact and fails loud.
-        const catalogOrdinals = readForkResumeCatalog(module).map(
-          (entry) => entry.functionOrdinal,
-        );
         const isForkFromThreadChild =
           initData.isForkChild === true &&
           initData.forkChildThreadFnPtr != null;
@@ -3587,8 +3518,8 @@ export async function centralizedWorkerMain(
           instance: forkModuleInstance,
           memory,
           ptrWidth,
-          format: linkedFrameFormat,
-          catalogOrdinals,
+          forkChild: initData.isForkChild === true,
+          borrowedChild: borrowedForkChild,
           // The module channel-mmaps its own arena and journal image, through
           // this worker's syscall channel. It was never told where that is:
           // every capture and seal would have asked the module to issue a
@@ -3597,17 +3528,13 @@ export async function centralizedWorkerMain(
           archiveControlAddr: dlopenArchiveControlAddr,
           label: `pid=${pid}: fork-module`,
         });
-        // Seed the linked-frame format + full resume catalog once, now, before
-        // any fork drives the module. Both are host-known custom sections.
+        // The per-worker format first (it resets every activation record),
+        // then activation 0's admission: every fork section of the program,
+        // before instantiation, so every fact a capture or a child install
+        // needs is in the module from one call. Admitting IS what assigns this
+        // activation's resume slots; the bind at registration publishes them.
         forkModuleBackend.setup();
-        // `setup()` seeds the resume catalog, and seeding IS what assigns
-        // this activation's slots. Binding here rather than at construction
-        // is forced by the order: the resume table exists before the module
-        // does, because the guest's import object is built from it.
-        resumeTable.bindSlots(
-          forkModuleBackend,
-          forkModuleInstance.exports.__wpk_fork_resume_table as WebAssembly.Table,
-        );
+        forkModuleBackend.admitActivation(0, module, mainTemplateId);
         // The per-activation frame entry points are the module's own, emitted
         // by the injector and read out of its table -- there is nothing to
         // construct or cache here any more.
@@ -3618,7 +3545,6 @@ export async function centralizedWorkerMain(
         // be needed.
         moduleForkUnwindTag = forkUnwindTagFrom(forkModuleInstance.exports, `pid=${pid} unwind`);
       }
-      const mainTemplateId = computeForkModuleTemplateId(programBytes);
       let processInstance: WebAssembly.Instance | null = null;
 
       // WHAT THE 2,098-LINE REGISTRY WAS, and where each part went: activation
@@ -3658,15 +3584,11 @@ export async function centralizedWorkerMain(
       // parent does not yet (see the class).
       const forkMergedStaticRoots = new ForkMergedStaticRoots(
         forkModuleInstance!.staticRootCatalog,
-        (activationId, length) =>
-          requireForkModuleBackend(forkModuleBackend, pid)
-            .placeActivationStaticRoots(activationId, length),
       );
       const forkActivations = new ForkActivations(
         requireForkModuleBackend(forkModuleBackend, pid),
         `pid=${pid}: fork activations`,
         forkActivationCatalogSink({
-          module: requireForkModuleBackend(forkModuleBackend, pid),
           functionCatalog: forkModuleInstance!.functionCatalog,
           mergedStaticRoots: forkMergedStaticRoots,
           owners: processTableStateOwners,
@@ -3705,19 +3627,6 @@ export async function centralizedWorkerMain(
       let importedStatePlanner: ForkChildImports | null = null;
       let earlyChildReferences: ForkChildReferences | null = null;
       let childDylinkState: readonly LoaderArchivedModule[] | null = null;
-      // Phase 6 item 3c: the raw KFGC (`kandelo.wpk_fork.gc_codec`) section bytes
-      // per activation and the host-exception owner, captured in the child's
-      // pre-instantiation planning block (where the compiled activation `modules`
-      // are in scope) so the later instantiation/attach block can seed the
-      // co-resident fork-module's typed-GC drive planner. Null until a fork child
-      // computes them.
-      let childGcCodecBytes: Map<number, Uint8Array> | null = null;
-      let childHostExceptionOwner = 0xffff_ffff;
-      // The exnref tag ordinals each activation's exception codec declares,
-      // captured in the planning block (where the compiled `modules` are in
-      // scope) so the attach block can seed the co-resident fork-module's exnref
-      // tag-validity admission gate. Null until a fork child computes them.
-      let childExceptionCodecBytes: Map<number, Uint8Array> | null = null;
       let processDlopenSupport: DlopenSupport | null = null;
       let processForkArchiveReaderHeld = false;
       const tableGenerationOffset =
@@ -4023,8 +3932,6 @@ export async function centralizedWorkerMain(
 
       const dylinkForkActivationOwner = hasDylinkForkRole
         ? createProcessDylinkActivationOwner({
-            ptrWidth,
-            resumeTable,
             activations: forkActivations,
             importedStateCapture,
             tableReplication: tableReplicationImports,
@@ -4132,58 +4039,20 @@ export async function centralizedWorkerMain(
             library.moduleBytes,
           );
           modules.set(library.activationId, activationModule);
-        }
-        // Each activation's identity, with no descriptor DECODED here. Both
-        // codecs are module-owned formats; the host locates their sections and
-        // hands over the raw bytes, and the module decodes them on seed.
-        // WHAT USED TO BE HERE: a sorted `declarations` array of
-        // `{ activationId }`, read by nobody since the module began decoding
-        // both codecs from raw section bytes. The comment below already says
-        // no descriptor is decoded here; the array was the last trace of when
-        // one was.
-        // Phase 6 item 3c: capture each activation's raw KFGC section bytes and
-        // the host-exception owner HERE, where the compiled `modules` (and their
-        // custom sections) are in scope, so the later instantiation/attach block
-        // can seed the co-resident fork-module's drive planner. The
-        // host-exception owner is the smallest activation that declared an
-        // exception codec descriptor — the JS `directOwner` for a host exnref —
-        // or 0xffff_ffff (the JS `null`) if none did.
-        const gcCodecBytes = new Map<number, Uint8Array>();
-        for (const [activationId, activationModule] of modules) {
-          const sections = WebAssembly.Module.customSections(
+          // ADMITTED here, before anything instantiates: the module plans this
+          // activation's imports and the child's GC, exception and resume state
+          // from its admission. The dlopen replay admits it again as it
+          // instantiates, which is the module's same-facts no-op.
+          forkModule().admitActivation(
+            library.activationId,
             activationModule,
-            WPK_FORK_GC_CODEC_SECTION,
+            computeForkModuleTemplateId(library.moduleBytes),
           );
-          if (sections.length !== 1) {
-            throw new Error(
-              `pid=${pid}: activation ${activationId} has ${sections.length} ` +
-                "GC codec sections; expected exactly one",
-            );
-          }
-          gcCodecBytes.set(activationId, new Uint8Array(sections[0]!));
         }
-        childGcCodecBytes = gcCodecBytes;
-        // Capture each activation's RAW exception codec section for the module's
-        // exnref tag-validity admission gate. The module derives the declared tag
-        // ordinals from the section itself -- decoding it here to hand over a
-        // `u32` array made this host a second decoder of a module-owned format.
-        const exceptionCodecBytes = new Map<number, Uint8Array>();
-        for (const [activationId, activationModule] of modules) {
-          const sections = WebAssembly.Module.customSections(
-            activationModule,
-            WPK_FORK_EXCEPTION_CODEC_SECTION,
-          );
-          if (sections.length === 1) {
-            exceptionCodecBytes.set(activationId, new Uint8Array(sections[0]!));
-          }
-        }
-        childExceptionCodecBytes = exceptionCodecBytes;
-        // The host-exception owner is the smallest activation that DECLARED an
-        // exception codec -- which is exactly the set that has a section, so it
-        // falls out of the scan above rather than out of a decoded descriptor.
-        childHostExceptionOwner =
-          [...exceptionCodecBytes.keys()].sort((left, right) => left - right)[0]
-            ?? 0xffff_ffff;
+        // No section is scanned here any more. Each activation's GC codec,
+        // exception codec and KFIG/KFIT arrived with its admission, and the
+        // module derives the host-exception owner from the admitted exception
+        // codecs itself (lane F stage 1b).
         // P2 (Path B): the co-resident module is the SOLE reconstructor whenever
         // it is active for this fork — there is no longer a per-kind host
         // admission gate, and no JS reconstruction fallback behind it. The former
@@ -4200,9 +4069,9 @@ export async function centralizedWorkerMain(
         // fails loud where IT can see the fault — GC layout validity in
         // `GcCodecHints::require_layout` (`EINVAL`); a raw host externref never
         // reaches a graph, because the capture refuses it (`EOPNOTSUPP`). The exnref
-        // tag-validity check the module ALSO now re-checks itself: the host seeds
-        // each activation's declared exnref tag ordinals
-        // (`fm_set_activation_exception_tags`), and the child-install entry
+        // tag-validity check the module ALSO now re-checks itself: each
+        // activation's admission carries its exception codec, from which the
+        // module derives the declared exnref tag ordinals, and the child-install entry
         // (`fm_attach_child`, COW and borrowed alike) fails loud with `EINVAL`
         // on an exnref recipe whose tag its owning activation never declared,
         // BEFORE the DRIVE_OP_EXN step materializes it — the fail-loud boundary
@@ -4234,10 +4103,9 @@ export async function centralizedWorkerMain(
         // exnref recipe against each activation's seeded exception tags before
         // building the reconstruction drive plan, and fails loud with `EINVAL` on
         // an undeclared tag — see `fm_set_activation_exception_tags` +
-        // `assert_exnref_tags_admissible` in `crates/fork-module`). The host now
-        // only SEEDS those tags (in the drive block below), so the fail-loud
-        // boundary lives inside reconstruction rather than as a separate host
-        // pre-walk.
+        // `assert_exnref_tags_admissible` in `crates/fork-module`). The tags
+        // arrive with each activation's admission, so the fail-loud boundary
+        // lives inside reconstruction rather than as a separate host pre-walk.
         if (forkModuleBackend) {
           forkModuleBackend.decodeReferenceGraph(childArenaRoot);
         }
@@ -4271,7 +4139,6 @@ export async function centralizedWorkerMain(
         );
         importedStatePlanner = new ForkChildImports(
           requireForkModuleBackend(forkModuleBackend, pid),
-          importedStateCapture,
           modules,
           childArenaRoot,
           earlyChildReferences,
@@ -4421,14 +4288,8 @@ export async function centralizedWorkerMain(
         throw error;
       }
       processInstance = instance;
-      forkActivations.register({
-        activationId: 0,
-        instance,
-        fixedPrefixSize: linkedFrameFormat.fixedPrefixSize,
-        templateId: mainTemplateId,
-      });
+      forkActivations.register({ activationId: 0, instance });
       mainImportedStatePreparation?.complete(instance);
-      resumeTable.registerActivation(0, instance);
       importedStatePlanner?.registerInstance(0, instance);
       if (!initData.isForkChild) {
         try {
@@ -4508,7 +4369,7 @@ export async function centralizedWorkerMain(
           // Phase 6 item 3b/3c: bind each activation's guest
           // `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports into the
           // module's imported drive table at
-          // `fm_drive_table_base(act) + {ALLOC, FILL, EXN}`, so the injected
+          // the drive base `fm_bind_activation` answers + {ALLOC, FILL, EXN}, so the injected
           // `fm_drive_execute` shim can `call_indirect` them. The module could not
           // import the guest exports directly — it is instantiated BEFORE the
           // guests to supply the frame-flip imports. The absolute slot numbers
@@ -4544,58 +4405,10 @@ export async function centralizedWorkerMain(
           // slot by slot against `fork_codec::drive_plan` by
           // `host/test/fork-module-backend.test.ts` -- including a test that no
           // slot in the stride is left unbound.
-          // Phase 6 item 3c: seed the module's typed-GC drive planner from the
-          // raw KFGC section bytes captured in the pre-instantiation planning
-          // block (`childGcCodecBytes`). Each activation's codec supplies the
-          // per-recipe layout facts (constructor deps, defaultable shells, the i31
-          // owner) `fm_build_gc_plan` needs to reproduce the JS drive-order. Seeded
-          // here — once per worker — so the coordinator's per-fork drive seam only
-          // builds + executes the plan. Re-seeding an activation would fail
-          // `EINVAL`, and this worker seeds each exactly once.
-          if (!childGcCodecBytes) {
-            throw new Error(
-              `pid=${pid}: fork-module drive lost the captured GC codec bytes`,
-            );
-          }
-          for (const activation of sortedActivations) {
-            const bytes = childGcCodecBytes.get(activation.activationId);
-            if (!bytes) {
-              throw new Error(
-                `pid=${pid}: fork-module drive seed lost activation ` +
-                  `${activation.activationId}'s GC codec bytes`,
-              );
-            }
-            forkModuleBackend.setActivationGcCodec(
-              activation.activationId,
-              bytes,
-            );
-          }
-          // The host-exception owner (the JS `directOwner` for a host exnref) was
-          // captured alongside the codec bytes: the smallest activation that
-          // declared an exception codec descriptor, or 0xffff_ffff if none.
-          forkModuleBackend.setHostExceptionOwner(childHostExceptionOwner);
-          // Seed each activation's declared exnref tag ordinals so the module's
-          // child-install entry can re-check every captured exnref recipe against
-          // them (the exnref tag-validity admission gate, moved out of the host).
-          // A recipe naming an undeclared tag then fails loud (`EINVAL`) from
-          // inside `fm_attach_child` BEFORE the DRIVE_OP_EXN step materializes it.
-          // Seeded here — once per worker — alongside the GC codec; a COW child
-          // re-seed is an idempotent no-op in the module. An activation that
-          // declares no exnref tags is not seeded (nothing to declare).
-          if (!childExceptionCodecBytes) {
-            throw new Error(
-              `pid=${pid}: fork-module drive lost the captured exception codecs`,
-            );
-          }
-          for (const activation of sortedActivations) {
-            const bytes = childExceptionCodecBytes.get(activation.activationId);
-            if (bytes !== undefined) {
-              forkModuleBackend.setActivationExceptionCodec(
-                activation.activationId,
-                bytes,
-              );
-            }
-          }
+          // WHAT USED TO BE HERE: the GC-codec and exception-codec seeding
+          // loops and the host-exception owner seed, fed by section scans in the
+          // planning block. All three facts arrive with each activation's
+          // admission now, and the module derives the owner itself.
           // Static-root binder: the merged anyref catalog the module's injected
           // `fm_drive_execute` reads on a DRIVE_OP_STATIC_ROOT step has to hold
           // the child's live roots before the drive runs.
@@ -6019,12 +5832,6 @@ export async function centralizedThreadWorkerMain(
       `pid=${pid} tid=${tid}: fork tables`,
     );
     let threadImportedStateCapture: ForkImportIdentity | null = null;
-    const threadResumeTable = new ForkResumeTable(
-      `pid=${pid} tid=${tid}: fork resume table`,
-    );
-    // The frame format is read where the fork-module is built, which is a
-    // narrower block than the registration below.
-    let threadFixedPrefixSize = 0;
     // WHAT USED TO BE HERE: this worker's exception broker. It resolved an
     // exception recipe's owning activation and called that activation's
     // exported thrower. The module does both now -- the owner comes out of the
@@ -6075,16 +5882,6 @@ export async function centralizedThreadWorkerMain(
             "co-resident fork module",
         );
       }
-      const linkedFrameFormat = readLinkedFrameFormat(module);
-      if (ptrWidth !== linkedFrameFormat.ptrWidth) {
-        throw new Error(
-          `pid=${pid} tid=${tid}: fork-module width mismatch: process ptrWidth ` +
-            `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
-        );
-      }
-      const catalogOrdinals = readForkResumeCatalog(module).map(
-        (entry) => entry.functionOrdinal,
-      );
       {
         threadForkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
@@ -6107,19 +5904,16 @@ export async function centralizedThreadWorkerMain(
           instance: threadForkModuleInstance,
           memory,
           ptrWidth,
-          format: linkedFrameFormat,
-          catalogOrdinals,
           channelBase: channelOffset,
           // The PROCESS control block: a pthread shares the process archive.
           archiveControlAddr: processChannelOffset - FORK_BUF_SIZE,
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
+        // The same two calls as the process path: the per-worker format, then
+        // activation 0's admission, which also checks the program's pointer
+        // width against this worker.
         threadForkModuleBackend.setup();
-        threadResumeTable.bindSlots(
-          threadForkModuleBackend,
-          threadForkModuleInstance.exports
-            .__wpk_fork_resume_table as WebAssembly.Table,
-        );
+        threadForkModuleBackend.admitActivation(0, module, threadTemplateId!);
         threadModuleUnwindTag = forkUnwindTagFrom(
           threadForkModuleInstance.exports,
           `pid=${pid} tid=${tid} unwind`,
@@ -6135,19 +5929,15 @@ export async function centralizedThreadWorkerMain(
           backend,
           `pid=${pid} tid=${tid}: fork activations`,
           forkActivationCatalogSink({
-            module: backend,
             functionCatalog: threadForkModuleInstance.functionCatalog,
             // A pthread replica runs its OWN module instance, so its merged
             // static-root table is its own too.
             mergedStaticRoots: new ForkMergedStaticRoots(
               threadForkModuleInstance.staticRootCatalog,
-              (activationId, length) =>
-                backend.placeActivationStaticRoots(activationId, length),
             ),
             owners: threadTableStateOwners,
           }),
         );
-        threadFixedPrefixSize = linkedFrameFormat.fixedPrefixSize;
         threadImportedStateCapture = new ForkImportIdentity(
           backend,
           `pid=${pid} tid=${tid}: imported activation state`,
@@ -6351,10 +6141,9 @@ export async function centralizedThreadWorkerMain(
       hasDylinkForkRole &&
       hasForkInstrumentation
         ? createProcessDylinkActivationOwner({
-            ptrWidth,
-            resumeTable: threadResumeTable,
             importedStateCapture: threadImportedStateCapture ?? undefined,
-            activations: threadForkActivations ?? undefined,
+            // Built with the module above whenever `hasForkInstrumentation`.
+            activations: threadForkActivations!,
             tableReplication: threadTableReplicationImports,
             isForkChild: false,
             isPthreadReplica: true,
@@ -6545,13 +6334,7 @@ export async function centralizedThreadWorkerMain(
       // Required by `hasCompleteForkInstrumentation`, so present here.
       const threadBootstrap = instance.exports
         .wpk_fork_module_thread_bootstrap as () => void;
-      threadResumeTable.registerActivation(0, instance);
-      threadForkActivations?.register({
-        activationId: 0,
-        instance,
-        fixedPrefixSize: threadFixedPrefixSize,
-        templateId: threadTemplateId!,
-      });
+      threadForkActivations?.register({ activationId: 0, instance });
       try {
         // The pthread bootstrap consumes passive element segments, so static
         // root harvesting and table-dirty registration must precede it just as

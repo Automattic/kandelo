@@ -4,9 +4,8 @@ import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import {
-  ForkResumeTable,
   type ForkResumeAssignment,
-  type ForkResumeSlots,
+  placeForkResumeThunks,
 } from "../src/fork-resume-table";
 import { startChannelResponder } from "./fork-module-capture-fixture";
 import { standInGuest } from "./support/resume-placement-stand-in";
@@ -14,7 +13,7 @@ import { standInGuest } from "./support/resume-placement-stand-in";
 /**
  * The resume-slot numbering, against the REAL module rather than a regex.
  *
- * The module's `resume_peek` returns an index into the table this class holds,
+ * The module's `resume_peek` returns an index into the table the guest fills,
  * so a slot the two sides number differently makes the guest `call_indirect`
  * into a real function that is the wrong one. Nothing traps; the process simply
  * resumes at the wrong place.
@@ -35,8 +34,10 @@ import { standInGuest } from "./support/resume-placement-stand-in";
  *
  * # What this file tests after the placement cutover, and what it does not
  *
- * `registerActivation` no longer writes the table. It publishes the module's
- * decision and hands the guest its own `(ptr, count)`; the guest's emitted
+ * Registration no longer writes the table. The module publishes its decision
+ * (in production, as the resume half of `fm_bind_activation`'s row; here
+ * through `fm_publish_resume_assignment`, which that row is built from) and
+ * `placeForkResumeThunks` hands the guest its own `(ptr, count)`; the guest's emitted
  * `__wpk_fork_place_resume_thunks` does the copying. So what is under test
  * here is the module's NUMBERING -- which slots each activation holds, and
  * what `dlclose` nulls.
@@ -79,7 +80,8 @@ const CATALOG_AT = 12 * 1024 * 1024;
 const MMAP_FLOOR = 13 * 1024 * 1024;
 
 interface Harness {
-  readonly table: ForkResumeTable;
+  /** Have the guest place its thunks from the module's published assignment. */
+  readonly place: (activationId: number, instance: WebAssembly.Instance) => void;
   /** Seed an activation's catalog, which is what assigns its slots. */
   readonly seed: (activationId: number, ordinals: readonly number[]) => void;
   readonly errno: () => number;
@@ -112,30 +114,26 @@ function harness(): Harness {
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
 
   const errno = () => (x.fm_last_errno as () => number)();
-  const slots: ForkResumeSlots = {
-    // THE REAL EXPORT, not a stand-in: the numbering under test is the
-    // module's, and this is how production asks for a whole activation of it.
-    publishResumeAssignment: (activationId): ForkResumeAssignment => {
-      const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
-        activationId,
+  // THE REAL EXPORT, not a stand-in: the numbering under test is the module's.
+  const publish = (activationId: number): ForkResumeAssignment => {
+    const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
+      activationId,
+    );
+    if (packed === -1n) {
+      throw new Error(
+        `no assignment for activation ${activationId} (errno ${errno()})`,
       );
-      if (packed === -1n) {
-        throw new Error(
-          `no assignment for activation ${activationId} (errno ${errno()})`,
-        );
-      }
-      return {
-        ptr: Number(packed & 0xffff_ffffn),
-        count: Number(packed >> 32n),
-      };
-    },
+    }
+    return {
+      ptr: Number(packed & 0xffff_ffffn),
+      count: Number(packed >> 32n),
+    };
   };
-
-  const table = new ForkResumeTable("resume slots");
+  const place = (activationId: number, instance: WebAssembly.Instance): void =>
+    placeForkResumeThunks("resume slots", activationId, instance, publish(activationId));
   // The MODULE's table, not one this test minted: it owns and exports it now,
-  // so binding anything else here would test a table nothing else can see.
+  // so reading anything else here would test a table nothing else can see.
   const resumeTable = x.__wpk_fork_resume_table as unknown as WebAssembly.Table;
-  table.bindSlots(slots, resumeTable);
 
   const seed = (activationId: number, ordinals: readonly number[]): void => {
     const bytes = new Uint8Array(ordinals.length * 4);
@@ -150,7 +148,7 @@ function harness(): Harness {
     expect(errno(), `seeding activation ${activationId}`).toBe(0);
   };
 
-  return { table, seed, errno, resumeTable, memory, exports: x };
+  return { place, seed, errno, resumeTable, memory, exports: x };
 }
 
 /**
@@ -236,17 +234,17 @@ function register(
   ordinals: readonly number[],
 ): void {
   h.seed(activationId, ordinals);
-  h.table.registerActivation(activationId, guest(h, ordinals));
+  h.place(activationId, guest(h, ordinals));
 }
 
-describe("ForkResumeTable, numbered by the module", () => {
+describe("resume placement, numbered by the module", () => {
   it("reserves slot 0 and numbers from 1", () => {
     // Slot 0 is the "no event" sentinel `resume_peek` returns when a replay has
     // nothing to resume, so no thunk may ever live there.
     const h = harness();
     register(h, 0, [0, 1]);
     expect(slotsOf(h, 0)).toEqual([1, 2]);
-    expect(h.table.resumeTable.get(0)).toBeNull();
+    expect(h.resumeTable.get(0)).toBeNull();
   });
 
   it("assigns slots by SORTED ordinal, not seeding order", () => {
@@ -266,7 +264,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     // not from the order the host saw them -- is still what is being checked.
     const h = harness();
     h.seed(0, [2, 0, 1]);
-    h.table.registerActivation(0, guest(h, [2, 0, 1]));
+    h.place(0, guest(h, [2, 0, 1]));
     expect(slotsOf(h, 0)).toEqual([1, 2, 3]);
   });
 
@@ -303,10 +301,10 @@ describe("ForkResumeTable, numbered by the module", () => {
     // `table.set $resume (ref.null func)` the release drives.
     const h = harness();
     register(h, 0, [0, 1]);
-    expect(h.table.resumeTable.get(1)).not.toBeNull();
+    expect(h.resumeTable.get(1)).not.toBeNull();
     release(h, 0);
-    expect(h.table.resumeTable.get(1)).toBeNull();
-    expect(h.table.resumeTable.get(2)).toBeNull();
+    expect(h.resumeTable.get(1)).toBeNull();
+    expect(h.resumeTable.get(2)).toBeNull();
   });
 
   it("nulls PLACED slots when a catalog is re-seeded over them", () => {
@@ -341,7 +339,7 @@ describe("ForkResumeTable, numbered by the module", () => {
 
     setGlobalCatalog([0, 1, 2]);
     expect(slotsOf(h, 0)).toEqual([1, 2, 3]);
-    h.table.registerActivation(0, guest(h, [0, 1, 2]));
+    h.place(0, guest(h, [0, 1, 2]));
     expect(h.resumeTable.get(1)).not.toBeNull();
     expect(h.resumeTable.get(2)).not.toBeNull();
     expect(h.resumeTable.get(3)).not.toBeNull();
@@ -390,17 +388,6 @@ describe("ForkResumeTable, numbered by the module", () => {
     expect(() => register(h, 0, [0, 0])).toThrow();
   });
 
-  it("refuses to register before a module is bound", () => {
-    const h = harness();
-    const unbound = new ForkResumeTable("unbound");
-    expect(() => unbound.registerActivation(0, guest(h, [0]))).toThrow(
-      /no fork module bound/,
-    );
-    // And the table itself is refused by name, rather than answering undefined
-    // and failing later inside a `table.set` that names nothing.
-    expect(() => unbound.resumeTable).toThrow(/no fork module bound/);
-  });
-
   it("refuses a guest that cannot place its own thunks", () => {
     // REPLACES "rejects a non-function target and a negative ordinal". Those
     // two assertions guarded a per-thunk argument list that no longer exists:
@@ -413,7 +400,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     const h = harness();
     h.seed(0, [0]);
     const withoutShim = { exports: {} } as unknown as WebAssembly.Instance;
-    expect(() => h.table.registerActivation(0, withoutShim)).toThrow(
+    expect(() => h.place(0, withoutShim)).toThrow(
       /exports no __wpk_fork_place_resume_thunks/,
     );
   });
@@ -426,7 +413,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     // at the first ordinal. The counts are compared instead.
     const h = harness();
     h.seed(0, [0, 1, 2]);
-    expect(() => h.table.registerActivation(0, guest(h, [0, 1]))).toThrow(
+    expect(() => h.place(0, guest(h, [0, 1]))).toThrow(
       /are not the same artifact/,
     );
   });
@@ -445,7 +432,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     // guest while the JavaScript host named it.
     const h = harness();
     h.seed(0, []);
-    expect(() => h.table.registerActivation(0, guest(h, [0, 1]))).toThrow(
+    expect(() => h.place(0, guest(h, [0, 1]))).toThrow(
       /are not the same artifact/,
     );
   });
@@ -475,7 +462,7 @@ describe("ForkResumeTable, numbered by the module", () => {
         }),
       },
     } as unknown as WebAssembly.Instance;
-    h.table.registerActivation(0, inert);
+    h.place(0, inert);
     expect(
       h.resumeTable.length,
       "the host grew or wrote the resume table during registration",
@@ -563,7 +550,7 @@ describe("ForkResumeTable, numbered by the module", () => {
       const placed = slotsOf(h, activation);
       ordinals.forEach((ordinal, index) => {
         expect(
-          h.table.resumeTable.get(placed[index]!),
+          h.resumeTable.get(placed[index]!),
           `activation ${activation} ordinal ${ordinal}`,
         ).not.toBeNull();
       });

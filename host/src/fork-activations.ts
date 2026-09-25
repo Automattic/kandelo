@@ -1,18 +1,19 @@
 /**
  * What the host still has to remember about a fork activation.
  *
- * Four fields, and each is here because of something JavaScript can do and the
+ * Two fields, and each is here because of something JavaScript can do and the
  * fork-module cannot:
  *
  * - `instance`, because binding a guest function into the module's drive table
  *   is a reference-typed `Table.set`. The module is instantiated BEFORE its
  *   guests -- it supplies their frame-flip imports -- so it cannot import their
  *   exports and the host has to put them where it can reach.
- * - `templateId`, the hash of the module bytes, which only the host holds.
- * - `fixedPrefixSize`, read from the frame-format custom section (which comes
- *   out through `WebAssembly.Module.customSections` and nowhere else), which a
- *   capture needs for every side activation.
- * - `activationId`, the key every seed is published under.
+ * - `activationId`, the key every module fact is published under.
+ *
+ * What left in lane F stage 1b: `templateId` and `fixedPrefixSize`. Both are
+ * now part of the activation's admission (`fm_admit_activation`), which the
+ * caller makes before instantiating, and the module decodes the prefix out of
+ * the linked-frame section itself -- so the host no longer carries either.
  *
  * What is deliberately NOT here is the 2,098-line registry this replaces. That
  * one wrapped each guest's save/restore/harvest exports in JavaScript objects
@@ -27,6 +28,7 @@ import {
   WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
   WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 } from "./generated/abi";
+import { type ForkResumeAssignment, placeForkResumeThunks } from "./fork-resume-table";
 
 /**
  * The merged funcref catalog every instrumented activation exports.
@@ -40,27 +42,25 @@ const FUNCTION_CATALOG_EXPORT = "__wpk_fork_function_catalog";
 export interface ForkActivation {
   readonly activationId: number;
   readonly instance: WebAssembly.Instance;
-  readonly fixedPrefixSize: number;
-  /**
-   * The 32-byte hash of this activation's module bytes.
-   *
-   * Here because the MODULE needs it and cannot compute it: it writes one
-   * `Module` record per activation into the capture arena, and that record is
-   * what makes the arena's activation set. Only the host holds the bytes.
-   */
-  readonly templateId: Uint8Array;
 }
 
-/** One side activation, as `fm_parent_begin_capture` reads them. */
-export interface ForkSideActivation {
-  readonly id: number;
-  readonly fixedPrefix: number;
+/** A registered activation, with the static-root base the module placed. */
+export interface RegisteredForkActivation extends ForkActivation {
+  readonly staticRootBase: number;
+}
+
+/** The row `fm_bind_activation` answers for one activation. */
+export interface ForkActivationRow {
+  readonly driveBase: number;
+  readonly funcCatalogBase: number;
+  readonly staticRootBase: number;
+  readonly resume: ForkResumeAssignment;
 }
 
 /** The module entries registration publishes through, and release. */
 export interface ForkActivationDriveSink {
-  bindActivationDrive(activationId: number, exports: Record<string, unknown>): void;
-  setActivationTemplateId(activationId: number, templateId: Uint8Array): void;
+  bindActivation(activationId: number, funcCatalogLength: number, staticRootLength: number): ForkActivationRow;
+  bindActivationDrive(activationId: number, driveBase: number, exports: Record<string, unknown>): void;
   releaseResumeSlots(activationId: number): number;
 }
 
@@ -74,8 +74,8 @@ export interface ForkActivationDriveSink {
  * inside `registerActivation`; this is the part of it that survived.
  */
 export interface ForkActivationCatalogSink {
-  registerCatalog(activationId: number, catalog: WebAssembly.Table): void;
-  registerStaticRoots(activationId: number, catalog: WebAssembly.Table): void;
+  registerCatalog(base: number, catalog: WebAssembly.Table): void;
+  registerStaticRoots(base: number, catalog: WebAssembly.Table): void;
   registerTable(activationId: number, ownerId: number, table: WebAssembly.Table): void;
   /** The one release the host makes: its table-identity election. */
   releaseTables(activationId: number, tables: readonly WebAssembly.Table[]): void;
@@ -95,29 +95,27 @@ export interface ForkActivationCatalogSink {
  * module is instantiated BEFORE its guests, so it cannot import a guest's
  * `__wpk_fork_function_catalog`, and the host copies each activation's catalog
  * into the range the MODULE places it at (the lowest gap live activations
- * leave). Copying keeps funcref identity, which the module's encode scan
+ * leave; `fm_bind_activation`'s `func_catalog_base`). Copying keeps funcref identity, which the module's encode scan
  * compares, and it is filled on every worker because that scan serves the
  * parent too. The module also clears the range when the activation is
  * released, so nothing here remembers where it went.
  */
 export function forkActivationCatalogSink(records: {
-  module: { placeActivationCatalog(activationId: number, length: number): number };
   functionCatalog: WebAssembly.Table;
-  mergedStaticRoots: { take(activationId: number, catalog: WebAssembly.Table): void };
+  mergedStaticRoots: { take(base: number, catalog: WebAssembly.Table): void };
   owners: {
     register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
     releaseActivation(activationId: number, tables: readonly WebAssembly.Table[]): void;
   };
 }): ForkActivationCatalogSink {
   return {
-    registerCatalog: (activationId, catalog) => {
+    registerCatalog: (base, catalog) => {
       const mirror = records.functionCatalog;
-      const base = records.module.placeActivationCatalog(activationId, catalog.length);
       if (mirror.length < base + catalog.length) mirror.grow(base + catalog.length - mirror.length);
       for (let slot = 0; slot < catalog.length; slot += 1) mirror.set(base + slot, catalog.get(slot));
     },
-    registerStaticRoots: (activationId, catalog) => {
-      records.mergedStaticRoots.take(activationId, catalog);
+    registerStaticRoots: (base, catalog) => {
+      records.mergedStaticRoots.take(base, catalog);
     },
     registerTable: (activationId, ownerId, table) => {
       records.owners.register(activationId, ownerId, table);
@@ -156,7 +154,7 @@ export function forkActivationTables(
 }
 
 export class ForkActivations {
-  private readonly live = new Map<number, ForkActivation>();
+  private readonly live = new Map<number, RegisteredForkActivation>();
   private readonly bootstrapped = new Set<number>();
 
   constructor(
@@ -166,32 +164,46 @@ export class ForkActivations {
   ) {}
 
   /**
-   * Remember an activation and bind its guest functions into the drive table.
+   * Remember an activation, bind it in the module, and act on the row.
+   *
+   * The activation must already be ADMITTED (`fm_admit_activation`, before its
+   * instantiation). `fm_bind_activation` then places it and answers one row;
+   * what the host does with it is the reference-typed work only it can do:
+   * `Table.set` of the drive bindings at the drive base, the guest's own
+   * resume-thunk placement, and the funcref and static-root catalog copies at
+   * their bases.
    *
    * The bind happens HERE rather than at capture because it is a property of
    * the instance, not of a fork: an unbound slot is a `call_indirect` on null
    * inside the module, which surfaces as a trap in the middle of an unwind
-   * rather than as a missing feature at registration.
+   * rather than as a missing feature at registration. Placement goes straight
+   * after the bind because the row's resume pointer names the module's one
+   * published buffer, which the next bind rewrites.
    */
   register(activation: ForkActivation): void {
-    if (this.live.has(activation.activationId)) {
-      throw new Error(
-        `${this.label}: activation ${activation.activationId} is already registered`,
-      );
+    const { activationId, instance } = activation;
+    if (this.live.has(activationId)) {
+      throw new Error(`${this.label}: activation ${activationId} is already registered`);
     }
-    this.drive.bindActivationDrive(
-      activation.activationId,
-      activation.instance.exports as Record<string, unknown>,
-    );
-    // Before any capture: the module refuses one for an activation whose
-    // template id it was never given, because the `Module` record it would
-    // write is what a child reads to know this activation exists.
-    this.drive.setActivationTemplateId(
-      activation.activationId,
-      activation.templateId,
-    );
-    this.publishCatalogs(activation);
-    this.live.set(activation.activationId, activation);
+    const exports = instance.exports as Record<string, unknown>;
+    // Harvest FIRST: the catalog lengths the module places are read after it,
+    // as they always were, and nothing is published from a harvest that traps.
+    if (this.catalogs) this.harvest(activationId, exports);
+    const functions = this.catalogTable(activationId, exports, FUNCTION_CATALOG_EXPORT);
+    const staticRoots = this.catalogTable(activationId, exports, WPK_FORK_STATIC_ROOT_CATALOG_EXPORT);
+    const row = this.drive.bindActivation(activationId, functions.length, staticRoots.length);
+    this.drive.bindActivationDrive(activationId, row.driveBase, exports);
+    placeForkResumeThunks(this.label, activationId, instance, row.resume);
+    this.publishCatalogs(activation, row, functions, staticRoots);
+    this.live.set(activationId, { activationId, instance, staticRootBase: row.staticRootBase });
+  }
+
+  private catalogTable(activationId: number, exports: Record<string, unknown>, name: string): WebAssembly.Table {
+    const table = exports[name];
+    if (!(table instanceof WebAssembly.Table)) {
+      throw new Error(`${this.label}: activation ${activationId} exports no ${name} table`);
+    }
+    return table;
   }
 
   /**
@@ -239,36 +251,26 @@ export class ForkActivations {
    * the active element segments the harvest reads. A harvest that traps can
    * have populated a strict prefix, so nothing is published from a failed one.
    */
-  private publishCatalogs(activation: ForkActivation): void {
-    if (!this.catalogs) return;
-    const exports = activation.instance.exports as Record<string, unknown>;
+  private harvest(activationId: number, exports: Record<string, unknown>): void {
     const harvest = exports[WPK_FORK_STATIC_ROOT_HARVEST_EXPORT];
     if (typeof harvest !== "function") {
       throw new Error(
-        `${this.label}: activation ${activation.activationId} exports no `
+        `${this.label}: activation ${activationId} exports no `
           + `${WPK_FORK_STATIC_ROOT_HARVEST_EXPORT}`,
       );
     }
     (harvest as () => void)();
+  }
 
-    const functions = exports[FUNCTION_CATALOG_EXPORT];
-    if (!(functions instanceof WebAssembly.Table)) {
-      throw new Error(
-        `${this.label}: activation ${activation.activationId} exports no `
-          + `${FUNCTION_CATALOG_EXPORT} table`,
-      );
-    }
-    this.catalogs.registerCatalog(activation.activationId, functions);
-
-    const staticRoots = exports[WPK_FORK_STATIC_ROOT_CATALOG_EXPORT];
-    if (!(staticRoots instanceof WebAssembly.Table)) {
-      throw new Error(
-        `${this.label}: activation ${activation.activationId} exports no `
-          + `${WPK_FORK_STATIC_ROOT_CATALOG_EXPORT} table`,
-      );
-    }
-    this.catalogs.registerStaticRoots(activation.activationId, staticRoots);
-
+  private publishCatalogs(
+    activation: ForkActivation,
+    row: ForkActivationRow,
+    functions: WebAssembly.Table,
+    staticRoots: WebAssembly.Table,
+  ): void {
+    if (!this.catalogs) return;
+    this.catalogs.registerCatalog(row.funcCatalogBase, functions);
+    this.catalogs.registerStaticRoots(row.staticRootBase, staticRoots);
     for (const [ownerId, table] of forkActivationTables(activation, this.label)) {
       this.catalogs.registerTable(activation.activationId, ownerId, table);
     }
@@ -315,19 +317,22 @@ export class ForkActivations {
    * a child instantiates them: a side activation can register before a
    * lower-numbered one (a dlopen races nothing), so insertion order is not it.
    */
-  ordered(): readonly ForkActivation[] {
+  ordered(): readonly RegisteredForkActivation[] {
     return [...this.live.values()].sort(
       (left, right) => left.activationId - right.activationId,
     );
   }
 
-  /** The side activations a capture must be told about; activation 0 is not one. */
-  sides(): readonly ForkSideActivation[] {
+  /**
+   * The side activations a capture must be told about; activation 0 is not one.
+   *
+   * Ids only: each side's fixed prefix is the module's, from its admission.
+   * The `(id, fixed_prefix)` records the module still reads carry 0 in the
+   * prefix word until stage 1d drops it.
+   */
+  sides(): readonly number[] {
     return this.ordered()
-      .filter((activation) => activation.activationId !== 0)
-      .map((activation) => ({
-        id: activation.activationId,
-        fixedPrefix: activation.fixedPrefixSize,
-      }));
+      .map(({ activationId }) => activationId)
+      .filter((activationId) => activationId !== 0);
   }
 }

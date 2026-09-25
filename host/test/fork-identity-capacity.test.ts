@@ -20,7 +20,16 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { readForkResumeCatalog } from "../src/fork-resume-catalog";
+/**
+ * A module's resume-catalog record count (KFRC header word at offset 8). Read
+ * here, by a test, because the host no longer decodes the catalog: the fork
+ * module does, at admission.
+ */
+function resumeCatalogCount(module: WebAssembly.Module): number {
+  const [section] = WebAssembly.Module.customSections(module, "kandelo.wpk_fork.resume_catalog");
+  if (!section) throw new Error("no kandelo.wpk_fork.resume_catalog section");
+  return new DataView(section).getUint32(8, true);
+}
 
 import {
   WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
@@ -105,7 +114,7 @@ describe("fork-module fixed caps vs a real program", () => {
     for (const { name, bytes } of artifacts) {
       let count = 0;
       try {
-        count = readForkResumeCatalog(new WebAssembly.Module(bytes)).length;
+        count = resumeCatalogCount(new WebAssembly.Module(bytes));
       } catch (error) {
         // ONLY "this module has no catalog section" may be treated as zero. A
         // ReferenceError or TypeError here is a bug in this test, and a broad
@@ -150,7 +159,7 @@ describe("fork-module fixed caps vs a real program", () => {
     // One activation per fork-instrumented module a process can hold at once.
     const acts = artifacts.filter(({ bytes }) => {
       try {
-        readForkResumeCatalog(new WebAssembly.Module(bytes));
+        resumeCatalogCount(new WebAssembly.Module(bytes));
         return true;
       } catch (error) {
         if (error instanceof RangeError || error instanceof WebAssembly.CompileError) {

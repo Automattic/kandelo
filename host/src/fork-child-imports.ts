@@ -75,11 +75,6 @@ export interface ForkChildImportPlanSource {
   childImportPlanField(index: number, field: number): bigint;
 }
 
-/** Seeding an activation's `KFIG`/`KFIT` sections into the module. */
-export interface ForkChildImportSectionSink {
-  seedActivationSections(activationId: number, module: WebAssembly.Module): void;
-}
-
 /**
  * What the child's early reference view must answer.
  *
@@ -108,19 +103,15 @@ export class ForkChildImports {
 
   constructor(
     source: ForkChildImportPlanSource,
-    sections: ForkChildImportSectionSink,
     private readonly modules: ReadonlyMap<number, WebAssembly.Module>,
     moduleStateRoot: number,
     private readonly references: ForkChildReferenceSource,
     private readonly label: string,
   ) {
-    // Seeded HERE, which is earlier than the parent path seeds them. The module
-    // cannot plan an activation's imports without its KFIG/KFIT sections, and
-    // the child asks for the plan before it instantiates anything -- so the seed
-    // has to precede instantiation rather than accompany it. See census 175.
-    for (const [activationId, module] of modules) {
-      sections.seedActivationSections(activationId, module);
-    }
+    // Every activation must already be ADMITTED: the module cannot plan an
+    // activation's imports without its KFIG/KFIT sections, which arrive with
+    // its admission, and the child asks for the plan before it instantiates
+    // anything. See census 175.
     for (const activationId of [...modules.keys()].sort((a, b) => a - b)) {
       const count = source.childImportPlan(activationId, moduleStateRoot);
       const rows: PlanRow[] = [];

@@ -1,5 +1,5 @@
-// The staging slab must hold the largest single seed the programs this repo
-// builds actually make.
+// The staging slab must hold the largest activation admission the programs this
+// repo builds actually make.
 //
 // `STAGING_SLAB_BYTES` (`host/src/fork-module-instance.ts`) is sized from a
 // measurement of the shipped artifacts, and a measurement written into a
@@ -9,28 +9,19 @@
 // This test re-measures the built artifacts against the live slab, in the
 // same shape as `fork-identity-capacity.test.ts`, so the number fails HERE.
 //
-// WHAT IS MEASURED: every byte string `ForkModuleContinuationBackend` stages,
-// per activation -- the resume catalog's ordinals (four bytes each), the GC
-// codec, imported-globals (KFIG) and imported-tables (KFIT) sections, the
-// exception codec, and the 32-byte template id. The slab is a per-call
-// scratch, so the bound is the LARGEST of these across every artifact, not
-// their sum; the per-process sum is reported as scale, because it is the
-// number the previous, cursor-shaped slab would have needed.
+// WHAT IS MEASURED: what `ForkModuleContinuationBackend` stages, per
+// activation. Since lane F stage 1b that is one thing: the activation's `KFAA`
+// admission descriptor, written by the production writer
+// (`encodeForkAdmission`) -- header, section refs and every
+// `kandelo.wpk_fork.*` section verbatim. The slab is a per-call scratch, so the
+// bound is the LARGEST admission across every artifact, not their sum.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import {
-  WPK_FORK_EXCEPTION_CODEC_SECTION,
-  WPK_FORK_GC_CODEC_SECTION,
-  WPK_FORK_IMPORTED_GLOBALS_SECTION,
-  WPK_FORK_IMPORTED_TABLES_SECTION,
-} from "../src/generated/abi";
-import { readForkResumeCatalog } from "../src/fork-resume-catalog";
-
-const TEMPLATE_ID_BYTES = 32;
+import { encodeForkAdmission } from "../src/fork-guest-sections";
 
 /** Every built program artifact, recursively, if any tier has been built. */
 function builtArtifacts(): { name: string; bytes: Uint8Array }[] {
@@ -58,8 +49,8 @@ function builtArtifacts(): { name: string; bytes: Uint8Array }[] {
   return out;
 }
 
-/** The bytes each of one artifact's seeds stages, by name, or null if it is not fork-instrumented. */
-function stagedSeeds(bytes: Uint8Array): Record<string, number> | null {
+/** The bytes one artifact's admission stages, or null if it is not fork-instrumented. */
+function admissionBytes(bytes: Uint8Array): number | null {
   let module: WebAssembly.Module;
   try {
     module = new WebAssembly.Module(bytes);
@@ -67,29 +58,16 @@ function stagedSeeds(bytes: Uint8Array): Record<string, number> | null {
     if (error instanceof RangeError || error instanceof WebAssembly.CompileError) return null;
     throw error;
   }
-  let ordinals: number;
-  try {
-    ordinals = readForkResumeCatalog(module).length;
-  } catch (error) {
-    // ONLY "this module has no catalog section" means "stages nothing"; see
-    // `fork-identity-capacity.test.ts` for why anything else is re-thrown.
-    if (!(error instanceof Error) || !/section/i.test(error.message)) throw error;
+  // A module with no resume catalog is not fork-instrumented and is never
+  // admitted; the module refuses an admission without one.
+  if (WebAssembly.Module.customSections(module, "kandelo.wpk_fork.resume_catalog").length === 0) {
     return null;
   }
-  const section = (name: string): number =>
-    WebAssembly.Module.customSections(module, name)[0]?.byteLength ?? 0;
-  return {
-    "template id": TEMPLATE_ID_BYTES,
-    "resume catalog": ordinals * 4,
-    "GC codec": section(WPK_FORK_GC_CODEC_SECTION),
-    "imported globals": section(WPK_FORK_IMPORTED_GLOBALS_SECTION),
-    "imported tables": section(WPK_FORK_IMPORTED_TABLES_SECTION),
-    "exception codec": section(WPK_FORK_EXCEPTION_CODEC_SECTION),
-  };
+  return encodeForkAdmission(0, 0, new Uint8Array(32), module).length;
 }
 
 describe("fork-module staging slab vs the built programs", () => {
-  it("holds the largest single seed any built artifact stages", () => {
+  it("holds the largest admission any built artifact stages", () => {
     const artifacts = builtArtifacts();
     if (artifacts.length === 0) {
       process.stderr.write(
@@ -110,12 +88,10 @@ describe("fork-module staging slab vs the built programs", () => {
     let largest = { bytes: 0, what: "" };
     let instrumented = 0;
     for (const { name, bytes } of artifacts) {
-      const seeds = stagedSeeds(bytes);
-      if (seeds === null) continue;
+      const size = admissionBytes(bytes);
+      if (size === null) continue;
       instrumented += 1;
-      for (const [what, size] of Object.entries(seeds)) {
-        if (size > largest.bytes) largest = { bytes: size, what: `${name} ${what}` };
-      }
+      if (size > largest.bytes) largest = { bytes: size, what: name };
     }
     // A run that measured NOTHING is not a pass. php alone is fork-instrumented
     // in every built tier, so zero instrumented artifacts means the measurement
@@ -123,7 +99,7 @@ describe("fork-module staging slab vs the built programs", () => {
     expect(instrumented, "fork-instrumented artifacts measured").toBeGreaterThan(0);
     expect(
       largest.bytes,
-      `the largest single seed is ${largest.what} at ${largest.bytes} bytes, against ` +
+      `the largest admission is ${largest.what} at ${largest.bytes} bytes, against ` +
         `a ${fm.stagingBytes}-byte slab (${((fm.stagingBytes / largest.bytes) || 0).toFixed(2)}x). ` +
         `Raise STAGING_SLAB_BYTES in host/src/fork-module-instance.ts, in whole wasm pages, ` +
         `and record the new measurement in its comment.`,

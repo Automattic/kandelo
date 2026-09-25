@@ -23,15 +23,15 @@ import {
  *
  * A FLOOR, not an inventory: the module exports far more, and a host binds
  * whichever it drives. These are the ones whose absence means the artifact is
- * not a fork-module at all — the errno channel, the format/catalog seeding a
- * host must do before any fork, and the module-owned GC transit table the
+ * not a fork-module at all — the errno channel, the format seed and the
+ * activation admission a host must make before any fork, and the module-owned GC transit table the
  * injector adds (`__wpk_fork_ref_gc_transit`, which is a Table, not a
  * function).
  */
 export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_last_errno",
   "fm_set_format",
-  "fm_set_activation_resume_catalog",
+  "fm_admit_activation",
   "fm_stats",
   "__wpk_fork_ref_gc_transit",
 ] as const;
@@ -88,29 +88,35 @@ const SHADOW_STACK_BYTES = 1024 * 1024;
  *
  * SIZED FROM A MEASUREMENT of the shipped artifacts, not chosen. The slab is
  * a per-call scratch (`ForkModuleContinuationBackend.stage()`): the module
- * copies every seed during the entry that takes it, so the slab holds one
- * request at a time and must fit the LARGEST single stage any activation
- * makes. Measured on 2026-09-22 over every fork-instrumented artifact under
- * `local-binaries/source-only-v1/programs/wasm32` (43 of them): the largest
- * is php's `intl.so` imported-globals (KFIG) section at 190,437 bytes; the
- * next are php-fpm's resume catalog at 76,756 (19,189 ordinals x 4) and
- * node/js's at 66,220. Three wasm pages hold the largest with 6,171 bytes to
- * spare. `host/test/fork-module-staging-capacity.test.ts` re-measures the
- * built artifacts against this number, so an extension that outgrows it
- * fails there rather than at a `dlopen` in a forking program.
+ * copies everything staged during the entry that takes it, so the slab holds
+ * one request at a time and must fit the LARGEST single stage.
  *
- * It was 256 KiB, justified as `RESUME_CATALOG_CAP * 4` -- the process-wide
- * resume-catalog cap, deleted -- and as "well above the module's 64 KiB
- * internal scratch", which sized a slab against a footprint the storage
- * conversion has since removed. It was also a bump cursor then, and would
- * have needed 298,448 bytes for php-fpm plus `intl.so` together: more than
- * it had.
+ * Since lane F stage 1b that stage is an activation's whole ADMISSION
+ * (`fm_admit_activation`): the 64-byte `KFAA` header, 12 bytes per section,
+ * and every `kandelo.wpk_fork.*` section it carries, verbatim. Measured on
+ * 2026-09-25 over the 104 fork-instrumented artifacts under
+ * `local-binaries/source-only-v1/programs/wasm32` and
+ * `local-binaries/programs/wasm32`: the largest is php's `intl.so` at 252,753
+ * bytes (imported globals 190,437, resume catalog 62,012); next are
+ * php-fpm.wasm at 153,792 and php.wasm at 152,480. Four wasm pages hold the
+ * largest with 9,391 bytes to spare. The plan's alternative -- staging KFIG and
+ * KFIT outside the admission -- would have kept a per-fact seed alive beside
+ * it, so the slab grew one page instead.
+ *
+ * It was three pages (192 KiB) from 2026-09-22, when the largest single seed
+ * was that same `intl.so` KFIG section alone. Before that it was 256 KiB,
+ * justified as `RESUME_CATALOG_CAP * 4` -- a cap since deleted -- and used as
+ * a bump cursor, which would have needed 298,448 bytes for php-fpm plus
+ * `intl.so` together. `host/test/fork-module-staging-capacity.test.ts`
+ * re-measures the built artifacts' admissions against this number, so an
+ * extension that outgrows it fails there rather than at a `dlopen` in a
+ * forking program.
  *
  * A request larger than this is refused loudly ("staging slab exhausted");
  * there is no fallback path. Written as a product of two integer literals,
  * which the storage ledger's recorder parses.
  */
-const STAGING_SLAB_BYTES = 192 * 1024;
+const STAGING_SLAB_BYTES = 256 * 1024;
 
 const WASM_PAGE_BYTES = 65536;
 

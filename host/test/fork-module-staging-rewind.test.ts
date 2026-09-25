@@ -24,8 +24,6 @@
 import { describe, expect, it } from "vitest";
 
 import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
-import type { ForkSideActivation } from "../src/fork-activations";
-import type { LinkedFrameFormatDescriptor } from "../src/fork-continuation";
 
 const STAGING_BASE = 4096;
 const STAGING_BYTES = 8192;
@@ -46,7 +44,7 @@ function harness() {
       sidesPointers.push(sides);
       return 0x2000;
     },
-    fm_set_activation_gc_codec: (_activation, at, _len) => {
+    fm_admit_activation: (at, _len) => {
       codecPointers.push(at);
       return 0;
     },
@@ -59,8 +57,6 @@ function harness() {
     } as unknown as ForkModuleContinuationBackendInstance,
     memory,
     ptrWidth: 4,
-    format: { ptrWidth: 4, fixedPrefixSize: 64 } as LinkedFrameFormatDescriptor,
-    catalogOrdinals: [],
     label: "staging scratch harness",
   });
   return { backend, memory, sidesPointers, codecPointers };
@@ -71,20 +67,40 @@ type ForkModuleContinuationBackendInstance = ConstructorParameters<
   typeof ForkModuleContinuationBackend
 >[0]["instance"];
 
-const SIDES: readonly ForkSideActivation[] = [
-  { id: 1, fixedPrefix: 64 },
-  { id: 2, fixedPrefix: 64 },
-  { id: 3, fixedPrefix: 64 },
-] as unknown as readonly ForkSideActivation[];
+const SIDES: readonly number[] = [1, 2, 3];
+
+/**
+ * A guest module whose one fork section is `length` bytes, so its admission
+ * stages exactly `64 + 12 + length`: the header and one section ref.
+ */
+function guest(length: number, fill: number): WebAssembly.Module {
+  const name = new TextEncoder().encode("kandelo.wpk_fork.gc_codec");
+  const uleb = (value: number): number[] => {
+    const out: number[] = [];
+    do {
+      let byte = value & 0x7f;
+      value >>>= 7;
+      if (value !== 0) byte |= 0x80;
+      out.push(byte);
+    } while (value !== 0);
+    return out;
+  };
+  const body = [...uleb(name.length), ...name, ...new Array<number>(length).fill(fill)];
+  return new WebAssembly.Module(new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x00, ...uleb(body.length), ...body,
+  ]));
+}
+
+const TEMPLATE = new Uint8Array(32);
 
 describe("staging slab as a per-call scratch", () => {
   it("places every stage at the slab's base, forks and seeds alike", () => {
     const { backend, sidesPointers, codecPointers } = harness();
-    const codec = new Uint8Array(128).fill(0xab);
+    const codec = guest(128, 0xab);
     for (let fork = 0; fork < 32; fork += 1) {
       backend.parentBeginCapture(0, 0, SIDES);
-      // A dlopen between forks: a seed the old cursor had to keep clear of.
-      backend.setActivationGcCodec(4 + fork, codec);
+      // A dlopen between forks: an admission the old cursor had to keep clear of.
+      backend.admitActivation(4 + fork, codec, TEMPLATE);
     }
     expect(sidesPointers).toHaveLength(32);
     expect(codecPointers).toHaveLength(32);
@@ -97,13 +113,13 @@ describe("staging slab as a per-call scratch", () => {
 
   it("does not exhaust the slab over more calls than it has room for", () => {
     const { backend } = harness();
-    // 24 bytes of side pairs and 128 of codec per iteration: as a cursor, the
-    // 8 KiB slab is gone in under sixty.
-    const codec = new Uint8Array(128).fill(0xab);
+    // 24 bytes of side pairs and a 204-byte admission per iteration: as a
+    // cursor, the 8 KiB slab is gone in under forty.
+    const codec = guest(128, 0xab);
     expect(() => {
       for (let fork = 0; fork < 2000; fork += 1) {
         backend.parentBeginCapture(0, 0, SIDES);
-          backend.setActivationGcCodec(4 + fork, codec);
+        backend.admitActivation(4 + fork, codec, TEMPLATE);
       }
     }).not.toThrow();
   });
@@ -113,19 +129,19 @@ describe("staging slab as a per-call scratch", () => {
     // decoder at best and seed a wrong one at worst, so the backend refuses
     // first and says both sizes. Exactly the slab's size still fits.
     const { backend, memory } = harness();
-    const exact = new Uint8Array(STAGING_BYTES).fill(0x5c);
-    backend.setActivationGcCodec(1, exact);
+    const body = STAGING_BYTES - 76;
+    backend.admitActivation(1, guest(body, 0x5c), TEMPLATE);
+    const staged = (): Uint8Array => new Uint8Array(memory.buffer, STAGING_BASE + 76, body);
     expect(
-      new Uint8Array(memory.buffer, STAGING_BASE, STAGING_BYTES).every((b) => b === 0x5c),
+      staged().every((b) => b === 0x5c),
       "a request of exactly the slab's size is staged whole",
     ).toBe(true);
-    const over = new Uint8Array(STAGING_BYTES + 1).fill(0x5d);
-    expect(() => backend.setActivationGcCodec(2, over)).toThrow(
-      /staging slab exhausted placing activation 2 GC codec \(8193 bytes against a 8192-byte slab\)/,
+    expect(() => backend.admitActivation(2, guest(body + 1, 0x5d), TEMPLATE)).toThrow(
+      /staging slab exhausted placing activation 2 admission \(8193 bytes against a 8192-byte slab\)/,
     );
     // And the refusal wrote nothing: the previous stage's bytes are intact.
     expect(
-      new Uint8Array(memory.buffer, STAGING_BASE, STAGING_BYTES).every((b) => b === 0x5c),
+      staged().every((b) => b === 0x5c),
       "a refused request leaves the slab as it was",
     ).toBe(true);
   });

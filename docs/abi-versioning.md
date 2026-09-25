@@ -349,8 +349,9 @@ ABI 42 replaces the fixed-capacity contiguous save buffer with dynamically
 mapped linked chunks. Instrumented modules carry the strict version-1
 `kandelo.wpk_fork.linked_frames` descriptor and import
 `env.__wpk_fork_frame_reserve`, `env.__wpk_fork_frame_commit`, and
-`env.__wpk_fork_frame_next`. The host validates the descriptor, owns chunk
-allocation and cleanup, and rejects incomplete or stale instrumentation.
+`env.__wpk_fork_frame_next`. The runtime validates the descriptor (today the
+fork module, when it admits each activation), owns chunk allocation and
+cleanup, and rejects incomplete or stale instrumentation.
 
 The transition is incompatible: generated postambles depend on
 reserve-before-write and commit-after-write semantics, replay uses a validated

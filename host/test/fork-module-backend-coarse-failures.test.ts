@@ -30,10 +30,7 @@ import {
   instantiateForkModule,
 } from "../src/fork-module-instance";
 import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
-import {
-  ContinuationAllocationError,
-  type LinkedFrameFormatDescriptor,
-} from "../src/fork-continuation";
+import { ContinuationAllocationError } from "../src/fork-continuation";
 import { startChannelResponder } from "./fork-module-capture-fixture";
 
 const PAGE = 65536;
@@ -61,28 +58,16 @@ function bumpAllocator(start: number): { reserve: (n: number) => number } {
   };
 }
 
-const format = (fixedPrefixSize: number): LinkedFrameFormatDescriptor =>
-  ({
-    ptrWidth: 4,
-    fixedPrefixSize,
-    chunkHeaderSize: 32,
-    alignment: 16,
-  }) as unknown as LinkedFrameFormatDescriptor;
-
-const CATALOG0 = [601, 602];
-
 describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
   it("a coarse seal the module cannot complete throws a TYPED ContinuationAllocationError, not a worker-trapping generic throw", () => {
     // A CHANNEL RESPONDER IS NEEDED, and the comment that said it was not is
     // what made this file hang. The coarse seal itself still fails at
     // `build_seal_plan_impl` (no capture open -> EINVAL) before it tries to
     // channel-mmap the journal-image chunk -- that part is unchanged, and it is
-    // the `sealCaptureAndSerialize` branch under test. What changed is
-    // `backend.setup()` below it: seeding a resume catalog REGISTERS it, and
-    // registration allocates the activation's record in the arena, which maps
-    // through `CHANNEL_BASE`. With nobody behind that address the setup call
-    // parks in `memory_atomic_wait32` with no deadline and the file hangs
-    // rather than failing.
+    // the `sealCaptureAndSerialize` branch under test. `fm_set_format` below
+    // releases the arena through `CHANNEL_BASE`, and with nobody behind that
+    // address a module call that maps would park in `memory_atomic_wait32`
+    // with no deadline and the file would hang rather than fail.
     const memory = new WebAssembly.Memory({
       initial: Math.ceil((16 * MiB) / PAGE),
       maximum: 16384,
@@ -102,8 +87,6 @@ describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
       instance: fm,
       memory,
       ptrWidth: 4,
-      format: format(128),
-      catalogOrdinals: CATALOG0,
       channelBase: CHANNEL_BASE,
       label: "coarse-seal-fail",
     });
@@ -128,5 +111,5 @@ describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
 // that a resume catalog past `FORK_MODULE_RESUME_CATALOG_CAP` threw at
 // construction. The cap is gone: the module stores every catalog on its arena
 // and a catalog it cannot map fails with the channel's own errno through
-// `fm_set_activation_resume_catalog`, which is the `call()` throw the other
-// tests in this file already cover.
+// `fm_admit_activation`, which is the `call()` throw the other tests in this
+// file already cover.

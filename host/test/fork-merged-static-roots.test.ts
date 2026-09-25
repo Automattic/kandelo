@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ForkActivation } from "../src/fork-activations";
+import type { RegisteredForkActivation } from "../src/fork-activations";
 import { ForkMergedStaticRoots } from "../src/fork-merged-static-roots";
 import { WPK_FORK_STATIC_ROOT_CATALOG_EXPORT } from "../src/generated/abi";
 import { fixture } from "./fork-module-capture-fixture";
@@ -13,12 +13,12 @@ import { fixture } from "./fork-module-capture-fixture";
  * into `base(module_activation) + ordinal`. Two things therefore have to agree:
  * WHERE the host writes a root, and WHAT base the module reads.
  *
- * They are the same number because the host never has one of its own: the
- * module places each catalog, and answers the same placement when asked again.
- * A second derivation of the layout is what went wrong before -- `worker-main`
+ * They are the same number because the host never derives one: the module
+ * places each catalog (`fm_bind_activation`'s row) and the host keeps that
+ * base only on the live activation record, which `dlclose` drops. A second
+ * derivation of the layout is what went wrong before -- `worker-main`
  * recomputed bases at child install and filled the mirror at THOSE, and the
- * child's roots went where nothing looked for them (census 201). A host copy
- * of the bases was the next version of the same risk: it outlived `dlclose`.
+ * child's roots went where nothing looked for them (census 201).
  */
 
 function table(length: number, label: string): WebAssembly.Table {
@@ -29,13 +29,16 @@ function table(length: number, label: string): WebAssembly.Table {
   return t;
 }
 
-/** A live activation whose only export is its static-root catalog. */
-function activation(activationId: number, catalog: WebAssembly.Table): ForkActivation {
+/** A registered activation whose only export is its static-root catalog. */
+function activation(
+  activationId: number,
+  staticRootBase: number,
+  catalog: WebAssembly.Table,
+): RegisteredForkActivation {
   return {
     activationId,
+    staticRootBase,
     instance: { exports: { [WPK_FORK_STATIC_ROOT_CATALOG_EXPORT]: catalog } } as never,
-    fixedPrefixSize: 0,
-    templateId: new Uint8Array(32),
   };
 }
 
@@ -44,10 +47,10 @@ describe("the merged static-root catalog", () => {
     const f = fixture();
     const place = f.x.fm_place_activation_static_roots as (a: number, n: number) => number;
     const merged = f.instance.staticRootCatalog;
-    const roots = new ForkMergedStaticRoots(merged, place);
-    const live = [activation(0, table(3, "a0")), activation(1, table(2, "a1"))];
-    for (const { activationId, instance } of live) {
-      roots.take(activationId, instance.exports[WPK_FORK_STATIC_ROOT_CATALOG_EXPORT] as WebAssembly.Table);
+    const roots = new ForkMergedStaticRoots(merged);
+    const live = [activation(0, place(0, 3), table(3, "a0")), activation(1, place(1, 2), table(2, "a1"))];
+    for (const { staticRootBase, instance } of live) {
+      roots.take(staticRootBase, instance.exports[WPK_FORK_STATIC_ROOT_CATALOG_EXPORT] as WebAssembly.Table);
     }
     expect(f.errno()).toBe(0);
     expect(merged.length, "grown to both slices").toBe(5);

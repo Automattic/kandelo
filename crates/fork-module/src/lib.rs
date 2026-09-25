@@ -5900,12 +5900,12 @@ mod wasm {
             for i in 0..count {
                 let off = (i as u64) * 8;
                 let id = unsafe { ch_read_u32(sides_ptr, off as usize) };
-                let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (off + 4) as usize) };
                 if id == 0 {
                     // Activation 0 is opened above; a side entry naming it is a
                     // host bug, not a silent double-open.
                     return Err(Errno::EINVAL);
                 }
+                let fixed_prefix = side_fixed_prefix(id, unsafe { ch_read_u32(sides_ptr, (off + 4) as usize) })?;
                 let root = add_activation_unwind_impl(id, channel_base, fixed_prefix)?;
                 write_module_state_root(root, arena_root)?;
             }
@@ -6814,12 +6814,12 @@ mod wasm {
             for i in 0..count {
                 let base = (i as u64) * 8;
                 let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
-                let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
                 if id == 0 {
                     // Activation 0 is seeded from the launch anchor + journal image
                     // above; a side entry naming it is a host bug.
                     return Err(Errno::EINVAL);
                 }
+                let fixed_prefix = side_fixed_prefix(id, unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) })?;
                 // The host knows this activation's `fixed_prefix` -- a static
                 // property of the module it loaded -- and CANNOT know its
                 // continuation root, which is a per-fork address the parent
@@ -6890,18 +6890,42 @@ mod wasm {
             for i in 0..count {
                 let base = (i as u64) * 8;
                 let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
-                let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
                 if id == 0 {
                     // Activation 0 is seeded from the launch anchor + journal image
                     // above; a side entry naming it is a host bug.
                     return Err(Errno::EINVAL);
                 }
+                let fixed_prefix = side_fixed_prefix(id, unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) })?;
                 let root = activation_continuation_root(module_state_root, id)?;
                 let private_prefix = carve_borrowed_prefix(fixed_prefix as u64)?;
                 add_activation_borrowed_child_replay_impl(id, root, fixed_prefix, private_prefix)?;
             }
         }
         Ok(())
+    }
+
+    /// A side activation's fixed prefix, for the `(id, fixed_prefix)` records
+    /// the capture and both child seeds read.
+    ///
+    /// The ADMITTED linked-frame record is the authority (lane F stage 1b): a
+    /// host that admits its activations no longer decodes the linked-frame
+    /// section, so it writes 0 in the record's prefix word and the module
+    /// answers from what it decoded at admission. A non-zero word is still
+    /// used as given from a caller that does not admit yet (host-native until
+    /// stage 1c, and module tests, where 0 is a real prefix), and is
+    /// cross-checked when both exist -- two prefixes for one activation mean
+    /// two different modules. An admitting host cannot reach here with an
+    /// unadmitted side: its sides are registered activations, and
+    /// registration binds, which refuses an unadmitted one. Stage 1d drops the
+    /// word from the record.
+    fn side_fixed_prefix(id: u32, host_word: u32) -> Result<u32, Errno> {
+        match arena_find(id, REC_KIND_LINKED_FORMAT) {
+            Some((at, _)) => {
+                let admitted = arena_u32(at + 4);
+                if host_word != 0 && host_word != admitted { Err(Errno::EINVAL) } else { Ok(admitted) }
+            }
+            None => Ok(host_word),
+        }
     }
 
     /// One activation's fixed prefix size, as the SEEDED format reports it.
@@ -8323,7 +8347,11 @@ mod wasm {
         // Activation 0 IS the module `fm_set_format` was given the format of,
         // until stage 1d takes the prefix out of that call. Two different
         // prefixes for one module means the host read two different modules.
-        if id == 0 && admitted.linked_format.fixed_prefix_size != FMT_FIXED_PREFIX.load(Ordering::Relaxed) {
+        // A host that admits (lane F stage 1b) no longer decodes the
+        // linked-frame section and passes 0 there; activation 0's admission is
+        // then what supplies the prefix, stored once every fact is stored.
+        let worker_prefix = FMT_FIXED_PREFIX.load(Ordering::Relaxed);
+        if id == 0 && worker_prefix != 0 && admitted.linked_format.fixed_prefix_size != worker_prefix {
             return Err(Errno::EINVAL);
         }
         admission_conflict(&admitted, desc_ptr)?;
@@ -8365,6 +8393,9 @@ mod wasm {
         }
         if let Some((ptr, len)) = at(K::ImportedTables) {
             set_activation_imports_impl(IMPORT_SPACE_TABLE, id, ptr, len)?;
+        }
+        if id == 0 {
+            FMT_FIXED_PREFIX.store(admitted.linked_format.fixed_prefix_size, Ordering::Relaxed);
         }
         Ok(())
     }

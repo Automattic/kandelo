@@ -12,8 +12,8 @@
  * activations' globals or tables, so this cannot be computed anywhere else.
  *
  * Everything else about a binding is the module's: which catalog entry PROVIDES
- * a shared object (that needs the KFIG/KFIT sections, which the module is
- * seeded with and the host does not decode), the type code, the recipe id for a
+ * a shared object (that needs the KFIG/KFIT sections, which the module
+ * decodes at admission and the host does not), the type code, the recipe id for a
  * reference, the ordering and the encoding. See census sections 152 and 154.
  *
  * So this file publishes identity and values, and nothing else. It does not
@@ -25,13 +25,11 @@ import {
   WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT,
   WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER,
   WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE,
-  WPK_FORK_IMPORTED_GLOBALS_SECTION,
   WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
-  WPK_FORK_IMPORTED_TABLES_SECTION,
   WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 } from "./generated/abi";
 
-/** `fm_set_activation_imports` / `fm_set_import_provenance` spaces. */
+/** `fm_set_identity_group` / `fm_set_import_provenance` spaces. */
 export const FORK_IMPORT_SPACE_GLOBAL = 0;
 export const FORK_IMPORT_SPACE_TABLE = 1;
 
@@ -39,9 +37,8 @@ export type ForkWasmImports = Readonly<
   Record<string, Readonly<Record<string, unknown>>>
 >;
 
-/** The three module entries this publishes through. */
+/** The two module entries this publishes through. */
 export interface ForkImportSeedSink {
-  setActivationImports(space: number, activationId: number, bytes: Uint8Array): void;
   setIdentityGroup(
     space: number,
     activationId: number,
@@ -74,12 +71,6 @@ interface Declaration {
 const CATALOGS = [
   [FORK_IMPORT_SPACE_GLOBAL, WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX],
   [FORK_IMPORT_SPACE_TABLE, WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX],
-] as const;
-
-/** The custom section each import space declares itself in. */
-const SECTIONS = [
-  [FORK_IMPORT_SPACE_GLOBAL, WPK_FORK_IMPORTED_GLOBALS_SECTION],
-  [FORK_IMPORT_SPACE_TABLE, WPK_FORK_IMPORTED_TABLES_SECTION],
 ] as const;
 
 const f64 = new DataView(new ArrayBuffer(8));
@@ -165,11 +156,11 @@ export class ForkImportIdentity {
   ) {}
 
   /**
-   * Seed an activation's import sections and wrap its import object.
+   * Wrap an activation's import object so every read is recorded.
    *
-   * The sections are seeded here rather than at `complete` because a malformed
-   * one is the host's bug and the module refuses it at the seed -- before the
-   * instantiation it would otherwise fail during.
+   * Its KFIG/KFIT sections are not seeded here any more: they are part of the
+   * activation's admission (`fm_admit_activation`), which the caller makes
+   * before instantiating, and the module refuses a malformed one there.
    */
   prepareActivation(
     activationId: number,
@@ -180,7 +171,6 @@ export class ForkImportIdentity {
       throw new Error(`${this.label}: activation ${activationId} is already prepared`);
     }
     this.preparing.add(activationId);
-    this.seedActivationSections(activationId, module);
 
     // Ordinals are positions in the WHOLE import section, which is how
     // `fork_instrument` numbered them (`module.imports.iter().enumerate()`), so
@@ -215,27 +205,6 @@ export class ForkImportIdentity {
       },
       abort: finish,
     };
-  }
-
-  /**
-   * Publish an activation's `KFIG`/`KFIT` sections to the module.
-   *
-   * Two callers need it at different moments and neither knows about the
-   * other: `prepareActivation` seeds at instantiation, and a fork CHILD seeds
-   * earlier still -- the module cannot plan an activation's imports without
-   * its sections, and the child asks for that plan before it instantiates
-   * anything (census 175). The MODULE makes the second seed a no-op: it
-   * compares the bytes and refuses only different ones. This used to keep a
-   * set of seeded ids to skip the call, which outlived `dlclose` and would make
-   * a library at a reused id skip its seed.
-   */
-  seedActivationSections(activationId: number, module: WebAssembly.Module): void {
-    for (const [space, section] of SECTIONS) {
-      const [bytes] = WebAssembly.Module.customSections(module, section);
-      if (bytes) {
-        this.sink.setActivationImports(space, activationId, new Uint8Array(bytes));
-      }
-    }
   }
 
   /**

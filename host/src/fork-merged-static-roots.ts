@@ -1,4 +1,4 @@
-import type { ForkActivation } from "./fork-activations";
+import type { RegisteredForkActivation } from "./fork-activations";
 import { WPK_FORK_STATIC_ROOT_CATALOG_EXPORT } from "./generated/abi";
 
 /**
@@ -27,31 +27,27 @@ import { WPK_FORK_STATIC_ROOT_CATALOG_EXPORT } from "./generated/abi";
  */
 export class ForkMergedStaticRoots {
   /**
-   * `place` is the module's `fm_place_activation_static_roots`, which both
-   * places a catalog and, asked again with the same length, answers where it
-   * placed it. So nothing here remembers a base, and a released activation
-   * leaves nothing behind: the module clears its range and drops its record.
+   * The module places each catalog (`fm_bind_activation`'s `static_root_base`)
+   * and `ForkActivations` keeps the base with the live activation, so nothing
+   * here remembers one and a released activation leaves nothing behind: the
+   * module clears its range and drops its record.
    */
-  constructor(
-    private readonly mirror: WebAssembly.Table,
-    private readonly place: (activationId: number, length: number) => number,
-  ) {}
+  constructor(private readonly mirror: WebAssembly.Table) {}
 
   /** Give one activation its slice at registration. No reference is copied. */
-  take(activationId: number, catalog: WebAssembly.Table): void {
-    const needed = this.place(activationId, catalog.length) + catalog.length;
+  take(base: number, catalog: WebAssembly.Table): void {
+    const needed = base + catalog.length;
     if (this.mirror.length < needed) {
       this.mirror.grow(needed - this.mirror.length, null);
     }
   }
 
   /** Copy every live activation's roots in, for one fork. */
-  fill(activations: readonly ForkActivation[]): void {
-    for (const { activationId, instance } of activations) {
+  fill(activations: readonly RegisteredForkActivation[]): void {
+    for (const { instance, staticRootBase } of activations) {
       const catalog = instance.exports[WPK_FORK_STATIC_ROOT_CATALOG_EXPORT] as WebAssembly.Table;
-      const base = this.place(activationId, catalog.length);
       for (let slot = 0; slot < catalog.length; slot += 1) {
-        this.mirror.set(base + slot, catalog.get(slot));
+        this.mirror.set(staticRootBase + slot, catalog.get(slot));
       }
     }
   }

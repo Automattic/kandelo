@@ -1,49 +1,73 @@
 import { describe, expect, it } from "vitest";
 import {
   type ForkActivation,
+  type ForkActivationRow,
   ForkActivations,
   type ForkActivationDriveSink,
 } from "../src/fork-activations";
 
 /**
- * The host's record of live activations: four fields and a drive bind.
+ * The host's record of live activations: two fields and what it does with the
+ * module's `fm_bind_activation` row.
  *
  * Everything this used to sit next to -- reference tables, GC transit, the
  * dirty-page journal, the guest save/restore wrappers -- is the module's. If a
  * test here starts asserting anything about those, the split has moved back.
  */
 
+/** A stand-in row: distinct, recognisable bases per activation. */
+function rowFor(activationId: number, resumeCount = 0): ForkActivationRow {
+  return {
+    driveBase: activationId * 19,
+    funcCatalogBase: activationId * 10,
+    staticRootBase: activationId * 100,
+    resume: { ptr: 4096 + activationId, count: resumeCount },
+  };
+}
+
 function recordingDrive(): {
-  bound: number[];
-  seeded: [number, Uint8Array][];
+  asked: [number, number, number][];
+  bound: [number, number][];
   sink: ForkActivationDriveSink;
 } {
-  const bound: number[] = [];
-  const seeded: [number, Uint8Array][] = [];
+  const asked: [number, number, number][] = [];
+  const bound: [number, number][] = [];
   return {
+    asked,
     bound,
-    seeded,
     sink: {
-      bindActivationDrive: (activationId) => void bound.push(activationId),
-      setActivationTemplateId: (activationId, templateId) =>
-        void seeded.push([activationId, templateId]),
+      bindActivation: (activationId, funcLength, staticLength) => {
+        asked.push([activationId, funcLength, staticLength]);
+        return rowFor(activationId);
+      },
+      bindActivationDrive: (activationId, base) => void bound.push([activationId, base]),
       releaseResumeSlots: () => 0,
     },
   };
 }
 
-/** An activation with just enough shape to be registered. */
+/**
+ * An activation with just enough shape to be registered: the two catalog
+ * tables every instrumented guest exports, and a placement shim over an empty
+ * resume catalog.
+ */
 function activation(
   activationId: number,
-  fixedPrefixSize = 32,
   exports: Record<string, unknown> = {},
+  placed: [number, number][] = [],
 ): ForkActivation {
   return {
     activationId,
-    instance: { exports } as unknown as WebAssembly.Instance,
-    fixedPrefixSize,
-    // Distinct per activation, so a test can tell whose id was seeded.
-    templateId: new Uint8Array(32).fill(activationId),
+    instance: {
+      exports: {
+        __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 2 }),
+        __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 3 }),
+        __wpk_fork_resume_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+        __wpk_fork_place_resume_thunks: (ptr: number, count: number) =>
+          (placed.push([ptr, count]), count),
+        ...exports,
+      },
+    } as unknown as WebAssembly.Instance,
   };
 }
 
@@ -54,7 +78,7 @@ function bootstrapping(activationId: number): {
 } {
   let runs = 0;
   return {
-    activation: activation(activationId, 32, {
+    activation: activation(activationId, {
       wpk_fork_module_bootstrap: () => void (runs += 1),
     }),
     runs: () => runs,
@@ -62,30 +86,44 @@ function bootstrapping(activationId: number): {
 }
 
 describe("the host's record of live activations", () => {
-  it("seeds each activation's template id when it registers", () => {
-    // Not incidental: the module writes one `Module` record per activation into
-    // the capture arena and that record carries this id, so an activation that
-    // registers without it makes `fm_parent_begin_capture` refuse with EINVAL.
-    // Nothing called the seeding entry at all until the dlopen e2e ran.
-    const { seeded, sink } = recordingDrive();
+  it("binds each activation with its catalog lengths and acts on the row", () => {
+    // The module places the activation and answers one row; the host's part is
+    // the reference-typed work: the drive bind at the drive base and the
+    // guest's own resume placement from the row's pointer and count. An
+    // unbound slot is a `call_indirect` on null inside the module, so it
+    // surfaces as a trap mid-unwind -- which is why this is registration's job
+    // rather than capture's.
+    const { asked, bound, sink } = recordingDrive();
     const activations = new ForkActivations(sink, "test");
-    activations.register(activation(0));
-    activations.register(activation(4));
-    expect(seeded.map(([id]) => id)).toEqual([0, 4]);
-    expect(seeded[1]![1], "each activation's own id, not a shared buffer").toEqual(
-      new Uint8Array(32).fill(4),
-    );
+    const placed: [number, number][] = [];
+    activations.register(activation(0, {}, placed));
+    activations.register(activation(3, {}, placed));
+    expect(asked).toEqual([[0, 2, 3], [3, 2, 3]]);
+    expect(bound).toEqual([[0, 0], [3, 57]]);
+    expect(placed).toEqual([[4096, 0], [4099, 0]]);
+    expect(activations.ordered().map((a) => a.staticRootBase)).toEqual([0, 300]);
   });
 
-  it("binds an activation's drive slots when it registers, not at capture", () => {
-    // An unbound slot is a `call_indirect` on null inside the module, so it
-    // surfaces as a trap mid-unwind rather than as a missing feature here.
-    // Binding is a property of the instance, so it belongs at registration.
-    const { bound, sink } = recordingDrive();
+  it("refuses a guest whose resume catalog disagrees with the module's count", () => {
+    // The admitted catalog and the instantiated guest are one artifact or they
+    // are not: a guest with MORE thunks than the module assigned would place a
+    // prefix and leave the rest at no slot, silently.
+    const { sink } = recordingDrive();
+    sink.bindActivation = (id) => rowFor(id, 5);
     const activations = new ForkActivations(sink, "test");
-    activations.register(activation(0));
-    activations.register(activation(3));
-    expect(bound).toEqual([0, 3]);
+    expect(() => activations.register(activation(1))).toThrow(/not the same artifact/);
+  });
+
+  it("publishes the catalogs at the bases the module placed", () => {
+    const calls: string[] = [];
+    const activations = new ForkActivations(recordingDrive().sink, "test", {
+      registerCatalog: (base, table) => void calls.push(`functions ${base}+${table.length}`),
+      registerStaticRoots: (base, table) => void calls.push(`roots ${base}+${table.length}`),
+      registerTable: () => {},
+      releaseTables: () => {},
+    });
+    activations.register(activation(2, { __wpk_fork_static_root_harvest: () => void calls.push("harvest") }));
+    expect(calls).toEqual(["harvest", "functions 20+2", "roots 200+3"]);
   });
 
   it("refuses to register one activation twice", () => {
@@ -122,10 +160,8 @@ describe("the host's record of live activations", () => {
       releaseTables: (id, tables) =>
         void calls.push(`release ${id} ${tables.map((t) => (t === table ? "T" : "?")).join()}`),
     });
-    const guest = activation(3, 32, {
+    const guest = activation(3, {
       __wpk_fork_static_root_harvest: () => {},
-      __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
-      __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_table_2: table,
     });
     activations.register(guest);
@@ -147,18 +183,15 @@ describe("the host's record of live activations", () => {
     expect(activations.ordered().map((a) => a.activationId)).toEqual([0, 2, 5]);
   });
 
-  it("names every activation but 0 as a side, with its own prefix", () => {
-    // Activation 0's prefix reaches the module through `fm_set_format`; the
-    // sides carry theirs in this list. Including 0 here would add it twice, and
-    // the module refuses a second add of an activation it already opened.
+  it("names every activation but 0 as a side, by id only", () => {
+    // Activation 0 is opened by the capture itself; including it here would add
+    // it twice, and the module refuses a second add of an activation it already
+    // opened. No prefix travels with a side: the module has it from admission.
     const activations = new ForkActivations(recordingDrive().sink, "test");
-    activations.register(activation(0, 16));
-    activations.register(activation(4, 48));
-    activations.register(activation(1, 24));
-    expect(activations.sides()).toEqual([
-      { id: 1, fixedPrefix: 24 },
-      { id: 4, fixedPrefix: 48 },
-    ]);
+    activations.register(activation(0));
+    activations.register(activation(4));
+    activations.register(activation(1));
+    expect(activations.sides()).toEqual([1, 4]);
   });
 });
 
@@ -189,7 +222,7 @@ describe("running an activation's module-state bootstrap", () => {
     const activations = new ForkActivations(recordingDrive().sink, "test");
     let calls = 0;
     activations.register(
-      activation(2, 32, {
+      activation(2, {
         wpk_fork_module_bootstrap: () => {
           calls += 1;
           if (calls === 1) throw new Error("guest trapped");

@@ -10,9 +10,8 @@
 // resume table it owns and exports, the slot allocator inside it, the
 // `kandelo.wpk_fork.resume_catalog` sections of two SDK-built, fork-
 // instrumented guests, and the host placement path production uses today
-// (`ForkResumeTable.registerActivation`, the one function behind all three
-// `registerActivation` sites at `host/src/worker-main.ts:1034`, `:4662` and
-// `:6971`).
+// (`placeForkResumeThunks`, which `ForkActivations.register` calls for every
+// activation on every worker).
 //
 // A stand-in: the thunk OBJECTS. Placement does not read them -- the slot is a
 // function of the seeded ordinal and nothing else -- so each is a distinct
@@ -59,11 +58,9 @@ import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import { readForkResumeCatalog } from "../src/fork-resume-catalog";
 import {
-  ForkResumeTable,
   type ForkResumeAssignment,
-  type ForkResumeSlots,
+  placeForkResumeThunks,
 } from "../src/fork-resume-table";
 import { startChannelResponder } from "./fork-module-capture-fixture";
 import { artifactGate } from "./support/artifact-gate";
@@ -175,7 +172,7 @@ interface PlacementBaseline {
 }
 
 interface Harness {
-  readonly table: ForkResumeTable;
+  readonly place: (activationId: number, instance: WebAssembly.Instance) => void;
   readonly seed: (activationId: number, ordinals: readonly number[]) => void;
   readonly errno: () => number;
   /** The memory the module publishes its record buffer into. */
@@ -184,7 +181,7 @@ interface Harness {
   readonly resumeTable: WebAssembly.Table;
 }
 
-/** The real module, its real table, and the host class that places into it. */
+/** The real module, its real table, and the host function that places into it. */
 function harness(): Harness {
   const memory = new WebAssembly.Memory({
     initial: 256,
@@ -212,42 +209,25 @@ function harness(): Harness {
   // production path uses -- which is also what lets this file survive Task 6's
   // deletion of the op-0 arm. The read-back below still deliberately uses
   // neither: it scans the table.
-  const resumeSlots = x.fm_resume_slots as (
-    op: number,
-    activation: number,
-    ordinal: number,
-  ) => number;
-  const slots: ForkResumeSlots = {
-    publishResumeAssignment: (activationId): ForkResumeAssignment => {
-      const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
-        activationId,
+  const publish = (activationId: number): ForkResumeAssignment => {
+    const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
+      activationId,
+    );
+    if (packed === -1n) {
+      throw new Error(
+        `no assignment for activation ${activationId} (errno ${errno()})`,
       );
-      if (packed === -1n) {
-        throw new Error(
-          `no assignment for activation ${activationId} (errno ${errno()})`,
-        );
-      }
-      return {
-        ptr: Number(packed & 0xffff_ffffn),
-        count: Number(packed >> 32n),
-      };
-    },
-    releaseResumeSlots: (activationId) => {
-      const freed = resumeSlots(1, activationId, 0);
-      if (freed < 0) {
-        throw new Error(
-          `activation ${activationId} had no slots to release (errno ${errno()})`,
-        );
-      }
-      return freed;
-    },
+    }
+    return {
+      ptr: Number(packed & 0xffff_ffffn),
+      count: Number(packed >> 32n),
+    };
   };
-
-  const table = new ForkResumeTable("resume placement baseline");
+  const place = (activationId: number, instance: WebAssembly.Instance): void =>
+    placeForkResumeThunks("resume placement baseline", activationId, instance, publish(activationId));
   // The MODULE's table, not one this test minted: it owns and exports it, so
-  // binding anything else here would record a table nothing else can see.
+  // reading anything else here would record a table nothing else can see.
   const resumeTable = x.__wpk_fork_resume_table as unknown as WebAssembly.Table;
-  table.bindSlots(slots, resumeTable);
 
   const seed = (activationId: number, ordinals: readonly number[]): void => {
     const bytes = new Uint8Array(ordinals.length * 4);
@@ -262,7 +242,7 @@ function harness(): Harness {
     expect(errno(), `seeding activation ${activationId}`).toBe(0);
   };
 
-  return { table, seed, errno, memory, resumeTable };
+  return { place, seed, errno, memory, resumeTable };
 }
 
 /**
@@ -287,10 +267,17 @@ function mintThunk(): WebAssembly.ExportValue {
   return new WebAssembly.Instance(THUNK_MODULE).exports.f as WebAssembly.ExportValue;
 }
 
-/** The ordinals an SDK-built, fork-instrumented guest declares. */
+/**
+ * The ordinals an SDK-built, fork-instrumented guest declares: each KFRC
+ * record's first word. Read here, by a test, because the host no longer
+ * decodes the catalog -- the fork module does, at admission.
+ */
 function catalogOrdinals(wasmPath: string): readonly number[] {
   const module = new WebAssembly.Module(readFileSync(wasmPath));
-  return readForkResumeCatalog(module).map((record) => record.functionOrdinal);
+  const [section] = WebAssembly.Module.customSections(module, "kandelo.wpk_fork.resume_catalog");
+  if (!section) throw new Error(`${wasmPath}: no resume catalog`);
+  const view = new DataView(section);
+  return Array.from({ length: view.getUint32(8, true) }, (_, i) => view.getUint32(12 + i * 8, true));
 }
 
 /** sha256 of a file, for the fixture fingerprint. */
@@ -360,8 +347,9 @@ describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
         // halves -- not any line in this file.
         //
         // HOW TASK 4 TOOK THAT RULING. The call below is unchanged in the one
-        // way that matters: it is still `ForkResumeTable.registerActivation`,
-        // the single function behind all three worker sites. What changed is
+        // way that matters: it is still the single placement function behind
+        // every worker site (`placeForkResumeThunks`, reached through
+        // `ForkActivations.register` since lane F stage 1b). What changed is
         // underneath it -- the host no longer queries a slot per thunk and
         // writes it, it publishes the module's whole decision and hands the
         // guest its own `(ptr, count)`. `standInGuest` stands in for the
@@ -369,7 +357,7 @@ describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
         // comes from the real module. Keeping the read-back means this file
         // can still say a thunk landed somewhere NOBODY asked for, which a
         // direct diff of the published pairs could not.
-        h.table.registerActivation(
+        h.place(
           activationId,
           standInGuest({
             memory: h.memory,
@@ -391,7 +379,7 @@ describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
 
       // READ BACK FROM THE TABLE. Every slot is examined, so a thunk placed
       // somewhere nobody asked for is found rather than missed.
-      const table = h.table.resumeTable;
+      const table = h.resumeTable;
       const found = new Map<number, PlacementEntry[]>();
       let occupied = 0;
       for (let slot = 0; slot < table.length; slot++) {

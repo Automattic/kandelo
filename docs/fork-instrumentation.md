@@ -497,7 +497,10 @@ pointer width (4 on wasm32, 8 on wasm64). Instrumented modules carry exactly
 one 24-byte `kandelo.wpk_fork.linked_frames` custom section. Version 1 contains
 the `KLCF` magic, descriptor size, pointer width, alignment, transactional-node
 flag, chunk-header size, node-header size, and module-specific fixed-prefix
-size. The host validates every field before instantiation.
+size. Every field is validated before instantiation, by the co-resident fork
+module when it admits the activation (`fm_admit_activation`): the host locates
+the section and stages its bytes in a `KFAA` admission descriptor with the
+activation's other `kandelo.wpk_fork.*` sections, and does not decode it.
 
 Continuation storage consists of page-rounded anonymous process mappings. The
 root starts with a chunk header, followed by the module's fixed prefix. Later
