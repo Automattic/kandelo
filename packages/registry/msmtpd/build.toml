@@ -6,9 +6,14 @@ script_path = "packages/registry/msmtpd/build-msmtpd.sh"
 # `__wpk_fork_place_resume_thunks`, which the host requires at process start --
 # so the binary died before `_start` and the build that produced it was green.
 # Same shape as the kernel build.toml omitting crates/runtime-core.
+#
+# `cargo:` rather than the directory since 2026-09-25: the instrumenter depends
+# on crates/shared, which the directory entry did not cover, so a shared-crate
+# change could not rebuild msmtpd. The closure is derived from `cargo metadata`
+# at keying time, like every other `cargo:` input.
 inputs = [
   "scripts/run-wasm-fork-instrument.sh",
-  "crates/fork-instrument",
+  "cargo:fork-instrument",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
