@@ -1,9 +1,8 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import { makeHostScratchTempRoot, runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 
@@ -249,7 +248,7 @@ describe.skipIf(!ZIP_AVAILABLE)("PHP zip extension on kandelo", () => {
     }, 60_000);
 
     it("round-trips a DEFLATE entry through ZipArchive", async () => {
-        const scratch = mkdtempSync(join(tmpdir(), "kandelo-php-zip-"));
+        const scratch = makeHostScratchTempRoot("kandelo-php-zip-");
         const archive = join(scratch, "smoke.zip");
         try {
             const { stdout, stderr, exitCode } = await runCentralizedProgram({

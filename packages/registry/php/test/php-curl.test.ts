@@ -1,15 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   existsSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import { makeHostScratchTempRoot, runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import {
@@ -113,7 +111,7 @@ describe.skipIf(!READY)("PHP curl as a runtime-loadable side module", () => {
   }, 60_000);
 
   it("transfers file URL bytes through libcurl", async () => {
-    const scratch = mkdtempSync(join(tmpdir(), "kandelo-php-curl-"));
+    const scratch = makeHostScratchTempRoot("kandelo-php-curl-");
     scratchDirs.push(scratch);
     const fixture = join(scratch, "fixture.txt");
     writeFileSync(fixture, "kandelo-curl-ok\n");

@@ -8,11 +8,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import { makeHostScratchTempRoot, runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 
@@ -24,7 +23,7 @@ const PHP_AVAILABLE = existsSync(phpBinaryPath);
 
 describe.skipIf(!PHP_AVAILABLE)("PHP concurrent SQLite access", () => {
     it("two PHP processes safely insert rows with proper locking", async () => {
-        const tmpDir = mkdtempSync(join(tmpdir(), "php-sqlite-test-"));
+        const tmpDir = makeHostScratchTempRoot("php-sqlite-test-");
         const dbPath = join(tmpDir, "test.db");
         const phpScript = `
 $db = new PDO('sqlite:${dbPath}');
