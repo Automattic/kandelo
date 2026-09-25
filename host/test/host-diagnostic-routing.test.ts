@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { entryRoutesThrough } from "./lifecycle-routes";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -62,9 +63,14 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
     ]) {
       expect(sharedLifecycleSource).toContain(`source: "${diagnosticSource}"`);
     }
-    expect(source).toContain("handleClone");
-    expect(source).toContain("handleExec");
-    expect(source).toContain("reportWorkerProtocolError");
+    expect(entryRoutesThrough(source, "handleClone"), "entry routes clones").toBe(true);
+    expect(entryRoutesThrough(source, "handleExec"), "entry routes execs").toBe(true);
+    // Through the shared reporter, or raised in place with the same source.
+    expect(
+      entryRoutesThrough(source, "reportWorkerProtocolError")
+        || source.includes('source: "worker protocol"'),
+      "entry reports protocol failures as host diagnostics",
+    ).toBe(true);
     expect(source).toContain("reportHostDiagnostic");
   });
 
@@ -93,7 +99,10 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
       /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
     );
     expect(source).toContain("...processLifecycleKernelCallbacks(),");
-    expect(source).toContain("terminatePoisonedKernelWorker,");
+    expect(
+      entryRoutesThrough(source, "terminatePoisonedKernelWorker"),
+      "entry routes a fatal kernel to the shared teardown",
+    ).toBe(true);
     expect(source).toMatch(/\bstopKernelRealm:\s*\(\)\s*=>/);
   });
 });
@@ -219,9 +228,12 @@ describe("an aborted fork says why", () => {
     expect(processWorkerSource).toMatch(
       /type: "fork_aborted", pid, errno, reason/,
     );
-    // The three causes, each in words rather than a code.
+    // The two causes, each in words rather than a code. There were three
+    // until 2026-09-22: a capture that meets a reference it cannot carry (a
+    // raw host externref) is refused inside the fork module now, so it arrives
+    // as "the capture could not seal" with that errno (EOPNOTSUPP) instead of
+    // a worker-side branch of its own.
     expect(processWorkerSource).toContain("the capture could not seal");
-    expect(processWorkerSource).toContain("cannot reconstruct in a fresh child");
     expect(processWorkerSource).toContain(
       "the kernel refused to create the child process",
     );

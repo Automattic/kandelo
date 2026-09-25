@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { entryRoutesThrough } from "./lifecycle-routes";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -107,8 +108,8 @@ describe("process generation detach host parity", () => {
         "handlePosixSpawn",
       ]) {
         expect(
-          source.includes(`  ${name},\n`) && source.includes("} = lifecycle;"),
-          `${host} must bind ${name} from ./process-lifecycle`,
+          entryRoutesThrough(source, name),
+          `${host} must route through ${name} from ./process-lifecycle`,
         ).toBe(true);
       }
       const lifecycleSurfaces = [

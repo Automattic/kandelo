@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { entryRoutesThrough } from "./lifecycle-routes";
 import { describe, expect, it, vi } from "vitest";
 import { reapHostOwnedExitedProcess } from "../src/host-owned-process-reap";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -158,8 +159,10 @@ describe("host-owned exited-process reaping", () => {
       "../src/browser-kernel-worker-entry.ts",
     ]) {
       const entrySource = readFileSync(join(__dirname, entry), "utf8");
-      expect(entrySource, `${entry} must bind finishProcessExit`)
-        .toContain("  finishProcessExit,");
+      expect(
+        entryRoutesThrough(entrySource, "finishProcessExit"),
+        `${entry} must route its exits through finishProcessExit`,
+      ).toBe(true);
     }
   });
 

@@ -25,6 +25,7 @@
  *     wired through main.ts.
  */
 
+import { entryRoutesThrough } from "./lifecycle-routes";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -80,10 +81,8 @@ function expectEntryProvides(src: string, path: string, name: string): void {
   const declared = new RegExp(
     String.raw`\b(?:async\s+)?function\s+` + name + String.raw`\s*\(`,
   ).test(src);
-  const bound = new RegExp(String.raw`^\s*` + name + String.raw`,\s*$`, "m")
-    .test(src) && src.includes("} = lifecycle;");
   expect(
-    declared || bound,
+    declared || entryRoutesThrough(src, name),
     path + " must define " + name + " or bind it from ./process-lifecycle",
   ).toBe(true);
 }

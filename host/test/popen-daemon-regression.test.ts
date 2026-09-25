@@ -9,21 +9,20 @@
  *    kernel now reserves PID 1 and allocates every user-process PID itself.
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { tryResolveBinary } from "../src/binary-resolver";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const shellBinary = join(__dirname, "../wasm/sh.wasm");
-const hasShell = existsSync(shellBinary);
+// Through the resolver, not host/wasm/sh.wasm: that copy is made once and
+// never refreshed, so it outlived the instrumentation it was built with and
+// the host refused it before `_start`.
+const shellBinary = tryResolveBinary("programs/dash.wasm");
 
-describe.skipIf(!hasShell)("popen/daemon regression gates", () => {
+describe.skipIf(shellBinary === null)("popen/daemon regression gates", () => {
   it("initial user-program PID is not 1 (reserved for init)", async () => {
     // daemon-failure's orphan check fires on `getppid() == 1`, so the test
     // harness must not spawn user programs at pid 1.
     const result = await runCentralizedProgram({
-      programPath: shellBinary,
+      programPath: shellBinary!,
       argv: ["dash", "-c", "echo $$"],
       timeout: 10_000,
     });
