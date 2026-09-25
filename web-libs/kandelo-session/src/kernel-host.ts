@@ -106,30 +106,45 @@ export interface LazyDownloadEvent {
   t: number;
 }
 
-/** Stage of a boot that can report incremental byte progress. */
-export type BootPhase = "image";
+/** Stage of a machine switch that can report progress. */
+export type MachinePhase = "destroying" | "image";
 
 /**
- * Progress of the boot-time VFS image load, before any kernel exists.
+ * Progress of a machine switch: tearing the outgoing machine down, then
+ * loading the incoming machine's VFS image.
  *
- * Deliberately separate from {@link LazyDownloadEvent}: lazy downloads are
- * emitted by the running kernel and their ledger is cleared on `attachKernel`,
- * which happens *after* the boot image has already finished loading.
+ * Deliberately separate from {@link LazyDownloadEvent}: both halves run while
+ * no kernel is attached, and `attachKernel` clears the lazy-download ledger.
  *
- * Every field is a scalar. This record must never retain image bytes — the
- * main thread is not an owner of VFS memory.
+ * Every field is a scalar. This record must never retain image bytes or
+ * process memory — the main thread is not an owner of machine memory.
  *
- * `totalBytes` is absent when no authenticated size is available, which
- * callers render as indeterminate rather than inventing a denominator.
+ * `total` is absent when no total is known, which callers render as
+ * indeterminate rather than inventing a denominator. `totalProvisional` marks
+ * a total that is a lower bound and may still grow; see the teardown phases in
+ * `host/src/destroy-progress-reporter.ts`.
  */
-export interface BootProgress {
-  phase: BootPhase;
-  /** Human-readable image identity, e.g. `wordpress-sqlite.vfs.zst`. */
+export interface MachineProgress {
+  phase: MachinePhase;
   label: string;
-  loadedBytes: number;
-  totalBytes?: number;
+  completed: number;
+  total?: number;
+  totalProvisional?: boolean;
+  unit: "processes" | "bytes";
   status: "loading" | "complete" | "error";
   error?: string;
+}
+
+/**
+ * Teardown progress from the kernel worker. Mirrors
+ * host/src/browser-kernel-protocol.ts: DestroyProgressEvent — duplicated as a
+ * structural type for the same reason as LazyDownloadEvent above.
+ */
+export interface DestroyProgressEvent {
+  phase: "draining" | "terminating";
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
 }
 
 /**
@@ -250,6 +265,14 @@ export interface KernelLike {
    * when it materializes content on first exec/open.
    */
   subscribeLazyDownloads?(cb: (event: LazyDownloadEvent) => void): () => void;
+  /**
+   * Subscribe to teardown progress. Emitted by the kernel worker while
+   * `destroy()` reaps processes. Optional: a kernel without it reports
+   * nothing, and the destroy phase stays indeterminate.
+   */
+  subscribeDestroyProgress?(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void;
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
@@ -742,9 +765,11 @@ export interface KernelHost {
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
   dmesgHistory(): DmesgLine[];
 
-  // Boot-time VFS image load progress. Null outside an in-flight boot.
-  getBootProgress(): BootProgress | null;
-  subscribeBootProgress(cb: (progress: BootProgress | null) => void): () => void;
+  // Machine switch progress. Null outside an in-flight switch.
+  getMachineProgress(): MachineProgress | null;
+  subscribeMachineProgress(
+    cb: (progress: MachineProgress | null) => void,
+  ): () => void;
 
   // Lazy VFS materialization progress
   subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void;
@@ -1086,8 +1111,8 @@ export class LiveKernelHost implements KernelHost {
   private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
   private lazyDownloadSummaryListeners = new ListenerSet<void>();
   private lazyDownloadCapacity = 512;
-  private bootProgress: BootProgress | null = null;
-  private bootProgressListeners = new ListenerSet<BootProgress | null>();
+  private machineProgress: MachineProgress | null = null;
+  private machineProgressListeners = new ListenerSet<MachineProgress | null>();
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
@@ -1320,30 +1345,31 @@ export class LiveKernelHost implements KernelHost {
     this._status = s;
     // The boot screen owns this record; once the machine leaves `booting`
     // there is no boot screen left to show it.
-    if (s !== "booting") this.setBootProgress(null);
+    if (s !== "booting") this.setMachineProgress(null);
     this.refreshTerminalAvailability();
     this.statusListeners.emit(s);
   }
 
   /**
-   * Publish boot-time VFS image progress. Pass `null` to clear it.
+   * Publish machine-switch progress. Pass `null` to clear it.
    *
-   * Survives `attachKernel` on purpose: the image finishes loading before the
-   * kernel is created, so this cannot live in the lazy-download ledger.
+   * Survives `attachKernel` on purpose: both the teardown and the image load
+   * finish before the incoming kernel is created, so this cannot live in the
+   * lazy-download ledger.
    */
-  setBootProgress(progress: BootProgress | null): void {
-    this.bootProgress = progress === null ? null : { ...progress };
-    this.bootProgressListeners.emit(this.bootProgress);
+  setMachineProgress(progress: MachineProgress | null): void {
+    this.machineProgress = progress === null ? null : { ...progress };
+    this.machineProgressListeners.emit(this.machineProgress);
   }
 
-  getBootProgress(): BootProgress | null {
-    return this.bootProgress === null ? null : { ...this.bootProgress };
+  getMachineProgress(): MachineProgress | null {
+    return this.machineProgress === null ? null : { ...this.machineProgress };
   }
 
-  subscribeBootProgress(
-    cb: (progress: BootProgress | null) => void,
+  subscribeMachineProgress(
+    cb: (progress: MachineProgress | null) => void,
   ): () => void {
-    return this.bootProgressListeners.add(cb);
+    return this.machineProgressListeners.add(cb);
   }
 
   /**
