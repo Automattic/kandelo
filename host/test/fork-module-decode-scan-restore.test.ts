@@ -21,22 +21,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { FORK_MODULE_STATS } from "../src/fork-module-backend";
 import {
   INTERN_KIND_STATIC_ROOT,
   captureArena,
   childModule,
   fixture,
 } from "./fork-module-capture-fixture";
-
-/**
- * `fm_decoded_node_field` selector 3: the resident graph's node count.
- *
- * It had its own export, `fm_decoded_node_count`, until that entry folded into
- * this one -- a property of the same resident graph, asked the same way, with
- * the index ignored. Census 202.
- */
-const DECODED_FIELD_COUNT = 3;
 
 const PID = 4242;
 const EINVAL = 22;
@@ -53,10 +43,7 @@ const DRIVE_STEP_OFF_OP = 0;
 const DRIVE_STEP_OFF_RECIPE = 8;
 const DRIVE_OP_STATIC_ROOT = 3;
 
-const GRAPHS_DECODED = FORK_MODULE_STATS.indexOf("referenceGraphsDecoded");
-
 interface ForkModuleExports {
-  fm_decode_reference_graph: (root: number) => number;
   fm_restore_from_arena: (root: number, pid: number) => number;
   fm_begin_reference_replay: (root: number, pid: number) => void;
   fm_build_gc_plan: (pid: number) => number;
@@ -102,32 +89,9 @@ function readRawPlan(memory: WebAssembly.Memory, ptr: number, count: number): Ui
 }
 
 describe("fork-module decode / restore (orchestration migration increment 1)", () => {
-  it("decodes a captured KFMS arena and reports the node count with proof of use", () => {
-    const { root, x } = captured();
-
-    const before = Number(x.fm_stats(GRAPHS_DECODED));
-    const nodeCount = x.fm_decode_reference_graph(root);
-    expect(x.fm_last_errno()).toBe(0);
-    // One canonical null + one node per distinct static root.
-    expect(nodeCount).toBe(1 + ORDINALS.length);
-    expect(x.fm_decoded_node_field(0, DECODED_FIELD_COUNT)).toBe(1 + ORDINALS.length);
-    expect(Number(x.fm_stats(GRAPHS_DECODED)) - before).toBe(1);
-
-    // A second decode makes the graph resident again and advances the counter.
-    expect(x.fm_decode_reference_graph(root)).toBe(1 + ORDINALS.length);
-    expect(Number(x.fm_stats(GRAPHS_DECODED)) - before).toBe(2);
-  });
-
-  it("fails cleanly on a malformed arena root", () => {
-    const { x } = captured();
-
-    // A zeroed in-bounds region is not a valid sealed chunk chain.
-    expect(x.fm_decode_reference_graph(NOT_AN_ARENA)).toBe(-1);
-    expect(x.fm_last_errno()).toBe(EINVAL);
-    // A failed decode leaves no resident graph.
-    expect(x.fm_decoded_node_field(0, DECODED_FIELD_COUNT)).toBe(-1);
-  });
-
+  // The two DECODE cases went with `fm_decode_reference_graph` and
+  // `fm_decoded_node_field` (lane F stage 1G): the graph is made resident
+  // only inside the module now, by `fm_child_plan` and the throw path.
   it("fm_restore_from_arena seeds the driver and builds a plan identical to begin + build", () => {
     const { root, x, memory } = captured();
 

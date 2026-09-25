@@ -42,6 +42,7 @@ extern crate wasm_posix_shared;
 pub mod activation_admission;
 pub mod catalogs;
 pub mod child_import_plan;
+pub mod child_plan;
 pub mod drive_plan;
 pub mod drive_plan_hints;
 pub mod dylink_archive;
@@ -90,6 +91,10 @@ pub use imported_globals::{decode_imported_globals, ImportedGlobal, ImportedGlob
 pub use child_import_plan::{
     build_child_import_plan, ImportPlanEntry, PlanSnapshot, IMPORT_PLAN_FLAG_SAVED,
     IMPORT_SPACE_GLOBAL, IMPORT_SPACE_TABLE,
+};
+pub use child_plan::{
+    build_child_plan, child_plan_len, encode_child_plan, reference_leaf, ActivationImportPlan,
+    ChildPlan, ChildPlanRow,
 };
 pub use imported_tables::{decode_imported_tables, ImportedTable, ImportedTables};
 pub use linked_frames::{

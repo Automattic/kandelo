@@ -36,7 +36,7 @@ import { type ForkResumeAssignment, placeForkResumeThunks } from "./fork-resume-
  * Not in `generated/abi.ts` because the generator does not emit it; the name is
  * the one `fork-module-instance.ts` imports the module's own copy under.
  */
-const FUNCTION_CATALOG_EXPORT = "__wpk_fork_function_catalog";
+export const FUNCTION_CATALOG_EXPORT = "__wpk_fork_function_catalog";
 
 /** One live activation. */
 export interface ForkActivation {

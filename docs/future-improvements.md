@@ -1063,7 +1063,7 @@ items reduce host surface, remove fixed caps, or close truthful-failure gaps.
   encode/decode dispatch (the 71-export count is not the true floor).** The
   ~43 per-type reference capture/reconstruction marshalling exports —
   `fm_capture_*`, `fm_ref_*`, `fm_funcref_ordinal`,
-  `fm_static_root_slot`, `fm_decoded_*`, `fm_decode_reference_graph`, and the
+  `fm_static_root_slot`, and the
   reconstruction drive/plan/install group — are a wide per-type guest<->module
   surface. A follow-up PR should consolidate them behind a narrower opaque
   encode/decode dispatch, driving the fork-module export count well below the 71

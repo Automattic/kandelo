@@ -236,7 +236,39 @@ pub fn build_child_import_plan(
     if out.windows(2).any(|w| w[0].import_ordinal == w[1].import_ordinal) {
         return Err(Errno::EINVAL); // two imports claim one ordinal
     }
+    require_saved_duplicates_agree(globals, &out)?;
     Ok(out)
+}
+
+/// Duplicate `(module, name)` base imports must carry one saved value.
+///
+/// The dylink loader allocates ONE cell for a name however many times the
+/// module imports it, so every duplicate is an alias of that cell and the
+/// parent can only have saved one value for it. Two different saved values
+/// mean the arena disagrees with itself; the loader would get whichever it
+/// asked about first. This was the host's `savedMutableGlobalImport` check.
+fn require_saved_duplicates_agree(
+    globals: &ImportedGlobals,
+    plan: &[ImportPlanEntry],
+) -> Result<(), Errno> {
+    let mut saved: Vec<(&str, &str, u64)> = Vec::new();
+    for declaration in &globals.globals {
+        let entry = plan
+            .binary_search_by_key(&declaration.import_ordinal, |e| e.import_ordinal)
+            .map(|at| &plan[at])
+            .map_err(|_| Errno::EINVAL)?;
+        if entry.space == IMPORT_SPACE_GLOBAL && entry.flags & IMPORT_PLAN_FLAG_SAVED != 0 {
+            saved.push((&declaration.module, &declaration.name, entry.bits));
+        }
+    }
+    saved.sort_unstable();
+    if saved
+        .windows(2)
+        .any(|w| (w[0].0, w[0].1) == (w[1].0, w[1].1) && w[0].2 != w[1].2)
+    {
+        return Err(Errno::EINVAL);
+    }
+    Ok(())
 }
 
 /// The little-endian bits of a 4- or 8-byte snapshot value.
@@ -510,6 +542,29 @@ mod tests {
             ),
             Err(Errno::EINVAL)
         );
+    }
+
+    #[test]
+    fn refuses_duplicate_base_imports_whose_saved_values_disagree() {
+        // Two imports of one `(module, name)` alias one loader cell, so the
+        // parent saved one value for it. Agreeing duplicates plan; a conflict
+        // is the arena disagreeing with itself.
+        let plan_with = |second: u8| {
+            let first = snapshot(I32, vec![42, 0, 0, 0]);
+            let other = snapshot(I32, vec![second, 0, 0, 0]);
+            build(
+                vec![global(7, 0, I32, true), global(8, 1, I32, true)],
+                vec![],
+                vec![binding(7, BASE_IMPORT, I32), binding(8, BASE_IMPORT, I32)],
+                vec![],
+                &[
+                    PlanSnapshot { activation: 1, owner: 7, snapshot: &first },
+                    PlanSnapshot { activation: 1, owner: 8, snapshot: &other },
+                ],
+            )
+        };
+        assert_eq!(plan_with(42).map(|p| p.len()), Ok(2));
+        assert_eq!(plan_with(43), Err(Errno::EINVAL));
     }
 
     #[test]

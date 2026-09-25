@@ -4078,21 +4078,14 @@ mod wasm {
     // resets.
     static REFERENCE_FEED_READS: AtomicU64 = AtomicU64::new(0);
 
-    // -- Module-owned wire-graph decode + externref-handle scan (orchestration
-    //    migration increment 1) -------------------------------------------------
+    // -- Module-owned decoded reference graph ---------------------------------
     //
-    // The decoded reference transaction the module OWNS for the current fork's
-    // decode/scan path, seeded by `fm_decode_reference_graph` from the KFMS
-    // module-state arena. This is the module-owned equivalent of the JS
-    // `decodeSegmentedForkReferenceTransaction` result: it lets the host (in a
-    // later host-rewire increment) stop decoding the wire graph in TypeScript
-    // (`fork-reference-segments.ts`) and stop scanning externref handles in
-    // TypeScript (`scanSegmentedForkReferenceExternrefHandles`,
-    // `fork-externref-process-owner.ts`), routing both through the ONE shared
-    // `fork_codec` decoder that already backs `fm_begin_reference_replay`. Held
-    // in its OWN static, independent of the replay `REFERENCE_STATE` driver: the
-    // pre-launch externref-handle scan runs BEFORE any replay driver is seeded,
-    // and a decode may be requested purely to inspect the graph.
+    // The decoded reference transaction of one KFMS module-state arena, made
+    // resident by `decode_reference_graph_impl` for its two readers: a child's
+    // `fm_child_plan` (raw reference imports, before anything is instantiated)
+    // and the exception throw path. Held in its OWN static, independent of the
+    // replay `REFERENCE_STATE` driver: the plan runs BEFORE any replay driver is
+    // seeded, and the driver consumes its transaction.
     struct DecodedGraphCell(UnsafeCell<Option<SegmentedReferenceTransaction>>);
     // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for DecodedGraphCell {}
@@ -4104,28 +4097,24 @@ mod wasm {
         unsafe { &mut *DECODED_GRAPH.0.get() }
     }
 
-    // -- Resident child import plan -----------------------------------------
+    // -- Resident child plan ------------------------------------------------
     //
-    // One activation's plan at a time, exactly like the decoded graph above and
-    // for the same reason: the host builds it, walks it, and moves on to the
-    // next activation. Holding several would mean the module deciding when a
-    // plan stops being interesting, which it cannot know.
-    struct ImportPlanCell(UnsafeCell<Option<Vec<fork_codec::ImportPlanEntry>>>);
+    // The encoded `fm_child_plan` answer, held so the address it returned stays
+    // valid while the host reads it. One at a time: a new plan replaces it.
+    struct ImportPlanCell(UnsafeCell<Option<Vec<u8>>>);
     // SAFETY: single-threaded per worker (see `Bump`).
     unsafe impl Sync for ImportPlanCell {}
     static IMPORT_PLAN: ImportPlanCell = ImportPlanCell(UnsafeCell::new(None));
 
     #[allow(clippy::mut_from_ref)]
-    fn import_plan() -> &'static mut Option<Vec<fork_codec::ImportPlanEntry>> {
+    fn import_plan() -> &'static mut Option<Vec<u8>> {
         // SAFETY: single-threaded per worker; one host drives build/read.
         unsafe { &mut *IMPORT_PLAN.0.get() }
     }
 
-    // Monotonic count of reference graphs the module has DECODED from a KFMS
-    // arena since worker start. Proof-of-use for the decode flip: after the host
-    // routes wire-graph decode through `fm_decode_reference_graph` this has
-    // advanced past its pre-fork value; a silent fallback to the TypeScript
-    // `decodeSegmentedForkReferenceTransaction` leaves it unchanged. Never resets.
+    // Monotonic count of reference graphs the module has made RESIDENT from a
+    // KFMS arena since worker start (`decode_reference_graph_impl`). Never
+    // resets.
     static REFERENCE_GRAPHS_DECODED: AtomicU64 = AtomicU64::new(0);
 
     // Retained STATS SLOT (fm_stats field 10) held for the frozen host/native
@@ -6754,8 +6743,8 @@ mod wasm {
     ///
     /// This is the arena->records->transaction path shared by
     /// `fm_begin_reference_replay` (the guest-driven replay) and
-    /// `fm_decode_reference_graph` / `fm_restore_from_arena` (the module-owned
-    /// orchestration entries). It uses the IMMUTABLE whole-memory view (reads
+    /// `decode_reference_graph_impl` / `fm_restore_from_arena` (the module-owned
+    /// orchestration paths). It uses the IMMUTABLE whole-memory view (reads
     /// only, so the release-LLVM `&mut`-noalias miscompile the serialize/child
     /// paths avoid does not apply), lifts each module-state record's payload into
     /// a borrowed `ReferenceTransactionRecord`, and reuses the D6.0 transaction
@@ -6824,11 +6813,10 @@ mod wasm {
     /// The staleness check, and the reason it is a comparison rather than an
     /// invalidation. The host used to hold this: `ForkExceptionBroker` had an
     /// `invalidate()` the fork path called at the two moments a new graph
-    /// exists. Abandoning the graph here instead would be wrong -- the host
-    /// decodes it for its OWN admission gates and reads node fields back
-    /// through `fm_decoded_node_field`, so dropping one it is still using would
-    /// turn its reads into `EINVAL`. Comparing roots notices the same staleness
-    /// without touching anything the host owns.
+    /// exists. Abandoning the graph at replay instead would be wrong -- a
+    /// child's `fm_child_plan` decodes the same arena before replay begins, and
+    /// comparing roots lets the throw path reuse that graph rather than decode
+    /// it twice.
     static DECODED_GRAPH_ROOT: AtomicU64 = AtomicU64::new(0);
 
     fn begin_reference_replay_impl(module_state_root: u64, _pid: u32) -> Result<(), Errno> {
@@ -6912,19 +6900,16 @@ mod wasm {
         Ok(())
     }
 
-    // -- Module-owned wire-graph decode / scan / restore impls (orchestration
-    //    migration increment 1) -------------------------------------------------
+    // -- Module-owned wire-graph decode / restore impls ----------------------
 
     /// Decode the sealed KFMS arena rooted at `module_state_root` into the
     /// module-owned decoded graph and return its node count (`>= 0`). Reuses the
     /// SAME shared arena decode as `fm_begin_reference_replay`; unlike replay it
     /// seeds NO driver/feed — it only makes the decoded graph resident for the
-    /// per-node structure readout (`fm_decoded_node_*`) and host inspection.
-    /// Reclaims any prior graph.
+    /// per-node structure readout below. Reclaims any prior graph.
     fn decode_reference_graph_impl(module_state_root: u64) -> Result<u32, Errno> {
-        // Clear any prior resident graph WITHOUT running its `Drop`: the host runs
-        // `fm_decode_reference_graph` during child setup (for the exnref-tag and
-        // static-root gates; see `worker-main.ts`), BEFORE the child's own
+        // Clear any prior resident graph WITHOUT running its `Drop`: a child's
+        // `fm_child_plan` decodes during child setup, BEFORE the child's own
         // `fm_begin_child_replay` bump reset, so a COW child's inherited
         // `DECODED_GRAPH` is clobbered and dropping it traps. See
         // `abandon_resident`. This was the ORIGINAL pipeline-in-command-substitution
@@ -6941,26 +6926,13 @@ mod wasm {
         Ok(node_count)
     }
 
-    // -- Module-owned decoded-graph STRUCTURE readout (orchestration migration
-    //    increment C) -----------------------------------------------------------
+    // -- Decoded-graph STRUCTURE readout ------------------------------------
     //
-    // BOTH CONSUMERS THIS COMMENT USED TO NAME ARE GONE, and it named them as
-    // reasons these accessors exist -- so read the list below, not the history.
-    // The exnref tag-validity gate moved INTO this module (see the tag catalog
-    // above, which supersedes `assertForkModuleExnrefTagsDeclared`), and the
-    // merged static-root mirror seeding stopped walking nodes when that layout
-    // became a single map settled at registration (census 201). A comment that
-    // justifies a surface by its callers outlives them by default; this one
-    // did, in the same file that elsewhere says the gate is the module's.
-    //
-    // THE LIVE CONSUMER is `ForkChildReferences`, which asks a recipe's KIND
-    // and its MODULE_ACTIVATION -- the ordinal selector and the node count have
-    // no host caller left. They stay exported because the wire format is frozen
-    // and a reader is cheap; nothing here should be read as a claim that
-    // something calls them.
-    // The wire format is FROZEN and no new algorithm is introduced: they read
-    // the SAME decoded `ReferenceRecipeNode` the shared `reference_segments.rs`
-    // decode already produced.
+    // Module-internal since lane F stage 1G deleted `fm_decoded_node_field`.
+    // Two readers: `fm_child_plan`, which resolves a child's raw reference
+    // imports against the graph, and the exception throw path, which asks an
+    // exnref recipe's owner. They read the SAME decoded `ReferenceRecipeNode`
+    // the shared `reference_segments.rs` decode produced.
 
     /// The wire node-kind discriminant for a decoded node, mirroring the TS
     /// `WireNodeKind` const enum (`fork-reference-recipes.ts`) and the writer's
@@ -7022,29 +6994,6 @@ mod wasm {
             | ReferenceRecipeNode::StaticRoot {
                 module_activation, ..
             } => Ok(*module_activation),
-            ReferenceRecipeNode::Null | ReferenceRecipeNode::I31 { .. } => Err(Errno::EINVAL),
-        })
-    }
-
-    /// The kind-specific ordinal ("second word") of the resident decoded graph's
-    /// node at `index`: funcref `function_ordinal`, exnref `tag_ordinal`,
-    /// struct/array `type_ordinal`, static-root `static_root_ordinal` — the SAME
-    /// `second` word the segment writer emits (`reference_segments_writer.rs`).
-    /// A kind without an ordinal (null, i31) is a truthful `EINVAL`.
-    /// This is what the host exnref gate reads as `tagOrdinal` and the static-root
-    /// mirror seeding reads as `staticRootOrdinal`.
-    fn decoded_node_ordinal_impl(index: usize) -> Result<u32, Errno> {
-        with_decoded_node(index, |node| match node {
-            ReferenceRecipeNode::Funcref {
-                function_ordinal, ..
-            } => Ok(*function_ordinal),
-            ReferenceRecipeNode::Exnref { tag_ordinal, .. } => Ok(*tag_ordinal),
-            ReferenceRecipeNode::Struct { type_ordinal, .. }
-            | ReferenceRecipeNode::Array { type_ordinal, .. } => Ok(*type_ordinal),
-            ReferenceRecipeNode::StaticRoot {
-                static_root_ordinal,
-                ..
-            } => Ok(*static_root_ordinal),
             ReferenceRecipeNode::Null | ReferenceRecipeNode::I31 { .. } => Err(Errno::EINVAL),
         })
     }
@@ -9366,9 +9315,8 @@ mod wasm {
     }
 
     /// The activation id the wire format reserves for an exception no
-    /// activation's codec claimed. Above `i32::MAX` on purpose, so a host
-    /// reading it through `fm_decoded_node_field` gets a refusal rather than a
-    /// plausible activation number.
+    /// activation's codec claimed. Above `i32::MAX` on purpose, so no reader
+    /// can mistake it for a plausible activation number.
     const HOST_EXCEPTION_ACTIVATION_ID: u32 =
         fork_codec::drive_plan_hints::FORK_HOST_EXCEPTION_ACTIVATION_ID;
 
@@ -9389,8 +9337,8 @@ mod wasm {
     /// So the module does not throw: it CALLS the activation that can. That is
     /// the same act the host floor performed, moved to the side of the boundary
     /// that already knows the answer. The owner is `module_activation` on the
-    /// recipe's node in the graph this module decoded; the host had to read it
-    /// back out through `fm_decoded_node_field` to do the same job.
+    /// recipe's node in the graph this module decoded; the host used to read it
+    /// back out through an accessor entry to do the same job.
     ///
     /// The call goes through the drive table, at
     /// `base(owner) + DRIVE_SLOT_EXN_THROW_RECIPE` -- the same mechanism that
@@ -9456,9 +9404,9 @@ mod wasm {
     ///
     /// Lazy for the reason `LAST_REPLAY_ROOT` records: decoding walks the arena
     /// and abandons the previous resident graph, so a fork that throws nothing
-    /// should pay nothing. Already-resident FOR THIS REPLAY'S ROOT is the
-    /// ordinary case in a child -- the host decodes the same arena during child
-    /// setup for its own admission gates -- so this usually does nothing.
+    /// should pay nothing. Already-resident FOR THIS REPLAY'S ROOT is common in
+    /// a child that imports a raw reference -- `fm_child_plan` decoded the same
+    /// arena during child setup -- and then this does nothing.
     fn make_replay_graph_resident() -> Result<(), Errno> {
         let root = LAST_REPLAY_ROOT.load(Ordering::Relaxed);
         if root == 0 {
@@ -10899,138 +10847,24 @@ mod wasm {
         }
     }
 
-    // -- Module-owned wire-graph decode + scan + restore exports (orchestration
-    //    migration increment 1) -------------------------------------------------
+    // -- Child plan (what a fresh child must know before it instantiates) ---
     //
-    // Additive `fm_*` surfaces over the EXISTING `fork_codec` decode/replay/drive
-    // engine (`reference_segments.rs` decode, `reference_replay.rs` driver/feed,
-    // `drive_plan.rs` build_drive_plan). They let a later host-rewire increment
-    // retire the TypeScript wire-graph decode (`fork-reference-segments.ts`),
-    // externref-handle scan (`scanSegmentedForkReferenceExternrefHandles`), and
-    // replay ENTRY wrapper (`restoreModuleState`/`materializeAllTyped`), routing
-    // all three through the ONE shared engine that already backs
-    // `fm_begin_reference_replay`. The wire format is FROZEN — these carry no new
-    // algorithm and no new engine-floor seam.
-
-    /// Decode the sealed KFMS module-state arena rooted at `module_state_root`
-    /// into the module-owned decoded reference graph. Returns the graph's node
-    /// count (`>= 0`) or `-1` (reason in `fm_last_errno`). The decoded graph
-    /// stays resident for the `fm_decoded_node_field` selectors
-    /// until the next decode or replay. See `decode_reference_graph_impl`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_decode_reference_graph(module_state_root: usize) -> i32 {
-        match decode_reference_graph_impl(module_state_root as u64) {
-            Ok(count) if count <= i32::MAX as u32 => {
-                set_ok();
-                count as i32
-            }
-            Ok(_) => {
-                set_err(Errno::EINVAL);
-                -1
-            }
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// The node count of the resident decoded graph, or `-1` with no graph.
-    ///
-    /// WAS `fm_decoded_node_count`, its own export. It is a field of the
-    /// resident graph like the three below it, and `fm_decoded_node_field`
-    /// already dispatches over them -- so it is a selector there now, and the
-    /// contract is one entry shorter. Census 202.
-    fn decoded_node_count_impl() -> i32 {
-        match decoded_graph().as_ref() {
-            Some(t) => match i32::try_from(t.nodes.len()) {
-                Ok(n) => {
-                    set_ok();
-                    n
-                }
-                Err(_) => {
-                    set_err(Errno::EINVAL);
-                    -1
-                }
-            },
-            None => {
-                set_err(Errno::EINVAL);
-                -1
-            }
-        }
-    }
-
-    /// One field of the resident decoded graph's node at `index`, selected by
-    /// `field`, or `-1` (reason in `fm_last_errno`) if no graph is resident,
-    /// `index` is out of range, the node's kind does not carry the requested
-    /// field, the value exceeds `i32::MAX`, or `field` is unknown.
-    ///
-    /// - 0 `KIND`              — the wire node-kind discriminant (`0..=7`: null 0,
-    ///   funcref 1, exnref 3, i31 4, struct 5, array 6, static-root 7; 2, the
-    ///   retired host-externref kind, never decodes). Mirrors the JS decode's `entry.node.kind` so the host
-    ///   can filter the graph by kind. See `decoded_node_kind_impl` /
-    ///   `wire_node_kind`.
-    /// - 1 `MODULE_ACTIVATION` — the `module_activation` coordinate
-    ///   (funcref/exnref/struct/array/static-root; absent for null/i31).
-    ///   This is the host's `moduleActivation` for the exnref admission gate and
-    ///   the static-root catalog mirror seeding. See
-    ///   `decoded_node_module_activation_impl`.
-    /// - 2 `ORDINAL`           — the kind-specific ordinal (funcref
-    ///   `function_ordinal`, exnref `tag_ordinal`, struct/array `type_ordinal`,
-    ///   static-root `static_root_ordinal`; absent for null/i31). This
-    ///   is the host's `tagOrdinal` (exnref admission gate) and
-    ///   `staticRootOrdinal` (static-root catalog mirror seeding). See
-    ///   `decoded_node_ordinal_impl`.
-    ///
-    /// Replaces the former `fm_decoded_node_kind`,
-    /// `fm_decoded_node_module_activation` and `fm_decoded_node_ordinal`
-    /// exports, which shared one concept ("read a field of a decoded node") and
-    /// one signature `(usize) -> i32`. Because the operand types were already
-    /// identical, folding them costs no type checking at the boundary — unlike
-    /// an opaque fold over exports whose operands mean different things. Keep
-    /// the selectors in lockstep with `FmDecodedNodeField` in
-    /// `host/src/fork-module-backend.ts`.
-    ///
-    /// Unlike `fm_stats`, a `match` is safe here: the arms dispatch to distinct
-    /// *functions* rather than loading from distinct statics, so it does not
-    /// reproduce the post-injection `br_table` miscompile documented there.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_decoded_node_field(index: usize, field: u32) -> i32 {
-        match field {
-            0 => match decoded_node_kind_impl(index) {
-                Ok(kind) => {
-                    set_ok();
-                    kind as i32
-                }
-                Err(e) => {
-                    set_err(e);
-                    -1
-                }
-            },
-            1 => clamp_decoded_u32(decoded_node_module_activation_impl(index)),
-            2 => clamp_decoded_u32(decoded_node_ordinal_impl(index)),
-            // The graph's own node count, which takes no index -- a property of
-            // the resident graph rather than of a node, but the same question
-            // asked of the same resident thing, and it had its own export for
-            // no better reason than that it was written first.
-            3 => decoded_node_count_impl(),
-            _ => {
-                set_err(Errno::EINVAL);
-                -1
-            }
-        }
-    }
-
-    // -- Child import plan (what a fresh child puts in each import object) ---
+    // One entry, lane F stage 1G. The host's irreducible act at child
+    // instantiation is assembling JavaScript import objects, NOT deciding what
+    // belongs in them. Everything that decides -- matching each KFIG/KFIT
+    // declaration to the binding record the parent sealed, cross-checking
+    // types, finding the saved scalar behind a base import, resolving a raw
+    // reference against the graph and checking its kind against the declared
+    // type, and the order the activations must be instantiated in -- is a
+    // decision over byte images, and it lives in `fork_codec::child_import_plan`
+    // and `fork_codec::child_plan`. This entry exposes the result as packed
+    // rows.
     //
-    // The two entries census 175 argues for, and the argument in one line: the
-    // host's irreducible act at child instantiation is assembling a JavaScript
-    // import object, NOT deciding what belongs in it. Everything that decides
-    // -- matching each KFIG/KFIT declaration to the binding record the parent
-    // sealed, cross-checking their types, finding the saved scalar behind a
-    // base import, refusing the combinations a child cannot reconstruct -- is a
-    // decision over byte images, and it lives in
-    // `fork_codec::child_import_plan`. These expose its result.
+    // WHAT IT REPLACED: `fm_decode_reference_graph` and `fm_decoded_node_field`
+    // (the host asked a recipe's kind and owner and checked admissibility
+    // itself), `fm_child_import_plan` / `fm_child_import_plan_field` (one
+    // activation and one field per call), and the host's own dependency walk
+    // and instantiation-order sort.
 
     /// Read one arena record's payload as a slice of guest memory.
     fn record_payload(record: &fork_codec::ModuleStateRecord) -> Result<&'static [u8], Errno> {
@@ -11049,20 +10883,11 @@ mod wasm {
         })
     }
 
-    fn build_child_import_plan_impl(activation: u32, module_state_root: u64) -> Result<u32, Errno> {
-        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
-        if pw == 0 {
-            return Err(Errno::EINVAL); // no format seeded, so no arena to read
-        }
-        let chunk_header_size =
-            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
-        let fmt = ModuleStateFormat {
-            pointer_width: pw as u8,
-            chunk_header_size,
-        };
-        let mem = unsafe { mem_ref() };
-        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
-
+    /// One activation's import plan over the inherited arena's records.
+    fn activation_import_plan(
+        activation: u32,
+        module_state: &fork_codec::ModuleState,
+    ) -> Result<Vec<fork_codec::ImportPlanEntry>, Errno> {
         // An activation with no KFIG/KFIT section imports no global or table.
         // That is the ordinary case for a program that never dlopens, and an
         // EMPTY CATALOG rather than a refusal: the section is emitted only when
@@ -11106,21 +10931,115 @@ mod wasm {
             })
             .collect();
 
-        let plan = build_child_import_plan(
+        build_child_import_plan(
             activation,
             &globals,
             &tables,
             &global_bindings,
             &table_bindings,
             &snapshot_view,
-        )?;
-        let count = u32::try_from(plan.len()).map_err(|_| Errno::EINVAL)?;
+        )
+    }
+
+    fn child_plan_impl(module_state_root: u64) -> Result<usize, Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL); // no format seeded, so no arena to read
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+
+        // The child's activations are the ones it ADMITTED: the host admits
+        // the main module and every archived side module before planning, and
+        // nothing is bound yet -- the COW-child scrub dropped the parent's
+        // placements, and this plan is what says which to instantiate first.
+        let mut activations: Vec<u32> = Vec::new();
+        arena_for_each_record(REC_KIND_LINKED_FORMAT, |id, _, _| activations.push(id));
+        activations.sort_unstable();
+        activations.dedup();
+        if activations.is_empty() {
+            return Err(Errno::EINVAL); // nothing admitted, so nothing to plan
+        }
+        let mut plans = Vec::with_capacity(activations.len());
+        for activation in &activations {
+            plans.push((*activation, activation_import_plan(*activation, &module_state)?));
+        }
+
+        // The graph is decoded only when a raw reference asks about it: most
+        // children import none, and a decode walks the whole arena. Kept
+        // resident as before, because the exception throw path reads the same
+        // graph (`make_replay_graph_resident`).
+        let raw_reference = plans.iter().flat_map(|(_, entries)| entries).any(|e| {
+            e.space == IMPORT_SPACE_GLOBAL as u8
+                && e.kind == abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
+        });
+        if raw_reference
+            && !(decoded_graph().is_some()
+                && DECODED_GRAPH_ROOT.load(Ordering::Relaxed) == module_state_root)
+        {
+            decode_reference_graph_impl(module_state_root)?;
+        }
+
+        let views: Vec<fork_codec::ActivationImportPlan<'_>> = plans
+            .iter()
+            .map(|(activation, entries)| fork_codec::ActivationImportPlan {
+                activation: *activation,
+                entries,
+            })
+            .collect();
+        let plan = fork_codec::build_child_plan(&views, |recipe| {
+            with_decoded_node(recipe as usize, |node| Ok(fork_codec::reference_leaf(node)))
+        })?;
+
         // Abandoned rather than dropped, for the reason `reset_bump_heap`
         // states: a previous plan's `Vec` lives in bump memory a fork may
         // already have reclaimed, and walking it to drop it is the trap.
         abandon_resident(import_plan());
-        *import_plan() = Some(plan);
-        Ok(count)
+        let mut bytes = alloc::vec![0u8; fork_codec::child_plan_len(&plan)];
+        let at = core::hint::black_box(bytes.as_mut_ptr() as usize);
+        fork_codec::encode_child_plan(&plan, &mut bytes, u32::try_from(at).map_err(|_| Errno::EINVAL)?)?;
+        *import_plan() = Some(bytes);
+        Ok(at)
+    }
+
+    /// Plan every admitted activation of the child whose inherited arena is
+    /// rooted at `module_state_root`, and return the plan's address (0 with the
+    /// reason in `fm_last_errno`).
+    ///
+    /// The plan is `{activation_count u32, row_count u32, order_ptr u32}`, then
+    /// `row_count` 24-byte rows `{activation u32, import_ordinal u32, resolve u8,
+    /// type_code u8, flags u16, a u32, b u32, dep_activation u32}`, then the
+    /// `activation_count` ids of the instantiation order at `order_ptr`. What
+    /// each `resolve` means is `fork_codec::child_plan`'s. It stays valid until
+    /// the next plan or bump reset.
+    ///
+    /// Refusals: `EINVAL` for an arena or plan that disagrees with itself
+    /// (including a raw reference whose kind the declared type cannot hold, a
+    /// dependency on an activation the child does not have, and duplicate base
+    /// imports whose saved values differ); `EOPNOTSUPP` for a reference no child
+    /// can produce before instantiation (an `exnref`, a typed GC value);
+    /// `EDEADLK` for a provider cycle among the activations.
+    ///
+    /// Every activation must already be admitted (`fm_admit_activation`), since
+    /// its KFIG/KFIT sections arrive with its admission.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_plan(module_state_root: usize) -> usize {
+        match child_plan_impl(module_state_root as u64) {
+            Ok(at) => {
+                set_ok();
+                at
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
     }
 
     // -- Peer-table checkpoint (cross-worker dylink table replication) -------
@@ -11293,102 +11212,6 @@ mod wasm {
             Err(errno) => {
                 set_err(errno);
                 0
-            }
-        }
-    }
-
-    /// Build the import plan for ONE activation of the child rooted at
-    /// `module_state_root`, and return how many entries it has (`>= 0`), or `-1`
-    /// with the reason in `fm_last_errno`.
-    ///
-    /// Building and counting are one entry rather than two because the count is
-    /// not a fact about the arena until the plan exists -- the same shape
-    /// `fm_decode_reference_graph` has, which also returns the node count of the
-    /// graph it just made resident. The plan stays resident for
-    /// `fm_child_import_plan_field` until the next build or bump reset.
-    ///
-    /// The activation's `KFIG`/`KFIT` sections must already have been admitted
-    /// (`fm_admit_activation`); an activation with neither imports no global
-    /// or table, which is the ordinary single-module case rather than an error.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_child_import_plan(activation: u32, module_state_root: usize) -> i32 {
-        match build_child_import_plan_impl(activation, module_state_root as u64) {
-            Ok(count) => match i32::try_from(count) {
-                Ok(count) => {
-                    set_ok();
-                    count
-                }
-                Err(_) => {
-                    set_err(Errno::EINVAL);
-                    -1
-                }
-            },
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// One field of the resident import plan's entry at `index`:
-    ///
-    /// - `0` IMPORT_ORDINAL     -- position in the activation's whole import section
-    /// - `1` SPACE              -- 0 globals, 1 tables
-    /// - `2` KIND               -- a binding kind, read UNDER `space`: the two
-    ///   numberings overlap, so `kind` alone names two different things
-    /// - `3` TYPE_CODE          -- declared value type (globals) or element type (tables)
-    /// - `4` FLAGS              -- `IMPORT_PLAN_FLAG_SAVED` when `BITS` is a saved scalar
-    /// - `5` BITS               -- a BIT PATTERN, not a magnitude: raw global bits,
-    ///   a recipe id, or the saved scalar. All 64 bits are meaningful and `-1`
-    ///   is a legal value here, so a caller must read `fm_last_errno` rather
-    ///   than test the result
-    /// - `6` SOURCE_ACTIVATION  -- provider activation for the `ACTIVATION_*` kinds
-    /// - `7` SOURCE_OWNER       -- provider catalog ordinal for those kinds
-    ///
-    /// `EINVAL` with `-1` for an unknown field, an out-of-range index, or no
-    /// resident plan.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_child_import_plan_field(index: usize, field: u32) -> i64 {
-        let entry = match import_plan().as_ref().and_then(|plan| plan.get(index)) {
-            Some(entry) => *entry,
-            None => {
-                set_err(Errno::EINVAL);
-                return -1;
-            }
-        };
-        let value = match field {
-            0 => i64::from(entry.import_ordinal),
-            1 => i64::from(entry.space),
-            2 => i64::from(entry.kind),
-            3 => i64::from(entry.type_code),
-            4 => i64::from(entry.flags),
-            5 => entry.bits as i64,
-            6 => i64::from(entry.source_activation),
-            7 => i64::from(entry.source_owner),
-            _ => {
-                set_err(Errno::EINVAL);
-                return -1;
-            }
-        };
-        set_ok();
-        value
-    }
-
-    /// Shared tail for the `u32`-valued `fm_decoded_node_field` selectors: a
-    /// value above `i32::MAX` is `EINVAL` rather than a negative sentinel.
-    fn clamp_decoded_u32(result: Result<u32, Errno>) -> i32 {
-        match result {
-            Ok(value) if value <= i32::MAX as u32 => {
-                set_ok();
-                value as i32
-            }
-            Ok(_) => {
-                set_err(Errno::EINVAL);
-                -1
-            }
-            Err(e) => {
-                set_err(e);
-                -1
             }
         }
     }

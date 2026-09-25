@@ -269,9 +269,10 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     ]);
     x.fm_begin_reference_replay(a.root, PID);
     expect(f.errno(), "the first fork's replay begins").toBe(0);
-    // Make A resident, as a child's own admission gates do before its replay.
-    x.fm_decode_reference_graph(a.root);
-    expect(f.errno(), "the first fork's graph is resident").toBe(0);
+    // Make A resident through the throw path's own lazy decode: a recipe
+    // past the graph decodes A, then refuses (EINVAL) and traps.
+    expect(() => x.__wpk_fork_ref_exn_broker_throw_recipe(9999)).toThrow(WebAssembly.RuntimeError);
+    expect(x.fm_last_errno(), "the first fork's graph is resident").toBe(22);
 
     x.fm_abort();
     expect(f.errno(), "the first fork ends").toBe(0);

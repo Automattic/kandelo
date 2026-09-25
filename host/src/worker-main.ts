@@ -102,7 +102,6 @@ import {
   computeForkModuleTemplateId,
   readForkModuleStateRoot,
 } from "./fork-guest-sections";
-import { ForkChildReferences } from "./fork-child-references";
 import { guardFunctionImport, guardImportObject } from "./import-trap-guard";
 import {
   ForkImportIdentity,
@@ -2822,12 +2821,9 @@ function createForkPeerTableCheckpoint(
   return {
     capture: () => backend().capturePeerTables(channelBase),
     restore: (root) => {
-      // Seed the driver and build the install plan, then make the graph
-      // resident: the plan drive rebuilds the funcref and GC slots the
-      // guest table restore is about to read, and the graph is what the
-      // reference lookups behind them resolve through.
+      // Seed the driver and build the install plan: the plan drive rebuilds
+      // the funcref and GC slots the guest table restore is about to read.
       const plan = backend().restoreFromArena(root, pid);
-      backend().decodeReferenceGraph(root);
       backend().driveRestoredPlan(plan);
       for (const activation of activations().ordered()) {
         const restore =
@@ -3557,14 +3553,6 @@ export async function centralizedWorkerMain(
       // asked for them later.
       // The host's whole memory of this process's activations: four fields
       // each, and the drive bind that registration performs. See census 157.
-      /** One of the module's scalar recipe accessors, by name. */
-      const forkModuleExport = (name: string): ((recipe: number) => number) => {
-        const fn = forkModuleInstance?.exports[name];
-        if (typeof fn !== "function") {
-          throw new Error(`pid=${pid}: fork module exports no ${name}`);
-        }
-        return fn as (recipe: number) => number;
-      };
       // Which coordinate of an aliased table writes its sparse state. Hoisted
       // out of the import-identity constructor because activation registration
       // publishes into it too, and both must elect over ONE set of coordinates.
@@ -3622,7 +3610,6 @@ export async function centralizedWorkerMain(
         processTableStateOwners, !borrowedForkChild,
       );
       let importedStatePlanner: ForkChildImports | null = null;
-      let earlyChildReferences: ForkChildReferences | null = null;
       let childDylinkState: readonly LoaderArchivedModule[] | null = null;
       let processDlopenSupport: DlopenSupport | null = null;
       let processForkArchiveReaderHeld = false;
@@ -3652,12 +3639,9 @@ export async function centralizedWorkerMain(
 
       // WHAT USED TO BE HERE: `registerChildReferenceActivation`, which handed
       // the early reference provider a per-activation function catalog, static
-      // root decoder and GC codec provider. `ForkChildReferences` resolves a
-      // coordinate through the module's decoded graph and the MERGED catalogs
-      // the fork-module already imports, so there is no per-activation
-      // registration left to do -- and with it went the last reader of
-      // `forkGcCodecProviderFromInstance`, whose provider was only ever passed
-      // on to this and to the registry.
+      // root decoder and GC codec provider. `fm_child_plan` resolves a child's
+      // raw reference imports to a slot of the owning activation's own
+      // catalog, so there is no per-activation registration left to do.
       const readProcessLaunchRoot = (): number => {
         if (borrowedForkChild) return forkBufAddr;
         const view = new DataView(memory.buffer);
@@ -4076,85 +4060,24 @@ export async function centralizedWorkerMain(
         // `fork_codec::reference_segments`, seeded from the KFMS arena by
         // `fm_begin_reference_replay`), the full topological drive-order
         // (`fm_build_gc_plan` + `fm_drive_execute` over `drive_plan` Phase
-        // 0/3-5 — static-root publish, then typed allocate/fill/exn), and every `fm_ref_*` restore data feed. The
-        // The host's own decode of this arena is GONE. It was last held for
-        // the reconstruction wiring it fed; that wiring reads the module's
-        // `fm_decoded_*` accessors now, over the graph the module decodes from
-        // the same bytes. Multi-activation (dlopen) forks are covered
-        // identically: the merged, activation-namespaced funcref and
-        // static-root catalogs resolve each node against its owning activation.
-        // Make the MODULE's decoded reference graph resident for the merged
-        // static-root catalog mirror seeding below, which reads node kinds +
-        // coordinates from the module's `fm_decoded_*` accessors instead of
-        // walking the JS `decodeSegmentedForkReferenceTransaction` structure. The
-        // resident graph survives the later attach (which seeds the replay
-        // DRIVER, not this read-only graph).
+        // 0/3-5 — static-root publish, then typed allocate/fill/exn), and every `fm_ref_*` restore data feed.
         //
-        // The exnref tag-validity ADMISSION gate that formerly walked this graph
-        // here MOVED into the co-resident module (its child-install entry
-        // `fm_attach_child` (COW and borrowed alike) re-checks every captured
-        // exnref recipe against each activation's seeded exception tags before
-        // building the reconstruction drive plan, and fails loud with `EINVAL` on
-        // an undeclared tag — see `fm_set_activation_exception_tags` +
-        // `assert_exnref_tags_admissible` in `crates/fork-module`). The tags
-        // arrive with each activation's admission, so the fail-loud boundary
-        // lives inside reconstruction rather than as a separate host pre-walk.
-        if (forkModuleBackend) {
-          forkModuleBackend.decodeReferenceGraph(childArenaRoot);
-        }
-        // The child's pre-instantiation reference view. Every fact comes from
-        // the graph the module just made resident; what the host adds is the
-        // turn from coordinate to live reference, which is the identity floor.
-        //
-        // WHAT WENT WITH THE 1,619-LINE PROVIDER: its own wire decode of the
-        // same arena, a scratch allocator, the GC transit staging, the
-        // per-activation function/static-root/codec registration, and the
-        // one-shot poisoning that existed to unwind all of it. This allocates
-        // nothing, so a failure leaves nothing to release.
-        earlyChildReferences = new ForkChildReferences(
-          {
-            decodedNodeKind: (index) =>
-              requireForkModuleBackend(forkModuleBackend, pid)
-                .decodedNodeKind(index),
-            decodedNodeModuleActivation: (index) =>
-              requireForkModuleBackend(forkModuleBackend, pid)
-                .decodedNodeModuleActivation(index),
-            funcrefOrdinal: (recipeId) =>
-              forkModuleExport("fm_funcref_ordinal")(recipeId),
-            staticRootSlot: (recipeId) =>
-              forkModuleExport("fm_static_root_slot")(recipeId),
-          },
-          {
-            functionCatalog: forkModuleInstance!.functionCatalog,
-            staticRootCatalog: forkModuleInstance!.staticRootCatalog,
-          },
-          `pid=${pid}: early child references`,
-        );
+        // The child's imports are planned by the module too (`fm_child_plan`):
+        // which value each import of each activation gets, whether a raw
+        // reference's kind fits its declared type, and the instantiation order
+        // (providers first; a provider cycle is refused with EDEADLK). The host
+        // turns the rows into import objects and checks the order against the
+        // archive's, since the dlopen replay instantiates in archive order.
         importedStatePlanner = new ForkChildImports(
-          requireForkModuleBackend(forkModuleBackend, pid),
+          requireForkModuleBackend(forkModuleBackend, pid).childPlan(childArenaRoot),
           modules,
-          childArenaRoot,
-          earlyChildReferences,
           `pid=${pid}: child imported activation state`,
         );
-        const archivedOrder = [
-          0,
-          ...childDylinkState.flatMap(({ activationId }) =>
-            activationId === undefined ? [] : [activationId],
-          ),
-        ];
-        const plannedOrder = importedStatePlanner.instantiationOrder();
-        if (
-          archivedOrder.length !== plannedOrder.length ||
-          archivedOrder.some(
-            (activationId, index) => activationId !== plannedOrder[index],
-          )
-        ) {
-          throw new Error(
-            `pid=${pid}: inherited activation import dependencies require order ` +
-              `${plannedOrder.join(",")}, but the replay archive provides ` +
-              archivedOrder.join(","),
-          );
+        const archivedOrder = [0, ...childDylinkState.flatMap(({ activationId }) =>
+          activationId === undefined ? [] : [activationId])].join(",");
+        if (archivedOrder !== importedStatePlanner.order.join(",")) {
+          throw new Error(`pid=${pid}: inherited activation import dependencies require order `
+            + `${importedStatePlanner.order.join(",")}, but the replay archive provides ${archivedOrder}`);
         }
       }
       if (!forkModuleInstance) {
@@ -4276,7 +4199,6 @@ export async function centralizedWorkerMain(
         );
       } catch (error) {
         mainImportedStatePreparation?.abort();
-        earlyChildReferences = null;
         importedStatePlanner?.clear();
         throw error;
       }
@@ -4331,7 +4253,7 @@ export async function centralizedWorkerMain(
             `pid=${pid}: fork child lost its inherited module-state arena`,
           );
         }
-        if (!importedStatePlanner || !earlyChildReferences) {
+        if (!importedStatePlanner) {
           throw new Error(
             `pid=${pid}: fork child lost its pre-instantiation reference plan`,
           );
@@ -4452,7 +4374,6 @@ export async function centralizedWorkerMain(
         // that is always 0, so every lookup missed silently.
         // `ModuleStateWriter::adopt` closes that; whether it was the ONLY thing
         // missing is what running this will say.
-        earlyChildReferences = null;
         // Seed the child's module state BEFORE attaching. Without it the module
         // has no state at all, so every `record_find` the guest's restore makes
         // answers 0 and the guest traps reading a page header from address 0.

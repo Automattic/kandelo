@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ForkModuleContinuationBackend,
   FORK_ACTIVATION_DRIVE_BINDINGS,
+  type ForkChildPlan,
 } from "../src/fork-module-backend";
 import {
   CAPTURE_KIND_ARRAY,
@@ -967,53 +968,20 @@ describe("the binding records the module assembles at capture", () => {
     expect(plan, "and gets an install plan").toBeGreaterThan(0);
   });
 
-  /** `fm_child_import_plan_field` selectors, in the module's match order. */
-  const PLAN_ORDINAL = 0;
-  const PLAN_SPACE = 1;
-  const PLAN_KIND = 2;
-  const PLAN_TYPE_CODE = 3;
-  const PLAN_FLAGS = 4;
-  const PLAN_BITS = 5;
-  const PLAN_SOURCE_ACTIVATION = 6;
-  const PLAN_SOURCE_OWNER = 7;
-  const PLAN_FLAG_SAVED = 1;
+  /** `CHILD_PLAN_RESOLVE_*`, in `crates/fork-codec/src/child_plan.rs`. */
+  const RESOLVE_PROVIDER_GLOBAL = 6;
+  const RESOLVE_PROVIDER_TABLE = 7;
+  const RESOLVE_SAVED_BASE_SCALAR = 8;
 
-  /** Build the plan for one activation and read it back as plain objects. */
-  function readPlan(
-    x: Record<string, unknown>,
-    errno: () => number,
-    activation: number,
-    root: number,
-  ): {
-    ordinal: number;
-    space: number;
-    kind: number;
-    typeCode: number;
-    flags: number;
-    bits: bigint;
-    sourceActivation: number;
-    sourceOwner: number;
-  }[] {
-    const count = (x.fm_child_import_plan as (a: number, r: number) => number)(
-      activation,
-      root,
-    );
-    expect(errno(), "fm_child_import_plan").toBe(0);
-    const field = x.fm_child_import_plan_field as (i: number, f: number) => bigint;
-    const out = [];
-    for (let index = 0; index < count; index += 1) {
-      out.push({
-        ordinal: Number(field(index, PLAN_ORDINAL)),
-        space: Number(field(index, PLAN_SPACE)),
-        kind: Number(field(index, PLAN_KIND)),
-        typeCode: Number(field(index, PLAN_TYPE_CODE)),
-        flags: Number(field(index, PLAN_FLAGS)),
-        bits: field(index, PLAN_BITS),
-        sourceActivation: Number(field(index, PLAN_SOURCE_ACTIVATION)),
-        sourceOwner: Number(field(index, PLAN_SOURCE_OWNER)),
-      });
-    }
-    return out;
+  /** `fm_child_plan` over `root`, read the way the host reads it. */
+  function readPlan(f: Fixture, root: number): ForkChildPlan {
+    return new ForkModuleContinuationBackend({
+      instance: f.instance,
+      memory: f.memory,
+      ptrWidth: 4,
+      channelBase: CHANNEL_BASE,
+      label: "child plan",
+    }).childPlan(root);
   }
 
   /** `DRIVE_SLOT_MODULE_TABLE_STATE_SAVE`. */
@@ -1150,7 +1118,7 @@ describe("the binding records the module assembles at capture", () => {
   });
 
   it("plans a child's imports from the arena, ordered by import ordinal", () => {
-    // The whole point of the two entries: the host asks WHAT TO DO with each
+    // The whole point of the entry: the host asks WHAT TO DO with each
     // import, not for the binding rows to reason about itself. The global is
     // provided by the activation the election chose; the table likewise; and
     // they come back in import-section order, which is the order the host
@@ -1166,22 +1134,25 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 99, 0n);
     saveWrites(f, 0, 1);
+    // The provider must be one of the child's activations, or the plan names
+    // an instance the child will never have.
+    admitActivation(f, 9, { template: sideTemplate(9) });
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
     const root = f.root();
 
-    const plan = readPlan(f.x, () => f.errno(), 0, root);
+    const { order, rows } = readPlan(f, root);
+    expect(order, "the provider is instantiated first").toEqual([9, 0]);
+    const plan = rows.filter((row) => row.activation === 0);
     expect(plan.length, "one global and one table").toBe(2);
     expect(plan[0]!.ordinal).toBe(0);
-    expect(plan[0]!.space, "the global comes first").toBe(SPACE_GLOBAL);
-    expect(plan[0]!.kind).toBe(KIND_ACTIVATION_GLOBAL);
+    expect(plan[0]!.resolve, "the global comes first").toBe(RESOLVE_PROVIDER_GLOBAL);
     expect(plan[0]!.typeCode).toBe(GLOBAL_TYPE_I32);
-    expect(plan[0]!.sourceActivation, "the elected owner").toBe(9);
-    expect(plan[0]!.sourceOwner).toBe(5);
+    expect([plan[0]!.a, plan[0]!.b], "the elected owner").toEqual([9, 5]);
+    expect(plan[0]!.dep).toBe(9);
     expect(plan[1]!.ordinal).toBe(1);
-    expect(plan[1]!.space, "the table second").toBe(SPACE_TABLE);
-    expect(plan[1]!.kind).toBe(KIND_ACTIVATION_TABLE);
-    expect(plan[1]!.sourceActivation).toBe(9);
+    expect(plan[1]!.resolve, "the table second").toBe(RESOLVE_PROVIDER_TABLE);
+    expect(plan[1]!.a).toBe(9);
   });
 
   it("assembles binding records when a SIDE activation imports a global too", () => {
@@ -1251,12 +1222,11 @@ describe("the binding records the module assembles at capture", () => {
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
 
-    const plan = readPlan(f.x, () => f.errno(), 0, f.root());
-    expect(plan[0]!.kind, "nothing owns the group").toBe(KIND_BASE_IMPORT);
-    expect(plan[0]!.flags & PLAN_FLAG_SAVED, "the snapshot travels").toBe(
-      PLAN_FLAG_SAVED,
+    const plan = readPlan(f, f.root()).rows;
+    expect(plan[0]!.resolve, "nothing owns the group, and the snapshot travels").toBe(
+      RESOLVE_SAVED_BASE_SCALAR,
     );
-    expect(plan[0]!.bits, "the value the save walk wrote").toBe(42n);
+    expect([plan[0]!.a, plan[0]!.b], "the value the save walk wrote").toEqual([42, 0]);
   });
 
   it("plans nothing for an activation that declared no imports", () => {
@@ -1269,44 +1239,22 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
     saveWrites(f, 0, 1);
+    admitActivation(f, 4, { template: sideTemplate(4) });
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
+    const plan = readPlan(f, f.root());
     expect(
-      (f.x.fm_child_import_plan as (a: number, r: number) => number)(
-        4,
-        f.root(),
-      ),
+      plan.rows.filter((row) => row.activation === 4),
       "activation 4 seeded no sections",
-    ).toBe(0);
-    expect(f.errno(), "and that is not an error").toBe(0);
+    ).toEqual([]);
+    expect(plan.order, "and is still one of the child's activations").toEqual([0, 4]);
   });
 
-  it("refuses a field read with no resident plan, a bad index and a bad field", () => {
+  it("refuses to plan from something that is not an arena", () => {
     const f = fixture();
-    const field = f.x.fm_child_import_plan_field as (i: number, f: number) => bigint;
-    expect(field(0, PLAN_ORDINAL), "nothing built yet").toBe(-1n);
-    expect(f.errno(), "and says why").toBe(22);
-
-    admitActivation(f, 0);
-    seedSections(f);
-    const { provenance } = publish(f);
-    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
-    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
-    saveWrites(f, 0, 1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-    const count = (f.x.fm_child_import_plan as (a: number, r: number) => number)(
-      0,
-      f.root(),
-    );
-    expect(f.errno(), "the plan builds").toBe(0);
-    expect(field(count, PLAN_ORDINAL), "one past the end").toBe(-1n);
-    expect(f.errno()).toBe(22);
-    expect(field(0, 99), "a field the module does not have").toBe(-1n);
-    expect(f.errno()).toBe(22);
-    // And the plan is still readable after a refusal: a bad read must not
-    // discard the plan the next good read needs.
-    expect(Number(field(0, PLAN_ORDINAL))).toBe(0);
-    expect(f.errno()).toBe(0);
+    // Zeroed, in bounds, and never mapped by the responder.
+    expect((f.x.fm_child_plan as (r: number) => number)(1024 * 1024)).toBe(0);
+    expect(f.errno()).not.toBe(0);
   });
 
   it("refuses to plan from an arena whose binding record is corrupt", () => {
@@ -1319,7 +1267,7 @@ describe("the binding records the module assembles at capture", () => {
     saveWrites(f, 0, 1);
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     const root = f.root();
-    const ok = (f.x.fm_child_import_plan as (a: number, r: number) => number)(0, root);
+    const ok = (f.x.fm_child_plan as (r: number) => number)(root);
     expect(ok, "the intact arena plans").toBeGreaterThan(0);
 
     const bindings = arenaRecords(f.memory, root).find(
@@ -1328,9 +1276,9 @@ describe("the binding records the module assembles at capture", () => {
     expect(bindings, "a KFBG record to corrupt").toBeDefined();
     bindings!.payload.setUint8(24 + 32, 99); // a kind no child could materialise
     expect(
-      (f.x.fm_child_import_plan as (a: number, r: number) => number)(0, root),
+      (f.x.fm_child_plan as (r: number) => number)(root),
       "the corrupt record is refused",
-    ).toBe(-1);
+    ).toBe(0);
     expect(f.errno()).toBe(22);
   });
 
@@ -1605,28 +1553,11 @@ describe("the binding records the module assembles at capture", () => {
     );
     expect(aggregateRecipes).toHaveLength(1);
     expect(recipes).toHaveLength(2);
+    expect(root, "and the graph seals").toBeGreaterThan(0);
 
-    // The CHILD decodes the sealed graph and reports it back. Node count and
-    // the aggregate's own coordinates are what a replay then drives from.
-    const child = childModule(f, { label: "aggregate-capture-child" });
-    const nodes = (child.fm_decode_reference_graph as (r: number) => number)(root);
-    expect(
-      (child.fm_last_errno as () => number)(),
-      "the child decodes what the parent sealed",
-    ).toBe(0);
-    // Canonical null, two leaves, one aggregate.
-    expect(nodes).toBe(4);
-
-    const field = child.fm_decoded_node_field as (i: number, f: number) => number;
-    const aggregateIndex = aggregateRecipes[0]!;
-    expect(
-      field(aggregateIndex, 1),
-      "the aggregate reports the activation it was captured for",
-    ).toBe(0);
-    expect(
-      field(aggregateIndex, 2),
-      "and the type ordinal it was defined with",
-    ).toBe(13);
+    // The CHILD-side readout of node count and coordinates went with
+    // `fm_decoded_node_field` (lane F stage 1G). The round trip it proved
+    // is `fork_codec`'s `round_trips_every_node_kind_and_shared_vector`.
   });
 
   it("captures a struct-to-array CYCLE, which needs every claim before any edge", () => {
@@ -1660,15 +1591,7 @@ describe("the binding records the module assembles at capture", () => {
       ],
     );
     expect(aggregateRecipes).toHaveLength(2);
-
-    const child = childModule(f, { label: "cycle-capture-child" });
-    const nodes = (child.fm_decode_reference_graph as (r: number) => number)(root);
-    expect(
-      (child.fm_last_errno as () => number)(),
-      "a child decodes a cyclic graph without looping",
-    ).toBe(0);
-    // Canonical null, one leaf, two aggregates.
-    expect(nodes).toBe(4);
+    expect(root, "and the cyclic graph seals").toBeGreaterThan(0);
   });
 
   it("refuses a vector whose appends do not match what was promised", () => {
@@ -1755,24 +1678,6 @@ describe("the binding records the module assembles at capture", () => {
       1,
     );
     expect(f.errno(), "an attach mid-capture is refused").toBe(EBUSY);
-  });
-
-  it("lets the PARENT decode its own sealed graph, for the replay lookups", () => {
-    // Whether a parent can ask its own sealed arena which activation owns an
-    // exnref recipe. It is the question census 159 turns on: if it can, the
-    // exception broker's `throwRecipe` needs no new entry -- the module already
-    // exposes a decoded node's module activation, and the host already wraps it.
-    const f = fixture();
-    admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-    expect(f.errno(), "seal").toBe(0);
-    const root = f.root();
-
-    const nodes = (f.x.fm_decode_reference_graph as (root: number) => number)(root);
-    expect(f.errno(), "the parent decodes its own arena").toBe(0);
-    expect(nodes, "and gets a node count back").toBeGreaterThanOrEqual(0);
   });
 
   it("falls back to a base import when no activation provides the object", () => {

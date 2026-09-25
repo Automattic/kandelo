@@ -154,9 +154,23 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   { slot: 18, name: "wpk_fork_module_table_apply", required: true },
 ] as const;
 
-/** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
-const DECODED_FIELD_KIND = 0;
-const DECODED_FIELD_MODULE_ACTIVATION = 1;
+/** One row of `fm_child_plan`; `resolve` is a `CHILD_PLAN_RESOLVE_*`. */
+export interface ForkChildPlanRow {
+  readonly activation: number;
+  readonly ordinal: number;
+  readonly resolve: number;
+  readonly typeCode: number;
+  readonly a: number;
+  readonly b: number;
+  /** The activation that must be instantiated first (0xffffffff: none). */
+  readonly dep: number;
+}
+
+/** A fork child's whole import plan, and the order to instantiate in. */
+export interface ForkChildPlan {
+  readonly order: readonly number[];
+  readonly rows: readonly ForkChildPlanRow[];
+}
 
 export interface ForkModuleBackendOptions {
   readonly instance: ForkModuleInstance;
@@ -662,9 +676,21 @@ export class ForkModuleContinuationBackend {
     return this.call("fm_restore_from_arena", moduleStateRoot, pid);
   }
 
-  /** Make a child's decoded reference graph resident for the accessors below. */
-  decodeReferenceGraph(moduleStateRoot: number): void {
-    this.call("fm_decode_reference_graph", moduleStateRoot);
+  /**
+   * Plan a fork child's imports from its inherited arena: `fm_child_plan`'s
+   * header, 24-byte rows and instantiation order (`fork_codec::child_plan`),
+   * read out at once because the next plan replaces them.
+   */
+  childPlan(moduleStateRoot: number): ForkChildPlan {
+    const at = this.call("fm_child_plan", moduleStateRoot);
+    const view = new DataView(this.options.memory.buffer);
+    const word = (offset: number): number => view.getUint32(offset, true);
+    const rows = Array.from({ length: word(at + 4) }, (_, index) => {
+      const row = at + 12 + index * 24;
+      return { activation: word(row), ordinal: word(row + 4), resolve: view.getUint8(row + 8),
+        typeCode: view.getUint8(row + 9), a: word(row + 12), b: word(row + 16), dep: word(row + 20) };
+    });
+    return { order: Array.from({ length: word(at) }, (_, index) => word(word(at + 8) + 4 * index)), rows };
   }
 
   // WHAT USED TO BE HERE: `moduleStateArenaRoot`, which read
@@ -690,33 +716,12 @@ export class ForkModuleContinuationBackend {
     return this.call("fm_resume_slots", unplaced ? 2 : 1, activationId, 0);
   }
 
-  // WHAT USED TO BE HERE: `decodedNodeCount` and `decodedNodeOrdinal`. Their
-  // only caller was the child-install path's second merged static-root base
-  // map, which walked every node to find the static roots and took each
-  // activation's maximum ordinal. That layout is settled once at registration
-  // now (census 201), so nothing counts nodes or reads an ordinal from the
-  // host any more. `fm_decoded_node_field` is still reached, for kind and
-  // module_activation, by `ForkChildReferences`.
+  // WHAT USED TO BE HERE: `decodedNodeKind` / `decodedNodeModuleActivation`
+  // and `childImportPlan` / `childImportPlanField`, which read the decoded
+  // graph and one activation's plan a field at a time so the host could check
+  // admissibility and sort the activations itself. `childPlan` answers all of
+  // it from the module (lane F stage 1G).
 
-  decodedNodeKind(index: number): number {
-    return this.call("fm_decoded_node_field", index, DECODED_FIELD_KIND);
-  }
-
-  decodedNodeModuleActivation(index: number): number {
-    return this.call(
-      "fm_decoded_node_field",
-      index,
-      DECODED_FIELD_MODULE_ACTIVATION,
-    );
-  }
-
-  /**
-   * Build one child activation's import plan and return its entry count.
-   *
-   * The activation's KFIG/KFIT sections must already be seeded. An activation
-   * that declared neither plans 0 imports, which is the ordinary single-module
-   * case rather than an error.
-   */
   /**
    * Capture a PEER-TABLE checkpoint into a fresh module-owned arena.
    *
@@ -729,33 +734,6 @@ export class ForkModuleContinuationBackend {
       throw new Error(`${this.label}: peer-table capture produced no arena`);
     }
     return root;
-  }
-
-  childImportPlan(activation: number, moduleStateRoot: number): number {
-    return this.call("fm_child_import_plan", activation, moduleStateRoot);
-  }
-
-  /**
-   * One field of the resident plan's entry at `index`.
-   *
-   * Not routed through `call`, which narrows to `number`: field 5 is a 64-bit
-   * PATTERN -- raw global bits, a recipe id or a saved scalar -- and narrowing
-   * it would lose the low bits of an i64. For the same reason `-1` is a legal
-   * result here, so failure is read from `fm_last_errno` rather than from the
-   * value.
-   */
-  childImportPlanField(index: number, field: number): bigint {
-    const read = this.exports.fm_child_import_plan_field as
-      (i: number, f: number) => bigint;
-    const value = read(index, field);
-    const errno = this.lastErrno();
-    if (errno !== 0) {
-      throw new Error(
-        `${this.label}: fm_child_import_plan_field(${index}, ${field}) ` +
-          `failed with errno ${errno}`,
-      );
-    }
-    return value;
   }
 
   /**
