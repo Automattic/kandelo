@@ -1,9 +1,14 @@
 # Machine progress overlay: destroy and load
 
-Status: design, approved conversationally on 2026-09-24. Sections 3-5 were
-folded in without section-by-section review at the maintainer's direction
-("good enough for now"); they are this author's judgment and are the parts
-most worth correcting at spec review.
+Status: design approved 2026-09-24. Sections 3-5 were folded in without
+section-by-section review at the maintainer's direction ("good enough for
+now"). The centred-overlay requirement in section 3 is a direct maintainer
+instruction, not an inference: the bar this design replaces was judged to read
+as a stray element in a left-hand pane.
+
+This work lands on PR #1412 rather than as a follow-up, by maintainer
+direction — the load bar shipping there is the UI being corrected, so the two
+belong in one change.
 
 ## Why
 
@@ -210,6 +215,13 @@ second bar for the same event. Its CSS is renamed with it.
 
 - Full-page: `position: fixed; inset: 0`, using the backdrop-blur idiom already
   present in `styles.css` (`.kshare-backdrop` and peers).
+- **Centred.** The card holding the label, bar and counts is centred in the
+  viewport, not pinned to a pane or an edge. This is the explicit fix for the
+  bar this design replaces: that one rendered inside the primary surface slot,
+  so it appeared in whatever pane happened to be mounted and read as a stray
+  element in a left-hand column rather than as the state of the whole machine.
+  A machine switch is a whole-page event and has to look like one. The card has
+  a bounded width so the bar does not stretch across a wide monitor.
 - Modal. The outgoing machine is gone and the incoming one is not up, so there
   is nothing meaningful to interact with underneath. The app container gets
   `inert` while the overlay is up, so blocking pointer events does not leave
