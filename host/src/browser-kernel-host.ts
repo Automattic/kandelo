@@ -12,6 +12,7 @@ import {
   type LazyDownloadEvent,
 } from "./vfs/memory-fs";
 import { FramebufferRegistry } from "./framebuffer/registry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
   HostDiagnostic,
@@ -302,6 +303,7 @@ export class BrowserKernel {
   private pendingPtyOutputChunks = 0;
   private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private destroyProgress = createDestroyProgressFanout();
   private pcmTransport: PcmTransportDescriptor | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
 
@@ -1458,6 +1460,7 @@ export class BrowserKernel {
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
     // Release every main-thread reference to shared buffers this kernel held.
     // `fbMemoryByPid`/`framebuffers` retain typed-array views over process
     // `WebAssembly.Memory` (up to 1 GiB max each) posted from the worker for
@@ -1805,7 +1808,7 @@ export class BrowserKernel {
         this.emitLazyDownload(msg.event);
         break;
       case "destroy_progress":
-        // TODO Task 3: implement destroy progress handling
+        this.destroyProgress.emit(msg.event);
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol

@@ -32,6 +32,7 @@ import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
   snapshotClosedLazyAssetSources,
@@ -226,6 +227,7 @@ export class NodeKernelHost {
   private _nextRequestId = 1;
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private destroyProgress = createDestroyProgressFanout();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -1030,6 +1032,7 @@ export class NodeKernelHost {
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1187,7 +1190,7 @@ export class NodeKernelHost {
         this.emitLazyDownload(msg.event);
         break;
       case "destroy_progress":
-        // TODO Task 3: implement destroy progress handling
+        this.destroyProgress.emit(msg.event);
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
