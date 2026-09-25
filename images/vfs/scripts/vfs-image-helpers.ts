@@ -449,6 +449,12 @@ export async function serializeImage(
     materializeAll: options.materializeAll,
     metadata,
     normalizeTimestampsMs: options.normalizeTimestampsMs,
+    // WHY: this is the product-artifact boundary. The allocator's free tail is
+    // capacity a running machine grows into, not content anyone should
+    // download — and it compresses to almost nothing, so it also hides how
+    // large an image really is. Consumers restore through the ceiling the
+    // image declares, so the tail is recoverable at boot.
+    trimFreeCapacity: true,
   });
   // Materialize first when requested so the resource and Wasm checks inspect
   // the exact concrete namespace represented by the returned snapshot.

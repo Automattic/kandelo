@@ -6,7 +6,7 @@ import { rewriteRootfsLazyFileUrls } from "../../apps/browser-demos/lib/init/roo
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
-const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
+const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs.zst");
 
 describe.skipIf(!existsSync(rootfsImage))("PHP browser PHPT lazy assets", () => {
   it("rewrites every canonical rootfs executable URL, including dash, ps, and pgrep", () => {

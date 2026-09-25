@@ -31,8 +31,8 @@ artifact_rows() {
             'host/wasm/kandelo-kernel.wasm' \
         'target/wasm32-unknown-unknown/release/kandelo_kernel.wasm' \
             'local-binaries/kernel.wasm' \
-        'target/exact-abi-source-test/rootfs.vfs' \
-            'host/wasm/rootfs.vfs'
+        'target/exact-abi-source-test/rootfs.vfs.zst' \
+            'host/wasm/rootfs.vfs.zst'
 }
 
 fail() {
@@ -192,7 +192,7 @@ prepare_source_test_rootfs() {
         ' -- "$output" "$packages_config" "$package_manifest"
     )
     validate_regular_artifact "$output" \
-        "target/exact-abi-source-test/rootfs.vfs" >/dev/null
+        "target/exact-abi-source-test/rootfs.vfs.zst" >/dev/null
 }
 
 write_inventory() {
@@ -254,7 +254,7 @@ pack_workspace() {
     EXACT_WORKSPACE_PRIVATE_ROOT="$private"
     stage="$private/workspace"
     mkdir -p "$stage"
-    local prepared_rootfs="$private/rootfs.vfs"
+    local prepared_rootfs="$private/rootfs.vfs.zst"
     prepare_source_test_rootfs \
         "$source_root" \
         "$prepared_rootfs" \
@@ -266,7 +266,7 @@ pack_workspace() {
     while IFS=$'\t' read -r source_path destination_path extra; do
         [ -n "$source_path" ] && [ -n "$destination_path" ] && [ -z "$extra" ] ||
             fail "internal artifact allowlist is invalid"
-        if [ "$source_path" = "target/exact-abi-source-test/rootfs.vfs" ]; then
+        if [ "$source_path" = "target/exact-abi-source-test/rootfs.vfs.zst" ]; then
             artifact_source="$prepared_rootfs"
         else
             validate_source_artifact_ancestors "$source_root" "$source_path"

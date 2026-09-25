@@ -240,7 +240,7 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
     }
 }
 
-/// Return content for dynamic files that cannot be owned by rootfs.vfs.
+/// Return content for dynamic files that cannot be owned by rootfs.vfs.zst.
 ///
 /// Static `/etc` policy and data, including OpenSSL configuration and trust
 /// roots, belong to the mounted image. `/etc/mtab` is the exception because it

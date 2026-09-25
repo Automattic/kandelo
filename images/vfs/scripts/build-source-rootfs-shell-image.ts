@@ -921,7 +921,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     ) {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
-          "--rootfs <rootfs.vfs> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
+          "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
           "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
           "--evdev-demo <evdev_demo.wasm> --espeak-ng <espeak-ng.wasm> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +

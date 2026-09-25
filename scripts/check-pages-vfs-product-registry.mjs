@@ -48,7 +48,8 @@ export function checkPagesVfsProductRegistry(options) {
     extractStaticImports(source).map((specifier) => ({ path, specifier })),
   );
   const globs = sources.flatMap(({ path, source }) =>
-    extractGlobImports(source).map((specifier) => ({ path, specifier })),
+    [...extractGlobImports(source), ...extractDynamicImports(source)]
+      .map((specifier) => ({ path, specifier })),
   );
 
   for (const entry of selected.values()) {
@@ -65,12 +66,13 @@ export function checkPagesVfsProductRegistry(options) {
         );
       }
       if (globMatches.length !== 0) {
-        throw new Error(`${entry.id} is eager but also has a lazy import.meta.glob loader`);
+        throw new Error(`${entry.id} is eager but also has an on-demand loader`);
       }
     } else {
       if (globMatches.length === 0) {
         throw new Error(
-          `${entry.id} is lazy in the Pages registry but has no import.meta.glob loader`,
+          `${entry.id} is lazy in the Pages registry but has no on-demand loader ` +
+            `(import.meta.glob or dynamic import)`,
         );
       }
       if (staticMatches.length !== 0) {
@@ -384,7 +386,6 @@ function checkCanonicalPagesProjection(selected, sources) {
   if (
     !liveSource.includes('from "virtual:kandelo-pages-vfs-products"') ||
     !liveSource.includes("createPagesVfsProductLoader(") ||
-    !liveSource.includes('activate("platform-rootfs")') ||
     !liveSource.includes('activate("browser-main-shell")')
   ) {
     throw new Error("browser live setup lacks the canonical eager Pages product loader");
@@ -428,12 +429,26 @@ export function isVfsSpecifier(specifier) {
 function checkRootfsAliasProjection(selected, sources) {
   const rootfs = selected.get("platform-rootfs");
   if (rootfs === undefined) return;
-  if (rootfs.load !== "eager") {
-    throw new Error("platform-rootfs alias must remain eager in the Pages registry");
+  // WHY lazy is now required: the canonical rootfs is a supporting artifact, not
+  // part of any machine's boot path. It seeds `/etc` for demos that start from
+  // an empty filesystem, backs the network demo's machine, and serves
+  // `vfsImage: "default"` callers. Declaring it eager made every visitor fetch
+  // an image they usually never mount.
+  if (rootfs.load !== "lazy") {
+    throw new Error("platform-rootfs must stay lazy in the Pages registry");
   }
   const hostSource = sourceNamed(sources, "browser-kernel-default-artifacts.ts");
-  if (!hostSource.includes(`from "${rootfsAlias}?url"`)) {
-    throw new Error("platform-rootfs is not statically imported through @rootfs-vfs");
+  if (hostSource.includes(`from "${rootfsAlias}?url"`)) {
+    throw new Error(
+      "platform-rootfs is statically imported through @rootfs-vfs, which would " +
+        "make it an eager dependency of every browser entry point",
+    );
+  }
+  if (!hostSource.includes(`import("${rootfsAlias}?url")`)) {
+    throw new Error(
+      "platform-rootfs must be reachable through an on-demand " +
+        `import("${rootfsAlias}?url")`,
+    );
   }
   const viteSource = sourceNamed(sources, "vite.config.ts");
   if (
@@ -728,6 +743,18 @@ function extractStaticImports(source) {
 
 function extractGlobImports(source) {
   return [...source.matchAll(/import\.meta\.glob\(\s*["']([^"']+)["']/g)]
+    .map((match) => match[1]);
+}
+
+/**
+ * Dynamic `import("...")` specifiers. These are on-demand loaders just as
+ * `import.meta.glob` is: the bundler emits the target as its own chunk and
+ * nothing fetches it until the importing branch runs. A lazy product may be
+ * reached this way when it has exactly one well-known artifact and therefore
+ * needs no glob over build-location candidates.
+ */
+function extractDynamicImports(source) {
+  return [...source.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)]
     .map((match) => match[1]);
 }
 

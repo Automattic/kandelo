@@ -217,7 +217,7 @@ function text(bytes: Uint8Array): string {
 }
 
 function fixturePaths(root: string) {
-  const rootfsPath = join(root, "rootfs.vfs");
+  const rootfsPath = join(root, "rootfs.vfs.zst");
   const bashPath = join(root, "bash.wasm");
   const fbdoomPath = join(root, "fbdoom.wasm");
   const modesetPath = join(root, "modeset.wasm");
@@ -968,7 +968,7 @@ describe("canonical source-rootfs shell", () => {
       ensureDirRecursiveOnHost(dir);
       extendedDependencyDirs.set(dependency, dir);
     }
-    writeFileSync(join(rootfsDir, "rootfs.vfs"), "rootfs");
+    writeFileSync(join(rootfsDir, "rootfs.vfs.zst"), "rootfs");
     writeFileSync(join(bashDir, "bash.wasm"), "bash");
     writeFileSync(join(fbdoomDir, "fbdoom.wasm"), "fbdoom");
     writeFileSync(join(modesetDir, "modeset.wasm"), "modeset");
@@ -1048,7 +1048,7 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     );
     expect(readdirSync(workDir)).toEqual([]);
     const invocation = readFileSync(logPath, "utf8");
-    expect(invocation).toContain(`--rootfs ${rootfsDir}/rootfs.vfs`);
+    expect(invocation).toContain(`--rootfs ${rootfsDir}/rootfs.vfs.zst`);
     expect(invocation).toContain(`--bash ${bashDir}/bash.wasm`);
     expect(invocation).toContain(`--fbdoom ${fbdoomDir}/fbdoom.wasm`);
     expect(invocation).toContain(`--modeset ${modesetDir}/modeset.wasm`);

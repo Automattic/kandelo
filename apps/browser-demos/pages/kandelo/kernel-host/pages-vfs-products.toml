@@ -1,9 +1,15 @@
 schema = 1
 kind = "kandelo-pages-vfs-products"
 
+# WHY lazy: the canonical rootfs is a supporting artifact, not part of any
+# machine's boot path. It seeds `/etc` for demos that start from an empty
+# filesystem, backs the network demo's own machine, and serves callers that ask
+# for `vfsImage: "default"`. Nothing statically imports it any more (see
+# host/src/browser-kernel-default-artifacts.ts), so it is fetched only when one
+# of those paths runs instead of by every visitor.
 [[products]]
 id = "platform-rootfs"
-load = "eager"
+load = "lazy"
 
 [[products]]
 id = "browser-main-shell"

@@ -143,16 +143,16 @@ export function selectNodeBenchmarkRuntimeArtifacts(
     try {
       const resolved = resolveRootfs();
       rootfs = {
-        logicalPath: "rootfs.vfs",
+        logicalPath: "rootfs.vfs.zst",
         selectedPath: resolved.selectedPath,
         resolverRequest: resolved.resolverRequest,
         resolverSelectedPath: resolved.selectedPath,
       };
     } catch (error) {
       rootfs = {
-        logicalPath: "rootfs.vfs",
+        logicalPath: "rootfs.vfs.zst",
         selectedPath: null,
-        resolverRequest: "rootfs.vfs -> programs/rootfs.vfs",
+        resolverRequest: "rootfs.vfs.zst -> programs/rootfs.vfs.zst",
         error: errorMessage(error),
       };
     }

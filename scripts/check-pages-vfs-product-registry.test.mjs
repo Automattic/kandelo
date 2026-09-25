@@ -249,6 +249,63 @@ test("enforces eager static imports and lazy glob-only imports", () => {
   });
 });
 
+test("keeps the canonical rootfs an on-demand dependency", () => {
+  // WHY this guard exists: the rootfs is a supporting artifact — it seeds /etc
+  // for demos that start from an empty filesystem, backs the network demo's
+  // machine, and serves `vfsImage: "default"` callers. A static
+  // `@rootfs-vfs?url` import made it an eager dependency of every browser entry
+  // point, so the registry had to publish it eagerly and every visitor fetched
+  // an image they usually never mounted.
+  withTempDir((directory) => {
+    const staticImport = copyBrowserSources(directory, (source, contents) => {
+      if (!source.endsWith("browser-kernel-default-artifacts.ts")) return contents;
+      return `import rootfsVfsUrl from "@rootfs-vfs?url";\n${contents}`;
+    });
+    assert.throws(
+      () => checkPagesVfsProductRegistry({ ...paths, browserSources: staticImport }),
+      /platform-rootfs.*statically imported.*eager dependency/is,
+    );
+
+    const noLoader = copyBrowserSources(directory, (source, contents) => {
+      if (!source.endsWith("browser-kernel-default-artifacts.ts")) return contents;
+      return contents.replace('import("@rootfs-vfs?url")', 'resolveSomehow()');
+    });
+    assert.throws(
+      () => checkPagesVfsProductRegistry({ ...paths, browserSources: noLoader }),
+      /platform-rootfs.*on-demand/is,
+    );
+  });
+});
+
+test("rejects a rootfs the Pages registry declares eager", () => {
+  withTempDir((directory) => {
+    // Flip BOTH registries together so the check reaches the rootfs rule
+    // instead of stopping at the source/generated equality guard.
+    const registry = join(directory, "eager-rootfs.toml");
+    writeFileSync(
+      registry,
+      readFileSync(registryPath, "utf8").replace(
+        /(id = "platform-rootfs"\nload = )"lazy"/,
+        '$1"eager"',
+      ),
+    );
+    const generated = join(directory, "eager-rootfs.generated.json");
+    const parsed = JSON.parse(readFileSync(generatedRegistryPath, "utf8"));
+    for (const entry of parsed.products) {
+      if (entry.id === "platform-rootfs") entry.load = "eager";
+    }
+    writeFileSync(generated, canonicalBytes(parsed));
+    assert.throws(
+      () => checkPagesVfsProductRegistry({
+        ...paths,
+        registryPath: registry,
+        generatedRegistryPath: generated,
+      }),
+      /platform-rootfs must stay lazy/is,
+    );
+  });
+});
+
 test("rejects absent, unregistered, and unselected VFS source paths", () => {
   withTempDir((directory) => {
     const absent = copyBrowserSources(directory, (source, contents) => {

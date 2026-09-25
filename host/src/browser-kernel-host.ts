@@ -156,7 +156,7 @@ export interface BrowserKernelBootOptions {
   kernelWasm?: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}, OR
-   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs`
+   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs.zst`
    * shipped with the worker entry. The worker takes ownership; the main
    * thread no longer has FS access.
    */
@@ -213,7 +213,7 @@ export interface BrowserKernelOwnedImageInitOptions {
 }
 
 async function fetchDefaultBrowserKernelArtifact(
-  kind: "kernelWasm" | "rootfsVfs",
+  kind: "kernelWasm",
 ): Promise<ArrayBuffer> {
   // WHY: explicit-byte consumers, including trust-boundary tests and embedded
   // hosts, must not require the demo build's default kernel/rootfs artifacts.
@@ -225,6 +225,29 @@ async function fetchDefaultBrowserKernelArtifact(
   return fetch(browserKernelDefaultArtifactUrls[kind]).then((response) =>
     response.arrayBuffer()
   );
+}
+
+/**
+ * Fetch the canonical rootfs image for `vfsImage: "default"`.
+ *
+ * Resolved through {@link browserDefaultRootfsVfsUrl} so the rootfs stays an
+ * on-demand chunk: it is a supporting artifact (empty-filesystem `/etc`
+ * seeding, the network demo's machine, explicit `"default"` callers), not
+ * something every boot should transfer.
+ */
+async function fetchDefaultRootfsVfsImage(): Promise<ArrayBuffer> {
+  const { browserDefaultRootfsVfsUrl } = await import(
+    "./browser-kernel-default-artifacts"
+  );
+  const url = await browserDefaultRootfsVfsUrl();
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `vfsImage:"default" could not fetch the canonical rootfs image ` +
+        `(${response.status} ${response.statusText})`,
+    );
+  }
+  return response.arrayBuffer();
 }
 
 export class BrowserKernel {
@@ -411,8 +434,7 @@ export class BrowserKernel {
         ? Promise.resolve(options.kernelWasm)
         : fetchDefaultBrowserKernelArtifact("kernelWasm"),
       options.vfsImage === "default"
-        ? fetchDefaultBrowserKernelArtifact("rootfsVfs")
-            .then((b) => new Uint8Array(b))
+        ? fetchDefaultRootfsVfsImage().then((b) => new Uint8Array(b))
         : Promise.resolve(options.vfsImage),
     ]);
 

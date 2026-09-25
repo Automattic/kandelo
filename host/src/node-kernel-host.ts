@@ -134,8 +134,8 @@ export interface NodeKernelHostOptions {
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
-   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs`, falling back
-   *     to the resolver-managed `programs/rootfs.vfs` artifact, and apply
+   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs.zst`, falling back
+   *     to the resolver-managed `programs/rootfs.vfs.zst` artifact, and apply
    *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
    *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
    *     `/tmp` etc.).
@@ -1301,7 +1301,7 @@ function resolveRootfsImage(
 }
 
 export interface ResolvedRootfsArtifact {
-  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
+  resolverRequest: "rootfs.vfs.zst" | "programs/rootfs.vfs.zst";
   selectedPath: string;
 }
 
@@ -1310,22 +1310,22 @@ export function resolveRootfsArtifact(
 ): ResolvedRootfsArtifact {
   try {
     return {
-      resolverRequest: "rootfs.vfs",
-      selectedPath: resolver("rootfs.vfs"),
+      resolverRequest: "rootfs.vfs.zst",
+      selectedPath: resolver("rootfs.vfs.zst"),
     };
   } catch (rootfsError) {
     try {
       return {
-        resolverRequest: "programs/rootfs.vfs",
-        selectedPath: resolver("programs/rootfs.vfs"),
+        resolverRequest: "programs/rootfs.vfs.zst",
+        selectedPath: resolver("programs/rootfs.vfs.zst"),
       };
     } catch (programsError) {
       const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
       const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
       throw new Error(
         `rootfsImage:"default" requested but no rootfs image was available.\n` +
-          `Tried rootfs.vfs:\n${rootfsMessage}\n` +
-          `Tried programs/rootfs.vfs:\n${programsMessage}\n` +
+          `Tried rootfs.vfs.zst:\n${rootfsMessage}\n` +
+          `Tried programs/rootfs.vfs.zst:\n${programsMessage}\n` +
           `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
       );
     }

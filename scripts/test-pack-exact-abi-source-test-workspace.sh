@@ -12,7 +12,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-expected_rootfs_row=$'target/exact-abi-source-test/rootfs.vfs\thost/wasm/rootfs.vfs'
+expected_rootfs_row=$'target/exact-abi-source-test/rootfs.vfs.zst\thost/wasm/rootfs.vfs.zst'
 bash "$PACKER" list | grep -Fxq "$expected_rootfs_row" || {
     echo "exact workspace packer does not transport the source-built test rootfs" >&2
     exit 1
@@ -65,7 +65,7 @@ while IFS=$'\t' read -r source_path destination_path extra; do
         exit 1
     }
     if [ -z "${created_sources[$source_path]:-}" ]; then
-        if [ "$source_path" = "target/exact-abi-source-test/rootfs.vfs" ]; then
+        if [ "$source_path" = "target/exact-abi-source-test/rootfs.vfs.zst" ]; then
             continue
         fi
         mkdir -p "$SOURCE/$(dirname "$source_path")"
@@ -86,7 +86,7 @@ git clone -q "$SOURCE" "$CONSUMER"
 bash "$PACKER" pack \
     --source-root "$SOURCE" \
     --archive "$ARCHIVE"
-[ ! -e "$SOURCE/target/exact-abi-source-test/rootfs.vfs" ] || {
+[ ! -e "$SOURCE/target/exact-abi-source-test/rootfs.vfs.zst" ] || {
     echo "protected rootfs preparation mutated the exact source checkout" >&2
     exit 1
 }
@@ -123,7 +123,7 @@ while IFS= read -r destination_path; do
     }
 done < "$expected_paths"
 grep -Fxq 'protected-package-free-rootfs' \
-    "$CONSUMER/host/wasm/rootfs.vfs" || {
+    "$CONSUMER/host/wasm/rootfs.vfs.zst" || {
     echo "protected rootfs preparation did not supply the extracted test image" >&2
     exit 1
 }
@@ -185,11 +185,11 @@ expect_failure symlink-ancestor "source artifact parent is a symbolic link" \
 rm "$SOURCE/host/test/fixtures"
 mv "$PRIVATE/external-fixtures" "$SOURCE/host/test/fixtures"
 
-printf 'product\n' > "$SOURCE/host/wasm/rootfs.vfs"
+printf 'product\n' > "$SOURCE/host/wasm/rootfs.vfs.zst"
 expect_failure product-vfs "product VFS" \
     bash "$PACKER" pack --source-root "$SOURCE" \
         --archive "$PRIVATE/product-vfs.tar.zst"
-rm "$SOURCE/host/wasm/rootfs.vfs"
+rm "$SOURCE/host/wasm/rootfs.vfs.zst"
 
 mkdir "$SOURCE/binaries"
 expect_failure binaries "legacy binaries" \

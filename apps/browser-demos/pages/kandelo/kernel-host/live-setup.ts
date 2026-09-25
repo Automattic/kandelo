@@ -547,10 +547,11 @@ export async function createLiveHost(
   opts: CreateLiveHostOptions = {},
 ): Promise<LiveKernelHost> {
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    await Promise.all([
-      CANONICAL_PAGES_VFS_LOADER.activate("platform-rootfs"),
-      CANONICAL_PAGES_VFS_LOADER.activate("browser-main-shell"),
-    ]);
+    // WHY only the shell: this prefetches the default boot image. The platform
+    // rootfs is a lazy product now — a supporting artifact that on-demand paths
+    // activate for themselves — so awaiting it here would make every boot,
+    // including a `?vfs=` deep link that never mounts it, wait on that transfer.
+    await CANONICAL_PAGES_VFS_LOADER.activate("browser-main-shell");
   }
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;

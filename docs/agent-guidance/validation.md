@@ -82,7 +82,7 @@ part of the task. Build or fetch what is missing:
    when a sysroot already exists), then the
    kernel, every package, and the rootfs, producing
    `local-binaries/kernel.wasm` (the binary resolver prefers it over
-   `binaries/`) and `host/wasm/rootfs.vfs`:
+   `binaries/`) and `host/wasm/rootfs.vfs.zst`:
    ```bash
    scripts/dev-shell.sh ./run.sh setup
    ```

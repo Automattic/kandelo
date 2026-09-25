@@ -23,6 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { constants as zlibConstants, zstdCompressSync } from "node:zlib";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs add <image> <vfs-path> [options]
@@ -258,7 +259,12 @@ export async function runAdd(args: string[]): Promise<number> {
 
   let mfs: MemoryFileSystem;
   try {
-    mfs = MemoryFileSystem.fromImage(imageBytes);
+    // WHY capacity-preserving: a serialized image retains only its allocated
+    // blocks, so its buffer is exactly full on restore. `add` mutates that
+    // namespace, and every new block has to come from growth up to the
+    // ceiling the image itself declares. A plain fromImage() would restore
+    // into a fixed-size buffer and fail with ENOSPC on the first write.
+    mfs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
     // WHY: authenticate before source reads, namespace mutation, or image writes.
     await mfs.verifyImportedLazyAtomicGroupSeals();
   } catch (e) {
@@ -361,15 +367,26 @@ export async function runAdd(args: string[]): Promise<number> {
 
   let updated: Uint8Array;
   try {
-    updated = await mfs.saveImage();
+    // WHY trimFreeCapacity: `add` rewrites a product artifact in place, so it
+    // must not reintroduce the free tail that `build` deliberately dropped.
+    updated = await mfs.saveImage({ trimFreeCapacity: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`mkrootfs add: failed to serialize image: ${msg}\n`);
     return 1;
   }
 
+  // WHY: preserve the artifact's encoding. A `.vfs.zst` image that `add`
+  // rewrote as raw bytes would still load (fromImage detects the magic) while
+  // silently becoming many times larger than the name promises.
+  const encoded = parsed.image.endsWith(".zst")
+    ? zstdCompressSync(updated, {
+        params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
+      })
+    : updated;
+
   try {
-    await writeAtomic(parsed.image, updated);
+    await writeAtomic(parsed.image, encoded);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`mkrootfs add: failed to write ${parsed.image}: ${msg}\n`);

@@ -37,4 +37,4 @@ script_path = "packages/registry/rootfs/build-rootfs-package.sh"
 
 [[outputs]]
 name = "rootfs"
-wasm = "rootfs.vfs"
+wasm = "rootfs.vfs.zst"

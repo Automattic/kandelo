@@ -69,7 +69,7 @@ async function main() {
   if (!bin || !outDir || !kernelPath || !rootfsPath) {
     console.error(
       "usage: generate-coreutils-man.ts <coreutils.wasm> <capture-dir>" +
-        " <kernel.wasm> <rootfs.vfs>",
+        " <kernel.wasm> <rootfs.vfs.zst>",
     );
     process.exit(2);
   }

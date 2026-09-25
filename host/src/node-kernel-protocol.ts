@@ -54,7 +54,7 @@ export interface InitMessage {
    */
   execProgramBytes?: Record<string, ArrayBuffer>;
   /**
-   * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
+   * Bytes of `host/wasm/rootfs.vfs.zst`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount
    * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
    * `VirtualPlatformIO`. Absent → worker falls back to `NodePlatformIO`

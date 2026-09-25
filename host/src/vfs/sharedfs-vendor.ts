@@ -212,6 +212,20 @@ export interface SharedFsSnapshotOptions {
    * snapshot copy. The live filesystem is not modified.
    */
   normalizeTimestampsMs?: number;
+  /**
+   * Serialize only through the highest allocated block instead of the whole
+   * backing buffer, so a distributable image does not ship the allocator's
+   * unused capacity as product bytes.
+   *
+   * Off by default, and deliberately so. A restored image is exactly full, so
+   * every later write — including materializing a deferred entry — depends on
+   * growing back to the ceiling the image declares. Production boots do that
+   * (`restoreVerifiedImageMounts` reserves via `imageMemfsReservationBytes`),
+   * but an in-process `saveImage()`/`fromImage()` round-trip that restores into
+   * a fixed-size buffer would get ENOSPC on its first allocation. Enable this
+   * where a build writes a product artifact, not for live snapshots.
+   */
+  trimFreeCapacity?: boolean;
 }
 
 export interface NamespaceEntryIdentity {
@@ -580,9 +594,31 @@ export class SharedFS {
       }
     }
 
-    const copy = new Uint8Array(this.buffer.byteLength);
-    copy.set(this.u8);
+    // WHY: the backing buffer is sized for the capacity a running machine may
+    // need, not for the bytes this filesystem actually holds. Serializing the
+    // free tail ships unused capacity as product bytes — the canonical rootfs
+    // image was 16 MiB on the wire for ~1.3 MiB of content, 93.6% of it zero.
+    // Retain through the highest allocated block only. SB_MAX_SIZE_BLOCKS is
+    // left untouched, so a restored image grows back on demand through the
+    // ordinary blockAllocWithGrow() path; SB_FREE_BLOCKS is rewritten to match
+    // the retained extent so statfs() and grow() both read truthful state.
+    const retainedBlocks = options?.trimFreeCapacity
+      ? this.allocatedBlockWatermark()
+      : Math.floor(this.buffer.byteLength / BLOCK_SIZE);
+    const retainedBytes = options?.trimFreeCapacity
+      ? retainedBlocks * BLOCK_SIZE
+      : this.buffer.byteLength;
+    const copy = new Uint8Array(retainedBytes);
+    copy.set(this.u8.subarray(0, retainedBytes));
     const view = new DataView(copy.buffer);
+    if (options?.trimFreeCapacity) {
+      view.setUint32(SB_TOTAL_BLOCKS, retainedBlocks, true);
+      view.setUint32(
+        SB_FREE_BLOCKS,
+        retainedBlocks - this.allocatedBlockCount(retainedBlocks),
+        true,
+      );
+    }
     view.setUint32(SB_GLOBAL_LOCK, 0, true);
     view.setUint32(SB_NAMESPACE_LOCK, 0, true);
     copy.fill(0, FD_TABLE_OFFSET, BLOCK_SIZE);
@@ -779,6 +815,44 @@ export class SharedFS {
   private resetAllocationHints(): void {
     this.blockAllocHint = this.findNextFreeBlockHint();
     this.inodeAllocHint = this.findNextFreeInodeHint();
+  }
+
+  /**
+   * One past the highest allocated block — the block count a serialized image
+   * must retain. Blocks below SB_DATA_START are the superblock, bitmaps, and
+   * inode table, which are always present, so the metadata region is the floor.
+   */
+  private allocatedBlockWatermark(): number {
+    const totalBlocks = this.r32(SB_TOTAL_BLOCKS);
+    const dataStart = this.r32(SB_DATA_START);
+    const bbStart = this.r32(SB_BLOCK_BITMAP_START) * BLOCK_SIZE;
+    for (let blockNo = totalBlocks - 1; blockNo >= dataStart; blockNo--) {
+      const word = Atomics.load(this.i32, (bbStart >> 2) + (blockNo >> 5));
+      if (word === 0) {
+        // No block in this bitmap word is allocated; skip the whole word.
+        blockNo &= ~31;
+        continue;
+      }
+      if ((word & (1 << (blockNo & 31))) !== 0) return blockNo + 1;
+    }
+    return dataStart;
+  }
+
+  /** Allocated blocks among the first `blocks` blocks, per the block bitmap. */
+  private allocatedBlockCount(blocks: number): number {
+    const bbStart = this.r32(SB_BLOCK_BITMAP_START) * BLOCK_SIZE;
+    let used = 0;
+    for (let blockNo = 0; blockNo < blocks; blockNo++) {
+      const word = Atomics.load(this.i32, (bbStart >> 2) + (blockNo >> 5));
+      if (word === 0) {
+        // Skip to the last block of this word; the loop's increment advances
+        // to the first block of the next one.
+        blockNo |= 31;
+        continue;
+      }
+      if ((word & (1 << (blockNo & 31))) !== 0) used++;
+    }
+    return used;
   }
 
   private findNextFreeBlockHint(): number {

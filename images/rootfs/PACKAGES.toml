@@ -2,7 +2,7 @@
 #
 # Entries here are turned into a generated mkrootfs manifest fragment by
 # scripts/generate-rootfs-package-manifest.mjs and included by
-# scripts/build-rootfs.sh. Package outputs default to lazy files: rootfs.vfs
+# scripts/build-rootfs.sh. Package outputs default to lazy files: rootfs.vfs.zst
 # stores an executable stub plus URL/size metadata, and the real Wasm is fetched
 # on first exec by hosts that run programs from the VFS.
 

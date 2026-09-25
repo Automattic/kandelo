@@ -24,8 +24,10 @@ vi.mock("../src/browser-kernel-default-artifacts", () => {
   return {
     browserKernelDefaultArtifactUrls: {
       kernelWasm: "stub://default-kernel",
-      rootfsVfs: "stub://default-rootfs",
     },
+    // WHY a function, not a URL constant: the canonical rootfs is resolved on
+    // demand so it stays out of every entry point's eager dependency graph.
+    browserDefaultRootfsVfsUrl: async () => "stub://default-rootfs",
   };
 });
 
@@ -234,6 +236,7 @@ describe("BrowserKernel", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       expect(url).toBe("stub://default-rootfs");
       return {
+        ok: true,
         arrayBuffer: async () => defaultRootfs.buffer.slice(0),
       };
     }));
@@ -245,7 +248,11 @@ describe("BrowserKernel", () => {
       vfsImage: "default",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The rootfs URL is resolved on demand, so boot waits on a dynamic module
+    // load and one extra await before the worker is constructed.
+    while (MockWorker.instances.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     const worker = MockWorker.instances[0]!;
     const init = worker.lastMessage("init");
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
