@@ -37,27 +37,29 @@ test("reports a real percentage while the image loads", async ({ page }) => {
   await setProgress(page, {
     phase: "image",
     label: "wordpress-sqlite.vfs.zst",
-    loadedBytes: 1024 * 1024,
-    totalBytes: 4 * 1024 * 1024,
+    completed: 1024 * 1024,
+    total: 4 * 1024 * 1024,
+    unit: "bytes",
     status: "loading",
   });
 
   await expect(page.locator(bar)).toHaveAttribute("aria-valuenow", "25");
-  await expect(page.getByText("loading wordpress-sqlite.vfs.zst"))
+  await expect(page.getByText("Loading wordpress-sqlite.vfs.zst"))
     .toBeVisible();
   await expect(page.getByText("1.0 MiB / 4.0 MiB")).toBeVisible();
 });
 
-test("names the image being loaded instead of a placeholder digest", async ({ page }) => {
+test("names the image being loaded", async ({ page }) => {
   await setProgress(page, {
     phase: "image",
     label: "browser-main-shell.vfs.zst",
-    loadedBytes: 512,
-    totalBytes: 2048,
+    completed: 512,
+    total: 2048,
+    unit: "bytes",
     status: "loading",
   });
 
-  await expect(page.getByText("image: browser-main-shell.vfs.zst"))
+  await expect(page.getByText("Loading browser-main-shell.vfs.zst"))
     .toBeVisible();
 });
 
@@ -67,7 +69,8 @@ test("falls back to an indeterminate bar when no total is known", async ({ page 
   await setProgress(page, {
     phase: "image",
     label: "custom.vfs.zst",
-    loadedBytes: 4096,
+    completed: 4096,
+    unit: "bytes",
     status: "loading",
   });
 
@@ -79,7 +82,8 @@ test("surfaces a failed image load", async ({ page }) => {
   await setProgress(page, {
     phase: "image",
     label: "custom.vfs.zst",
-    loadedBytes: 0,
+    completed: 0,
+    unit: "bytes",
     status: "error",
     error: "custom.vfs.zst returned HTTP 503",
   });
@@ -92,8 +96,9 @@ test("removes the bar once the machine is running", async ({ page }) => {
   await setProgress(page, {
     phase: "image",
     label: "shell.vfs.zst",
-    loadedBytes: 2048,
-    totalBytes: 2048,
+    completed: 2048,
+    total: 2048,
+    unit: "bytes",
     status: "complete",
   });
   await expect(page.locator(bar)).toBeVisible();
@@ -104,4 +109,21 @@ test("removes the bar once the machine is running", async ({ page }) => {
   });
 
   await expect(page.locator(bar)).toHaveCount(0);
+});
+
+test("shows the machine being unloaded with a provisional count", async ({ page }) => {
+  await setProgress(page, {
+    phase: "destroying",
+    label: "Bare shell",
+    completed: 3,
+    total: 7,
+    totalProvisional: true,
+    unit: "processes",
+    status: "loading",
+  });
+
+  await expect(page.getByText("Unloading Bare shell")).toBeVisible();
+  await expect(page.getByText("3 of 7+ processes")).toBeVisible();
+  await expect(page.locator(bar))
+    .toHaveAttribute("aria-valuetext", "3 of at least 7 processes");
 });
