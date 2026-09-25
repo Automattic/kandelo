@@ -50,8 +50,11 @@ export function createDestroyProgressReporter(
       publish();
     },
     startTerminating(stragglerCount) {
+      const nextTotal = Math.max(total, drainTotal + Math.max(0, stragglerCount));
+      const alreadyTerminating = phase === "terminating";
+      if (alreadyTerminating && nextTotal === total) return;
       phase = "terminating";
-      total = drainTotal + Math.max(0, stragglerCount);
+      total = nextTotal;
       provisional = false;
       publish();
     },

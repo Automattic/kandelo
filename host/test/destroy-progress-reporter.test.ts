@@ -68,6 +68,33 @@ describe("destroy progress reporter", () => {
     expect(last.completed).not.toBe(last.total);
   });
 
+  it("a second terminate sweep never lowers the total", () => {
+    const { events, emit } = collect();
+    const r = createDestroyProgressReporter(emit);
+    r.startDraining(7);
+    r.drained(7);
+    r.startTerminating(2);
+    r.terminated(1);
+    const before = events.at(-1)!;
+    r.startTerminating(0);
+    const after = events.at(-1)!;
+    expect(after.total).toBe(9);
+    expect(after.completed).toBeGreaterThanOrEqual(before.completed);
+  });
+
+  it("a second terminate sweep does not republish an unchanged total", () => {
+    const { events, emit } = collect();
+    const r = createDestroyProgressReporter(emit);
+    r.startDraining(7);
+    r.drained(7);
+    r.startTerminating(2);
+    r.terminated(1);
+    const countBefore = events.length;
+    r.startTerminating(0);
+    r.startTerminating(0);
+    expect(events.length).toBe(countBefore);
+  });
+
   it("reports a zero total rather than inventing one", () => {
     const { events, emit } = collect();
     createDestroyProgressReporter(emit).startDraining(0);
