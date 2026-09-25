@@ -40,18 +40,19 @@ async function syslogText(page: Page): Promise<string> {
   return lines.join("\n");
 }
 
-async function openInternals(page: Page) {
+async function setInternals(page: Page, open: boolean) {
   const internals = page.getByRole("button", { name: "Internals" });
   if ((await internals.count()) === 0) return;
-  if ((await internals.getAttribute("aria-pressed")) !== "true") {
-    await internals.click();
-  }
+  const pressed = (await internals.getAttribute("aria-pressed")) === "true";
+  if (pressed !== open) await internals.click();
 }
 
 test("Kandelo quake software demo boots the shareware first scene", async ({
   page,
 }) => {
-  test.setTimeout(300_000);
+  // Generous: fetching the 9 MB archive and extracting the 18 MB pak with lha
+  // in-wasm before the engine paints its first frame takes minutes.
+  test.setTimeout(600_000);
   test.skip(
     !archiveReachable,
     "quake106.zip mirror unreachable (offline) — demo can't run",
@@ -64,7 +65,7 @@ test("Kandelo quake software demo boots the shareware first scene", async ({
   page.on("pageerror", (err) => consoleErrors.push(`pageerror: ${err.message}`));
 
   await gotoMachineOrSkip(page, "quake");
-  await openInternals(page);
+  await setInternals(page, true);
 
   // The launch wrapper is what the machine runs; it extracts the pak, then
   // execs the engine. Confirm the machine launched the demo command.
@@ -79,8 +80,12 @@ test("Kandelo quake software demo boots the shareware first scene", async ({
     throw e;
   }
 
+  // Close Internals so its popover stops intercepting pointer events over the
+  // framebuffer canvas.
+  await setInternals(page, false);
+
   const canvas = page.locator("canvas.kframebuffer-canvas").first();
-  await expect(canvas).toBeVisible({ timeout: 180_000 });
+  await expect(canvas).toBeVisible({ timeout: 300_000 });
 
   // Satisfy the browser audio-autoplay gesture and give the framebuffer focus.
   await canvas.click();
