@@ -3,6 +3,7 @@
 
 import * as React from "react";
 import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
+import { useVfsTools } from "../webmcp/use-vfs-tools";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
@@ -61,6 +62,7 @@ export const App: React.FC = () => {
   const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
   const surface = useMachineSurfaceController();
+  useVfsTools();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);

@@ -9,6 +9,7 @@ import type {
   LazyDownloadEvent,
   SerializedLazyArchiveEntry,
 } from "./vfs/memory-fs";
+import type { VfsChangeEvent } from "./vfs/types";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
@@ -151,6 +152,24 @@ export interface ReadVfsFileMessage {
   path: string;
   /** Return the file's permission bits with its bytes for lossless restore. */
   includeMode?: boolean;
+}
+
+export interface VfsDirEntry {
+  name: string;
+  /** Linux `d_type` of the entry as the backing store reported it. */
+  type: number;
+  mode: number;
+  size: number;
+  uid: number;
+  gid: number;
+  /** Link target when the entry is a symlink. */
+  target?: string;
+}
+
+export interface ReadVfsDirMessage {
+  type: "read_vfs_dir";
+  requestId: number;
+  path: string;
 }
 
 export interface WriteVfsFileMessage {
@@ -421,6 +440,15 @@ export interface DrainSyscallTraceMessage {
   requestId: number;
 }
 
+/** Start or stop forwarding VFS change events for paths under `prefix`. Off
+ * by default — the worker subscribes to its VFS while at least one prefix is
+ * watched. */
+export interface WatchVfsChangesMessage {
+  type: "watch_vfs_changes";
+  prefix: string;
+  enabled: boolean;
+}
+
 /** Send an HTTP request to a server running in the kernel and wait for the
  *  response. Reply arrives as a `response` message whose `result` is an
  *  {@link HttpResponse}. */
@@ -473,6 +501,7 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | ReadVfsDirMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
@@ -507,6 +536,7 @@ export type MainToKernelMessage =
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage
+  | WatchVfsChangesMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
@@ -680,6 +710,12 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+/** A path under a watched prefix changed in the worker-owned VFS. */
+export interface VfsChangeMessage {
+  type: "vfs_change";
+  event: VfsChangeEvent;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -699,4 +735,5 @@ export type KernelToMainMessage =
   | FbForgetGenerationMessage
   | ProcEventMessage
   | HttpBridgePendingMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | VfsChangeMessage;
