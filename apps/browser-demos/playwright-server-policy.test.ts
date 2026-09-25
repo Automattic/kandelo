@@ -90,9 +90,21 @@ test("exact product proofs never reuse another worktree's server", () => {
 });
 
 test("broad service-worker scope permission exists only in historical records", async () => {
+  // Files allowed to name the header. The scan matches any mention, so this
+  // list holds prose that FORBIDS it and a test that asserts its absence —
+  // neither grants broad scope. A file that actually sets the header does not
+  // belong here. The two 2026-08-19 design records this list used to carry are
+  // gone from the tree; the entries went with them.
+  //
+  // This file names the header only via the assembled `header` constant below,
+  // so the scan does not match this file itself.
   const allowedHistoricalRecords = new Set([
-    "docs/superpowers/plans/2026-08-19-directory-scoped-browser-builds.md",
-    "docs/superpowers/specs/2026-08-19-local-first-builds-design.md",
+    // Asserts the served response carries no such header.
+    "apps/browser-demos/test/scoped-deployments.spec.ts",
+    // "one worker must never control `/` or a sibling".
+    "docs/browser-support.md",
+    // Instructs porters not to use it to broaden a script-directory scope.
+    "docs/porting-guide.md",
   ]);
   const sourceExtensions = new Set([
     ".c", ".cjs", ".css", ".h", ".html", ".js", ".jsx", ".json", ".md",

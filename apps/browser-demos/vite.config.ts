@@ -85,10 +85,19 @@ function vfsProductsVirtualModule(): Plugin {
  */
 function vfsProductsPlugin(base: string): Plugin {
   const configuredMap = process.env.KANDELO_PAGES_PRODUCT_MAP;
+  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
   if (configuredMap === undefined) {
+    // An asset group only means anything to a scoped product deployment, which
+    // a private map defines. Ignoring the group here would quietly produce an
+    // ordinary build and ship a site without the authenticated group the
+    // deployer asked for — fail loudly instead.
+    if (configuredAssetGroup !== undefined) {
+      throw new Error(
+        "KANDELO_PAGES_VFS_ASSET_GROUP_DIR requires KANDELO_PAGES_PRODUCT_MAP",
+      );
+    }
     return vfsProductsVirtualModule();
   }
-  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
   if (!path.isAbsolute(configuredMap)) {
     throw new Error(
       "KANDELO_PAGES_PRODUCT_MAP must be an absolute private map path",
