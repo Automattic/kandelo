@@ -842,7 +842,7 @@ git commit -m "Browser: Generalize boot progress into machine-switch progress"
 
 **Files:**
 - Modify: `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`
-  (`startBoot` at line 795; the image-progress reporter and `loadVfsImage`
+  (`startBoot` at line 702; the image-progress reporter and `loadVfsImage`
   call site further down, which currently build a `BootProgress`)
 - Create: `apps/browser-demos/pages/kandelo/kernel-host/machine-progress.ts`
 - Test: `apps/browser-demos/pages/kandelo/kernel-host/machine-progress.test.ts`
@@ -1073,7 +1073,7 @@ Expected: PASS, 8 tests.
 - [ ] **Step 5: Wire it into `startBoot`**
 
 In `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`, import both
-helpers, then change the teardown block in `startBoot` (line 795) to:
+helpers, then change the teardown block in `startBoot` (line 702) to:
 
 ```ts
     const seq = ++bootSeq;

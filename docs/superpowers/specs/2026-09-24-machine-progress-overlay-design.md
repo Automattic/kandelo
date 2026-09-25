@@ -65,6 +65,13 @@ the numbers; nothing new has to be counted.
 1500 ms / 15 ms constants, and a comment stating the phases mirror the browser
 entry. This is the same change twice, not a browser feature with a Node stub.
 
+## Rebase note (2026-09-24)
+
+Rebased onto #1416, which moved VFS image composition into a disposable
+worker. That change did not touch `performDestroy` in either worker entry, nor
+`BrowserKernel.destroy()`, so every teardown count this design relies on is
+unaffected. It did move `startBoot`, which now begins at `live-setup.ts:702`.
+
 ## Design
 
 ### 1. The signal (worker protocol, both hosts)
