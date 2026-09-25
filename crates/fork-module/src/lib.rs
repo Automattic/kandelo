@@ -3601,7 +3601,9 @@ mod wasm {
                 )
             };
             out.copy_from_slice(&stream[header_end..payload_end]);
-            module_state.commit(mem_mut_ref, payload)?;
+            // A FRESH view, not the one `reserve` was given: see
+            // `write_imported_global_bindings`.
+            module_state.commit(unsafe { mem_mut() }, payload)?;
             at = payload_end;
         }
         Ok(())
@@ -3750,7 +3752,8 @@ mod wasm {
                 )
             };
             encode_journal_image(out, image, len)?;
-            module_state.commit(mem, payload)?;
+            // A FRESH view: see `write_imported_global_bindings`.
+            module_state.commit(unsafe { mem_mut() }, payload)?;
         }
         Ok(image)
     }
@@ -3874,7 +3877,8 @@ mod wasm {
             )
         };
         fork_codec::encode_imported_table_bindings(out, &bindings)?;
-        module_state.commit(mem_mut_ref, payload)?;
+        // A FRESH view: see `write_imported_global_bindings`.
+        module_state.commit(unsafe { mem_mut() }, payload)?;
         Ok(())
     }
 
@@ -4018,7 +4022,13 @@ mod wasm {
             )
         };
         encode_imported_global_bindings(out, &bindings)?;
-        module_state.commit(mem_mut_ref, payload)?;
+        // A FRESH view of memory, not the one `reserve` was given. A record
+        // that does not fit the tail chunk makes `reserve` map a new one,
+        // which GROWS guest memory; the old slice ends at the old length, so
+        // `commit` reading the new chunk's header through it was refused with
+        // EINVAL. php's `intl.so`, whose bindings record is larger than a
+        // chunk's remaining room, could not fork at all.
+        module_state.commit(unsafe { mem_mut() }, payload)?;
         Ok(())
     }
 
@@ -5984,7 +5994,8 @@ mod wasm {
                     out,
                     &fork_codec::ModuleDescriptor { template_id, flags: 0 },
                 )?;
-                module_state.commit(mem, payload)?;
+                // A FRESH view: see `write_imported_global_bindings`.
+                module_state.commit(unsafe { mem_mut() }, payload)?;
             }
         }
 
