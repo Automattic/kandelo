@@ -83,9 +83,9 @@ echo "==> Cross-compiling tyr-quake (wasm32, software renderer)..."
 # selects the C rasterizer fallbacks (the .S files are x86-only). LIBS="-lm"
 # only: wasm32posix-cc auto-injects channel_syscall.c + musl libc.a, so passing
 # -lc would duplicate fork/_Fork/__syscall_cp; libm is not auto-linked.
-QUAKE_VID_TARGET="${QUAKE_VID_TARGET:-null}"
-QUAKE_IN_TARGET="${QUAKE_IN_TARGET:-null}"
-QUAKE_SND_TARGET="${QUAKE_SND_TARGET:-null}"
+QUAKE_VID_TARGET="${QUAKE_VID_TARGET:-fbdev}"
+QUAKE_IN_TARGET="${QUAKE_IN_TARGET:-fbdev}"
+QUAKE_SND_TARGET="${QUAKE_SND_TARGET:-kandelo}"
 make CC=wasm32posix-cc \
      LD=wasm32posix-cc \
      TARGET_OS=UNIX TARGET_UNIX=linux \
