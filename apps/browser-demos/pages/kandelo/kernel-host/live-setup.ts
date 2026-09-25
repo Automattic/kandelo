@@ -5,6 +5,10 @@ import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { composeImageInWorker } from "./image-composer-client";
 import { imageMachine, type ImageMachine } from "./image-composer";
 import {
+  initialDestroyProgress,
+  subscribeDestroyProgress,
+} from "./machine-progress";
+import {
   CUSTOM_VFS_PROFILE_MAX_BYTES,
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
@@ -708,6 +712,9 @@ export async function createLiveHost(
   ): Promise<void> {
     const seq = ++bootSeq;
     const previousKernel = currentKernel;
+    // The descriptor still names the OUTGOING machine here: setDescriptor for
+    // the incoming one runs inside bootProfile, after this teardown.
+    const outgoingTitle = h.getBootDescriptor().title;
     currentKernel = null;
     // WHY: detach while this activation still owns the previous generation.
     // If we await teardown first, a newer boot can attach its kernel and this
@@ -718,7 +725,18 @@ export async function createLiveHost(
       // workers are terminated inside destroy(), and this boot path leaves no
       // main-thread SharedArrayBuffer behind — image composition runs in a
       // disposable worker whose buffer dies with its realm.
-      await previousKernel.destroy().catch(() => {});
+      h.setMachineProgress(initialDestroyProgress(outgoingTitle));
+      const offDestroyProgress = subscribeDestroyProgress(
+        previousKernel,
+        outgoingTitle,
+        () => seq === bootSeq,
+        (progress) => h.setMachineProgress(progress),
+      );
+      try {
+        await previousKernel.destroy().catch(() => {});
+      } finally {
+        offDestroyProgress();
+      }
     }
     const bootStartedAt = performance.now();
 
@@ -1245,7 +1263,15 @@ async function bootProfile(
   const reportVfsImageProgress: VfsImageProgressReport = (report) => {
     // A superseded boot must not keep driving the current boot screen.
     if (!isCurrent()) return;
-    host.setBootProgress({ phase: "image", label: vfsImageLabel, ...report });
+    host.setMachineProgress({
+      phase: "image",
+      label: vfsImageLabel,
+      completed: report.loadedBytes,
+      ...(report.totalBytes === undefined ? {} : { total: report.totalBytes }),
+      unit: "bytes",
+      status: report.status,
+      ...(report.error === undefined ? {} : { error: report.error }),
+    });
   };
   const [kernelBytes, loadedVfs] = await Promise.all([
     fetch(kernelWasmUrl)
