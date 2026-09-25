@@ -81,6 +81,7 @@ export const App: React.FC = () => {
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
   const [audioState, setAudioState] = React.useState<MachineAudioState>(() => host.getAudioState());
+  const [audioActive, setAudioActive] = React.useState<boolean>(() => host.getAudioActivity());
   const [audioError, setAudioError] = React.useState<string | null>(null);
   const nextTerminalIndex = React.useRef(2);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
@@ -116,6 +117,14 @@ export const App: React.FC = () => {
       setAudioState(state);
       if (state === "running") setAudioError(null);
     }),
+    [host],
+  );
+
+  // Whether any guest in this machine has opened the audio device. Separate
+  // from the sink's state: it is what tells a real audio failure apart from a
+  // sink nothing ever asked for.
+  React.useEffect(
+    () => host.subscribeAudioActivity(setAudioActive),
     [host],
   );
 
@@ -343,7 +352,7 @@ export const App: React.FC = () => {
   }, []);
 
   return (
-    <div className={appClassName} style={appStyle} data-audio-state={audioState}>
+    <div className={appClassName} style={appStyle} data-audio-state={audioState} data-audio-active={audioActive ? "true" : "false"}>
       <div
         data-machine-content
         {...(machineProgress === null ? {} : { inert: true })}
@@ -395,7 +404,7 @@ export const App: React.FC = () => {
         )}
 
         <LazyDownloadToasts downloads={lazyDownloads} />
-        {surface.status === "running" && audioState !== "running" && (
+        {surface.status === "running" && audioActive && audioState !== "running" && (
           <AudioStatusToast
             state={audioState}
             error={audioError}

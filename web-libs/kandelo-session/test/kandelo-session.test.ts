@@ -777,6 +777,38 @@ describe("LiveKernelHost: machine PCM lifecycle", () => {
     expect(output!.getState()).toBe("running");
     framebuffer.close();
   });
+
+  it("reports guest audio demand from the kernel and defaults to false without it", () => {
+    let emit: ((active: boolean) => void) | null = null;
+    let active = false;
+    const host = new LiveKernelHost({
+      kernel: {
+        getAudioActivity: () => active,
+        onAudioActivityChange: (cb: (value: boolean) => void) => {
+          emit = cb;
+          cb(active);
+          return () => { emit = null; };
+        },
+      } as never,
+    });
+
+    const observed: boolean[] = [];
+    const off = host.subscribeAudioActivity((value) => observed.push(value));
+    expect(observed).toEqual([false]);
+
+    active = true;
+    emit?.(true);
+    expect(observed).toEqual([false, true]);
+    expect(host.getAudioActivity()).toBe(true);
+    off();
+
+    // Review Focus 3: a kernel that predates this API must not crash the shell.
+    const legacy = new LiveKernelHost({ kernel: {} as never });
+    expect(legacy.getAudioActivity()).toBe(false);
+    const offLegacy = legacy.subscribeAudioActivity(() => {});
+    expect(typeof offLegacy).toBe("function");
+    offLegacy();
+  });
 });
 
 describe("LiveKernelHost: shell command queue", () => {

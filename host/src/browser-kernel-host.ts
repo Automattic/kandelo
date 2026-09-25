@@ -51,7 +51,9 @@ import type { MountSpec } from "./vfs/default-mounts";
 import { FILE_MODES } from "./generated/abi";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
+import { pcmControlWords } from "./audio/pcm-transport";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
+import { AudioActivityLatch } from "./audio/audio-activity-latch";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
@@ -307,6 +309,8 @@ export class BrowserKernel {
   private destroyProgress = createDestroyProgressFanout();
   private pcmTransport: PcmTransportDescriptor | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
+  private audioActivity: AudioActivityLatch | null = null;
+  private audioActivityListeners = new Set<(active: boolean) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
     // Resolve the reservation budget before anything sizes an address space.
@@ -1278,6 +1282,35 @@ export class BrowserKernel {
     return this.pcmDriver.subscribe(listener);
   }
 
+  /**
+   * Has a guest in this machine opened the audio device?
+   *
+   * Orthogonal to `getAudioState()`, which describes the host sink. This
+   * describes whether anything in the machine ever asked for one, and is what
+   * lets a UI tell an idle sink from a broken one instead of warning every
+   * machine about a device it never used.
+   */
+  getAudioActivity(): boolean {
+    return this.audioActivity?.active ?? false;
+  }
+
+  onAudioActivityChange(listener: (active: boolean) => void): () => void {
+    this.audioActivityListeners.add(listener);
+    listener(this.getAudioActivity());
+    this.audioActivity?.start();
+    return () => {
+      this.audioActivityListeners.delete(listener);
+      if (this.audioActivityListeners.size === 0) this.audioActivity?.stop();
+    };
+  }
+
+  private emitAudioActivity(): void {
+    const active = this.getAudioActivity();
+    for (const cb of this.audioActivityListeners) {
+      try { cb(active); } catch { /* listener errors don't break the loop */ }
+    }
+  }
+
   // ── PTY methods ──
 
   /** Write data to the PTY master for a process. */
@@ -1450,6 +1483,9 @@ export class BrowserKernel {
     await this.pcmDriver?.close().catch(() => {});
     this.pcmDriver = null;
     this.pcmTransport = null;
+    this.audioActivity?.stop();
+    this.audioActivity = null;
+    this.audioActivityListeners.clear();
     // WHY: process/pthread Workers are owned beneath the kernel worker. After
     // the worker's bounded graceful attempt, terminating this outer realm is
     // the final release fence for aliases that could not be detached exactly.
@@ -1594,6 +1630,14 @@ export class BrowserKernel {
       case "ready": {
         if (msg.pcmTransport) {
           this.pcmTransport = msg.pcmTransport;
+          // Demand is a different fact from sink state: this watches whether
+          // anything in the machine ever opens /dev/dsp. It samples the header
+          // the kernel already publishes, and stops for good once it latches.
+          this.audioActivity = new AudioActivityLatch(
+            pcmControlWords(msg.pcmTransport),
+            () => this.emitAudioActivity(),
+          );
+          if (this.audioActivityListeners.size > 0) this.audioActivity.start();
           if (
             typeof globalThis.AudioContext === "function" ||
             "webkitAudioContext" in globalThis
