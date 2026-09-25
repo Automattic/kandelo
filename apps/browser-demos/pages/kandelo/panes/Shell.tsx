@@ -9,7 +9,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-import { useKernelHost, useStatus } from "../kernel-host/react";
+import { useMachineProgress, useKernelHost, useStatus } from "../kernel-host/react";
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import type { TerminalLinkContext } from "../../../../../web-libs/kandelo-session/src/terminal-links";
 import { registerTerminalLinks } from "../../../lib/terminal-links";
@@ -292,27 +292,34 @@ const ShellTerminalHost: React.FC<{
   );
 };
 
-const PreBoot: React.FC<{ status: string }> = ({ status }) => (
-  <div className="kshell-placeholder">
-    <pre style={{
-      margin: "0 0 10px",
-      color: "var(--k-accent-fire)",
-      fontFamily: "inherit",
-      fontSize: 11,
-      lineHeight: 1.1,
-    }}>
+const PreBoot: React.FC<{ status: string }> = ({ status }) => {
+  const progress = useMachineProgress();
+  // Name the image actually being loaded. Before the load starts there is
+  // nothing truthful to show, so say so rather than printing a stand-in.
+  const image = progress?.label ?? "(not loaded yet)";
+
+  return (
+    <div className="kshell-placeholder">
+      <pre style={{
+        margin: "0 0 10px",
+        color: "var(--k-accent-fire)",
+        fontFamily: "inherit",
+        fontSize: 11,
+        lineHeight: 1.1,
+      }}>
 {`      (        Kandelo Linux 6.8.0
        )       Booting a browser VFS image.
       (
  ___|||___     status: ${status}
-|  | | |  |    image: b3:9f2a3b81d2c47f1e
+|  | | |  |    image: ${image}
 |__|_|_|__|    Waiting for the kernel to reach 'running'.`}
-    </pre>
-    <span className="kshell-dim">maker@kandelo</span>
-    <span className="kshell-dim">:~$ </span>
-    <span className="kshell-cursor" />
-  </div>
-);
+      </pre>
+      <span className="kshell-dim">maker@kandelo</span>
+      <span className="kshell-dim">:~$ </span>
+      <span className="kshell-cursor" />
+    </div>
+  );
+};
 
 function readShellTheme(element: HTMLElement | null) {
   const styles = getComputedStyle(element ?? document.documentElement);

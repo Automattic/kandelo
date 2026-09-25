@@ -477,3 +477,148 @@ test("rejects a group manifest outside the deployment base before fetch", () => 
     /group path/i,
   );
 });
+
+// ── image load progress ────────────────────────────────────────────────────
+//
+// The boot screen needs incremental byte counts while the root image lands;
+// without them a cold start is a multi-second wait with no feedback.
+
+/** A streaming response that delivers `body` in fixed-size slices. */
+function streamedResponse(body: Uint8Array, sliceBytes: number): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let at = 0; at < body.byteLength; at += sliceBytes) {
+        controller.enqueue(body.subarray(at, at + sliceBytes));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: { "content-length": String(body.byteLength) },
+    status: 200,
+  });
+}
+
+test("reports cumulative image progress against the authenticated size", async () => {
+  const fixture = groupFixture("/a/");
+  const seen: Array<{ id: string; loadedBytes: number; totalBytes: number }> = [];
+  const loader = createPagesVfsProductLoaderForBase(
+    [fixture.entry],
+    async (url) => {
+      if (url === fixture.manifestPath) return response(fixture.manifest);
+      if (url === fixture.imageUrl) return streamedResponse(fixture.image, 8);
+      throw new Error(`unexpected URL ${url}`);
+    },
+    "/a/",
+  );
+  loader.subscribeProgress((progress) => {
+    if (progress.status === "loading") {
+      seen.push({
+        id: progress.id,
+        loadedBytes: progress.loadedBytes,
+        totalBytes: progress.totalBytes,
+      });
+    }
+  });
+
+  await loader.activate("browser-node");
+
+  assert.ok(seen.length > 1, "expected more than one progress report");
+  assert.ok(seen.every((p) => p.id === "browser-node"));
+  assert.ok(seen.every((p) => p.totalBytes === fixture.image.byteLength));
+  assert.deepEqual(
+    seen.map((p) => p.loadedBytes),
+    [...seen.map((p) => p.loadedBytes)].sort((a, b) => a - b),
+    "loaded bytes must be non-decreasing",
+  );
+  assert.equal(seen.at(-1)?.loadedBytes, fixture.image.byteLength);
+});
+
+test("does not report the group manifest fetch as image progress", async () => {
+  const fixture = groupFixture("/a/");
+  const seen: string[] = [];
+  const loader = createPagesVfsProductLoaderForBase(
+    [fixture.entry],
+    async (url) => {
+      if (url === fixture.manifestPath) return response(fixture.manifest);
+      if (url === fixture.imageUrl) return response(fixture.image);
+      throw new Error(`unexpected URL ${url}`);
+    },
+    "/a/",
+  );
+  loader.subscribeProgress((progress) => seen.push(progress.status));
+
+  await loader.activate("browser-node");
+
+  // The manifest is small and is not the image; only the image moves the bar.
+  assert.deepEqual(seen.at(-1), "complete");
+  assert.ok(!seen.includes("error"));
+});
+
+test("replays the current record to a subscriber that attaches late", async () => {
+  const fixture = groupFixture("/a/");
+  const loader = createPagesVfsProductLoaderForBase(
+    [fixture.entry],
+    async (url) => {
+      if (url === fixture.manifestPath) return response(fixture.manifest);
+      if (url === fixture.imageUrl) return response(fixture.image);
+      throw new Error(`unexpected URL ${url}`);
+    },
+    "/a/",
+  );
+
+  // An eager product starts loading at construction, so the boot screen always
+  // subscribes after the fact.
+  await loader.activate("browser-node");
+  const seen: Array<{ id: string; status: string }> = [];
+  loader.subscribeProgress((progress) =>
+    seen.push({ id: progress.id, status: progress.status })
+  );
+
+  assert.deepEqual(seen, [{ id: "browser-node", status: "complete" }]);
+});
+
+test("reports a failed image load as an error record", async () => {
+  const fixture = groupFixture("/a/");
+  const seen: Array<{ status: string; error?: string }> = [];
+  const loader = createPagesVfsProductLoaderForBase(
+    [fixture.entry],
+    async (url) => {
+      if (url === fixture.manifestPath) return response(fixture.manifest);
+      return new Response(null, { status: 503 });
+    },
+    "/a/",
+  );
+  loader.subscribeProgress((progress) =>
+    seen.push({ status: progress.status, error: progress.error })
+  );
+
+  await assert.rejects(loader.activate("browser-node"));
+
+  assert.equal(seen.at(-1)?.status, "error");
+  assert.match(seen.at(-1)?.error ?? "", /503/);
+});
+
+test("retains no image bytes in its progress records", async () => {
+  const fixture = groupFixture("/a/");
+  const loader = createPagesVfsProductLoaderForBase(
+    [fixture.entry],
+    async (url) => {
+      if (url === fixture.manifestPath) return response(fixture.manifest);
+      if (url === fixture.imageUrl) return response(fixture.image);
+      throw new Error(`unexpected URL ${url}`);
+    },
+    "/a/",
+  );
+
+  await loader.activate("browser-node");
+
+  // The main thread must not become an owner of VFS memory through this path.
+  for (const value of Object.values(loader.progress("browser-node")!)) {
+    assert.ok(
+      typeof value === "string" || typeof value === "number" ||
+        value === undefined,
+      `progress field retained a ${typeof value}`,
+    );
+  }
+});

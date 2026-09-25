@@ -130,6 +130,7 @@ describe("parseGalleryRoster", () => {
       "wordpress-sqlite",
       "wordpress-mariadb",
       "doom",
+      "quake",
       "modeset",
       "sdl2",
       "evdev",

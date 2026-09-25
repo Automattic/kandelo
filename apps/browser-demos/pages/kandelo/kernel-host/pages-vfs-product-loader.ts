@@ -4,6 +4,10 @@ import {
   type VfsAssetGroupManifestV1,
 } from "../../../../../web-libs/kandelo-session/src/vfs-asset-group";
 import { normalizeDeploymentBase } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
+import {
+  readExactSizedBody,
+  type SizedDownloadProgress,
+} from "../../../../../web-libs/kandelo-session/src/sized-download";
 
 export interface PagesVfsAssetGroupIdentity {
   bytes: number;
@@ -32,9 +36,30 @@ export type PagesVfsProductFetcher = (
   url: string,
   init: RequestInit,
 ) => Promise<Response>;
+/**
+ * Progress of one product's image load. Scalars only — the main thread must
+ * not retain VFS bytes, so this never carries the image itself.
+ *
+ * `totalBytes` is the manifest-authenticated decoded size, which makes the
+ * percentage exact even when a CDN compresses the transfer.
+ */
+export interface PagesVfsProductProgress {
+  id: string;
+  loadedBytes: number;
+  totalBytes: number;
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
 export interface PagesVfsProductLoader {
   activate(id: string): Promise<ActivatedPagesVfsProduct>;
   bytes(id: string): Promise<ArrayBuffer>;
+  /** Latest image-load record for `id`, if one has been observed. */
+  progress(id: string): PagesVfsProductProgress | undefined;
+  /**
+   * Observe image-load progress. Eager products begin loading at construction,
+   * so every retained record is replayed to a subscriber that attaches later.
+   */
+  subscribeProgress(cb: (progress: PagesVfsProductProgress) => void): () => void;
 }
 
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -86,6 +111,18 @@ export function createPagesVfsProductLoaderForBase(
   let groupLoading: Promise<VfsAssetGroupManifestV1> | undefined;
   let settledGroupPromise: Promise<VfsAssetGroupManifestV1> | undefined;
   const activations = new Map<string, Promise<ActivatedPagesVfsProduct>>();
+  const progressById = new Map<string, PagesVfsProductProgress>();
+  const progressListeners = new Set<
+    (progress: PagesVfsProductProgress) => void
+  >();
+  const publishProgress = (progress: PagesVfsProductProgress): void => {
+    progressById.set(progress.id, progress);
+    for (const listener of progressListeners) listener(progress);
+  };
+  /** Report image bytes only; the group manifest is not the image. */
+  const imageProgress = (id: string): SizedDownloadProgress =>
+    (loadedBytes, totalBytes) =>
+      publishProgress({ id, loadedBytes, totalBytes, status: "loading" });
   const loadGroup = (): Promise<VfsAssetGroupManifestV1> => {
     if (group === undefined)
       return Promise.reject(new Error("Pages VFS product map has no asset group"));
@@ -114,13 +151,17 @@ export function createPagesVfsProductLoaderForBase(
       );
     const prior = activations.get(id);
     if (prior !== undefined) return prior;
-    const pending = (entry.asset_group === undefined
+    // Bind the group to a local so its narrowing survives into the async
+    // callback below; TypeScript drops property narrowing across that boundary.
+    const assetGroup = entry.asset_group;
+    const pending = (assetGroup === undefined
       ? fetchAndValidate(
           entry.path,
           entry.bytes,
           entry.sha256,
           `Pages VFS product ${id}`,
           fetcher,
+          imageProgress(id),
         ).then((image) => ({
           id,
           imageBytes: image.slice().buffer,
@@ -140,7 +181,7 @@ export function createPagesVfsProductLoaderForBase(
               `Pages VFS product ${id} differs from its group image identity`,
             );
           }
-          const manifestUrl = absoluteUrl(entry.asset_group.path);
+          const manifestUrl = absoluteUrl(assetGroup.path);
           const imageUrl = resolveGroupedAssetUrl(
             manifestUrl,
             product.image.path,
@@ -152,6 +193,7 @@ export function createPagesVfsProductLoaderForBase(
             product.image.sha256,
             `Pages VFS product ${id}`,
             fetcher,
+            imageProgress(id),
           );
           return {
             id,
@@ -166,14 +208,37 @@ export function createPagesVfsProductLoaderForBase(
             }),
           };
         }));
-    activations.set(id, pending);
-    void pending.then(
-      () => undefined,
-      () => {
-        if (activations.get(id) === pending) activations.delete(id);
+    // WHY: settle progress inside the chain, so a caller awaiting activate()
+    // observes the terminal record rather than racing a detached handler.
+    const tracked = pending.then(
+      (activation) => {
+        publishProgress({
+          id,
+          loadedBytes: entry.bytes,
+          totalBytes: entry.bytes,
+          status: "complete",
+        });
+        return activation;
+      },
+      (error: unknown) => {
+        publishProgress({
+          id,
+          loadedBytes: progressById.get(id)?.loadedBytes ?? 0,
+          totalBytes: entry.bytes,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
       },
     );
-    return pending;
+    activations.set(id, tracked);
+    void tracked.then(
+      () => undefined,
+      () => {
+        if (activations.get(id) === tracked) activations.delete(id);
+      },
+    );
+    return tracked;
   };
   for (const entry of byId.values())
     if (entry.load === "eager") void activate(entry.id).catch(() => undefined);
@@ -181,6 +246,15 @@ export function createPagesVfsProductLoaderForBase(
     activate,
     async bytes(id) {
       return (await activate(id)).imageBytes.slice(0);
+    },
+    progress(id) {
+      const record = progressById.get(id);
+      return record === undefined ? undefined : { ...record };
+    },
+    subscribeProgress(cb) {
+      for (const record of progressById.values()) cb({ ...record });
+      progressListeners.add(cb);
+      return () => progressListeners.delete(cb);
     },
   };
 }
@@ -211,6 +285,7 @@ async function fetchAndValidate(
   expectedSha256: string,
   label: string,
   fetcher: PagesVfsProductFetcher,
+  onProgress?: SizedDownloadProgress,
 ): Promise<Uint8Array> {
   const response = await fetcher(url, { cache: "no-store" });
   if (!response.ok)
@@ -235,7 +310,12 @@ async function fetchAndValidate(
   ) {
     throw new Error(`${label} content-length differs from ${expectedBytes}`);
   }
-  const bytes = await readBounded(response, expectedBytes, label);
+  const bytes = await readExactSizedBody(
+    response,
+    expectedBytes,
+    label,
+    onProgress,
+  );
   const digestBytes = new Uint8Array(bytes.byteLength);
   digestBytes.set(bytes);
   if (
@@ -245,38 +325,6 @@ async function fetchAndValidate(
     throw new Error(`${label} SHA-256 differs from ${expectedSha256}`);
   }
   return bytes;
-}
-
-async function readBounded(
-  response: Response,
-  maximum: number,
-  label: string,
-): Promise<Uint8Array> {
-  if (response.body === null) throw new Error(`${label} has no response body`);
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > maximum)
-        throw new Error(`${label} received length exceeds ${maximum}`);
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  if (length !== maximum)
-    throw new Error(`${label} received length differs from ${maximum}`);
-  const result = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
 }
 
 function validateEntry(

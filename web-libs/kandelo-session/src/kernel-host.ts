@@ -106,6 +106,47 @@ export interface LazyDownloadEvent {
   t: number;
 }
 
+/** Stage of a machine switch that can report progress. */
+export type MachinePhase = "destroying" | "image";
+
+/**
+ * Progress of a machine switch: tearing the outgoing machine down, then
+ * loading the incoming machine's VFS image.
+ *
+ * Deliberately separate from {@link LazyDownloadEvent}: both halves run while
+ * no kernel is attached, and `attachKernel` clears the lazy-download ledger.
+ *
+ * Every field is a scalar. This record must never retain image bytes or
+ * process memory — the main thread is not an owner of machine memory.
+ *
+ * `total` is absent when no total is known, which callers render as
+ * indeterminate rather than inventing a denominator. `totalProvisional` marks
+ * a total that is a lower bound and may still grow; see the teardown phases in
+ * `host/src/destroy-progress-reporter.ts`.
+ */
+export interface MachineProgress {
+  phase: MachinePhase;
+  label: string;
+  completed: number;
+  total?: number;
+  totalProvisional?: boolean;
+  unit: "processes" | "bytes";
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
+
+/**
+ * Teardown progress from the kernel worker. Mirrors
+ * host/src/browser-kernel-protocol.ts: DestroyProgressEvent — duplicated as a
+ * structural type for the same reason as LazyDownloadEvent above.
+ */
+export interface DestroyProgressEvent {
+  phase: "draining" | "terminating";
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
 /**
  * Authoritative latest state for one lazy VFS transport asset.
  *
@@ -224,6 +265,14 @@ export interface KernelLike {
    * when it materializes content on first exec/open.
    */
   subscribeLazyDownloads?(cb: (event: LazyDownloadEvent) => void): () => void;
+  /**
+   * Subscribe to teardown progress. Emitted by the kernel worker while
+   * `destroy()` reaps processes. Optional: a kernel without it reports
+   * nothing, and the destroy phase stays indeterminate.
+   */
+  subscribeDestroyProgress?(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void;
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
@@ -716,6 +765,12 @@ export interface KernelHost {
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
   dmesgHistory(): DmesgLine[];
 
+  // Machine switch progress. Null outside an in-flight switch.
+  getMachineProgress(): MachineProgress | null;
+  subscribeMachineProgress(
+    cb: (progress: MachineProgress | null) => void,
+  ): () => void;
+
   // Lazy VFS materialization progress
   subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void;
   /** Bounded chronological log for low-level diagnostics. */
@@ -1056,6 +1111,8 @@ export class LiveKernelHost implements KernelHost {
   private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
   private lazyDownloadSummaryListeners = new ListenerSet<void>();
   private lazyDownloadCapacity = 512;
+  private machineProgress: MachineProgress | null = null;
+  private machineProgressListeners = new ListenerSet<MachineProgress | null>();
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
@@ -1286,8 +1343,33 @@ export class LiveKernelHost implements KernelHost {
   setStatus(s: MachineStatus): void {
     if (s === this._status) return;
     this._status = s;
+    // The boot screen owns this record; once the machine leaves `booting`
+    // there is no boot screen left to show it.
+    if (s !== "booting") this.setMachineProgress(null);
     this.refreshTerminalAvailability();
     this.statusListeners.emit(s);
+  }
+
+  /**
+   * Publish machine-switch progress. Pass `null` to clear it.
+   *
+   * Survives `attachKernel` on purpose: both the teardown and the image load
+   * finish before the incoming kernel is created, so this cannot live in the
+   * lazy-download ledger.
+   */
+  setMachineProgress(progress: MachineProgress | null): void {
+    this.machineProgress = progress === null ? null : { ...progress };
+    this.machineProgressListeners.emit(this.machineProgress);
+  }
+
+  getMachineProgress(): MachineProgress | null {
+    return this.machineProgress === null ? null : { ...this.machineProgress };
+  }
+
+  subscribeMachineProgress(
+    cb: (progress: MachineProgress | null) => void,
+  ): () => void {
+    return this.machineProgressListeners.add(cb);
   }
 
   /**

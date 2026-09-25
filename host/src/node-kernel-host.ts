@@ -27,11 +27,13 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
   ResolveExecRequestMessage,
+  DestroyProgressEvent,
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
   snapshotClosedLazyAssetSources,
@@ -226,6 +228,7 @@ export class NodeKernelHost {
   private _nextRequestId = 1;
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private destroyProgress = createDestroyProgressFanout();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -930,6 +933,13 @@ export class NodeKernelHost {
     };
   }
 
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
+  }
+
   /**
    * Read a regular file from the existing worker-owned VFS. This is the Node
    * peer of BrowserKernel.readFileFromVfs(); it never falls back to an ambient
@@ -1030,6 +1040,7 @@ export class NodeKernelHost {
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1185,6 +1196,9 @@ export class NodeKernelHost {
         break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
+        break;
+      case "destroy_progress":
+        this.destroyProgress.emit(msg.event);
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
