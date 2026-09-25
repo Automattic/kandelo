@@ -47,72 +47,92 @@ async function setInternals(page: Page, open: boolean) {
   if (pressed !== open) await internals.click();
 }
 
-test("Kandelo quake software demo boots the shareware first scene", async ({
-  page,
-}) => {
-  // Generous: fetching the 9 MB archive and extracting the 18 MB pak with lha
-  // in-wasm before the engine paints its first frame takes minutes.
-  test.setTimeout(600_000);
-  test.skip(
-    !archiveReachable,
-    "quake106.zip mirror unreachable (offline) — demo can't run",
-  );
+// Both budgets run the same machine. `memoryProfile` is the dev override that
+// reproduces a host's address-space budget on any browser
+// (apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts): undefined lets
+// the page detect its own, and "constrained" forces the 256 MiB-per-process
+// budget browsers select on small-reservation-pool devices such as iOS.
+//
+// The constrained case is a regression guard, not a variation for its own
+// sake. TyrQuake allocates its whole heap in one malloc and upstream defaults
+// that heap to 256 MiB, which under this budget IS the entire process address
+// space -- so the engine died with "Allocation of 268435456 byte heap failed"
+// before drawing a frame, on iOS only. It now sizes the heap from RLIMIT_AS.
+const BUDGETS = [
+  ["this host's own budget", undefined],
+  ["the constrained (iOS) budget", "constrained"],
+] as const;
 
-  const consoleErrors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") consoleErrors.push(msg.text());
-  });
-  page.on("pageerror", (err) => consoleErrors.push(`pageerror: ${err.message}`));
+for (const [budgetLabel, memoryProfile] of BUDGETS) {
+  test(`Kandelo quake software demo boots the shareware first scene under ${budgetLabel}`, async ({
+    page,
+  }) => {
+    // Generous: fetching the 9 MB archive and extracting the 18 MB pak with lha
+    // in-wasm before the engine paints its first frame takes minutes.
+    test.setTimeout(600_000);
+    test.skip(
+      !archiveReachable,
+      "quake106.zip mirror unreachable (offline) — demo can't run",
+    );
 
-  await gotoMachineOrSkip(page, "quake");
-  await setInternals(page, true);
+    const consoleErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => consoleErrors.push(`pageerror: ${err.message}`));
 
-  // The launch wrapper is what the machine runs; it extracts the pak, then
-  // execs the engine. Confirm the machine launched the demo command.
-  try {
+    await gotoMachineOrSkip(page, "quake", {
+      search: memoryProfile === undefined ? {} : { memoryProfile },
+    });
+    await setInternals(page, true);
+
+    // The launch wrapper is what the machine runs; it extracts the pak, then
+    // execs the engine. Confirm the machine launched the demo command.
+    try {
+      await expect
+        .poll(() => syslogText(page), { timeout: 120_000 })
+        .toMatch(/running \/usr\/local\/bin\/quake/);
+    } catch (e) {
+      console.log("SYSLOG:\n" + (await syslogText(page)));
+      console.log("CONSOLE ERRORS:\n" + consoleErrors.join("\n"));
+      console.log("BODY:\n" + (await page.locator("body").innerText().catch(() => "")));
+      throw e;
+    }
+
+    // Close Internals so its popover stops intercepting pointer events over the
+    // framebuffer canvas.
+    await setInternals(page, false);
+
+    const canvas = page.locator("canvas.kframebuffer-canvas").first();
+    await expect(canvas).toBeVisible({ timeout: 300_000 });
+
+    // Satisfy the browser audio-autoplay gesture and give the framebuffer focus.
+    await canvas.click();
+
+    // The real proof: after fetch (~9 MB) + in-machine extraction + engine load,
+    // the software renderer paints a colored scene (id logo / menu / level).
+    // A blank or single-color canvas means nothing rendered.
     await expect
-      .poll(() => syslogText(page), { timeout: 120_000 })
-      .toMatch(/running \/usr\/local\/bin\/quake/);
-  } catch (e) {
-    console.log("SYSLOG:\n" + (await syslogText(page)));
-    console.log("CONSOLE ERRORS:\n" + consoleErrors.join("\n"));
-    console.log("BODY:\n" + (await page.locator("body").innerText().catch(() => "")));
-    throw e;
-  }
+      .poll(() => distinctColors(canvas), {
+        timeout: 240_000,
+        intervals: [2_000, 3_000, 5_000],
+      })
+      .toBeGreaterThan(8);
 
-  // Close Internals so its popover stops intercepting pointer events over the
-  // framebuffer canvas.
-  await setInternals(page, false);
+    // Drive keys through the framebuffer keyboard path and confirm the engine
+    // keeps rendering (input reaches the game; no crash). Enter is a regression
+    // guard: its Linux keycode is 28 (0x1C = the tty VQUIT control char), so
+    // before in_fbdev put stdin in raw mode the tty turned Enter into SIGQUIT and
+    // killed the engine. ESC then toggles the menu.
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => distinctColors(canvas), { timeout: 30_000 })
+      .toBeGreaterThan(8);
 
-  const canvas = page.locator("canvas.kframebuffer-canvas").first();
-  await expect(canvas).toBeVisible({ timeout: 300_000 });
-
-  // Satisfy the browser audio-autoplay gesture and give the framebuffer focus.
-  await canvas.click();
-
-  // The real proof: after fetch (~9 MB) + in-machine extraction + engine load,
-  // the software renderer paints a colored scene (id logo / menu / level).
-  // A blank or single-color canvas means nothing rendered.
-  await expect
-    .poll(() => distinctColors(canvas), {
-      timeout: 240_000,
-      intervals: [2_000, 3_000, 5_000],
-    })
-    .toBeGreaterThan(8);
-
-  // Drive keys through the framebuffer keyboard path and confirm the engine
-  // keeps rendering (input reaches the game; no crash). Enter is a regression
-  // guard: its Linux keycode is 28 (0x1C = the tty VQUIT control char), so
-  // before in_fbdev put stdin in raw mode the tty turned Enter into SIGQUIT and
-  // killed the engine. ESC then toggles the menu.
-  await page.keyboard.press("Enter");
-  await page.keyboard.press("Escape");
-  await expect
-    .poll(() => distinctColors(canvas), { timeout: 30_000 })
-    .toBeGreaterThan(8);
-
-  // The machine must not have reported a failed launch or an early exit.
-  const sys = await syslogText(page);
-  expect(sys).not.toMatch(/quake.*failed/i);
-  expect(sys).not.toMatch(/quake exited/i);
-});
+    // The machine must not have reported a failed launch or an early exit.
+    const sys = await syslogText(page);
+    expect(sys).not.toMatch(/quake.*failed/i);
+    expect(sys).not.toMatch(/quake exited/i);
+  });
+}
