@@ -254,6 +254,13 @@ export interface KernelLike {
   getAudioState?(): MachineAudioState;
   onAudioStateChange?(cb: (state: MachineAudioState) => void): () => void;
   /**
+   * Has a guest in this machine opened the audio device? Orthogonal to
+   * `getAudioState`, which describes the host sink rather than demand for it.
+   * Latched for the machine's lifetime.
+   */
+  getAudioActivity?(): boolean;
+  onAudioActivityChange?(cb: (active: boolean) => void): () => void;
+  /**
    * Subscribe to the kernel-worker's live syscall trace. Each event
    * carries the raw syscall number + args + firing pid. The underlying
    * ring buffer is enabled lazily; nothing runs on the syscall hot path
@@ -826,6 +833,9 @@ export interface KernelHost {
   suspendAudio(): Promise<void>;
   getAudioState(): MachineAudioState;
   subscribeAudioState(cb: (state: MachineAudioState) => void): () => void;
+  /** Latched: has any guest in this machine opened the audio device? */
+  getAudioActivity(): boolean;
+  subscribeAudioActivity(cb: (active: boolean) => void): () => void;
 
   // framebuffer — mirrors /dev/fb0 into a 2D canvas and returns a handle
   // that the embedder uses to forward keyboard and mouse input for the bound
@@ -1121,6 +1131,7 @@ export class LiveKernelHost implements KernelHost {
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
   private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
+  private audioActivityListeners = new ListenerSet<boolean>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
@@ -1133,6 +1144,7 @@ export class LiveKernelHost implements KernelHost {
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
   private offAudioState: (() => void) | null = null;
+  private offAudioActivity: (() => void) | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
@@ -1186,6 +1198,8 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.offAudioState?.();
     this.offAudioState = null;
+    this.offAudioActivity?.();
+    this.offAudioActivity = null;
     this.invalidatePtySessions(previousKernel);
     this.kernel = kernel;
     if (kernel.framebuffers) {
@@ -1204,6 +1218,12 @@ export class LiveKernelHost implements KernelHost {
       });
     }
     this.audioStateListeners.emit(this.getAudioState());
+    if (kernel.onAudioActivityChange) {
+      this.offAudioActivity = kernel.onAudioActivityChange((active) => {
+        this.audioActivityListeners.emit(active);
+      });
+    }
+    this.audioActivityListeners.emit(this.getAudioActivity());
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.refreshKmsAvailability();
@@ -1220,9 +1240,12 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.offAudioState?.();
     this.offAudioState = null;
+    this.offAudioActivity?.();
+    this.offAudioActivity = null;
     this.invalidatePtySessions(detachedKernel);
     this.kernel = undefined;
     this.audioStateListeners.emit("unavailable");
+    this.audioActivityListeners.emit(false);
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
@@ -1558,6 +1581,8 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.offAudioState?.();
     this.offAudioState = null;
+    this.offAudioActivity?.();
+    this.offAudioActivity = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);
@@ -2313,6 +2338,16 @@ export class LiveKernelHost implements KernelHost {
   subscribeAudioState(cb: (state: MachineAudioState) => void): () => void {
     const off = this.audioStateListeners.add(cb);
     cb(this.getAudioState());
+    return off;
+  }
+
+  getAudioActivity(): boolean {
+    return this.kernel?.getAudioActivity?.() ?? false;
+  }
+
+  subscribeAudioActivity(cb: (active: boolean) => void): () => void {
+    const off = this.audioActivityListeners.add(cb);
+    cb(this.getAudioActivity());
     return off;
   }
 
