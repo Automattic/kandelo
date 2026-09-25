@@ -4425,6 +4425,17 @@
   to { transform: rotate(360deg); }
 }
 
+/* The modal wrapper exists only to carry `inert` during a machine switch; it
+   must not participate in layout. `.kapp` is a flex container and `.kmain`
+   relies on being its direct flex child (`flex: 1`) to fill the space above
+   the dock. A plain block wrapper made `.kmain` size to content instead,
+   shrinking the terminal and preview panes. `display: contents` removes the
+   wrapper's own box so its children stay direct flex children of `.kapp`,
+   while the element — and therefore `inert` — still applies to the subtree. */
+[data-machine-content] {
+  display: contents;
+}
+
 /* Machine switch progress: one centred, full-page overlay covering teardown
    and image load. Centred rather than pinned to a pane — a switch is a
    whole-page event.
