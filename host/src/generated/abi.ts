@@ -477,6 +477,7 @@ export const WAKEUP_EVENT_TYPES = {
   processStopped: 16,
   processContinued: 32,
   advisoryLock: 64,
+  forkLifecycle: 128,
 } as const;
 export const WAKEUP_EVENT_FIELDS = {
   idx: { offset: 0, size: 4, type: "u32" },

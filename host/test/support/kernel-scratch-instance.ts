@@ -67,6 +67,10 @@ function signatures(
       parameters: [pointer, i32],
       result: i32,
     },
+    kernel_drain_fork_lifecycle_events: {
+      parameters: [pointer, i32, i32],
+      result: i32,
+    },
     kernel_drain_wakeup_events: {
       parameters: [pointer, i32, i32],
       result: i32,
@@ -125,6 +129,10 @@ function signatures(
       result: i32,
     },
     kernel_find_listener_fd_by_accept_wake: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_fork_launch_failed: {
       parameters: [i32, i32],
       result: i32,
     },

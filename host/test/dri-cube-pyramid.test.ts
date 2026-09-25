@@ -11,10 +11,7 @@ import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
-import {
-  ForkReplayGateCoordinator,
-  observeForkReplayWorker,
-} from "../src/fork-replay-gate";
+import { observeForkLaunchWorker } from "../src/fork-launch-observer";
 import { GlMuxer } from "../src/webgl/muxer";
 import type { GlBinding } from "../src/webgl/registry";
 import type {
@@ -124,6 +121,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             mode,
             parentMemory,
             continuation,
+            launchDecided,
           }) => {
             // WHY: this focused graphics harness launches every child through
             // _start and does not retain pthread entry roots. Reject that
@@ -162,9 +160,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             kernel.gl.attachCanvas(childPid, fakeCanvas);
 
             const forkBufAddr = continuation.forkBufAddr;
-            const forkReplay = new ForkReplayGateCoordinator(
-              `DRI cube fork child pid=${childPid}`,
-            );
 
             const childInit: CentralizedWorkerInitMessage = {
               type: "centralized_init",
@@ -176,7 +171,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               isForkChild: true,
               forkMode: mode,
               forkBufAddr,
-              forkReplayGate: forkReplay.gate,
               ptrWidth,
             };
 
@@ -192,32 +186,21 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               kernel.unregisterProcess(childPid);
               workers.delete(childPid);
             });
-            observeForkReplayWorker(
-              forkReplay,
+            // The kernel completes the parent once the child's replay reports
+            // ready; a Worker that ends first is reported as a failed launch.
+            const launchFailure = observeForkLaunchWorker(
               childWorker,
               childPid,
-              () => workers.get(childPid) === childWorker,
+              launchDecided,
+              () => {},
             );
-
             try {
-              await forkReplay.waitUntilReady();
-              if (workers.get(childPid) !== childWorker) {
-                throw new Error(
-                  `fork child ${childPid} changed generation before commit`,
-                );
-              }
-              if (!kernel.shouldLaunchPendingChild(childPid)) {
-                throw new Error(
-                  `fork child ${childPid} exited before replay commit`,
-                );
-              }
-              forkReplay.commit();
+              await Promise.race([launchDecided, launchFailure]);
               return [childChannelOffset];
             } catch (error) {
-              forkReplay.cancel(error);
               if (workers.get(childPid) === childWorker) {
                 workers.delete(childPid);
-                kernel.unregisterProcess(childPid);
+                kernel.deactivateProcess(childPid);
               }
               childWorker.terminate().catch(() => {});
               throw error;

@@ -408,6 +408,10 @@ pub mod wakeup_event_wire {
     pub const TYPE_PROCESS_STOPPED: u8 = 16;
     pub const TYPE_PROCESS_CONTINUED: u8 = 32;
     pub const TYPE_ADVISORY_LOCK: u8 = 64;
+    /// A fork-lifecycle record was queued (see `fork_lifecycle_event_wire`).
+    /// `idx` is 0. The host drains `kernel_drain_fork_lifecycle_events` when
+    /// it sees this bit, so launches cost no drain call when idle.
+    pub const TYPE_FORK_LIFECYCLE: u8 = 128;
 }
 
 /// Cross-layer layout values and defensive limits for the non-forking spawn

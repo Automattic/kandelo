@@ -370,7 +370,7 @@ const {
   processMemoryCreators,
   processTeardowns,
   ptyByPid,
-  vforkLifetimes,
+  endVforkBorrow,
   vmInterruptTimers,
   handleSpawn,
   handleExit,
@@ -767,8 +767,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         const error = new Error(
           `vfork child ${pid} attempted to expose borrowed Memory to browser main`,
         );
-        if (vforkLifetimes.isActiveBorrower(processInfo)) {
-          vforkLifetimes.requireAddressSpaceContainment(processInfo, error);
+        if (!processInfo.vforkWorkspace.borrowEnded) {
+          endVforkBorrow(processInfo, false, error);
           reportHostDiagnostic({
             pid,
             source: "vfork framebuffer ownership",
@@ -816,8 +816,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         const error = new Error(
           `vfork child ${pid} attempted to rebind borrowed Memory in browser main`,
         );
-        if (vforkLifetimes.isActiveBorrower(processInfo)) {
-          vforkLifetimes.requireAddressSpaceContainment(processInfo, error);
+        if (!processInfo.vforkWorkspace.borrowEnded) {
+          endVforkBorrow(processInfo, false, error);
           reportHostDiagnostic({
             pid,
             source: "vfork framebuffer ownership",
@@ -939,7 +939,7 @@ function installProcessWorkerListeners(
     const active = processes.get(pid);
     if (
       active?.worker === worker
-      && vforkLifetimes.phaseForChild(active) !== undefined
+      && active.vforkWorkspace?.borrowEnded === false
     ) {
       traceVforkMechanism("worker_crashed", `child=${pid}`);
     }

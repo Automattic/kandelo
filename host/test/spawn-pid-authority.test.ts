@@ -23,6 +23,7 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
   HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
@@ -396,7 +397,11 @@ describe("kernel task-ID authority", () => {
     await Promise.resolve();
 
     expect(kernelForkProcess).toHaveBeenCalledOnce();
-    expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid, 0);
+    expect(kernelForkProcess).toHaveBeenCalledWith(
+      parentPid,
+      parentPid,
+      PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+    );
     expect(onFork).toHaveBeenCalledWith({
       parentPid,
       childPid,
@@ -406,21 +411,17 @@ describe("kernel task-ID authority", () => {
         kind: "main",
         forkBufAddr: TEST_FORK_CONTINUATION,
       },
+      launchDecided: expect.any(Promise),
     });
     expect(harness.completeChannel).not.toHaveBeenCalled();
     expect("allocateTopLevelSpawnPid" in harness.worker).toBe(false);
 
+    // Registration finishing does not complete the parent: the kernel does,
+    // once the child's replay reports ready.
     finishForkRegistration([WASM_PAGE_SIZE]);
     await forkRegistration;
     await drainTaskAuthorityGate();
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.channel,
-      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-      origArgs,
-      undefined,
-      childPid,
-      0,
-    );
+    expect(harness.completeChannel).not.toHaveBeenCalled();
   });
 
   it("returns the kernel-assigned PID for top-level process creation", () => {

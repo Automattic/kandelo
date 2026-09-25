@@ -74,6 +74,8 @@ host/test/fork-gc-codec.test.ts	source-only
 host/test/fork-host-externref-refusal.test.ts	prepared-product
 host/test/fork-imported-globals.test.ts	source-only
 host/test/fork-instrument-coverage.test.ts	prepared-product
+host/test/fork-kernel-launch.test.ts	prepared-product
+host/test/fork-launch-observer.test.ts	source-only
 host/test/fork-mechanism-trace.test.ts	source-only
 host/test/fork-memory-clone-guest.test.ts	prepared-product
 host/test/fork-module-capture-refusal.test.ts	source-only
@@ -83,7 +85,6 @@ host/test/fork-reference-recipes.test.ts	source-only
 host/test/fork-reference-segments.test.ts	source-only
 host/test/fork-reference-transaction.test.ts	source-only
 host/test/fork-replay-events.test.ts	source-only
-host/test/fork-replay-gate.test.ts	source-only
 host/test/fork-replay-host-parity.test.ts	source-only
 host/test/fork-save-buffer-overrun.test.ts	source-only
 host/test/fork-static-root-catalog.test.ts	source-only
@@ -268,7 +269,6 @@ host/test/tls-network-backend-real-client.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
 host/test/unix-listener-exec.test.ts	prepared-product
 host/test/vfork-lifecycle-guest.test.ts	prepared-product
-host/test/vfork-lifetime.test.ts	source-only
 host/test/vfork-mechanism-trace.test.ts	source-only
 host/test/vfork-production-mechanism.test.ts	source-only
 host/test/vfork-side-module-fixture.test.ts	source-only

@@ -1122,30 +1122,32 @@ to the parent's existing `Shared WebAssembly.Memory` and launches a separate
 child Worker without constructing or copying a child process Memory. The child
 receives its own syscall channel, host-reserved replay workspace, Wasm
 instance, loader, and continuation controller. Only the calling parent thread
-stays parked in the asynchronous fork import; sibling pthreads continue to
-run.
+stays parked on its `SYS_VFORK` channel, which the kernel completes; sibling
+pthreads continue to run.
 
 The kernel marks the vfork child's independent Process record. Nested fork,
 vfork, spawn, and pthread clone fail with `EAGAIN`; failed exec preserves the
 marker and returns to the child. Successful exec commit, `_exit()`, and exact
 signal/trap teardown quiesce the borrowing Worker, release its alias and
-workspace, and resume the exact parked caller once. An ambiguous forced Worker
-termination cannot prove that shared-memory access stopped, so the host
-contains the complete address-space owner group rather than resuming the
-parent unsafely. Ordinary fork continues to use only the ordinary mode and the
+workspace, and tell the kernel, which resumes the parked caller once. An
+ambiguous forced Worker termination cannot prove that shared-memory access
+stopped, so the host asks the kernel to contain the complete address-space
+owner group rather than resuming the parent unsafely. Ordinary fork continues to use only the ordinary mode and the
 independent-memory path above.
 
-#### Kernel-owned launch state (ABI 44, not yet used by the hosts)
+#### Kernel-owned launch state (ABI 44)
 
-Today the host decides when a fork child is ready and when a vfork parent may
-resume: `host/src/fork-replay-gate.ts` holds the child at its fork site until
-the host commits, and `host/src/vfork-lifetime.ts` (with
-`vfork_parent_release` in `crates/host-native`) tracks the borrowed memory.
-The kernel now also carries that state itself, so the hosts can move onto it.
-The kernel state exists and is unit-tested; neither host passes the opt-in bit
-yet, so today's behaviour is unchanged. The switch is lane F stages 2b
-(Node/browser) and 2d (native); see
-`docs/superpowers/plans/2026-09-24-lane-f-super-plan.md`.
+The kernel decides when a fork child is ready and when a vfork parent may
+resume. The Node and browser hosts pass the opt-in bit below on every
+fork and vfork; `host/src/kernel-worker.ts` completes a parked parent only
+from the kernel's fork-lifecycle events. The host keeps only what the kernel
+cannot observe: Worker construction and early failure
+(`host/src/fork-launch-observer.ts`), and a vfork child's control slot,
+whether its realm may already have touched the shared memory, and the exact
+teardown proof (`host/src/vfork-lifetime.ts`, `completeVforkGenerationTeardown`
+in `host/src/process-lifecycle.ts`). The native host (`crates/host-native`,
+with its own `vfork_parent_release`) does not opt in yet; that is lane F
+stage 2d (see `docs/superpowers/plans/2026-09-24-lane-f-super-plan.md`).
 
 A host opts in per launch by OR-ing
 `fork_contract::LAUNCH_KERNEL_COMPLETES` (`0x100`,
@@ -1162,34 +1164,47 @@ a launch:
   `Launching`, `ReplayReady` or `Committed`). A vfork child also carries
   `vfork_parent` for as long as it runs on the borrowed image.
 - The fork module issues `SYS_FORK_REPLAY_READY` (416, no arguments) on the
-  child's own channel when replay reaches the fork site. The channel is bound
+  child's own channel from `fm_parent_finish` when a child replay finishes,
+  which is the moment replay reaches the fork site. The channel is bound
   to exactly one process, and the process table decides whether that process is
-  alive and still launching. That one check replaces the host's
-  Worker-generation comparison and `shouldLaunchPendingChild`. An ordinary fork
-  commits and the parent's result is the child pid. A vfork child moves to
-  `ReplayReady` and its parent stays parked. A second report fails with
-  `EALREADY`, a process with no kernel-completed launch with `EINVAL`, and a
-  dead child with `ESRCH`. The call returns 0, which is the child's fork() return.
+  alive and still launching. That one check replaced the host's
+  Worker-generation comparison and its pending-child liveness probe. An
+  ordinary fork commits and the parent's result is the child pid. A vfork child
+  moves to `ReplayReady` and its parent stays parked. A second report fails
+  with `EALREADY`, a process with no kernel-completed launch with `EINVAL`, and
+  a dead child with `ESRCH`. The call returns 0, which is the child's fork()
+  return. The module treats `EINVAL` as "this host completes the parent
+  itself", which is true only of the native host until stage 2d.
 - If a child dies before it reports ready, the parent still learns its PID. For
   an ordinary fork, the parent's result is committed with the child pid at the
   exit, so the parent gets the PID and a zombie it can reap, as POSIX requires.
-- `kernel_fork_launch_failed(child_pid, errno)` replaces the host rollback. It
+- `kernel_fork_launch_failed(child_pid, errno)` is the host's rollback. It
   must be called before any vfork child realm could touch the shared memory. If
   the child is still launching, the kernel removes it and the parent's result
   is `-errno` (return 0). If the child already died or committed, nothing
-  changes (return 1).
+  changes (return 1). The Node/browser host calls it when Worker construction
+  or start fails, and when an ordinary fork child's Worker fails or exits
+  before the kernel decided its launch (`EAGAIN` for a refused vfork workspace
+  or retirement backlog, `ENOMEM` otherwise); a still-live child that already
+  committed is then recorded as a SIGSEGV death rather than left imageless.
 - A vfork borrower's exec commit or exit clears `vfork_parent` and moves the
   lifetime to awaiting quiescence. The borrow itself stays recorded. The host
   proves its realm stopped touching the memory, then calls
   `kernel_vfork_address_space_released(child_pid, disposition)`. `RESUME`
   (`EBUSY` while the child still runs on the image) completes the parent with
   the child pid. `CONTAIN` records SIGSEGV death for the parent and any live
-  child, and never completes the parent.
+  child, and never completes the parent. The Node/browser host asks for
+  `CONTAIN` whenever its teardown was not exact or a failure happened after
+  the child Worker may have started, and tears both processes down through
+  the ordinary kill path.
 - The kernel reports each parent completion and each quiescence request as a
   24-byte record in a queue the host drains with
   `kernel_drain_fork_lifecycle_events(out_ptr, out_len, max_events)`. The layout
   is `fork_lifecycle_event_wire` in `crates/shared` and
-  `FORK_LIFECYCLE_EVENT_*` in `host/src/generated/abi.ts`.
+  `FORK_LIFECYCLE_EVENT_*` in `host/src/generated/abi.ts`. Each record also
+  raises the wake type `TYPE_FORK_LIFECYCLE` (128) in the ordinary wakeup
+  queue, so the host drains the lifecycle queue only from its existing wake
+  drain and costs nothing when no launch is in flight.
 
 A launch that does not set the bit keeps no launch record, never has a
 recorded borrower, and produces no events.

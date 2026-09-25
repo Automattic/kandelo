@@ -213,6 +213,12 @@ import {
   WAKEUP_EVENT_FIELDS,
   WAKEUP_EVENT_RECORD_BYTES,
   WAKEUP_EVENT_TYPES,
+  FORK_LAUNCH_FAILED_RESULTS,
+  FORK_LIFECYCLE_EVENT_FIELDS,
+  FORK_LIFECYCLE_EVENT_KINDS,
+  FORK_LIFECYCLE_EVENT_RECORD_BYTES,
+  PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+  VFORK_RELEASE_DISPOSITIONS,
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
@@ -1991,6 +1997,12 @@ export interface ForkLaunchRequest {
   readonly continuation: ForkContinuationContext;
   /** Present only for vfork, measured before the kernel child is allocated. */
   readonly borrowedReplay?: ForkBorrowedReplayWorkspace;
+  /**
+   * The parent's result once the kernel decided it: the child pid, or a
+   * negated errno after the launch was reported failed. The kernel, not the
+   * host, completes the parent's channel with it.
+   */
+  readonly launchDecided: Promise<number>;
 }
 
 export interface ResolvedSpawnProgram {
@@ -2923,6 +2935,17 @@ export class CentralizedKernelWorker {
    * `removeChannel` and the thread-exit path.
    */
   private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
+  /**
+   * Parked SYS_FORK/SYS_VFORK callers of kernel-completed launches, by child
+   * pid. The kernel decides each result; `decide` hands it to the launching
+   * host code and the fork-lifecycle drain completes `channel` with it.
+   */
+  readonly #forkLaunches = new Map<number, {
+    readonly channel: ChannelInfo;
+    readonly origArgs: number[];
+    readonly callerTid: number;
+    readonly decide: (result: number) => void;
+  }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
@@ -9267,19 +9290,6 @@ export class CentralizedKernelWorker {
   }
 
   /** Remove host-only child state after fork/spawn Worker launch fails. */
-  private rollbackChildHostRegistration(childPid: number): void {
-    this.#runOrDeferKernelEntry(
-      `child host rollback pid=${childPid}`,
-      (entry) => {
-        this.#rollbackChildHostRegistrationWithinKernelEntry(
-          childPid,
-          entry,
-        );
-        return undefined;
-      },
-    );
-  }
-
   #rollbackChildHostRegistrationWithinKernelEntry(
     childPid: number,
     entry: KernelWorkerEntryContext,
@@ -10258,33 +10268,6 @@ export class CentralizedKernelWorker {
       // identity remains the best available liveness evidence there.
     }
     return true;
-  }
-
-  private isAsyncChannelProcessActive(channel: ChannelInfo): boolean {
-    if (!this.isRegisteredChannel(channel)) return false;
-    if (this.#kernelFatalError !== null) return false;
-    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
-      throw new KernelReentrantEntryError(
-        `async channel liveness pid=${channel.pid}`,
-      );
-    }
-    let active: boolean | undefined;
-    const deferred = this.#runOrDeferKernelEntry(
-      `async channel liveness pid=${channel.pid}`,
-      (entry) => {
-        active = this.#isAsyncChannelProcessActiveWithinKernelEntry(
-          channel,
-          entry,
-        );
-        return undefined;
-      },
-    );
-    if (deferred || active === undefined) {
-      throw new KernelReentrantEntryError(
-        `async channel liveness pid=${channel.pid}`,
-      );
-    }
-    return active;
   }
 
   /** Public liveness guard for async Node/browser worker-entry continuations. */
@@ -15761,8 +15744,12 @@ export class CentralizedKernelWorker {
     let needDatagramWriterWake = false;
     let needAdvisoryLockWake = false;
     let needSignalSafeDeferredWake = false;
+    let needForkLifecycleDrain = false;
 
     for (const { wakeIdx, wakeType } of events) {
+      if (wakeType & WAKEUP_EVENT_TYPES.forkLifecycle) {
+        needForkLifecycleDrain = true;
+      }
       const lifecycleEvent =
         wakeType & (
           WAKEUP_EVENT_TYPES.processStopped
@@ -15888,6 +15875,9 @@ export class CentralizedKernelWorker {
     // reader/writer and non-signal-safe poll wakes above run synchronously
     // (not via this deferred path). Only matching signal-safe ppoll entries
     // remain parked for the grace period.
+    if (needForkLifecycleDrain) {
+      this.#drainForkLifecycleEventsWithinKernelEntry(entry);
+    }
     if (needDatagramWriterWake) {
       this.wakeBlockedFallbackWriters();
     }
@@ -20665,9 +20655,17 @@ export class CentralizedKernelWorker {
     );
   }
 
-  #rollbackForkWithinKernelEntry(
-    channel: ChannelInfo,
-    origArgs: number[],
+  /**
+   * Report a kernel-completed fork launch the host could not finish.
+   *
+   * The kernel decides what that means. A child still launching is rolled
+   * back and the parent's fork returns `-errno`. A child that already died or
+   * committed stays the parent's result; only its host Worker is gone, so a
+   * still-live one is recorded as a signal death rather than left with no
+   * image. Either way the parent's channel is completed by the
+   * fork-lifecycle drain, never here.
+   */
+  #failForkLaunchWithinKernelEntry(
     childPid: number,
     cause: unknown,
     entry: KernelWorkerEntryContext,
@@ -20680,49 +20678,150 @@ export class CentralizedKernelWorker {
         return undefined;
       });
     }
-    try {
-      this.#rollbackChildHostRegistrationWithinKernelEntry(childPid, entry);
-    } catch (hostRollbackError) {
-      this.#rethrowKernelEntryFatal(hostRollbackError);
-      entry.deferObserverEffect(() => {
-        console.error(
-          `[kernel-worker] fork child ${childPid} host rollback failed:`,
-          hostRollbackError,
+    // Host-only state first: a shared-mapping writeback needs the kernel
+    // Process, which a roll-back removes.
+    this.#rollbackChildHostRegistrationWithinKernelEntry(childPid, entry);
+    const errno =
+      cause instanceof ProcessMemoryRetirementBacklogError
+      || cause instanceof VforkAddressSpaceBusyError
+        ? EAGAIN // bounded debt or vfork workspace denied admission.
+        : ENOMEM; // worker launch or ordinary allocation failure.
+    const launchFailed = this.#kernelInstanceForEntry(entry).exports
+      .kernel_fork_launch_failed as (childPid: number, errno: number) => number;
+    const outcome = launchFailed(childPid, errno);
+    if (outcome < 0) {
+      const launch = this.#forkLaunches.get(childPid);
+      this.#forkLaunches.delete(childPid);
+      if (launch) {
+        this.#terminateForKernelProtocolFailureWithinKernelEntry(
+          launch.channel,
+          `could not roll back fork child ${childPid}: errno ${-outcome}`,
+          entry,
         );
-        return undefined;
-      });
-    }
-    try {
-      this.#removeFromKernelProcessTableWithinKernelEntry(childPid, entry);
-    } catch (rollbackError) {
-      this.#rethrowKernelEntryFatal(rollbackError);
-      this.#terminateForKernelProtocolFailureWithinKernelEntry(
-        channel,
-        `could not roll back fork child ${childPid}: ${
-          rollbackError instanceof Error
-            ? rollbackError.message
-            : String(rollbackError)
-        }`,
-        entry,
-      );
+      }
       return;
     }
     if (
-      this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
+      outcome === FORK_LAUNCH_FAILED_RESULTS.alreadyResolved
+      && this.#getProcessExitSignal(childPid, entry) === -1
     ) {
-      const errno =
-        cause instanceof ProcessMemoryRetirementBacklogError
-        || cause instanceof VforkAddressSpaceBusyError
-          ? 11 // EAGAIN: bounded debt or vfork workspace denied admission.
-          : 12; // ENOMEM: worker launch or ordinary allocation failure.
+      this.#notifyHostProcessCrashedWithinKernelEntry(childPid, SIGSEGV, entry);
+    }
+    // The removal releases locks and queues the parent's completion.
+    this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+  }
+
+  /**
+   * Complete the parents of kernel-completed fork launches.
+   *
+   * The kernel decides each parent's SYS_FORK/SYS_VFORK result (the child
+   * pid once the child's replay reported ready, its vfork borrow was
+   * released, or it died first; `-errno` once a launch was reported failed)
+   * and queues it. This is the one place a parked parent is completed. A
+   * vfork's awaiting-quiescence record needs no action here: the host
+   * already runs that teardown and reports it through
+   * `releaseVforkAddressSpace`.
+   */
+  #drainForkLifecycleEventsWithinKernelEntry(
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const MAX_EVENTS = 64;
+    const bufSize = MAX_EVENTS * FORK_LIFECYCLE_EVENT_RECORD_BYTES;
+    const records: DataView[] = [];
+    for (;;) {
+      const bytes = this.#requireMainScratchRegion().withLease((lease) => {
+        const count = this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_drain_fork_lifecycle_events",
+          [lease.exportPointer(0, bufSize), bufSize, MAX_EVENTS],
+        );
+        if (!Number.isSafeInteger(count) || count < 0 || count > MAX_EVENTS) {
+          throw new KernelScratchError(
+            `fork lifecycle drain returned invalid event count ${count}`,
+            EIO,
+          );
+        }
+        return lease.copyOut(0, count * FORK_LIFECYCLE_EVENT_RECORD_BYTES);
+      });
+      for (let off = 0; off < bytes.byteLength; off += FORK_LIFECYCLE_EVENT_RECORD_BYTES) {
+        records.push(new DataView(bytes.buffer, bytes.byteOffset + off));
+      }
+      if (bytes.byteLength < bufSize) break;
+    }
+    const field = (
+      record: DataView,
+      name: keyof typeof FORK_LIFECYCLE_EVENT_FIELDS,
+    ): number => record.getInt32(FORK_LIFECYCLE_EVENT_FIELDS[name].offset, true);
+    for (const record of records) {
+      const childPid = field(record, "childPid");
+      const launch = this.#forkLaunches.get(childPid);
+      if (field(record, "kind") !== FORK_LIFECYCLE_EVENT_KINDS.parentComplete || !launch) {
+        continue;
+      }
+      this.#forkLaunches.delete(childPid);
+      const result = field(record, "value");
+      launch.decide(result);
+      if (
+        launch.channel.pid !== field(record, "parentPid")
+        || launch.callerTid !== field(record, "parentTid")
+      ) {
+        this.#terminateForKernelProtocolFailureWithinKernelEntry(
+          launch.channel,
+          `fork child ${childPid} completed a parent the host did not park`,
+          entry,
+        );
+        continue;
+      }
+      // A sibling pthread may have exec'd or exited the parent image while
+      // this thread was parked; its channel is then gone.
+      if (!this.#isAsyncChannelProcessActiveWithinKernelEntry(launch.channel, entry)) {
+        continue;
+      }
       this.#completeForkWithinKernelEntry(
-        channel,
-        origArgs,
-        -1,
-        errno,
+        launch.channel,
+        launch.origArgs,
+        result > 0 ? result : -1,
+        result > 0 ? 0 : -result,
         entry,
       );
     }
+  }
+
+  /**
+   * End a vfork child's borrow of its parent's image once the host has
+   * finished (`resume`) or given up proving (`contain`) the child's exact
+   * teardown. On resume the kernel completes the parked parent with the
+   * child pid; on contain it kills the parent and a still-live child by
+   * SIGSEGV, whose host teardown then runs through the ordinary kill path.
+   * Returns 0 or a negated errno (`ESRCH`: not a recorded borrower; `EBUSY`:
+   * resume while the kernel still sees the child on the image).
+   */
+  releaseVforkAddressSpace(childPid: number, disposition: number): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("vfork address-space release");
+    }
+    let result: number | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `vfork address-space release pid=${childPid}`,
+      (entry) => {
+        const release = this.#kernelInstanceForEntry(entry).exports
+          .kernel_vfork_address_space_released as
+          (childPid: number, disposition: number) => number;
+        result = release(childPid, disposition);
+        if (result === 0 && disposition === VFORK_RELEASE_DISPOSITIONS.contain) {
+          this.#forkLaunches.delete(childPid);
+          this.reapKilledProcessesAfterSyscall(entry);
+        }
+        this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+        return undefined;
+      },
+    );
+    if (deferred || result === undefined) {
+      throw new KernelReentrantEntryError("vfork address-space release");
+    }
+    return result;
   }
 
   /**
@@ -20846,11 +20945,18 @@ export class CentralizedKernelWorker {
 
     // Fork atomically allocates the child PID and inserts its Process in Rust.
     // The host receives that identity only after the authoritative state exists.
+    // The kernel also owns the launch: it decides when this parent returns
+    // (see `#drainForkLifecycleEventsWithinKernelEntry`).
     const kernelForkProcess = this.#kernelInstanceForEntry(entry).exports.kernel_fork_process as
-      (parentPid: number, callerTid: number, mode: ProcessForkMode) => number;
-    const forkResult = kernelForkProcess(parentPid, callerTid, mode);
+      (parentPid: number, callerTid: number, mode: number) => number;
+    const forkResult = kernelForkProcess(
+      parentPid,
+      callerTid,
+      mode | PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+    );
     if (forkResult <= 0) {
-      // Fork failed in kernel (e.g., ESRCH, ENOMEM)
+      // Fork failed in kernel (e.g., ESRCH, ENOMEM, EAGAIN for a borrowed
+      // address space)
       const errno = forkResult < 0 ? (-forkResult) >>> 0 : EIO;
       this.#completeForkWithinKernelEntry(
         channel, _origArgs, -1, errno, entry,
@@ -20858,6 +20964,14 @@ export class CentralizedKernelWorker {
       return;
     }
     const childPid = forkResult >>> 0;
+    let decide!: (result: number) => void;
+    const launchDecided = new Promise<number>((resolve) => { decide = resolve; });
+    this.#forkLaunches.set(childPid, {
+      channel,
+      origArgs: _origArgs,
+      callerTid,
+      decide,
+    });
 
     // Clear fork_child flag immediately. With wpk_fork instrumentation, the
     // child resumes from the fork point and never checks this flag. Without
@@ -20867,67 +20981,37 @@ export class CentralizedKernelWorker {
       ((pid: number) => number) | undefined;
     if (clearForkChild) clearForkChild(childPid);
 
-    if (continuation.kind === "thread") {
-      try {
-        this.#reserveHostRegionAtWithinKernelEntry(
-          childPid,
-          callerSlotReservation!,
-          guestPointerWidth,
-          entry,
-        );
-      } catch (err) {
-        this.#rethrowKernelEntryFatal(err);
-        try {
-          this.#removeFromKernelProcessTableWithinKernelEntry(
-            childPid,
-            entry,
-          );
-        } catch (rollbackError) {
-          this.#rethrowKernelEntryFatal(rollbackError);
-          this.#terminateForKernelProtocolFailureWithinKernelEntry(
-            channel,
-            `could not roll back fork child ${childPid}: ${
-              rollbackError instanceof Error
-                ? rollbackError.message
-                : String(rollbackError)
-            }`,
-            entry,
-          );
-          return;
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        entry.deferObserverEffect(() => {
-          console.error(
-            `[kernel-worker] fork child slot reservation failed: ${message}`,
-          );
-          return undefined;
-        });
-        this.#completeForkWithinKernelEntry(
-          channel, _origArgs, -1, 12, entry,
-        );
-        return;
-      }
-    }
-
     // The kernel child is real before its host Worker launches. Install its
     // host-only fd mirrors synchronously so a sibling exec cannot remove the
     // parent's last listener and close the shared backend during onFork's
     // async worker setup. Rust owns target selection; these mirrors retain the
     // host backend and stable wake identity across that launch window.
     try {
+      if (continuation.kind === "thread") {
+        this.#reserveHostRegionAtWithinKernelEntry(
+          childPid,
+          callerSlotReservation!,
+          guestPointerWidth,
+          entry,
+        );
+      }
       this.inheritHostFdMirrors(parentPid, childPid, entry);
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
-      this.#rollbackForkWithinKernelEntry(
-        channel,
-        _origArgs,
-        childPid,
-        err,
-        entry,
-      );
+      this.#failForkLaunchWithinKernelEntry(childPid, err, entry);
       return;
     }
 
+    const failLaunch = (cause: unknown, label: string): void => {
+      this.#runOrDeferKernelEntry(
+        `${label} pid=${childPid}`,
+        (failureEntry) => {
+          if (this.#kernelFatalError !== null) return undefined;
+          this.#failForkLaunchWithinKernelEntry(childPid, cause, failureEntry);
+          return undefined;
+        },
+      );
+    };
     entry.deferProtocolTransactionStart(() => {
       let launch: Promise<number[]>;
       try {
@@ -20939,68 +21023,26 @@ export class CentralizedKernelWorker {
             parentMemory: channel.memory,
             continuation,
             ...(borrowedReplay ? { borrowedReplay } : {}),
+            launchDecided,
           }),
         );
       } catch (cause) {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "fork launch failure",
-          (rollbackEntry) => {
-            this.#rollbackForkWithinKernelEntry(
-              channel,
-              _origArgs,
-              childPid,
-              cause,
-              rollbackEntry,
-            );
-            return undefined;
-          },
-        );
+        failLaunch(cause, "fork launch failure");
         return undefined;
       }
       this.#continuePromise(launch, () => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "fork launch completion",
+        this.#runOrDeferKernelEntry(
+          `fork launch completion pid=${childPid}`,
           (completionEntry) => {
+            if (this.#kernelFatalError !== null) return undefined;
             this.#finalizePendingChildTerminationWithinKernelEntry(
               childPid,
               completionEntry,
             );
-            if (
-              !this.#isAsyncChannelProcessActiveWithinKernelEntry(
-                channel,
-                completionEntry,
-              )
-            ) {
-              return undefined;
-            }
-            this.#completeForkWithinKernelEntry(
-              channel,
-              _origArgs,
-              childPid,
-              0,
-              completionEntry,
-            );
             return undefined;
           },
         );
-      }, (cause) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "fork launch rejection",
-          (rollbackEntry) => {
-            this.#rollbackForkWithinKernelEntry(
-              channel,
-              _origArgs,
-              childPid,
-              cause,
-              rollbackEntry,
-            );
-            return undefined;
-          },
-        );
-      });
+      }, (cause) => failLaunch(cause, "fork launch rejection"));
       return undefined;
     });
   }

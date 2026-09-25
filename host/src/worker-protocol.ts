@@ -110,12 +110,6 @@ export interface CentralizedWorkerInitMessage {
   /** Exact byte length of the inherited fork-module region (paired with the base). */
   forkModuleInheritedBytes?: number;
   /**
-   * Two-phase launch gate for a fork child. The child announces that all
-   * reconstruction and activation frames reached the inherited fork import,
-   * then waits here until the kernel host commits the launch.
-   */
-  forkReplayGate?: SharedArrayBuffer;
-  /**
    * Entry-point override for fork children created by a non-main thread.
    *
    * A pthread worker that calls fork() unwinds through its pthread entry
@@ -206,7 +200,6 @@ export interface WorkerTerminateMessage {
 
 export type WorkerToHostMessage =
   | WorkerReadyMessage
-  | ForkReplayReadyMessage
   | WorkerExitMessage
   | ThreadExitMessage
   | WorkerMemoryQuiescentMessage
@@ -338,11 +331,6 @@ export interface ForkModuleReferencesMessage {
 
 export interface WorkerReadyMessage {
   type: "ready";
-  pid: number;
-}
-
-export interface ForkReplayReadyMessage {
-  type: "fork_replay_ready";
   pid: number;
 }
 

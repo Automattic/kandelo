@@ -5251,6 +5251,38 @@ mod wasm {
         Ok(())
     }
 
+    /// Report that this fork child's replay reached the inherited fork site:
+    /// `SYS_FORK_REPLAY_READY` on the child's own channel. The kernel checks
+    /// the channel's process is a live, still-launching fork child and commits
+    /// the launch (an ordinary fork's parent then returns the child pid; a vfork
+    /// parent stays parked until the borrow is released). Answers 0, which the
+    /// child's fork() returns.
+    ///
+    /// `EINVAL` means the launch was not created with
+    /// `fork_contract::LAUNCH_KERNEL_COMPLETES`: that host completes the
+    /// parent itself, so there is nothing to report to. Only host-native still
+    /// launches that way, until lane F stage 2d switches it; delete this arm
+    /// then. Every other refusal (`ESRCH`, `EALREADY`) is a broken launch and
+    /// fails the finish.
+    fn report_fork_replay_ready() -> Result<(), Errno> {
+        let (ret, err) = channel_syscall(
+            channel_base()?,
+            wasm_posix_shared::abi::extended_syscalls::SYS_FORK_REPLAY_READY,
+            [0; 6],
+        );
+        let code = if err != 0 {
+            err
+        } else if ret < 0 {
+            (-ret) as u32
+        } else {
+            return Ok(());
+        };
+        match Errno::from_u32(code).unwrap_or(Errno::EIO) {
+            Errno::EINVAL => Ok(()),
+            errno => Err(errno),
+        }
+    }
+
     // -- Module-owned growing frame-chunk allocator (Option B) --------------
     //
     // Each `allocate` issues a fresh `SYS_MMAP` through the channel, growing the
@@ -8639,8 +8671,14 @@ mod wasm {
     /// guest export, same ascending order, drive FIRST then finish. The abort finish
     /// still asserts the `in_abort` pairing `fm_parent_replay(abort=1)` set, so a stray
     /// `fm_parent_finish(abort=1)` is a loud `EINVAL`.
+    ///
+    /// A CHILD replay's finish is the point where the child reached the inherited
+    /// fork site, so it then reports `SYS_FORK_REPLAY_READY` on the child's own
+    /// channel (see `report_fork_replay_ready`). The kernel, not the host, decides
+    /// from that whether the parent's fork() now returns the child pid.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_finish(abort: u32) {
+        let child_replay = abort == 0 && PHASE.load(Ordering::Relaxed) == PHASE_CHILD_REPLAY;
         // An ordinary finish ends EITHER a parent replay or a child replay --
         // the same call closes both, which is why this takes two phases rather
         // than one. An abort finish ends only an abort replay.
@@ -8649,7 +8687,14 @@ mod wasm {
         } else {
             require_phase_either(PHASE_PARENT_REPLAY, PHASE_CHILD_REPLAY)
         };
-        match allowed.and_then(|()| finish_transaction_impl(abort != 0)) {
+        let finished = allowed.and_then(|()| finish_transaction_impl(abort != 0));
+        match finished.and_then(|()| {
+            if child_replay {
+                report_fork_replay_ready()
+            } else {
+                Ok(())
+            }
+        }) {
             Ok(()) => {
                 enter_phase(PHASE_IDLE);
                 set_ok()

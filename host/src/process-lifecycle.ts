@@ -81,6 +81,7 @@ import {
   FILE_MODES,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
+  VFORK_RELEASE_DISPOSITIONS,
 } from "./generated/abi";
 import type {
   ForkModuleProofMessage,
@@ -103,9 +104,7 @@ import {
 import {
   VforkAddressSpaceBusyError,
   type VforkExactCompletionReason,
-  type VforkLifetime,
-  VforkLifetimeCoordinator,
-  type VforkLifetimeDisposition,
+  type VforkWorkspaceOwnership,
 } from "./vfork-lifetime";
 import {
   classifiedSignalOrFallback as classifySignalOrFallback,
@@ -139,10 +138,7 @@ import {
   ProcessMemoryCapacityError,
   ProcessMemoryRetirementBacklogError,
 } from "./process-memory";
-import {
-  ForkReplayGateCoordinator,
-  observeForkReplayWorker,
-} from "./fork-replay-gate";
+import { observeForkLaunchWorker } from "./fork-launch-observer";
 import { sampleProcessMemoryStats } from "./fork-mechanism-trace";
 import { patchWasmForThread } from "./worker-main";
 import {
@@ -159,17 +155,7 @@ export interface ProcessGenerationOwnership {
   memoryLease: ProcessMemoryLease;
 }
 
-/** A parent's control slot, borrowed until exact vfork exec/exit teardown. */
-export interface VforkWorkspaceOwnership {
-  /**
-   * The process whose address space the slot was reserved from. A vfork child
-   * borrows its parent's memory, so the release goes back to the parent's pid,
-   * not the child's.
-   */
-  readonly ownerPid: number;
-  readonly slotAddr: number;
-  released: boolean;
-}
+export type { VforkWorkspaceOwnership } from "./vfork-lifetime";
 
 /**
  * The part of each entry's `ProcessInfo` this module actually reads.
@@ -313,7 +299,7 @@ export interface LifecycleWorker {
  * The worker handle this module drives.
  *
  * Narrower than `WorkerHandle` was not sustainable once fork construction
- * moved here: `observeForkReplayWorker` needs the message surface to watch a
+ * moved here: `observeForkLaunchWorker` needs the message surface to watch a
  * child reach its copied activation. Both hosts' adapters already return
  * exactly `WorkerHandle`, so this constrains nothing they do not already
  * satisfy — it only stops the module pretending it touches less than it does.
@@ -763,8 +749,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   /** PTY index by PID. */
   const ptyByPid = new Map<number, number>();
 
-  const vforkLifetimes = new VforkLifetimeCoordinator<Info>();
-
   const vmInterruptTimers = new VmInterruptTimerManager<Info>((pid) =>
     processes.get(pid),
   );
@@ -879,28 +863,70 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     reason: VforkExactCompletionReason,
     cause?: unknown,
   ): void {
-    const phase = vforkLifetimes.phaseForChild(info);
-    if (phase === undefined) return;
-    if (!exact) {
-      vforkLifetimes.requireAddressSpaceContainment(
-        info,
-        cause ?? new Error("vfork child teardown lacked an exact quiescence fence"),
+    const borrow = info.vforkWorkspace;
+    if (!borrow || borrow.borrowEnded) return;
+    if (exact) {
+      traceVforkMechanism(
+        "exact_teardown",
+        `child_channel=${info.channelOffset} reason=${reason}`,
       );
-      return;
+      releaseVforkWorkspace(info);
     }
-    traceVforkMechanism(
-      "exact_teardown",
-      `child_channel=${info.channelOffset} reason=${reason}`,
+    endVforkBorrow(
+      info,
+      exact,
+      cause ?? new Error("vfork child teardown lacked an exact quiescence fence"),
     );
-    releaseVforkWorkspace(info);
-    if (phase === "starting") {
-      vforkLifetimes.completeWithoutBorrow(
-        info,
-        reason === "exit" ? "exit" : "signal",
-      );
-    } else {
-      vforkLifetimes.completeAfterExactTeardown(info, reason);
-    }
+  }
+
+  /**
+   * Tell the kernel, once, that a vfork child's borrow of its parent's image
+   * ended. With the host's exact teardown proof the kernel resumes the parked
+   * parent with the child pid. Without it, or if the kernel still sees the
+   * child on the image, neither image may keep running: the kernel kills
+   * both by SIGSEGV. If even that is refused the kernel is left with two
+   * live images over one address space, which is not recoverable.
+   */
+  function endVforkBorrow(info: Info, exact: boolean, cause: unknown): void {
+    const borrow = info.vforkWorkspace;
+    if (!borrow || borrow.borrowEnded) return;
+    borrow.borrowEnded = true;
+    const { ownerPid: parentPid, childPid } = borrow;
+    const release = (disposition: number) => retryKernelEntryResult(
+      () => host.kernel().releaseVforkAddressSpace(childPid, disposition),
+    );
+    void (async () => {
+      if (exact) {
+        const resumed = await release(VFORK_RELEASE_DISPOSITIONS.resume);
+        if (resumed === -ESRCH) return; // no borrow left to release
+        if (resumed === 0) {
+          traceVforkMechanism(
+            "parent_released",
+            `parent=${parentPid} child=${childPid}`,
+          );
+          return;
+        }
+        cause = new Error(`kernel refused to resume the vfork parent: errno ${-resumed}`);
+      }
+      reportHostDiagnostic({
+        pid: parentPid,
+        status: signalExitStatus(SIGSEGV),
+        source: "vfork address-space containment",
+        message:
+          `[vfork] containing shared address space after ambiguous child `
+          + `teardown for pid=${childPid}: ${formatError(cause)}`,
+      });
+      const contained = await release(VFORK_RELEASE_DISPOSITIONS.contain);
+      if (contained !== 0 && contained !== -ESRCH) {
+        throw new Error(`kernel refused containment: errno ${-contained}`);
+      }
+    })().catch((error: unknown) => {
+      terminatePoisonedKernelWorker(new Error(
+        `could not contain ambiguous vfork address space for parent=${parentPid} `
+          + `child=${childPid}`,
+        { cause: error },
+      ));
+    });
   }
 
   /**
@@ -1476,103 +1502,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     } finally {
       processTeardowns.delete(expectedWorker);
     }
-  }
-
-  /**
-   * Contain a shared vfork address space whose child teardown was ambiguous.
-   *
-   * A vfork child borrows the parent's backing, so if the host cannot prove
-   * which of the two still owns it, neither may keep running: both are exited
-   * with SIGSEGV and the backing is force-retired. Failing to contain either
-   * one leaves the kernel with two live images over one address space, which
-   * is not a recoverable state — poison the kernel instance rather than
-   * continue.
-   */
-  async function containVforkAddressSpace(
-    disposition: Extract<
-      VforkLifetimeDisposition<Info>,
-      { kind: "contain-address-space" }
-    >,
-    childGeneration: Info,
-    parentPid: number,
-  ): Promise<number[]> {
-    const status = signalExitStatus(SIGSEGV);
-    reportHostDiagnostic({
-      pid: parentPid,
-      status,
-      source: "vfork address-space containment",
-      message:
-        `[vfork] containing shared address space after ambiguous child `
-        + `teardown for pid=${disposition.childPid}: ${
-          formatError(disposition.cause)
-        }`,
-    });
-
-    // SIGSEGV is passed explicitly rather than left to the host default: this
-    // path knows both images are being killed, so the synthesized reap is
-    // required on every host regardless of how that host's ordinary exits
-    // reach it.
-    if (processes.get(disposition.childPid) === childGeneration) {
-      await finishProcessExit(
-        disposition.childPid,
-        status,
-        SIGSEGV,
-        childGeneration.worker,
-        "trap",
-      );
-    }
-    if (processes.get(parentPid) === disposition.parentGeneration) {
-      await finishProcessExit(
-        parentPid,
-        status,
-        SIGSEGV,
-        disposition.parentGeneration.worker,
-        "trap",
-      );
-    }
-
-    if (
-      processes.get(disposition.childPid) === childGeneration
-      || processes.get(parentPid) === disposition.parentGeneration
-    ) {
-      const error = new Error(
-        `could not contain ambiguous vfork address space for parent=${parentPid} `
-        + `child=${disposition.childPid}`,
-        { cause: disposition.cause },
-      );
-      terminatePoisonedKernelWorker(error);
-      throw error;
-    }
-
-    // WHY: rejecting onFork here would ask the kernel to roll back childPid,
-    // which may already name a successful exec replacement. Resolving is safe
-    // only because the exact parked parent generation is now absent, so the
-    // kernel completion guard cannot publish into its retired channel.
-    return [];
-  }
-
-  /** Settle a completed vfork lifetime into what `onFork` should return. */
-  async function finishVforkDisposition(
-    disposition: VforkLifetimeDisposition<Info>,
-    childGeneration: Info,
-    parentPid: number,
-  ): Promise<number[]> {
-    if (disposition.kind === "return-error") {
-      throw new VforkAddressSpaceBusyError(
-        `vfork launch returned errno ${disposition.errno}`,
-      );
-    }
-    if (disposition.kind === "contain-address-space") {
-      return containVforkAddressSpace(disposition, childGeneration, parentPid);
-    }
-    // A sibling pthread can exec or exit the parent image while its calling
-    // thread is parked. In that case the original channel no longer exists and
-    // the kernel completion guard must observe no current parent generation.
-    traceVforkMechanism(
-      "parent_released",
-      `parent=${parentPid} child=${disposition.childPid}`,
-    );
-    return [childGeneration.channelOffset];
   }
 
   /**
@@ -2372,8 +2301,9 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
   /**
    * Construct a COPIED or SHARED fork child: clone the parent's address
-   * space, register the child, launch a worker into the copied activation,
-   * and commit the replay gate that wakes it.
+   * space, register the child, and launch a worker into the copied
+   * activation. The kernel commits the launch when the child's replay
+   * reports `SYS_FORK_REPLAY_READY`; this resolves once it has.
    *
    * The two entries' copies of this were already ~75% identical; the residue
    * was formatting, a local alias for `parentInfo.programBytes`, and the same
@@ -2386,6 +2316,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     mode: ProcessForkMode,
     parentMemory: WebAssembly.Memory,
     continuation: ForkContinuationContext,
+    launchDecided: Promise<number>,
   ): Promise<number[]> {
     const kernelWorker = host.kernel();
     const parentInfo = processes.get(parentPid);
@@ -2430,9 +2361,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let workerStartAttempted = false;
     let lifecycleTeardownStarted = false;
     let childGeneration: Info | undefined;
-    const forkReplay = new ForkReplayGateCoordinator(
-      `fork child pid=${childPid}`,
-    );
     try {
       await host.awaitProcessConstructionBarrier();
       // Pre-compile the module so the child's code is optimized on entry.
@@ -2512,7 +2440,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         // init, before it can fork), in which case the child reserves its own.
         forkModuleInheritedBase: parentInfo.forkModuleRegion?.base,
         forkModuleInheritedBytes: parentInfo.forkModuleRegion?.bytes,
-        forkReplayGate: forkReplay.gate,
         forkChildThreadFnPtr: forkReplayContext?.fnPtr,
         forkChildThreadArgPtr: forkReplayContext?.argPtr,
         ptrWidth,
@@ -2549,11 +2476,11 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       };
       processes.set(childPid, childGeneration);
 
-      observeForkReplayWorker(
-        forkReplay,
+      const launchFailure = observeForkLaunchWorker(
         launchedWorker,
         childPid,
-        () => processes.get(childPid)?.worker === launchedWorker,
+        launchDecided,
+        () => intentionallyTerminated.add(launchedWorker as object),
       );
       host.installProcessWorkerListeners(worker, childPid);
       const startDisposition = await retryKernelEntryResult(() =>
@@ -2565,11 +2492,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             worker.start();
           },
           () => {
-            forkReplay.cancel(
-              new Error(
-                `Fork child ${childPid} launch was cancelled before replay readiness`,
-              ),
-            );
             void launchedWorker.terminate();
           },
         ),
@@ -2580,9 +2502,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         );
       }
       if (startDisposition === "dead") {
-        forkReplay.cancel(
-          new Error(`Fork child ${childPid} exited before Worker launch`),
-        );
         await terminateTrackedWorker(worker);
         processes.get(childPid)?.workerQuiescence.settle();
         const signal = await retryKernelEntryResult(
@@ -2597,25 +2516,12 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         );
         return [];
       }
-      await forkReplay.waitUntilReady();
-      if (processes.get(childPid)?.worker !== launchedWorker) {
-        throw new Error(
-          `Fork child ${childPid} changed generation before replay commit`,
-        );
-      }
-      if (!await retryKernelEntryResult(
-        () => kernelWorker.shouldLaunchPendingChild(childPid),
-      )) {
-        throw new Error(`Fork child ${childPid} exited before replay commit`);
-      }
-      // WHY: only this commit wakes the child inside the inherited fork
-      // import. Keep the child blocked there until the fresh worker generation
-      // has proved reconstruction completed, so the parent cannot observe a
-      // child whose continuation has not reached the copied activation.
-      forkReplay.commit();
+      // The kernel decides the launch (the child's replay reported ready, or
+      // it died first). A Worker that ended before then rejects instead, and
+      // the rollback below reports it to the kernel as a failed launch.
+      await Promise.race([launchDecided, launchFailure]);
     } catch (error) {
       if (lifecycleTeardownStarted) throw error;
-      forkReplay.cancel(error);
       if (childWorker) await terminateTrackedWorker(childWorker);
       const generation = childGeneration ?? {
         memory: childMemory,
@@ -3022,6 +2928,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     mode: ProcessForkMode,
     parentMemory: WebAssembly.Memory,
     continuation: ForkContinuationContext,
+    launchDecided: Promise<number>,
     borrowedReplay?: ForkBorrowedReplayWorkspace,
     releaseCreatorAdmission?: () => void,
   ): Promise<number[]> {
@@ -3056,24 +2963,25 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       mode,
       parentMemory,
       continuation,
+      launchDecided,
     );
   }
 
   /**
-   * Construct a vfork child: it borrows the parent's address space and the
-   * parent stays suspended until the child execs or exits.
+   * Construct a vfork child: it borrows the parent's address space, and the
+   * kernel keeps the parent parked until the borrow ends.
    *
-   * Shared verbatim apart from three things. Two are the launch family's
-   * standing corrections — the exact finalized signal on a dead-child
-   * teardown, in both places this path reaches one. The third is a rewrite of
-   * Node's `finalizeProcessWorker` call into the `finishProcessExit` it
-   * reduces to on this path, so the borrowing-phase trap is one call on both
-   * hosts rather than a Node wrapper around it.
+   * The kernel owns that lifetime (one borrower per address space, the
+   * parent's completion). This keeps the host facts: the alias lease and
+   * control slot, the moment a child realm may touch the shared memory, and
+   * the teardown proof `completeVforkGenerationTeardown` reports. Before the
+   * Worker starts, a failure is an ordinary launch failure the kernel rolls
+   * back; after it, only containment of both images is truthful.
    *
    * The browser's vfork worker-constructor fault injection survives as the
    * `purpose` argument to `createDeferredProcessWorker`: it is a test seam for
-   * the rollback below, and it must stay scoped to vfork rather than firing
-   * for every deferred worker.
+   * the containment below, and it must stay scoped to vfork rather than
+   * firing for every deferred worker.
    */
   async function handleVfork(
     parentPid: number,
@@ -3088,9 +2996,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     if (!parentInfo || parentInfo.memory !== parentMemory) {
       throw new Error(`Unknown parent generation for pid ${parentPid}`);
     }
-    if (vforkLifetimes.hasActiveAddressSpace(parentMemory)) {
-      throw new VforkAddressSpaceBusyError();
-    }
     if (
       borrowedReplay.prefixBytes <= 0
       || borrowedReplay.prefixBytes > FORK_SAVE_BUFFER_SIZE
@@ -3103,8 +3008,8 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     }
 
     if (!parentInfo.programModule) {
-      // Stay synchronous until the alias lease, child generation, and lifetime
-      // are all installed. A sibling pthread may otherwise replace the parent
+      // Stay synchronous until the alias lease and child generation are
+      // installed. A sibling pthread may otherwise replace the parent
       // generation in the first yielded turn.
       parentInfo.programModule = new WebAssembly.Module(parentInfo.programBytes);
     }
@@ -3136,8 +3041,11 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     }
     const workspaceOwnership: VforkWorkspaceOwnership = {
       ownerPid: parentPid,
+      childPid,
       slotAddr: workspaceAllocation.slotStartPage * WASM_PAGE_SIZE,
       released: false,
+      childMayAccessMemory: false,
+      borrowEnded: false,
     };
     const childChannelOffset = workspaceAllocation.channelOffset;
     const childLayout = parentInfo.layout;
@@ -3145,11 +3053,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     let childWorker: (W & { start(): boolean }) | undefined;
     let childGeneration: Info | undefined;
     let registered = false;
-    let lifetimeStarted = false;
-    let lifetime: VforkLifetime<Info> | undefined;
-    const forkReplay = new ForkReplayGateCoordinator(
-      `vfork child pid=${childPid}`,
-    );
 
     try {
       const workspaceAddress =
@@ -3190,7 +3093,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           : parentInfo.forkReplayContext
             ? { ...parentInfo.forkReplayContext, forkBufAddr }
             : undefined;
-      let launchedWorker: W & { start(): boolean };
       const childInitData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid: childPid,
@@ -3210,7 +3112,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         forkPrivatePrefixBytes: borrowedReplay.prefixBytes,
         forkScratchAddr: workspaceAllocation.tlsOffset,
         forkScratchBytes: borrowedReplay.scratchBytes,
-        forkReplayGate: forkReplay.gate,
         forkChildThreadFnPtr: forkReplayContext?.fnPtr,
         forkChildThreadArgPtr: forkReplayContext?.argPtr,
         ptrWidth,
@@ -3226,7 +3127,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       };
 
       childWorker = host.createDeferredProcessWorker(childInitData, "vfork");
-      launchedWorker = childWorker;
+      const launchedWorker = childWorker;
       childGeneration = {
         generation: allocateProcessGeneration(),
         memory: parentMemory,
@@ -3261,32 +3162,20 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             + `scratch=${childInitData.forkScratchAddr}`,
         );
       }
-      lifetime = vforkLifetimes.begin(
-        parentPid,
-        childPid,
-        parentInfo,
-        childGeneration,
-      );
-      lifetimeStarted = true;
       processes.set(childPid, childGeneration);
-      // The exact generation is now sweepable by terminal host destroy. Keep the
-      // onFork promise pending to park only the calling guest thread.
+      // The exact generation is now sweepable by terminal host destroy.
       releaseCreatorAdmission?.();
 
-      observeForkReplayWorker(
-        forkReplay,
-        launchedWorker,
-        childPid,
-        () => processes.get(childPid)?.worker === launchedWorker,
-      );
       host.installProcessWorkerListeners(childWorker, childPid);
-      let startFailure: unknown;
+      const generation = childGeneration;
       const startDisposition = await retryKernelEntryResult(() =>
         kernelWorker.startProcessWorkerWhenRunnable(
           childPid,
           parentMemory,
           () => {
-            vforkLifetimes.markChildMayAccessMemory(childGeneration!);
+            // From here a child realm may touch the parent's memory, so a
+            // failure can no longer be rolled back, only contained.
+            workspaceOwnership.childMayAccessMemory = true;
             traceVforkMechanism(
               "child_may_access_memory",
               `parent=${parentPid} child=${childPid}`,
@@ -3294,25 +3183,16 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             try {
               launchedWorker.start();
             } catch (error) {
-              // Worker construction can partially publish a realm before throwing.
-              // Once marked borrowing, only whole-address-space containment may
-              // release the parent's parked syscall.
-              startFailure = error;
-              forkReplay.cancel(error);
-              vforkLifetimes.requireAddressSpaceContainment(
-                childGeneration!,
-                error,
-              );
+              // Worker construction can partially publish a realm before
+              // throwing.
               traceVforkMechanism(
                 "worker_start_failed",
                 `parent=${parentPid} child=${childPid}`,
               );
+              endVforkBorrow(generation, false, error);
             }
           },
           () => {
-            forkReplay.cancel(
-              new Error(`Vfork child ${childPid} launch was cancelled`),
-            );
             void launchedWorker.terminate();
           },
         ),
@@ -3323,9 +3203,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         );
       }
       if (startDisposition === "dead") {
-        forkReplay.cancel(
-          new Error(`Vfork child ${childPid} exited before Worker launch`),
-        );
         await terminateTrackedWorker(childWorker);
         childGeneration.workerQuiescence.settle();
         const signal = await retryKernelEntryResult(
@@ -3338,78 +3215,14 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           signal > 0 ? signal : undefined,
           signal > 0 ? "signal" : "exit",
         );
-        return finishVforkDisposition(
-          await lifetime.completion,
-          childGeneration,
-          parentPid,
-        );
       }
-
-      try {
-        await forkReplay.waitUntilReady();
-      } catch (error) {
-        const phase = vforkLifetimes.phaseForChild(childGeneration);
-        if (phase === "starting") {
-          childGeneration.workerQuiescence.settle();
-          const signal = await retryKernelEntryResult(
-            () => kernelWorker.finalizePendingChildTermination(childPid),
-          );
-          await awaitFinalizedProcessTeardown(
-            childPid,
-            signal > 0 ? signalExitStatus(signal) : 0,
-            childWorker,
-            signal > 0 ? signal : undefined,
-            signal > 0 ? "signal" : "exit",
-          );
-        } else if (phase === "borrowing" && startFailure === undefined) {
-          // The Node entry reached this through `finalizeProcessWorker`,
-          // which reduces to exactly this call here: its extra guards are the
-          // ones `finishProcessExit` already applies, and its
-          // `notifyHostProcessCrashed` is what passing `SIGSEGV` performs.
-          await finishProcessExit(
-            childPid,
-            signalExitStatus(SIGSEGV),
-            SIGSEGV,
-            childWorker,
-            "trap",
-          );
-        }
-        return finishVforkDisposition(
-          await lifetime.completion,
-          childGeneration,
-          parentPid,
-        );
-      }
-      if (processes.get(childPid) !== childGeneration) {
-        throw new Error(
-          `Vfork child ${childPid} changed generation before replay commit`,
-        );
-      }
-      if (!await retryKernelEntryResult(
-        () => kernelWorker.shouldLaunchPendingChild(childPid),
-      )) {
-        throw new Error(`Vfork child ${childPid} exited before replay commit`);
-      }
-      forkReplay.commit();
-      return finishVforkDisposition(
-        await lifetime.completion,
-        childGeneration,
-        parentPid,
-      );
+      return [childChannelOffset];
     } catch (error) {
-      if (childGeneration && lifetimeStarted) {
-        const phase = vforkLifetimes.phaseForChild(childGeneration);
-        if (phase === "borrowing") {
-          vforkLifetimes.requireAddressSpaceContainment(childGeneration, error);
-          return finishVforkDisposition(
-            await lifetime!.completion,
-            childGeneration,
-            parentPid,
-          );
-        }
+      if (childGeneration && workspaceOwnership.childMayAccessMemory) {
+        endVforkBorrow(childGeneration, false, error);
+        return [];
       }
 
-      forkReplay.cancel(error);
       if (childWorker) await terminateTrackedWorker(childWorker);
       if (childGeneration && registered) {
         const detachResult = await detachExactProcessGeneration({
@@ -3435,9 +3248,9 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         workspaceOwnership.released = true;
         releaseThreadSlot(workspaceOwnership.ownerPid, workspaceOwnership.slotAddr);
       }
-      if (childGeneration && lifetimeStarted) {
-        vforkLifetimes.abortBeforeChildStart(childGeneration, 11);
-      }
+      // The kernel rolls the child back (and ends its borrow) when the
+      // rejection reaches `kernel_fork_launch_failed`.
+      workspaceOwnership.borrowEnded = true;
       throw error;
     }
   }
@@ -3468,7 +3281,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     const kernelWorker = host.kernel();
     const initiatingInfo = processes.get(pid);
     if (!initiatingInfo) return -3; // ESRCH
-    const vforkBorrower = vforkLifetimes.isActiveBorrower(initiatingInfo);
     // Preallocate the replacement address space before the irreversible commit.
     const newPtrWidth = detectPtrWidth(programBytes);
     const metadataResult = kernelWorker.validateExecMetadata(
@@ -3542,14 +3354,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         preparedLeaseConsumed = true;
       } catch {
         // Preserve the kernel's authoritative commit result.
-      }
-      if (
-        commitResult !== undefined
-        && commitResult < 0
-        && vforkBorrower
-        && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-      ) {
-        vforkLifetimes.noteFailedExec(initiatingInfo, -commitResult);
       }
     };
     const startAfterCommit = async (): Promise<number> => {
@@ -3747,35 +3551,25 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
                   `Exec replacement Worker for pid ${pid} was cancelled`,
                 );
               }
-              if (
-                vforkBorrower
-                && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-              ) {
-                completeVforkGenerationTeardown(
-                  initiatingInfo,
-                  oldMemoryRetirementSafe && initiatingLeaseConsumed,
-                  "exec",
-                  new Error(
-                    `vfork child ${pid} exec retired without an exact old-memory fence`,
-                  ),
-                );
-              }
+              completeVforkGenerationTeardown(
+                initiatingInfo,
+                oldMemoryRetirementSafe && initiatingLeaseConsumed,
+                "exec",
+                new Error(
+                  `vfork child ${pid} exec retired without an exact old-memory fence`,
+                ),
+              );
             },
             () => {
               void replacementWorker?.terminate();
             },
             (error) => {
-              if (
-                vforkBorrower
-                && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-              ) {
-                completeVforkGenerationTeardown(
-                  initiatingInfo,
-                  oldMemoryRetirementSafe && initiatingLeaseConsumed,
-                  "trap",
-                  error,
-                );
-              }
+              completeVforkGenerationTeardown(
+                initiatingInfo,
+                oldMemoryRetirementSafe && initiatingLeaseConsumed,
+                "trap",
+                error,
+              );
               const message =
                 error instanceof Error ? error.message : String(error);
               reportHostDiagnostic({
@@ -3818,7 +3612,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           const signal = await retryKernelEntryResult(
             () => kernelWorker.finalizeExecHandoffTermination(pid),
           );
-          if (vforkBorrower) {
+          {
             completeVforkGenerationTeardown(
               initiatingInfo,
               oldMemoryRetirementSafe,
@@ -3905,11 +3699,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           else initiatingInfo.memoryLease.releaseAfterForcedTermination();
           initiatingLeaseConsumed = true;
         }
-        if (
-          vforkBorrower
-          && preparedTransferred
-          && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-        ) {
+        if (preparedTransferred) {
           completeVforkGenerationTeardown(
             initiatingInfo,
             oldMemoryRetirementSafe && initiatingLeaseConsumed,
@@ -3969,6 +3759,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         parentMemory,
         continuation,
         borrowedReplay,
+        launchDecided,
       }) => {
         const launch = (releaseCreatorAdmission?: () => void) => {
           // Announce every kernel-side process event so an Inspector-style
@@ -3985,6 +3776,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             mode,
             parentMemory,
             continuation,
+            launchDecided,
             borrowedReplay,
             releaseCreatorAdmission,
           );
@@ -4007,19 +3799,10 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           const { pid } = request;
           const execGeneration = processes.get(pid);
           const previousWorker = execGeneration?.worker;
+          // A failed exec returns to a borrowing vfork child without ending
+          // its borrow: the kernel releases the parent only after a later
+          // successful exec or _exit.
           const result = await handleExec(request);
-          if (
-            typeof result === "number"
-            && result < 0
-            && execGeneration
-            && processes.get(pid) === execGeneration
-            && vforkLifetimes.isActiveBorrower(execGeneration)
-          ) {
-            // A failed exec returns to the borrowing child. POSIX does not let
-            // that release the parent; only a later successful exec or _exit
-            // ends the shared-address-space lifetime.
-            vforkLifetimes.noteFailedExec(execGeneration, -result);
-          }
           if (typeof result === "number") {
             creatorAdmission.release();
             return result;
@@ -4271,7 +4054,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       // Published only after worker-main returns. Unlike a browser
       // `Worker.terminate()`, this is an exact-generation ownership fence and
       // can authorize dropping the allocator's strong reference.
-      if (vforkLifetimes.phaseForChild(process) !== undefined) {
+      if (process.vforkWorkspace?.borrowEnded === false) {
         traceVforkMechanism("memory_quiescent", `child=${pid}`);
       }
       process.workerQuiescence.settle();
@@ -4488,7 +4271,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     settleDestroyedRealmAllocator,
     threadModuleCache,
     threadedProcessPids,
-    vforkLifetimes,
     vmInterruptTimers,
     classifyWasmTrap,
     classifiedSignalOrFallback,
@@ -4502,9 +4284,8 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     awaitFinalizedProcessTeardown,
     createFreshProcessMemory,
     detachExactProcessGeneration,
-    containVforkAddressSpace,
+    endVforkBorrow,
     finishProcessExit,
-    finishVforkDisposition,
     handleExportRootfsImage,
     handleInjectConnection,
     handlePipeRead,
@@ -4564,6 +4345,7 @@ export function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 const ENOEXEC = 8;
+const ESRCH = 3;
 
 // A `/`-tree path whose backing archive has not been fetched
 // (rootfs-lazy-archives.ts) surfaces as EAGAIN from the kernel; the fetch runs

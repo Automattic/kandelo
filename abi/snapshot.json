@@ -10357,6 +10357,10 @@
       {
         "bit": 64,
         "name": "advisoryLock"
+      },
+      {
+        "bit": 128,
+        "name": "forkLifecycle"
       }
     ]
   }

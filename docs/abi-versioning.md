@@ -1099,6 +1099,15 @@ snapshot diff.
   switch (stages 2b and 2d). No libc header changed, so musl needs no rebuild.
   See "Kernel-owned launch state" in `docs/architecture.md`.
 
+  Stage 2b (2026-09-25) switched the Node and browser hosts and added wakeup
+  type `TYPE_FORK_LIFECYCLE` = 128 (`WAKEUP_EVENT_TYPES.forkLifecycle`, snapshot
+  section `wakeup_event_wire`), raised with each fork-lifecycle record so the
+  host drains that queue from its ordinary wake drain. Additive: no existing
+  wake bit changed, and a host that never opts in never sees it. The fork
+  module now issues `SYS_FORK_REPLAY_READY` itself, so a fork-module artifact
+  and kernel from before 2b must not be mixed with 2b hosts; both are
+  rebuilt from source with the host.
+
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
   removed and ten directory-relative `*at` replacements added, taking the built
