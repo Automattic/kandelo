@@ -502,16 +502,42 @@ change (per the ABI contract).
   not a recompile. *Mitigation:* scoped to its own plan; Phase 1 already
   satisfies the DoD, so Phase 2 risk never blocks the showcase.
 
-## §10. Open questions / to confirm at implementation time
+## §10. Resolved during implementation
 
-- Exact TyrQuake commit SHA (v0.71 tag commit) + archive sha256.
-- Exact `quake106.zip` mirror URL (pinned commit) + sha256 (verify by
-  download).
-- Whether the shell image already ships a libarchive-based extractor
-  (`bsdtar`) that handles both zip and `lh5`, or whether we package
-  `lhasa` (+ `unzip`).
-- Whether TyrQuake's Makefile accepts a custom `VID_TARGET`/`IN_TARGET`
-  cleanly or the patch must add target wiring.
-- Whether the generic `/dev/dsp` OSS backend needs latency-buffer
-  negotiation for TyrQuake's mixer (fbDOOM's sound patches are the
-  reference).
+- **TyrQuake pin:** v0.71 tag → commit
+  `52c707768f7e9b118b1517476c65a7c87a929602`, archive sha256
+  `178bfcd6f571c966be7949988af7b0ad6a83cb847c098a17923e1c876663a63c`.
+- **`quake106.zip` mirror:** `cdn.jsdelivr.net/gh/Jason2Brownlee/
+  QuakeOfficialArchive@30c29bd5907fd999b0bb8e52c941ef770b4d3ba8/bin/
+  quake106.zip`, sha256
+  `ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239`
+  (9,094,045 bytes). Extracts to `id1/pak0.pak` sha256
+  `35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af`,
+  verified on the host with libarchive.
+- **Extraction tools:** Kandelo's `tar` is GNU (no zip/lh5), so the wrapper
+  uses the existing `unzip` package for the zip step and a newly packaged
+  `lhasa` 0.4.0 (sha256
+  `a7fc883c304c508562fb93fa307a4c342b0c886fcc265f28b92dc0c39220c5b3`) for
+  the `lh5` step. Both are lazy `/usr/bin` binaries.
+- **Makefile:** patch `0001` adds clean `VID_TARGET=fbdev` / `IN_TARGET=fbdev`
+  branches; the build forces `TARGET_OS=UNIX TARGET_UNIX=linux` (the build
+  host is macOS) and `USE_X86_ASM=N`.
+- **Sound:** TyrQuake's `snd_oss.c` uses mmap DMA, which Kandelo's `/dev/dsp`
+  does not support (`SUPPORTED_CAPS` has no `DSP_CAP_MMAP`/`TRIGGER`).
+  Phase 1 therefore adds a **write-based** `snd_kandelo.c` that keeps the ring
+  mixer but pushes painted audio with `write()` and tracks the play cursor via
+  `SNDCTL_DSP_GETODELAY`. Audio timing is validated by ear in the browser.
+- **Role model:** a shell dependency is either eager or lazy (the composer
+  requires every `SHELL_LAZY_BINARY_SPECS` entry registered, and only
+  lazy/eager-file deps register). `tyrquake` is therefore `lazy-file`: the
+  demo's eager wrapper `/usr/local/bin/quake` extracts the pak then execs the
+  lazy engine `/usr/bin/quake`, which also serves the terminal.
+
+## §11. Status
+
+- **Phase 1:** package, backends, extraction tooling, demo profile, gallery,
+  terminal lazy binary, and bridge test are implemented and green. The full
+  `browser-main-shell` product builds through the resolver with all image
+  guards passing. Browser render is validated with
+  `apps/browser-demos/test/kandelo-quake.spec.ts`.
+- **Phase 2 (OpenGL):** not started; see §7.

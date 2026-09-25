@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
-import { QUAKE_ZIP_URL } from "../../web-libs/kandelo-session/src/demo-guides";
+import { QUAKE_ZIP_URL } from "../../../web-libs/kandelo-session/src/demo-guides";
 
 // The quake demo fetches id's original shareware archive (quake106.zip, ~9 MB)
 // at load, then the machine extracts id1/pak0.pak from it in-place with real
@@ -40,6 +40,14 @@ async function syslogText(page: Page): Promise<string> {
   return lines.join("\n");
 }
 
+async function openInternals(page: Page) {
+  const internals = page.getByRole("button", { name: "Internals" });
+  if ((await internals.count()) === 0) return;
+  if ((await internals.getAttribute("aria-pressed")) !== "true") {
+    await internals.click();
+  }
+}
+
 test("Kandelo quake software demo boots the shareware first scene", async ({
   page,
 }) => {
@@ -49,13 +57,27 @@ test("Kandelo quake software demo boots the shareware first scene", async ({
     "quake106.zip mirror unreachable (offline) — demo can't run",
   );
 
+  const consoleErrors: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text());
+  });
+  page.on("pageerror", (err) => consoleErrors.push(`pageerror: ${err.message}`));
+
   await gotoMachineOrSkip(page, "quake");
+  await openInternals(page);
 
   // The launch wrapper is what the machine runs; it extracts the pak, then
   // execs the engine. Confirm the machine launched the demo command.
-  await expect
-    .poll(() => syslogText(page), { timeout: 120_000 })
-    .toMatch(/running \/usr\/local\/bin\/quake/);
+  try {
+    await expect
+      .poll(() => syslogText(page), { timeout: 120_000 })
+      .toMatch(/running \/usr\/local\/bin\/quake/);
+  } catch (e) {
+    console.log("SYSLOG:\n" + (await syslogText(page)));
+    console.log("CONSOLE ERRORS:\n" + consoleErrors.join("\n"));
+    console.log("BODY:\n" + (await page.locator("body").innerText().catch(() => "")));
+    throw e;
+  }
 
   const canvas = page.locator("canvas.kframebuffer-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 180_000 });
