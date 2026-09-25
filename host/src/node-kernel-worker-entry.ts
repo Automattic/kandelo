@@ -3446,7 +3446,6 @@ async function performDestroy() {
   const retireCurrentGenerations = async (): Promise<void> => {
     const stragglers = [...processes.entries()];
     destroyProgress.startTerminating(stragglers.length);
-    let retired = 0;
     for (const [pid, info] of stragglers) {
       vmInterruptTimers.clear(pid, info);
       const [workerQuiescent, threadsQuiescent] = await Promise.all([
@@ -3478,7 +3477,7 @@ async function performDestroy() {
           detachResult,
         );
       }
-      destroyProgress.terminated(++retired);
+      destroyProgress.terminatedOne();
     }
   };
   await retireCurrentGenerations();

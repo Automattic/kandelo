@@ -7,8 +7,8 @@ export interface DestroyProgressReporter {
   drained(completedCount: number): void;
   /** Phase 3 begins; `stragglerCount` is added to the total. */
   startTerminating(stragglerCount: number): void;
-  /** Phase 3 tick: how many stragglers have been terminated so far. */
-  terminated(count: number): void;
+  /** One straggler finished terminating. Increments; safe across sweeps. */
+  terminatedOne(): void;
 }
 
 /**
@@ -58,8 +58,8 @@ export function createDestroyProgressReporter(
       provisional = false;
       publish();
     },
-    terminated(count) {
-      const next = Math.min(Math.max(drainTotal + count, completed), total);
+    terminatedOne() {
+      const next = Math.min(completed + 1, total);
       if (next === completed) return;
       completed = next;
       publish();

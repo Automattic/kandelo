@@ -34,7 +34,7 @@ describe("destroy progress reporter", () => {
     r.startDraining(7);
     r.drained(7);
     r.startTerminating(2);
-    r.terminated(1);
+    r.terminatedOne();
     expect(events.at(-2)).toEqual({
       phase: "terminating", completed: 7, total: 9, totalProvisional: false,
     });
@@ -50,7 +50,7 @@ describe("destroy progress reporter", () => {
     r.startDraining(7);
     r.drained(5);
     r.startTerminating(2);
-    r.terminated(0);
+    r.terminatedOne();
     for (let i = 1; i < events.length; i++) {
       expect(events[i]!.completed).toBeGreaterThanOrEqual(events[i - 1]!.completed);
       expect(events[i]!.total).toBeGreaterThanOrEqual(events[i - 1]!.total);
@@ -74,7 +74,7 @@ describe("destroy progress reporter", () => {
     r.startDraining(7);
     r.drained(7);
     r.startTerminating(2);
-    r.terminated(1);
+    r.terminatedOne();
     const before = events.at(-1)!;
     r.startTerminating(0);
     const after = events.at(-1)!;
@@ -88,11 +88,28 @@ describe("destroy progress reporter", () => {
     r.startDraining(7);
     r.drained(7);
     r.startTerminating(2);
-    r.terminated(1);
+    r.terminatedOne();
     const countBefore = events.length;
     r.startTerminating(0);
     r.startTerminating(0);
     expect(events.length).toBe(countBefore);
+  });
+
+  it("completion survives a second terminate sweep", () => {
+    const { events, emit } = collect();
+    const r = createDestroyProgressReporter(emit);
+    r.startDraining(7);
+    r.drained(7);
+    r.startTerminating(2);
+    r.terminatedOne();
+    // Second sweep: no new stragglers found, but one more straggler
+    // (discovered by the first sweep) finishes terminating here.
+    r.startTerminating(0);
+    r.terminatedOne();
+    const last = events.at(-1)!;
+    expect(last.completed).toBe(9);
+    expect(last.total).toBe(9);
+    expect(last.completed).toBe(last.total);
   });
 
   it("reports a zero total rather than inventing one", () => {
