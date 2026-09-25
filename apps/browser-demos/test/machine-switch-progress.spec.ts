@@ -36,6 +36,11 @@ test("a machine switch shows teardown then load progress @slow", async ({
   await page.exposeFunction("__recordHeadline", (text: string) => {
     if (text && headlines.at(-1) !== text) headlines.push(text);
   });
+  // 50ms is deliberately short. If it ever misses a very fast phase on a
+  // faster machine, the failure direction is a false NEGATIVE (the test
+  // fails because a headline is missing) -- never a false pass. Do not
+  // "optimise" this interval upward; a longer interval trades a safe
+  // failure mode for an unsafe one.
   await page.evaluate(() => {
     setInterval(() => {
       const el = document.querySelector(".kmprogress-headline");
@@ -59,6 +64,23 @@ test("a machine switch shows teardown then load progress @slow", async ({
   });
   await expect(page.locator(".kmprogress-card")).toHaveCount(0);
 
-  expect(headlines.some((h) => h.startsWith("Unloading"))).toBe(true);
-  expect(headlines.some((h) => h.startsWith("Loading"))).toBe(true);
+  const firstUnloading = headlines.findIndex((h) => h.startsWith("Unloading"));
+  const firstLoading = headlines.findIndex((h) => h.startsWith("Loading"));
+
+  expect(firstUnloading, `headlines seen: ${JSON.stringify(headlines)}`)
+    .toBeGreaterThanOrEqual(0);
+  expect(firstLoading, `headlines seen: ${JSON.stringify(headlines)}`)
+    .toBeGreaterThanOrEqual(0);
+  // Teardown precedes the load: the outgoing machine is destroyed before the
+  // incoming image is read. Asserting only presence would pass if the two
+  // phases were emitted in the wrong order.
+  expect(firstUnloading, `headlines seen: ${JSON.stringify(headlines)}`)
+    .toBeLessThan(firstLoading);
+
+  // A degraded headline that kept the right prefix but lost its subject
+  // (e.g. "Unloading" with nothing after it) must not pass. Do not hard-code
+  // a specific machine or image name here -- the roster can change -- but
+  // require a non-empty subject after the verb.
+  expect(headlines[firstUnloading]).toMatch(/^Unloading \S/);
+  expect(headlines[firstLoading]).toMatch(/^Loading \S/);
 });
