@@ -84,6 +84,11 @@ fork-codec = { path = "../fork-codec" }
 # and version `fork-codec` and `fork-instrument` already use, so this adds no
 # new third-party code to the tree -- only a second consumer of it.
 sha2 = { version = "0.10", default-features = false }
+# LOCATES a guest's `kandelo.wpk_fork.*` custom sections (and the fork
+# module's `dylink.0` mem_info) -- `wasmtime::Module` has no custom-section
+# accessor. The sections themselves are decoded by the fork module. Same
+# version the tests already used, so no new third-party code.
+wasmparser = "0.247"
 
 # Ergonomic error propagation for the pump (`bail!`, `?` across the many
 # fallible kernel-export calls). Wasmtime already pulls anyhow into the tree.
@@ -124,7 +129,6 @@ rustix = { version = "1", features = ["fs"] }
 libc = "0.2"
 
 [dev-dependencies]
-wasmparser = "0.247"
 # `wat` compiles the tiny WAT wait/notify probe module in-test, keeping the
 # fixture readable alongside the assertions that consume it.
 wat = "1"
