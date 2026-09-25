@@ -680,6 +680,28 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+/** Which teardown step `performDestroy` is in. */
+export type DestroyPhase = "draining" | "terminating";
+
+/**
+ * Cumulative teardown progress. Counts processes, not bytes.
+ *
+ * `total` is a lower bound while `totalProvisional` is true: the drain phase
+ * knows only the processes it woke, and the terminate phase adds stragglers it
+ * discovers afterwards. `completed` never resets between phases.
+ */
+export interface DestroyProgressEvent {
+  phase: DestroyPhase;
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
+export interface DestroyProgressMessage {
+  type: "destroy_progress";
+  event: DestroyProgressEvent;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -699,4 +721,5 @@ export type KernelToMainMessage =
   | FbForgetGenerationMessage
   | ProcEventMessage
   | HttpBridgePendingMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | DestroyProgressMessage;

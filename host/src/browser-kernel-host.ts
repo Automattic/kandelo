@@ -1804,6 +1804,9 @@ export class BrowserKernel {
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
+      case "destroy_progress":
+        // TODO Task 3: implement destroy progress handling
+        break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
         // grows. Runtime values still originate outside TypeScript, so make a
