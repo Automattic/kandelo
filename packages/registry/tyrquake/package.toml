@@ -1,0 +1,30 @@
+kind = "program"
+name = "tyrquake"
+version = "0.71.0"
+# TyrQuake (Kevin Shanahan, "Tyrann"): a portable, C-only Quake engine that
+# builds both a software renderer (tyr-quake) and a GL renderer (tyr-glquake)
+# from one tree. Phase 1 ships only the software renderer, wired to Kandelo's
+# framebuffer (/dev/fb0), evdev/PS-2 input, and OSS audio (/dev/dsp) via added
+# vid_fbdev/in_fbdev backends and the engine's existing snd_oss backend. The
+# playable pak0.pak is not bundled: the browser demo fetches id's intact
+# shareware archive (quake106.zip) and extracts it inside Kandelo.
+kernel_abi = 43
+depends_on = []
+
+# Upstream publishes tags, not release tarballs. Pin the exact commit archive
+# that the v0.71 tag dereferences to (byte-stable, verified by sha256).
+[source]
+url = "https://github.com/sezero/tyrquake/archive/52c707768f7e9b118b1517476c65a7c87a929602.tar.gz"
+sha256 = "178bfcd6f571c966be7949988af7b0ad6a83cb847c098a17923e1c876663a63c"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/sezero/tyrquake/blob/v0.71/gnu.txt"
+
+[build]
+script_path = "packages/registry/tyrquake/build-tyrquake.sh"
+
+[[outputs]]
+name = "quake"
+wasm = "quake.wasm"

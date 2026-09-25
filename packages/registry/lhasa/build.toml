@@ -1,0 +1,8 @@
+script_path = "packages/registry/lhasa/build-lhasa.sh"
+inputs = [
+  "packages/registry/lhasa/build-lhasa.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

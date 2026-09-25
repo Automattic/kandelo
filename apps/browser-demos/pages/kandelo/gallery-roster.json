@@ -10,6 +10,7 @@
     { "product": "browser-wordpress", "profile": "wordpress-sqlite" },
     { "product": "browser-lamp", "profile": "wordpress-mariadb" },
     { "product": "browser-main-shell", "profile": "doom" },
+    { "product": "browser-main-shell", "profile": "quake" },
     { "product": "browser-main-shell", "profile": "modeset" },
     { "product": "browser-main-shell", "profile": "sdl2" },
     { "product": "browser-main-shell", "profile": "evdev" },

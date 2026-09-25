@@ -47,6 +47,53 @@
         }
       }
     },
+    "quake": {
+      "identity": {
+        "title": "Quake (software)",
+        "summary": "TyrQuake's software renderer on /dev/fb0, extracted from id's shareware archive inside Kandelo.",
+        "accent": "#8a1c1c",
+        "glyph": "Q",
+        "packages": [
+          "tyrquake@local",
+          "lhasa@local",
+          "unzip@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/quake"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "touchControls": true
+      },
+      "assets": [
+        {
+          "path": "/usr/share/quake/quake106.zip",
+          "url": "https://cdn.jsdelivr.net/gh/Jason2Brownlee/QuakeOfficialArchive@30c29bd5907fd999b0bb8e52c941ef770b4d3ba8/bin/quake106.zip",
+          "sha256": "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239",
+          "mode": 420
+        }
+      ],
+      "ingest": {
+        "accept": [".pak"],
+        "targetPath": "/usr/share/quake/id1/pak0.pak",
+        "maxBytes": 33554432,
+        "label": "Load pak0.pak",
+        "onLoad": {
+          "restart": "/usr/local/bin/quake"
+        }
+      }
+    },
     "modeset": {
       "identity": {
         "title": "DRM/KMS fluid sim",

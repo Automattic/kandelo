@@ -44,6 +44,8 @@ import {
 import {
   DOOM_WAD_SHA256,
   DOOM_WAD_URL,
+  QUAKE_ZIP_SHA256,
+  QUAKE_ZIP_URL,
 } from "../../web-libs/kandelo-session/src/demo-guides";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -645,6 +647,13 @@ describe("canonical source-rootfs shell", () => {
     });
     expect(fs.stat("/home/.nethack").mode & 0o777).toBe(0o777);
 
+    // The quake basedir and its id1 game dir must exist and be writable by the
+    // unprivileged demo user: the profile stages quake106.zip into the basedir,
+    // the launch wrapper extracts id1/pak0.pak, and the bring-your-own-pak
+    // ingest writes id1/pak0.pak directly (writeFile requires the parent dir).
+    expect(fs.stat("/usr/share/quake").mode & 0o777).toBe(0o777);
+    expect(fs.stat("/usr/share/quake/id1").mode & 0o777).toBe(0o777);
+
     const terminalSessionBytes = readVfsFile(
       fs,
       EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -675,6 +684,23 @@ describe("canonical source-rootfs shell", () => {
         mode: 0o644,
       },
     ]);
+    expect(resolveDemoInit(demo!, "quake")).toEqual({
+      shellCommand: "/usr/local/bin/quake",
+    });
+    expect(resolveDemoPresentation(demo!, "quake")?.touchControls).toBe(true);
+    expect(resolveDemoPresentation(demo!, "quake")?.runningPrimary).toEqual([
+      "framebuffer",
+      "terminal",
+      "syslog",
+    ]);
+    expect(resolveDemoAssets(demo!, "quake")).toEqual([
+      {
+        path: "/usr/share/quake/quake106.zip",
+        url: QUAKE_ZIP_URL,
+        sha256: QUAKE_ZIP_SHA256,
+        mode: 0o644,
+      },
+    ]);
     expect(resolveDemoInit(demo!, "modeset")).toEqual({
       shellCommand: "/usr/local/bin/modeset",
     });
@@ -702,6 +728,7 @@ describe("canonical source-rootfs shell", () => {
     );
     const base = JSON.parse(readFileSync(packageDemoPath, "utf8"));
     base.profiles.doom = overlay.profiles.doom;
+    base.profiles.quake = overlay.profiles.quake;
     base.profiles.modeset = overlay.profiles.modeset;
     const basePath = join(root, "base-with-owned-profiles.json");
     writeFileSync(basePath, JSON.stringify(base));

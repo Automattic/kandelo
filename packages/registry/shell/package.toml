@@ -26,6 +26,8 @@ depends_on = [
   "zstd@1.5.6",
   "zip@3.0",
   "unzip@6.0",
+  "lhasa@0.4.0",
+  "tyrquake@0.71.0",
   "lsof@0.1.0",
   "nano@8.0",
   "sqlite-cli@3.49.1",

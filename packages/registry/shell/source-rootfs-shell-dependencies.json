@@ -21,6 +21,8 @@
     { "name": "zstd", "version": "1.5.6", "role": "lazy-file" },
     { "name": "zip", "version": "3.0", "role": "lazy-file" },
     { "name": "unzip", "version": "6.0", "role": "lazy-file" },
+    { "name": "lhasa", "version": "0.4.0", "role": "lazy-file" },
+    { "name": "tyrquake", "version": "0.71.0", "role": "lazy-file" },
     { "name": "lsof", "version": "0.1.0", "role": "lazy-file" },
     { "name": "nano", "version": "8.0", "role": "lazy-file" },
     { "name": "sqlite-cli", "version": "3.49.1", "role": "lazy-file" },
