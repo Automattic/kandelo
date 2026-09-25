@@ -12,7 +12,7 @@ use wasm_posix_shared::lock_type::*;
 use wasm_posix_shared::mode::{
     S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_ISGID, S_ISUID,
 };
-use wasm_posix_shared::rlimit::{RLIMIT_FSIZE, RLIM_INFINITY};
+use wasm_posix_shared::rlimit::{RLIMIT_AS, RLIMIT_FSIZE, RLIM_INFINITY};
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::{
@@ -16568,6 +16568,27 @@ pub fn sys_getrlimit(proc: &Process, resource: u32) -> Result<(u64, u64), Errno>
         return Err(Errno::EINVAL);
     }
     let limits = proc.rlimits[resource as usize];
+    if resource == RLIMIT_AS {
+        // A process address space here is a real, bounded Wasm linear memory,
+        // not the lazily-committed virtual range RLIMIT_AS describes on Linux.
+        // `max_addr` is the ceiling mmap and brk already refuse to cross, and
+        // the host sets it per process from the memory layout it built. Report
+        // THAT rather than the stored pair, which still reads RLIM_INFINITY
+        // because a Process is constructed before the host knows its layout.
+        //
+        // WHY this must be the truth: a guest cannot discover the bound any
+        // other way. Reporting infinity invites a program to size one large
+        // allocation from it and then take an ENOMEM it had no way to
+        // anticipate -- which is exactly how TyrQuake died on hosts using the
+        // constrained memory profile, where its 256 MiB default heap is the
+        // whole address space.
+        //
+        // The ceiling is physics, so it is the hard limit: no privilege can
+        // raise it. A soft limit a guest set below it is preserved; one above
+        // it cannot be honoured and is reported at the ceiling.
+        let ceiling = proc.memory.layout_metadata().max_addr as u64;
+        return Ok((limits[0].min(ceiling), ceiling));
+    }
     Ok((limits[0], limits[1]))
 }
 
@@ -31736,6 +31757,47 @@ mod tests {
         let (soft, hard) = sys_getrlimit(&proc, 3).unwrap(); // RLIMIT_STACK
         assert_eq!(soft, 8 * 1024 * 1024);
         assert_eq!(hard, u64::MAX);
+    }
+
+    #[test]
+    fn test_getrlimit_as_reports_the_real_address_space_ceiling() {
+        // RLIMIT_AS must never read RLIM_INFINITY: the address space is a
+        // bounded Wasm memory, and a guest that believes otherwise sizes
+        // allocations it cannot have.
+        let mut proc = Process::new(1);
+        let (soft, hard) = sys_getrlimit(&proc, 9).unwrap(); // RLIMIT_AS
+        assert_ne!(hard, u64::MAX);
+        assert_eq!(soft, hard);
+        assert_eq!(hard, proc.memory.layout_metadata().max_addr as u64);
+
+        // It tracks the ceiling the host installs for this process. 4096 Wasm
+        // pages is the per-process budget of the constrained memory profile.
+        proc.memory.set_max_addr(4096 * 65536);
+        let (soft, hard) = sys_getrlimit(&proc, 9).unwrap();
+        assert_eq!(hard, 4096 * 65536);
+        assert_eq!(soft, hard);
+    }
+
+    #[test]
+    fn test_getrlimit_as_keeps_a_lower_soft_limit() {
+        let mut proc = Process::new(1);
+        let ceiling = proc.memory.layout_metadata().max_addr as u64;
+        sys_setrlimit(&mut proc, 9, ceiling / 4, ceiling).unwrap();
+        let (soft, hard) = sys_getrlimit(&proc, 9).unwrap();
+        assert_eq!(soft, ceiling / 4);
+        assert_eq!(hard, ceiling);
+    }
+
+    #[test]
+    fn test_getrlimit_as_never_reports_above_the_ceiling() {
+        // A soft limit no allocation could reach is reported at the bound
+        // that actually applies, not at the number the guest asked for.
+        let mut proc = Process::new(1);
+        sys_setrlimit(&mut proc, 9, u64::MAX, u64::MAX).unwrap();
+        proc.memory.set_max_addr(4096 * 65536);
+        let (soft, hard) = sys_getrlimit(&proc, 9).unwrap();
+        assert_eq!(soft, 4096 * 65536);
+        assert_eq!(hard, 4096 * 65536);
     }
 
     #[test]

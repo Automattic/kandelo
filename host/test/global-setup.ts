@@ -94,6 +94,7 @@ const TEST_PROGRAMS = [
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
   "rlimit_fsize_test.c",
+  "rlimit_as_test.c",
   "kernel_scratch_browser_test.c",
   "socket_timeout_options_test.c",
   "unix_listener_exec_test.c",
