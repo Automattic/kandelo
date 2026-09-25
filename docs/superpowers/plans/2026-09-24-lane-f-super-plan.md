@@ -1,4 +1,4 @@
-> Status: DRAFT for maintainer review (2026-09-24). Measured at fabc04f52; since then 3d214db8a merged image/cache-key and suite/ABI-marker work, which does not change the fork-module entry surface or the numbers below. Open questions at the end need rulings before stage 1a starts.
+> Status: APPROVED WITH RULINGS (2026-09-25) — see "Maintainer rulings" at the end; they override the open questions. Measured at fabc04f52; since then 3d214db8a merged image/cache-key and suite/ABI-marker work, which does not change the fork-module entry surface or the numbers below. Open questions at the end need rulings before stage 1a starts.
 
 # Lane F super plan: one fork path in Rust for Node, browser and host-native
 
@@ -645,3 +645,33 @@ Getting to 5 needs either dilution, which the maintainer already rejected in §1
 - `/Users/brandon/kandelo-abi44-reconcile/host/src/fork-module-backend.ts`
 - `/Users/brandon/kandelo-abi44-reconcile/crates/host-native/src/guest.rs`
 - `/Users/brandon/kandelo-abi44-reconcile/host/src/process-lifecycle.ts`, with `crates/kernel/src/wasm_api.rs`
+
+## Maintainer rulings (2026-09-25)
+
+1. **`fm_run` is planned in fully** as a committed stage of step 3 (3c is no
+   longer optional or probe-only). Exception-handling and trap-propagation
+   risks are handled as part of the stage's validation, on V8, SpiderMonkey,
+   JSC and wasmtime.
+2. **Entry target:** decide after step 1 lands, from the measured floor. No
+   measure or target change before then.
+3. **ABI 44 content approved** (unreleased; snapshot regeneration, no
+   version bump, full rebuild): `SYS_FORK_REPLAY_READY`, kernel-driven
+   completion of a parent's SYS_FORK/SYS_VFORK, and the 1K guest-emitted
+   catalog placement shims.
+4. **Measures:**
+   - Repoint lane F's `forkTypeScript <= 2500` closure condition (already
+     met; it predates the file split) at the fork TypeScript that remains
+     (`forkPlatformTypeScript` + `forkRestoredHostFloor`), bound set after
+     step 1.
+   - Extract the WASI and uninstrumented branches of `centralizedWorkerMain`
+     into named functions and list them in `WORKER_MAIN_OTHER_LANES`.
+   - The merged process/thread fork path lives in
+     `host/src/worker-main-fork-support.ts` (named as subservient to
+     worker-main.ts) and is COUNTED in `workerMainForkTypeScript`, so moving
+     code there never removes it from the closure measure.
+   - `createProcessDylinkActivationOwner` and the table-replication owner
+     stay counted as lane F (not reclassified).
+5. Defaults taken where the maintainer did not rule: measure the per-activation
+   admission size before sizing the staging slab (Q6); keep the proof-of-use
+   messages unless step 3 shows a single stats message is strictly simpler and
+   its tests move with it (Q5).
