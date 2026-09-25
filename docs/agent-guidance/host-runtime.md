@@ -28,6 +28,16 @@ and costs real budget on WebKit. Host budgets live in
 space than a caller asked for, report the reduction rather than applying it
 silently.
 
+That budget is also visible to the guest, and must stay that way. A process
+address space is a bounded Wasm linear memory, so `getrlimit(RLIMIT_AS)`
+reports the real per-process ceiling rather than `RLIM_INFINITY` — it is the
+only way a program can discover a bound that differs by device (1 GiB under
+the desktop profile, 256 MiB under the constrained one). Software that sizes
+one large allocation from a compile-time default is the case that breaks:
+TyrQuake's 256 MiB default heap is the entire address space under the
+constrained budget, so the Quake demo died at startup on iOS alone. Port such
+programs to ask, rather than raising a global budget to fit one of them.
+
 Node.js and browser hosts are peers. A host-runtime behavior change is
 incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
