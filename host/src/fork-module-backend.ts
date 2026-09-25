@@ -262,7 +262,8 @@ export class ForkModuleContinuationBackend {
     const flags = (this.options.forkChild ? FORK_ADMISSION_FORK_CHILD : 0)
       | (this.options.borrowedChild ? FORK_ADMISSION_BORROWED_CHILD : 0);
     const desc = encodeForkAdmission(activationId, flags, templateId, module);
-    this.call("fm_admit_activation", this.stage(desc, `activation ${activationId} admission`), desc.length);
+    // The module releases a buffer it mapped for this (`stage`) as it returns.
+    this.call("fm_admit_activation", this.stage(desc, `activation ${activationId} admission`, true), desc.length);
   }
 
   /**
@@ -786,8 +787,11 @@ export class ForkModuleContinuationBackend {
    * now: catalogs, codecs and sections go into its own arena records and the
    * template id into its own table, all during the entry that seeds them.
    * Nothing outlives its call, so nothing needs a cursor, and the slab
-   * only has to hold the LARGEST single request rather than the sum of every
-   * activation's seeds -- which is what `STAGING_SLAB_BYTES` is sized from.
+   * only has to hold one request at a time rather than the sum of every
+   * activation's seeds. An ADMISSION larger than the slab goes to a buffer the
+   * module maps to its size (`fm_admission_buffer`) and releases as
+   * `fm_admit_activation` returns, accepted or refused; any other request
+   * larger than the slab is refused.
    *
    * `host/test/fork-arena-release.test.ts` is where the copy is proven: it
    * seeds a GC codec and then an exception codec over the same staging page,
@@ -797,15 +801,15 @@ export class ForkModuleContinuationBackend {
    * section would be refused by the module's decoder at best and seed a wrong
    * one at worst; the message carries both sizes so the boundary is readable.
    */
-  private stage(bytes: Uint8Array, what: string): number {
-    const at = this.options.instance.stagingBase;
+  private stage(bytes: Uint8Array, what: string, admission = false): number {
     const limit = this.options.instance.stagingBytes;
-    if (bytes.length > limit) {
+    if (bytes.length > limit && !admission) {
       throw new Error(
         `${this.label}: staging slab exhausted placing ${what} ` +
           `(${bytes.length} bytes against a ${limit}-byte slab)`,
       );
     }
+    const at = bytes.length > limit ? this.call("fm_admission_buffer", bytes.length) >>> 0 : this.options.instance.stagingBase;
     new Uint8Array(this.options.memory.buffer).set(bytes, at);
     return at;
   }

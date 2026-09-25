@@ -9,8 +9,10 @@ import {
 } from "../src/fork-guest-sections";
 import {
   CHANNEL_BASE,
+  MMAP_COUNTER,
   MMAP_FLOOR,
   MODULE_BASE,
+  MUNMAP_COUNTER,
   PAGE,
   startChannelResponder,
 } from "./fork-module-capture-fixture";
@@ -120,7 +122,13 @@ function freshModule(label: string) {
     reserve: () => MODULE_BASE,
     label,
   });
-  startChannelResponder({ memory, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR });
+  // Page 5 is free in this layout (staging starts at page 16).
+  startChannelResponder({
+    memory,
+    channelBase: CHANNEL_BASE,
+    floor: MMAP_FLOOR,
+    counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
+  });
   const x = fm.exports as Record<string, Fn>;
   let cursor = STAGE;
   /** Copy bytes into guest memory, as a host stages into its slab. */
@@ -152,7 +160,9 @@ function freshModule(label: string) {
       assignment: records(ptr!, count!),
     };
   };
-  return { x, memory, stage, errno, call, admit, bind, records };
+  const tally = (at: number): number => new DataView(memory.buffer).getUint32(at, true);
+  const maps = () => ({ mmap: tally(MMAP_COUNTER), munmap: tally(MUNMAP_COUNTER) });
+  return { x, memory, stage, errno, call, admit, bind, records, maps };
 }
 
 type Module = ReturnType<typeof freshModule>;
@@ -370,6 +380,37 @@ describe("fm_admit_activation / fm_bind_activation", () => {
     const m = freshModule("no channel");
     m.call("fm_set_format", 4, prefix, 0, 0);
     expect(m.admit(encode(0, templateId(0), sections))).toBe(EINVAL);
+  });
+
+  it("admits from a buffer it maps to the descriptor's size, and unmaps it accepted or refused", () => {
+    // The host path for an admission larger than its staging slab (php's).
+    const m = freshModule("admission buffer");
+    m.call("fm_set_format", 4, prefix, 0, CHANNEL_BASE);
+    const viaBuffer = (desc: Uint8Array) => {
+      const at = m.call("fm_admission_buffer", desc.length) >>> 0;
+      expect(at, "a mapped address, not the slab").toBeGreaterThanOrEqual(MMAP_FLOOR);
+      new Uint8Array(m.memory.buffer, at, desc.length).set(desc);
+      const before = m.maps();
+      const errno = m.x.fm_admit_activation!(at, desc.length);
+      const after = m.maps();
+      return { errno, munmaps: after.munmap - before.munmap };
+    };
+    const desc = encode(1, templateId(1), sections);
+    expect(viaBuffer(desc)).toEqual({ errno: 0, munmaps: 1 });
+    // Refused (different facts for activation 1): still released, and the
+    // refusal's errno is what the host sees.
+    expect(viaBuffer(encode(1, templateId(2), sections))).toEqual({ errno: EINVAL, munmaps: 1 });
+    // No buffer outstanding: an admission from the slab unmaps nothing.
+    const before = m.maps().munmap;
+    expect(m.admit(desc)).toBe(0);
+    expect(m.maps().munmap - before).toBe(0);
+    // A buffer the host never admitted from is released by the next request.
+    m.call("fm_admission_buffer", 100);
+    const pending = m.maps().munmap;
+    m.call("fm_admission_buffer", 100);
+    expect(m.maps().munmap - pending).toBe(1);
+    expect(m.x.fm_admission_buffer!(0)).toBe(0);
+    expect(m.errno()).toBe(EINVAL);
   });
 
   it("refuses a structurally corrupt descriptor", () => {

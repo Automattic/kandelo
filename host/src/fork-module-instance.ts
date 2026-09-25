@@ -52,14 +52,14 @@ export interface ForkModuleInstance {
   readonly driveTable: WebAssembly.Table;
   readonly staticRootCatalog: WebAssembly.Table;
   /**
-   * A fixed staging slab INSIDE the reserved region, for pre-fork catalog
-   * scratch and GC-codec staging.
+   * A fixed staging slab INSIDE the reserved region, the per-call scratch
+   * every host-to-module stage lands in.
    *
-   * It lives here rather than in a growing channel mmap for a fork-correctness
-   * reason: a growing mmap would permanently enlarge the shared process memory,
-   * and a fork-from-thread child clones that memory, so the child would observe
-   * a different size than its parent. A request larger than the slab falls back
-   * to the channel mmap, whose growth that path does not assert against.
+   * It lives here so the common stage costs no syscall and never grows the
+   * process memory, which a copied fork child clones. An admission larger
+   * than the slab is staged in a buffer the module maps and releases around
+   * that admission instead; linear memory cannot shrink, so the first such mapping
+   * may grow the memory once, and later ones reuse the freed range.
    */
   readonly stagingBase: number;
   readonly stagingBytes: number;
@@ -84,39 +84,28 @@ export interface InstantiateForkModuleOptions {
 const SHADOW_STACK_BYTES = 1024 * 1024;
 
 /**
- * The staging slab reserved above the shadow stack.
+ * The staging slab reserved above the shadow stack: ONE wasm page, reserved by
+ * every fork-capable process and thread worker for its whole life.
  *
- * SIZED FROM A MEASUREMENT of the shipped artifacts, not chosen. The slab is
- * a per-call scratch (`ForkModuleContinuationBackend.stage()`): the module
- * copies everything staged during the entry that takes it, so the slab holds
- * one request at a time and must fit the LARGEST single stage.
+ * The slab is a per-call scratch (`ForkModuleContinuationBackend.stage()`):
+ * the module copies everything staged during the entry that takes it, so it
+ * holds one request at a time. Its largest request is an activation's whole
+ * admission (`fm_admit_activation`). One page is sized for the COMMON case,
+ * not the largest: measured on 2026-09-25 over the 62 fork-instrumented
+ * artifacts under `local-binaries/programs/wasm32`, every admission fits
+ * (largest wget.wasm at 54,880 bytes). php does not: php.wasm stages 152,480
+ * bytes, php-fpm.wasm 153,792 and its `intl.so` extension 252,753. Those go to a
+ * buffer the fork module maps to their size (`fm_admission_buffer`) and
+ * releases when the admission returns.
  *
- * Since lane F stage 1b that stage is an activation's whole ADMISSION
- * (`fm_admit_activation`): the 64-byte `KFAA` header, 12 bytes per section,
- * and every `kandelo.wpk_fork.*` section it carries, verbatim. Measured on
- * 2026-09-25 over the 104 fork-instrumented artifacts under
- * `local-binaries/source-only-v1/programs/wasm32` and
- * `local-binaries/programs/wasm32`: the largest is php's `intl.so` at 252,753
- * bytes (imported globals 190,437, resume catalog 62,012); next are
- * php-fpm.wasm at 153,792 and php.wasm at 152,480. Four wasm pages hold the
- * largest with 9,391 bytes to spare. The plan's alternative -- staging KFIG and
- * KFIT outside the admission -- would have kept a per-fact seed alive beside
- * it, so the slab grew one page instead.
- *
- * It was three pages (192 KiB) from 2026-09-22, when the largest single seed
- * was that same `intl.so` KFIG section alone. Before that it was 256 KiB,
- * justified as `RESUME_CATALOG_CAP * 4` -- a cap since deleted -- and used as
- * a bump cursor, which would have needed 298,448 bytes for php-fpm plus
- * `intl.so` together. `host/test/fork-module-staging-capacity.test.ts`
- * re-measures the built artifacts' admissions against this number, so an
- * extension that outgrows it fails there rather than at a `dlopen` in a
- * forking program.
- *
- * A request larger than this is refused loudly ("staging slab exhausted");
- * there is no fallback path. Written as a product of two integer literals,
+ * It was four pages from lane F stage 1b, sized so the largest admission fit,
+ * which charged every thread of every forking program 256 KiB for php's
+ * extensions. The side-activation list (`stageSides`, 8 bytes per activation)
+ * always stages here; a request too large for the slab is refused loudly
+ * ("staging slab exhausted"). Written as a product of two integer literals,
  * which the storage ledger's recorder parses.
  */
-const STAGING_SLAB_BYTES = 256 * 1024;
+const STAGING_SLAB_BYTES = 64 * 1024;
 
 const WASM_PAGE_BYTES = 65536;
 

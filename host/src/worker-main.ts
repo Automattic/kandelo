@@ -3506,14 +3506,11 @@ export async function centralizedWorkerMain(
         // region via `forkModuleInheritedBase`) stages into the SAME slab and
         // its `memory.size` stays equal to the parent's — a growing channel
         // mmap here would land at the child's inherited (higher) mmap cursor
-        // and inflate the clone. A staging request larger than the slab (a
-        // large GC codec) falls back to the growing channel mmap; that path
-        // never asserts an exact memory size, so its growth is invisible.
+        // and inflate the clone. Only an admission larger than the slab (php
+        // and its extensions) takes a mapping, which the module makes and
+        // releases around that one admission.
         // The instance carries its own exports, drive table and staging
-        // slab, so none of those are threaded separately any more -- and the
-        // reserve/release region callbacks are gone with them: the backend
-        // stages into the module's OWN slab rather than asking the host for
-        // a region, so there is nothing for a host to hand over or reclaim.
+        // slab, so none of those are threaded separately any more.
         forkModuleBackend = new ForkModuleContinuationBackend({
           instance: forkModuleInstance,
           memory,

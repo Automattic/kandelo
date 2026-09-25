@@ -8313,9 +8313,15 @@ mod wasm {
     /// the same worker may already have admitted. Different facts under an
     /// admitted activation id are `EINVAL`, checked for EVERY section before
     /// anything is stored, so a refused re-admission changes nothing.
+    ///
+    /// A buffer `fm_admission_buffer` mapped is released as this returns,
+    /// whether the admission was accepted or refused: every fact is copied out
+    /// of the descriptor before it returns. A refusal's errno wins over a
+    /// release failure's.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_admit_activation(desc_ptr: usize, len: usize) -> i32 {
-        match admit_activation_impl(desc_ptr as u64, len) {
+        let admitted = admit_activation_impl(desc_ptr as u64, len);
+        match admitted.and(release_admission_buffer()) {
             Ok(()) => {
                 set_ok();
                 0
@@ -8325,6 +8331,49 @@ mod wasm {
                 errno as i32
             }
         }
+    }
+
+    /// The mapping `fm_admission_buffer` handed out and the next admission
+    /// releases: `(address, length)`, or `(0, 0)` with none outstanding.
+    static ADMISSION_BUFFER: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
+
+    /// Map `len` bytes for an admission descriptor too large for the host's
+    /// staging slab, and return their address (0 with `fm_last_errno` set on
+    /// failure). Sized to the request -- the kernel rounds the mapping up to
+    /// whole pages -- and released by the `fm_admit_activation` that reads it,
+    /// so no worker keeps a slab sized for its largest admission (php's
+    /// `intl.so` at ~250 KB) for its whole life. A buffer still outstanding is
+    /// released first, so an admission the host never made leaks nothing.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_admission_buffer(len: usize) -> usize {
+        let mapped = release_admission_buffer().and_then(|()| {
+            let base = channel_base()?;
+            if len == 0 {
+                return Err(Errno::EINVAL);
+            }
+            channel_mmap(base, len as u64)
+        });
+        match mapped {
+            Ok(addr) => {
+                ADMISSION_BUFFER[0].store(addr as usize, Ordering::Relaxed);
+                ADMISSION_BUFFER[1].store(len, Ordering::Relaxed);
+                set_ok();
+                addr as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    fn release_admission_buffer() -> Result<(), Errno> {
+        let addr = ADMISSION_BUFFER[0].swap(0, Ordering::Relaxed);
+        let len = ADMISSION_BUFFER[1].swap(0, Ordering::Relaxed);
+        if addr == 0 {
+            return Ok(());
+        }
+        channel_munmap(channel_base()?, addr as u64, len as u64)
     }
 
     fn admit_activation_impl(desc_ptr: u64, len: usize) -> Result<(), Errno> {

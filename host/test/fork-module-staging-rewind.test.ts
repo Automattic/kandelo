@@ -1,5 +1,8 @@
-// The staging slab is a PER-CALL scratch: every stage lands at its base, and
-// a request the slab cannot hold is refused rather than truncated.
+// The staging slab is a PER-CALL scratch: every stage lands at its base. An
+// admission the slab cannot hold goes to a buffer the module maps to its size
+// (`fm_admission_buffer`; its release is proven against the real module in
+// `fork-module-admission.test.ts`); any other request the slab cannot hold is
+// refused rather than truncated.
 //
 // WHAT THIS REPLACED. This file used to assert a per-fork REWIND: the slab was
 // a bump cursor, because the module kept the POINTER to every durable seed
@@ -27,6 +30,8 @@ import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
 
 const STAGING_BASE = 4096;
 const STAGING_BYTES = 8192;
+/** Where the stand-in module's admission buffer is: above the slab. */
+const SCRATCH_BASE = 16384;
 
 /**
  * A stand-in module that records the pointer each entry is given.
@@ -38,15 +43,23 @@ function harness() {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const sidesPointers: number[] = [];
   const codecPointers: number[] = [];
+  const codecLastBytes: number[] = [];
+  const bufferRequests: number[] = [];
   const exports: Record<string, (...args: number[]) => number> = {
     fm_last_errno: () => 0,
     fm_parent_begin_capture: (_channel, _arena, sides, _count) => {
       sidesPointers.push(sides);
       return 0x2000;
     },
-    fm_admit_activation: (at, _len) => {
+    fm_admit_activation: (at, len) => {
       codecPointers.push(at);
+      // What the module would copy: the last byte of the staged admission.
+      codecLastBytes.push(new Uint8Array(memory.buffer)[at + len - 1]);
       return 0;
+    },
+    fm_admission_buffer: (len) => {
+      bufferRequests.push(len);
+      return SCRATCH_BASE;
     },
   };
   const backend = new ForkModuleContinuationBackend({
@@ -59,7 +72,7 @@ function harness() {
     ptrWidth: 4,
     label: "staging scratch harness",
   });
-  return { backend, memory, sidesPointers, codecPointers };
+  return { backend, memory, sidesPointers, codecPointers, codecLastBytes, bufferRequests };
 }
 
 /** The constructor's `instance` field, which this file only ever stands in for. */
@@ -124,25 +137,29 @@ describe("staging slab as a per-call scratch", () => {
     }).not.toThrow();
   });
 
-  it("refuses a request larger than the slab rather than truncating it", () => {
-    // THE BOUNDARY, loud. A truncated section would be refused by the module's
-    // decoder at best and seed a wrong one at worst, so the backend refuses
-    // first and says both sizes. Exactly the slab's size still fits.
-    const { backend, memory } = harness();
+  it("stages an admission larger than the slab in a buffer the module maps to its size", () => {
+    // Exactly the slab's size still goes to the slab, with no buffer.
+    const { backend, codecPointers, codecLastBytes, bufferRequests } = harness();
     const body = STAGING_BYTES - 76;
     backend.admitActivation(1, guest(body, 0x5c), TEMPLATE);
-    const staged = (): Uint8Array => new Uint8Array(memory.buffer, STAGING_BASE + 76, body);
-    expect(
-      staged().every((b) => b === 0x5c),
-      "a request of exactly the slab's size is staged whole",
-    ).toBe(true);
-    expect(() => backend.admitActivation(2, guest(body + 1, 0x5d), TEMPLATE)).toThrow(
-      /staging slab exhausted placing activation 2 admission \(8193 bytes against a 8192-byte slab\)/,
+    expect(codecPointers).toEqual([STAGING_BASE]);
+    expect(bufferRequests).toEqual([]);
+    // One byte more asks the module for exactly that many bytes, and the
+    // module sees the whole admission there.
+    backend.admitActivation(2, guest(body + 1, 0x5d), TEMPLATE);
+    expect(bufferRequests).toEqual([STAGING_BYTES + 1]);
+    expect(codecPointers).toEqual([STAGING_BASE, SCRATCH_BASE]);
+    expect(codecLastBytes).toEqual([0x5c, 0x5d]);
+  });
+
+  it("refuses a side list larger than the slab rather than truncating it", () => {
+    // THE BOUNDARY, loud, for the one stage that has no mapping: a truncated
+    // list would give the module the wrong activations.
+    const { backend, sidesPointers } = harness();
+    const tooMany = Array.from({ length: STAGING_BYTES / 8 + 1 }, (_, i) => i + 1);
+    expect(() => backend.parentBeginCapture(0, 0, tooMany)).toThrow(
+      /staging slab exhausted placing 1025 side activation\(s\) \(8200 bytes against a 8192-byte slab\)/,
     );
-    // And the refusal wrote nothing: the previous stage's bytes are intact.
-    expect(
-      staged().every((b) => b === 0x5c),
-      "a refused request leaves the slab as it was",
-    ).toBe(true);
+    expect(sidesPointers).toEqual([]);
   });
 });

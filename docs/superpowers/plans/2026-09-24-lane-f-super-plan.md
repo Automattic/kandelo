@@ -224,7 +224,7 @@ Each is one or two commits.
 **1c. host-native switch.**
 - Replace `read_linked_frame_fixed_prefix_size`, `read_fork_resume_catalog_records` and `read_gc_codec_descriptor_section` with a section *locator* built on the already-present `wasmparser` dependency (about 20 lines). This also deletes the hand-written `find_custom_section` / `read_leb_u32` walk.
 - `GuestForkFormat` shrinks to `{template_id, sections}`.
-- Replace the three per-purpose scratch pages (catalog, GC codec, template id; 6600–6700) with one staging slab, mirroring TS. Note this touches the `compute_fork_module_region` math.
+- Replace the three per-purpose scratch pages (catalog, GC codec, template id; 6600–6700) with one one-page staging slab plus `fm_admission_buffer` for larger admissions, mirroring TS. Note this touches the `compute_fork_module_region` math.
 - Replace `place_resume_thunks` and `bind_fork_phase_flip_drive_table` with `fm_bind_activation`.
 - Side effect: native gains exception-codec and host-exception-owner seeding for free, which is a parity fix.
 - 1b and 1c can run in **parallel worktrees** after 1a.
@@ -245,14 +245,14 @@ Each is one or two commits.
 
 **Tests** (through real workers and guests):
 
-- Existing: `fork-dlclose-activation`, `fork-activation-release`, `fork-dlopen-replay-e2e`, `fork-from-dlopen-side-module-e2e`, `fork-module-backend.test.ts` (re-pin drive-slot and row layout), `fork-module-staging-capacity.test.ts`.
+- Existing: `fork-dlclose-activation`, `fork-activation-release`, `fork-dlopen-replay-e2e`, `fork-from-dlopen-side-module-e2e`, `fork-module-backend.test.ts` (re-pin drive-slot and row layout), `fork-module-staging-rewind.test.ts` (the admission mapping).
 - New: `fork-admission-refusal.test.ts`. It admits a real instrumented guest whose staged linked-frame bytes are corrupted, and expects the named errno at admission, not at capture.
 - Mutation check: remove each module-side validation (ptr-width mismatch, ordinal/slot check) and confirm the test fails. Record the build key per mutation.
 - Native: re-run the full `cargo test -p host-native --target aarch64-apple-darwin`. The bare command runs zero tests and exits 101. Passing set must be ≥ 56.
 
 **Risks:**
 
-1. **Slab capacity.** It is sized for the largest *single* stage (intl.so KFIG, 190,437 B). An admission stages *all* of an activation's sections at once. Re-measure the largest per-activation sum with the capacity test before choosing a size. The fallback is to keep KFIG/KFIT on their own stage.
+1. **Slab capacity.** RESOLVED 2026-09-25. 1b first grew the slab to four pages to fit intl.so's 252,753-byte admission. The maintainer then chose a one-page slab plus `fm_admission_buffer(len)`: the module maps an exact-size buffer for a larger admission (php.wasm, php-fpm.wasm, intl.so) and `fm_admit_activation` releases it, accepted or refused. Every non-php admission measured fits one page (largest wget.wasm, 54,880 B). Intended to fold into one module-owned staging entry that answers from a module-owned slab when a request fits.
 2. **COW children.** A copied child inherits the parent's module region and re-admits. Every section seed must be a byte-compare no-op. The GC codec seed currently refuses a re-seed with EINVAL (`set_activation_gc_codec_impl`), so change it to a byte-compare.
 3. **Parent seeding change.** GC and exception codecs are now seeded on the **parent** too, where today they are seeded only in the child. Check that the capture reads nothing differently.
 
