@@ -40,3 +40,27 @@ test("Kandelo shell machine never warns about audio", async ({ page }) => {
   );
   await expect(page.locator(".kpcm-audio-status")).toHaveCount(0);
 });
+
+// The other direction, and the one that matters more: a machine whose guest
+// really does open /dev/dsp must still surface a real audio problem. Without
+// a gesture the browser's autoplay policy holds the sink below "running", so
+// the warning is the correct thing to show — and it must still appear.
+test("Kandelo espeak machine still warns when its audio cannot play", async ({ page }) => {
+  test.setTimeout(300_000);
+
+  await gotoMachineOrSkip(page, "espeak");
+
+  // No click: espeak-ng runs from the boot path and opens /dev/dsp on its
+  // own, which is exactly the demand signal under test.
+  await expect(page.locator("[data-audio-active]")).toHaveAttribute(
+    "data-audio-active",
+    "true",
+    { timeout: 240_000 },
+  );
+
+  await expect(page.locator("[data-audio-state]")).not.toHaveAttribute(
+    "data-audio-state",
+    "running",
+  );
+  await expect(page.locator(".kpcm-audio-status")).toBeVisible();
+});
