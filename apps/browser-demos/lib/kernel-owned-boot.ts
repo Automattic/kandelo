@@ -11,7 +11,6 @@
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
-import rootfsVfsUrl from "@rootfs-vfs?url";
 
 export { overlayEtcFromRootfs };
 export { isWebKitLikeBrowser, isWebKitLikeUserAgent } from "./browser-engine";
@@ -116,7 +115,13 @@ let rootfsBytesPromise: Promise<Uint8Array> | null = null;
  */
 export function fetchRootfsBytes(): Promise<Uint8Array> {
   if (!rootfsBytesPromise) {
-    rootfsBytesPromise = fetch(rootfsVfsUrl as string)
+    // WHY resolved on demand: the canonical rootfs seeds `/etc` for demos that
+    // start from an empty filesystem, which is a supporting need. Importing its
+    // URL statically made it an eager dependency of every page that touches
+    // this module, including ones that never seed anything.
+    rootfsBytesPromise = import("@host/browser-kernel-default-artifacts")
+      .then((m) => m.browserDefaultRootfsVfsUrl())
+      .then((url) => fetch(url))
       .then((r) => {
         if (!r.ok) throw new Error(`rootfs.vfs.zst fetch failed: ${r.status}`);
         return r.arrayBuffer();
