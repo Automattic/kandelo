@@ -132,6 +132,7 @@ import {
   initializeBrowserCorsProxyForWorker,
 } from "./browser-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 
 const PAGE_SIZE = 65536;
 const O_WRONLY_CREAT_TRUNC =
@@ -4102,10 +4103,14 @@ async function performDestroy() {
   // EINTR + a queued SIGKILL; the guest glue then runs kernel_exit, the worker
   // returns to its JS event loop (via {exit}), and it becomes reclaimable. A
   // no-op cost on V8 (Chrome), so it runs unconditionally.
+  const destroyProgress = createDestroyProgressReporter((event) =>
+    post({ type: "destroy_progress", event }),
+  );
   let woken = new Set<number>();
   try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
     console.error(`[kernel-worker] killAllBlockedForTeardown failed: ${e}`);
   }
+  destroyProgress.startDraining(woken.size);
 
   // Phase 2 — drain. The woken workers run their exit path and post `{exit}`,
   // which fires handleExit → removes them from `processes` and terminates them
@@ -4113,13 +4118,17 @@ async function performDestroy() {
   // not wake (e.g. one already exited via a sibling thread) never posts `{exit}`
   // and is force-terminated below instead of waited on. Bounded.
   const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
-  const stillDraining = () => {
-    for (const pid of woken) if (processes.has(pid)) return true;
-    return false;
+  const liveWokenCount = () => {
+    let live = 0;
+    for (const pid of woken) if (processes.has(pid)) live++;
+    return live;
   };
+  const stillDraining = () => liveWokenCount() > 0;
   while (stillDraining() && Date.now() < drainDeadline) {
+    destroyProgress.drained(woken.size - liveWokenCount());
     await delay(DESTROY_KILL_DRAIN_POLL_MS);
   }
+  destroyProgress.drained(woken.size - liveWokenCount());
   if (stillDraining()) {
     console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
   }
@@ -4130,7 +4139,10 @@ async function performDestroy() {
   // threadWorkers / ptyByPid clears, those maps stay populated across kernel
   // rebuilds (e.g. iframe reload) and leak.
   const retireCurrentGenerations = async (): Promise<void> => {
-    for (const [pid, info] of [...processes.entries()]) {
+    const stragglers = [...processes.entries()];
+    destroyProgress.startTerminating(stragglers.length);
+    let retired = 0;
+    for (const [pid, info] of stragglers) {
       if (info.worker) {
         await terminateThreadWorkers(pid);
         await terminateTrackedWorker(info.worker);
@@ -4153,6 +4165,7 @@ async function performDestroy() {
           detachResult,
         );
       }
+      destroyProgress.terminated(++retired);
     }
   };
   await retireCurrentGenerations();
