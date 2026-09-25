@@ -17,6 +17,7 @@ import { Inspector } from "../panes/Inspector";
 import { Display, type DisplayHandle, type WordPressLoginOptions } from "../panes/Display";
 import { Shell, type ShellTerminal } from "../panes/Shell";
 import { DemoGuide } from "../panes/DemoGuide";
+import { BootProgressBar } from "../panes/BootProgressBar";
 import type { DemoActionConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import type {
   DemoPresentation,
@@ -246,6 +247,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
     <div className="kmachine">
       <div className="kmachine-workspace">
         <div className="kmachine-primary">
+          {/* Sits above whichever surface `bootPrimary` selected, so the image
+              load is visible for every demo rather than only the ones whose
+              boot surface happens to be the terminal. */}
+          <BootProgressBar />
           {shouldMountDemoSurface && (
             <PrimarySurfaceSlot active={activePrimary === demoSurface}>
               <Display

@@ -12,6 +12,7 @@ import "../../pages/kandelo/styles.css";
 
 import { KernelHostProvider } from "../../pages/kandelo/kernel-host/react";
 import { Shell } from "../../pages/kandelo/panes/Shell";
+import { BootProgressBar } from "../../pages/kandelo/panes/BootProgressBar";
 import {
   LiveKernelHost,
   type BootProgress,
@@ -30,6 +31,7 @@ export function mountBootScreen(container: HTMLElement): BootProgressFixture {
     React.createElement(
       KernelHostProvider,
       { host },
+      React.createElement(BootProgressBar, {}),
       React.createElement(Shell, {}),
     ),
   );
