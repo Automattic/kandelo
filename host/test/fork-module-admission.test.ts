@@ -18,8 +18,8 @@ import {
 } from "./fork-module-capture-fixture";
 
 /**
- * Lane F stage 1a: `fm_admit_activation` + `fm_bind_activation`, checked
- * against the per-fact entries they replace, over a REAL instrumented guest.
+ * Lane F stage 1a: `fm_admit_activation` + `fm_bind_activation`, over a REAL
+ * instrumented guest.
  *
  * The guest is `dash.wasm`, a fork-instrumented C program with hundreds of
  * resume targets and every section an admission can carry. The host part of
@@ -27,13 +27,13 @@ import {
  * does with `WebAssembly.Module.customSections` exactly as a host would; the
  * module decodes them.
  *
- * The comparison is the point: one module instance is seeded the OLD way (one
- * `fm_*` call per fact, the host decoding the resume catalog itself), a second
- * is admitted, and everything the module lets a host observe -- the resume
- * assignment, the catalog bases, the drive base -- must be identical. What a
- * host cannot read back (the stored codec and section bytes, the template id)
- * is checked through the old seeds' own same-bytes rule: re-seeding identical
- * bytes over an admitted activation is a no-op, different bytes are `EINVAL`.
+ * What a host can observe -- the resume assignment, the catalog bases, the
+ * drive base -- is read off the bound row. What it cannot read back (the
+ * stored codec and section bytes, the template id) is checked through the
+ * re-admission rule: identical facts are a no-op, different ones are
+ * `EINVAL`. Until lane F stage 1d this file also compared admission against
+ * the ten per-fact entries it replaced; those entries are deleted, and that
+ * half went with them.
  */
 
 const EINVAL = 22;
@@ -167,7 +167,7 @@ function freshModule(label: string) {
 
 type Module = ReturnType<typeof freshModule>;
 
-/** The resume ordinals, decoded by the host the way the old path did. */
+/** The resume ordinals, decoded here only to check the module's answer. */
 function ordinals(catalog: Uint8Array): number[] {
   const view = new DataView(catalog.buffer, catalog.byteOffset, catalog.byteLength);
   const count = view.getUint32(8, true);
@@ -177,39 +177,6 @@ function ordinals(catalog: Uint8Array): number[] {
 function fixedPrefix(sections: Map<Kind, Uint8Array>): number {
   const linked = sections.get("linkedFrames")!;
   return new DataView(linked.buffer, linked.byteOffset).getUint32(20, true);
-}
-
-/** The per-fact seeds for everything but the resume catalog. */
-function seedFacts(m: Module, activation: number, id: Uint8Array, sections: Map<Kind, Uint8Array>): void {
-  m.call("fm_set_activation_template_id", activation, m.stage(id));
-  const gc = sections.get("gcCodec")!;
-  m.call("fm_set_activation_gc_codec", activation, m.stage(gc), gc.length);
-  const exn = sections.get("exceptionCodec");
-  if (exn) m.call("fm_set_activation_exception_codec", activation, m.stage(exn), exn.length);
-  for (const [space, kind] of [[0, "importedGlobals"], [1, "importedTables"]] as const) {
-    const bytes = sections.get(kind)!;
-    m.call("fm_set_activation_imports", space, activation, m.stage(bytes), bytes.length);
-  }
-}
-
-/** Seed one activation with the per-fact entries admission replaces. */
-function seedOld(m: Module, activation: number, id: Uint8Array, sections: Map<Kind, Uint8Array>): void {
-  seedFacts(m, activation, id, sections);
-  const ords = ordinals(sections.get("resumeCatalog")!);
-  const words = new Uint8Array(new Uint32Array(ords).buffer);
-  m.call("fm_set_activation_resume_catalog", activation, m.stage(words), ords.length);
-}
-
-/** The old placement: the four entries `fm_bind_activation` replaces. */
-function bindOld(m: Module, activation: number, funcLen: number, staticLen: number) {
-  const func = m.call("fm_place_activation_catalog", activation, funcLen);
-  const statics = m.call("fm_place_activation_static_roots", activation, staticLen);
-  const drive = m.call("fm_drive_table_base", activation);
-  const packed = (m.x.fm_publish_resume_assignment as unknown as (a: number) => bigint)(activation);
-  expect(m.errno()).toBe(0);
-  const ptr = Number(packed & 0xffff_ffffn);
-  const count = Number(packed >> 32n);
-  return { row: { drive, func, statics }, assignment: m.records(ptr, count) };
 }
 
 const sections = locate(guest);
@@ -261,40 +228,48 @@ describe("fm_admit_activation / fm_bind_activation", () => {
     expect(m.admit(encodeForkAdmission(0, 0, templateId(0), guest))).toBe(0);
   });
 
-  it("produces the same resume assignment and bases as the per-fact entries", () => {
-    const old = freshModule("old path");
-    old.call("fm_set_format", 4, prefix, 0, CHANNEL_BASE);
-    for (const a of ACTIVATIONS) seedOld(old, a.id, a.template, sections);
-    const fresh = admitted("admission path");
+  it("assigns every catalog ordinal a slot of its own, and places the catalogs", () => {
+    const m = admitted("admission path");
+    const catalog = ordinals(sections.get("resumeCatalog")!);
+    const seen = new Set<number>();
     for (const a of ACTIVATIONS) {
-      const before = bindOld(old, a.id, a.funcLen, a.staticLen);
-      const after = fresh.bind(a.id, a.funcLen, a.staticLen);
-      expect(after.errno).toBe(0);
-      expect(after.row).toEqual(before.row);
-      expect(after.assignment).toEqual(before.assignment);
-      expect(after.assignment.length).toBe(ordinals(sections.get("resumeCatalog")!).length);
+      const bound = m.bind(a.id, a.funcLen, a.staticLen);
+      expect(bound.errno).toBe(0);
+      // One record per catalog ordinal, ascending by ordinal, in the order
+      // the guest's placement shim walks them.
+      expect(bound.assignment!.map(([ordinal]) => ordinal)).toEqual(catalog);
+      for (const [, slot] of bound.assignment!) {
+        expect(slot, "slot 0 is the reserved sentinel").toBeGreaterThan(0);
+        expect(seen.has(slot!), `slot ${slot} handed out twice`).toBe(false);
+        seen.add(slot!);
+      }
     }
-    // Non-trivial placement: later activations land at distinct bases.
-    expect(fresh.bind(4, 2, 9).row).toEqual({ drive: 4 * 19, func: 12, statics: 3 });
+    // The first activation bound numbers from 1.
+    expect(m.bind(0, 7, 3).assignment![0]).toEqual([catalog[0], 1]);
+    // Non-trivial placement: later activations land at distinct bases, the
+    // lowest gap each catalog fits.
+    expect(m.bind(0, 7, 3).row).toEqual({ drive: 0, func: 0, statics: 0 });
+    expect(m.bind(1, 5, 0).row).toEqual({ drive: 19, func: 7, statics: 0 });
+    expect(m.bind(4, 2, 9).row).toEqual({ drive: 4 * 19, func: 12, statics: 3 });
   });
 
-  it("stores exactly the bytes the per-fact entries would have", () => {
+  it("compares every stored fact on re-admission", () => {
     const m = admitted("stored bytes");
-    // EQUAL: re-seeding identical bytes over an admitted activation is each
-    // old seed's no-op (a conflicting one is EINVAL).
-    for (const a of ACTIVATIONS) seedFacts(m, a.id, a.template, sections);
+    // EQUAL: re-admitting identical facts is a no-op.
+    for (const a of ACTIVATIONS) {
+      expect(m.admit(encode(a.id, a.template, sections)), `re-admit ${a.id}`).toBe(0);
+    }
     // PRESENT: a different value is refused, so a record exists at all.
-    const refused = (name: string, ...args: number[]): number => {
-      m.x[name]!(...args);
-      return m.errno();
-    };
-    expect(refused("fm_set_activation_template_id", 1, m.stage(templateId(0x55)))).toBe(EINVAL);
+    const template = ACTIVATIONS[1]!.template;
+    expect(m.admit(encode(1, templateId(0x55), sections)), "template id").toBe(EINVAL);
     // An empty GC codec is valid ("no typed GC") and differs from the stored one.
-    expect(refused("fm_set_activation_gc_codec", 1, m.stage(new Uint8Array(1)), 0)).toBe(EINVAL);
+    const noGc = new Map(sections).set("gcCodec", new Uint8Array(0));
+    expect(m.admit(encode(1, template, noGc)), "GC codec").toBe(EINVAL);
     // A valid exception codec declaring no tags differs from the stored one.
     const noTags = sections.get("exceptionCodec")!.slice(0, 8);
     new DataView(noTags.buffer).setUint32(4, 0, true);
-    expect(refused("fm_set_activation_exception_codec", 1, m.stage(noTags), 8)).toBe(EINVAL);
+    const noExn = new Map(sections).set("exceptionCodec", noTags);
+    expect(m.admit(encode(1, template, noExn)), "exception codec").toBe(EINVAL);
     // And for each optional section, an admission WITHOUT it now disagrees
     // with the record the first admission stored.
     for (const kind of ["gcCodec", "exceptionCodec", "importedGlobals", "importedTables"] as const) {
@@ -411,6 +386,17 @@ describe("fm_admit_activation / fm_bind_activation", () => {
     expect(m.maps().munmap - pending).toBe(1);
     expect(m.x.fm_admission_buffer!(0)).toBe(0);
     expect(m.errno()).toBe(EINVAL);
+  });
+
+  it("refuses a descriptor that runs off the end of memory", () => {
+    // Wholly past the end, not straddling it: a straddling descriptor is
+    // refused by the decoder reading garbage from the in-bounds prefix, which
+    // passes with the bounds check REMOVED.
+    const m = freshModule("off the end");
+    m.call("fm_set_format", 4, prefix, 0, CHANNEL_BASE);
+    const desc = encode(1, templateId(1), sections);
+    expect(m.x.fm_admit_activation!(m.memory.buffer.byteLength + 4096, desc.length)).toBe(EINVAL);
+    expect(m.admit(desc), "the same descriptor, in memory, is admitted").toBe(0);
   });
 
   it("refuses a structurally corrupt descriptor", () => {

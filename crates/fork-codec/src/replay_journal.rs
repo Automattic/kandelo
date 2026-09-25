@@ -24,9 +24,9 @@
 //! `ForkResumeTable` that owns the `__wpk_fork_resume_table`
 //! `WebAssembly.Table` the guest imports. `resume_peek` returns an index INTO
 //! that JS table, so the two numberings must agree exactly or `call_indirect`
-//! reaches the wrong thunk. They are NOT left to agree by luck: the host seeds
+//! reaches the wrong thunk. They are NOT left to agree by luck: the host admits
 //! each activation's full catalog into the module once per worker via
-//! `fm_set_activation_resume_catalog`, and this module numbers from that catalog rather
+//! `fm_admit_activation`, and this module numbers from that catalog rather
 //! than from its own committed ordinals, which makes the numbering identical
 //! BY CONSTRUCTION. See the contract comment at `fork-module/src/lib.rs:227`
 //! for the full argument. The coupling is designed, not accidental, but it is

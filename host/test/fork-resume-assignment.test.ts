@@ -1,5 +1,6 @@
-// WHY THIS EXISTS: `fm_publish_resume_assignment` writes a packed record
-// buffer that a DIFFERENT implementation reads.
+// WHY THIS EXISTS: `fm_bind_activation` publishes a packed record buffer --
+// the resume half of the row it answers -- that a DIFFERENT implementation
+// reads.
 //
 // The writer is Rust (`crates/fork-module/src/lib.rs`,
 // `publish_resume_assignment_impl`). The reader is wasm emitted instruction by
@@ -40,6 +41,7 @@ import { buildForkGuestImports } from "../src/fork-guest-imports";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { artifactGate } from "./support/artifact-gate";
 import { startChannelResponder } from "./fork-module-capture-fixture";
+import { admit, bind } from "./support/fork-admission";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -56,7 +58,7 @@ const MODULE_BASE = 16 * 1024 * 1024;
 /**
  * NO LONGER INERT, and the comment that said it was is what made this file
  * hang. It used to read: "nothing here issues a syscall or spills a published
- * buffer to a mapping". Seeding a catalog REGISTERS it, and registration now
+ * buffer to a mapping". Admitting a catalog REGISTERS it, and registration
  * allocates the activation's `(ordinal, slot)` record in the arena, which maps
  * its chunks through this address. With nobody behind it, `channel_syscall`
  * parks in `memory_atomic_wait32` with no deadline -- so the file did not
@@ -69,7 +71,7 @@ const CHANNEL_BASE = 12 * 1024 * 1024;
  * at 20 MiB, inside the 32 MiB this file declares.
  */
 const MMAP_FLOOR = 24 * 1024 * 1024;
-/** Scratch the ordinal catalogs are staged at, above both regions. */
+/** Scratch the admission descriptors are staged at, above both regions. */
 const CATALOG_AT = 20 * 1024 * 1024;
 
 /** The record layout, restated from the SHIM rather than from the writer. */
@@ -86,7 +88,7 @@ interface Harness {
   readonly memory: WebAssembly.Memory;
   readonly exports: Record<string, unknown>;
   readonly resumeTable: WebAssembly.Table;
-  /** Seed an activation's catalog, which is what assigns its slots. */
+  /** Admit an activation with this catalog, which is what assigns its slots. */
   readonly seed: (activationId: number, ordinals: readonly number[]) => void;
   readonly release: (activationId: number) => number;
   readonly publish: (activationId: number) => Published;
@@ -121,34 +123,23 @@ function harness(): Harness {
   ) => number;
 
   const seed = (activationId: number, ordinals: readonly number[]): void => {
-    const bytes = new Uint8Array(ordinals.length * 4);
-    const view = new DataView(bytes.buffer);
-    ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
-    new Uint8Array(memory.buffer, CATALOG_AT, bytes.length).set(bytes);
-    (x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
-      activationId,
-      CATALOG_AT,
-      ordinals.length,
-    );
-    expect(errno(), `seeding activation ${activationId}`).toBe(0);
+    expect(
+      admit(x, memory, CATALOG_AT, activationId, { ordinals }),
+      `admitting activation ${activationId}`,
+    ).toBe(0);
   };
 
+  // The resume half of the bound row, exactly what registration hands the
+  // guest's shim. No catalog tables here, so both lengths are 0; binding
+  // again with the same lengths answers the same row.
   const publish = (activationId: number): Published => {
-    const packed = (
-      x.fm_publish_resume_assignment as (a: number) => bigint
-    )(activationId);
-    if (packed === -1n) {
+    const row = bind(x, memory, activationId, 0, 0);
+    if (!row) {
       throw new Error(
-        `publishing activation ${activationId} failed with errno ${errno()}`,
+        `binding activation ${activationId} failed with errno ${errno()}`,
       );
     }
-    // COUNT HIGH, POINTER LOW -- see the export's own doc comment. A pointer in
-    // the high half would make any buffer above 2 GiB decode as a negative
-    // i64, which is the error signal.
-    return {
-      ptr: Number(packed & 0xffff_ffffn),
-      count: Number(packed >> 32n),
-    };
+    return row.resume;
   };
 
   return {
@@ -179,13 +170,13 @@ function readRecords(
   return records;
 }
 
-describe("fm_publish_resume_assignment", () => {
+describe("the resume assignment fm_bind_activation publishes", () => {
   it("publishes every (ordinal, slot) the module assigned, ascending", () => {
     const h = harness();
-    // Deliberately unsorted, and deliberately not dense: the module sorts the
-    // catalog before assigning, so the published order is a property of the
-    // publisher rather than of what the host happened to pass.
-    h.seed(0, [7, 1, 4]);
+    // Deliberately not dense. A catalog's ordinals are strictly ascending --
+    // admission refuses any other order -- so the published order checked
+    // below is the publisher's, which walks the assignment it recorded.
+    h.seed(0, [1, 4, 7]);
 
     const published = h.publish(0);
     expect(h.errno()).toBe(0);
@@ -212,8 +203,8 @@ describe("fm_publish_resume_assignment", () => {
 
   it("publishes an empty buffer for an activation that holds no slots", () => {
     const h = harness();
-    // A side module with no fork-instrumented function seeds an EMPTY catalog
-    // and therefore holds no slots -- `libneeded-provider.so` in
+    // A side module with no fork-instrumented function admits an EMPTY
+    // catalog and therefore holds no slots -- `libneeded-provider.so` in
     // `fork-from-dlopen-side-module-e2e` is exactly that. Treating it as an
     // error once cost a real fork (see `resume_unregister_impl`).
     h.seed(3, []);
@@ -221,11 +212,11 @@ describe("fm_publish_resume_assignment", () => {
     expect(h.errno()).toBe(0);
     expect(empty).toEqual({ ptr: 0, count: 0 });
 
-    // And an activation nobody ever seeded answers the same way, for the same
-    // reason: "was this registered" is a question the host already answers.
-    const unknown = h.publish(41);
-    expect(h.errno()).toBe(0);
-    expect(unknown).toEqual({ ptr: 0, count: 0 });
+    // An activation nobody ever admitted is REFUSED rather than answered the
+    // same way: an empty assignment would be a success that places no
+    // thunks, for a guest whose catalog the module never saw.
+    expect(bind(h.exports, h.memory, 41, 0, 0)).toBeNull();
+    expect(h.errno()).toBe(22);
   });
 
   it("publishes the allocator's reuse, not a fresh ascending numbering", () => {
@@ -238,7 +229,7 @@ describe("fm_publish_resume_assignment", () => {
     // PLACEMENT NORMALLY GROWS THIS. Releasing an activation nulls each entry
     // it held, inside the module, and `table.set` traps on a slot the table
     // does not have. This case exercises the ALLOCATOR with no guest at all --
-    // it seeds catalogs and never places a thunk -- so the table is grown here
+    // it admits catalogs and never places a thunk -- so the table is grown here
     // to the size the guest's shim would have grown it to. Growing is not
     // writing: no thunk goes in, and the assertions below are about which
     // slots the allocator hands out, not about what is in them.

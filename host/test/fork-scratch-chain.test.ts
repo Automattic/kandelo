@@ -7,7 +7,7 @@ import {
   arenaChunkBytesFromSource,
   arenaFixture,
   fixture,
-  seedTemplateId,
+  admitActivation,
 } from "./fork-module-capture-fixture";
 
 /**
@@ -230,7 +230,7 @@ describe("guest-facing scratch chain", () => {
     // chained stack, closed by routing native's scratch imports to the module
     // rather than by inventing a native gate.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "the capture opens").toBe(0);

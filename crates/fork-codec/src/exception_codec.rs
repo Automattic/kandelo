@@ -14,8 +14,8 @@
 //! (`readForkExceptionCodecDescriptor`) is gone, and so is the `.mts` half of
 //! the drift guard. The guard is not weakened so much as emptied: it compared
 //! two implementations of one wire format, and there is one now — this file,
-//! which the module reads the section through
-//! (`fm_set_activation_exception_codec`).
+//! which the module reads the section through when an activation is admitted
+//! (`fm_admit_activation`).
 //!
 //! Layout recap (all little-endian):
 //!

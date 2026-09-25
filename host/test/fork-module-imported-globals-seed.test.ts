@@ -7,21 +7,23 @@ import {
   MMAP_FLOOR,
   startChannelResponder,
 } from "./fork-module-capture-fixture";
+import { admit, type AdmissionFacts } from "./support/fork-admission";
 
 /**
- * Seeding an activation's imported-global (KFIG) custom section.
+ * Admitting an activation's imported-global (KFIG) and imported-table (KFIT)
+ * custom sections.
  *
- * The module needs it to build the imported-global bindings a child reads: the
- * section says which globals an activation imports and at what type, which is
- * half of every binding. It is seeded rather than read because a custom section
- * lives in the `WebAssembly.Module` and only the host can get it out --
- * `WebAssembly.Module.customSections`. The module cannot reach its guests'
- * modules at all.
+ * The module needs them to build the imported-global bindings a child reads:
+ * a section says which globals an activation imports and at what type, which
+ * is half of every binding. They arrive in the activation's admission rather
+ * than being read because a custom section lives in the `WebAssembly.Module`
+ * and only the host can get it out -- `WebAssembly.Module.customSections`. The
+ * module cannot reach its guests' modules at all.
  */
 
 const EINVAL = 22;
 
-/** `fm_set_activation_imports` / `fm_set_import_provenance` spaces. */
+/** `fm_set_import_provenance` / `fm_set_identity_group` spaces. */
 const SPACE_GLOBAL = 0;
 const SPACE_TABLE = 1;
 
@@ -68,12 +70,8 @@ function fixture() {
   return {
     memory,
     errno: () => (x.fm_last_errno as () => number)(),
-    seed: x.fm_set_activation_imports as (
-      space: number,
-      activation: number,
-      ptr: number,
-      byteLength: number,
-    ) => void,
+    /** `fm_admit_activation`, staged low; the errno it answered. */
+    admit: (activation: number, facts: AdmissionFacts) => admit(x, memory, 4096, activation, facts),
     provenance: x.fm_set_import_provenance as (
       space: number,
       consumerActivation: number,
@@ -91,13 +89,6 @@ function fixture() {
   };
 }
 
-/** Put `bytes` in guest memory at `at` and return the address. */
-function place(memory: WebAssembly.Memory, at: number, bytes: Uint8Array): number {
-  new Uint8Array(memory.buffer, at, bytes.length).set(bytes);
-  return at;
-}
-
-/** A valid, empty KFIT section: 16-byte header, zero records. */
 /** A valid `KFIG` section with ONE record -- different bytes from `emptySection`. */
 function oneGlobalSection(): Uint8Array {
   const moduleName = new TextEncoder().encode("env");
@@ -121,6 +112,7 @@ function oneGlobalSection(): Uint8Array {
   return bytes;
 }
 
+/** A valid, empty KFIT section: 16-byte header, zero records. */
 function emptyTableSection(): Uint8Array {
   const bytes = new Uint8Array(16);
   const view = new DataView(bytes.buffer);
@@ -132,25 +124,22 @@ function emptyTableSection(): Uint8Array {
   return bytes;
 }
 
-describe("imported-global section seeding", () => {
+describe("imported-global section admission", () => {
   it("accepts one section per activation", () => {
     const f = fixture();
     const section = emptySection();
-    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, section), section.length);
-    expect(f.errno()).toBe(0);
-    f.seed(SPACE_GLOBAL, 1, place(f.memory, 8192, section), section.length);
-    expect(f.errno()).toBe(0);
+    expect(f.admit(0, { importedGlobals: section })).toBe(0);
+    expect(f.admit(1, { importedGlobals: section })).toBe(0);
   });
 
-  it("refuses a malformed section at the SEED, not at the capture", () => {
+  it("refuses a malformed section at ADMISSION, not at the capture", () => {
     // A bad section is the host's bug. Discovering it when the capture finally
     // reads it means discovering it mid-fork, where a truthful errno has
     // already become a trap.
     const f = fixture();
     const bad = emptySection();
     bad[0] = 0x00; // wrong magic
-    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, bad), bad.length);
-    expect(f.errno()).toBe(EINVAL);
+    expect(f.admit(0, { importedGlobals: bad })).toBe(EINVAL);
   });
 
   it("refuses a DIFFERENT second section, and ignores an identical one", () => {
@@ -158,40 +147,25 @@ describe("imported-global section seeding", () => {
     // activations, and quietly keeping either one binds a child's imports
     // against the wrong module's declarations. That is what this refuses.
     //
-    // An IDENTICAL re-seed is a no-op instead, and the reason is a COW fork
-    // child: this module's statics live in the guest's memory at
-    // `__memory_base`, the child's memory is a clone of its parent's, and BSS
-    // is not re-zeroed when the child instantiates its own fork-module. So the
-    // child reads the PARENT's seed table and its own seeding -- of the same
-    // guest module, hence the same bytes -- looked like a confusion and was
-    // refused. That was `errno 22` on 41 test files. Idempotence rather than a
-    // reset in `fm_set_format`, for the reason recorded beside the GC codec
-    // there: a host is free to RE-SEED a child or to let it INHERIT, and only
-    // idempotence is correct under both. Census D9 C2.
+    // An IDENTICAL re-admission is a no-op instead, and the reason is a COW
+    // fork child: a child and its import planner both admit activations
+    // another caller in the same worker may already have admitted -- of the
+    // same guest module, hence the same bytes -- and refusing that as a
+    // confusion was `errno 22` on 41 test files when the per-section seed did
+    // it. Census D9 C2.
     const f = fixture();
     const section = emptySection();
-    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, section), section.length);
-    expect(f.errno()).toBe(0);
-    f.seed(SPACE_GLOBAL, 0, place(f.memory, 8192, section), section.length);
-    expect(f.errno(), "identical bytes are the same declarations").toBe(0);
+    expect(f.admit(0, { importedGlobals: section })).toBe(0);
+    expect(f.admit(0, { importedGlobals: section }), "identical bytes are the same declarations")
+      .toBe(0);
     // A VALID section that differs, not a malformed one: a malformed section is
     // refused by the DECODER before the conflict check is reached, so asserting
     // on it proves nothing about the check. Perturbing the check to accept
-    // every re-seed left that version of this assertion passing.
-    const other = oneGlobalSection();
-    f.seed(SPACE_GLOBAL, 0, place(f.memory, 12288, other), other.length);
-    expect(f.errno(), "different bytes are two modules, and are refused")
-      .toBe(EINVAL);
-  });
-
-  it("refuses a section that runs off the end of memory", () => {
-    // Wholly past the end, not straddling it. A straddling pointer proves
-    // nothing: the decoder reads the header from the in-bounds prefix, sees
-    // whatever is there, and rejects the magic -- so the test passes with the
-    // bounds check REMOVED, which is what it is supposed to be guarding.
-    const f = fixture();
-    f.seed(SPACE_GLOBAL, 0, f.memory.buffer.byteLength + 4096, 16);
-    expect(f.errno()).toBe(EINVAL);
+    // every re-admission left that version of this assertion passing.
+    expect(
+      f.admit(0, { importedGlobals: oneGlobalSection() }),
+      "different bytes are two modules, and are refused",
+    ).toBe(EINVAL);
   });
 });
 
@@ -280,41 +254,36 @@ describe("global identity groups, the fact wasm cannot compute", () => {
 const KIND_ACTIVATION_TABLE = 1;
 const KIND_TABLE_BASE_IMPORT = 2;
 
-describe("one seed surface over two import spaces", () => {
+describe("two import spaces", () => {
   it("keeps a global section and a table section for the same activation", () => {
     // The spaces are separate namespaces, not a single per-activation slot. An
-    // activation normally has both, and a seed of one must not read as a
-    // re-seed of the other.
+    // activation normally has both, and admitting one must not read as a
+    // conflicting re-admission of the other.
     const f = fixture();
     const globals = emptySection();
     const tables = emptyTableSection();
-    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, globals), globals.length);
-    expect(f.errno()).toBe(0);
-    f.seed(SPACE_TABLE, 0, place(f.memory, 8192, tables), tables.length);
-    expect(f.errno(), "a table section is not a re-seed").toBe(0);
-    f.seed(SPACE_TABLE, 0, place(f.memory, 12288, tables), tables.length);
-    expect(f.errno(), "and an identical table re-seed is a no-op").toBe(0);
+    expect(f.admit(0, { importedGlobals: globals })).toBe(0);
+    expect(
+      f.admit(0, { importedGlobals: globals, importedTables: tables }),
+      "adding a table section is not a conflict",
+    ).toBe(0);
+    expect(
+      f.admit(0, { importedGlobals: globals, importedTables: tables }),
+      "and an identical re-admission is a no-op",
+    ).toBe(0);
   });
 
   it("decodes each space against its own section format", () => {
     // KFIG bytes in the table space are not a table catalog. Accepting them
     // would store a section whose records the capture then reads as tables.
     const f = fixture();
-    const globals = emptySection();
-    f.seed(SPACE_TABLE, 0, place(f.memory, 4096, globals), globals.length);
-    expect(f.errno()).toBe(EINVAL);
+    expect(f.admit(0, { importedTables: emptySection() })).toBe(EINVAL);
   });
 
   it("refuses a space that names neither catalog", () => {
-    // The section here is a VALID KFIT one, deliberately. Seeding space 2 with
-    // KFIG bytes proves nothing: the seed would then refuse them for failing to
-    // decode as tables, and the space check could be deleted with this test
-    // still passing. Bytes that would be accepted under a known space are what
-    // make the refusal attributable to the space.
+    // The two sections an admission carries name their own spaces, so a third
+    // space can only arrive through the per-coordinate entries.
     const f = fixture();
-    const section = emptyTableSection();
-    f.seed(2, 0, place(f.memory, 4096, section), section.length);
-    expect(f.errno()).toBe(EINVAL);
     f.identity(2, 1, 5, 7);
     expect(f.errno()).toBe(EINVAL);
     f.provenance(2, 3, 1, KIND_ACTIVATION_TABLE, 7, 0n);

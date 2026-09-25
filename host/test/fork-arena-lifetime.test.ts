@@ -20,15 +20,15 @@ import {
  * would read the FIRST seed's ordinals out of reused memory. That is a wrong
  * value, not a trap, and no other test in the suite looks at it.
  *
- * WHAT IT DRIVES: `fm_set_activation_resume_catalog` now allocates the
- * activation's `(ordinal, slot)` record in the arena, so a seed / release /
- * re-seed round trip is a real allocate / free / allocate through the chunk
- * chain and the directory.
+ * WHAT IT DRIVES: `fm_admit_activation` allocates the activation's
+ * `(ordinal, slot)` record in the arena, so an admit / release / re-admit
+ * round trip is a real allocate / free / allocate through the chunk chain and
+ * the directory.
  */
 
-/** The activation seeded and released below. */
+/** The activation admitted and released below. */
 const ACTIVATION = 9;
-/** The activation seeded into whatever memory the release returned. */
+/** The activation admitted into whatever memory the release returned. */
 const LATER = 10;
 
 describe("arena record lifetime", () => {
@@ -38,8 +38,7 @@ describe("arena record lifetime", () => {
     // fixture has no guest to have grown the table. See the fixture's own note.
     x.growResumeTable(8);
 
-    x.seedActivationCatalog(ACTIVATION, [10, 20, 30]);
-    expect(x.errno()).toBe(0);
+    expect(x.admit(ACTIVATION, { ordinals: [10, 20, 30] })).toBe(0);
     expect(x.publishedPairs(ACTIVATION), "three records, ascending").toEqual([
       [10, 1],
       [20, 2],
@@ -66,8 +65,8 @@ describe("arena record lifetime", () => {
     // wrong VALUE here rather than a trap, and no other test looks at it.
     // Its slots are the freed 1, 2, 3 first -- smallest-first reuse -- then two
     // fresh ones.
-    x.seedActivationCatalog(LATER, [11, 22, 33, 44, 55]);
-    expect(x.errno(), "seeding after the release").toBe(0);
+    expect(x.admit(LATER, { ordinals: [11, 22, 33, 44, 55] }), "admitting after the release")
+      .toBe(0);
     expect(x.publishedPairs(LATER), "its own five, not the first seed's three")
       .toEqual([
         [11, 1],
@@ -79,30 +78,33 @@ describe("arena record lifetime", () => {
     expect(x.slots(1, LATER, 0), "five slots freed on the second release").toBe(5);
   });
 
-  it("re-seeds an activation's catalog over its own released record", () => {
-    // THE SAME-ACTIVATION ROUND TRIP. A re-seed through
-    // `fm_set_activation_resume_catalog` REPLACES the catalog record and
-    // re-decides the slots: `resume_reseed` frees the old assignment before
-    // registering the new one. That used to be true only of the process-wide
-    // entry for activation 0 (`fm_set_resume_catalog`, deleted with the store
-    // behind it) while the per-activation entry refused a re-seed with
-    // `EINVAL`; there is one entry and one rule now, so this exercises
-    // release-then-allocate on a single activation through the arena, which is
-    // the lifetime this file asserts. Activation 0 because that is the seed
-    // every worker's `setup()` performs.
-    const x = arenaFixture("arena lifetime reseed");
-    x.seedActivationCatalog(0, [10, 20, 30]);
-    expect(x.errno(), "the first seed").toBe(0);
+  it("re-admits an activation over its own released record", () => {
+    // THE SAME-ACTIVATION ROUND TRIP. An admitted catalog is never REPLACED
+    // -- a different catalog under an admitted id is `EINVAL`, because the
+    // guest has already placed thunks at its slots -- so the way one id gets
+    // a new catalog is the way a host reuses a closed library's id: `dlclose`
+    // releases everything the activation held, and the next admission of the
+    // same id allocates afresh. This exercises release-then-allocate on a
+    // single activation through the arena, which is the lifetime this file
+    // asserts.
+    const x = arenaFixture("arena lifetime readmit");
+    x.growResumeTable(8);
+    expect(x.admit(0, { ordinals: [10, 20, 30] }), "the first admission").toBe(0);
     expect(x.publishedPairs(0)).toEqual([
       [10, 1],
       [20, 2],
       [30, 3],
     ]);
+    expect(
+      x.admit(0, { ordinals: [11, 22, 33, 44, 55] }),
+      "a different catalog under an admitted id is refused",
+    ).toBe(22);
 
-    // The re-seed frees the three slots and allocates a NEW record for five.
-    // Its slots are the freed 1, 2, 3 reused smallest-first, then 4 and 5.
-    x.seedActivationCatalog(0, [11, 22, 33, 44, 55]);
-    expect(x.errno(), "the re-seed").toBe(0);
+    // The release frees the three slots; the re-admission allocates a NEW
+    // record for five. Its slots are the freed 1, 2, 3 reused smallest-first,
+    // then 4 and 5.
+    expect(x.slots(1, 0, 0), "three slots freed").toBe(3);
+    expect(x.admit(0, { ordinals: [11, 22, 33, 44, 55] }), "the re-admission").toBe(0);
     expect(x.publishedPairs(0), "five records, none of them the old three")
       .toEqual([
         [11, 1],
@@ -113,7 +115,7 @@ describe("arena record lifetime", () => {
       ]);
     expect(
       x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD),
-      "one activation, one entry -- the re-seed did not leave two",
+      "one activation, one entry -- the re-admission did not leave two",
     ).toBe(1);
   });
 });

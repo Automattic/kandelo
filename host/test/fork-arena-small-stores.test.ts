@@ -60,11 +60,12 @@ const SPACE_GLOBAL = 0;
  *     56, 96, 176, 336, 656, 1_296, 2_576 (push 160), 5_136 (push 320),
  *     10_256 (push 640), 20_496 (push 1_280), 40_976 (push 2_560), ...
  *
- * The filler is a seeded resume catalog of 4,998 ordinals, which the module
- * keeps as TWO records in chunk 1: the catalog itself (16 + 4 * 4,998 =
+ * The filler is an admitted resume catalog of 4,998 ordinals, which the
+ * module keeps as TWO records in chunk 1: the catalog itself (16 + 4 * 4,998 =
  * 20,008 bytes) and the slot assignment registration writes beside it
- * (16 + 8 * 4,998 = 40,000). That is 60,008 bytes, so chunk 1 has 5,496
- * left. The first seven list sizes sum to
+ * (16 + 8 * 4,998 = 40,000). The admission also stores the activation's
+ * template id (16 + 32 = 48) and linked-frame format (16 + 8 = 24). That is
+ * 60,080 bytes, so chunk 1 has 5,424 left. The first seven list sizes sum to
  * 56 + 96 + 176 + 336 + 656 + 1,296 + 2,576 = 5,192 and fit; the eighth
  * (5,136, at push 320) does not, so it takes chunk 2. Chunk 1 keeps the
  * filler and is NOT swept. In chunk 2: 5,136 + 10,256 + 20,496 = 35,888
@@ -101,18 +102,18 @@ describe("the five small per-activation stores", () => {
     // directory chunk and one record chunk per cycle, with margin.
     x.memory.grow(300 * 2 + 64);
     for (let act = 1; act <= 300; act += 1) {
-      x.seedActivationCatalog(act, [1, 2]);
-      expect(x.errno(), `catalog for activation ${act}`).toBe(0);
-      x.seedTemplateId(act, act & 0xff);
-      expect(x.errno(), `template id for activation ${act}`).toBe(0);
+      expect(
+        x.admit(act, { ordinals: [1, 2], template: act & 0xff }),
+        `admitting activation ${act}`,
+      ).toBe(0);
       x.seedTableStateOwner(act, 1, true);
       expect(x.errno(), `table-state owner for activation ${act}`).toBe(0);
       // Each placement takes the range the previous cycle's release gave back,
       // so 300 open/close cycles leave both merged tables one catalog long.
-      expect(x.placeCatalog(act, 16), `catalog for activation ${act}`).toBe(0);
-      expect(x.errno(), `catalog for activation ${act}`).toBe(0);
-      expect(x.placeStaticRoots(act, 4), `static roots for activation ${act}`).toBe(0);
-      expect(x.errno(), `static roots for activation ${act}`).toBe(0);
+      const row = x.bind(act, 16, 4);
+      expect(x.errno(), `binding activation ${act}`).toBe(0);
+      expect(row?.func, `catalog for activation ${act}`).toBe(0);
+      expect(row?.statics, `static roots for activation ${act}`).toBe(0);
       x.seedImportProvenance(
         SPACE_GLOBAL,
         act,
@@ -131,7 +132,7 @@ describe("the five small per-activation stores", () => {
     // Both halves: the counts walk the chain and cannot see a chunk that was
     // unlinked but never unmapped, so the tally is held beside them. ONE
     // mapping is retained by design and is not the arena's: the bump heap's
-    // chunk, mapped by the first seed (the catalog is copied onto the bump)
+    // chunk, mapped by the first admission (its sections are decoded on the bump)
     // and kept by a durable instance so the next fork does not pay to map it
     // again (`fork-bump-heap.test.ts`). Three hundred cycles of small
     // allocations with no reset between them stay inside that one chunk.
@@ -153,15 +154,16 @@ describe("the five small per-activation stores", () => {
     "returns a chunk an extend empties while a sibling's chunk stays live (default-build derivation)",
     () => {
     const x = arenaFixture("small stores: cross-chunk extend");
-    // The sibling: records that pin chunk 1 for the whole test, seeded
-    // through the production resume-catalog entry. The release at the end
-    // nulls every slot it registered, so the table must cover them.
+    // The sibling: records that pin chunk 1 for the whole test, admitted
+    // through the production admission entry. The release at the end nulls
+    // every slot it registered, so the table must cover them.
     x.growResumeTable(FILLER_ORDINALS + 1);
-    x.seedActivationCatalog(
-      ACTIVATION_FILLER,
-      Array.from({ length: FILLER_ORDINALS }, (_, i) => i + 1),
-    );
-    expect(x.errno(), "the filler seeds").toBe(0);
+    expect(
+      x.admit(ACTIVATION_FILLER, {
+        ordinals: Array.from({ length: FILLER_ORDINALS }, (_, i) => i + 1),
+      }),
+      "the filler is admitted",
+    ).toBe(0);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "one chunk").toBe(1);
     const munmapsAtStart = x.munmaps();
 
@@ -220,15 +222,12 @@ describe("the five small per-activation stores", () => {
     const x = arenaFixture("small stores: refusals");
     const A = 3;
 
-    // Template id: an identical re-seed is idempotent (a COW child re-seeds
-    // the hash of the same module's bytes); a DIFFERENT id is two modules
-    // under one activation and is refused.
-    x.seedTemplateId(A, 0xa5);
-    expect(x.errno()).toBe(0);
-    x.seedTemplateId(A, 0xa5);
-    expect(x.errno(), "same id again").toBe(0);
-    x.seedTemplateId(A, 0x5a);
-    expect(x.errno(), "a different id under one activation").toBe(EINVAL);
+    // Template id: an identical re-admission is idempotent (a COW child
+    // re-admits the hash of the same module's bytes); a DIFFERENT id is two
+    // modules under one activation and is refused.
+    expect(x.admit(A, { template: 0xa5 })).toBe(0);
+    expect(x.admit(A, { template: 0xa5 }), "same id again").toBe(0);
+    expect(x.admit(A, { template: 0x5a }), "a different id under one activation").toBe(EINVAL);
 
     // Table-state owner: a re-seed UPDATES, deliberately the opposite of the
     // catalogs, because the host re-elects whenever a lower coordinate
@@ -254,33 +253,31 @@ describe("the five small per-activation stores", () => {
     x.seedImportProvenance(SPACE_GLOBAL, A, 5, 200, 0, 0n);
     expect(x.errno(), "an undefined kind").toBe(EINVAL);
 
-    // The two catalog placements: once per activation until its release.
-    // Asked again with the same length, the module answers the range it
-    // placed -- that is how a host finds a base without keeping a copy of it
-    // -- and a different length is two catalogs claiming one activation.
-    const placed = x.placeCatalog(A, 100);
+    // The two catalog placements, both made by `fm_bind_activation`: once
+    // per activation until its release. Bound again with the same lengths,
+    // the module answers the row it placed -- that is how a host finds a base
+    // without keeping a copy of it -- and a different length is two catalogs
+    // claiming one activation.
+    const placed = x.bind(A, 100, 10);
     expect(x.errno()).toBe(0);
-    expect(x.placeCatalog(A, 100), "the same catalog, asked again").toBe(placed);
+    expect(x.bind(A, 100, 10), "the same catalogs, bound again").toEqual(placed);
     expect(x.errno()).toBe(0);
-    expect(x.placeCatalog(A, 200), "catalog re-placement").toBe(-1);
+    expect(x.bind(A, 200, 10), "catalog re-placement").toBeNull();
     expect(x.errno(), "catalog re-placement").toBe(EINVAL);
-    x.placeStaticRoots(A, 10);
-    expect(x.errno()).toBe(0);
-    expect(x.placeStaticRoots(A, 20), "static-root re-placement").toBe(-1);
+    expect(x.bind(A, 100, 20), "static-root re-placement").toBeNull();
     expect(x.errno(), "static-root re-placement").toBe(EINVAL);
   });
 
   it("drops all five in the COW-child scrub so the child can re-seed", () => {
     // The old arrays had three counters the scrub zeroed and two it did not.
-    // Now `arena_release_all()` drops every per-activation record but the GC
-    // codec, and a child that re-seeds is a child that starts clean: the
-    // refusals above must NOT fire on the second seeding.
+    // Now `arena_release_all()` drops every per-activation record, and a
+    // child that re-admits is a child that starts clean: the refusals above
+    // must NOT fire on the second admission.
     const x = arenaFixture("small stores: scrub");
     const A = 4;
-    x.seedTemplateId(A, 0x11);
+    expect(x.admit(A, { template: 0x11 })).toBe(0);
     x.seedTableStateOwner(A, 9, true);
-    x.placeCatalog(A, 64);
-    x.placeStaticRoots(A, 8);
+    x.bind(A, 64, 8);
     x.seedImportProvenance(SPACE_GLOBAL, A, 0, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 7n);
     expect(x.errno()).toBe(0);
     const before = x.munmaps();
@@ -290,12 +287,9 @@ describe("the five small per-activation stores", () => {
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "nothing kept").toBe(0);
     expect(x.munmaps(), "and the chunks went back").toBeGreaterThan(before);
     expect(x.tableStateOwned(A, 9), "the election did not survive").toBe(0);
-    // Re-seeds that were refused before the scrub are accepted after it.
-    x.seedTemplateId(A, 0x22);
-    expect(x.errno(), "a different template id after the scrub").toBe(0);
-    x.placeCatalog(A, 65);
-    expect(x.errno(), "a catalog placed again after the scrub").toBe(0);
-    x.placeStaticRoots(A, 9);
-    expect(x.errno(), "static roots placed again after the scrub").toBe(0);
+    // What was refused before the scrub is accepted after it.
+    expect(x.admit(A, { template: 0x22 }), "a different template id after the scrub").toBe(0);
+    x.bind(A, 65, 9);
+    expect(x.errno(), "catalogs placed again at other lengths after the scrub").toBe(0);
   });
 });

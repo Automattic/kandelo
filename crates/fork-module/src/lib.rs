@@ -390,9 +390,11 @@ mod wasm {
     ///     This is the `dlclose` release, where an unplaced slot means the
     ///     guest's shim did not run and absorbing that would absorb a guest
     ///     that placed nothing at all.
-    ///   * `true` -- skip it. This is the catalog RE-SEED, which runs before
-    ///     placement by construction, so a slot past the end provably holds
-    ///     nothing and refusing to look at it is the only correct answer.
+    ///   * `true` -- skip it. This is the release of a `dlopen` that failed
+    ///     part way (`fm_resume_slots` op 2): its slots were assigned at
+    ///     admission, but its guest may never have run its placement shim, so
+    ///     a slot past the end provably holds nothing and refusing to look at
+    ///     it is the only correct answer.
     fn resume_null_via_injector(slot: u32, lenient: bool) {
         // SAFETY: after injection this is a local thunk performing one
         // `table.set` of `ref.null func` on the module's OWN resume table,
@@ -477,16 +479,16 @@ mod wasm {
     // the numbering the guest's thunks were placed by, or `call_indirect`
     // targets the wrong thunk (silent corruption).
     //
-    // To make the numbering identical BY CONSTRUCTION, the host seeds EVERY
-    // activation's fork-instrumented function ordinals -- its
-    // `kandelo.wpk_fork.resume_catalog` section, any order -- through
-    // `fm_set_activation_resume_catalog(act, ptr, count)`, once per activation
-    // per worker, and the module decides every slot at that moment
-    // (`resume_reseed`) and publishes the decision for the guest's own shim to
-    // apply (`fm_publish_resume_assignment`). Activation 0 seeds through the
-    // same entry as every dlopen side module. A committed frame's function
-    // always has a resume thunk, so committed is always a subset of the
-    // catalog.
+    // To make the numbering identical BY CONSTRUCTION, the host hands over
+    // EVERY activation's fork-instrumented function ordinals -- its
+    // `kandelo.wpk_fork.resume_catalog` section, verbatim -- in the
+    // activation's `fm_admit_activation` descriptor, once per activation per
+    // worker; the module decodes it, decides every slot at that moment
+    // (`resume_register_impl`) and publishes the decision for the guest's own
+    // shim to apply (the resume half of `fm_bind_activation`'s row).
+    // Activation 0 is admitted through the same entry as every dlopen side
+    // module. A committed frame's function always has a resume thunk, so
+    // committed is always a subset of the catalog.
     //
     // WHAT THIS REPLACED: a second, PROCESS-WIDE catalog for activation 0
     // alone -- `fm_set_resume_catalog` into a fixed `[u32; 65_536]` static
@@ -506,10 +508,9 @@ mod wasm {
     // 0 exists in every activation and names a DIFFERENT function in each, and
     // that is what one flat process-wide ordinal list could not express: it
     // had nothing in it to tell activation 0's ordinal 0 from activation 1's.
-    // So the host seeds a SEPARATE resume catalog PER ACTIVATION via
-    // `fm_set_activation_resume_catalog(act, ptr, count)`, and the module
-    // registers each activation's `ResumeSlotTable` entry from ITS OWN catalog
-    // (see `register_activation_slots`).
+    // So each activation's admission carries a SEPARATE resume catalog, and
+    // the module registers each activation's `ResumeSlotTable` entry from ITS
+    // OWN catalog (see `register_activation_slots`).
     //
     // WHAT IS NOT PER-ACTIVATION IS THE SLOT SPACE, and this comment used to
     // say the opposite -- that "activation 0's table and activation 1's table
@@ -535,14 +536,15 @@ mod wasm {
     // `call_indirect` never targets the wrong thunk.
     //
     // Storage: one arena record per activation under `REC_KIND_RESUME_CATALOG`,
-    // holding the little-endian `u32` ordinals, allocated at seed and released
-    // with the activation (`fm_resume_slots` op 1) or by the COW-child scrub.
-    // A RE-SEED REPLACES the record and re-decides the slots (`resume_reseed`):
-    // the catalog IS the ordinal set, so a host that seeds twice has changed
-    // its mind, not made an error. Activation 0's process-wide entry always
-    // behaved that way and `host/test/fork-resume-table.test.ts` pins it; the
-    // per-activation entry used to refuse a re-seed with `EINVAL` instead, a
-    // difference between two stores that is gone with the second store.
+    // holding the little-endian `u32` ordinals, allocated at admission and
+    // released with the activation (`fm_resume_slots` op 1) or by the COW-child
+    // scrub. It is NEVER REPLACED while the activation lives: re-admitting the
+    // same catalog is a no-op, and a different one is `EINVAL`
+    // (`admission_conflict`), because the guest has already placed thunks at
+    // the slots the first one decided. A new catalog under the same id takes
+    // a `dlclose` first. (The per-fact seed this replaced in lane F stage 1d,
+    // `fm_set_activation_resume_catalog`, REPLACED on a re-seed and renumbered
+    // the activation; nothing in production relied on that.)
     //
     // WHAT THIS REPLACED: a shared 8,192-ordinal static floor, a 64-entry
     // index of `[activation_id, guest_addr, len]` and two counters -- about
@@ -765,9 +767,9 @@ mod wasm {
     /// `crates/host-native` now passes its channel offset to `fm_set_format`
     /// like the Node and browser hosts always have.
     fn resume_register_impl(activation_id: u32) -> Result<u32, Errno> {
-        // NEVER SEEDED is `EINVAL`, and it cannot happen from the one caller
-        // (`resume_reseed`, after the seed): the catalog record was written a
-        // moment ago. The refusal is here because this is where the catalog is
+        // NEVER ADMITTED is `EINVAL`, and it cannot happen from the one caller
+        // (`admit_activation_impl`, after it stores the catalog): the catalog
+        // record was written a moment ago. The refusal is here because this is where the catalog is
         // read, and a reader that invents an empty one would number slots by
         // a rule the guest's resume table does not share.
         let catalog = activation_catalog(activation_id).ok_or(Errno::EINVAL)?;
@@ -776,7 +778,7 @@ mod wasm {
         }
         // Sorted ascending with repeats rejected, which are two of the four
         // rules. The scratch vector is bump-heap and lives only for this call;
-        // registration happens at catalog-seed time, so nothing resets under it.
+        // registration happens at admission, so nothing resets under it.
         let mut sorted: alloc::vec::Vec<u32> = catalog.to_vec();
         sorted.sort_unstable();
         for window in sorted.windows(2) {
@@ -819,32 +821,6 @@ mod wasm {
         Ok(assigned)
     }
 
-    /// Seeding a catalog re-decides that activation's slots.
-    ///
-    /// A re-seed frees the previous assignment first rather than refusing: the
-    /// catalog IS the ordinal set, so replacing it replaces the numbering, and
-    /// a host that seeds twice has changed its mind rather than made an error.
-    /// A first seed has nothing to free, which is the ordinary case.
-    fn resume_reseed(activation_id: u32) -> Result<(), Errno> {
-        // LENIENT NULLING, not no nulling. A re-seed still returns this
-        // activation's slots to the free bitmap, so anything left in them is
-        // a stale thunk at a slot the allocator is about to hand out again --
-        // a real function of the right type, which runs rather than faulting
-        // (census 194). So they are nulled.
-        //
-        // What is different from the `dlclose` release is what a slot the
-        // TABLE does not have means here. This is the one path that can reach
-        // the free routine before anything has been placed: seeding is what
-        // ASSIGNS slots, so at the moment of a re-seed the resume table may
-        // still be its bare initial length of 1, and a strict `table.set`
-        // would trap on a slot that provably holds nothing
-        // (`fork-module-instance.test.ts` seeds a 20,000-ordinal catalog and
-        // then a 65,536-ordinal one over it, with no guest anywhere). Lenient
-        // nulls what the table has and skips what it does not.
-        let _ = resume_unregister_impl(activation_id, true);
-        resume_register_impl(activation_id).map(|_| ())
-    }
-
     /// Null an activation's table entries, then free its slots for reuse.
     ///
     /// ZERO SLOTS IS A SUCCESS, not "never registered", and the distinction cost
@@ -882,9 +858,10 @@ mod wasm {
     /// had, preserved rather than dropped on the way in.
     ///
     /// EVERY CALLER NULLS. `lenient` decides only what a slot the resume table
-    /// does not have means -- a trap for the `dlclose` release, a skip for a
-    /// catalog re-seed. See `resume_null_via_injector`, and `resume_reseed`
-    /// for why the re-seed is the one path that can see such a slot.
+    /// does not have means -- a trap for the `dlclose` release (op 1), a skip
+    /// for the release of a `dlopen` that failed before its guest placed
+    /// anything (op 2), whose slots were assigned at admission but may lie
+    /// past the table's bare initial length. See `resume_null_via_injector`.
     fn resume_unregister_impl(activation_id: u32, lenient: bool) -> Result<u32, Errno> {
         // A MISSING RECORD IS `Ok(0)`, NOT `Err(EINVAL)`, and the distinction
         // is load-bearing in two directions. `fm_resume_slots` op 1 reaches
@@ -935,11 +912,11 @@ mod wasm {
         // REPORTED, NOT THROWN MID-WALK. A bad slot is a reason to tell the
         // caller, never a reason to stop dismantling the record: an early
         // return would leave the activation holding a half-released record, and
-        // the very next `resume_reseed` would refuse it as "already
-        // registered" -- a wedge, from one slot. That is not hypothetical: it
-        // is how the first attempt at this conversion broke
-        // `host/test/fork-module-instance.test.ts`, which reported `EINVAL`
-        // from a re-seed rather than from the slot that caused it.
+        // the next registration would refuse it as "already registered" -- a
+        // wedge, from one slot. That is not hypothetical: it is how the first
+        // attempt at this conversion broke `host/test/fork-module-instance.test.ts`,
+        // which reported `EINVAL` from a (since deleted) catalog re-seed rather
+        // than from the slot that caused it.
         let watermark = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
         let mut failure: Option<Errno> = None;
         for index in 0..pairs {
@@ -954,9 +931,8 @@ mod wasm {
         // a record naming a slot this module cannot free is corrupt, and
         // keeping it would make every later unregister hit the same wall
         // forever. Only THIS record is dropped, not the activation's whole
-        // directory entry -- `fm_resume_slots` op 1 releases the activation,
-        // and a re-seed must be able to re-register into the same activation
-        // whose other records (template id, codecs, sections) are untouched.
+        // directory entry: `fm_resume_slots` releases the rest of the
+        // activation's records itself, right after this returns.
         arena_unlink_record(
             arena_directory_find(activation_id),
             at - RECORD_HEADER,
@@ -975,7 +951,8 @@ mod wasm {
     // thunks itself -- so the cost was quadratic in the activation's size:
     // ~3.8x10^3 comparisons for the 87-thunk dlopen fixture, and ~10^8 per php
     // process start at 19,025 thunks. Placement asks for the WHOLE activation
-    // at once now (`fm_publish_resume_assignment`, one walk), so nothing needs
+    // at once now (the resume half of `fm_bind_activation`'s row, one walk),
+    // so nothing needs
     // `(activation, ordinal)` as a lookup key at all -- which is what let the
     // index become one contiguous record per activation.
 
@@ -1218,52 +1195,20 @@ mod wasm {
         Ok((ptr, count as u32))
     }
 
-    fn set_activation_resume_catalog_impl(
-        activation_id: u32,
-        ptr: u64,
-        count: u64,
-    ) -> Result<(), Errno> {
-        let count = usize::try_from(count).map_err(|_| Errno::EINVAL)?;
-        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
-        let byte_len = count.checked_mul(4).ok_or(Errno::EINVAL)?;
-        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        if end > mem_len_bytes() {
-            return Err(Errno::EINVAL); // catalog region past the end of guest memory
+    /// Store one activation's resume catalog record: its ordinals as
+    /// little-endian `u32`s. Once per activation -- admission stores it only
+    /// when the activation has none, and a second record of one kind is
+    /// `arena_alloc`'s `EINVAL`.
+    fn store_activation_resume_catalog(activation_id: u32, ordinals: &[u32]) -> Result<(), Errno> {
+        let byte_len = ordinals.len().checked_mul(4).ok_or(Errno::EINVAL)?;
+        let at = arena_alloc(activation_id, REC_KIND_RESUME_CATALOG, byte_len)? as usize;
+        // Written AFTER the allocation: `channel_mmap` grows the shared
+        // memory. The record is 8-aligned, which is what `guest_u32s`
+        // requires of the read side.
+        let m = unsafe { mem_mut() };
+        for (i, ordinal) in ordinals.iter().enumerate() {
+            m[at + i * 4..at + i * 4 + 4].copy_from_slice(&ordinal.to_le_bytes());
         }
-        // NO HEAP COPY: the bump heap maps its chunks through the channel, and
-        // a module with no channel must answer this seed with the arena's
-        // `EINVAL`, not trap on a null allocation first. Copied AFTER the
-        // allocation, through a view taken after it: `channel_mmap` grows the
-        // shared memory. Byte-wise, because the guest's pointer carries no
-        // alignment promise.
-        store_activation_resume_catalog(activation_id, byte_len, |m, at| {
-            m.copy_within(start..end, at);
-        })
-    }
-
-    /// Store one activation's resume catalog record (`byte_len` bytes of
-    /// little-endian `u32` ordinals, written by `fill` into the record at the
-    /// given offset), replacing any earlier one. Shared by the old per-fact
-    /// seed and by admission, so the record has one writer whichever entry
-    /// delivered the ordinals.
-    fn store_activation_resume_catalog(
-        activation_id: u32,
-        byte_len: usize,
-        fill: impl FnOnce(&mut [u8], usize),
-    ) -> Result<(), Errno> {
-        // A RE-SEED REPLACES. The old record goes first, so the new one is the
-        // only catalog this activation has when `resume_reseed` reads it back;
-        // `arena_alloc` would otherwise refuse the second record of one kind.
-        // Dropping it before the new allocation is safe here where it is not
-        // in `arena_extend`: nothing is copied from the old record.
-        if let Some((at, _)) = arena_find(activation_id, REC_KIND_RESUME_CATALOG) {
-            arena_unlink_record(arena_directory_find(activation_id), at - RECORD_HEADER);
-            arena_sweep_record_chunks(channel_base().unwrap_or(0));
-        }
-        let at = arena_alloc(activation_id, REC_KIND_RESUME_CATALOG, byte_len)?;
-        // The record itself is 8-aligned, which is what `guest_u32s` requires
-        // of the read side.
-        fill(unsafe { mem_mut() }, at as usize);
         Ok(())
     }
 
@@ -1323,8 +1268,8 @@ mod wasm {
     // D6.1 imported ONE funcref catalog table and required every funcref to name
     // a single activation (`sole_funcref_activation`). D7a.1b lifts that: the host
     // lays every activation's function catalog into ONE merged imported table,
-    // each activation at a distinct BASE the module places with
-    // `fm_place_activation_catalog`. `funcref_ordinal_impl` then returns the
+    // each activation at a distinct BASE the module places when it binds the
+    // activation (`fm_bind_activation`). `funcref_ordinal_impl` then returns the
     // GLOBAL slot `base(module_activation) + function_ordinal`, so a funcref
     // minted in activation A but held by activation B's frame resolves against
     // A's catalog slice — the coordinate the RECIPE names, never the caller. A
@@ -2663,26 +2608,6 @@ mod wasm {
         guest_bytes(at, len).ok()
     }
 
-    /// Seed one activation's imported-global (KFIG) or imported-table (KFIT)
-    /// custom section. `space` is 0 for globals, 1 for tables.
-    ///
-    /// `EINVAL` for an unknown space, an out-of-range pointer, a malformed
-    /// section, or a CONFLICTING re-seed (an identical one is a no-op);
-    /// `channel_mmap`'s truthful `ENOMEM`/`EAGAIN` when the record cannot be
-    /// mapped. Check `fm_last_errno`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_imports(
-        space: u32,
-        activation_id: u32,
-        ptr: usize,
-        byte_len: usize,
-    ) {
-        match set_activation_imports_impl(space, activation_id, ptr as u64, byte_len as u64) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
     // -- Per-activation module template ids ---------------------------------
     //
     // The 32-byte template id identifying the Wasm module behind an activation.
@@ -2762,19 +2687,6 @@ mod wasm {
         let mut id = [0u8; TEMPLATE_ID_BYTES];
         id.copy_from_slice(&m[a..a + TEMPLATE_ID_BYTES]);
         Some(id)
-    }
-
-    /// Seed one activation's module template id (32 bytes at `ptr`).
-    ///
-    /// `EINVAL` for an out-of-range pointer or a re-seed with a different id;
-    /// the truthful mapping errno if the record cannot be allocated. Check
-    /// `fm_last_errno`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_template_id(activation_id: u32, ptr: usize) {
-        match set_activation_template_id_impl(activation_id, ptr as u64) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
     }
 
     // -- Table sparse-state ownership ---------------------------------------
@@ -2933,8 +2845,8 @@ mod wasm {
     // Exactly the funcref merged-catalog mechanism, for static roots. The host
     // lays every activation's instantiation-time static-root catalog into ONE
     // merged imported anyref table (`env.__wpk_fork_static_root_catalog`), each
-    // activation at a distinct BASE the module places with
-    // `fm_place_activation_static_roots`.
+    // activation at a distinct BASE the module places when it binds the
+    // activation (`fm_bind_activation`).
     // `static_root_slot_impl` then returns the GLOBAL catalog index
     // `base(module_activation) + static_root_ordinal`, so a static root minted in
     // activation A but held by activation B's frame resolves against A's catalog
@@ -2965,10 +2877,10 @@ mod wasm {
     // facts the reference-recipe graph does not carry: which of a struct/array's
     // edges are constructor (allocation-time) dependencies, which layouts are
     // defaultable shells, and the i31 owner. Those live in each activation's
-    // decoded `kandelo.wpk_fork.gc_codec` catalog. The host decodes the section
-    // for admission already; it seeds the SAME raw section bytes into the module
-    // ONCE per activation per worker via `fm_set_activation_gc_codec(act, ptr,
-    // count)`, and `build_gc_plan_impl` decodes them into a `GcCodec` per
+    // decoded `kandelo.wpk_fork.gc_codec` catalog. The host stages the raw
+    // section bytes in the activation's `fm_admit_activation` descriptor, once
+    // per activation per worker; admission validates and stores them, and
+    // `build_gc_plan_impl` decodes them into a `GcCodec` per
     // activation to build `fork_codec::GcCodecHints` (the faithful port of the JS
     // `gcAllocationDependencies` / owner derivation).
     //
@@ -3109,62 +3021,6 @@ mod wasm {
             m[at + i * 4..at + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
         }
         Ok(())
-    }
-
-    /// Guest-facing `fm_set_activation_exception_codec(activation, ptr, byte_len)`.
-    ///
-    /// Seed ONE activation's exception codec from its raw
-    /// `kandelo.wpk_fork.exception_codec` section, and derive from it the two
-    /// things the host used to derive for itself.
-    ///
-    /// Replaces `fm_set_activation_exception_tags`, which took a `u32` array the
-    /// HOST produced by decoding this very section -- a second decoder of a format
-    /// this module owns. The module decodes it now.
-    ///
-    /// An empty section is not an error: it is an activation whose codec declares
-    /// no tags, which still makes it a candidate owner.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_exception_codec(
-        activation_id: u32,
-        ptr: usize,
-        byte_len: usize,
-    ) {
-        match set_activation_exception_codec_impl(activation_id, ptr, byte_len) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    fn set_activation_exception_codec_impl(
-        activation_id: u32,
-        ptr: usize,
-        byte_len: usize,
-    ) -> Result<(), Errno> {
-        let end = ptr.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        if end > mem_len_bytes() {
-            return Err(Errno::EINVAL); // section region past the end of memory
-        }
-        let ordinals: Vec<u32> = if byte_len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: `[ptr, end)` is inside guest linear memory, checked above,
-            // and the module shares that memory.
-            let bytes = unsafe {
-                core::slice::from_raw_parts(core::hint::black_box(ptr) as *const u8, byte_len)
-            };
-            let codec = fork_codec::exception_codec::decode_exception_codec(bytes)?;
-            codec.tags.iter().map(|tag| tag.tag_ordinal).collect()
-        };
-        store_activation_exception_tags(activation_id, &ordinals)
-        // NOTE: this entry deliberately does NOT derive the host-exception owner,
-        // even though it could -- the owner is the smallest activation that
-        // declared a codec, which is exactly the set of activations that reach
-        // here. It is left host-seeded because nothing can OBSERVE the derivation:
-        // the owner is module-internal state with no accessor, `fm_stats` is a
-        // counter surface rather than a state read, and adding an accessor would
-        // put an entry nothing in production calls into a bucket whose target is
-        // 0. An untested derivation of a value that decides which activation owns
-        // a host exnref is worse than one more host call. See census section 67.
     }
 
     /// The exception tag ordinals `activation_id`'s codec declared, or `None` when
@@ -7278,8 +7134,8 @@ mod wasm {
     /// wrapper — which sized transit and sequenced the drive host-side, looping
     /// leaf drives — into the module, so the module now owns seeding + drive-order
     /// construction and the host issues a SINGLE `fm_drive_execute(plan, count)`.
-    /// GC graphs still require each participating activation's
-    /// `fm_set_activation_gc_codec` to have run first, exactly as
+    /// GC graphs still require each participating activation to have been
+    /// admitted with its GC codec first, exactly as
     /// `fm_build_gc_plan` does today; an un-seeded GC activation, a malformed
     /// arena, or an unadmitted reference kind (`EOPNOTSUPP`, host keeps the JS
     /// path) is a truthful failure, never a wrong plan.
@@ -8158,114 +8014,6 @@ mod wasm {
         table_state_owned_impl(activation_id, owner_id)
     }
 
-    /// Seed ONE activation's resume catalog for this worker (Phase 6 D7a.1a — the
-    /// multi-activation path): `[ptr, ptr + count*4)` is a little-endian `u32`
-    /// array of `activation_id`'s OWN fork-instrumented function ordinals (the set
-    /// the host registers into THAT activation's JS `__wpk_fork_resume_table`).
-    /// A dlopen fork loads N modules, each with its own catalog table; the module
-    /// registers each activation's resume slots from ITS catalog so the numbering
-    /// matches that activation's JS table by construction (resume-slot parity).
-    /// Called once per activation per worker, before any fork, after
-    /// `fm_set_format`; activation 0 seeds through this entry like every other.
-    /// A second seed of the same activation REPLACES its catalog and re-decides
-    /// its slots. A catalog the arena cannot map fails with `channel_mmap`'s
-    /// truthful `ENOMEM`/`EAGAIN`; an out-of-range pointer is `EINVAL` (check
-    /// `fm_last_errno`).
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_resume_catalog(
-        activation_id: u32,
-        ptr: usize,
-        count: usize,
-    ) {
-        // Seeding IS registering. The catalog is the ordinal set, and the slot
-        // for each ordinal is decided here, once, so nothing downstream --
-        // neither host nor guest -- computes a second answer.
-        match set_activation_resume_catalog_impl(activation_id, ptr as u64, count as u64)
-            .and_then(|()| resume_reseed(activation_id))
-        {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Place ONE activation's function catalog of `len` entries in this
-    /// worker's merged `__wpk_fork_function_catalog` table (Phase 6 D7a.1b — the
-    /// merged-catalog mechanism) and return its base; the host copies the
-    /// catalog into `[base, base + len)`. `fm_funcref_ordinal` then returns the
-    /// GLOBAL slot `base(module_activation) + function_ordinal` for the injected
-    /// funcref shim to `table.get`, so a funcref minted in one activation but
-    /// held by another's frame resolves against its OWN activation's slice.
-    ///
-    /// The module decides the base -- the lowest gap the live activations leave
-    /// -- because it also frees the range: `fm_resume_slots` op 1 drops the
-    /// record, and the next placement takes the range again. A host that chose
-    /// bases itself grew the table by one catalog per `dlopen`, forever.
-    /// Called ONCE per activation per worker, before any fork drives reference
-    /// reconstruction. Returns -1 with `fm_last_errno`: `EINVAL` for an
-    /// activation already placed, `E2BIG` past an `i32` index, or the arena's
-    /// truthful mapping errno.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_place_activation_catalog(activation_id: u32, len: u32) -> i32 {
-        place_catalog(REC_KIND_FUNC_CATALOG_BASE, activation_id, len)
-    }
-
-    /// Place ONE activation's static-root catalog of `len` entries in this
-    /// worker's merged `env.__wpk_fork_static_root_catalog` anyref table and
-    /// return its base, exactly as `fm_place_activation_catalog` does for
-    /// funcrefs. `fm_static_root_slot` then returns the GLOBAL slot
-    /// `base(module_activation) + static_root_ordinal` for the injected drive
-    /// shim to `table.get`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_place_activation_static_roots(activation_id: u32, len: u32) -> i32 {
-        place_catalog(REC_KIND_STATIC_ROOT_BASE, activation_id, len)
-    }
-
-    fn place_catalog(kind: u32, activation_id: u32, len: u32) -> i32 {
-        match place_catalog_impl(kind, activation_id, len) {
-            Ok(base) => {
-                set_ok();
-                base as i32
-            }
-            Err(errno) => {
-                set_err(errno);
-                -1
-            }
-        }
-    }
-
-    /// Seed ONE activation's raw `kandelo.wpk_fork.gc_codec` section bytes for this
-    /// worker (Phase 6 item 3c — the real GC drive plan). `ptr`/`byte_len` point at
-    /// the section bytes the host wrote into guest memory; the module copies them
-    /// into its own arena and decodes them (into a `GcCodec`) when
-    /// `fm_build_gc_plan` runs, to supply the per-recipe GC-layout facts the JS
-    /// `materializeTypedGraph` drive-order needs (constructor dependencies,
-    /// defaultable shells, the i31 owner). Called ONCE per activation per worker,
-    /// before any fork drives GC reconstruction, alongside `fm_set_format`. Too
-    /// many activations, or catalogs that jointly exceed the module's arena, fail
-    /// with `E2BIG`; a re-seeded activation fails with `EINVAL` (check
-    /// `fm_last_errno`), and the host keeps the JS drive-order for that program.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_gc_codec(activation_id: u32, ptr: usize, byte_len: usize) {
-        match set_activation_gc_codec_impl(activation_id, ptr as u64, byte_len as u64) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    // `fm_set_activation_exception_tags` was DELETED here: it took a `u32` array
-    // the host produced by decoding the exception codec section, which made the
-    // host a second decoder of a module-owned format.
-    // `fm_set_activation_exception_codec` above takes the raw section instead.
-
-    /// Seed which activation owns a HOST exnref (one with no activation of its
-    /// own): the smallest activation that declared an exception codec, or
-    /// `u32::MAX` for "none". `build_gc_plan_impl` leaves an exnref ownerless when
-    /// this is `u32::MAX` so `build_drive_plan` fails loudly rather than guessing.
-    ///
-    /// Still host-seeded, and the module COULD derive it -- the owning set is
-    /// exactly the activations that reach `fm_set_activation_exception_codec`. It
-    /// is not derived because nothing could observe that it had been: see census
-    /// section 67.
     /// Seed the vfork BORROWED child's admitted replay workspace.
     ///
     /// `base` is where the kernel put the region and `bytes` is how much it
@@ -8294,24 +8042,17 @@ mod wasm {
         }
     }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_host_exception_owner(owner: u32) {
-        HOST_EXCEPTION_OWNER.store(owner, Ordering::Relaxed);
-        set_ok();
-    }
-
     // -- Activation admission (lane F stage 1a) ------------------------------
     //
     // ONE entry that takes everything a host knows about an activation, in the
     // `KFAA` descriptor `fork_codec::activation_admission` defines: the
     // located-but-undecoded custom sections, plus the three facts only the host
-    // has (activation id, fork-child flags, template id). It replaces six
+    // has (activation id, fork-child flags, template id). It replaced six
     // per-fact seeds -- `fm_set_activation_resume_catalog`, `_template_id`,
     // `_gc_codec`, `_exception_codec`, `_imports` and
     // `fm_set_host_exception_owner` -- and with them every host's own decoders
-    // and seeding order. Those entries stay alive until lane F stage 1d; this
-    // entry reuses the storage functions they call, so both paths write the
-    // same records.
+    // and seeding order. Lane F stage 1d deleted those entries; the storage
+    // functions below are the ones they called.
 
     /// Admit one activation from the `KFAA` descriptor at `[desc_ptr, desc_ptr
     /// + len)`. Returns 0 or the errno (also left in `fm_last_errno`).
@@ -8424,17 +8165,12 @@ mod wasm {
             arena_set_u32(record, admitted.linked_format.pointer_width as u32);
             arena_set_u32(record + 4, admitted.linked_format.fixed_prefix_size);
         }
-        // Registering assigns slots, so an identical catalog must NOT go
-        // through `resume_reseed`: that would null and re-decide slots whose
-        // thunks the guest has already placed.
+        // Registering assigns slots, so it happens once, with the catalog: an
+        // identical re-admission must not re-decide slots whose thunks the
+        // guest has already placed.
         if activation_catalog(id).is_none() {
-            let ordinals = &admitted.resume_ordinals;
-            store_activation_resume_catalog(id, ordinals.len() * 4, |m, at| {
-                for (i, ordinal) in ordinals.iter().enumerate() {
-                    m[at + i * 4..at + i * 4 + 4].copy_from_slice(&ordinal.to_le_bytes());
-                }
-            })?;
-            resume_reseed(id)?;
+            store_activation_resume_catalog(id, &admitted.resume_ordinals)?;
+            resume_register_impl(id)?;
         }
         if let Some((ptr, len)) = at(K::GcCodec) {
             set_activation_gc_codec_impl(id, ptr, len)?;
@@ -8498,9 +8234,10 @@ mod wasm {
     /// do: `Table.set` of the drive bindings at `drive_base`, the funcref
     /// catalog copy at `func_catalog_base`, sizing the static-root mirror from
     /// `static_root_base`, and the guest's `__wpk_fork_place_resume_thunks(
-    /// resume_ptr, resume_count)`. Replaces `fm_place_activation_catalog`,
+    /// resume_ptr, resume_count)`. It replaced `fm_place_activation_catalog`,
     /// `fm_place_activation_static_roots`, `fm_drive_table_base` and
-    /// `fm_publish_resume_assignment`, whose logic it calls.
+    /// `fm_publish_resume_assignment` (deleted in lane F stage 1d), whose
+    /// logic it calls.
     ///
     /// `func_catalog_len` and `static_root_len` are the lengths of the
     /// instance's two catalog tables, which only exist after instantiation.
@@ -8689,20 +8426,11 @@ mod wasm {
 
     // -- GC drive-shim exports (Phase 6 item 3b) -----------------------------
 
-    /// The first `env.__wpk_fork_drive_table` slot for `activation` (item 3b).
-    /// The host reads this to bind each activation's `_gc_allocate`/`_gc_fill`
-    /// guest exports at `base + {ALLOC, FILL}`, matching the absolute slot numbers
-    /// the Rust drive PLAN encodes. A single-activation fork uses base 0.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_drive_table_base(activation: u32) -> i32 {
-        drive_plan::drive_table_base(activation) as i32
-    }
-
     /// Build the REAL topological GC drive plan (Phase 6 item 3c) for the fork's
     /// whole reference graph, reproducing the JS `materializeTypedGraph` order, and
     /// return its guest address for `fm_drive_execute`. Requires
     /// `fm_begin_reference_replay` to have seeded the driver and each participating
-    /// activation's `fm_set_activation_gc_codec` to have seeded its layout catalog.
+    /// activation to have been admitted with its GC codec (its layout catalog).
     /// Returns 0 on failure (check `fm_last_errno`): a missing driver, an un-seeded
     /// GC activation, a mismatched recipe/layout coordinate, or an unallocatable
     /// constructor/exception cycle is a truthful failure, never a wrong plan.
@@ -8739,7 +8467,7 @@ mod wasm {
     /// followed by a per-activation `wpk_fork_rewind_begin(root)` loop — with ONE
     /// module call. The host must have bound each activation's
     /// `wpk_fork_rewind_begin` into `__wpk_fork_drive_table` at
-    /// `fm_drive_table_base(activation) + DRIVE_SLOT_REWIND_BEGIN` before calling
+    /// `drive_base(activation) + DRIVE_SLOT_REWIND_BEGIN` before calling
     /// this (the ref-typed table bind is a host floor). Behaviourally identical
     /// to the old host loop: same guest export, same roots, same order. A zero-
     /// activation state or a plan-build failure is a truthful errno
@@ -8802,7 +8530,7 @@ mod wasm {
     /// (vfork borrowed) before this entry — so, unlike `fm_parent_replay`, there is
     /// NO begin step; this folds only the guest rewind DRIVE. The host must have
     /// bound each activation's `wpk_fork_rewind_begin` into `__wpk_fork_drive_table`
-    /// at `fm_drive_table_base(activation) + DRIVE_SLOT_REWIND_BEGIN` before calling
+    /// at `drive_base(activation) + DRIVE_SLOT_REWIND_BEGIN` before calling
     /// this (the ref-typed table bind is a host floor). Behaviourally identical to
     /// the old host loop: same guest export, same roots (COW: `module_buffer`;
     /// borrowed: child-private prefix), same ascending order. A guest reconstruction
@@ -8832,7 +8560,7 @@ mod wasm {
     /// `wpk_fork_unwind_end()` loop, then `fm_finish_unwind`, then
     /// `fm_serialize_journal_alloc` — with ONE module call. The host must have
     /// bound each activation's `wpk_fork_unwind_end` into `__wpk_fork_drive_table`
-    /// at `fm_drive_table_base(activation) + DRIVE_SLOT_UNWIND_END` before calling
+    /// at `drive_base(activation) + DRIVE_SLOT_UNWIND_END` before calling
     /// this (the ref-typed table bind is a host floor). Behaviourally identical to
     /// the old host sequence: same guest export, same order, seal FIRST then
     /// serialize.
@@ -8916,7 +8644,7 @@ mod wasm {
     /// `fm_add_activation_unwind` + `writeForkModuleStateRoot` +
     /// `wpk_fork_unwind_begin` loop with ONE module call. The host must have bound
     /// each activation's `wpk_fork_unwind_begin` into `__wpk_fork_drive_table` at
-    /// `fm_drive_table_base(activation) + DRIVE_SLOT_UNWIND_BEGIN` before calling
+    /// `drive_base(activation) + DRIVE_SLOT_UNWIND_BEGIN` before calling
     /// this (the ref-typed table bind is a host floor). Returns activation 0's
     /// module-buffer anchor (0 on failure; check `fm_last_errno`); a side
     /// activation's anchor stays in the module, which records every
@@ -9014,7 +8742,7 @@ mod wasm {
     /// `wpk_fork_rewind_end()` / `wpk_fork_abort_end()` loop, then `fm_finish_replay`
     /// / `fm_finish_abort` — with ONE module call. The host must have bound each
     /// activation's `wpk_fork_rewind_end` / `wpk_fork_abort_end` into
-    /// `__wpk_fork_drive_table` at `fm_drive_table_base(activation) +
+    /// `__wpk_fork_drive_table` at `drive_base(activation) +
     /// DRIVE_SLOT_{REWIND,ABORT}_END` before calling this (the ref-typed table bind
     /// is a host floor). Behaviourally identical to the old host sequence: same
     /// guest export, same ascending order, drive FIRST then finish. The abort finish
@@ -9092,7 +8820,7 @@ mod wasm {
     /// indexing/`get` on a null-base slice miscompiles under `--release` (it
     /// reports out-of-bounds for an in-bounds range), whereas single-element
     /// access and raw pointer reads are correct — the same reason
-    /// `fm_set_activation_gc_codec` copies via a raw pointer.
+    /// `set_activation_template_id_impl` reads via a raw pointer.
     fn read_capture_bytes(ptr: usize, len: usize) -> Result<Vec<u8>, Errno> {
         if len == 0 {
             return Ok(Vec::new());
@@ -11688,8 +11416,8 @@ mod wasm {
     /// graph it just made resident. The plan stays resident for
     /// `fm_child_import_plan_field` until the next build or bump reset.
     ///
-    /// The activation's `KFIG`/`KFIT` sections must already be seeded through
-    /// `fm_set_activation_imports`; an activation with neither imports no global
+    /// The activation's `KFIG`/`KFIT` sections must already have been admitted
+    /// (`fm_admit_activation`); an activation with neither imports no global
     /// or table, which is the ordinary single-module case rather than an error.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_child_import_plan(activation: u32, module_state_root: usize) -> i32 {
@@ -12194,13 +11922,13 @@ mod wasm {
     ///   * op 1 -- release `activation`'s slots for reuse (`ordinal` ignored),
     ///     returning how many were freed. The host calls this on `dlclose`.
     ///   * op 2 -- the same for an activation whose resume thunks were never
-    ///     placed: a `dlopen` that failed after its seeds. Its slots may lie
-    ///     past the end of the resume table, so they are nulled leniently.
+    ///     placed: a `dlopen` that failed after its admission. Its slots may
+    ///     lie past the end of the resume table, so they are nulled leniently.
     ///
-    /// Slots are assigned when the host SEEDS the catalog
-    /// (`fm_set_activation_resume_catalog`), which is
-    /// before any fork, and the whole assignment is handed to the guest's own
-    /// placement shim by `fm_publish_resume_assignment`.
+    /// Slots are assigned when the host ADMITS the activation
+    /// (`fm_admit_activation`), which is before any fork, and the whole
+    /// assignment is handed to the guest's own placement shim as the resume
+    /// half of `fm_bind_activation`'s row.
     ///
     /// # OP 0 IS GONE, and the `op` parameter is not
     ///
@@ -12246,59 +11974,6 @@ mod wasm {
             },
             _ => {
                 set_err(Errno::EINVAL);
-                -1
-            }
-        }
-    }
-
-    /// Publish `activation`'s resume-slot assignment where the guest's
-    /// `__wpk_fork_place_resume_thunks(ptr, count)` shim can read it.
-    ///
-    /// Returns `(count << 32) | ptr`, or `-1` with the reason in
-    /// `fm_last_errno`. An activation that holds no slots is a SUCCESS
-    /// returning `(0, 0)`, not an error -- see `publish_resume_assignment_impl`.
-    ///
-    /// # What this replaces
-    ///
-    /// The host used to read one slot per thunk (`fm_resume_slots` op 0, now
-    /// deleted), then `table.get` the thunk out of the guest's catalog and
-    /// `table.set` it into the resume table, once per fork-instrumented function
-    /// -- 19,025 crossings per process start in the measured case. The decision
-    /// was always this module's; only the WRITE had to be somewhere that can
-    /// hold a funcref. The guest can hold one, and it already owns both tables,
-    /// so the write went there (Task 2) and this is the decision it applies.
-    ///
-    /// # Why `count` is the HIGH half, and `ptr` the low one
-    ///
-    /// The obvious packing -- pointer high, count low -- breaks twice on a
-    /// wasm32 memory grown past 2 GiB. A pointer of `0x8000_0000` or more sets
-    /// bit 63, so a perfectly good buffer comes back as a NEGATIVE `i64` and
-    /// every caller that reads "< 0" as failure rejects it; and `-1` would stop
-    /// being a sentinel no real answer can produce. Putting the count high
-    /// fixes both, because the count is BOUNDED where an address is not: it is
-    /// the activation's catalog length, one `u32` ordinal each in the guest's
-    /// own memory, so it cannot approach 2^31 on a wasm32 guest whose whole
-    /// address space is 2^32 bytes. The result never exceeds 2^49, is never
-    /// negative, and `-1` is unambiguous. The
-    /// plan's interface line says "a packed `(ptr, count)`"; this is that pair,
-    /// with the field order chosen so the error signal keeps working.
-    ///
-    /// # The buffer stays live
-    ///
-    /// It is the module's fixed BSS (or, for an activation larger than the
-    /// floor, a retained mapping), so `reset_bump_heap` -- which runs at four
-    /// points during a single fork -- cannot free it under the caller. Calling
-    /// this again after a fork rewrites the same buffer and returns a live
-    /// address, rather than an address that was valid when it was handed out.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_publish_resume_assignment(activation: u32) -> i64 {
-        match publish_resume_assignment_impl(activation) {
-            Ok((ptr, count)) => {
-                set_ok();
-                ((count as i64) << 32) | (ptr as i64)
-            }
-            Err(errno) => {
-                set_err(errno);
                 -1
             }
         }

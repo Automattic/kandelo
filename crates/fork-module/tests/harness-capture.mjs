@@ -160,6 +160,60 @@ function lastErrno() {
   return x.fm_last_errno();
 }
 
+// Admit one activation through `fm_admit_activation`, the entry both hosts
+// admit an activation through: a `KFAA` descriptor with an all-zero template
+// id, the two sections every admission requires (a wasm32 linked-frame and
+// module-state descriptor, fixed prefix 0), an EMPTY resume catalog, and any
+// extra `[kind, bytes]` sections (4 = GC codec). The layout is
+// `fork_codec::activation_admission`'s; `host/test/support/fork-admission.ts`
+// writes the same thing for the host suite.
+const ADMISSION_AT = SCRATCH_BASE + 32768;
+function admit(activation, extra = []) {
+  const linked = new Uint8Array(24);
+  const lv = new DataView(linked.buffer);
+  linked.set([75, 76, 67, 70]); // "KLCF"
+  lv.setUint16(4, 1, true);
+  lv.setUint16(6, 24, true);
+  linked[8] = 4;
+  linked[9] = 8;
+  lv.setUint16(10, 3, true);
+  lv.setUint32(12, 32, true);
+  lv.setUint32(16, 24, true);
+  const state = new Uint8Array(24);
+  const sv = new DataView(state.buffer);
+  state.set([75, 70, 77, 68]); // "KFMD"
+  sv.setUint16(4, 1, true);
+  sv.setUint16(6, 24, true);
+  state[8] = 4;
+  state[9] = 8;
+  sv.setUint16(10, 7, true);
+  sv.setUint16(12, 1, true);
+  sv.setUint16(14, 1, true);
+  sv.setUint32(16, 1, true);
+  const catalog = new Uint8Array(12);
+  catalog.set([75, 70, 82, 67]); // "KFRC"
+  new DataView(catalog.buffer).setUint16(4, 1, true);
+  new DataView(catalog.buffer).setUint16(6, 12, true);
+  const sections = [[1, linked], [2, state], [3, catalog], ...extra];
+  let offset = 64 + sections.length * 12;
+  const desc = new Uint8Array(sections.reduce((n, [, b]) => n + b.length, offset));
+  const view = new DataView(desc.buffer);
+  desc.set([75, 70, 65, 65]); // "KFAA"
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 64, true);
+  view.setUint32(8, activation, true);
+  view.setUint32(48, sections.length, true);
+  sections.forEach(([kind, bytes], i) => {
+    view.setUint32(64 + i * 12, kind, true);
+    view.setUint32(68 + i * 12, offset, true);
+    view.setUint32(72 + i * 12, bytes.length, true);
+    desc.set(bytes, offset);
+    offset += bytes.length;
+  });
+  u8().set(desc, ADMISSION_AT);
+  return x.fm_admit_activation(ADMISSION_AT, desc.length);
+}
+
 // ---------------------------------------------------------------------------
 // The GUEST-facing reference-vector surface (env.__wpk_fork_ref_vector_*).
 //
@@ -956,17 +1010,14 @@ function i31Minter() {
     i.exports.ret.value = recipe;
     return i;
   };
-  // The broker walks the activations `fm_set_activation_gc_codec` registered,
-  // so a codec must be seeded for each. The committed fixture is a real codec
-  // section, shared here by both activations.
+  // The broker walks the activations admitted with a GC codec, so each is
+  // admitted with one. The committed fixture is a real codec section, shared
+  // here by both activations.
   const codecBytes = readFileSync(
     new URL("../../fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url),
   );
-  const CODEC_AT = SCRATCH_BASE + 4096;
-  u8().set(codecBytes, CODEC_AT);
   const seedCodec = (act) => {
-    x.fm_set_activation_gc_codec(act, CODEC_AT, codecBytes.length);
-    assert.equal(lastErrno(), 0, `seeding codec for activation ${act}`);
+    assert.equal(admit(act, [[4, codecBytes]]), 0, `admitting activation ${act}'s codec`);
   };
 
   // Two activations: 3 does NOT recognise the value, 4 does. Registering 3
@@ -985,7 +1036,7 @@ function i31Minter() {
   x.fm_capture_begin();
   assert.equal(x.__wpk_fork_ref_gc_i31(9), 1, "routed value's recipe");
 
-  // Seed two activation codecs so the broker has a registry to walk. The bytes
+  // Admit two activation codecs so the broker has a registry to walk. The bytes
   // are the committed gc-codec fixture, which both activations can share.
   seedCodec(3);
   seedCodec(4);
@@ -1338,98 +1389,12 @@ const bindTableShims = (activation, host) => {
   }
 }
 
-// ---- The module validates a GC codec section when it ARRIVES ---------------
-//
-// The host used to decode this descriptor in TypeScript purely to fail early on
-// a malformed one, which meant two decoders of one format. The module decodes it
-// on seed now, so the host's copy is redundant -- but only if the module really
-// refuses a bad section HERE rather than at the first fork that reads it. That
-// is what this checks, and it is why the host's decoder can be deleted.
-{
-  const codecBytes = readFileSync(
-    new URL("../../fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url),
-  );
-  const AT = SCRATCH_BASE + 16384;
-
-  // A fresh worker: `fm_set_format` resets the per-activation catalogs, so these
-  // activation ids are unseeded regardless of what ran above.
-  x.fm_set_format(4, 0, 0, 0);
-  assert.equal(lastErrno(), 0, "format reseeded");
-
-  // The real fixture is accepted.
-  u8().set(codecBytes, AT);
-  x.fm_set_activation_gc_codec(11, AT, codecBytes.length);
-  assert.equal(lastErrno(), 0, "a real codec section is accepted on seed");
-
-  // The same bytes with a corrupted magic are REFUSED, at seed time.
-  const corrupt = Uint8Array.from(codecBytes);
-  corrupt[0] ^= 0xff;
-  u8().set(corrupt, AT);
-  x.fm_set_activation_gc_codec(12, AT, corrupt.length);
-  assert.equal(
-    lastErrno(),
-    EINVAL,
-    "a corrupted codec magic is refused when the section arrives",
-  );
-
-  // Truncated to less than a header is refused too -- a length check, not just a
-  // magic check, so a section that merely starts right cannot pass.
-  u8().set(codecBytes.subarray(0, 8), AT);
-  x.fm_set_activation_gc_codec(13, AT, 8);
-  assert.equal(lastErrno(), EINVAL, "a truncated codec section is refused");
-}
-
-// ---- The module derives exception tags from the section itself --------------
-//
-// `fm_set_activation_exception_tags` took a `u32` array the HOST produced by
-// decoding the exception codec section -- a second decoder of a format the module
-// owns. `fm_set_activation_exception_codec` takes the raw section instead.
-//
-// Asserted through errno, which is all that is observable: the stored tags have
-// no accessor. That is enough, because the idempotence rule makes the STORE
-// visible -- an identical re-seed is accepted and a conflicting one is refused,
-// and neither could happen if nothing had been stored.
-{
-  const codecBytes = readFileSync(
-    new URL("../../fork-codec/testdata/exception-codec-wasm32.bin", import.meta.url),
-  );
-  const AT = SCRATCH_BASE + 24576;
-
-  x.fm_set_format(4, 0, 0, 0);
-  assert.equal(lastErrno(), 0, "format reseeded");
-  u8().set(codecBytes, AT);
-
-  x.fm_set_activation_exception_codec(7, AT, codecBytes.length);
-  assert.equal(lastErrno(), 0, "a real exception codec section is accepted");
-
-  // An identical re-seed is a no-op, which it could only be by comparing against
-  // tags the first call actually stored.
-  x.fm_set_activation_exception_codec(7, AT, codecBytes.length);
-  assert.equal(lastErrno(), 0, "an identical re-seed is accepted as a no-op");
-
-  // A DIFFERENT section for the same activation is refused. Truncating the tag
-  // count changes the derived ordinals, so this is the conflicting-re-seed path
-  // and it proves the stored set came from the section rather than being empty.
-  const shorter = codecBytes.subarray(0, codecBytes.length - 8);
-  u8().set(shorter, AT);
-  const shorterOk = (() => {
-    x.fm_set_activation_exception_codec(7, AT, shorter.length);
-    return lastErrno();
-  })();
-  assert.notEqual(
-    shorterOk,
-    0,
-    "a section yielding different tags is refused for an already-seeded activation",
-  );
-
-  // A corrupted magic is refused outright: the module decodes, it does not just
-  // copy bytes.
-  const corrupt = Uint8Array.from(codecBytes);
-  corrupt[0] ^= 0xff;
-  u8().set(corrupt, AT);
-  x.fm_set_activation_exception_codec(8, AT, corrupt.length);
-  assert.equal(lastErrno(), EINVAL, "a corrupted exception codec is refused");
-}
+// The GC and exception codec sections are validated when they ARRIVE, in
+// `fm_admit_activation`: `fork_codec::activation_admission`'s own tests refuse
+// a malformed section of each kind, and `host/test/fork-module-admission.test.ts`
+// drives the module's refusal and its same-facts rule over a real guest. The
+// per-section seeds this harness used to check that through were deleted in
+// lane F stage 1d.
 
 // ---- Encoding a funcref back to a recipe -----------------------------------
 //
@@ -1455,8 +1420,16 @@ const bindTableShims = (activation, host) => {
   catalog.grow(2, null);
   catalog.set(base + 0, alpha);
   catalog.set(base + 1, beta);
-  assert.equal(x.fm_place_activation_catalog(4, base), 0, "activation 4 holds the slots already filled");
-  assert.equal(x.fm_place_activation_catalog(5, 2), base, "activation 5's catalog is placed after them");
+  // Placed the way registration places them: admit, then bind with the
+  // catalog lengths. The row's second word is the function-catalog base.
+  const place = (activation, length) => {
+    assert.equal(admit(activation), 0, `admitting activation ${activation}`);
+    const row = x.fm_bind_activation(activation, length, 0);
+    assert.notEqual(row, 0, `binding activation ${activation} errno=${lastErrno()}`);
+    return dv().getUint32(row + 4, true);
+  };
+  assert.equal(place(4, base), 0, "activation 4 holds the slots already filled");
+  assert.equal(place(5, 2), base, "activation 5's catalog is placed after them");
   assert.equal(lastErrno(), 0, "activation 5's catalog is placed");
 
   // A null funcref is recipe 0 -- the graph's "no reference", not a failure, and

@@ -29,8 +29,8 @@
 //!
 //! `kind` numbering OVERLAPS between the two spaces --
 //! `IMPORTED_GLOBAL_BINDING_RAW_NUMBER` and `IMPORTED_TABLE_BINDING_`
-//! `ACTIVATION_TABLE` are both 1 -- exactly as `fm_set_activation_imports`
-//! found. A reader that looks at `kind` without `space` is reading a different
+//! `ACTIVATION_TABLE` are both 1 -- exactly as the module's imported-section
+//! seed found when it stored both spaces. A reader that looks at `kind` without `space` is reading a different
 //! record than the writer wrote, so `space` travels with every entry rather
 //! than being implied by where the entry came from.
 
@@ -47,8 +47,8 @@ use crate::module_state_records::{
     GlobalSnapshot, ImportedGlobalBinding, ImportedTableBinding,
 };
 
-/// Import space of a plan entry: globals or tables. Same numbering as
-/// `fm_set_activation_imports`, deliberately.
+/// Import space of a plan entry: globals or tables. Same numbering as the
+/// fork module's `IMPORT_SPACE_*` and `fm_set_import_provenance`, deliberately.
 pub const IMPORT_SPACE_GLOBAL: u8 = 0;
 /// See [`IMPORT_SPACE_GLOBAL`].
 pub const IMPORT_SPACE_TABLE: u8 = 1;

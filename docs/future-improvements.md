@@ -1549,9 +1549,10 @@ can be absent from every end-to-end run while the suite reports green, and
 nothing in the output says which copy ran.
 
 It was found by proving a branch reachable rather than by noticing a wrong
-answer. `fm_publish_resume_assignment` was made to return `ENOMEM`
-unconditionally and the fork module rebuilt (build key changed, so the
-mutation reached the artifact); `host/test/fork-module-worker-instantiation.test.ts`
+answer. `fm_publish_resume_assignment` (since folded into
+`fm_bind_activation`) was made to return `ENOMEM` unconditionally and the
+fork module rebuilt (build key changed, so the mutation reached the
+artifact); `host/test/fork-module-worker-instantiation.test.ts`
 — a real kernel worker driving a real fork — **still passed**, while the unit
 test loading the same `fork_module32.wasm` directly failed six of seven cases.
 `host/dist/worker-entry.js` was 7 hours old and contained none of the host

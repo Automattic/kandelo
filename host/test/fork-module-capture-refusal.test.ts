@@ -29,6 +29,7 @@ import {
   PHASE_ABORT_REPLAY,
   PHASE_IDLE,
   PHASE_SEALED_PARENT,
+  driveBase,
   fixture,
   openCapture,
   saveSlotThunk,
@@ -40,7 +41,7 @@ const EOPNOTSUPP = 95;
 
 /** Bind activation 0's abort-replay slots, which `openCapture` leaves unbound. */
 function bindAbortSlots(f: Fixture): void {
-  const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
+  const base = driveBase(0);
   f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_BEGIN, saveSlotThunk(() => {}) as never);
   f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_END, voidSlotThunk(() => {}) as never);
 }

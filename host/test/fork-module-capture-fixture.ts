@@ -13,9 +13,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FAITHFUL_GUEST_BYTES } from "./fork-module-faithful-guest";
 import { readForkModuleStateRoot } from "../src/fork-guest-sections";
+import {
+  admit,
+  bind,
+  type AdmissionFacts,
+  type BindRow,
+} from "./support/fork-admission";
 
 /** The per-activation drive stride: one slot per binding. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
+
+/**
+ * The first drive-table slot of `activation`: one stride per activation, the
+ * `drive_base` of the row `fm_bind_activation` answers. Spelled here rather
+ * than read from a bind because a bind also PLACES the activation's merged
+ * catalogs, which most tests on this rig do not want; `fork-codec`'s
+ * `drive_table_base_reserves_slots_per_activation` pins the stride, and
+ * `fork-module-capture-drive.test.ts` checks a real bind answers this.
+ */
+export function driveBase(activation: number): number {
+  return activation * FORK_ACTIVATION_DRIVE_SLOTS;
+}
 
 /**
  * The first test that reaches `begin_capture_impl`.
@@ -317,19 +335,21 @@ export function fixture(): Fixture {
   });
 
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
-  // Activation 0's resume catalog, EMPTY, seeded the way every worker's
-  // `setup()` seeds it before any fork. The module registers an activation's
-  // resume slots from its seeded catalog and from nothing else: a replay of
-  // an activation that never seeded one is refused with `EINVAL`, because a
-  // module numbering slots by a rule the guest's resume table does not share
-  // is the divergence the seeded catalog exists to rule out. No test on this
-  // rig commits a frame, so an empty catalog is the truthful one; a test that
-  // did would seed the ordinals it commits, as a real guest's catalog holds
-  // them. Two mappings (a directory chunk and a record chunk) precede every
-  // later one because of this, which is why nothing may be staged inside the
-  // responder's range -- see `openCapture`.
-  seedEmptyResumeCatalog(x, 0);
-  const base = (x.fm_drive_table_base as (a: number) => number)(0);
+  // Activation 0 ADMITTED, the way every worker's `setup()` admits it before
+  // any fork: an all-zero template id and an EMPTY resume catalog. The module
+  // registers an activation's resume slots from its admitted catalog and from
+  // nothing else: a replay of an activation never admitted is refused with
+  // `EINVAL`, because a module numbering slots by a rule the guest's resume
+  // table does not share is the divergence the catalog exists to rule out.
+  // No test on this rig commits a frame, so an empty catalog is the truthful
+  // one. A test may admit activation 0 again with more sections (a KFIG, a
+  // codec): an admission that ADDS a section to the same template and
+  // catalog is accepted. Mappings (a directory chunk and a record chunk)
+  // precede every later one because of this, which is why nothing may be
+  // staged inside the responder's range -- see `openCapture`.
+  const admitted = admit(x, memory, ARENA_STAGING_AT, 0);
+  if (admitted !== 0) throw new Error(`admitting activation 0: errno ${admitted}`);
+  const base = driveBase(0);
   const table = fm.driveTable;
   if (table.length < base + 14) table.grow(base + 14 - table.length);
   // Every slot the parent lifecycle drives. The guest double's three exports
@@ -373,29 +393,45 @@ export function fixture(): Fixture {
 }
 
 /**
- * Seed an EMPTY resume catalog for `activation`, as a host does for an
- * activation whose module has no fork-instrumented function. The module keeps
- * the record and treats "registered, holding nothing" as distinct from "never
- * registered", which only the latter refuses.
+ * Admit `activation` to this rig's module through `fm_admit_activation`, the
+ * one entry both hosts seed an activation through. With no `facts` it is an
+ * all-zero template id and an EMPTY resume catalog -- an activation whose
+ * module has no fork-instrumented function, which the module keeps as
+ * "registered, holding nothing", distinct from "never registered".
+ *
+ * Returns the errno (also in `fm_last_errno`): re-admitting identical facts
+ * is a no-op, and different ones under one activation are `EINVAL`.
  */
-export function seedEmptyResumeCatalog(x: Record<string, unknown>, activation: number): void {
-  (x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
-    activation,
-    0,
-    0,
-  );
-  const errno = (x.fm_last_errno as () => number)();
-  if (errno !== 0) {
-    throw new Error(`seeding activation ${activation}'s empty resume catalog: errno ${errno}`);
-  }
+export function admitActivation(
+  f: Fixture,
+  activation: number,
+  facts: AdmissionFacts = {},
+): number {
+  return admit(f.x, f.memory, ARENA_STAGING_AT, activation, facts);
 }
 
-/** Put a template id for `activation` in guest memory and seed it. */
-export function seedTemplateId(f: Fixture, activation: number, at: number): void {
-  (f.x.fm_set_activation_template_id as (a: number, p: number) => void)(
-    activation,
-    at,
-  );
+/**
+ * `admitActivation` against another module instance over the same memory --
+ * a CHILD's module, which admits for itself as a fork child's worker does.
+ */
+export function admitInto(
+  x: Record<string, unknown>,
+  memory: WebAssembly.Memory,
+  activation: number,
+  facts: AdmissionFacts = {},
+): number {
+  return admit(x, memory, ARENA_STAGING_AT, activation, facts);
+}
+
+/**
+ * The template id `openCapture` admits a SIDE activation with. A real dlopen
+ * fork's side module hashes to its OWN template id, so each side gets
+ * distinct bytes rather than two activations claiming one id -- a state
+ * production cannot produce. Keyed by activation so every helper here that
+ * admits a side admits the same facts.
+ */
+export function sideTemplate(activation: number): number {
+  return (0xb0 + activation) & 0xff;
 }
 
 export function saveSlotThunk(body: (activation: number) => void): CallableFunction {
@@ -530,29 +566,23 @@ export interface CaptureOptions {
  * recipe.
  */
 export function openCapture(f: Fixture, sides: readonly number[] = []): number[] {
-  seedTemplateId(f, 0, 2048);
-  expect(f.errno(), "template id for activation 0").toBe(0);
-  sides.forEach((activation, index) => {
-    // A real dlopen fork's side module hashes to its OWN template id; write
-    // distinct bytes so the arena's Module records are distinguishable rather
-    // than two activations claiming one id -- a state production cannot
-    // produce. NOTHING GATES THIS TODAY: filling these 32 bytes with zeros,
-    // which makes every activation's id identical, leaves every caller of this
-    // fixture passing. It is here because a fixture that produces an
-    // impossible state teaches the next reader the wrong thing, not because a
-    // test would catch its removal.
-    const at = 2048 + (index + 1) * 64;
-    new Uint8Array(f.memory.buffer, at, 32).fill(0xb0 + index);
-    seedTemplateId(f, activation, at);
-    expect(f.errno(), `template id for activation ${activation}`).toBe(0);
-    // And its resume catalog, empty, as `dlopen` seeds a side module's before
-    // the fork that carries it; see `fixture()` for why a replay needs one.
-    seedEmptyResumeCatalog(f.x, activation);
-  });
+  expect(admitActivation(f, 0), "admitting activation 0").toBe(0);
+  for (const activation of sides) {
+    // Its own template id (`sideTemplate`) and an empty resume catalog, as
+    // `dlopen` admits a side module before the fork that carries it; see
+    // `fixture()` for why a replay needs the catalog. NOTHING GATES THE
+    // DISTINCT TEMPLATE TODAY: admitting every side with zeros leaves every
+    // caller of this fixture passing. It is here because a fixture that
+    // produces an impossible state teaches the next reader the wrong thing.
+    expect(
+      admitActivation(f, activation, { template: sideTemplate(activation) }),
+      `admitting activation ${activation}`,
+    ).toBe(0);
+  }
 
   const saved: number[] = [];
   for (const activation of [0, ...sides]) {
-    const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+    const base = driveBase(activation);
     const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
     if (f.instance.driveTable.length < needed) {
       f.instance.driveTable.grow(needed - f.instance.driveTable.length);
@@ -602,37 +632,41 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): number[]
 const CATALOG_STRIDE = 1 << 16;
 
 /**
- * Place the merged catalogs a multi-activation capture needs, the way a
- * dlopen host does, so that activation `a`'s slice starts at `a * STRIDE`:
- * ascending, each sized to reach the next one's base.
+ * Bind the activations a multi-activation capture's leaves name, the way a
+ * dlopen host binds each one it registers, so that activation `a`'s slice of
+ * BOTH merged catalogs starts at `a * STRIDE`: ascending, each sized to reach
+ * the next one's base. Each is admitted first (bind refuses an unadmitted
+ * activation) with the facts `openCapture` would admit it with.
  *
- * A single-activation capture seeds nothing, which is the production worker
- * that never dlopened: the module then maps a slot to activation 0 directly.
+ * A capture whose leaves name only activation 0 binds nothing, and the module
+ * then maps a slot to activation 0 directly.
  */
-function seedCatalogBases(
+function bindCatalogBases(
   f: Fixture,
   leaves: readonly (readonly [kind: number, a: number, b: number])[],
 ): void {
-  for (const [kind, place] of [
-    [INTERN_KIND_FUNCREF, "fm_place_activation_catalog"],
-    [INTERN_KIND_STATIC_ROOT, "fm_place_activation_static_roots"],
-  ] as const) {
-    const activations = new Set(
-      leaves.filter(([k]) => k === kind).map(([, activation]) => activation),
-    );
-    if ([...activations].every((activation) => activation === 0)) continue;
-    activations.add(0);
-    const sorted = [...activations].sort((l, r) => l - r);
-    sorted.forEach((activation, index) => {
-      const next = sorted[index + 1] ?? activation + 1;
-      const base = (f.x[place] as (a: number, len: number) => number)(
-        activation,
-        (next - activation) * CATALOG_STRIDE,
-      );
-      expect(f.errno(), `${place}(${activation})`).toBe(0);
-      expect(base, `${place}(${activation})`).toBe(activation * CATALOG_STRIDE);
-    });
-  }
+  const activations = new Set(
+    leaves
+      .filter(([k]) => k === INTERN_KIND_FUNCREF || k === INTERN_KIND_STATIC_ROOT)
+      .map(([, activation]) => activation),
+  );
+  if ([...activations].every((activation) => activation === 0)) return;
+  activations.add(0);
+  const sorted = [...activations].sort((l, r) => l - r);
+  sorted.forEach((activation, index) => {
+    if (activation !== 0) {
+      expect(
+        admitActivation(f, activation, { template: sideTemplate(activation) }),
+        `admitting activation ${activation}`,
+      ).toBe(0);
+    }
+    const next = sorted[index + 1] ?? activation + 1;
+    const length = (next - activation) * CATALOG_STRIDE;
+    const row = bind(f.x, f.memory, activation, length, length);
+    expect(f.errno(), `fm_bind_activation(${activation})`).toBe(0);
+    expect(row?.func, `activation ${activation}'s function catalog`).toBe(activation * CATALOG_STRIDE);
+    expect(row?.statics, `activation ${activation}'s static roots`).toBe(activation * CATALOG_STRIDE);
+  });
 }
 
 /**
@@ -648,7 +682,7 @@ function seedCatalogBases(
  *     codec calls with the payload.
  *
  * The `(activation, ordinal)` a test names becomes the slot
- * `base(activation) + ordinal` of the bases `seedCatalogBases` laid out.
+ * `base(activation) + ordinal` of the bases `bindCatalogBases` laid out.
  */
 function internLeaf(
   f: Fixture,
@@ -686,7 +720,7 @@ export function captureArena(
   interned: readonly (readonly [kind: number, a: number, b: number])[],
   options: CaptureOptions = {},
 ): { root: number; recipes: number[]; saved: number[] } {
-  seedCatalogBases(f, interned);
+  bindCatalogBases(f, interned);
   const saved = openCapture(f, options.sideActivations ?? []);
   const recipes = interned.map((leaf) => {
     const id = internLeaf(f, leaf);
@@ -769,7 +803,7 @@ export function captureGraph(
   aggregates: readonly CapturedAggregate[] = [],
   options: CaptureOptions & { readonly scalarStagingBase?: number } = {},
 ): { root: number; recipes: number[]; aggregateRecipes: number[] } {
-  seedCatalogBases(f, leaves);
+  bindCatalogBases(f, leaves);
   openCapture(f, options.sideActivations ?? []);
 
   const recipes = leaves.map((leaf) => {
@@ -974,15 +1008,16 @@ export interface ArenaFixture {
   /** `fm_resume_slots(op, activation, ordinal)`; op 1 is the dlclose release. */
   slots: (op: number, activation: number, ordinal: number) => number;
   /**
-   * The SLOT of each `(ordinal, slot)` record `fm_publish_resume_assignment`
-   * publishes for `activation`, in the published order (ascending by ordinal).
+   * The SLOT of each `(ordinal, slot)` record the module publishes for
+   * `activation`, in the published order (ascending by ordinal).
    *
-   * This is how a test reads WHICH slots an activation holds. No `fm_*` entry
-   * answers `(activation, ordinal) -> slot` any more -- `fm_resume_slots` op 0
-   * was deleted with `resume_slot_of` -- so the whole-activation publish is the
-   * only reader, and it is the one the guest's placement shim consumes, which
-   * makes it the right one: a test asserting these numbers is asserting the
-   * numbers the thunks are actually placed at.
+   * Read the way production reads it: the resume half of the row
+   * `fm_bind_activation` answers, which is what the guest's placement shim
+   * consumes -- so a test asserting these numbers is asserting the numbers the
+   * thunks are actually placed at. Binding again with the same catalog
+   * lengths answers the same row, so this binds with the lengths the
+   * activation was last bound with (0, 0 if never). No `fm_*` entry answers
+   * `(activation, ordinal) -> slot`.
    */
   publishedSlots: (activation: number) => number[];
   /**
@@ -997,44 +1032,29 @@ export interface ArenaFixture {
    *
    * The bump heap has no static floor: the FIRST allocating call in an
    * instance maps a 1 MiB chunk through the channel, and a durable instance
-   * retains it. Every seed path allocates on the bump (a catalog is copied,
-   * a section is decoded), so a test that takes an `mmaps()` baseline and
-   * then seeds sees ONE more mapping than the arena chunks it is counting.
-   * This seeds a one-ordinal catalog on a spare activation and releases it
-   * through the `dlclose` entry, so the heap chunk is mapped and retained
-   * while the record and directory chunks that seed took are returned; a
+   * retains it. Every admission allocates on the bump (its sections are
+   * decoded), so a test that takes an `mmaps()` baseline and then admits
+   * sees ONE more mapping than the arena chunks it is counting. This admits
+   * a one-ordinal activation on a spare id and releases it through the
+   * `dlclose` entry, so the heap chunk is mapped and retained while the
+   * record and directory chunks that admission took are returned; a
    * baseline taken AFTER this counts the arena and only the arena. The
    * alternative -- loosening "one mmap per chunk" to "at least" -- would
    * blind the tally to exactly the unlinked-but-mapped chunk it exists to see.
    */
   warmHeap: () => void;
-  /** `fm_set_activation_resume_catalog` with the ordinals staged first. */
-  seedActivationCatalog: (activation: number, ordinals: readonly number[]) => void;
   /**
-   * `fm_set_activation_imports` with the section staged first: a KFIG section
-   * for space 0, a KFIT section for space 1. The staging page is one wasm
-   * page, so a section longer than that is refused here rather than silently
-   * overrunning into whatever sits above it.
+   * `fm_admit_activation` with a `KFAA` descriptor built from `facts`, staged
+   * on the one-page staging area -- or, for a descriptor larger than a page,
+   * in the buffer `fm_admission_buffer` maps, as a host stages a large one.
+   * Returns the errno (also in `fm_last_errno`).
    */
-  seedActivationImports: (space: number, activation: number, section: Uint8Array) => void;
+  admit: (activation: number, facts?: AdmissionFacts) => number;
   /**
-   * `fm_set_activation_gc_codec` with the raw KFGC section staged first, on
-   * the same one-page staging area and with the same overrun refusal as
-   * `seedActivationImports`. An EMPTY section is accepted by the module
-   * without decoding, which makes it a valid CONFLICTING re-seed against any
-   * non-empty one -- the one way a test can ask "is the stored codec still
-   * there?" without a second well-formed codec to seed.
+   * `fm_bind_activation(activation, funcLen, staticLen)`: the row, or `null`
+   * with the refusal in `fm_last_errno`.
    */
-  seedActivationGcCodec: (activation: number, section: Uint8Array) => void;
-  /** `fm_set_activation_exception_codec` with the raw KFEC section staged first. */
-  seedActivationExceptionCodec: (activation: number, section: Uint8Array) => void;
-  /**
-   * `fm_set_activation_template_id` with 32 bytes of `fill` staged first.
-   * Two calls with the same `fill` are the idempotent re-seed a COW child
-   * makes; two with different fills are the "two modules under one
-   * activation" the module refuses.
-   */
-  seedTemplateId: (activation: number, fill: number) => void;
+  bind: (activation: number, funcLen: number, staticLen: number) => BindRow | null;
   /** `fm_set_activation_table_state_owner(activation, owner, owns)`. */
   seedTableStateOwner: (activation: number, owner: number, owns: boolean) => void;
   /**
@@ -1044,10 +1064,6 @@ export interface ArenaFixture {
    * primary activation.
    */
   tableStateOwned: (activation: number, owner: number) => number;
-  /** `fm_place_activation_catalog(activation, len)`, the base it placed. */
-  placeCatalog: (activation: number, length: number) => number;
-  /** `fm_place_activation_static_roots(activation, len)`, the base it placed. */
-  placeStaticRoots: (activation: number, length: number) => number;
   /** `fm_set_import_provenance(space, consumer, ordinal, kind, group, rawBits)`. */
   seedImportProvenance: (
     space: number,
@@ -1121,7 +1137,7 @@ export function arenaChunkBytesFromSource(): number {
 }
 
 /**
- * Where `seedActivationCatalog` stages its ordinals: page 6, between the
+ * Where every admission descriptor is staged: page 6, between the
  * munmap counter (page 5) and `MODULE_BASE` (8 MiB), and far below
  * `MMAP_FLOOR`, so nothing the responder hands out can overlap it.
  */
@@ -1146,11 +1162,23 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     floor: MMAP_FLOOR,
     counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
   });
+  /** The catalog lengths each activation was bound with, for re-reading its row. */
+  const bound = new Map<number, [number, number]>();
   const setFormat = (): void => {
     (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
+    bound.clear();
   };
   setFormat();
   const errno = (): number => (x.fm_last_errno as () => number)();
+  const published = (activation: number): Array<[number, number]> => {
+    const [funcLen, staticLen] = bound.get(activation) ?? [0, 0];
+    const row = bind(x, memory, activation, funcLen, staticLen);
+    if (!row) {
+      throw new Error(`binding activation ${activation} failed with errno ${errno()}`);
+    }
+    bound.set(activation, [funcLen, staticLen]);
+    return row.assignment;
+  };
   const f: ArenaFixture = {
     x,
     memory,
@@ -1159,105 +1187,18 @@ export function arenaFixture(label = "arena"): ArenaFixture {
     // `DataView` taken before a growth is not guaranteed to survive it.
     munmaps: () => new DataView(memory.buffer).getUint32(MUNMAP_COUNTER, true),
     mmaps: () => new DataView(memory.buffer).getUint32(MMAP_COUNTER, true),
-    slots: x.fm_resume_slots as ArenaFixture["slots"],
-    publishedPairs: (activation) => {
-      const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
-        activation,
-      );
-      if (packed === -1n) {
-        throw new Error(
-          `fm_publish_resume_assignment failed for activation ${activation} ` +
-            `with errno ${errno()}`,
-        );
-      }
-      const ptr = Number(packed & 0xffffffffn);
-      const count = Number(packed >> 32n);
-      const view = new DataView(memory.buffer);
-      const out: Array<[number, number]> = [];
-      for (let i = 0; i < count; i += 1) {
-        out.push([
-          view.getUint32(ptr + i * 8, true),
-          view.getUint32(ptr + i * 8 + 4, true),
-        ]);
-      }
-      return out;
+    slots: (op, activation, ordinal) => {
+      bound.delete(activation);
+      return (x.fm_resume_slots as ArenaFixture["slots"])(op, activation, ordinal);
     },
-    publishedSlots: (activation) => {
-      const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
-        activation,
-      );
-      if (packed === -1n) {
-        throw new Error(
-          `fm_publish_resume_assignment failed for activation ${activation} ` +
-            `with errno ${errno()}`,
-        );
-      }
-      const ptr = Number(packed & 0xffffffffn);
-      const count = Number(packed >> 32n);
-      // A fresh view: publishing a large assignment spills to a mapping, and
-      // `channel_mmap` grows the shared memory.
-      const view = new DataView(memory.buffer);
-      const out: number[] = [];
-      // Each record is `[ordinal: u32, slot: u32]`; the slot is at +4.
-      for (let i = 0; i < count; i += 1) out.push(view.getUint32(ptr + i * 8 + 4, true));
-      return out;
-    },
+    publishedPairs: (activation) => published(activation),
+    publishedSlots: (activation) => published(activation).map(([, slot]) => slot),
     setFormat,
-    seedActivationCatalog: (activation, ordinals) => {
-      const staged = new Uint8Array(ordinals.length * 4);
-      const view = new DataView(staged.buffer);
-      ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
-      new Uint8Array(memory.buffer, ARENA_STAGING_AT, staged.length).set(staged);
-      (
-        x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void
-      )(activation, ARENA_STAGING_AT, ordinals.length);
-    },
-    seedActivationImports: (space, activation, section) => {
-      if (section.length > PAGE) {
-        throw new Error(
-          `seedActivationImports: a ${section.length}-byte section overruns the one-page staging area`,
-        );
-      }
-      new Uint8Array(memory.buffer, ARENA_STAGING_AT, section.length).set(section);
-      (
-        x.fm_set_activation_imports as (s: number, a: number, p: number, n: number) => void
-      )(space, activation, ARENA_STAGING_AT, section.length);
-    },
-    seedActivationGcCodec: (activation, section) => {
-      if (section.length > PAGE) {
-        throw new Error(
-          `seedActivationGcCodec: a ${section.length}-byte section overruns the one-page staging area`,
-        );
-      }
-      new Uint8Array(memory.buffer, ARENA_STAGING_AT, section.length).set(section);
-      (x.fm_set_activation_gc_codec as (a: number, p: number, n: number) => void)(
-        activation,
-        ARENA_STAGING_AT,
-        section.length,
-      );
-    },
-    seedActivationExceptionCodec: (activation, section) => {
-      if (section.length > PAGE) {
-        throw new Error(
-          `seedActivationExceptionCodec: a ${section.length}-byte section overruns the one-page staging area`,
-        );
-      }
-      new Uint8Array(memory.buffer, ARENA_STAGING_AT, section.length).set(section);
-      (x.fm_set_activation_exception_codec as (a: number, p: number, n: number) => void)(
-        activation,
-        ARENA_STAGING_AT,
-        section.length,
-      );
-    },
-    seedTemplateId: (activation, fill) => {
-      // Staged on the same page as the sections: the module copies the 32
-      // bytes out before it allocates, so the staging area is free again by
-      // the time the call returns.
-      new Uint8Array(memory.buffer, ARENA_STAGING_AT, 32).fill(fill);
-      (x.fm_set_activation_template_id as (a: number, p: number) => void)(
-        activation,
-        ARENA_STAGING_AT,
-      );
+    admit: (activation, facts = {}) => admit(x, memory, ARENA_STAGING_AT, activation, facts),
+    bind: (activation, funcLen, staticLen) => {
+      const row = bind(x, memory, activation, funcLen, staticLen);
+      if (row) bound.set(activation, [funcLen, staticLen]);
+      return row;
     },
     seedTableStateOwner: (activation, owner, owns) => {
       (x.fm_set_activation_table_state_owner as (a: number, o: number, w: number) => void)(
@@ -1270,13 +1211,6 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       (x.fm_module_state_table_state_owned as (a: number, o: number) => number)(
         activation,
         owner,
-      ),
-    placeCatalog: (activation, length) =>
-      (x.fm_place_activation_catalog as (a: number, n: number) => number)(activation, length),
-    placeStaticRoots: (activation, length) =>
-      (x.fm_place_activation_static_roots as (a: number, n: number) => number)(
-        activation,
-        length,
       ),
     seedImportProvenance: (space, consumer, ordinal, kind, group, rawBits) => {
       (
@@ -1303,8 +1237,9 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       // slot the release nulls (strict `table.set`, see `growResumeTable`).
       const WARM_ACTIVATION = 0xfffe;
       f.growResumeTable(2);
-      f.seedActivationCatalog(WARM_ACTIVATION, [1]);
-      if (errno() !== 0) throw new Error(`warmHeap: seeding failed with errno ${errno()}`);
+      if (f.admit(WARM_ACTIVATION, { ordinals: [1] }) !== 0) {
+        throw new Error(`warmHeap: admission failed with errno ${errno()}`);
+      }
       f.slots(1, WARM_ACTIVATION, 0);
       if (errno() !== 0) throw new Error(`warmHeap: release failed with errno ${errno()}`);
     },

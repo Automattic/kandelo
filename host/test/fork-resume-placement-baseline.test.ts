@@ -63,6 +63,7 @@ import {
   placeForkResumeThunks,
 } from "../src/fork-resume-table";
 import { startChannelResponder } from "./fork-module-capture-fixture";
+import { admit, bind } from "./support/fork-admission";
 import { artifactGate } from "./support/artifact-gate";
 import { standInGuest } from "./support/resume-placement-stand-in";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
@@ -205,23 +206,19 @@ function harness(): Harness {
   const errno = () => (x.fm_last_errno as () => number)();
   // NO OP-0 COUPLING ANY MORE. The recorder used to ask `fm_resume_slots` op 0
   // for every slot, because that was how the production placement path got
-  // one. It asks for a whole activation at once now, through the export the
-  // production path uses -- which is also what lets this file survive Task 6's
-  // deletion of the op-0 arm. The read-back below still deliberately uses
-  // neither: it scans the table.
+  // one. It asks for a whole activation at once now, through the entry the
+  // production path uses -- the resume half of `fm_bind_activation`'s row --
+  // which is also what lets this file survive Task 6's deletion of the op-0
+  // arm. The read-back below still deliberately uses neither: it scans the
+  // table.
   const publish = (activationId: number): ForkResumeAssignment => {
-    const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
-      activationId,
-    );
-    if (packed === -1n) {
+    const row = bind(x, memory, activationId, 0, 0);
+    if (!row) {
       throw new Error(
         `no assignment for activation ${activationId} (errno ${errno()})`,
       );
     }
-    return {
-      ptr: Number(packed & 0xffff_ffffn),
-      count: Number(packed >> 32n),
-    };
+    return row.resume;
   };
   const place = (activationId: number, instance: WebAssembly.Instance): void =>
     placeForkResumeThunks("resume placement baseline", activationId, instance, publish(activationId));
@@ -230,16 +227,10 @@ function harness(): Harness {
   const resumeTable = x.__wpk_fork_resume_table as unknown as WebAssembly.Table;
 
   const seed = (activationId: number, ordinals: readonly number[]): void => {
-    const bytes = new Uint8Array(ordinals.length * 4);
-    const view = new DataView(bytes.buffer);
-    ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
-    new Uint8Array(memory.buffer, CATALOG_AT, bytes.length).set(bytes);
-    (x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
-      activationId,
-      CATALOG_AT,
-      ordinals.length,
-    );
-    expect(errno(), `seeding activation ${activationId}`).toBe(0);
+    expect(
+      admit(x, memory, CATALOG_AT, activationId, { ordinals }),
+      `admitting activation ${activationId}`,
+    ).toBe(0);
   };
 
   return { place, seed, errno, memory, resumeTable };
@@ -339,8 +330,9 @@ describe.skipIf(skip)("fork resume-thunk placement baseline", () => {
         // in-process instantiation this file exists to avoid.
         //
         // CONTROLLER RULING: Task 4 produces the AFTER half by seeding these
-        // same two catalogs and calling `fm_publish_resume_assignment`
-        // (Task 3), decoding its `(ordinal, slot)` pairs and diffing them
+        // same two catalogs and reading the module's published assignment
+        // (Task 3; now the resume half of `fm_bind_activation`'s row),
+        // decoding its `(ordinal, slot)` pairs and diffing them
         // against the SAME recorded artifact. That compares the thing which
         // actually decides placement, and needs no guest instance. The
         // artifact's shape is therefore the stable contract between the two

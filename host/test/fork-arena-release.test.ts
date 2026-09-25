@@ -26,12 +26,12 @@ import {
  * the leak the observable exists for. So the `SYS_MUNMAP` tally is asserted
  * beside it: one unmap per chunk released.
  *
- * THE ALLOCATION IS A PRODUCTION ONE. The first test seeds two activations'
- * imported-global (KFIG) sections through `fm_set_activation_imports`, the
- * entry `ForkImportIdentity` uses, sized so the two records cannot share a
- * chunk -- and then releases them one at a time through `fm_resume_slots`
- * op 1, the `dlclose` entry, watching each chunk go back as its last record
- * leaves it. A TEST FILE THAT ASSERTS ONLY ZEROS is indistinguishable from
+ * THE ALLOCATION IS A PRODUCTION ONE. The first test admits two activations
+ * with imported-global (KFIG) sections through `fm_admit_activation`, the
+ * entry both hosts admit an activation through, sized so the two KFIG records
+ * cannot share a chunk -- and then releases them one at a time through
+ * `fm_resume_slots` op 1, the `dlclose` entry, watching each chunk go back as
+ * its last record leaves it. A TEST FILE THAT ASSERTS ONLY ZEROS is indistinguishable from
  * one that has stopped working, which is why the second test drives the three
  * counts APART as well: three fields returning 0 proves nothing about which
  * counter answered which read, because a collision reads as agreement.
@@ -49,9 +49,6 @@ import {
  * table, which the const-assert cannot see.
  */
 
-/** `fm_set_activation_imports` space for the KFIG section. */
-const SPACE_GLOBAL = 0;
-
 /** The activations the tests seed and release. */
 const ACTIVATION_A = 11;
 const ACTIVATION_B = 12;
@@ -68,7 +65,10 @@ const ACTIVATION_B = 12;
  * so a default chunk holds 65,536 - 32 = 65,504 bytes of records, and a
  * record costs 16 bytes of header. Two activations at 40,000 payload bytes
  * each therefore need 2 chunks: 40,016 fits in the first, the second does not
- * (80,032 > 65,504). In the FORCED build a 40,016-byte record is larger than
+ * (80,032 > 65,504). Each admission also stores a few small records (its
+ * template id, linked-frame format and empty resume catalog) BEFORE its KFIG
+ * section; B's land in the first chunk's remaining space, beside A's, and
+ * only B's KFIG takes the second. In the FORCED build a 40,016-byte record is larger than
  * a 4,064-byte body, so each takes an oversized chunk sized to itself -- two
  * chunks by a different route, and MORE THAN ONE either way, which is the
  * claim the forced build exists to make good on.
@@ -166,10 +166,10 @@ describe("arena chunk release", () => {
     const munmapsBefore = x.munmaps();
 
     const section = kfigSection();
-    x.seedActivationImports(SPACE_GLOBAL, ACTIVATION_A, section);
-    expect(x.errno(), `seeding activation ${ACTIVATION_A}`).toBe(0);
-    x.seedActivationImports(SPACE_GLOBAL, ACTIVATION_B, section);
-    expect(x.errno(), `seeding activation ${ACTIVATION_B}`).toBe(0);
+    expect(x.admit(ACTIVATION_A, { importedGlobals: section }), `admitting activation ${ACTIVATION_A}`)
+      .toBe(0);
+    expect(x.admit(ACTIVATION_B, { importedGlobals: section }), `admitting activation ${ACTIVATION_B}`)
+      .toBe(0);
 
     // In the default build one chunk holds 65,504 bytes, so the two
     // 40,000-byte KFIG sections take 2 chunks; in the forced build a chunk
@@ -186,23 +186,24 @@ describe("arena chunk release", () => {
     expect(x.mmaps() - mmapsBefore, "one mmap per chunk, directory included").toBe(
       EXPECTED_CHUNKS + 1,
     );
-    expect(x.munmaps() - munmapsBefore, "seeding only ever maps").toBe(0);
+    expect(x.munmaps() - munmapsBefore, "admission only ever maps").toBe(0);
 
-    // RELEASED ONE AT A TIME, through the dlclose entry. A's record is alone
-    // in the first chunk and B's alone in the second, so each release must
-    // give back exactly its own chunk -- and the directory chunk only with
-    // the last entry. Asserting only the final zero would pass a sweep that
-    // returns everything at the end and nothing in between.
-    expect(x.slots(1, ACTIVATION_A, 0), `releasing activation ${ACTIVATION_A}`).toBe(0);
+    // RELEASED ONE AT A TIME, through the dlclose entry. B's KFIG record is
+    // alone in the second chunk and everything else shares the first, so B's
+    // release must give back exactly the second chunk -- A still holds the
+    // first -- and A's the first, with the directory chunk only with the last
+    // entry. Asserting only the final zero would pass a sweep that returns
+    // everything at the end and nothing in between.
+    expect(x.slots(1, ACTIVATION_B, 0), `releasing activation ${ACTIVATION_B}`).toBe(0);
     expect(x.errno()).toBe(0);
-    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "A's chunk gone, B's kept").toBe(
+    expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "B's chunk gone, A's kept").toBe(
       EXPECTED_CHUNKS - 1,
     );
-    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory still holds B").toBe(1);
+    expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory still holds A").toBe(1);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "one entry left").toBe(1);
-    expect(x.munmaps() - munmapsBefore, "A's chunk was actually unmapped").toBe(1);
+    expect(x.munmaps() - munmapsBefore, "B's chunk was actually unmapped").toBe(1);
 
-    expect(x.slots(1, ACTIVATION_B, 0), `releasing activation ${ACTIVATION_B}`).toBe(0);
+    expect(x.slots(1, ACTIVATION_A, 0), `releasing activation ${ACTIVATION_A}`).toBe(0);
     expect(x.errno()).toBe(0);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
@@ -225,10 +226,10 @@ describe("arena chunk release", () => {
     // The release below nulls the activation's table entries STRICTLY; a bare
     // module fixture has no guest to have grown the table.
     x.growResumeTable(8);
-    x.seedActivationCatalog(ACTIVATION_A, [1, 2, 3]);
-    expect(x.errno(), `seeding activation ${ACTIVATION_A}`).toBe(0);
-    x.seedActivationCatalog(ACTIVATION_B, [4, 5, 6]);
-    expect(x.errno(), `seeding activation ${ACTIVATION_B}`).toBe(0);
+    expect(x.admit(ACTIVATION_A, { ordinals: [1, 2, 3] }), `admitting activation ${ACTIVATION_A}`)
+      .toBe(0);
+    expect(x.admit(ACTIVATION_B, { ordinals: [4, 5, 6] }), `admitting activation ${ACTIVATION_B}`)
+      .toBe(0);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "two activations").toBe(2);
     expect(
       x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD),
@@ -280,7 +281,7 @@ describe("arena chunk release", () => {
 
 /**
  * The committed KFGC and KFEC fixtures the `fork-codec` decoder tests use,
- * because both seeds DECODE what they are handed and refuse filler.
+ * because admission DECODES both and refuses filler.
  */
 const GC_CODEC = new Uint8Array(
   readFileSync(new URL("../../crates/fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url)),
@@ -291,13 +292,13 @@ const EXCEPTION_CODEC = new Uint8Array(
   ),
 );
 
-/** An activation that seeds only exception tags, so the scrub has an entry to drop. */
+/** An activation admitted with only an exception codec, so the scrub has an entry to drop. */
 const ACTIVATION_TAGS_ONLY = 13;
-/** An activation nothing seeds until the control assertion needs a fresh one. */
+/** An activation nothing admits until the control assertion needs a fresh one. */
 const ACTIVATION_FRESH = 14;
 
 describe("GC-codec and exception-tag records", () => {
-  it("seeds both onto the arena and releases them with the activation", () => {
+  it("admits both onto the arena and releases them with the activation", () => {
     const x = arenaFixture("arena codec release");
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(0);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(0);
@@ -306,29 +307,28 @@ describe("GC-codec and exception-tag records", () => {
     const mmapsBefore = x.mmaps();
     const munmapsBefore = x.munmaps();
 
-    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
-    expect(x.errno(), "seeding the GC codec").toBe(0);
-    x.seedActivationExceptionCodec(ACTIVATION_A, EXCEPTION_CODEC);
-    expect(x.errno(), "seeding the exception codec").toBe(0);
+    const both = { gcCodec: GC_CODEC, exceptionCodec: EXCEPTION_CODEC };
+    expect(x.admit(ACTIVATION_A, both), "admitting both codecs").toBe(0);
 
-    // Two small records share one chunk; the directory took one more.
+    // The small records share one chunk; the directory took one more.
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "record chunks").toBe(1);
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "directory chunks").toBe(1);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "directory entries").toBe(1);
     expect(x.mmaps() - mmapsBefore, "one mmap per chunk, directory included").toBe(2);
 
-    // An identical re-seed of either is a no-op: nothing new is mapped, and
-    // nothing is refused. A CONFLICTING one is refused: an empty section
+    // An identical re-admission is a no-op: nothing new is mapped, and
+    // nothing is refused. A CONFLICTING codec is refused: an empty section
     // decodes as valid input and differs from the stored bytes.
-    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
-    expect(x.errno(), "identical GC codec re-seed").toBe(0);
-    x.seedActivationExceptionCodec(ACTIVATION_A, EXCEPTION_CODEC);
-    expect(x.errno(), "identical exception codec re-seed").toBe(0);
-    expect(x.mmaps() - mmapsBefore, "a re-seed maps nothing").toBe(2);
-    x.seedActivationGcCodec(ACTIVATION_A, new Uint8Array(0));
-    expect(x.errno(), "a conflicting GC codec is refused").toBe(22);
-    x.seedActivationExceptionCodec(ACTIVATION_A, new Uint8Array(0));
-    expect(x.errno(), "a conflicting exception codec is refused").toBe(22);
+    expect(x.admit(ACTIVATION_A, both), "identical re-admission").toBe(0);
+    expect(x.mmaps() - mmapsBefore, "a re-admission maps nothing").toBe(2);
+    expect(
+      x.admit(ACTIVATION_A, { ...both, gcCodec: new Uint8Array(0) }),
+      "a conflicting GC codec is refused",
+    ).toBe(22);
+    expect(
+      x.admit(ACTIVATION_A, { ...both, exceptionCodec: new Uint8Array(0) }),
+      "a conflicting exception codec is refused",
+    ).toBe(22);
 
     // Released through the dlclose entry, which returns 0 freed SLOTS (this
     // activation registered no resume ordinals) and drops both records.
@@ -340,7 +340,7 @@ describe("GC-codec and exception-tag records", () => {
     expect(x.munmaps() - munmapsBefore, "one munmap per chunk released").toBe(2);
   });
 
-  it("the COW-child scrub drops the GC codec with everything else, and the child's re-seed is a first seed", () => {
+  it("the COW-child scrub drops the GC codec with everything else, and the child's re-admission is a first one", () => {
     // THE RETIRED INHERITED-CODEC CASE. `arena_release_all` once KEPT
     // `REC_KIND_GC_CODEC` on the premise that the native host inherited the
     // parent's codec on a COW child rather than re-seeding it. That premise
@@ -348,21 +348,25 @@ describe("GC-codec and exception-tag records", () => {
     // `fm_set_format` on both launch paths; Node re-seeds every replayed
     // activation before anything reads a codec), and keeping the record cost
     // every child up to two inherited 64 KiB mappings. So the scrub is a
-    // blind sweep: every chunk goes back, and the child's seed of the SAME
-    // codec is accepted as a first seed. No entry reads a codec back
+    // blind sweep: every chunk goes back, and the child's admission of the
+    // SAME codec is accepted as a first one. No entry reads a codec back
     // directly, so "the codec is gone" is observed the way its survival used
-    // to be: a re-seed of a DIFFERENT (empty) section is ACCEPTED where,
+    // to be: an admission with a DIFFERENT (empty) section is ACCEPTED where,
     // before the scrub, it was refused with 22 against the stored bytes.
     const x = arenaFixture("arena codec cow scrub");
     x.warmHeap(); // the codec decode allocates on the bump; see `warmHeap`
-    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
-    expect(x.errno(), "seeding the GC codec").toBe(0);
-    x.seedActivationExceptionCodec(ACTIVATION_A, EXCEPTION_CODEC);
-    expect(x.errno(), "seeding A's exception codec").toBe(0);
-    x.seedActivationExceptionCodec(ACTIVATION_TAGS_ONLY, EXCEPTION_CODEC);
-    expect(x.errno(), "seeding a tags-only activation").toBe(0);
-    x.seedActivationGcCodec(ACTIVATION_A, new Uint8Array(0));
-    expect(x.errno(), "before the scrub a conflicting re-seed is refused").toBe(22);
+    expect(
+      x.admit(ACTIVATION_A, { gcCodec: GC_CODEC, exceptionCodec: EXCEPTION_CODEC }),
+      "admitting A's codecs",
+    ).toBe(0);
+    expect(
+      x.admit(ACTIVATION_TAGS_ONLY, { exceptionCodec: EXCEPTION_CODEC }),
+      "admitting a tags-only activation",
+    ).toBe(0);
+    expect(
+      x.admit(ACTIVATION_A, { gcCodec: new Uint8Array(0), exceptionCodec: EXCEPTION_CODEC }),
+      "before the scrub a conflicting re-admission is refused",
+    ).toBe(22);
     expect(x.stats(ARENA_DIRECTORY_ENTRY_COUNT_FIELD), "two activations").toBe(2);
     const held =
       x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD) + x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD);
@@ -379,23 +383,28 @@ describe("GC-codec and exception-tag records", () => {
     expect(x.stats(ARENA_DIRECTORY_CHUNK_COUNT_FIELD), "no directory chunk survives").toBe(0);
     expect(x.munmaps() - munmapsBefore, "one unmap per chunk the parent held").toBe(held);
 
-    // The child re-seeds, as both hosts do. Its identical seed is a FIRST
-    // seed now (it maps afresh), and a subsequent conflicting one is refused
-    // against the bytes the child itself stored -- proof that the child's
-    // seed, not an inherited record, is what the module holds.
+    // The child re-admits, as both hosts do -- here with the GC codec only.
+    // Its identical codec is a FIRST admission now (it maps afresh), and a
+    // subsequent conflicting one is refused against the bytes the child
+    // itself stored -- proof that the child's admission, not an inherited
+    // record, is what the module holds.
     const mmapsBefore = x.mmaps();
-    x.seedActivationGcCodec(ACTIVATION_A, GC_CODEC);
-    expect(x.errno(), "the child's re-seed is accepted as a first seed").toBe(0);
+    expect(x.admit(ACTIVATION_A, { gcCodec: GC_CODEC }), "the child's admission is a first one")
+      .toBe(0);
     expect(x.mmaps() - mmapsBefore, "and it maps afresh: nothing was inherited").toBeGreaterThan(0);
-    x.seedActivationGcCodec(ACTIVATION_A, new Uint8Array(0));
-    expect(x.errno(), "a conflicting re-seed is refused against the child's own seed").toBe(22);
-    // The control: the same empty section is a legitimate FIRST seed for an
-    // activation that has none, so the 22 above is a comparison, not a rule.
-    x.seedActivationGcCodec(ACTIVATION_FRESH, new Uint8Array(0));
-    expect(x.errno(), "an empty first seed is accepted").toBe(0);
-    // The exception tags were dropped the same way: a DIFFERENT set is a
-    // first seed where before the scrub it was refused.
-    x.seedActivationExceptionCodec(ACTIVATION_A, new Uint8Array(0));
-    expect(x.errno(), "A's tags were dropped, so an empty seed is a first seed").toBe(0);
+    expect(
+      x.admit(ACTIVATION_A, { gcCodec: new Uint8Array(0) }),
+      "a conflicting codec is refused against the child's own admission",
+    ).toBe(22);
+    // The control: the same empty section is a legitimate FIRST admission for
+    // an activation that has none, so the 22 above is a comparison, not a rule.
+    expect(x.admit(ACTIVATION_FRESH, { gcCodec: new Uint8Array(0) }), "an empty first codec")
+      .toBe(0);
+    // The exception tags were dropped the same way: A now takes an EMPTY
+    // exception codec, where before the scrub a different one was refused.
+    expect(
+      x.admit(ACTIVATION_A, { gcCodec: GC_CODEC, exceptionCodec: new Uint8Array(0) }),
+      "A's tags were dropped, so an empty codec is a first one",
+    ).toBe(0);
   });
 });

@@ -45,27 +45,15 @@ import {
   INTERN_KIND_FUNCREF,
   PAGE,
   captureGraph,
+  admitInto,
   childInstance,
+  driveBase,
   fixture,
   type Fixture,
 } from "./fork-module-capture-fixture";
 
 const PTR_WIDTH = 4 as const;
 const PID = 6262;
-/**
- * Where the GC codec section is staged for `fm_set_activation_gc_codec`: LOW
- * scratch, on the page `openCapture` uses for template ids (2048) and the sides
- * vector (4096), clear of both.
- *
- * NOT inside the responder's mmap range. This used to be `MMAP_FLOOR + 10 *
- * PAGE`, which survived only while fewer than ten mappings preceded the seed
- * -- the responder bump-allocates upward from `MMAP_FLOOR` and never clears a
- * page. Putting the GC codec on the arena adds mappings ahead of the capture
- * (a directory chunk and a record chunk), the same way the KFIG conversion
- * did for `fork-module-capture-drive.test.ts`'s sides vector, so the codec is
- * staged where no mapping can land on it.
- */
-const CODEC_SCRATCH = 8192;
 // The function-catalog ordinal the aliased funcref leaf names.
 const LEAF_ORDINAL = 77;
 
@@ -89,7 +77,7 @@ const GC_CODEC = new Uint8Array(
 );
 
 /**
- * CAPTURE the struct-to-array cycle through the module, and stage the codec.
+ * CAPTURE the struct-to-array cycle through the module.
  *
  * This used to CONSTRUCT the sealed arena in TypeScript with the set-aside
  * `ForkModuleStateArena` and `appendSegmentedForkReferenceTransaction`, then
@@ -103,7 +91,6 @@ const GC_CODEC = new Uint8Array(
  */
 function captureGcCycle(f: Fixture): {
   root: number;
-  codecPtr: number;
   structId: number;
   arrayId: number;
   leafId: number;
@@ -129,11 +116,8 @@ function captureGcCycle(f: Fixture): {
       },
     ],
   );
-  const codecPtr = CODEC_SCRATCH;
-  new Uint8Array(f.memory.buffer, codecPtr, GC_CODEC.byteLength).set(GC_CODEC);
   return {
     root,
-    codecPtr,
     structId: aggregateRecipes[0]!,
     arrayId: aggregateRecipes[1]!,
     leafId: recipes[0]!,
@@ -142,7 +126,6 @@ function captureGcCycle(f: Fixture): {
 
 interface ForkModuleRefExports {
   fm_set_format: (pw: number, fixedPrefix: number) => void;
-  fm_set_activation_gc_codec: (act: number, ptr: number, len: number) => void;
   fm_begin_reference_replay: (root: number, pid: number) => void;
   // The single folded proof-of-use counter accessor (replaced the former 11
   // individual counter exports); read via the `FmStatField` enum.
@@ -151,7 +134,6 @@ interface ForkModuleRefExports {
   fm_build_gc_plan: (pid: number) => number;
   fm_gc_plan_count: () => number;
   fm_drive_execute: (ptr: number, count: number) => void;
-  fm_drive_table_base: (act: number) => number;
   __wpk_fork_ref_gc_route: (recipeId: number, expectedActivation: number) => number;
   __wpk_fork_ref_gc_payload_len: (
     recipeId: number,
@@ -195,7 +177,7 @@ function bindFaithfulGuest(
   const moduleExports = fm.exports as Record<string, unknown>;
   ensureTransitRecipeSlot(moduleExports, maxRecipeId);
   const { guest, published } = instantiateFaithfulGuest(moduleExports);
-  const base = x.fm_drive_table_base(0);
+  const base = driveBase(0);
   if (fm.driveTable.length < base + 3) {
     fm.driveTable.grow(base + 3 - fm.driveTable.length);
   }
@@ -209,10 +191,10 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
   it("drives a struct<->array cycle over an aliased leaf, advances the counters, and never mints a tag", () => {
     const f = fixture();
 
-    const { root, codecPtr, structId, arrayId, leafId } = captureGcCycle(f);
+    const { root, structId, arrayId, leafId } = captureGcCycle(f);
     const { fm, x } = replayChild(f);
 
-    x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
+    admitInto(fm.exports as Record<string, unknown>, f.memory, 0, { gcCodec: GC_CODEC });
     expect(x.fm_last_errno()).toBe(0);
 
     const gcNodesBefore = Number(x.fm_stats(STAT.gcNodesReconstructed));
@@ -335,9 +317,9 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     // errno is set, leaving `fm_last_errno` at the 0 the replay left. 22 is
     // EINVAL, and it can only come from the check. Census 192.
     const f = fixture();
-    const { root, codecPtr, structId } = captureGcCycle(f);
-    const { x } = replayChild(f);
-    x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
+    const { root, structId } = captureGcCycle(f);
+    const { fm, x } = replayChild(f);
+    admitInto(fm.exports as Record<string, unknown>, f.memory, 0, { gcCodec: GC_CODEC });
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
@@ -357,9 +339,9 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     // WebAssembly engine.
     const f = fixture();
     const memory = f.memory;
-    const { root, codecPtr, structId, arrayId, leafId } = captureGcCycle(f);
-    const { x } = replayChild(f);
-    x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
+    const { root, structId, arrayId, leafId } = captureGcCycle(f);
+    const { fm, x } = replayChild(f);
+    admitInto(fm.exports as Record<string, unknown>, f.memory, 0, { gcCodec: GC_CODEC });
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
@@ -375,9 +357,13 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     // A mismatched activation routes to the -1 sentinel (a value, not a trap).
     expect(x.__wpk_fork_ref_gc_route(structId, 9)).toBe(-1);
 
-    // Load the struct scalars into guest memory (well above the module's 4 MiB
-    // heap at the 8 MiB reserve base) and read back its interned edge vector.
-    const structDst = 13 * 1024 * 1024;
+    // Load the struct scalars into guest memory and read back its interned
+    // edge vector. LOW scratch (pages 7 and 8), below the module at 8 MiB and
+    // clear of the channel (page 4), the responder's counters (page 5) and the
+    // admission staging page (6) -- NOT inside the responder's mmap range from
+    // 12 MiB, where these writes would land on whatever arena chunk the
+    // admissions before them mapped there.
+    const structDst = 7 * PAGE;
     const structVec = x.__wpk_fork_ref_gc_load(structId, 0, 0, 1, 1 /* struct */, structDst, 4);
     expect([...new Uint8Array(memory.buffer, structDst, 4)]).toEqual([
       0x78, 0x56, 0x34, 0x12,

@@ -34,11 +34,14 @@ import {
   fixture,
   moduleStateRootAt,
   saveSlotThunk,
-  seedEmptyResumeCatalog,
-  seedTemplateId,
+  admitActivation,
+  admitInto,
+  driveBase,
+  sideTemplate,
   voidSlotThunk,
   type Fixture,
 } from "./fork-module-capture-fixture";
+import { bind } from "./support/fork-admission";
 
 /** The per-activation drive stride: one slot per binding. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
@@ -74,7 +77,7 @@ const BORROWED_WORKSPACE_SCRATCH = 7 * PAGE;
 describe("capture begin, driven through a serviced channel", () => {
   it("allocates its own arena and declares the activation set into it", () => {
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     expect(f.errno()).toBe(0);
 
     (f.x.fm_capture_begin as () => void)();
@@ -99,8 +102,8 @@ describe("capture begin, driven through a serviced channel", () => {
     // follows -- the arena, the Module records, the guest save drive -- has to
     // cover both activations or the child rebuilds only one.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
-    seedTemplateId(f, 1, 2048);
+    admitActivation(f, 0);
+    admitActivation(f, 1, { template: sideTemplate(1) });
     expect(f.errno(), "both template ids seed").toBe(0);
 
     // The sides list: one `(id, fixedPrefix)` pair, as `fm_parent_begin_capture`
@@ -116,7 +119,7 @@ describe("capture begin, driven through a serviced channel", () => {
     // grow the table would do.
     const driven: number[] = [];
     for (const activation of [0, 1]) {
-      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
       if (f.instance.driveTable.length < needed) {
         f.instance.driveTable.grow(needed - f.instance.driveTable.length);
@@ -160,14 +163,14 @@ describe("capture begin, driven through a serviced channel", () => {
     // with the coordinator and the record kind sat defined and unused. Without
     // it a multi-activation child cannot be seeded at all. Census 183.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
-    seedTemplateId(f, 1, 2048);
+    admitActivation(f, 0);
+    admitActivation(f, 1, { template: sideTemplate(1) });
     const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);
     for (const activation of [0, 1]) {
-      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
       if (f.instance.driveTable.length < needed) {
         f.instance.driveTable.grow(needed - f.instance.driveTable.length);
@@ -224,7 +227,7 @@ describe("capture begin, driven through a serviced channel", () => {
     // repeat it, and writing one would put a record in every ordinary fork's
     // arena for nobody.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
@@ -241,7 +244,7 @@ describe("capture begin, driven through a serviced channel", () => {
     // not fail -- it starts a second arena on the same channel that nothing
     // reads, while the caller's arena keeps only what the caller wrote.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
@@ -335,7 +338,7 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     // frees through the channel, so before it existed none of them could be
     // driven at all -- the module parked instead of answering.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     const phase = () => Number((f.x.fm_phase as () => number)());
     expect(phase()).toBe(PHASE_IDLE);
 
@@ -362,7 +365,7 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     // sealed-parent needed a capture with a live guest. It needs a serviced
     // channel, which is a smaller thing.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     const workspace = f.x.fm_borrowed_replay_workspace as (field: number) => bigint;
 
     (f.x.fm_capture_begin as () => void)();
@@ -403,7 +406,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
    */
   function backendFixture(): { f: Fixture; backend: ForkModuleContinuationBackend } {
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     const backend = new ForkModuleContinuationBackend({
       instance: f.instance,
       memory: f.memory,
@@ -533,7 +536,7 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     // before, and must still. Writing an empty one would put a record the child
     // then decodes for no reason.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "capture with no imported globals").toBe(0);
@@ -545,16 +548,9 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     // binding it anyway would wire a child's import from a coordinate nothing
     // describes.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
-    const kfig = emptyKfig();
-    new Uint8Array(f.memory.buffer, 6144, kfig.length).set(kfig);
-    (f.x.fm_set_activation_imports as (s: number, a: number, p: number, n: number) => void)(
-      0 /* globals */,
-      0,
-      6144,
-      kfig.length,
-    );
-    expect(f.errno(), "empty section seeded").toBe(0);
+    admitActivation(f, 0);
+    admitActivation(f, 0, { importedGlobals: emptyKfig() });
+    expect(f.errno(), "empty section admitted").toBe(0);
     // Provenance for owner 1, which the empty section does not declare.
     (f.x.fm_set_import_provenance as (
       s: number, a: number, o: number, k: number, group: number, bits: bigint,
@@ -729,7 +725,7 @@ describe("the binding records the module assembles at capture", () => {
     const commit = f.x.__wpk_fork_module_state_record_commit as (
       payload: number,
     ) => void;
-    const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
+    const base = driveBase(0);
     f.instance.driveTable.set(
       base + DRIVE_SLOT_MODULE_STATE_SAVE,
       saveSlotThunk(() => {
@@ -746,21 +742,17 @@ describe("the binding records the module assembles at capture", () => {
     );
   }
 
+  /**
+   * Admit activation 0 again with one imported global (KFIG) and one imported
+   * table (KFIT): the same template and catalog `fixture()` admitted, plus two
+   * sections, which admission accepts.
+   */
   function seedSections(f: Fixture): void {
-    const seed = f.x.fm_set_activation_imports as (
-      space: number,
-      activation: number,
-      ptr: number,
-      len: number,
-    ) => void;
-    const kfig = kfigOne(1, 0, GLOBAL_TYPE_I32);
-    new Uint8Array(f.memory.buffer, 6144, kfig.length).set(kfig);
-    seed(SPACE_GLOBAL, 0, 6144, kfig.length);
-    expect(f.errno(), "KFIG seed").toBe(0);
-    const kfit = kfitOne(1, 1);
-    new Uint8Array(f.memory.buffer, 7168, kfit.length).set(kfit);
-    seed(SPACE_TABLE, 0, 7168, kfit.length);
-    expect(f.errno(), "KFIT seed").toBe(0);
+    admitActivation(f, 0, {
+      importedGlobals: kfigOne(1, 0, GLOBAL_TYPE_I32),
+      importedTables: kfitOne(1, 1),
+    });
+    expect(f.errno(), "KFIG and KFIT admitted").toBe(0);
   }
 
   function publish(f: Fixture): {
@@ -794,28 +786,22 @@ describe("the binding records the module assembles at capture", () => {
     // All three were `errno 22` or `errno 16` on real programs. This drives the
     // inherited shape directly rather than through a fork. Census D9 C2.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     expect(f.errno(), "the first template-id seed").toBe(0);
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     expect(f.errno(), "and an IDENTICAL re-seed is a no-op").toBe(0);
     // A different id under the same activation is two modules claiming one
     // coordinate, and stays loud.
-    new Uint8Array(f.memory.buffer, 3072, 32).fill(0xab);
-    seedTemplateId(f, 0, 3072);
+    admitActivation(f, 0, { template: 0xab });
     expect(f.errno(), "a CONFLICTING template id is refused").toBe(22);
 
     seedSections(f);
     seedSections(f);
-    expect(f.errno(), "identical KFIG/KFIT bytes re-seed as a no-op").toBe(0);
-    const seed = f.x.fm_set_activation_imports as (
-      space: number,
-      activation: number,
-      ptr: number,
-      len: number,
-    ) => void;
-    const other = kfigOne(2, 0, GLOBAL_TYPE_I32);
-    new Uint8Array(f.memory.buffer, 9216, other.length).set(other);
-    seed(SPACE_GLOBAL, 0, 9216, other.length);
+    expect(f.errno(), "identical KFIG/KFIT bytes re-admit as a no-op").toBe(0);
+    admitActivation(f, 0, {
+      importedGlobals: kfigOne(2, 0, GLOBAL_TYPE_I32),
+      importedTables: kfitOne(1, 1),
+    });
     expect(f.errno(), "CONFLICTING KFIG bytes are refused").toBe(22);
 
     // And the phase: open a capture, then do what a fresh worker does.
@@ -836,7 +822,7 @@ describe("the binding records the module assembles at capture", () => {
     // cannot tell them apart -- both name the same object -- and the host is not
     // allowed to say which provides it, so this is the module's answer.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7); // the consumer's own entry: an importer
@@ -887,7 +873,7 @@ describe("the binding records the module assembles at capture", () => {
     // hands the child a binding record it never got, reconstructing its
     // imported globals against whatever its base imports happen to hold.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7);
@@ -909,7 +895,7 @@ describe("the binding records the module assembles at capture", () => {
     // on the ownership guard, silently, and the tests below could not see it
     // because they stop at begin.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7);
@@ -964,7 +950,7 @@ describe("the binding records the module assembles at capture", () => {
     // parent sealed and builds its install plan from it. Until the seal wrote
     // the reference transaction, this failed on the first record it looked for.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7);
@@ -1045,7 +1031,7 @@ describe("the binding records the module assembles at capture", () => {
     // carries the table records the guest's table-save walk wrote, sealed with
     // the reference segments a peer needs to rebuild the funcref slots.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     const saved: number[] = [];
     const reserve = f.x.__wpk_fork_module_state_record_reserve as (
       kind: number,
@@ -1054,7 +1040,7 @@ describe("the binding records the module assembles at capture", () => {
       size: number,
     ) => number;
     const commit = f.x.__wpk_fork_module_state_record_commit as (p: number) => void;
-    const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
+    const base = driveBase(0);
     // The fixture's drive table is sized for the slots its own harness binds;
     // this slot is past them, so grow to the full per-activation stride the way
     // `bindActivationDrive` does.
@@ -1105,7 +1091,7 @@ describe("the binding records the module assembles at capture", () => {
     ).toBe(0);
     expect(f.errno()).toBe(22);
 
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     expect(
       (f.x.fm_capture_peer_tables as (c: number) => number)(0),
       "no syscall channel to allocate through",
@@ -1122,7 +1108,7 @@ describe("the binding records the module assembles at capture", () => {
     // It opens a capture graph of its own; doing that mid-fork would discard
     // the fork's, and the fork would seal an arena with no references in it.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { provenance } = publish(f);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
@@ -1150,11 +1136,23 @@ describe("the binding records the module assembles at capture", () => {
     // thunks: wabt 1.0.37 cannot disassemble this module (it rejects the GC and
     // exnref types), so there is no artifact test for them, and the real fix
     // was to delete the injector's duplicate constant rather than pin it.
+    //
+    // Read off the row `fm_bind_activation` answers, the only place the host
+    // learns it -- and checked against `driveBase`, the fixture's spelling
+    // every other test on this rig binds its drive slots by.
     const f = fixture();
-    const base = f.x.fm_drive_table_base as (a: number) => number;
+    const base = (activation: number): number | undefined => {
+      if (activation !== 0) admitActivation(f, activation, { template: sideTemplate(activation) });
+      return bind(f.x, f.memory, activation, 0, 0)?.drive;
+    };
     expect(base(0)).toBe(0);
     expect(base(1), "one stride up").toBe(FORK_ACTIVATION_DRIVE_SLOTS);
     expect(base(2), "and linear from there").toBe(2 * FORK_ACTIVATION_DRIVE_SLOTS);
+    expect([0, 1, 2].map(driveBase), "the fixture's spelling agrees").toEqual([
+      0,
+      FORK_ACTIVATION_DRIVE_SLOTS,
+      2 * FORK_ACTIVATION_DRIVE_SLOTS,
+    ]);
   });
 
   it("plans a child's imports from the arena, ordered by import ordinal", () => {
@@ -1164,7 +1162,7 @@ describe("the binding records the module assembles at capture", () => {
     // they come back in import-section order, which is the order the host
     // walks `WebAssembly.Module.imports()` in.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7);
@@ -1199,19 +1197,12 @@ describe("the binding records the module assembles at capture", () => {
     // the fork -- so a side activation whose declarations or snapshots are
     // missing refuses the whole capture rather than its own record.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
-    seedTemplateId(f, 1, 2048);
-    const seed = f.x.fm_set_activation_imports as (
-      space: number,
-      activation: number,
-      ptr: number,
-      len: number,
-    ) => void;
-    for (const [activation, at] of [[0, 6144], [1, 7168]] as const) {
-      const kfig = kfigOne(1, 0, GLOBAL_TYPE_I32);
-      new Uint8Array(f.memory.buffer, at, kfig.length).set(kfig);
-      seed(SPACE_GLOBAL, activation, at, kfig.length);
-      expect(f.errno(), `KFIG seed for activation ${activation}`).toBe(0);
+    for (const activation of [0, 1]) {
+      admitActivation(f, activation, {
+        template: activation === 0 ? 0 : sideTemplate(activation),
+        importedGlobals: kfigOne(1, 0, GLOBAL_TYPE_I32),
+      });
+      expect(f.errno(), `KFIG admitted for activation ${activation}`).toBe(0);
     }
     const { provenance } = publish(f);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
@@ -1219,7 +1210,7 @@ describe("the binding records the module assembles at capture", () => {
 
     const driven: number[] = [];
     for (const activation of [0, 1]) {
-      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
       if (f.instance.driveTable.length < needed) {
         f.instance.driveTable.grow(needed - f.instance.driveTable.length);
@@ -1262,7 +1253,7 @@ describe("the binding records the module assembles at capture", () => {
     // import, but the parent's saved contents are still authoritative. The flag
     // is what distinguishes a saved zero from nothing saved.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { provenance } = publish(f);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
@@ -1283,7 +1274,7 @@ describe("the binding records the module assembles at capture", () => {
     // The ordinary single-module case. An empty plan, not a refusal: the KFIG
     // section is emitted only when there is something to describe.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { provenance } = publish(f);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
@@ -1307,7 +1298,7 @@ describe("the binding records the module assembles at capture", () => {
     expect(field(0, PLAN_ORDINAL), "nothing built yet").toBe(-1n);
     expect(f.errno(), "and says why").toBe(22);
 
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { provenance } = publish(f);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
@@ -1331,7 +1322,7 @@ describe("the binding records the module assembles at capture", () => {
 
   it("refuses to plan from an arena whose binding record is corrupt", () => {
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { provenance } = publish(f);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
@@ -1361,7 +1352,7 @@ describe("the binding records the module assembles at capture", () => {
     // would be read much later, by the host building the child's imports, and
     // by then it is a wrong child rather than a refused fork.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7);
@@ -1395,7 +1386,7 @@ describe("the binding records the module assembles at capture", () => {
     // declares. A plan missing the restores traps inside the guest with no
     // errno to read, which is what the dlopen e2e hit (census 182).
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
@@ -1425,14 +1416,14 @@ describe("the binding records the module assembles at capture", () => {
     // cannot know one (it is a per-fork address), so the module resolves it
     // from the KFAC manifest it wrote at seal.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
-    seedTemplateId(f, 1, 2048);
+    admitActivation(f, 0);
+    admitActivation(f, 1, { template: sideTemplate(1) });
     const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);
     for (const activation of [0, 1]) {
-      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
       if (f.instance.driveTable.length < needed) {
         f.instance.driveTable.grow(needed - f.instance.driveTable.length);
@@ -1466,7 +1457,7 @@ describe("the binding records the module assembles at capture", () => {
 
     const child = childModule(f);
     const childSeed = child.fm_child_seed as (r: number, a: number, s: number, n: number) => void;
-    // NEVER SEEDED IS REFUSED. Neither activation has a resume catalog in this
+    // NEVER ADMITTED IS REFUSED. Neither activation has a resume catalog in this
     // child yet, and the module no longer numbers slots from the committed
     // ordinals when it finds none: a binary arriving with nothing seeded is a
     // build whose instrumentation step did not run, and numbering by a rule
@@ -1482,20 +1473,17 @@ describe("the binding records the module assembles at capture", () => {
     expect((child.fm_phase as () => number)(), "and no phase was entered").toBe(PHASE_IDLE);
     // AN EMPTY CATALOG IS NOT THAT CASE. This capture committed no frame, so
     // both activations hold zero resume targets -- which is what
-    // `libneeded-provider.so` seeds in `fork-from-dlopen-side-module-e2e`,
+    // `libneeded-provider.so` admits in `fork-from-dlopen-side-module-e2e`,
     // and mistaking it for "never registered" already cost a real fork. An
     // empty RECORD says "registered, holding nothing"; NO record says "never
-    // registered". Seeded the way every host seeds: activation 0 through the
-    // same entry as its side.
+    // registered". Admitted the way every host admits: activation 0 through
+    // the same entry as its side, with the facts the parent admitted.
     for (const activation of [0, 1]) {
-      (child.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
-        activation,
-        SIDES_SCRATCH,
-        0,
-      );
       expect(
-        (child.fm_last_errno as () => number)(),
-        `an empty catalog is a legitimate seed for activation ${activation}`,
+        admitInto(child, f.memory, activation, {
+          template: activation === 0 ? 0 : sideTemplate(activation),
+        }),
+        `an empty catalog is a legitimate admission for activation ${activation}`,
       ).toBe(0);
     }
     childSeed(root, act0Root, childSides, 1);
@@ -1566,19 +1554,18 @@ describe("the binding records the module assembles at capture", () => {
     // is something far away (here, `dlopen` called a second time while the fork
     // still held the loader's archive reader). Census 186.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
-    seedTemplateId(f, 1, 2048);
+    admitActivation(f, 0);
+    admitActivation(f, 1, { template: sideTemplate(1) });
     // The side activation is declared by hand here rather than through
     // `openCapture`, so its (empty) resume catalog is seeded by hand too: the
     // replay below registers every activation's slots from its catalog and
     // refuses one that never seeded.
-    seedEmptyResumeCatalog(f.x, 1);
     const sidesPtr = SIDES_SCRATCH;
     const sides = new DataView(f.memory.buffer);
     sides.setUint32(sidesPtr, 1, true);
     sides.setUint32(sidesPtr + 4, 0, true);
     for (const activation of [0, 1]) {
-      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
       if (f.instance.driveTable.length < needed) {
         f.instance.driveTable.grow(needed - f.instance.driveTable.length);
@@ -1717,7 +1704,7 @@ describe("the binding records the module assembles at capture", () => {
     // returns nothing (that is the guest ABI), so `finish` is the only place
     // this can surface.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "the capture opens").toBe(0);
@@ -1744,7 +1731,7 @@ describe("the binding records the module assembles at capture", () => {
     // With no region seeded there is nowhere private to write, so the seed is
     // refused rather than defaulting to somewhere. Census D9 C4.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
@@ -1785,7 +1772,7 @@ describe("the binding records the module assembles at capture", () => {
     // everything: an attach while THIS worker is capturing its own fork would
     // seed a replay driver over a live capture.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "capture open").toBe(0);
@@ -1803,7 +1790,7 @@ describe("the binding records the module assembles at capture", () => {
     // exception broker's `throwRecipe` needs no new entry -- the module already
     // exposes a decoded node's module activation, and the host already wraps it.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
@@ -1820,7 +1807,7 @@ describe("the binding records the module assembles at capture", () => {
     // group imports the global, so nobody can hand it to a child and it comes
     // from the child's own base imports instead. The host never says this.
     const f = fixture();
-    seedTemplateId(f, 0, 2048);
+    admitActivation(f, 0);
     seedSections(f);
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7);

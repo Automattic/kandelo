@@ -210,8 +210,8 @@ pub const DRIVE_OP_ABORT_END: u32 = 13;
 /// `wpk_fork_module_state_restore`/`wpk_fork_module_state_finish_restore`/
 /// `wpk_fork_rewind_begin`/`wpk_fork_abort_begin`/`wpk_fork_unwind_end`/
 /// `wpk_fork_rewind_end`/`wpk_fork_abort_end`/`wpk_fork_unwind_begin` at
-/// `base(a)+offset`. The host reads
-/// `fm_drive_table_base` and binds the guest exports at these offsets, so bumping
+/// `base(a)+offset`. The host reads the base from the row
+/// `fm_bind_activation` answers and binds the guest exports at these offsets, so bumping
 /// this count stays consistent as long as every side derives its slots from
 /// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
 /// contract (not a wire/ABI format, not serialized), so growing it is additive.

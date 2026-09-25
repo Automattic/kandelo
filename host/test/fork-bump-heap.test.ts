@@ -67,8 +67,8 @@ describe("bump heap floor", () => {
     // floor there is nothing else to hold.
     expect(x.mmaps(), "instantiation alone maps nothing").toBe(0);
 
-    x.seedActivationCatalog(ACTIVATION, [1, 2, 3]);
-    expect(x.errno(), "seeding a three-ordinal catalog").toBe(0);
+    x.admit(ACTIVATION, { ordinals: [1, 2, 3] });
+    expect(x.errno(), "admitting a three-ordinal catalog").toBe(0);
     expect(
       x.mmaps() - arenaChunks(x),
       "the first real work maps a heap chunk beside the arena's",
@@ -81,12 +81,12 @@ describe("bump heap floor", () => {
     // moves only by whatever arena chunks the second seed adds, which the
     // arena's own counts report.
     const x = arenaFixture("bump heap retention");
-    x.seedActivationCatalog(ACTIVATION, [1, 2, 3]);
+    x.admit(ACTIVATION, { ordinals: [1, 2, 3] });
     expect(x.errno()).toBe(0);
     const mapsAfterFirst = x.mmaps();
     const arenaAfterFirst = arenaChunks(x);
 
-    x.seedActivationCatalog(ACTIVATION + 1, [4, 5, 6]);
+    x.admit(ACTIVATION + 1, { ordinals: [4, 5, 6] });
     expect(x.errno()).toBe(0);
     expect(x.mmaps() - mapsAfterFirst, "no second heap chunk").toBe(
       arenaChunks(x) - arenaAfterFirst,
@@ -95,7 +95,7 @@ describe("bump heap floor", () => {
 
   it("keeps a durable worker's chunks across an abort", () => {
     const x = arenaFixture("bump heap abort, durable");
-    x.seedActivationCatalog(ACTIVATION, [1, 2, 3]);
+    x.admit(ACTIVATION, { ordinals: [1, 2, 3] });
     expect(x.errno()).toBe(0);
     const before = x.munmaps();
 
@@ -112,7 +112,7 @@ describe("bump heap floor", () => {
       PAGE,
     );
     expect(x.errno(), "seeding the borrowed workspace").toBe(0);
-    x.seedActivationCatalog(ACTIVATION, [1, 2, 3]);
+    x.admit(ACTIVATION, { ordinals: [1, 2, 3] });
     expect(x.errno()).toBe(0);
     const heapChunks = x.mmaps() - arenaChunks(x);
     expect(heapChunks, "the seed grew the heap").toBeGreaterThan(0);
@@ -130,7 +130,7 @@ describe("bump heap floor", () => {
     expect(arenaChunks(x), "the arena is untouched").toBeGreaterThan(0);
     // The list was FORGOTTEN, not merely unmapped: the next allocation maps
     // afresh rather than reusing an address the kernel took back.
-    x.seedActivationCatalog(ACTIVATION + 1, [4, 5, 6]);
+    x.admit(ACTIVATION + 1, { ordinals: [4, 5, 6] });
     expect(x.errno()).toBe(0);
     expect(x.mmaps() - mapsBefore, "a fresh chunk after the release").toBe(
       heapChunks,

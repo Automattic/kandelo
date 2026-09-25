@@ -5,6 +5,7 @@ import {
   CAPTURE_KIND_EXNREF,
   INTERN_KIND_I31,
   captureGraph,
+  driveBase,
   fixture,
   saveSlotThunk,
 } from "./fork-module-capture-fixture";
@@ -50,7 +51,7 @@ function bindThrower(
   raise: boolean,
 ): number[] {
   const calls: number[] = [];
-  const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+  const base = driveBase(activation);
   const thunk = saveSlotThunk((recipe) => {
     calls.push(recipe);
     if (raise) throw new Error(`activation ${activation} raised ${recipe}`);

@@ -6,6 +6,7 @@ import {
   instantiateForkModule,
 } from "../src/fork-module-instance";
 import { arenaFixture } from "./fork-module-capture-fixture";
+import { admit } from "./support/fork-admission";
 
 const PAGE = 65536;
 
@@ -90,7 +91,7 @@ describe("instantiateForkModule", () => {
     // one reaches by giving the module no channel at all.
     //
     // WHY THIS RUNS ON `arenaFixture` AND NOT ON THE BARE INSTANCE ABOVE.
-    // Seeding a catalog REGISTERS it, and registration now allocates the
+    // Admitting a catalog REGISTERS it, and registration allocates the
     // activation's `(ordinal, slot)` record in the arena — which maps its
     // chunks with `channel_mmap`. A module whose `fm_set_format` was given no
     // channel base answers `EINVAL` from `channel_base()` instead, which is the
@@ -106,28 +107,31 @@ describe("instantiateForkModule", () => {
     const x = arenaFixture("resume catalog size");
     // THE RESPONDER NEVER REUSES AN ADDRESS and never grows the memory: it
     // bump-allocates upward from its floor in the fixture's 16 MiB. The three
-    // seeds below map three assignment records (160 KiB, 512 KiB, 512 KiB,
-    // each page-rounded) plus the arena's chunks -- and, since the bump heap
-    // lost its static floor, its 1 MiB chunks come through the same window.
-    // Without more room the publish's own bound (`end > mem_len_bytes()`)
-    // answers a truthful ENOMEM for a rig limit, so the memory is grown here.
-    // A property of the test rig, not of the module: a kernel reuses pages.
-    x.memory.grow(128); // 8 MiB
+    // admissions below map three descriptors through `fm_admission_buffer`
+    // (160 KiB, 512 KiB, 512 KiB), three catalogs and three assignment
+    // records (160 KiB, 512 KiB, 512 KiB, each page-rounded), all live at
+    // once, plus the arena's chunks -- and, since the bump heap lost its
+    // static floor, its 1 MiB chunks come through the same window. Without
+    // more room the publish's own bound (`end > mem_len_bytes()`) answers a
+    // truthful ENOMEM for a rig limit, so the memory is grown here. A
+    // property of the test rig, not of the module: a kernel reuses pages.
+    x.memory.grow(256); // 16 MiB
     const OLD_CAP = 65_536;
+    const dense = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
     // A catalog exceeding the OLDEST cap registers cleanly.
-    x.seedActivationCatalog(0, Array.from({ length: 20_000 }, (_, i) => i));
-    expect(x.errno(), "20,000 ordinals: past the 16,384 cap").toBe(0);
-    // Exactly at the later cap: accepted, and a re-seed of activation 0
-    // replaces the first catalog. This is the largest assignment the arena is
-    // asked for anywhere -- 65,536 records, 512 KiB in one chunk sized to the
-    // request.
-    x.seedActivationCatalog(0, Array.from({ length: OLD_CAP }, (_, i) => i));
-    expect(x.errno(), "exactly at the old cap").toBe(0);
+    expect(x.admit(0, { ordinals: dense(20_000) }), "20,000 ordinals: past the 16,384 cap")
+      .toBe(0);
+    // Exactly at the later cap: accepted. This is the largest assignment the
+    // arena is asked for anywhere but the case below -- 65,536 records,
+    // 512 KiB in one chunk sized to the request.
+    expect(x.admit(1, { ordinals: dense(OLD_CAP) }), "exactly at the old cap").toBe(0);
     // One past it: ACCEPTED. There is no cap to answer E2BIG for; a catalog
     // the arena can map is a catalog the module holds.
-    x.seedActivationCatalog(0, Array.from({ length: OLD_CAP + 1 }, (_, i) => i));
-    expect(x.errno(), "one past the old cap is not a boundary any more").toBe(0);
-    expect(x.publishedSlots(0).length, "and every ordinal got a slot").toBe(OLD_CAP + 1);
+    expect(
+      x.admit(2, { ordinals: dense(OLD_CAP + 1) }),
+      "one past the old cap is not a boundary any more",
+    ).toBe(0);
+    expect(x.publishedSlots(2).length, "and every ordinal got a slot").toBe(OLD_CAP + 1);
   });
 
   it("refuses to register a resume catalog when it has no channel to store it in", () => {
@@ -154,17 +158,10 @@ describe("instantiateForkModule", () => {
     (fm.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0);
     expect((fm.exports.fm_last_errno as () => number)()).toBe(0);
 
-    const catalogAddr = 1 * 1024 * 1024; // 1 MiB, well below the module region
-    const view = new DataView(memory.buffer);
-    for (let i = 0; i < 4; i++) view.setUint32(catalogAddr + i * 4, i, true);
-    (fm.exports.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
-      0,
-      catalogAddr,
-      4,
-    );
+    const stageAddr = 1 * 1024 * 1024; // 1 MiB, well below the module region
     const EINVAL = 22;
     expect(
-      (fm.exports.fm_last_errno as () => number)(),
+      admit(fm.exports as Record<string, unknown>, memory, stageAddr, 0, { ordinals: [0, 1, 2, 3] }),
       "a module with no channel cannot register slots, and says so",
     ).toBe(EINVAL);
   });

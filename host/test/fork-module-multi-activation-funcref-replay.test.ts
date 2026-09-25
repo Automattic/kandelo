@@ -5,7 +5,7 @@
 // which resolves every funcref against ONE catalog. D7a.1b removes that
 // restriction with a MERGED, activation-namespaced catalog: the host lays each
 // activation's function catalog at a distinct BASE inside one imported table, the
-// base the module places with `fm_place_activation_catalog`.
+// base the module places when it binds the activation (`fm_bind_activation`).
 // `fm_funcref_ordinal` then returns the GLOBAL slot
 // `base(module_activation) + function_ordinal`, and the injected
 // `__wpk_fork_ref_decode_funcref` shim `table.get`s that slot.
@@ -37,10 +37,13 @@ import { describe, expect, it } from "vitest";
 import { FORK_MODULE_STATS } from "../src/fork-module-backend";
 import {
   INTERN_KIND_FUNCREF,
+  admitInto,
   captureArena,
   childInstance,
   fixture,
+  sideTemplate,
 } from "./fork-module-capture-fixture";
+import { bind } from "./support/fork-admission";
 
 const PID = 4343;
 // The main module (activation 0) and its dlopen'd side module (activation 1),
@@ -80,7 +83,6 @@ function catalogTable(base: number, count: number): WebAssembly.Table {
 }
 
 interface ForkModuleRefExports {
-  fm_place_activation_catalog: (activationId: number, length: number) => number;
   fm_begin_reference_replay: (root: number, pid: number) => void;
   fm_stats: (field: number) => bigint;
   fm_last_errno: () => number;
@@ -132,15 +134,21 @@ describe("fork-module multi-activation funcref reconstruction (Phase 6 D7a.1b)",
     const catalogA = catalogTable(1000, 80);
     const catalogB = catalogTable(2000, 6);
 
-    // The CHILD's merged, activation-namespaced catalog: the module places A
-    // at slots [0, 80) and B at [80, 86). Filling it is the host's job -- the
-    // module is instantiated before its guests and cannot import their
-    // exports.
+    // The CHILD's merged, activation-namespaced catalog: binding each
+    // activation places A at slots [0, 80) and B at [80, 86). Filling it is
+    // the host's job -- the module is instantiated before its guests and
+    // cannot import their exports.
     const child = childInstance(f, { label: "multi-funcref-replay-child" });
+    const cx = child.exports as Record<string, unknown>;
     const x = child.exports as unknown as ForkModuleRefExports;
-    const BASE_A = x.fm_place_activation_catalog(ACTIVATION_A, catalogA.length);
+    const place = (activation: number, length: number): number | undefined => {
+      const template = activation === ACTIVATION_A ? 0 : sideTemplate(activation);
+      expect(admitInto(cx, f.memory, activation, { template }), `admitting ${activation}`).toBe(0);
+      return bind(cx, f.memory, activation, length, 0)?.func;
+    };
+    const BASE_A = place(ACTIVATION_A, catalogA.length)!;
     expect(x.fm_last_errno(), "activation A's catalog is placed").toBe(0);
-    const BASE_B = x.fm_place_activation_catalog(ACTIVATION_B, catalogB.length);
+    const BASE_B = place(ACTIVATION_B, catalogB.length)!;
     expect(x.fm_last_errno(), "activation B's catalog is placed").toBe(0);
     expect([BASE_A, BASE_B]).toEqual([0, catalogA.length]);
     const merged = child.functionCatalog;

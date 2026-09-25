@@ -34,9 +34,10 @@ import { arenaFixture } from "./fork-module-capture-fixture";
  * slots around 1,000,001, handed those numbers back, and tidied up after
  * itself perfectly. Only the numbers gave it away.
  *
- * So every assertion here goes through `fm_publish_resume_assignment`, which
- * is the reader the guest's own placement shim consumes: asserting these
- * numbers is asserting the numbers the thunks are actually placed at.
+ * So every assertion here goes through the resume half of the row
+ * `fm_bind_activation` answers, which is the reader the guest's own placement
+ * shim consumes: asserting these numbers is asserting the numbers the thunks
+ * are actually placed at.
  *
  * Beside the numbers, this file asserts two things the numbers cannot show:
  * that a free MAPS nothing, and that a COW child inherits none of the parent's
@@ -53,8 +54,8 @@ describe("resume free-slot bitmap", () => {
     x.growResumeTable(8);
 
     // Three ordinals take slots 1, 2, 3 from RESUME_NEXT_SLOT.
-    x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
-    expect(x.errno(), "seeding activation A").toBe(0);
+    x.admit(ACTIVATION_A, { ordinals: [10, 20, 30] });
+    expect(x.errno(), "admitting activation A").toBe(0);
     expect(x.publishedSlots(ACTIVATION_A), "a fresh activation numbers from 1")
       .toEqual([1, 2, 3]);
     // ASCENDING BY ORDINAL, asserted rather than assumed. The store this
@@ -87,11 +88,11 @@ describe("resume free-slot bitmap", () => {
     ).toBe(0);
 
     // THE ASSERTION THAT DISTINGUISHES A WORKING FREE LIST from a bitmap that
-    // merely exists: seeding three more ordinals must consume the three freed
+    // merely exists: admitting three more ordinals must consume the three freed
     // slots rather than growing three fresh ones. If it grew instead, these
     // would be 4, 5, 6.
-    x.seedActivationCatalog(ACTIVATION_B, [11, 22, 33]);
-    expect(x.errno(), "seeding activation B").toBe(0);
+    x.admit(ACTIVATION_B, { ordinals: [11, 22, 33] });
+    expect(x.errno(), "admitting activation B").toBe(0);
     expect(
       x.publishedSlots(ACTIVATION_B),
       "the reused slots are the freed ones, smallest first",
@@ -111,14 +112,14 @@ describe("resume free-slot bitmap", () => {
     // would land on one thunk.
     const x = arenaFixture("resume free bitmap scrub");
     x.growResumeTable(8);
-    x.seedActivationCatalog(ACTIVATION_A, [10, 20, 30]);
-    expect(x.errno(), "seeding activation A").toBe(0);
+    x.admit(ACTIVATION_A, { ordinals: [10, 20, 30] });
+    expect(x.errno(), "admitting activation A").toBe(0);
     expect(x.slots(1, ACTIVATION_A, 0), "three slots freed into the bitmap").toBe(3);
 
     x.setFormat();
 
-    x.seedActivationCatalog(ACTIVATION_B, [11, 22, 33, 44, 55]);
-    expect(x.errno(), "seeding activation B in the child").toBe(0);
+    x.admit(ACTIVATION_B, { ordinals: [11, 22, 33, 44, 55] });
+    expect(x.errno(), "admitting activation B in the child").toBe(0);
     const slots = x.publishedSlots(ACTIVATION_B);
     expect(slots, "the child numbers from 1 with nothing inherited").toEqual([
       1, 2, 3, 4, 5,
@@ -160,8 +161,8 @@ describe("resume free-slot bitmap", () => {
     x.growResumeTable(CAP);
 
     const ordinals = Array.from({ length: CAP }, (_, i) => i);
-    x.seedActivationCatalog(ACTIVATION_A, ordinals);
-    expect(x.errno(), "seeding a full-occupancy catalog").toBe(0);
+    x.admit(ACTIVATION_A, { ordinals });
+    expect(x.errno(), "admitting a full-occupancy catalog").toBe(0);
 
     // Every one of them, including slot CAP. Against the fixed bitmap this was
     // -1 with `fm_last_errno` == ENOSPC (28).
@@ -174,8 +175,8 @@ describe("resume free-slot bitmap", () => {
     // AND IT REALLY WENT BACK. A release that reported success while dropping
     // the top slot would leave the next activation numbering from CAP + 1, so
     // the reuse is what distinguishes "freed" from "claimed to free".
-    x.seedActivationCatalog(ACTIVATION_B, [7]);
-    expect(x.errno(), "seeding activation B").toBe(0);
+    x.admit(ACTIVATION_B, { ordinals: [7] });
+    expect(x.errno(), "admitting activation B").toBe(0);
     expect(
       x.publishedSlots(ACTIVATION_B),
       "the freed slots come back smallest-first, from 1",

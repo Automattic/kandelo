@@ -39,6 +39,8 @@ import {
   CHILD_MODULE_BASE,
   INTERN_KIND_I31,
   captureGraph,
+  admitInto,
+  driveBase,
   fixture,
 } from "./fork-module-capture-fixture";
 
@@ -73,11 +75,9 @@ interface NonPublishingGuest {
 }
 
 interface DriveShimExports {
-  fm_set_activation_gc_codec: (act: number, ptr: number, len: number) => void;
   fm_restore_from_arena: (root: number, pid: number) => number;
   fm_gc_plan_count: () => number;
   fm_drive_execute: (planPtr: number, count: number) => void;
-  fm_drive_table_base: (activation: number) => number;
   fm_last_errno: () => number;
 }
 
@@ -87,8 +87,6 @@ const GC_CODEC = new Uint8Array(
     new URL("../../crates/fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url),
   ),
 );
-/** Where the codec bytes are staged: low scratch, clear of the channel. */
-const CODEC_AT = 2 * 65536;
 
 const MODULE = new WebAssembly.Module(
   readFileSync(resolveBinary("fork_module32.wasm")),
@@ -146,9 +144,10 @@ function setup(): {
   const x = fm.exports as unknown as DriveShimExports;
   (fm.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 4 * 65536);
 
-  new Uint8Array(f.memory.buffer, CODEC_AT, GC_CODEC.byteLength).set(GC_CODEC);
-  x.fm_set_activation_gc_codec(0, CODEC_AT, GC_CODEC.byteLength);
-  expect(x.fm_last_errno(), "the GC codec seeds").toBe(0);
+  expect(
+    admitInto(fm.exports as Record<string, unknown>, f.memory, 0, { gcCodec: GC_CODEC }),
+    "the child admits its GC codec",
+  ).toBe(0);
 
   const transitTable = fm.exports.__wpk_fork_ref_gc_transit as WebAssembly.Table;
   const planPtr = x.fm_restore_from_arena(root, PID);
@@ -167,7 +166,7 @@ describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () 
     // STORE #2 at `recipe+1`) into the host-owned drive table (base(0) = 0 ->
     // ALLOC slot 0, FILL slot 1).
     const { guest, published } = instantiateFaithfulGuest(fm.exports);
-    const base = x.fm_drive_table_base(0);
+    const base = driveBase(0);
     expect(base).toBe(0);
     if (fm.driveTable.length < base + 2) {
       fm.driveTable.grow(base + 2 - fm.driveTable.length);
@@ -203,7 +202,7 @@ describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () 
     // into the transit table, so the shim's post-ALLOC read finds a null slot.
     const guest = new WebAssembly.Instance(NONPUBLISHING_GUEST_MODULE)
       .exports as unknown as NonPublishingGuest;
-    const base = x.fm_drive_table_base(0);
+    const base = driveBase(0);
     if (fm.driveTable.length < base + 2) {
       fm.driveTable.grow(base + 2 - fm.driveTable.length);
     }

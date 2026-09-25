@@ -34,7 +34,9 @@ import {
   CAPTURE_KIND_EXNREF,
   INTERN_KIND_FUNCREF,
   captureGraph,
+  admitInto,
   childInstance,
+  driveBase,
   fixture,
   type Fixture,
 } from "./fork-module-capture-fixture";
@@ -102,7 +104,6 @@ interface ForkModuleRefExports {
   fm_build_gc_plan: (pid: number) => number;
   fm_gc_plan_count: () => number;
   fm_drive_execute: (ptr: number, count: number) => void;
-  fm_drive_table_base: (act: number) => number;
   __wpk_fork_ref_exn_route: (recipeId: number, expectedActivation: number) => number;
   __wpk_fork_ref_exn_load: (
     recipeId: number,
@@ -115,13 +116,6 @@ interface ForkModuleRefExports {
     referenceCount: number,
   ) => number;
   __wpk_fork_ref_exn_cache_index: (recipeId: number) => number;
-  // The exnref tag-validity admission gate: seed one activation's declared tag
-  // ordinals, then the child-install entry re-checks the graph against them.
-  fm_set_activation_exception_codec: (
-    activation: number,
-    ptr: number,
-    count: number,
-  ) => void;
   fm_attach_child: (root: number, pid: number) => number;
 }
 
@@ -151,7 +145,7 @@ function bindFaithfulGuest(
   const moduleExports = fm.exports as Record<string, unknown>;
   ensureTransitRecipeSlot(moduleExports, maxRecipeId);
   const { guest } = instantiateFaithfulGuest(moduleExports);
-  const base = x.fm_drive_table_base(0);
+  const base = driveBase(0);
   if (fm.driveTable.length < base + 3) {
     fm.driveTable.grow(base + 3 - fm.driveTable.length);
   }
@@ -222,7 +216,8 @@ describe("fork-module exnref reference reconstruction (Phase 6 D6.3a)", () => {
     expect(x.__wpk_fork_ref_exn_cache_index(exnId)).toBe(1); // first (only) exnref
 
     // Load the exnref: no scalar bytes, one reference-payload recipe id (LE u32).
-    const refIdsDst = 13 * 1024 * 1024;
+    // LOW scratch (page 7): the responder maps arena chunks from 12 MiB up.
+    const refIdsDst = 7 * PAGE;
     expect(x.__wpk_fork_ref_exn_load(exnId, 0, 0, 0, refIdsDst, 0, refIdsDst, 1)).toBe(1);
     expect(new Uint32Array(memory.buffer, refIdsDst, 1)[0]).toBe(payloadId);
 
@@ -251,7 +246,7 @@ describe("fork-module exnref tag-validity admission gate (fm_attach_child)", () 
    * array. `fm_set_activation_exception_tags` took the array and was DELETED
    * for exactly that reason: decoding the section to produce it made the host a
    * second decoder of a module-owned format. The committed fixture declares
-   * tags {0, 1, 2}, which is what `declareTags` seeds; `false` seeds nothing,
+   * tags {0, 1, 2}, which is what `declareTags` admits; `false` admits nothing,
    * for the activation-declared-no-codec case.
    */
   function attachWithSeededTags(
@@ -260,16 +255,15 @@ describe("fork-module exnref tag-validity admission gate (fm_attach_child)", () 
     declareTags: boolean,
   ): { errno: number; x: ForkModuleRefExports } {
     const memory = f.memory;
-    const { x } = replayChild(f);
+    const { fm, x } = replayChild(f);
 
     if (declareTags) {
-      const scratch = memory.buffer.byteLength;
-      memory.grow(1);
-      new Uint8Array(memory.buffer, scratch, EXCEPTION_CODEC.byteLength).set(
-        EXCEPTION_CODEC,
-      );
-      x.fm_set_activation_exception_codec(0, scratch, EXCEPTION_CODEC.byteLength);
-      expect(x.fm_last_errno(), "the codec section is accepted").toBe(0);
+      expect(
+        admitInto(fm.exports as Record<string, unknown>, memory, 0, {
+          exceptionCodec: EXCEPTION_CODEC,
+        }),
+        "the codec section is admitted",
+      ).toBe(0);
     }
 
     x.fm_attach_child(root, PID);

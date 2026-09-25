@@ -20,7 +20,7 @@ import {
  * serviced channel -- so it is sequenced AFTER `fm_set_format` stores
  * `CHANNEL_BASE`, not before.
  *
- * WHAT IT DRIVES: the resume assignment is on the arena, so seeding an
+ * WHAT IT DRIVES: the resume assignment is on the arena, so admitting an
  * oversized catalog really does map record and directory chunks, and the scrub
  * really does have something to hand back.
  */
@@ -44,8 +44,8 @@ const ordinalsPastOneChunk = Array.from({ length: 20_000 }, (_, i) => i + 1);
 describe("arena COW-child scrub", () => {
   it("a second fm_set_format returns every chunk the first one's records held", () => {
     const x = arenaFixture("arena cow scrub");
-    x.seedActivationCatalog(ACTIVATION, ordinalsPastOneChunk);
-    expect(x.errno(), "seeding the oversized catalog").toBe(0);
+    x.admit(ACTIVATION, { ordinals: ordinalsPastOneChunk });
+    expect(x.errno(), "admitting the oversized catalog").toBe(0);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD)).toBeGreaterThan(0);
     const before = x.munmaps();
     const held =

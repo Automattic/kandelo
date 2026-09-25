@@ -3,7 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { RegisteredForkActivation } from "../src/fork-activations";
 import { ForkMergedStaticRoots } from "../src/fork-merged-static-roots";
 import { WPK_FORK_STATIC_ROOT_CATALOG_EXPORT } from "../src/generated/abi";
-import { fixture } from "./fork-module-capture-fixture";
+import {
+  admitActivation,
+  fixture,
+  sideTemplate,
+  type Fixture,
+} from "./fork-module-capture-fixture";
+import { bind } from "./support/fork-admission";
 
 /**
  * ONE static-root base map, and it is the module's.
@@ -42,10 +48,22 @@ function activation(
   };
 }
 
+/**
+ * Place `activation`'s static-root catalog the way registration does: admit
+ * it, then bind it with no function catalog. The row's `static_root_base`,
+ * or -1 with the refusal in `fm_last_errno`.
+ */
+function placer(f: Fixture): (activation: number, length: number) => number {
+  return (activation, length) => {
+    if (activation !== 0) admitActivation(f, activation, { template: sideTemplate(activation) });
+    return bind(f.x, f.memory, activation, 0, length)?.statics ?? -1;
+  };
+}
+
 describe("the merged static-root catalog", () => {
   it("fills every live activation at the base the module placed it", () => {
     const f = fixture();
-    const place = f.x.fm_place_activation_static_roots as (a: number, n: number) => number;
+    const place = placer(f);
     const merged = f.instance.staticRootCatalog;
     const roots = new ForkMergedStaticRoots(merged);
     const live = [activation(0, place(0, 3), table(3, "a0")), activation(1, place(1, 2), table(2, "a1"))];
@@ -66,7 +84,7 @@ describe("the merged static-root catalog", () => {
 
   it("MODULE: the same length answers the same base; a different one is refused", () => {
     const f = fixture();
-    const place = f.x.fm_place_activation_static_roots as (a: number, n: number) => number;
+    const place = placer(f);
     expect(place(1, 4)).toBe(0);
     expect(place(2, 8)).toBe(4);
     expect(place(1, 4), "asked again, the range it holds").toBe(0);

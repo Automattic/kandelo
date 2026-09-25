@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
-import { fixture, openCapture, type Fixture } from "./fork-module-capture-fixture";
+import {
+  admitActivation,
+  fixture,
+  openCapture,
+  sideTemplate,
+  type Fixture,
+} from "./fork-module-capture-fixture";
+import { bind } from "./support/fork-admission";
 
 /** The per-activation drive stride: one slot per binding, as the host binds it. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
@@ -35,8 +42,16 @@ const FUNCTION = new WebAssembly.Instance(
 function module(f: Fixture) {
   const call = (name: string) => f.x[name] as (...args: number[]) => number;
   return {
-    placeCatalog: call("fm_place_activation_catalog"),
-    placeStaticRoots: call("fm_place_activation_static_roots"),
+    /**
+     * Admit and bind `activation` as a `dlopen` registers it, placing its two
+     * merged catalogs at the lengths given; the row's two bases, or -1 each
+     * with the refusal in `fm_last_errno`.
+     */
+    place: (activation: number, funcLen: number, staticLen: number) => {
+      expect(admitActivation(f, activation, { template: sideTemplate(activation) })).toBe(0);
+      const row = bind(f.x, f.memory, activation, funcLen, staticLen);
+      return { func: row?.func ?? -1, statics: row?.statics ?? -1 };
+    },
     release: (activation: number, unplaced = false) =>
       call("fm_resume_slots")(unplaced ? 2 : 1, activation, 0),
     slotToRecipe: call("fm_funcref_slot_to_recipe"),
@@ -57,10 +72,8 @@ describe("releasing an activation through the fork module", () => {
   it("nulls exactly the closed activation's catalog, static-root and drive slots", () => {
     const f = fixture();
     const m = module(f);
-    expect(m.placeCatalog(1, 3)).toBe(0);
-    expect(m.placeCatalog(2, 2)).toBe(3);
-    expect(m.placeStaticRoots(1, 2)).toBe(0);
-    expect(m.placeStaticRoots(2, 2)).toBe(2);
+    expect(m.place(1, 3, 2)).toEqual({ func: 0, statics: 0 });
+    expect(m.place(2, 2, 2)).toEqual({ func: 3, statics: 2 });
     const { functionCatalog, staticRootCatalog, driveTable } = f.instance;
     fillAll(functionCatalog, 5, FUNCTION);
     fillAll(staticRootCatalog, 4, { root: true });
@@ -80,16 +93,18 @@ describe("releasing an activation through the fork module", () => {
   it("gives a released range to the next placement, so the tables stay bounded", () => {
     const f = fixture();
     const m = module(f);
-    expect(m.placeCatalog(1, 10)).toBe(0);
+    // Activation 1 holds functions and no static roots: a zero-length range,
+    // which every later placement's lowest gap passes over.
+    expect(m.place(1, 10, 0).func).toBe(0);
     const { functionCatalog } = f.instance;
     // 200 open/close cycles of a second library. Each `dlopen` gets a NEW
     // activation id (the host does not reuse ids yet), and still takes the
     // range the previous `dlclose` gave back.
     for (let cycle = 0; cycle < 200; cycle += 1) {
       const id = 2 + cycle;
-      const base = m.placeCatalog(id, 7);
+      const { func: base, statics } = m.place(id, 7, 3);
       expect(base, `cycle ${cycle}`).toBe(10);
-      expect(m.placeStaticRoots(id, 3), `cycle ${cycle}`).toBe(0);
+      expect(statics, `cycle ${cycle}`).toBe(0);
       fillAll(functionCatalog, base + 7, FUNCTION);
       m.release(id);
       expect(f.errno(), `cycle ${cycle}`).toBe(0);
@@ -99,18 +114,18 @@ describe("releasing an activation through the fork module", () => {
     // The LOWEST gap that fits: with [0, 10) freed below a live [10, 17), a
     // 7 goes at 0, a 4 does not fit the 3 left and goes past the end, and a 3
     // fills the rest of the gap.
-    expect(m.placeCatalog(300, 7)).toBe(10);
+    expect(m.place(300, 7, 0).func).toBe(10);
     m.release(1);
-    expect(m.placeCatalog(301, 7)).toBe(0);
-    expect(m.placeCatalog(302, 4)).toBe(17);
-    expect(m.placeCatalog(303, 3)).toBe(7);
+    expect(m.place(301, 7, 0).func).toBe(0);
+    expect(m.place(302, 4, 0).func).toBe(17);
+    expect(m.place(303, 3, 0).func).toBe(7);
   });
 
   it("refuses a slot no live range holds, rather than naming a closed library", () => {
     const f = fixture();
     const m = module(f);
-    m.placeCatalog(1, 4);
-    m.placeCatalog(2, 4);
+    m.place(1, 4, 0);
+    m.place(2, 4, 0);
     m.release(1);
     openCapture(f, [2]);
     expect(m.slotToRecipe(5), "a slot of the live range").toBeGreaterThanOrEqual(0);
@@ -122,13 +137,12 @@ describe("releasing an activation through the fork module", () => {
   it("releases a dlopen that failed before its tables were grown (op 2)", () => {
     const f = fixture();
     const m = module(f);
-    expect(m.placeCatalog(5, 64)).toBe(0);
-    expect(m.placeStaticRoots(5, 64)).toBe(0);
+    expect(m.place(5, 64, 64)).toEqual({ func: 0, statics: 0 });
     // Nothing grew the tables: the clamped fill has nothing to clear.
     expect(f.instance.functionCatalog.length).toBe(0);
     expect(m.release(5, true)).toBe(0);
     expect(f.errno()).toBe(0);
-    expect(m.placeCatalog(5, 8), "a reused id starts from nothing").toBe(0);
+    expect(m.place(5, 8, 8).func, "a reused id starts from nothing").toBe(0);
     expect(f.errno()).toBe(0);
   });
 });

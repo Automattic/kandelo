@@ -37,6 +37,8 @@ import {
   CHILD_MODULE_BASE,
   INTERN_KIND_I31,
   captureGraph,
+  admitInto,
+  driveBase,
   fixture,
 } from "./fork-module-capture-fixture";
 
@@ -52,15 +54,11 @@ const GC_CODEC = new Uint8Array(
     new URL("../../crates/fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url),
   ),
 );
-/** Where the codec bytes are staged for `fm_set_activation_gc_codec`. */
-const CODEC_AT = 2 * 65536;
 
 interface DriveExports {
-  fm_set_activation_gc_codec: (act: number, ptr: number, len: number) => void;
   fm_restore_from_arena: (root: number, pid: number) => number;
   fm_gc_plan_count: () => number;
   fm_drive_execute: (ptr: number, count: number) => void;
-  fm_drive_table_base: (act: number) => number;
   fm_last_errno: () => number;
 }
 
@@ -99,9 +97,10 @@ function driveCaptured(
   const x = child.exports as unknown as DriveExports;
   (child.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 4 * 65536);
 
-  new Uint8Array(f.memory.buffer, CODEC_AT, GC_CODEC.byteLength).set(GC_CODEC);
-  x.fm_set_activation_gc_codec(0, CODEC_AT, GC_CODEC.byteLength);
-  expect(x.fm_last_errno(), "the child's GC codec seeds").toBe(0);
+  expect(
+    admitInto(child.exports as Record<string, unknown>, f.memory, 0, { gcCodec: GC_CODEC }),
+    "the child admits its GC codec",
+  ).toBe(0);
 
   // STORE #2 is the module's OWN exported transit table -- the same object the
   // guest publishes into and the shim reads back.
@@ -118,7 +117,7 @@ function driveCaptured(
   }));
 
   // Bind the guest's own allocate/fill/exn where the shim `call_indirect`s.
-  const base = x.fm_drive_table_base(0);
+  const base = driveBase(0);
   if (child.driveTable.length < base + 3) {
     child.driveTable.grow(base + 3 - child.driveTable.length);
   }

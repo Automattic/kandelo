@@ -8,8 +8,8 @@
 //! instrumenter (`fork_instrument::module_exception_codec`, specifically its
 //! `replace_descriptor`, reached here through the public
 //! `module_exception_codec::inject`). The host no longer decodes this section
-//! at all — it stages the raw bytes into the fork-module through
-//! `fm_set_activation_exception_codec` and the module decodes them with
+//! at all — it stages the raw bytes into the fork-module in the activation's
+//! `fm_admit_activation` descriptor and the module decodes them with
 //! `fork_codec::exception_codec`.
 //!
 //! To keep the fixture genuine (real encoder output, never hand-authored

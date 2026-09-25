@@ -8,6 +8,7 @@ import {
   placeForkResumeThunks,
 } from "../src/fork-resume-table";
 import { startChannelResponder } from "./fork-module-capture-fixture";
+import { admit, bind } from "./support/fork-admission";
 import { standInGuest } from "./support/resume-placement-stand-in";
 
 /**
@@ -35,8 +36,8 @@ import { standInGuest } from "./support/resume-placement-stand-in";
  * # What this file tests after the placement cutover, and what it does not
  *
  * Registration no longer writes the table. The module publishes its decision
- * (in production, as the resume half of `fm_bind_activation`'s row; here
- * through `fm_publish_resume_assignment`, which that row is built from) and
+ * (the resume half of `fm_bind_activation`'s row, read here exactly as
+ * registration reads it) and
  * `placeForkResumeThunks` hands the guest its own `(ptr, count)`; the guest's emitted
  * `__wpk_fork_place_resume_thunks` does the copying. So what is under test
  * here is the module's NUMBERING -- which slots each activation holds, and
@@ -71,7 +72,7 @@ const CATALOG_AT = 12 * 1024 * 1024;
  * Where the responder starts handing out mappings: above the staged catalogs
  * at 12 MiB, inside the 16 MiB this harness declares.
  *
- * WHY THERE IS A RESPONDER AT ALL. Seeding a catalog REGISTERS it, and
+ * WHY THERE IS A RESPONDER AT ALL. Admitting a catalog REGISTERS it, and
  * registration allocates the activation's `(ordinal, slot)` record in the
  * arena, which maps its chunks through `CHANNEL_BASE`. With nobody behind that
  * address `channel_syscall` parks in `memory_atomic_wait32` with no deadline,
@@ -82,7 +83,7 @@ const MMAP_FLOOR = 13 * 1024 * 1024;
 interface Harness {
   /** Have the guest place its thunks from the module's published assignment. */
   readonly place: (activationId: number, instance: WebAssembly.Instance) => void;
-  /** Seed an activation's catalog, which is what assigns its slots. */
+  /** Admit an activation with this catalog, which is what assigns its slots. */
   readonly seed: (activationId: number, ordinals: readonly number[]) => void;
   readonly errno: () => number;
   /** The module's own resume table, which placement grows and fills. */
@@ -115,19 +116,16 @@ function harness(): Harness {
 
   const errno = () => (x.fm_last_errno as () => number)();
   // THE REAL EXPORT, not a stand-in: the numbering under test is the module's.
+  // No catalog tables here, so both lengths are 0; binding again with the same
+  // lengths answers the same row.
   const publish = (activationId: number): ForkResumeAssignment => {
-    const packed = (x.fm_publish_resume_assignment as (a: number) => bigint)(
-      activationId,
-    );
-    if (packed === -1n) {
+    const row = bind(x, memory, activationId, 0, 0);
+    if (!row) {
       throw new Error(
         `no assignment for activation ${activationId} (errno ${errno()})`,
       );
     }
-    return {
-      ptr: Number(packed & 0xffff_ffffn),
-      count: Number(packed >> 32n),
-    };
+    return row.resume;
   };
   const place = (activationId: number, instance: WebAssembly.Instance): void =>
     placeForkResumeThunks("resume slots", activationId, instance, publish(activationId));
@@ -136,16 +134,10 @@ function harness(): Harness {
   const resumeTable = x.__wpk_fork_resume_table as unknown as WebAssembly.Table;
 
   const seed = (activationId: number, ordinals: readonly number[]): void => {
-    const bytes = new Uint8Array(ordinals.length * 4);
-    const view = new DataView(bytes.buffer);
-    ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
-    new Uint8Array(memory.buffer, CATALOG_AT, bytes.length).set(bytes);
-    (x.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
-      activationId,
-      CATALOG_AT,
-      ordinals.length,
-    );
-    expect(errno(), `seeding activation ${activationId}`).toBe(0);
+    expect(
+      admit(x, memory, CATALOG_AT, activationId, { ordinals }),
+      `admitting activation ${activationId}`,
+    ).toBe(0);
   };
 
   return { place, seed, errno, resumeTable, memory, exports: x };
@@ -177,23 +169,16 @@ function release(h: Harness, activationId: number): void {
  *
  * An activation that holds nothing publishes `(0, 0)`, which decodes to the
  * empty list -- the same answer `slotsOf` gave for an activation with an empty
- * catalog, and for one that has been released.
+ * catalog.
  */
 function slotsOf(h: Harness, activationId: number): number[] {
-  const packed = (
-    h.exports.fm_publish_resume_assignment as (a: number) => bigint
-  )(activationId);
-  if (packed === -1n) {
+  const row = bind(h.exports, h.memory, activationId, 0, 0);
+  if (!row) {
     throw new Error(
-      `publishing activation ${activationId} failed with errno ${h.errno()}`,
+      `binding activation ${activationId} failed with errno ${h.errno()}`,
     );
   }
-  const ptr = Number(packed & 0xffff_ffffn);
-  const count = Number(packed >> 32n);
-  if (count === 0) return [];
-  // `(ordinal: u32, slot: u32)`, stride 8, so slot `i` is word `i * 2 + 1`.
-  const records = new Uint32Array(h.memory.buffer, ptr, count * 2);
-  return Array.from({ length: count }, (_, i) => records[i * 2 + 1]!);
+  return row.assignment.map(([, slot]) => slot);
 }
 
 /** A fresh, distinct Wasm function. The numbering does not read the thunk. */
@@ -247,24 +232,18 @@ describe("resume placement, numbered by the module", () => {
     expect(h.resumeTable.get(0)).toBeNull();
   });
 
-  it("assigns slots by SORTED ordinal, not seeding order", () => {
-    // The module sorts the catalog, so the slot a thunk gets is a function of
-    // its ordinal and nothing else. The catalog is seeded out of order to prove
-    // the host no longer influences it: this class used to sort too, and a test
-    // that seeded them sorted could not tell the two apart.
-    //
-    // CONTRACT CHANGE, recorded rather than quietly rewritten. This case used
-    // to seed [7, 2, 5], pass the targets in that same order, and assert
-    // `slotsOf(0) === [3, 1, 2]` -- the recorded slots followed the HOST's
-    // argument order while their values followed the module's sorted ordinals.
-    // There is no argument order now: the host hands the guest one buffer the
-    // module wrote, and the module writes it ascending by ordinal. So the
-    // recorded list is the module's order, [1, 2, 3], and the fact the old
-    // assertion encoded -- that the VALUES come from the sorted ordinals and
-    // not from the order the host saw them -- is still what is being checked.
+  it("assigns slots by ordinal, from a catalog the module holds in order", () => {
+    // The slot a thunk gets is a function of its ordinal and nothing else, and
+    // the host cannot influence the order: the catalog arrives as the guest's
+    // own `KFRC` section, whose ordinals are strictly ascending, and admission
+    // REFUSES one that is not. So there is no host order left to test against
+    // -- an out-of-order catalog is a malformed section, refused by the
+    // module, and the recorded list is the module's order.
     const h = harness();
-    h.seed(0, [2, 0, 1]);
-    h.place(0, guest(h, [2, 0, 1]));
+    const unordered = admit(h.exports, h.memory, CATALOG_AT, 0, { ordinals: [2, 0, 1] });
+    expect(unordered, "an out-of-order catalog is the module's refusal").toBe(22);
+    h.seed(0, [0, 1, 2]);
+    h.place(0, guest(h, [0, 1, 2]));
     expect(slotsOf(h, 0)).toEqual([1, 2, 3]);
   });
 
@@ -305,53 +284,6 @@ describe("resume placement, numbered by the module", () => {
     release(h, 0);
     expect(h.resumeTable.get(1)).toBeNull();
     expect(h.resumeTable.get(2)).toBeNull();
-  });
-
-  it("nulls PLACED slots when a catalog is re-seeded over them", () => {
-    // THE RE-SEED PATH, pinned. `fm_set_activation_resume_catalog` seeds a
-    // catalog, and seeding over one already seeded RENUMBERS the activation:
-    // `resume_reseed` returns its slots to the free bitmap and assigns fresh
-    // ones from the new ordinal set. Anything left in a returned slot is a
-    // stale thunk at a slot the allocator is about to hand out again -- a real
-    // function of the right type, so a later resume through it runs instead of
-    // faulting. Census 194.
-    //
-    // That path nulls LENIENTLY: it is the one caller that can reach the free
-    // routine before any placement, because seeding is what ASSIGNS slots, so
-    // a slot past the end of the table provably holds nothing and is skipped
-    // rather than trapped on. `fork-module-instance.test.ts` covers that half
-    // by seeding two catalogs with no guest anywhere. This covers the half
-    // that matters for correctness: when the thunks HAVE been placed, the
-    // re-seed clears them.
-    const h = harness();
-    const setGlobalCatalog = (ordinals: readonly number[]): void => {
-      const bytes = new Uint8Array(ordinals.length * 4);
-      const view = new DataView(bytes.buffer);
-      ordinals.forEach((o, i) => view.setUint32(i * 4, o >>> 0, true));
-      new Uint8Array(h.memory.buffer, CATALOG_AT, bytes.length).set(bytes);
-      (h.exports.fm_set_activation_resume_catalog as (a: number, p: number, c: number) => void)(
-        0,
-        CATALOG_AT,
-        ordinals.length,
-      );
-      expect(h.errno(), "seeding activation 0's catalog").toBe(0);
-    };
-
-    setGlobalCatalog([0, 1, 2]);
-    expect(slotsOf(h, 0)).toEqual([1, 2, 3]);
-    h.place(0, guest(h, [0, 1, 2]));
-    expect(h.resumeTable.get(1)).not.toBeNull();
-    expect(h.resumeTable.get(2)).not.toBeNull();
-    expect(h.resumeTable.get(3)).not.toBeNull();
-
-    // Re-seed with a SHORTER catalog, so slots 2 and 3 are freed and not
-    // immediately reassigned. A re-seed that did not null would leave live
-    // thunks in both.
-    setGlobalCatalog([0]);
-    expect(slotsOf(h, 0)).toEqual([1]);
-    expect(h.resumeTable.get(1), "slot 1 was freed and reassigned").toBeNull();
-    expect(h.resumeTable.get(2), "slot 2 was freed").toBeNull();
-    expect(h.resumeTable.get(3), "slot 3 was freed").toBeNull();
   });
 
   it("rejects every op but the release", () => {
