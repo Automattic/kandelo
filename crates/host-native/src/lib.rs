@@ -1783,6 +1783,92 @@ mod tests {
         Ok(())
     }
 
+    /// A guest that executes Wasm `unreachable` without calling exit(2) has
+    /// faulted, and must end with the SIGILL status (`128 + 4`) every Kandelo
+    /// host records for that trap.
+    ///
+    /// This host once treated every `unreachable` trap as the exit path
+    /// unwinding the guest, so this program ended as if it had exited cleanly
+    /// -- and, because nothing told the kernel it was gone, the pump waited
+    /// out its 30-second cap. A JavaScript host decides the same question by
+    /// asking whether the kernel recorded an exit (`kernelExitStatus` in
+    /// `host/src/worker-main.ts`); this is the native half of that parity.
+    /// Fixture: `native_trap.c`.
+    #[test]
+    fn smoke_guest_unreachable_is_a_fault() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = crate::fixtures::fixture("native_trap.wasm");
+
+        let started = std::time::Instant::now();
+        let outcome = run_trivial_guest(&path, guest)?;
+        let elapsed = started.elapsed();
+
+        let sigill_status =
+            wasm_posix_shared::trap_signal::signal_exit_status(wasm_posix_shared::signal::SIGILL);
+        assert_eq!(
+            outcome.exit_code, sigill_status,
+            "a guest `unreachable` must end the process as SIGILL, not as a clean exit \
+             (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(outcome.stdout, b"about to trap\n", "the guest must run up to its fault");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "the fault must end the process promptly, not after the pump's cap: {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// A fork CHILD that faults on `unreachable` is reaped by its parent with
+    /// the SIGILL status, instead of leaving the parent parked in waitpid().
+    ///
+    /// The shape the four failing native fork smoke tests share: a child that
+    /// traps. While the trap was swallowed, the kernel never learned the child
+    /// was gone and the parent's waitpid() hung until the pump's 30-second cap,
+    /// which hid the child's actual fault. Fixture:
+    /// `native_fork_trap.instrumented.wasm`, whose exit code is the reaped
+    /// status in `$?` form (132 for SIGILL whether or not the host marks the
+    /// child WIFSIGNALED).
+    #[test]
+    fn smoke_fork_child_unreachable_is_reaped_as_a_fault() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = crate::fixtures::fixture("native_fork_trap.instrumented.wasm");
+
+        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+        let started = std::time::Instant::now();
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+        let elapsed = started.elapsed();
+
+        let sigill_status =
+            wasm_posix_shared::trap_signal::signal_exit_status(wasm_posix_shared::signal::SIGILL);
+        assert_eq!(
+            outcome.exit_code, sigill_status,
+            "the parent must reap its trapping child as SIGILL \
+             (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(stdout.contains("child\n"), "the child must run up to its fault: {stdout:?}");
+        assert!(stdout.contains("parent\n"), "the parent must return from waitpid: {stdout:?}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "the child's fault must release the parent promptly, not after the pump's cap: \
+             {elapsed:?}"
+        );
+        Ok(())
+    }
+
     /// Increment 3: the native host carries a **Phase 2 opaque-record** syscall
     /// end-to-end. `uname(2)` is non-RAW, so the flipped glue self-marshals the
     /// struct-utsname pointer into a record; the host blind-transports it, the

@@ -201,6 +201,7 @@ INSTRUMENTED_FIXTURES=(
     native_fork_host_externref_field_refused
     native_fork_host_externref_refused
     native_fork_refs
+    native_fork_trap
     native_vfork
     native_vfork_exec
 )

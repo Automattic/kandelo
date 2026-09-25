@@ -603,14 +603,20 @@ over in the host.
   access to it. Closing this needs the guest thread to hand the classified
   signal to the pump — a small shared slot the pump drains beside the exit it
   already processes — rather than a new export.
-- **A guest's own `unreachable` is swallowed.** `run_fork_capable_entry`
-  treats `Trap::UnreachableCodeReached` as a clean return, because this host's
-  exit path unwinds the guest with exactly that trap once the kernel has
-  committed the exit status. A guest that genuinely executes `unreachable`
-  therefore ends silently where a JavaScript host reports SIGILL. Separating
-  the two needs a committed-exit flag the guest OS thread can read; the
-  coordinator's information is already there in the kernel, so this is
-  plumbing rather than a new decision.
+- **A worker thread's own `unreachable` is swallowed.** The process's main
+  thread no longer has this gap. When the kernel records a process's exit,
+  the pump publishes `CH_TEARDOWN` on the exited main thread's channel and
+  joins it, the native form of a JavaScript host's `kernel_exit` returning
+  once the exit is committed (`kernelExitStatus` in
+  `host/src/worker-main.ts`). `run_fork_capable_entry` therefore reads an
+  `unreachable` trap as an exit only when its channel holds `CH_TEARDOWN`,
+  and otherwise reports SIGILL through the kernel
+  (`smoke_guest_unreachable_is_a_fault`,
+  `smoke_fork_child_unreachable_is_reaped_as_a_fault`). A pthread's entry
+  loop, `run_worker_thread`, still treats every `unreachable` trap as a clean
+  thread exit, because musl's detached-thread teardown ends in exactly that
+  trap after posting `SYS_exit`. Separating the two there needs the same
+  signal for worker-thread exits.
 
 Every other trap kind — memory, table/array bounds, stack overflow, integer
 division and conversion faults, null and mistyped indirect calls — is

@@ -7296,13 +7296,12 @@ fn launch_vfork_borrowed_child(
 
 /// Instantiate the guest on a fresh OS thread and run it to `_start`. The
 /// thread blocks inside `_start` on each syscall's `wait32`; the pump on the
-/// kernel thread services them. It never returns for a normal exit (the guest
-/// parks after `exit_group`), so the ordinary caller must not join it — it is
-/// reclaimed when the process exits. N1-R's `reclaim_parked_thread` +
-/// `join_reclaimed_thread` are the one exception: on execve-success or spawn
-/// `-ECHILD` rollback, the pump publishes `CH_TEARDOWN` on this thread's
-/// channel, notifies it, and joins the returned handle deterministically
-/// instead of abandoning it (see `GuestProcess::thread_handles`).
+/// kernel thread services them. The ordinary caller must not join it: the
+/// pump does. When the kernel records the process's exit, and on
+/// execve-success or spawn `-ECHILD` rollback, the pump publishes
+/// `CH_TEARDOWN` on this thread's channel, notifies it, and joins the handle
+/// (see `GuestProcess::thread_handles`); the guest traps on `CH_TEARDOWN` and
+/// `run_fork_capable_entry` returns.
 fn spawn_guest_thread(
     engine: &Engine,
     module: Module,
@@ -9996,21 +9995,37 @@ fn run_fork_capable_entry(
         };
         match result {
             Ok(()) => return,
-            // `unreachable` is how this host's own exit path unwinds the guest
-            // after the kernel has already committed the exit status (see the
-            // pump's `Syscall::Exit` branch — "the kernel commits the status
-            // then traps via kernel_exit's `unreachable`"), so it cannot be
-            // treated as a fault: doing so would turn every clean exit into
-            // SIGILL.
+            // An `unreachable` trap is either the host unwinding this thread
+            // on purpose or the guest faulting, and this loop must not guess
+            // which. It asks the channel, as `worker-main.ts` asks
+            // `kernelExitStatus` before treating the trap as an exit:
             //
-            // KNOWN CONFLATION, stated rather than hidden: a guest that
-            // genuinely executes `unreachable` produces the same wasmtime error
-            // and is therefore also swallowed here, where a JavaScript host
-            // reports SIGILL. Separating the two needs a committed-exit flag
-            // this OS thread can read; tracked in
-            // `docs/future-improvements.md`. Every other trap kind IS
-            // classified, in the fault arm below.
-            Err(e) if is_unreachable_trap(&e) => return,
+            //  * `CH_TEARDOWN` on this thread's channel: the pump has already
+            //    decided this process's fate and woke the thread to unwind
+            //    it. It does that after the kernel records the process's exit
+            //    (`run_pump`'s exit branch — the native form of JS's
+            //    `kernel_exit` returning once the exit is committed) and when
+            //    it reclaims a superseded image (execve success, spawn
+            //    rollback — the native form of JS's `ExecRetirement`). The
+            //    glue's `__builtin_trap()` is that unwind. Nothing to report,
+            //    and posting on the channel would race the pump's join.
+            //  * Anything else: the guest executed `unreachable` itself. That
+            //    is a fault, reported as SIGILL through the kernel exactly as
+            //    the arm below reports every other trap kind.
+            Err(e) if is_unreachable_trap(&e) => {
+                let channel_status =
+                    unsafe { atomic_u32(guest_mem, channel_offset + STATUS_OFFSET) }
+                        .load(Ordering::SeqCst);
+                if channel_status != ChannelStatus::Teardown as u32 {
+                    report_guest_fault(
+                        guest_mem,
+                        channel_offset,
+                        WasmTrapKind::IllegalInstruction,
+                        &e,
+                    );
+                }
+                return;
+            }
             Err(e) if is_thrown_exception_escape(&e) => {
                 // Only valid straight after the LEXICAL entry captured a
                 // fresh fork (`Idle` phase); an exception escaping during a
@@ -10052,20 +10067,7 @@ fn run_fork_capable_entry(
             }
             Err(e) => {
                 match wasmtime_trap_kind(&e) {
-                    Some(kind) => {
-                        // The guest faulted. Report it as the signal every
-                        // other Kandelo host reports for the same fault, and
-                        // end the process so the kernel — and any parent in
-                        // `wait(2)` — learns it is gone.
-                        let signum = kind.signal();
-                        let status =
-                            wasm_posix_shared::trap_signal::signal_exit_status(signum);
-                        eprintln!(
-                            "guest faulted: {} trap (signal {signum}, status {status}): {e:#}",
-                            kind.as_str()
-                        );
-                        post_guest_trap_exit(guest_mem, channel_offset, status);
-                    }
+                    Some(kind) => report_guest_fault(guest_mem, channel_offset, kind, &e),
                     None => eprintln!("guest entry failed: {e:#}"),
                 }
                 return;
@@ -10281,10 +10283,10 @@ fn drive_fork_capture_seal_and_launch_child(
         // comment for the EARLIER, broader version of this fix (skipping
         // `fm_begin_reference_replay` too) that empirically reproduced this
         // same hang from a DIFFERENT cause — both traps are
-        // `wasmtime::Trap::UnreachableCodeReached`, indistinguishable from
-        // the guest's own deliberate normal-exit trap at the level
-        // `is_unreachable_trap` checks, so either failure is silently
-        // swallowed as "the thread exited normally" instead of surfacing.
+        // `wasmtime::Trap::UnreachableCodeReached`. At the time that trap was
+        // swallowed as "the thread exited normally"; the main thread's entry
+        // loop (`run_fork_capable_entry`) now reports it as SIGILL unless the
+        // pump woke the thread with `CH_TEARDOWN`.
         //
         // Root cause this fixes (see the 2026-09-05 substrate grounding doc
         // §3): `fm_build_gc_plan` -> `GcCodecHints::new` derives `i31_owner`
@@ -10571,6 +10573,24 @@ fn wasmtime_trap_kind(error: &wasmtime::Error) -> Option<WasmTrapKind> {
 /// flag. Tracked in `docs/future-improvements.md`.
 fn post_guest_trap_exit(guest_mem: &SharedMemory, channel_offset: usize, status: i32) {
     post_process_exit_group(guest_mem, channel_offset, status);
+}
+
+/// The guest faulted. Report it as the signal every other Kandelo host
+/// reports for the same fault, and end the process so the kernel — and any
+/// parent in `wait(2)` — learns it is gone.
+fn report_guest_fault(
+    guest_mem: &SharedMemory,
+    channel_offset: usize,
+    kind: WasmTrapKind,
+    error: &wasmtime::Error,
+) {
+    let signum = kind.signal();
+    let status = wasm_posix_shared::trap_signal::signal_exit_status(signum);
+    eprintln!(
+        "guest faulted: {} trap (signal {signum}, status {status}): {error:#}",
+        kind.as_str()
+    );
+    post_guest_trap_exit(guest_mem, channel_offset, status);
 }
 
 /// Post `exit_group(status)` on a channel and wait (bounded) for the pump.
@@ -11240,8 +11260,13 @@ impl std::fmt::Display for ThreadKernelExit {
 
 impl std::error::Error for ThreadKernelExit {}
 
-/// Whether a Wasmtime error is a guest `unreachable` trap (the expected halt at
-/// the end of the process/thread exit path).
+/// Whether a Wasmtime error is a guest `unreachable` trap.
+///
+/// The trap alone does not say whether the guest faulted or was unwound by
+/// the host; each caller must decide that from state it can read.
+/// `run_fork_capable_entry` does (`CH_TEARDOWN` on its channel, else SIGILL).
+/// `run_worker_thread` still treats every such trap as a clean thread exit —
+/// see `docs/future-improvements.md`.
 fn is_unreachable_trap(e: &wasmtime::Error) -> bool {
     matches!(
         e.downcast_ref::<wasmtime::Trap>(),
@@ -11305,14 +11330,12 @@ struct GuestProcess {
     channels: Vec<PumpChannel>,
     /// The OS `JoinHandle` backing each live entry in `channels`, keyed by
     /// that channel's `offset` (the same key `reclaim_parked_thread` writes
-    /// the teardown sentinel to). Normally these threads are never joined —
-    /// they park forever in the channel's `memory.atomic.wait32` and are
-    /// left for the OS to reclaim at process teardown (see
-    /// `spawn_guest_thread`/`spawn_worker_thread`'s doc comments). N1-R's
-    /// reclamation paths (execve-success, spawn `-ECHILD` rollback) are the
-    /// exception: they publish `CH_TEARDOWN` on a channel, then look up and
-    /// `join()` its handle here for deterministic reclamation instead of
-    /// abandoning it.
+    /// the teardown sentinel to). The main thread's handle is joined when
+    /// the kernel records the process's exit (`run_pump`'s exit branch). The
+    /// reclamation paths (execve-success, spawn `-ECHILD` rollback) likewise
+    /// publish `CH_TEARDOWN` on a channel, then look up and `join()` its
+    /// handle here. Other handles (worker threads still running at exit) are
+    /// left for the OS to reclaim at process teardown.
     thread_handles: HashMap<usize, thread::JoinHandle<()>>,
     /// N1-I4 Task 3: this process's own [`GuestForkFormat`] (from its OWN
     /// `Module::new` call site — `run_guest`'s boot module, `handle_spawn`'s
@@ -11901,7 +11924,8 @@ fn run_pump(
                 trace.push(syscall_nr);
 
                 // Process exit on the MAIN channel: the kernel commits the
-                // status then traps via kernel_exit's `unreachable`. Only
+                // status, then the pump wakes the exited thread with
+                // `CH_TEARDOWN` so it unwinds (below). Only
                 // `processes[0]`'s (the boot process) exit marks the run as
                 // done, but does not necessarily return immediately (see this
                 // function's doc comment: it drains any spawned children
@@ -11938,6 +11962,33 @@ fn run_pump(
                     // comment); `None` for every ordinary process.
                     if let Some(release) = processes[pi].vfork_parent_release.take() {
                         resolve_vfork_parent_release(kernel_mem, processes, release)?;
+                    }
+                    // The exit is recorded, so unwind the thread that posted
+                    // it, as a JavaScript host does: its `kernel_exit` waits
+                    // for this same commit and then traps, and the worker
+                    // loop treats that trap as an exit only because the exit
+                    // is recorded. Here `CH_TEARDOWN` is that fact, published
+                    // on the thread's own channel: the glue traps on it and
+                    // `run_fork_capable_entry` returns cleanly (and so folds
+                    // this process's fork proof-of-use) instead of reporting a
+                    // fault. Joined, because the channel is PENDING -- the
+                    // thread is at or entering its wait on this word -- so it
+                    // unwinds promptly; see `reclaim_parked_thread`. Without
+                    // this the thread parked forever, and a guest that trapped
+                    // right after posting its exit was indistinguishable from
+                    // one that faulted.
+                    //
+                    // Joined directly rather than through
+                    // `join_reclaimed_thread`, whose test counter is evidence
+                    // of exec/rollback reclamation specifically.
+                    reclaim_parked_thread(&guest_mem, &ch);
+                    if let Some(handle) = processes[pi].thread_handles.remove(&ch.offset) {
+                        if handle.join().is_err() {
+                            eprintln!(
+                                "[host-native] pid {pid}'s exited main thread panicked instead of \
+                                 unwinding on TEARDOWN"
+                            );
+                        }
                     }
                     // No one reads a response to this final syscall (whether
                     // this is the boot process or a spawned child), so drop

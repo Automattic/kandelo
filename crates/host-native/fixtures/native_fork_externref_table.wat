@@ -39,11 +39,9 @@
   ;; Post a REAL `SYS_EXIT_GROUP($code)` on the process's main syscall
   ;; channel, mirroring `$wait_child`'s hand-rolled channel protocol (the
   ;; same offsets: `SYSCALL_OFFSET` = base+4, `ARGS_OFFSET` = base+8,
-  ;; `STATUS_OFFSET` = base+0). `exit_group` never returns, so this ends in
-  ;; `unreachable` unconditionally — a recognized-as-clean
-  ;; `Trap::UnreachableCodeReached` on native (`guest.rs::is_unreachable_
-  ;; trap`), the SAME outcome a real musl `_exit`/`exit_group` call produces
-  ;; for every OTHER (C-built) fixture in this crate.
+  ;; `STATUS_OFFSET` = base+0). `exit_group` never returns: like a real musl
+  ;; `_exit`, this parks on the channel after posting, which is the SAME
+  ;; outcome every OTHER (C-built) fixture in this crate reaches.
   ;;
   ;; Deliberately NOT `kernel.kernel_exit`: that import is native's
   ;; SIGKILL-ONLY fast path (`guest.rs`'s own doc comment: "A normal exit
@@ -110,6 +108,23 @@
     memory.atomic.notify
     drop
 
+    ;; Park on the status word until the host answers, as musl's `_exit`
+    ;; does. The native host answers an exit by recording it and then
+    ;; publishing `CH_TEARDOWN` here, so the `unreachable` below runs only
+    ;; once the exit is recorded, and the host reads it as that unwind.
+    ;; Trapping straight after the notify, as this once did, races the host
+    ;; and is indistinguishable from a guest fault (SIGILL).
+    (loop $park
+      local.get $base
+      i32.const 1 ;; still PENDING
+      i64.const -1
+      memory.atomic.wait32
+      drop
+      local.get $base
+      i32.atomic.load
+      i32.const 1
+      i32.eq
+      br_if $park)
     unreachable)
 
   (func $wait_child (param $pid i32) (result i32)
