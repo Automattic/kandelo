@@ -350,6 +350,41 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   expect(await terminalText(page)).toContain("KANDELO_NETHACK_OK:0");
 });
 
+/*
+ * Midnight Commander gets its own machine rather than a fourth leg on the
+ * test above. Each lazy archive materializes a multi-megabyte program into
+ * the same session, and WebKit does not sustain bash + vim + NetHack + mc
+ * in one tab: mc alone succeeds there, but appended after the other three
+ * it never finishes. Keeping it separate tests the same thing without
+ * making the gate depend on how much a browser tolerates in one session.
+ *
+ * `--version` exits without entering the full-screen UI, so this proves
+ * the archive materializes and the binary runs without driving a TUI.
+ */
+test("Kandelo shell demo runs Midnight Commander", async ({ page }) => {
+  test.setTimeout(360_000);
+
+  await gotoMachineOrSkip(page, "shell");
+  await waitForReady(page);
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
+
+  await runGuideScript(
+    page,
+    "mc --version >/tmp/kandelo-mc.out 2>&1\n" +
+      "mc_version=$(</tmp/kandelo-mc.out)\n" +
+      "if [[ \"$mc_version\" == *'GNU Midnight Commander'* ]]; then\n" +
+      "  printf 'KANDELO_MC_OK\\n'\n" +
+      "else\n" +
+      "  printf 'KANDELO_MC_FAIL\\n'\n" +
+      "  cat /tmp/kandelo-mc.out\n" +
+      "fi",
+    /KANDELO_MC_(?:OK|FAIL)/,
+    180_000,
+  );
+  expect(await terminalText(page)).toContain("KANDELO_MC_OK");
+});
+
 test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page }) => {
   test.setTimeout(240_000);
   const standaloneShellRuntimeFetches: Array<{

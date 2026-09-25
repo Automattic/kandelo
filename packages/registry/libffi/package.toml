@@ -1,0 +1,46 @@
+# Per-library manifest for libffi. See docs/package-management.md.
+#
+# This is a from-scratch FULL libffi port for wasm32, not a
+# vendored upstream libffi: upstream has no wasm32 backend (only the
+# emscripten JS-assisted port), and this target cannot JIT trampolines.
+# `ffi_call` classifies arguments and return into the wasm32 C ABI's
+# word classes and dispatches through a generated `call_indirect`
+# switch; `ffi_closure` allocates from a generated static trampoline
+# pool. See include/ffi.h for the design, gen-dispatch.sh for the
+# generated families and their bounds.
+#
+# Consumers: the glib/gobject stack, which needs the full type machinery
+# and closures. An earlier revision of this package was a narrower shim
+# covering only the all-i32 `ffi_call` shape a Wayland dispatcher uses;
+# that shape is still covered by test/ffi_shim_test.c. The version stays
+# 0.1.0 across that rewrite: the public surface only grew, and
+# `build.toml.revision` is what invalidates cached archives.
+#
+# No upstream source is fetched; the build script compiles the bundled
+# `src/` + generated TUs directly. The `[source]` block carries a
+# sentinel URL + zero sha so the manifest schema parses but no remote
+# fetch is attempted (matches the libinput-lite / posix-utils-lite
+# in-tree-only convention).
+
+kind = "library"
+
+name = "libffi"
+version = "0.1.0"
+kernel_abi = 43
+depends_on = []
+
+[source]
+url = "https://example.invalid/libffi-0.1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Automattic/kandelo/blob/main/packages/registry/libffi/build-libffi.sh"
+
+[build]
+script_path = "packages/registry/libffi/build-libffi.sh"
+
+[outputs]
+libs = ["lib/libffi.a"]
+headers = ["include/ffi.h"]

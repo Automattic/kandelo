@@ -1,0 +1,128 @@
+Give two glib callbacks their exact signatures.
+
+mc builds its event-group and event trees with
+
+    g_tree_new_full ((GCompareDataFunc) g_ascii_strcasecmp, ...)
+
+g_ascii_strcasecmp takes two parameters; GCompareDataFunc takes three
+(key_a, key_b, user_data). Calling a function through a pointer of an
+incompatible type is undefined behaviour in C, and the cast only appears
+to work because mainstream native ABIs let the callee ignore an argument
+the caller pushed.
+
+WebAssembly does not. call_indirect carries the static type of the call
+site and every engine traps when the referenced function's type differs,
+so the first g_tree_lookup during events_init aborted the process:
+
+    null function or function signature mismatch
+      at g_tree_lookup
+      at mc_event_get_event_group_by_name
+      at mc_event_add / mc_event_mass_add / events_init / main
+
+This is not a Kandelo limitation being worked around: no WebAssembly
+engine can dispatch a two-parameter function through a three-parameter
+type, so the defect is in mc's cast. glib's own port carries the same
+fix for its internal GCompareFunc-as-GCompareDataFunc casts.
+
+The same defect appears a second time in the widget layer:
+
+    g_list_foreach (g->widgets, (GFunc) widget_destroy, NULL);
+
+widget_destroy takes one parameter; GFunc takes two. That runs on
+MSG_DESTROY, so it trapped whenever a group was torn down -- closing any
+dialog, or quitting mc.
+
+Adds a wrapper with the exact signature at each site: one
+GCompareDataFunc for the two tree constructions, one GFunc for the group
+teardown.
+
+--- a/lib/event/internal.h
++++ b/lib/event/internal.h
+@@ -20,6 +20,7 @@
+ 
+ /*** declarations of public functions **********************************/
+ 
++gint mc_event_key_compare (gconstpointer a, gconstpointer b, gpointer user_data);
+ GTree *mc_event_get_event_group_by_name (const gchar * event_group_name, gboolean create_new,
+                                          GError ** mcerror);
+ GPtrArray *mc_event_get_event_by_name (GTree * event_group, const gchar * event_name,
+--- a/lib/event/event.c
++++ b/lib/event/event.c
+@@ -47,6 +47,21 @@
+ /*** public functions ****************************************************************************/
+ /* --------------------------------------------------------------------------------------------- */
+ 
++/**
++ * Compare two string keys of an event GTree.
++ *
++ * Exists so the comparator has the exact GCompareDataFunc signature.
++ * Casting g_ascii_strcasecmp (two parameters) to GCompareDataFunc (three)
++ * is undefined behaviour that native ABIs happen to tolerate; WebAssembly
++ * type-checks every indirect call and traps on it.
++ */
++gint
++mc_event_key_compare (gconstpointer a, gconstpointer b, gpointer user_data)
++{
++    (void) user_data;
++    return g_ascii_strcasecmp ((const gchar *) a, (const gchar *) b);
++}
++
+ gboolean
+ mc_event_init (GError **mcerror)
+ {
+@@ -59,7 +74,7 @@
+     }
+ 
+     mc_event_grouplist =
+-        g_tree_new_full ((GCompareDataFunc) g_ascii_strcasecmp,
++        g_tree_new_full (mc_event_key_compare,
+                          NULL, (GDestroyNotify) g_free, (GDestroyNotify) g_tree_destroy);
+ 
+     if (mc_event_grouplist == NULL)
+--- a/lib/event/manage.c
++++ b/lib/event/manage.c
+@@ -157,7 +157,7 @@
+     if (event_group == NULL && create_new)
+     {
+         event_group =
+-            g_tree_new_full ((GCompareDataFunc) g_ascii_strcasecmp,
++            g_tree_new_full (mc_event_key_compare,
+                              NULL,
+                              (GDestroyNotify) g_free,
+                              (GDestroyNotify) mc_event_group_destroy_value);
+--- a/lib/widget/group.c
++++ b/lib/widget/group.c
+@@ -614,6 +614,24 @@
+     w->set_state = group_default_set_state;
+ 
+     g->mouse_status = MOU_UNHANDLED;
++}
++
++/* --------------------------------------------------------------------------------------------- */
++
++/**
++ * Destroy one child widget of a group.
++ *
++ * Exists so the callback has the exact GFunc signature. Casting
++ * widget_destroy (one parameter) to GFunc (two) is undefined behaviour that
++ * native ABIs happen to tolerate; WebAssembly type-checks every indirect
++ * call and traps on it, which killed mc whenever a group was destroyed --
++ * closing any dialog, or quitting.
++ */
++static void
++group_widget_destroy (gpointer data, gpointer user_data)
++{
++    (void) user_data;
++    widget_destroy (WIDGET (data));
+ }
+ 
+ /* --------------------------------------------------------------------------------------------- */
+@@ -647,7 +665,7 @@
+         return MSG_HANDLED;
+ 
+     case MSG_DESTROY:
+-        g_list_foreach (g->widgets, (GFunc) widget_destroy, NULL);
++        g_list_foreach (g->widgets, group_widget_destroy, NULL);
+         g_list_free (g->widgets);
+         g->widgets = NULL;
+         return MSG_HANDLED;

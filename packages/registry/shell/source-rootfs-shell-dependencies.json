@@ -62,6 +62,11 @@
       "role": "lazy-archive"
     },
     {
+      "name": "mc-browser-bundle",
+      "version": "4.8.32",
+      "role": "lazy-archive"
+    },
+    {
       "name": "coreutils-docs",
       "version": "9.6",
       "role": "lazy-archive"

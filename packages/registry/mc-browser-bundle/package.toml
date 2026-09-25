@@ -1,0 +1,33 @@
+# Browser lazy-archive bundle for GNU Midnight Commander.
+#
+# Reshapes the mc package's outputs (mc.wasm + mc-runtime.zip) into the
+# single root-relative mc.zip the shell VFS image registers as a lazy
+# archive under /usr/. Nothing is downloaded until a user runs `mc`.
+#
+# The archive carries bin/mc plus the mcedit/mcview/mcdiff symlinks, and
+# the share/mc, etc/mc and libexec/mc trees mc reads at startup.
+
+kind = "program"
+name = "mc-browser-bundle"
+version = "4.8.32"
+kernel_abi = 43
+depends_on = ["mc@4.8.32"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/MidnightCommander/mc/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/mc-browser-bundle/build-mc-browser-bundle.sh"
+
+[[outputs]]
+name = "mc"
+wasm = "mc.zip"
+# The zip is an archive of an already-instrumented binary, not a program
+# the resolver should instrument again.
+fork_instrumentation = "disabled"

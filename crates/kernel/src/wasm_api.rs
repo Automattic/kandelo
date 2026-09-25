@@ -11020,7 +11020,20 @@ pub extern "C" fn kernel_ioctl(
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
+    // A successful TIOCSWINSZ owes SIGWINCH to the foreground process group of
+    // the terminal that was resized. `sys_ioctl` records the group because it
+    // holds only the calling process; the table lives here. Same delivery shape
+    // as kernel_pty_resize and the ISIG path in kernel_pty_master_write.
+    let winch_pgid = core::mem::replace(&mut proc.pending_winch_pgid, 0);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    if winch_pgid > 0 {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        for pid in table.pids_in_group(winch_pgid as u32) {
+            if let Some(target) = table.get_mut(pid) {
+                target.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+            }
+        }
+    }
     result
 }
 
