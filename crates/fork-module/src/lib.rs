@@ -1230,6 +1230,27 @@ mod wasm {
         if end > mem_len_bytes() {
             return Err(Errno::EINVAL); // catalog region past the end of guest memory
         }
+        // NO HEAP COPY: the bump heap maps its chunks through the channel, and
+        // a module with no channel must answer this seed with the arena's
+        // `EINVAL`, not trap on a null allocation first. Copied AFTER the
+        // allocation, through a view taken after it: `channel_mmap` grows the
+        // shared memory. Byte-wise, because the guest's pointer carries no
+        // alignment promise.
+        store_activation_resume_catalog(activation_id, byte_len, |m, at| {
+            m.copy_within(start..end, at);
+        })
+    }
+
+    /// Store one activation's resume catalog record (`byte_len` bytes of
+    /// little-endian `u32` ordinals, written by `fill` into the record at the
+    /// given offset), replacing any earlier one. Shared by the old per-fact
+    /// seed and by admission, so the record has one writer whichever entry
+    /// delivered the ordinals.
+    fn store_activation_resume_catalog(
+        activation_id: u32,
+        byte_len: usize,
+        fill: impl FnOnce(&mut [u8], usize),
+    ) -> Result<(), Errno> {
         // A RE-SEED REPLACES. The old record goes first, so the new one is the
         // only catalog this activation has when `resume_reseed` reads it back;
         // `arena_alloc` would otherwise refuse the second record of one kind.
@@ -1240,12 +1261,9 @@ mod wasm {
             arena_sweep_record_chunks(channel_base().unwrap_or(0));
         }
         let at = arena_alloc(activation_id, REC_KIND_RESUME_CATALOG, byte_len)?;
-        // Copied AFTER the allocation, through a view taken after it:
-        // `channel_mmap` grows the shared memory. Byte-wise, because the
-        // guest's pointer carries no alignment promise; the record itself is
-        // 8-aligned, which is what `guest_u32s` requires of the read side.
-        let m = unsafe { mem_mut() };
-        m.copy_within(start..end, at as usize);
+        // The record itself is 8-aligned, which is what `guest_u32s` requires
+        // of the read side.
+        fill(unsafe { mem_mut() }, at as usize);
         Ok(())
     }
 
@@ -1659,12 +1677,12 @@ mod wasm {
     /// Record kinds. One per (store, space) pair; a directory entry names an
     /// activation, and the activation's records are distinguished by kind.
     ///
-    /// ALL ELEVEN ARE DECLARED HERE, in one place, although this task converts
+    /// ALL OF THEM ARE DECLARED HERE, in one place, although this task converts
     /// none of them: a kind number reused between two stores would make one
     /// store's `arena_find` answer with the other's payload, which is a wrong
     /// value rather than an error. The same reasoning the `fm_stats` field
     /// table below is built on, and the same reason it is a table rather than
-    /// eleven numbers chosen as each store arrives.
+    /// numbers chosen as each store arrives.
     #[allow(dead_code)]
     const REC_KIND_RESUME_ASSIGNMENT: u32 = 1;
     const REC_KIND_KFIG: u32 = 2; // imported globals (space 0)
@@ -1677,6 +1695,11 @@ mod wasm {
     const REC_KIND_TEMPLATE_ID: u32 = 9;
     const REC_KIND_FUNC_CATALOG_BASE: u32 = 10;
     const REC_KIND_STATIC_ROOT_BASE: u32 = 11;
+    /// `[pointer_width, fixed_prefix_size]` from the activation's admitted
+    /// linked-frame descriptor. Its presence is also what says an activation
+    /// was ADMITTED (`fm_admit_activation`), which `fm_bind_activation`
+    /// requires.
+    const REC_KIND_LINKED_FORMAT: u32 = 12;
 
     /// First chunk of the record chain, or 0 before anything is allocated.
     static RECORD_HEAD: AtomicU64 = AtomicU64::new(0);
@@ -8240,6 +8263,196 @@ mod wasm {
     pub extern "C" fn fm_set_host_exception_owner(owner: u32) {
         HOST_EXCEPTION_OWNER.store(owner, Ordering::Relaxed);
         set_ok();
+    }
+
+    // -- Activation admission (lane F stage 1a) ------------------------------
+    //
+    // ONE entry that takes everything a host knows about an activation, in the
+    // `KFAA` descriptor `fork_codec::activation_admission` defines: the
+    // located-but-undecoded custom sections, plus the three facts only the host
+    // has (activation id, fork-child flags, template id). It replaces six
+    // per-fact seeds -- `fm_set_activation_resume_catalog`, `_template_id`,
+    // `_gc_codec`, `_exception_codec`, `_imports` and
+    // `fm_set_host_exception_owner` -- and with them every host's own decoders
+    // and seeding order. Those entries stay alive until lane F stage 1d; this
+    // entry reuses the storage functions they call, so both paths write the
+    // same records.
+
+    /// Admit one activation from the `KFAA` descriptor at `[desc_ptr, desc_ptr
+    /// + len)`. Returns 0 or the errno (also left in `fm_last_errno`).
+    ///
+    /// Must follow `fm_set_format`, which resets every per-activation record
+    /// and supplies the worker's pointer width.
+    ///
+    /// Re-admitting an activation with the SAME facts is a no-op: a COW child
+    /// and a child's import planner both admit activations another caller in
+    /// the same worker may already have admitted. Different facts under an
+    /// admitted activation id are `EINVAL`, checked for EVERY section before
+    /// anything is stored, so a refused re-admission changes nothing.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_admit_activation(desc_ptr: usize, len: usize) -> i32 {
+        match admit_activation_impl(desc_ptr as u64, len) {
+            Ok(()) => {
+                set_ok();
+                0
+            }
+            Err(errno) => {
+                set_err(errno);
+                errno as i32
+            }
+        }
+    }
+
+    fn admit_activation_impl(desc_ptr: u64, len: usize) -> Result<(), Errno> {
+        // The worker's pointer width, which only `fm_set_format` has set. A
+        // module with no format cannot tell whether this activation fits it.
+        let worker_width = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if worker_width == 0 {
+            return Err(Errno::EINVAL);
+        }
+        // Decoding allocates on the bump heap, which maps through the channel.
+        // With none, answer the arena's own `EINVAL` rather than trapping on a
+        // null allocation.
+        channel_base()?;
+        // DECODED WHOLLY before anything is stored, into owned values plus
+        // spans: every store below may `channel_mmap`, and nothing may hold a
+        // view of the descriptor across that.
+        let admitted = fork_codec::admit_activation(guest_bytes(desc_ptr, len)?, Some(worker_width as u8))
+            .map_err(|rejection| rejection.errno())?;
+        let id = admitted.descriptor.activation_id;
+        // Activation 0 IS the module `fm_set_format` was given the format of,
+        // until stage 1d takes the prefix out of that call. Two different
+        // prefixes for one module means the host read two different modules.
+        if id == 0 && admitted.linked_format.fixed_prefix_size != FMT_FIXED_PREFIX.load(Ordering::Relaxed) {
+            return Err(Errno::EINVAL);
+        }
+        admission_conflict(&admitted, desc_ptr)?;
+
+        use fork_codec::AdmissionSectionKind as K;
+        let at = |kind: K| admitted.span(kind).map(|span| (desc_ptr + span.offset as u64, span.len as u64));
+        set_activation_template_id_impl(id, desc_ptr + fork_codec::activation_admission::ADMISSION_TEMPLATE_ID_OFFSET as u64)?;
+        if arena_find(id, REC_KIND_LINKED_FORMAT).is_none() {
+            let record = arena_alloc(id, REC_KIND_LINKED_FORMAT, 8)?;
+            arena_set_u32(record, admitted.linked_format.pointer_width as u32);
+            arena_set_u32(record + 4, admitted.linked_format.fixed_prefix_size);
+        }
+        // Registering assigns slots, so an identical catalog must NOT go
+        // through `resume_reseed`: that would null and re-decide slots whose
+        // thunks the guest has already placed.
+        if activation_catalog(id).is_none() {
+            let ordinals = &admitted.resume_ordinals;
+            store_activation_resume_catalog(id, ordinals.len() * 4, |m, at| {
+                for (i, ordinal) in ordinals.iter().enumerate() {
+                    m[at + i * 4..at + i * 4 + 4].copy_from_slice(&ordinal.to_le_bytes());
+                }
+            })?;
+            resume_reseed(id)?;
+        }
+        if let Some((ptr, len)) = at(K::GcCodec) {
+            set_activation_gc_codec_impl(id, ptr, len)?;
+        }
+        if let Some(tags) = &admitted.exception_tag_ordinals {
+            store_activation_exception_tags(id, tags)?;
+            // The host-exception owner is the smallest activation whose
+            // exception codec was admitted: derived from the records, so the
+            // answer does not depend on admission order.
+            let mut owner = u32::MAX;
+            arena_for_each_record(REC_KIND_EXN_TAGS, |activation, _, _| owner = owner.min(activation));
+            HOST_EXCEPTION_OWNER.store(owner, Ordering::Relaxed);
+        }
+        if let Some((ptr, len)) = at(K::ImportedGlobals) {
+            set_activation_imports_impl(IMPORT_SPACE_GLOBAL, id, ptr, len)?;
+        }
+        if let Some((ptr, len)) = at(K::ImportedTables) {
+            set_activation_imports_impl(IMPORT_SPACE_TABLE, id, ptr, len)?;
+        }
+        Ok(())
+    }
+
+    /// `EINVAL` when any fact already stored for this activation differs from
+    /// what the descriptor says. A record the descriptor has no section for
+    /// counts as different: the two sources disagree about whether the fact
+    /// exists at all.
+    fn admission_conflict(admitted: &fork_codec::AdmittedActivation, desc_ptr: u64) -> Result<(), Errno> {
+        use fork_codec::AdmissionSectionKind as K;
+        let id = admitted.descriptor.activation_id;
+        let differs = |kind: u32, section: Option<K>| -> Result<bool, Errno> {
+            let Some((at, len)) = arena_find(id, kind) else { return Ok(false) };
+            let Some(span) = section.and_then(|k| admitted.span(k)) else { return Ok(true) };
+            Ok(guest_bytes(at, len)? != guest_bytes(desc_ptr + span.offset as u64, span.len as usize)?)
+        };
+        let conflict = activation_template_id(id).is_some_and(|stored| stored != admitted.descriptor.template_id)
+            || arena_find(id, REC_KIND_LINKED_FORMAT).is_some_and(|(at, _)| {
+                arena_u32(at) != admitted.linked_format.pointer_width as u32
+                    || arena_u32(at + 4) != admitted.linked_format.fixed_prefix_size
+            })
+            || activation_catalog(id).is_some_and(|stored| stored != admitted.resume_ordinals.as_slice())
+            || activation_exception_tags(id).is_some_and(|stored| {
+                admitted.exception_tag_ordinals.as_deref() != Some(stored)
+            })
+            || differs(REC_KIND_GC_CODEC, Some(K::GcCodec))?
+            || differs(REC_KIND_KFIG, Some(K::ImportedGlobals))?
+            || differs(REC_KIND_KFIT, Some(K::ImportedTables))?;
+        if conflict { Err(Errno::EINVAL) } else { Ok(()) }
+    }
+
+    /// The row `fm_bind_activation` returns: `drive_base`, `func_catalog_base`,
+    /// `static_root_base`, `resume_ptr`, `resume_count`, each a `u32`. One per
+    /// worker, rewritten by each bind; the host reads it before its next module
+    /// call.
+    static BIND_ROW: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
+
+    /// Place an ADMITTED activation after its instantiation, and return the
+    /// module-owned row the host needs for the reference-typed work only it can
+    /// do: `Table.set` of the drive bindings at `drive_base`, the funcref
+    /// catalog copy at `func_catalog_base`, sizing the static-root mirror from
+    /// `static_root_base`, and the guest's `__wpk_fork_place_resume_thunks(
+    /// resume_ptr, resume_count)`. Replaces `fm_place_activation_catalog`,
+    /// `fm_place_activation_static_roots`, `fm_drive_table_base` and
+    /// `fm_publish_resume_assignment`, whose logic it calls.
+    ///
+    /// `func_catalog_len` and `static_root_len` are the lengths of the
+    /// instance's two catalog tables, which only exist after instantiation.
+    /// Binding again with the same lengths answers the same row (placement is
+    /// idempotent), so a host may ask again rather than keep a copy.
+    ///
+    /// Returns the row's address, or 0 with `fm_last_errno`: `EINVAL` for an
+    /// activation never admitted or a length that differs from its placed one,
+    /// `E2BIG` past an `i32` table index, or the arena's mapping errno.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_bind_activation(activation_id: u32, func_catalog_len: u32, static_root_len: u32) -> usize {
+        match bind_activation_impl(activation_id, func_catalog_len, static_root_len) {
+            Ok(row) => {
+                set_ok();
+                row
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    fn bind_activation_impl(activation_id: u32, func_catalog_len: u32, static_root_len: u32) -> Result<usize, Errno> {
+        // Binding an activation the module was never told about would publish
+        // an empty resume assignment -- a SUCCESS that places no thunks.
+        if arena_find(activation_id, REC_KIND_LINKED_FORMAT).is_none() {
+            return Err(Errno::EINVAL);
+        }
+        let func_catalog_base = place_catalog_impl(REC_KIND_FUNC_CATALOG_BASE, activation_id, func_catalog_len)?;
+        let static_root_base = place_catalog_impl(REC_KIND_STATIC_ROOT_BASE, activation_id, static_root_len)?;
+        let (resume_ptr, resume_count) = publish_resume_assignment_impl(activation_id)?;
+        let row = [
+            drive_plan::drive_table_base(activation_id),
+            func_catalog_base,
+            static_root_base,
+            resume_ptr,
+            resume_count,
+        ];
+        for (cell, value) in BIND_ROW.iter().zip(row) {
+            cell.store(value, Ordering::Relaxed);
+        }
+        Ok(core::hint::black_box(BIND_ROW.as_ptr() as usize))
     }
 
 

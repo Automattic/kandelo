@@ -39,6 +39,7 @@ extern crate wasm_posix_shared;
 // machinery this crate still owns (`reference_graph_builder`, `gc_codec`,
 // `drive_plan`, `reference_replay`, etc.) depended on it.
 
+pub mod activation_admission;
 pub mod catalogs;
 pub mod child_import_plan;
 pub mod drive_plan;
@@ -66,6 +67,11 @@ pub mod replay_events;
 pub mod replay_journal;
 pub mod rewind_driver;
 
+pub use activation_admission::{
+    admit_activation, decode_activation_admission, encode_activation_admission,
+    placeable_resume_ordinals, AdmissionDescriptor, AdmissionRejection, AdmissionSectionKind,
+    AdmissionSpan, AdmittedActivation,
+};
 pub use catalogs::{
     decode_resume_catalog, decode_static_root_catalog, ForkResumeCatalog, ForkResumeCatalogRecord,
     StaticRootCatalog,

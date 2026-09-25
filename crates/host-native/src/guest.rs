@@ -5393,53 +5393,25 @@ fn find_custom_section<'a>(wasm_bytes: &'a [u8], name: &str) -> anyhow::Result<O
 
 /// Read the guest's `kandelo.wpk_fork.linked_frames` (KLCF) custom section —
 /// `wasm-fork-instrument`'s linked-frame format descriptor — and return its
-/// `fixed_prefix_size` field (the second argument `fm_set_format` needs).
-/// Mirrors `readLinkedFrameFormat` in `host/src/fork-continuation.ts`, using
-/// the SAME field names/offsets from `wasm_posix_shared::abi` it imports from
-/// `host/src/generated/abi.ts`. Returns `Ok(None)` when the section is
-/// absent (an ordinary, non-fork-instrumented guest) rather than erroring —
-/// absence is the expected, common case for every fixture that never calls
-/// `fork()`.
+/// `fixed_prefix_size` field (the second argument `fm_set_format` needs),
+/// decoded by `fork_codec::LinkedFrameFormat::parse_descriptor`. Returns
+/// `Ok(None)` when the section is absent (an ordinary, non-fork-instrumented
+/// guest) rather than erroring — absence is the expected, common case for
+/// every fixture that never calls `fork()`.
 fn read_linked_frame_fixed_prefix_size(wasm_bytes: &[u8]) -> anyhow::Result<Option<u32>> {
-    use wasm_posix_shared::abi::{
-        WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
-        WPK_FORK_LINKED_FRAME_FORMAT_SECTION, WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
-        WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
-    };
+    use wasm_posix_shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION;
     let Some(bytes) = find_custom_section(wasm_bytes, WPK_FORK_LINKED_FRAME_FORMAT_SECTION)? else {
         return Ok(None);
     };
-    anyhow::ensure!(
-        bytes.len() == WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE as usize,
-        "linked-frame format descriptor has {} bytes, expected {}",
-        bytes.len(),
-        WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE
-    );
-    anyhow::ensure!(bytes[0..4] == WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, "bad linked-frame format magic");
-    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    anyhow::ensure!(
-        version == WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
-        "unsupported linked-frame format version {version}"
-    );
-    let declared_size = u16::from_le_bytes([bytes[6], bytes[7]]);
-    anyhow::ensure!(
-        declared_size == WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
-        "bad linked-frame format declared size {declared_size}"
-    );
-    let ptr_width = bytes[8];
+    // THE ONE DECODER of this descriptor, shared with the fork module's
+    // admission (`fork_codec::activation_admission`) and the artifact
+    // contract. This host used to carry a field-by-field copy that skipped
+    // the header-size check the shared one makes.
+    let format = fork_codec::LinkedFrameFormat::parse_descriptor(bytes)
+        .map_err(|rejection| anyhow::anyhow!("linked-frame format {}", rejection.reason()))?;
+    let ptr_width = format.pointer_width;
     anyhow::ensure!(ptr_width == 4, "this host only supports wasm32 guests, got ptr_width {ptr_width}");
-    let alignment = bytes[9];
-    anyhow::ensure!(
-        alignment == WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
-        "bad linked-frame record alignment {alignment}"
-    );
-    let flags = u16::from_le_bytes([bytes[10], bytes[11]]);
-    anyhow::ensure!(
-        flags == WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
-        "unsupported linked-frame flags {flags:#x}"
-    );
-    let fixed_prefix_size = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-    Ok(Some(fixed_prefix_size))
+    Ok(Some(format.fixed_prefix_size))
 }
 
 /// One decoded `kandelo.wpk_fork.resume_catalog` (KFRC) record: the
@@ -5459,67 +5431,28 @@ struct ForkResumeCatalogRecord {
 
 /// Read the guest's `kandelo.wpk_fork.resume_catalog` (KFRC) custom section —
 /// the ordered `(function_ordinal, local_catalog_slot)` table
-/// `wasm-fork-instrument` emits — in file order (already validated strictly
-/// increasing by `function_ordinal`), exactly the shape `readForkResumeCatalog
-/// (...)` decodes in `host/src/fork-resume-catalog.ts`. These KFRC framing
-/// constants have NO shared-ABI mirror (see `crates/fork-codec/src/
-/// catalogs.rs`'s identical note) — they live only in `host/src/fork-resume-
-/// catalog.ts`, `crates/fork-codec/src/catalogs.rs`, and privately in
-/// `crates/fork-instrument`, so they are carried locally here too. Returns an
-/// empty `Vec` when the section is absent (a fork-instrumented guest with no
-/// resume targets at all is not expected in practice, but an absent section
-/// is treated the same as the TS `setup()`'s `count === 0` skip, not an
-/// error).
+/// `wasm-fork-instrument` emits — in file order, decoded and checked by
+/// `fork_codec::placeable_resume_ordinals` (the decoder the fork module's
+/// admission uses). Returns an empty `Vec` when the section is absent.
 fn read_fork_resume_catalog_records(wasm_bytes: &[u8]) -> anyhow::Result<Vec<ForkResumeCatalogRecord>> {
-    const RESUME_MAGIC: [u8; 4] = *b"KFRC";
-    const RESUME_VERSION: u16 = 1;
-    const RESUME_HEADER_SIZE: usize = 12;
-    const RESUME_RECORD_SIZE: usize = 8;
-
     let Some(bytes) = find_custom_section(wasm_bytes, "kandelo.wpk_fork.resume_catalog")? else {
         return Ok(Vec::new());
     };
-    anyhow::ensure!(bytes.len() >= RESUME_HEADER_SIZE, "resume catalog descriptor is truncated");
-    anyhow::ensure!(bytes[0..4] == RESUME_MAGIC, "bad resume catalog magic");
-    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    anyhow::ensure!(version == RESUME_VERSION, "unsupported resume catalog version {version}");
-    let header_size = u16::from_le_bytes([bytes[6], bytes[7]]);
-    anyhow::ensure!(header_size as usize == RESUME_HEADER_SIZE, "bad resume catalog header size {header_size}");
-    let count = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-    let expected = RESUME_HEADER_SIZE + count * RESUME_RECORD_SIZE;
-    anyhow::ensure!(bytes.len() == expected, "resume catalog has an invalid size");
-
-    let mut records = Vec::with_capacity(count);
-    let mut previous: Option<u32> = None;
-    for i in 0..count {
-        let off = RESUME_HEADER_SIZE + i * RESUME_RECORD_SIZE;
-        let function_ordinal = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
-        let local_catalog_slot =
-            u32::from_le_bytes([bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7]]);
-        if let Some(prev) = previous {
-            anyhow::ensure!(
-                function_ordinal > prev,
-                "resume catalog function ordinals are not strictly increasing"
-            );
-        }
-        previous = Some(function_ordinal);
-        // THE SHIM'S OWN ASSUMPTION, checked rather than carried. The emitted
-        // `__wpk_fork_place_resume_thunks` reads a published record's ORDINAL
-        // and uses it directly as the index into the guest's
-        // `__wpk_fork_resume_catalog` table, so the two columns must be the
-        // same number. `emit_resume_catalog` asserts exactly that when it
-        // writes the section (`debug_assert_eq!(thunk.func_ordinal, slot)`); a
-        // `debug_assert` in the producer is not a check in the consumer, and
-        // this host reads artifacts it did not build.
-        anyhow::ensure!(
-            local_catalog_slot == function_ordinal,
-            "resume catalog record {i} names ordinal {function_ordinal} at local catalog slot \
-             {local_catalog_slot}; the placement shim indexes the catalog BY ORDINAL, so the two \
-             must agree"
-        );
-        records.push(ForkResumeCatalogRecord { function_ordinal });
-    }
-    Ok(records)
+    // THE SHIM'S OWN ASSUMPTION, checked rather than carried: the emitted
+    // `__wpk_fork_place_resume_thunks` indexes the guest's catalog table BY
+    // ORDINAL, so every record's ordinal must be its local catalog slot.
+    // `emit_resume_catalog` only `debug_assert`s that when it writes the
+    // section, and this host reads artifacts it did not build. The check (and
+    // the KFRC decode under it) is `fork_codec`'s, the one copy the fork
+    // module's admission runs too.
+    let ordinals = fork_codec::placeable_resume_ordinals(bytes).map_err(|rejection| match rejection {
+        fork_codec::AdmissionRejection::ResumeOrdinalNotSlot { index } => anyhow::anyhow!(
+            "resume catalog record {index} names an ordinal that is not its local catalog slot; \
+             the placement shim indexes the catalog BY ORDINAL, so the two must agree"
+        ),
+        other => anyhow::anyhow!("resume catalog {}", other.reason()),
+    })?;
+    Ok(ordinals.into_iter().map(|function_ordinal| ForkResumeCatalogRecord { function_ordinal }).collect())
 }
 
 /// The guest-program-specific fork format this host must seed into a FRESH
