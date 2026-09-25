@@ -59,6 +59,36 @@ test("a machine switch shows teardown then load progress @slow", async ({
     .filter({ hasText: /Node\.js/i }).first().click();
 
   await expect(page.locator(".kmprogress-card")).toBeVisible({ timeout: 30_000 });
+
+  // toBeVisible() does not consider occlusion. The gallery pane that started
+  // this switch is still open at this point (closeDockPane() only runs after
+  // applyBootDescriptor resolves), so this is exactly the case where a
+  // lower-stacked overlay would be painted under the dock and invisible to
+  // the user despite having a non-zero, non-hidden box. Hit-test instead.
+  const occluded = await page.evaluate(() => {
+    const card = document.querySelector(".kmprogress-card");
+    if (!card) return "no card";
+    // The app marks its main content (including a modally-covering gallery
+    // pane) `inert` while a switch is in flight, so a keyboard/AT user cannot
+    // reach a machine that is gone. Chromium's hit-testing excludes inert
+    // subtrees entirely, so elementFromPoint "sees through" an inert pane
+    // straight to whatever is behind it -- even when that pane is fully
+    // covering the point on screen. Lift inertness for this synchronous
+    // check only: nothing repaints and nothing becomes interactively
+    // reachable in between removing and restoring the attribute, so this
+    // never changes what a real user could do.
+    const inertHosts = Array.from(document.querySelectorAll("[inert]"));
+    for (const host of inertHosts) host.removeAttribute("inert");
+    try {
+      const r = card.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit && card.contains(hit) ? null : (hit?.className ?? "unknown");
+    } finally {
+      for (const host of inertHosts) host.setAttribute("inert", "");
+    }
+  });
+  expect(occluded, "something is painted over the progress card").toBeNull();
+
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 240_000,
   });

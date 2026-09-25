@@ -4427,11 +4427,16 @@
 
 /* Machine switch progress: one centred, full-page overlay covering teardown
    and image load. Centred rather than pinned to a pane — a switch is a
-   whole-page event. */
+   whole-page event.
+   z-index must clear the dock layer, which stays mounted (and can stay open,
+   e.g. the gallery pane) for the whole switch: .kdock-shell 1000,
+   .kdock-popover 1010, .kdownload-toasts 1100. 1200 is above all of those.
+   Covering the dock is correct here — the overlay is modal by design, and
+   the machine the dock was controlling is gone. */
 .kmprogress-overlay {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 1200;
   display: grid;
   place-items: center;
   background: color-mix(in oklch, var(--k-bg) 72%, transparent);
