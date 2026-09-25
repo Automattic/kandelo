@@ -69,6 +69,34 @@ apply_patches() {
 }
 apply_patches
 
-# --- TASK 2+ appends the SDK activation, make invocation, and install here ---
-echo "staged"
-exit 0
+# Use this worktree's SDK and sysroot rather than a global npm link.
+source "$REPO_ROOT/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
+
+cd "$SRC"
+echo "==> Cleaning previous build..."
+make clean >/dev/null 2>&1 || true
+
+echo "==> Cross-compiling tyr-quake (wasm32, software renderer)..."
+# The build host is macOS; force the Linux UNIX profile so the engine uses
+# fbdev/OSS conventions instead of the darwin (framework) path. USE_X86_ASM=N
+# selects the C rasterizer fallbacks (the .S files are x86-only). LIBS="-lm"
+# only: wasm32posix-cc auto-injects channel_syscall.c + musl libc.a, so passing
+# -lc would duplicate fork/_Fork/__syscall_cp; libm is not auto-linked.
+QUAKE_VID_TARGET="${QUAKE_VID_TARGET:-null}"
+QUAKE_IN_TARGET="${QUAKE_IN_TARGET:-null}"
+QUAKE_SND_TARGET="${QUAKE_SND_TARGET:-null}"
+make CC=wasm32posix-cc \
+     LD=wasm32posix-cc \
+     TARGET_OS=UNIX TARGET_UNIX=linux \
+     USE_X86_ASM=N USE_SDL=N \
+     VID_TARGET="$QUAKE_VID_TARGET" \
+     IN_TARGET="$QUAKE_IN_TARGET" \
+     SND_TARGET="$QUAKE_SND_TARGET" \
+     CD_TARGET=null \
+     LIBS="-lm" \
+     bin/tyr-quake
+
+cp bin/tyr-quake "$OUT_BIN"
+ls -la "$OUT_BIN"
+echo "==> quake.wasm built (VID=$QUAKE_VID_TARGET IN=$QUAKE_IN_TARGET SND=$QUAKE_SND_TARGET)."

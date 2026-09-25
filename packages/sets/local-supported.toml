@@ -348,6 +348,10 @@ name = "tcl"
 class = "user-software"
 
 [[packages]]
+name = "tyrquake"
+class = "user-software"
+
+[[packages]]
 name = "unzip"
 class = "user-software"
 
