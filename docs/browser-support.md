@@ -305,6 +305,18 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   stops: the queue fills, writers apply backpressure, and drain/close stays
   pending instead of pretending audio played. Resuming the context continues
   from the queued position.
+- **Audio demand is a separate signal from audio state.** Every machine gets a
+  PCM transport at kernel ready, so the sink's state (`unprepared`,
+  `suspended`, `running`, `error`, …) says nothing about whether anything in
+  the machine wants audio. The kernel already publishes demand in the shared
+  control header: a guest `open()` of `/dev/dsp` bumps the monotonic
+  `generation` and leaves `state` non-closed, while the host's transport claim
+  touches neither. `KernelHost.getAudioActivity()` /
+  `subscribeAudioActivity()` report that, latched for the machine's lifetime,
+  and the browser app shows its audio warning only when demand is set — so a
+  shell machine stays silent while a machine that has opened the device still
+  surfaces a suspended, errored, interrupted or unavailable sink. The latch is
+  what keeps the warning up after a program that played one short sound exits.
 - Browser policy suspension and interruption are recoverable and do not poison
   the stream. A permanent worklet, processor, or sink failure is latched into
   the shared transport instead: blocked calls wake, `write()` and drain return
