@@ -827,6 +827,13 @@ export async function buildSourceRootfsShellImage(
     new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
     0o755,
   );
+  // The quake profile stages quake106.zip into this basedir at page load, and
+  // the wrapper (running as the unprivileged demo user) extracts id1/pak0.pak
+  // beneath it. The directory must exist (the asset writer does not create
+  // parents) and be world-writable so the demo user can create id1/ and write
+  // the extracted pak.
+  ensureDirRecursive(fs, "/usr/share");
+  ensureDirRecursive(fs, "/usr/share/quake", 0o777);
   ensureDirRecursive(fs, "/usr/bin");
   writeVfsBinary(fs, "/usr/bin/espeak-ng", espeakNg, 0o755);
   writeEspeakVoiceData(fs, espeakNgData);

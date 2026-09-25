@@ -34,6 +34,8 @@ import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import sqlite3WasmUrl from "@binaries/programs/wasm32/sqlite3.wasm?url";
+import lhaWasmUrl from "@binaries/programs/wasm32/lha.wasm?url";
+import quakeWasmUrl from "@binaries/programs/wasm32/quake.wasm?url";
 
 export {
   assertShellLazyUrlsResolved,
@@ -63,6 +65,8 @@ const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id
   lsof: lsofWasmUrl,
   nano: nanoWasmUrl,
   "sqlite-cli": sqlite3WasmUrl,
+  lhasa: lhaWasmUrl,
+  tyrquake: quakeWasmUrl,
 };
 
 const SHELL_LAZY_PLACEHOLDER_URLS = new Map(
