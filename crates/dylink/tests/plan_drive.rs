@@ -423,6 +423,67 @@ fn a_side_module_resolves_the_main_images_double_underscore_symbols() {
     assert!(linker.scope.global_symbol("__wpk_fork_function_catalog").is_none());
 }
 
+/// A side module that takes the address of a main-program function the main
+/// program never put in its table gets the function a slot at load, and its
+/// `GOT.func` cell holds that slot. php's `curl.so` is the case that found
+/// this: `Curl_ccalloc = calloc` read `GOT.func.calloc`, php.wasm has no table
+/// entry for `calloc`, the cell stayed 0 and `curl_init()` trapped on a null
+/// table entry. A function that already has a slot keeps it, and a second
+/// library that takes the same address reuses the first one's slot.
+#[test]
+fn an_address_taken_main_function_without_a_slot_gets_one() {
+    let side = || {
+        SideModule {
+            dylink: DylinkSection { memory_size: 16, memory_align: 2, ..Default::default() },
+            imports: vec![Import::got("GOT.func", "calloc"), Import::got("GOT.func", "malloc")],
+            ..Default::default()
+        }
+        .encode()
+    };
+    let func = |name: &str| SymbolValue::Func { instance: MAIN_INSTANCE, export: name.into() };
+    let mut linker = process_linker();
+    linker.scope.publish_main_image(
+        [(String::from("calloc"), func("calloc")), (String::from("malloc"), func("malloc"))],
+        [(2, MAIN_INSTANCE, String::from("malloc"))],
+        4,
+    );
+    let mut executor = Executor::new(4, 0x1000);
+    let mut plan = LinkPlan::begin(&mut linker, LoadRequest::new("curl.so", side()))
+        .expect("begin");
+    executor.drive(&mut linker, &mut plan).expect("load");
+    let bindings = plan.bindings().expect("bindings");
+    let cell = |executor: &Executor, binding: &ImportBinding| match binding.value {
+        BindingValue::Global(global) => executor.globals[&global],
+        ref other => panic!("a GOT.func import must bind a cell, got {other:?}"),
+    };
+    // `calloc` took the next slot, and the table holds it there.
+    assert_eq!(cell(&executor, &bindings[0]), WasmValue::I32(4));
+    assert_eq!(
+        executor.table.get(&4),
+        Some(&TableValue::Export { instance: MAIN_INSTANCE, name: "calloc".into() })
+    );
+    // Journaled, so a fork child and a peer thread replicate the slot.
+    assert!(executor.hosts.iter().any(|request| matches!(
+        request,
+        HostRequest::JournalTableMutation { first_index: 4, length: 1 }
+    )));
+    // `malloc` already had slot 2 and keeps it.
+    assert_eq!(cell(&executor, &bindings[1]), WasmValue::I32(2));
+    assert_eq!(linker.scope.function_table_index(MAIN_INSTANCE, "calloc"), Some(4));
+
+    // A second library that takes `calloc`'s address grows nothing.
+    let grows = |executor: &Executor| {
+        executor.acts.iter().filter(|act| matches!(act, LinkAct::GrowTable { .. })).count()
+    };
+    let before = grows(&executor);
+    let mut again = LinkPlan::begin(&mut linker, LoadRequest::new("zip.so", side()))
+        .expect("begin");
+    executor.drive(&mut linker, &mut again).expect("load");
+    assert_eq!(grows(&executor), before, "calloc already has a slot");
+    let bindings = again.bindings().expect("bindings");
+    assert_eq!(cell(&executor, &bindings[0]), WasmValue::I32(4));
+}
+
 /// An immutable global export is a data address relative to the module's base
 /// and is relocated; a mutable one is instance state and passes through.
 #[test]

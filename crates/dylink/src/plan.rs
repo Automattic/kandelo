@@ -451,6 +451,9 @@ enum Pending {
     Tag(TagSlot),
     GotGlobal(usize),
     SavedGot(usize),
+    ProviderSlotGrow(usize),
+    ProviderSlotWrite(usize, u64),
+    ProviderSlotJournal(usize, u64),
     PrepareActivation,
     Instantiate,
     RegisterActivation,
@@ -1046,6 +1049,37 @@ impl LinkPlan {
                 let symbol = self.got_imports[index].symbol.clone();
                 self.fetched_got_func.insert(symbol, value);
             }
+            Pending::ProviderSlotGrow(index) => {
+                let slot = result.expect_index()?;
+                let (instance, name) = self.provider_slot_for(linker, index)?;
+                self.emit(
+                    PlanStep::Act(LinkAct::WriteTable {
+                        index: slot,
+                        value: TableValue::Export { instance, name },
+                    }),
+                    Pending::ProviderSlotWrite(index, slot),
+                );
+            }
+            Pending::ProviderSlotWrite(index, slot) => {
+                result.expect_done()?;
+                // Journaled like `dlsym`'s slot, so a fork child and a peer
+                // thread replicate the function at the same index.
+                self.emit(
+                    PlanStep::Host(HostRequest::JournalTableMutation {
+                        first_index: slot,
+                        length: 1,
+                    }),
+                    Pending::ProviderSlotJournal(index, slot),
+                );
+            }
+            Pending::ProviderSlotJournal(index, slot) => {
+                // The cursor does NOT advance: `plan_got` reconsiders the same
+                // declaration, and the provider now has a slot.
+                result.expect_done()?;
+                let (instance, name) = self.provider_slot_for(linker, index)?;
+                linker.scope.record_function_slot(instance, &name, slot);
+                linker.scope.set_table_length(linker.scope.table_length().max(slot + 1));
+            }
             Pending::GotGlobal(index) => {
                 result.expect_done()?;
                 let site = &self.got_imports[index];
@@ -1359,6 +1393,16 @@ impl LinkPlan {
         Ok(())
     }
 
+    /// The function a `GOT.func` declaration resolves to, for giving it a
+    /// table slot.
+    fn provider_slot_for(&self, linker: &Linker, index: usize) -> DylinkResult<(InstanceId, String)> {
+        let symbol = &self.got_imports[index].symbol;
+        match linker.scope.scoped_symbol(&self.dependency_scope, symbol).map(|r| r.value) {
+            Some(SymbolValue::Func { instance, export }) => Ok((instance, export)),
+            _ => Err(DylinkError::UnexpectedActSequence),
+        }
+    }
+
     fn plan_got(&mut self, linker: &mut Linker) -> DylinkResult<()> {
         while self.got_cursor < self.got_imports.len() {
             let index = self.got_cursor;
@@ -1418,6 +1462,25 @@ impl LinkPlan {
                     Pending::SavedGot(index),
                 );
                 return Ok(());
+            }
+
+            // A function another module provides, with no table slot yet --
+            // one the main program never took the address of itself, like
+            // php's `calloc` for `curl.so`. The address-take gets it a slot
+            // here, the way `dlsym` does; left alone the cell would hold 0 and
+            // the first call through it would trap on a null table entry. A
+            // replay takes the parent's value instead (above), and this
+            // module's OWN functions get the slots reserved with its region.
+            if kind == GotKind::Func && resolved_table_index.is_none() && replay_value.is_none() {
+                if let Some(SymbolValue::Func { instance, .. }) = resolved.as_ref().map(|r| &r.value) {
+                    if *instance != self.instance {
+                        self.emit(
+                            PlanStep::Act(LinkAct::GrowTable { delta: 1 }),
+                            Pending::ProviderSlotGrow(index),
+                        );
+                        return Ok(());
+                    }
+                }
             }
 
             let decision = decide_got_cell(GotRequest {
