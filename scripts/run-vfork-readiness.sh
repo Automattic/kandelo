@@ -41,7 +41,7 @@ bash scripts/build-programs.sh
 )
 
 host_tests=(
-  test/vfork-lifetime.test.ts
+  test/fork-launch-observer.test.ts
   test/vfork-workspace.test.ts
   test/vfork-production-mechanism.test.ts
   test/vfork-mechanism-trace.test.ts

@@ -198,8 +198,10 @@ std::thread_local! {
         core::cell::RefCell::new(Vec::new());
 }
 
-/// Queue one transition for the host.
+/// Queue one transition for the host, and raise the fork-lifecycle wake so
+/// the host's ordinary wake drain knows to drain this queue too.
 pub fn push(event: ForkLifecycleEvent) {
+    crate::wakeup::push(0, wasm_posix_shared::wakeup_event_wire::TYPE_FORK_LIFECYCLE);
     #[cfg(test)]
     {
         let _ = &EVENT_QUEUE;

@@ -9,9 +9,9 @@ const repoRoot = join(testDir, "..", "..");
 /**
  * Slice `handleOrdinaryFork` out of `host/src/process-lifecycle.ts`.
  *
- * It is one implementation serving both hosts now, so the replay-gate
+ * It is one implementation serving both hosts now, so the launch
  * transaction is checked once. That is stronger than checking two copies: the
- * gate can no longer be committed in the right order on one host and the
+ * launch can no longer be observed in the right order on one host and the
  * wrong order on the other. `expectEntryProvides` below keeps each entry on
  * the hook for actually binding it, so sharing cannot read as deleting.
  *
@@ -59,46 +59,42 @@ function expectEntryProvides(relativePath: string): void {
 describe.each([
   ["Node", "host/src/node-kernel-worker-entry.ts"],
   ["browser", "host/src/browser-kernel-worker-entry.ts"],
-])("%s fork replay launch transaction", (_host, relativePath) => {
+])("%s kernel-completed fork launch", (_host, relativePath) => {
   it("routes the kernel fork callback into the shared ordinary-fork launch", () => {
     expectEntryProvides(relativePath);
   });
 
-  it("waits for the exact child generation before committing and resolving", () => {
+  it("observes the launch before the ordinary listeners and waits for the kernel", () => {
     const handler = ordinaryForkHandlerSource(relativePath);
-    const wait = handler.indexOf("await forkReplay.waitUntilReady()");
-    const generationCheck = handler.indexOf(
-      "processes.get(childPid)?.worker !== launchedWorker",
-      wait,
+    const observe = handler.indexOf("observeForkLaunchWorker(");
+    const listeners = handler.indexOf("host.installProcessWorkerListeners(");
+    const wait = handler.indexOf(
+      "await Promise.race([launchDecided, launchFailure])",
     );
-    const commit = handler.indexOf("forkReplay.commit()", generationCheck);
     const resolve = handler.lastIndexOf("return [childChannelOffset]");
 
-    expect(handler).toContain("forkReplayGate: forkReplay.gate");
-    expect(handler).toContain("observeForkReplayWorker(");
-    expect(wait).toBeGreaterThanOrEqual(0);
-    expect(generationCheck).toBeGreaterThan(wait);
-    expect(commit).toBeGreaterThan(generationCheck);
-    expect(resolve).toBeGreaterThan(commit);
+    // The observer must run first, so a Worker ending before the kernel
+    // decided is a failed launch rather than an ordinary process death.
+    expect(observe).toBeGreaterThanOrEqual(0);
+    expect(listeners).toBeGreaterThan(observe);
+    expect(wait).toBeGreaterThan(listeners);
+    expect(resolve).toBeGreaterThan(wait);
+    // No host-side gate commits the child any more: the kernel does.
+    expect(handler).not.toContain("forkReplayGate");
+    expect(handler).not.toContain(".commit()");
   });
 
-  it("cancels both a deferred launch and the rollback path", () => {
+  it("rolls a failed launch back and hands it to the kernel", () => {
     const handler = ordinaryForkHandlerSource(relativePath);
-    const launchGate = handler.indexOf("startProcessWorkerWhenRunnable(");
-    const launchCancellation = handler.indexOf("forkReplay.cancel(", launchGate);
     const rollback = handler.indexOf("} catch (error)");
-    const rollbackCancellation = handler.indexOf("forkReplay.cancel(error)", rollback);
+    const terminate = handler.indexOf(
+      "await terminateTrackedWorker(childWorker)",
+      rollback,
+    );
+    const rethrow = handler.indexOf("throw error;", terminate);
 
-    expect(launchGate).toBeGreaterThanOrEqual(0);
-    expect(launchCancellation).toBeGreaterThan(launchGate);
-    expect(launchCancellation).toBeLessThan(rollback);
-    expect(rollbackCancellation).toBeGreaterThan(rollback);
-    expect(
-      handler.indexOf(
-        "await terminateTrackedWorker(childWorker)",
-        rollbackCancellation,
-      ),
-    )
-      .toBeGreaterThan(rollbackCancellation);
+    expect(rollback).toBeGreaterThanOrEqual(0);
+    expect(terminate).toBeGreaterThan(rollback);
+    expect(rethrow).toBeGreaterThan(terminate);
   });
 });

@@ -30,10 +30,7 @@ import {
   ensureDirRecursive,
   writeVfsBinary,
 } from "../src/vfs/image-helpers";
-import {
-  ForkReplayGateCoordinator,
-  observeForkReplayWorker,
-} from "../src/fork-replay-gate";
+import { observeForkLaunchWorker } from "../src/fork-launch-observer";
 import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
@@ -174,6 +171,16 @@ export interface RunProgramOptions {
     kernelWorker: CentralizedKernelWorker,
     pid: number,
   ) => void | Promise<void>;
+  /**
+   * Main-thread harness hook invoked after a fork child is registered and
+   * before its Worker exists, so a test can act on the child inside its
+   * launch window (for example kill it before replay reports ready). Forces
+   * main-thread mode.
+   */
+  onForkChildRegistered?: (
+    kernelWorker: CentralizedKernelWorker,
+    childPid: number,
+  ) => void;
   /** If `true`, the helper queries `kernel_get_fork_count(pid)` whenever
    *  the running program creates a guest child and surfaces those live-parent
    *  snapshots on `RunProgramResult.forkCountSamples`. Used by the
@@ -338,7 +345,12 @@ function centralizedForkModuleFields(
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
-  if (options.io || options.onKernelReady || options.processWorkerEntry) {
+  if (
+    options.io
+    || options.onKernelReady
+    || options.onForkChildRegistered
+    || options.processWorkerEntry
+  ) {
     return runOnMainThread(options);
   }
   return runInWorkerThread(options);
@@ -799,6 +811,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         mode,
         parentMemory,
         continuation,
+        launchDecided,
       }) => {
         const parentBuf = new Uint8Array(parentMemory.buffer);
         const parentPages = Math.ceil(parentBuf.byteLength / 65536);
@@ -821,6 +834,13 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           mmapBase: childLayout.mmapBase,
         });
         kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+        options.onForkChildRegistered?.(kernelWorker, childPid);
+        // As the production host does: a child that died before its Worker
+        // exists stays the kernel's zombie and gets no Worker.
+        if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+          kernelWorker.deactivateProcess(childPid);
+          return [];
+        }
 
         const activeForkBufAddr = continuation.forkBufAddr;
         const parentForkReplayContext = forkReplayContexts.get(parentPid);
@@ -835,9 +855,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             ? { ...parentForkReplayContext, forkBufAddr: activeForkBufAddr }
             : undefined;
         const forkBufAddr = activeForkBufAddr;
-        const forkReplay = new ForkReplayGateCoordinator(
-          `centralized test fork child pid=${childPid}`,
-        );
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
         let childWorker:
@@ -852,7 +869,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           isForkChild: true,
           forkMode: mode,
           forkBufAddr,
-          forkReplayGate: forkReplay.gate,
           forkChildThreadFnPtr: forkReplayContext?.fnPtr,
           forkChildThreadArgPtr: forkReplayContext?.argPtr,
           ptrWidth: parentPtrWidth,
@@ -908,30 +924,20 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             reapChildWorkerIfReady(childPid);
           }
         });
-        observeForkReplayWorker(
-          forkReplay,
+        // Match the real Node/browser host: the kernel completes the parent
+        // once the child's replay reports ready, and a Worker that ends first
+        // is reported to the kernel as a failed launch.
+        const launchFailure = observeForkLaunchWorker(
           childWorker,
           childPid,
-          () => workers.get(childPid) === childWorker,
+          launchDecided,
+          () => {},
         );
 
         try {
-          await forkReplay.waitUntilReady();
-          if (workers.get(childPid) !== childWorker) {
-            throw new Error(
-              `Fork child ${childPid} changed generation before replay commit`,
-            );
-          }
-          if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
-            throw new Error(`Fork child ${childPid} exited before replay commit`);
-          }
-          // Match the real Node/browser host: the parent cannot observe the
-          // child until replay has reached the inherited fork import and this
-          // separate commit wakes that exact Worker generation.
-          forkReplay.commit();
+          await Promise.race([launchDecided, launchFailure]);
           return [childChannelOffset];
         } catch (error) {
-          forkReplay.cancel(error);
           if (workers.get(childPid) === childWorker) {
             workers.delete(childPid);
             processProgramBytes.delete(childPid);

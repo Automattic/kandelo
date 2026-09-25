@@ -41,12 +41,18 @@ import {
   CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
+  FORK_LAUNCH_FAILED_RESULTS,
+  FORK_LIFECYCLE_EVENT_KINDS,
+  FORK_LIFECYCLE_EVENT_RECORD_BYTES,
   HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_FORK_MODE_VFORK,
   PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
+  WAKEUP_EVENT_RECORD_BYTES,
+  WAKEUP_EVENT_TYPES,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
 import {
@@ -345,6 +351,82 @@ async function issueDirectKernelOpen(
   return readMailboxResult(process.memory, process.channelOffset);
 }
 
+/**
+ * A kernel stand-in for kernel-completed fork launches. It records the
+ * launch `kernel_fork_process` opens, answers `kernel_fork_launch_failed` by
+ * queuing the parent's `-errno` as the kernel does, and lets a test commit
+ * the launch the way the child's `SYS_FORK_REPLAY_READY` would. Queued
+ * records surface through the ordinary wake drain's fork-lifecycle bit.
+ */
+function forkLifecycleKernel(
+  childPid: number,
+  launchFailedResult: number = FORK_LAUNCH_FAILED_RESULTS.rolledBack,
+) {
+  const events: number[][] = [];
+  let memory: WebAssembly.Memory | undefined;
+  let launch: { parent: number; tid: number; mode: number } | undefined;
+  const queueParentComplete = (value: number): void => {
+    if (!launch) throw new Error("no fork launch to complete");
+    events.push([
+      FORK_LIFECYCLE_EVENT_KINDS.parentComplete,
+      launch.mode,
+      childPid,
+      launch.parent,
+      launch.tid,
+      value,
+    ]);
+  };
+  const exports = {
+    kernel_fork_process: vi.fn((parent: number, tid: number, mode: number) => {
+      launch = { parent, tid, mode: mode & ~PROCESS_FORK_LAUNCH_KERNEL_COMPLETES };
+      return childPid;
+    }),
+    kernel_fork_launch_failed: vi.fn((_child: number, errno: number) => {
+      if (launchFailedResult === FORK_LAUNCH_FAILED_RESULTS.rolledBack) {
+        queueParentComplete(-errno);
+      }
+      return launchFailedResult;
+    }),
+    kernel_drain_wakeup_events: vi.fn((rawOut: number | bigint, len: number) => {
+      const out = Number(rawOut);
+      if (events.length === 0 || len < WAKEUP_EVENT_RECORD_BYTES) return 0;
+      new DataView(memory!.buffer).setUint32(out, 0, true);
+      new Uint8Array(memory!.buffer)[out + 4] = WAKEUP_EVENT_TYPES.forkLifecycle;
+      return 1;
+    }),
+    kernel_drain_fork_lifecycle_events: vi.fn(
+      (rawOut: number | bigint, len: number, max: number) => {
+        const out = Number(rawOut);
+        const count = Math.min(
+          events.length,
+          max,
+          Math.floor(len / FORK_LIFECYCLE_EVENT_RECORD_BYTES),
+        );
+        const view = new DataView(memory!.buffer);
+        events.splice(0, count).forEach((event, index) => {
+          event.forEach((word, field) => view.setInt32(
+            out + index * FORK_LIFECYCLE_EVENT_RECORD_BYTES + field * 4,
+            word,
+            true,
+          ));
+        });
+        return count;
+      },
+    ),
+  };
+  return {
+    exports,
+    bind(harness: GatedLifecycleHarness): void {
+      memory = harness.kernelMemory;
+    },
+    /** Commit the launch as the child's replay-ready report does. */
+    commit(harness: GatedLifecycleHarness): void {
+      queueParentComplete(childPid);
+      harness.worker.testAuthority.drainWakeupEventsForTest();
+    },
+  };
+}
+
 describe("CentralizedKernelWorker Process Management", () => {
   it("does not deliver SIGEV_NONE as a signal-zero wakeup", () => {
     expect(shouldDeliverPosixTimerSignal(0)).toBe(false);
@@ -357,12 +439,14 @@ describe("CentralizedKernelWorker Process Management", () => {
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channelOffset = WASM_PAGE_SIZE;
     publishMainForkContinuation(memory, channelOffset);
-    const kernelForkProcess = vi.fn(() => 101);
-    const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const kernel = forkLifecycleKernel(101);
+    const kernelForkProcess = kernel.exports.kernel_fork_process;
+    const onFork = vi.fn((_request: unknown) => Promise.resolve([WASM_PAGE_SIZE]));
     const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
-      kernelExports: { kernel_fork_process: kernelForkProcess },
+      kernelExports: kernel.exports,
     });
+    kernel.bind(harness);
     registerLifecycleProcess(
       harness,
       parentPid,
@@ -376,10 +460,27 @@ describe("CentralizedKernelWorker Process Management", () => {
       HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
       [0],
     );
+    await waitForCondition(
+      () => onFork.mock.calls.length === 1,
+      "fork worker launch",
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // The launch resolved, but only the kernel completes the parent.
+    expect(
+      Atomics.load(
+        new Int32Array(memory.buffer, channelOffset),
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      ),
+    ).toBe(CHANNEL_STATUS_PENDING);
+    kernel.commit(harness);
     await waitForMailboxCompletion(memory, channelOffset);
 
     expect(kernelForkProcess).toHaveBeenCalledOnce();
-    expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid, 0);
+    expect(kernelForkProcess).toHaveBeenCalledWith(
+      parentPid,
+      parentPid,
+      PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+    );
     expect(onFork).toHaveBeenCalledWith({
       parentPid,
       childPid: 101,
@@ -389,7 +490,11 @@ describe("CentralizedKernelWorker Process Management", () => {
         kind: "main",
         forkBufAddr: TEST_FORK_CONTINUATION,
       },
+      launchDecided: expect.any(Promise),
     });
+    await expect(
+      (onFork.mock.calls[0]![0] as { launchDecided: Promise<number> }).launchDecided,
+    ).resolves.toBe(101);
     expect(readMailboxResult(memory, channelOffset)).toEqual({
       value: 101,
       errno: 0,
@@ -406,12 +511,14 @@ describe("CentralizedKernelWorker Process Management", () => {
     });
     const channelOffset = WASM_PAGE_SIZE;
     publishMainForkContinuation(memory, channelOffset);
-    const kernelForkProcess = vi.fn(() => childPid);
+    const kernel = forkLifecycleKernel(childPid);
+    const kernelForkProcess = kernel.exports.kernel_fork_process;
     const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
     const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
-      kernelExports: { kernel_fork_process: kernelForkProcess },
+      kernelExports: kernel.exports,
     });
+    kernel.bind(harness);
     registerLifecycleProcess(harness, parentPid, memory, channelOffset);
 
     writePendingSyscall(
@@ -420,12 +527,19 @@ describe("CentralizedKernelWorker Process Management", () => {
       HOST_INTERCEPTED_SYSCALLS.SYS_VFORK,
       [128, WASM_PAGE_SIZE],
     );
+    await waitForCondition(
+      () => onFork.mock.calls.length === 1,
+      "vfork worker launch",
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // What the kernel queues when the host releases the borrow.
+    kernel.commit(harness);
     await waitForMailboxCompletion(memory, channelOffset);
 
     expect(kernelForkProcess).toHaveBeenCalledWith(
       parentPid,
       parentPid,
-      PROCESS_FORK_MODE_VFORK,
+      PROCESS_FORK_MODE_VFORK | PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
     );
     expect(onFork).toHaveBeenCalledWith({
       parentPid,
@@ -440,6 +554,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         prefixBytes: 128,
         scratchBytes: WASM_PAGE_SIZE,
       },
+      launchDecided: expect.any(Promise),
     });
     expect(readMailboxResult(memory, channelOffset)).toEqual({
       value: childPid,
@@ -570,14 +685,16 @@ describe("CentralizedKernelWorker Process Management", () => {
       kernelView.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
+    const kernel = forkLifecycleKernel(childPid);
     harness = createGatedLifecycleHarness({
       callbacks: { onClone, onFork },
       kernelExports: {
-        kernel_fork_process: vi.fn(() => childPid),
+        ...kernel.exports,
         kernel_handle_channel: kernelHandleChannel,
         kernel_reserve_host_region_at: reserveHostRegionAt,
       },
     });
+    kernel.bind(harness);
     registerLifecycleProcess(
       harness,
       parentPid,
@@ -605,6 +722,12 @@ describe("CentralizedKernelWorker Process Management", () => {
       HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
       [0],
     );
+    await waitForCondition(
+      () => onFork.mock.calls.length === 1,
+      "pthread fork worker launch",
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    kernel.commit(harness);
     await waitForMailboxCompletion(memory, threadChannelOffset);
 
     expect(reserveHostRegionAt).toHaveBeenCalledWith(
@@ -625,6 +748,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         slotStart,
         slotLen,
       },
+      launchDecided: expect.any(Promise),
     });
     expect(readMailboxResult(memory, threadChannelOffset)).toEqual({
       value: childPid,
@@ -650,13 +774,13 @@ describe("CentralizedKernelWorker Process Management", () => {
       continuationAddress,
     );
     const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const kernel = forkLifecycleKernel(childPid);
     const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
       pointerWidth: 8,
-      kernelExports: {
-        kernel_fork_process: vi.fn(() => childPid),
-      },
+      kernelExports: kernel.exports,
     });
+    kernel.bind(harness);
     registerLifecycleProcess(
       harness,
       parentPid,
@@ -673,6 +797,12 @@ describe("CentralizedKernelWorker Process Management", () => {
         HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
         [0],
       );
+      await waitForCondition(
+        () => onFork.mock.calls.length === 1,
+        "wasm64 fork worker launch",
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      kernel.commit(harness);
       await waitForMailboxCompletion(memory, channelOffset);
 
       expect(readBigUint64).toHaveBeenCalledWith(
@@ -688,6 +818,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           kind: "main",
           forkBufAddr: continuationAddress,
         },
+        launchDecided: expect.any(Promise),
       });
       expect(readMailboxResult(memory, channelOffset)).toEqual({
         value: childPid,
@@ -911,13 +1042,15 @@ describe("CentralizedKernelWorker Process Management", () => {
     publishMainForkContinuation(memory, channelOffset);
     const removeProcess = vi.fn(() => 0);
     const onFork = vi.fn(() => Promise.reject(new Error("launch failed")));
+    const kernel = forkLifecycleKernel(100);
     const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
       kernelExports: {
-        kernel_fork_process: vi.fn(() => 100),
+        ...kernel.exports,
         kernel_remove_process: removeProcess,
       },
     });
+    kernel.bind(harness);
     registerLifecycleProcess(harness, parentPid, memory, channelOffset);
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -931,7 +1064,10 @@ describe("CentralizedKernelWorker Process Management", () => {
       await waitForMailboxCompletion(memory, channelOffset);
 
       expect(onFork).toHaveBeenCalledOnce();
-      expect(removeProcess).toHaveBeenCalledWith(100);
+      // The kernel rolls the child back; the host never removes it itself.
+      expect(kernel.exports.kernel_fork_launch_failed)
+        .toHaveBeenCalledExactlyOnceWith(100, 12);
+      expect(removeProcess).not.toHaveBeenCalled();
       expect(readMailboxResult(memory, channelOffset)).toEqual({
         value: -1,
         errno: 12,
@@ -963,13 +1099,15 @@ describe("CentralizedKernelWorker Process Management", () => {
       4 * WASM_PAGE_SIZE,
     );
     const onFork = vi.fn(() => Promise.reject(admissionError));
+    const kernel = forkLifecycleKernel(100);
     const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
       kernelExports: {
-        kernel_fork_process: vi.fn(() => 100),
+        ...kernel.exports,
         kernel_remove_process: removeProcess,
       },
     });
+    kernel.bind(harness);
     registerLifecycleProcess(harness, parentPid, memory, channelOffset);
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -983,7 +1121,9 @@ describe("CentralizedKernelWorker Process Management", () => {
       await waitForMailboxCompletion(memory, channelOffset);
 
       expect(onFork).toHaveBeenCalledOnce();
-      expect(removeProcess).toHaveBeenCalledWith(100);
+      expect(kernel.exports.kernel_fork_launch_failed)
+        .toHaveBeenCalledExactlyOnceWith(100, 11);
+      expect(removeProcess).not.toHaveBeenCalled();
       expect(readMailboxResult(memory, channelOffset)).toEqual({
         value: -1,
         errno: 11,
@@ -993,26 +1133,26 @@ describe("CentralizedKernelWorker Process Management", () => {
     }
   });
 
-  it("terminates the parent when a failed fork launch cannot remove the child", async () => {
+  it("terminates the parent when the kernel refuses a failed fork launch", async () => {
     const parentPid = 77;
     const childPid = 100;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channelOffset = WASM_PAGE_SIZE;
     publishMainForkContinuation(memory, channelOffset);
-    const removeProcess = vi.fn(() => -5);
     const markProcessSignaled = vi.fn(() => 0);
     const onExit = vi.fn();
+    const kernel = forkLifecycleKernel(childPid, -5);
     const harness = createGatedLifecycleHarness({
       callbacks: {
         onFork: vi.fn(() => Promise.reject(new Error("launch failed"))),
         onExit,
       },
       kernelExports: {
-        kernel_fork_process: vi.fn(() => childPid),
+        ...kernel.exports,
         kernel_mark_process_signaled: markProcessSignaled,
-        kernel_remove_process: removeProcess,
       },
     });
+    kernel.bind(harness);
     registerLifecycleProcess(harness, parentPid, memory, channelOffset);
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -1028,7 +1168,8 @@ describe("CentralizedKernelWorker Process Management", () => {
         "fatal fork rollback parent termination",
       );
 
-      expect(removeProcess).toHaveBeenCalledWith(childPid);
+      expect(kernel.exports.kernel_fork_launch_failed)
+        .toHaveBeenCalledWith(childPid, 12);
       expect(markProcessSignaled).toHaveBeenCalledWith(parentPid, 11);
       expect(onExit).toHaveBeenCalledWith(parentPid, 139);
       expect(
@@ -1038,8 +1179,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         ),
       ).toBe(CHANNEL_STATUS_PENDING);
       expect(error).toHaveBeenCalledWith(
-        "[handleSyscall] FATAL could not roll back fork child 100: " +
-          "Kernel could not remove process 100: errno 5",
+        "[handleSyscall] FATAL could not roll back fork child 100: errno 5",
       );
     } finally {
       error.mockRestore();

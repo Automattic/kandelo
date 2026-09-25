@@ -86,7 +86,6 @@ import {
   requireForkUnwindTag,
 } from "./fork-guest-imports";
 import { forkPhase } from "./fork-phase";
-import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
   type ForkModuleInstance,
   instantiateForkModule,
@@ -3805,22 +3804,8 @@ export async function centralizedWorkerMain(
             forkModuleBackend = null;
             forkModuleFrameExports = null;
           }
-          if (initData.isForkChild) {
-            const gate = initData.forkReplayGate;
-            if (!gate) {
-              throw new Error(
-                `pid=${pid}: fork child is missing its replay commit gate`,
-              );
-            }
-            // Every outer activation has already restored its frame before
-            // descending to this import. Reaching here is therefore the exact
-            // point at which the host may commit the fresh child.
-            port.postMessage({
-              type: "fork_replay_ready",
-              pid,
-            } satisfies WorkerToHostMessage);
-            waitForForkReplayCommit(gate, `pid=${pid}`);
-          }
+          // A child's replay finish above already reported
+          // SYS_FORK_REPLAY_READY to the kernel from inside the module.
           return forkResult;
         }
         if (phase === "abort-replay") {

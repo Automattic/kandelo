@@ -4739,7 +4739,7 @@ struct WakeupEventType {
     bit: u8,
 }
 
-fn wakeup_event_types() -> [WakeupEventType; 7] {
+fn wakeup_event_types() -> [WakeupEventType; 8] {
     use shared::wakeup_event_wire as wire;
 
     [
@@ -4770,6 +4770,10 @@ fn wakeup_event_types() -> [WakeupEventType; 7] {
         WakeupEventType {
             name: "advisoryLock",
             bit: wire::TYPE_ADVISORY_LOCK,
+        },
+        WakeupEventType {
+            name: "forkLifecycle",
+            bit: wire::TYPE_FORK_LIFECYCLE,
         },
     ]
 }
@@ -8519,6 +8523,7 @@ mod tests {
                 { "name": "processStopped", "bit": 16 },
                 { "name": "processContinued", "bit": 32 },
                 { "name": "advisoryLock", "bit": 64 },
+                { "name": "forkLifecycle", "bit": 128 },
             ])
         );
     }

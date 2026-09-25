@@ -1350,9 +1350,8 @@ gate reported none of them.
   assignable to `BufferSource`. Out of campaign scope, but in host's program
   because host imports that source directly.
 - **2 that look like genuine defects** and deserve their own look:
-  `fork-replay-gate.ts:208` reads `.status` off a union
-  (`Partial<WorkerExitMessage> | Partial<WorkerErrorMessage>`) where only one
-  arm has it, and `tls-network-backend.ts:213` passes a
+  a `.status` read off a union in `fork-replay-gate.ts` (since deleted with
+  the host fork gate in lane F stage 2b), and `tls-network-backend.ts:213` passes a
   `Uint8Array<ArrayBufferLike>` where a `BufferSource` is required.
 
 The Vite-typing gap should be closed first, so the remaining count is small
