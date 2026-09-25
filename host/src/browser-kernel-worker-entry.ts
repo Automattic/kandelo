@@ -4123,13 +4123,14 @@ async function performDestroy() {
     for (const pid of woken) if (processes.has(pid)) live++;
     return live;
   };
-  const stillDraining = () => liveWokenCount() > 0;
-  while (stillDraining() && Date.now() < drainDeadline) {
-    destroyProgress.drained(woken.size - liveWokenCount());
+  let liveWoken = liveWokenCount();
+  while (liveWoken > 0 && Date.now() < drainDeadline) {
+    destroyProgress.drained(woken.size - liveWoken);
     await delay(DESTROY_KILL_DRAIN_POLL_MS);
+    liveWoken = liveWokenCount();
   }
-  destroyProgress.drained(woken.size - liveWokenCount());
-  if (stillDraining()) {
+  destroyProgress.drained(woken.size - liveWoken);
+  if (liveWoken > 0) {
     console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
   }
 

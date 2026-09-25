@@ -112,6 +112,35 @@ describe("destroy progress reporter", () => {
     expect(last.completed).toBe(last.total);
   });
 
+  it("a second terminate sweep adds its own stragglers to the total", () => {
+    const { events, emit } = collect();
+    const r = createDestroyProgressReporter(emit);
+    r.startDraining(7);
+    r.drained(7);
+    r.startTerminating(2);
+    r.terminatedOne();
+    r.terminatedOne();
+    r.startTerminating(1);
+    expect(events.at(-1)!.total).toBe(10);
+    r.terminatedOne();
+    const last = events.at(-1)!;
+    expect(last.completed).toBe(10);
+    expect(last.total).toBe(10);
+  });
+
+  it("a sweep that finds nothing does not change the total", () => {
+    const { events, emit } = collect();
+    const r = createDestroyProgressReporter(emit);
+    r.startDraining(4);
+    r.drained(4);
+    r.startTerminating(1);
+    r.terminatedOne();
+    const countBefore = events.length;
+    r.startTerminating(0);
+    expect(events.at(-1)!.total).toBe(5);
+    expect(events.length).toBe(countBefore);
+  });
+
   it("reports a zero total rather than inventing one", () => {
     const { events, emit } = collect();
     createDestroyProgressReporter(emit).startDraining(0);
