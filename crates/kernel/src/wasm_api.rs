@@ -2697,15 +2697,79 @@ pub extern "C" fn kernel_reap_process(pid: u32) -> i32 {
 /// carried explicitly because the host memory/lifetime transaction differs:
 /// ordinary fork owns a memory clone, while genuine vfork will borrow the
 /// parent's memory and suspend only its calling thread until exec or exit.
+///
+/// `mode` may carry `fork_contract::LAUNCH_KERNEL_COMPLETES`: the kernel then
+/// owns the launch (see `crate::fork_lifecycle`): the child answers
+/// `SYS_FORK_REPLAY_READY`, the host reports failures through
+/// `kernel_fork_launch_failed` and vfork releases through
+/// `kernel_vfork_address_space_released`, and the parent's result arrives as a
+/// `KIND_PARENT_COMPLETE` record from `kernel_drain_fork_lifecycle_events`.
+/// A vfork (with or without the bit) is refused with `EAGAIN` while the
+/// parent's address space already has a kernel-recorded borrower.
+///
 /// Returns the child pid on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u32) -> i32 {
-    let Some(mode) = wasm_posix_shared::fork_contract::Mode::from_u32(mode) else {
+    let Some((mode, kernel_completes)) =
+        wasm_posix_shared::fork_contract::decode_process_request(mode)
+    else {
         return -(Errno::EINVAL as i32);
     };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.fork_process_for_caller_with_mode(parent_pid, caller_tid, mode) {
+    match table.fork_process_for_caller_with_request(parent_pid, caller_tid, mode, kernel_completes)
+    {
         Ok(child_pid) => child_pid as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// The host could not launch a kernel-completed fork child: its Worker could
+/// not be constructed, or errored or exited before the child's replay
+/// reported `SYS_FORK_REPLAY_READY` (and, for vfork, before any child realm
+/// could touch the borrowed memory; after that point only
+/// `kernel_vfork_address_space_released(child, CONTAIN)` is truthful).
+///
+/// Returns `fork_lifecycle_event_wire::LAUNCH_FAILED_ROLLED_BACK` (0) when
+/// the kernel removed the still-launching child and queued the parent's
+/// `-errno` completion, `LAUNCH_FAILED_ALREADY_RESOLVED` (1) when the child
+/// had already died (it stays the parent's reapable zombie) or committed, or
+/// a negated errno: `EINVAL` for an errno outside 1..=4095 or a child without
+/// a kernel-completed launch, `ESRCH` for no such child.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fork_launch_failed(child_pid: u32, errno: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.fork_launch_failed(child_pid, errno) {
+        Ok((outcome, removed)) => {
+            if let Some(removed) = removed {
+                finish_removed_process(child_pid, removed);
+            }
+            outcome.wire_value()
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// The host finished its teardown of a vfork child's use of the parent's
+/// address space, after the kernel queued `KIND_VFORK_AWAITING_QUIESCENCE`
+/// (or, for `CONTAIN`, at any point it cannot prove quiescence).
+///
+/// `disposition` is `fork_lifecycle_event_wire::RELEASE_RESUME` (queue the
+/// parent's SYS_VFORK completion with the child pid) or `RELEASE_CONTAIN`
+/// (terminate the parent and any still-live child by SIGSEGV; the parent is
+/// never completed). Returns 0, or a negated errno: `EINVAL` unknown
+/// disposition, `ESRCH` the child is not a recorded borrower, `EBUSY` resume
+/// requested while the child still runs on the borrowed image.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_vfork_address_space_released(child_pid: u32, disposition: u32) -> i32 {
+    let Some(disposition) =
+        crate::fork_lifecycle::VforkReleaseDisposition::from_u32(disposition)
+    else {
+        return -(Errno::EINVAL as i32);
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    match table.vfork_address_space_released(child_pid, disposition, &mut host) {
+        Ok(_) => 0,
         Err(e) => -(e as i32),
     }
 }
@@ -7388,6 +7452,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             t.cond_wait_abort(a1 as u32, pid);
             0
+        }
+        syscall_numbers::SYS_FORK_REPLAY_READY => {
+            // SYS_FORK_REPLAY_READY: (). The channel binds the caller to one
+            // process; the table decides whether it is a live, still-launching
+            // kernel-completed fork child.
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            let pid = table.current_pid();
+            match table.fork_replay_ready(pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
         }
         syscall_numbers::SYS_THREAD_CANCEL => {
             // SYS_THREAD_CANCEL: (target_tid). Host-owned wait state is woken
@@ -15521,6 +15596,25 @@ pub extern "C" fn kernel_drain_wakeup_events(
 ) -> u32 {
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wakeup::drain(out, max_events)
+}
+
+/// Drain queued fork-lifecycle events (see `crate::fork_lifecycle`).
+///
+/// Writes whole `fork_lifecycle_event_wire::RECORD_BYTES` records, at most
+/// `max_events` and as many as fit in `out_len`, and returns how many were
+/// written. Records that do not fit stay queued in order. Only launches
+/// created with `fork_contract::LAUNCH_KERNEL_COMPLETES` produce records.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_drain_fork_lifecycle_events(
+    out_ptr: *mut u8,
+    out_len: u32,
+    max_events: u32,
+) -> u32 {
+    if out_ptr.is_null() {
+        return 0;
+    }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    crate::fork_lifecycle::drain(out, max_events)
 }
 
 // ---------------------------------------------------------------------------

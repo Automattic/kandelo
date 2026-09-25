@@ -1135,6 +1135,65 @@ contains the complete address-space owner group rather than resuming the
 parent unsafely. Ordinary fork continues to use only the ordinary mode and the
 independent-memory path above.
 
+#### Kernel-owned launch state (ABI 44, not yet used by the hosts)
+
+Today the host decides when a fork child is ready and when a vfork parent may
+resume: `host/src/fork-replay-gate.ts` holds the child at its fork site until
+the host commits, and `host/src/vfork-lifetime.ts` (with
+`vfork_parent_release` in `crates/host-native`) tracks the borrowed memory.
+The kernel now also carries that state itself, so the hosts can move onto it.
+The kernel state exists and is unit-tested; neither host passes the opt-in bit
+yet, so today's behaviour is unchanged. The switch is lane F stages 2b
+(Node/browser) and 2d (native); see
+`docs/superpowers/plans/2026-09-24-lane-f-super-plan.md`.
+
+A host opts in per launch by OR-ing
+`fork_contract::LAUNCH_KERNEL_COMPLETES` (`0x100`,
+`PROCESS_FORK_LAUNCH_KERNEL_COMPLETES`) into the `mode` argument of
+`kernel_fork_process`. The guest-carried mode never contains the bit. For such
+a launch:
+
+- Every process has a kernel-owned `address_space` id, fresh at creation and at
+  exec. A vfork child gets its parent's id. The process table records the one
+  vfork child borrowing each id. `kernel_fork_process(.., VFORK)` refuses with
+  `EAGAIN` while the parent's address space has a borrower, whether or not that
+  second vfork opted in, and refuses before any child PID exists.
+- The child carries `fork_launch` (parent pid and task, mode, and phase
+  `Launching`, `ReplayReady` or `Committed`). A vfork child also carries
+  `vfork_parent` for as long as it runs on the borrowed image.
+- The fork module issues `SYS_FORK_REPLAY_READY` (416, no arguments) on the
+  child's own channel when replay reaches the fork site. The channel is bound
+  to exactly one process, and the process table decides whether that process is
+  alive and still launching. That one check replaces the host's
+  Worker-generation comparison and `shouldLaunchPendingChild`. An ordinary fork
+  commits and the parent's result is the child pid. A vfork child moves to
+  `ReplayReady` and its parent stays parked. A second report fails with
+  `EALREADY`, a process with no kernel-completed launch with `EINVAL`, and a
+  dead child with `ESRCH`. The call returns 0, which is the child's fork() return.
+- If a child dies before it reports ready, the parent still learns its PID. For
+  an ordinary fork, the parent's result is committed with the child pid at the
+  exit, so the parent gets the PID and a zombie it can reap, as POSIX requires.
+- `kernel_fork_launch_failed(child_pid, errno)` replaces the host rollback. It
+  must be called before any vfork child realm could touch the shared memory. If
+  the child is still launching, the kernel removes it and the parent's result
+  is `-errno` (return 0). If the child already died or committed, nothing
+  changes (return 1).
+- A vfork borrower's exec commit or exit clears `vfork_parent` and moves the
+  lifetime to awaiting quiescence. The borrow itself stays recorded. The host
+  proves its realm stopped touching the memory, then calls
+  `kernel_vfork_address_space_released(child_pid, disposition)`. `RESUME`
+  (`EBUSY` while the child still runs on the image) completes the parent with
+  the child pid. `CONTAIN` records SIGSEGV death for the parent and any live
+  child, and never completes the parent.
+- The kernel reports each parent completion and each quiescence request as a
+  24-byte record in a queue the host drains with
+  `kernel_drain_fork_lifecycle_events(out_ptr, out_len, max_events)`. The layout
+  is `fork_lifecycle_event_wire` in `crates/shared` and
+  `FORK_LIFECYCLE_EVENT_*` in `host/src/generated/abi.ts`.
+
+A launch that does not set the bit keeps no launch record, never has a
+recorded borrower, and produces no events.
+
 After vfork capture seals, its process Worker reports two exact workspace
 requirements in host-intercepted syscall arguments: all active activation
 prefixes after alignment and the reference/exception codec scratch high-water.

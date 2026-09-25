@@ -477,6 +477,17 @@ address-space ownership. ABI 43 now distinguishes `kernel_fork(FORK)` from
 protocol. Libc `vfork()` therefore no longer aliases the `fork()` wrapper or
 runs `pthread_atfork` handlers.
 
+The replay-ready handshake is moving into the kernel. Today, before fork()
+returns 0, a replayed child waits on a host-owned shared gate
+(`fork-replay-gate.ts`) until the host commits it. ABI 44 adds the kernel side
+of the replacement: a fork module that replays a launch created with
+`fork_contract::LAUNCH_KERNEL_COMPLETES` issues `SYS_FORK_REPLAY_READY` (416) on
+the child's channel from its child-replay `kernel_fork` path. The kernel checks
+that the child is alive and still launching, and the call returns the child's 0.
+The fork module does not issue it yet. It switches in lane F stage 2b together
+with the host. For the kernel state and events, see "Kernel-owned launch state"
+in `docs/architecture.md`.
+
 The vfork mode connects those borrowed APIs to the production Node and browser
 launch paths. It retains the parent's Memory, parks the calling thread, and
 releases that caller only after successful exec commit or exact child

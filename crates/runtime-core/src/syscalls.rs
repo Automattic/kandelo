@@ -975,6 +975,16 @@ fn commit_exec_state_impl(
     proc.posix_timers.clear();
     proc.fork_child = false;
     proc.vfork_child = false;
+    // The committed image runs on a new address space. A vfork borrower stops
+    // using its parent's image here, so its lifetime moves to awaiting host
+    // quiescence; the borrowed id stays recorded in the process table until
+    // the host releases it. A finished launch record describes the discarded
+    // image and cannot be answered again.
+    proc.note_fork_lifecycle_image_end(
+        wasm_posix_shared::fork_lifecycle_event_wire::QUIESCENCE_REASON_EXEC,
+    );
+    proc.address_space = crate::fork_lifecycle::AddressSpaceId::fresh();
+    proc.fork_launch = None;
     proc.fork_exec_path = None;
     proc.fork_exec_argv = None;
     proc.fork_fd_actions.clear();

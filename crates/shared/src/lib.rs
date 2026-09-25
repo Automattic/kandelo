@@ -247,6 +247,120 @@ pub mod fork_contract {
 
     pub const MODE_FORK: u32 = Mode::Fork as u32;
     pub const MODE_VFORK: u32 = Mode::Vfork as u32;
+
+    /// Host-only request bit on the `kernel_fork_process` export's `mode`
+    /// argument: the kernel owns this launch's completion.
+    ///
+    /// With the bit set the kernel records a `PendingForkLaunch` on the
+    /// child, answers `SYS_FORK_REPLAY_READY` from it, and reports the
+    /// parent's SYS_FORK/SYS_VFORK result through the fork-lifecycle event
+    /// queue ([`super::fork_lifecycle_event_wire`]). A vfork additionally
+    /// records the borrowed address space and its borrower. Without the bit
+    /// the kernel keeps no launch state and emits no fork-lifecycle events;
+    /// the host that created the child completes the parent itself.
+    ///
+    /// WHY a separate bit instead of a new `Mode`: the mode is guest-carried
+    /// (the `kernel_fork` import) and names *what* the guest asked for;
+    /// who completes the parent is a property of the host's launch path,
+    /// which the guest must never select. The bit is outside every `Mode`
+    /// value, so `Mode::from_u32` still refuses it.
+    pub const LAUNCH_KERNEL_COMPLETES: u32 = 1 << 8;
+
+    /// Split a `kernel_fork_process` mode argument into the guest-visible
+    /// mode and the host-only kernel-completion request.
+    pub const fn decode_process_request(value: u32) -> Option<(Mode, bool)> {
+        let kernel_completes = value & LAUNCH_KERNEL_COMPLETES != 0;
+        match Mode::from_u32(value & !LAUNCH_KERNEL_COMPLETES) {
+            Some(mode) => Some((mode, kernel_completes)),
+            None => None,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn process_request_keeps_mode_and_completion_bit_separate() {
+            assert_eq!(decode_process_request(MODE_FORK), Some((Mode::Fork, false)));
+            assert_eq!(decode_process_request(MODE_VFORK), Some((Mode::Vfork, false)));
+            assert_eq!(
+                decode_process_request(MODE_VFORK | LAUNCH_KERNEL_COMPLETES),
+                Some((Mode::Vfork, true))
+            );
+            assert_eq!(Mode::from_u32(LAUNCH_KERNEL_COMPLETES), None);
+            assert_eq!(decode_process_request(2), None);
+            assert_eq!(decode_process_request(LAUNCH_KERNEL_COMPLETES | 2), None);
+        }
+    }
+}
+
+/// Packed kernel/host wire layout for one fork-lifecycle event.
+///
+/// The kernel owns fork and vfork launch state for launches created with
+/// [`fork_contract::LAUNCH_KERNEL_COMPLETES`]. Each state change the host
+/// must act on is queued as one fixed 24-byte little-endian record and
+/// drained with `kernel_drain_fork_lifecycle_events(out_ptr, out_len,
+/// max_events)`, which returns the number of records written (never
+/// partial) and keeps the rest queued.
+///
+/// Record fields, all 32-bit little-endian:
+///
+/// | offset | field | meaning |
+/// |---|---|---|
+/// | 0 | `kind` | one of the `KIND_*` values below |
+/// | 4 | `mode` | [`fork_contract::MODE_FORK`] or [`fork_contract::MODE_VFORK`] |
+/// | 8 | `child_pid` | the child the event is about |
+/// | 12 | `parent_pid` | the parent whose SYS_FORK/SYS_VFORK is parked |
+/// | 16 | `parent_tid` | the parent task whose channel is parked |
+/// | 20 | `value` | per-kind value (signed) |
+pub mod fork_lifecycle_event_wire {
+    use core::mem::size_of;
+
+    pub const KIND_OFFSET: usize = 0;
+    pub const MODE_OFFSET: usize = KIND_OFFSET + size_of::<u32>();
+    pub const CHILD_PID_OFFSET: usize = MODE_OFFSET + size_of::<u32>();
+    pub const PARENT_PID_OFFSET: usize = CHILD_PID_OFFSET + size_of::<u32>();
+    pub const PARENT_TID_OFFSET: usize = PARENT_PID_OFFSET + size_of::<u32>();
+    pub const VALUE_OFFSET: usize = PARENT_TID_OFFSET + size_of::<u32>();
+    pub const RECORD_BYTES: usize = VALUE_OFFSET + size_of::<i32>();
+
+    /// Complete the parent's parked SYS_FORK/SYS_VFORK. `value` is the
+    /// syscall result: the child pid (> 0) or a negated errno. The host
+    /// must still confirm that `(parent_pid, parent_tid)` names the channel
+    /// generation it parked; a sibling thread may have exited or exec'd the
+    /// parent image in the meantime.
+    pub const KIND_PARENT_COMPLETE: u32 = 1;
+    /// A vfork borrower stopped using the parent's image: it exec'd or
+    /// exited (`value` is a `QUIESCENCE_REASON_*`). The host proves its
+    /// realm stopped touching the shared memory, then answers with
+    /// `kernel_vfork_address_space_released(child_pid, disposition)`.
+    pub const KIND_VFORK_AWAITING_QUIESCENCE: u32 = 2;
+
+    pub const QUIESCENCE_REASON_EXEC: i32 = 1;
+    pub const QUIESCENCE_REASON_EXIT: i32 = 2;
+
+    /// `kernel_vfork_address_space_released` dispositions.
+    ///
+    /// `RESUME`: the host proved exact teardown; the parent's SYS_VFORK
+    /// completes with the child pid.
+    /// `CONTAIN`: teardown was ambiguous; the kernel records SIGSEGV death
+    /// for the parent and, if still live, the child, and the parent's
+    /// SYS_VFORK is never completed.
+    pub const RELEASE_RESUME: u32 = 0;
+    pub const RELEASE_CONTAIN: u32 = 1;
+
+    /// `kernel_fork_launch_failed` results (negative values are errnos).
+    ///
+    /// `ROLLED_BACK`: the child was still launching; the kernel removed it
+    /// and queued `KIND_PARENT_COMPLETE` with `-errno`. The host discards
+    /// its own launch state for the child.
+    /// `ALREADY_RESOLVED`: the child had already died (it stays a reapable
+    /// zombie) or had already committed; the parent's result comes from
+    /// that path instead, and the host treats its Worker's end as an
+    /// ordinary process death.
+    pub const LAUNCH_FAILED_ROLLED_BACK: i32 = 0;
+    pub const LAUNCH_FAILED_ALREADY_RESOLVED: i32 = 1;
 }
 
 /// Packed host/kernel wire layout for one process-table snapshot record.
@@ -3895,6 +4009,13 @@ pub mod abi {
         pub const SYS_ACCEPT4: u32 = 384;
         pub const SYS_EXIT_GROUP: u32 = 387;
         pub const SYS_THREAD_CANCEL: u32 = 415;
+        /// Issued by a fork child on its own channel once replay reached the
+        /// inherited fork site. The kernel validates that the caller is a live
+        /// child of a kernel-completed launch (see
+        /// `fork_contract::LAUNCH_KERNEL_COMPLETES`), records the transition,
+        /// and returns 0, which becomes the child's fork() return. Not a libc
+        /// syscall: only the fork replay path issues it. No arguments.
+        pub const SYS_FORK_REPLAY_READY: u32 = 416;
 
         pub const SYSCALLS: &[AbiSyscallNumber] = &[
             AbiSyscallNumber {
@@ -4261,6 +4382,10 @@ pub mod abi {
                 name: "ThreadCancel",
                 number: SYS_THREAD_CANCEL,
             },
+            AbiSyscallNumber {
+                name: "ForkReplayReady",
+                number: SYS_FORK_REPLAY_READY,
+            },
         ];
     }
 
@@ -4279,7 +4404,7 @@ pub mod abi {
         ///
         /// Numbered 500 to sit clear of every Linux syscall numbering
         /// scheme and of our kernel-side dispatch table in `wasm_api.rs`
-        /// (highest used: 415). The original plan picked 214 to neighbour
+        /// (highest used: 416). The original plan picked 214 to neighbour
         /// SYS_FORK, but 214 collides with the kernel's existing
         /// SYS_GETPGID handler — host-interception alone wouldn't help
         /// because every legitimate getpgid call would also be caught.

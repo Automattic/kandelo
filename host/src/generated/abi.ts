@@ -363,6 +363,8 @@ export const PROCESS_FORK_MODE_VFORK = 1 as const;
 export type ProcessForkMode =
   | typeof PROCESS_FORK_MODE_FORK
   | typeof PROCESS_FORK_MODE_VFORK;
+/** Host-only `kernel_fork_process` mode bit: the kernel completes the launch. */
+export const PROCESS_FORK_LAUNCH_KERNEL_COMPLETES = 256 as const;
 export const WPK_FORK_PROCESS_IMPORT = { module: "kernel", name: "kernel_fork", params: ["i32"], results: ["i32"] } as const;
 export const WPK_FORK_REQUIRED_IMPORTS = [
   { module: "env", name: "__wpk_fork_frame_commit", params: ["ptr"], results: [] },
@@ -479,6 +481,32 @@ export const WAKEUP_EVENT_TYPES = {
 export const WAKEUP_EVENT_FIELDS = {
   idx: { offset: 0, size: 4, type: "u32" },
   wakeType: { offset: 4, size: 1, type: "u8" },
+} as const;
+
+export const FORK_LIFECYCLE_EVENT_RECORD_BYTES = 24 as const;
+export const FORK_LIFECYCLE_EVENT_FIELDS = {
+  kind: { offset: 0, size: 4, type: "u32" },
+  mode: { offset: 4, size: 4, type: "u32" },
+  childPid: { offset: 8, size: 4, type: "u32" },
+  parentPid: { offset: 12, size: 4, type: "u32" },
+  parentTid: { offset: 16, size: 4, type: "u32" },
+  value: { offset: 20, size: 4, type: "i32" },
+} as const;
+export const FORK_LIFECYCLE_EVENT_KINDS = {
+  parentComplete: 1,
+  vforkAwaitingQuiescence: 2,
+} as const;
+export const FORK_LIFECYCLE_QUIESCENCE_REASONS = {
+  exec: 1,
+  exit: 2,
+} as const;
+export const VFORK_RELEASE_DISPOSITIONS = {
+  resume: 0,
+  contain: 1,
+} as const;
+export const FORK_LAUNCH_FAILED_RESULTS = {
+  rolledBack: 0,
+  alreadyResolved: 1,
 } as const;
 
 export const POLL_EVENTS = {
@@ -1283,6 +1311,7 @@ export const ABI_SYSCALLS = {
   Accept4: 384,
   ExitGroup: 387,
   ThreadCancel: 415,
+  ForkReplayReady: 416,
 } as const;
 
 export type ChannelScalarSlotKind =
@@ -1732,6 +1761,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   386: "execveat",
   387: "exit_group",
   415: "thread_cancel",
+  416: "fork_replay_ready",
   500: "spawn",
 } as const;
 

@@ -23,6 +23,7 @@ pub mod exec_target;
 pub mod fd;
 pub mod fifo;
 pub mod fork;
+pub mod fork_lifecycle;
 pub mod guest_ptr;
 pub mod hostdir;
 pub mod hostname;

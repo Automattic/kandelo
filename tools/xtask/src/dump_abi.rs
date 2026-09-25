@@ -2878,6 +2878,11 @@ fn render_ts_module() -> String {
     out.push_str(
         "export type ProcessForkMode =\n  | typeof PROCESS_FORK_MODE_FORK\n  | typeof PROCESS_FORK_MODE_VFORK;\n",
     );
+    out.push_str(&format!(
+        "/** Host-only `kernel_fork_process` mode bit: the kernel completes the launch. */\n\
+         export const PROCESS_FORK_LAUNCH_KERNEL_COMPLETES = {} as const;\n",
+        shared::fork_contract::LAUNCH_KERNEL_COMPLETES,
+    ));
     let process_fork_import = shared::abi::WPK_FORK_PROCESS_IMPORT;
     out.push_str(&format!(
         "export const WPK_FORK_PROCESS_IMPORT = {{ module: {:?}, name: {:?}, params: {}, results: {} }} as const;\n",
@@ -2991,6 +2996,7 @@ fn render_ts_module() -> String {
         ));
     }
     out.push_str("} as const;\n\n");
+    out.push_str(&render_ts_fork_lifecycle_event_wire());
     out.push_str("export const POLL_EVENTS = {\n");
     for (name, value) in poll_events() {
         out.push_str(&format!("  {}: {},\n", name, value));
@@ -4604,6 +4610,10 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         process_snapshot_wire(),
     );
     root.insert("wakeup_event_wire".into(), wakeup_event_wire());
+    root.insert(
+        "fork_lifecycle_event_wire".into(),
+        fork_lifecycle_event_wire(),
+    );
     root.insert("io_multiplexing".into(), io_multiplexing());
     root.insert("vfs_metadata".into(), vfs_metadata());
     root.insert("spawn_contract".into(), spawn_contract());
@@ -4791,6 +4801,114 @@ fn wakeup_event_wire() -> Value {
         "fields": fields,
         "types": types,
     })
+}
+
+fn fork_lifecycle_event_fields() -> [WakeupEventField; 6] {
+    use shared::fork_lifecycle_event_wire as wire;
+
+    let field = |name, offset, ty| WakeupEventField {
+        name,
+        offset,
+        size: 4,
+        ty,
+    };
+    [
+        field("kind", wire::KIND_OFFSET, "u32"),
+        field("mode", wire::MODE_OFFSET, "u32"),
+        field("childPid", wire::CHILD_PID_OFFSET, "u32"),
+        field("parentPid", wire::PARENT_PID_OFFSET, "u32"),
+        field("parentTid", wire::PARENT_TID_OFFSET, "u32"),
+        field("value", wire::VALUE_OFFSET, "i32"),
+    ]
+}
+
+fn fork_lifecycle_event_values() -> [(&'static str, &'static str, i64); 8] {
+    use shared::fork_lifecycle_event_wire as wire;
+
+    [
+        ("kinds", "parentComplete", wire::KIND_PARENT_COMPLETE as i64),
+        ("kinds", "vforkAwaitingQuiescence", wire::KIND_VFORK_AWAITING_QUIESCENCE as i64),
+        ("quiescence_reasons", "exec", wire::QUIESCENCE_REASON_EXEC as i64),
+        ("quiescence_reasons", "exit", wire::QUIESCENCE_REASON_EXIT as i64),
+        ("release_dispositions", "resume", wire::RELEASE_RESUME as i64),
+        ("release_dispositions", "contain", wire::RELEASE_CONTAIN as i64),
+        ("launch_failed_results", "rolledBack", wire::LAUNCH_FAILED_ROLLED_BACK as i64),
+        ("launch_failed_results", "alreadyResolved", wire::LAUNCH_FAILED_ALREADY_RESOLVED as i64),
+    ]
+}
+
+fn fork_lifecycle_event_wire() -> Value {
+    let fields: Vec<Value> = fork_lifecycle_event_fields()
+        .iter()
+        .map(|field| {
+            json!({
+                "name": field.name,
+                "offset": field.offset,
+                "size": field.size,
+                "type": field.ty,
+            })
+        })
+        .collect();
+    let mut groups: BTreeMap<&str, JsonMap> = BTreeMap::new();
+    for (group, name, value) in fork_lifecycle_event_values() {
+        groups
+            .entry(group)
+            .or_default()
+            .insert(name.into(), json!(value));
+    }
+    let mut root: JsonMap = BTreeMap::new();
+    root.insert(
+        "record_size".into(),
+        json!(shared::fork_lifecycle_event_wire::RECORD_BYTES),
+    );
+    root.insert("fields".into(), Value::Array(fields));
+    root.insert(
+        "launch_kernel_completes".into(),
+        json!(shared::fork_contract::LAUNCH_KERNEL_COMPLETES),
+    );
+    for (group, values) in groups {
+        root.insert(group.into(), Value::Object(values.into_iter().collect()));
+    }
+    Value::Object(root.into_iter().collect())
+}
+
+fn render_ts_fork_lifecycle_event_wire() -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "export const FORK_LIFECYCLE_EVENT_RECORD_BYTES = {} as const;\n",
+        shared::fork_lifecycle_event_wire::RECORD_BYTES
+    ));
+    out.push_str("export const FORK_LIFECYCLE_EVENT_FIELDS = {\n");
+    for field in fork_lifecycle_event_fields() {
+        out.push_str(&format!(
+            "  {}: {{ offset: {}, size: {}, type: {:?} }},\n",
+            field.name, field.offset, field.size, field.ty
+        ));
+    }
+    out.push_str("} as const;\n");
+    let mut groups: Vec<(&str, Vec<(&str, i64)>)> = Vec::new();
+    for (group, name, value) in fork_lifecycle_event_values() {
+        match groups.iter_mut().find(|(existing, _)| *existing == group) {
+            Some((_, values)) => values.push((name, value)),
+            None => groups.push((group, vec![(name, value)])),
+        }
+    }
+    for (group, values) in groups {
+        let constant = match group {
+            "kinds" => "FORK_LIFECYCLE_EVENT_KINDS",
+            "quiescence_reasons" => "FORK_LIFECYCLE_QUIESCENCE_REASONS",
+            "release_dispositions" => "VFORK_RELEASE_DISPOSITIONS",
+            "launch_failed_results" => "FORK_LAUNCH_FAILED_RESULTS",
+            other => unreachable!("unnamed fork lifecycle group {other}"),
+        };
+        out.push_str(&format!("export const {constant} = {{\n"));
+        for (name, value) in values {
+            out.push_str(&format!("  {name}: {value},\n"));
+        }
+        out.push_str("} as const;\n");
+    }
+    out.push('\n');
+    out
 }
 
 fn poll_events() -> [(&'static str, i16); 6] {
@@ -8403,6 +8521,31 @@ mod tests {
                 { "name": "advisoryLock", "bit": 64 },
             ])
         );
+    }
+
+    #[test]
+    fn generated_fork_lifecycle_event_wire_is_packed_and_complete() {
+        let wire = fork_lifecycle_event_wire();
+        assert_eq!(wire["record_size"], json!(24));
+        assert_eq!(
+            wire["fields"],
+            json!([
+                { "name": "kind", "offset": 0, "size": 4, "type": "u32" },
+                { "name": "mode", "offset": 4, "size": 4, "type": "u32" },
+                { "name": "childPid", "offset": 8, "size": 4, "type": "u32" },
+                { "name": "parentPid", "offset": 12, "size": 4, "type": "u32" },
+                { "name": "parentTid", "offset": 16, "size": 4, "type": "u32" },
+                { "name": "value", "offset": 20, "size": 4, "type": "i32" },
+            ])
+        );
+        assert_eq!(
+            wire["kinds"],
+            json!({ "parentComplete": 1, "vforkAwaitingQuiescence": 2 })
+        );
+        assert_eq!(wire["launch_kernel_completes"], json!(256));
+        let rendered = render_ts_fork_lifecycle_event_wire();
+        assert!(rendered.contains("export const FORK_LIFECYCLE_EVENT_RECORD_BYTES = 24 as const;"));
+        assert!(rendered.contains("export const VFORK_RELEASE_DISPOSITIONS = {\n  resume: 0,\n  contain: 1,\n} as const;"));
     }
 
     #[test]

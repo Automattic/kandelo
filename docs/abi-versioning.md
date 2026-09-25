@@ -1078,6 +1078,26 @@ snapshot diff.
   fork-instrumented artifact must be rebuilt through the normal path. Folded
   into 44 because 44 is unreleased. See `docs/fork-reference-support.md`.
 
+- **Kernel-owned fork launch and vfork lifetime (lane F stages 2a and 2c,
+  2026-09-25).** This adds syscall `SYS_FORK_REPLAY_READY` = 416 (`ForkReplayReady` in
+  `ABI_SYSCALLS`). It adds kernel exports `kernel_fork_launch_failed(child_pid,
+  errno)`, `kernel_vfork_address_space_released(child_pid, disposition)` and
+  `kernel_drain_fork_lifecycle_events(out_ptr, out_len, max_events)`. It adds the
+  host-only `kernel_fork_process` mode bit `fork_contract::LAUNCH_KERNEL_COMPLETES`
+  (`0x100`) and the 24-byte `fork_lifecycle_event_wire` record (snapshot section
+  `fork_lifecycle_event_wire`). The maintainer approved this content, including
+  moving parent SYS_FORK/SYS_VFORK completion into the kernel, under unreleased
+  44 on 2026-09-25, with snapshot regeneration only.
+
+  The structural part is additive. Launches without the bit behave exactly as
+  before and produce no events. One existing behaviour changes: every
+  vfork, opted in or not, is now refused with `EAGAIN` while the parent's
+  address space has a kernel-recorded borrower. Only opted-in launches record
+  one, so this cannot trigger until a host opts in. The semantic change is who
+  completes the parent's SYS_FORK/SYS_VFORK, and it takes effect when the hosts
+  switch (stages 2b and 2d). No libc header changed, so musl needs no rebuild.
+  See "Kernel-owned launch state" in `docs/architecture.md`.
+
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
   removed and ten directory-relative `*at` replacements added, taking the built
