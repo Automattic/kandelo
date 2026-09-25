@@ -34,7 +34,8 @@ switch, naming what is happening and what is being destroyed or loaded.
 One full-page overlay, active from the start of teardown to the moment the new
 machine reaches `running`. Two phases, each with its own real measurement:
 
-- `Unloading Bare shell` — `3 of 7 processes`
+- `Unloading Bare shell` — `3 of 7+ processes`, becoming `9 of 9 processes`
+  once teardown knows the full count
 - `Loading browser-main-shell image` — `1.1 MiB / 2.3 MiB`
 
 The bar re-bases between phases rather than pretending to be one continuous
@@ -74,6 +75,8 @@ export interface DestroyProgressEvent {
   phase: DestroyPhase;
   completed: number;
   total: number;
+  /** True while `total` may still grow. See "Provisional total" below. */
+  totalProvisional: boolean;
 }
 
 export interface DestroyProgressMessage {
@@ -85,13 +88,14 @@ export interface DestroyProgressMessage {
 Emitted from `performDestroy` in both worker entries, at the points where the
 code already holds the numbers:
 
-- After phase 1: `{ draining, completed: 0, total: woken.size }`.
+- After phase 1: `{ draining, completed: 0, total: woken.size,
+  totalProvisional: true }`.
 - During phase 2: emit **only when `completed` increases**, not on every 15 ms
   poll tick. Same information, at most N messages for N processes instead of up
-  to 100 per teardown. A progress indicator must not put avoidable traffic on
-  the channel the syscall path uses.
-- Phase 3: `{ terminating, completed: woken.size + k, total: woken.size + M }`,
-  where M is the straggler count captured at phase entry.
+  to 100 per teardown.
+- Phase 3: `{ terminating, completed: woken.size + k, total: woken.size + M,
+  totalProvisional: false }`, where M is the straggler count captured at phase
+  entry.
 
 The worker emits **cumulative** counts, not per-phase ones. Phase 3's numbers
 carry phase 2's total forward so `completed` never resets between phases, which
@@ -108,9 +112,20 @@ mirroring their existing `subscribeLazyDownloads`, plus a `case
 `web-libs/kandelo-session` gains it as an optional method, so a kernel that does
 not implement it reports nothing rather than failing.
 
-**Accepted cost.** This adds messages on a path that runs during teardown.
-Emitting on change rather than on tick keeps it to a handful per switch. The
-cost is real and is accepted because teardown can visibly take seconds.
+**Transport, and what this does not cost.** `post()` is plain `postMessage`
+in both entries — `globalThis.postMessage` in the browser worker,
+`port.postMessage` in Node. That is the structured-clone message port, which is
+a *different* transport from the syscall path: syscalls ride the
+SharedArrayBuffer channel with `Atomics.wait`/`notify` and `CH_STATUS` /
+`CH_PENDING`, which is exactly what `killAllBlockedForTeardown` walks to wake
+parked workers. A `destroy_progress` message never touches that channel.
+
+So the cost is a structured clone and a main-thread task per message, for a
+handful of small objects, during teardown, while guests are being killed and
+syscall traffic is ending anyway. Emitting on change rather than on tick is
+tidiness, not mitigation of a real risk. (An earlier draft of this spec claimed
+these messages shared the syscall channel and treated the traffic as an
+accepted cost. That was wrong.)
 
 ### 2. The host channel and wiring
 
@@ -125,6 +140,7 @@ export interface MachineProgress {
   label: string;
   completed: number;
   total?: number;        // absent -> indeterminate, never invented
+  totalProvisional?: boolean;  // true -> `total` may still grow
   unit: "processes" | "bytes";
   status: "loading" | "complete" | "error";
   error?: string;
@@ -157,15 +173,33 @@ The existing clearing rule needs no change. Verified: during destroy the status
 is still `running` so no clear fires; `setStatus("booting")` does not clear; the
 final `setStatus("running")` does.
 
-**Cumulative denominator.** Phases 2 and 3 count different sets — drained
-pids, then stragglers discovered afterwards. Reporting each with its own
-denominator makes the bar jump backwards (7/7 then 0/2), which reads as
-broken. So the worker emits cumulative totals (see section 1): phase 2 reports
+**Provisional total.** Phases 2 and 3 count different sets — drained pids,
+then stragglers discovered afterwards. Reporting each with its own denominator
+makes the bar jump backwards (7/7 then 0/2), which reads as broken. So the
+worker emits cumulative totals (see section 1): phase 2 reports
 `total = woken.size`; when phase 3 finds M stragglers the total becomes
-`woken.size + M` with `completed` continuing upward. `completed` is monotonic;
-the denominator grows once, when the system genuinely learns there is more work.
-A denominator that grows is mildly surprising to watch; the alternatives are
-resetting the bar or pre-computing a total that does not exist.
+`woken.size + M`, with `completed` continuing upward and never resetting.
+
+The total is therefore a lower bound until phase 3 fixes it, and the UI says so
+rather than letting it change silently: while `totalProvisional` is true the
+count renders as `3 of 7+ processes`, and once the total is final as
+`9 of 9 processes`. The `+` is what makes the growth expected instead of
+looking like a bug.
+
+Note the obvious phrasing is backwards and must be avoided. The phase-2 total
+*is* the blocked set — exactly the processes parked in `Atomics.wait` that
+`killAllBlockedForTeardown` woke. What phase 3 adds is the opposite: the
+stragglers, which the code describes as "non-blocked workers, or any that didn't
+exit in time", plus thread workers. So a label like "7 + blocked" would misname
+the number; 7 already is the blocked count.
+
+**The fill may recede once.** With a provisional total, `7 of 7` shows 100% and
+then becomes `7 of 9` at 78% when stragglers are found. That is accepted: the
+`+` marks the number as a lower bound, so the drop is legible as the system
+learning rather than a glitch. The alternatives are worse — capping the fill
+below 100% while provisional is a small lie, and holding the bar indeterminate
+until the total is final discards the real measurement available during the
+longest phase.
 
 ### 3. The overlay
 
@@ -181,11 +215,14 @@ second bar for the same event. Its CSS is renamed with it.
   `inert` while the overlay is up, so blocking pointer events does not leave
   keyboard users tabbing into hidden content.
 - Content: verb plus label (`Unloading <label>` / `Loading <label>`), the bar,
-  and the formatted counts.
+  and the formatted counts — `3 of 7+ processes` while the total is
+  provisional, `9 of 9 processes` once final, `1.1 MiB / 2.3 MiB` for bytes.
 - Accessibility: `role="progressbar"` with `aria-valuenow`/`min`/`max` when a
   total exists, `aria-valuetext` when indeterminate; the container is
   `role="status"` with `aria-live="polite"` so a phase change is announced once
-  rather than on every tick.
+  rather than on every tick. A provisional total always sets `aria-valuetext`
+  to spell it out — "3 of at least 7 processes" — because a bare `+` conveys
+  nothing to a screen reader.
 
 ### 4. Degradation
 
@@ -211,15 +248,18 @@ presented as success.
 ### 5. Testing
 
 - `web-libs/kandelo-session/test/` — the channel: phase transitions, `unit`
-  handling, indeterminate when `total` is absent, survival across
-  `attachKernel()`, clearing when status leaves `booting`. Runs in the wired
+  handling, indeterminate when `total` is absent, the provisional-to-final
+  total transition, survival across `attachKernel()`, clearing when status
+  leaves `booting`. Runs in the wired
   Vitest suite.
 - `host/test/` — worker emission: boot a kernel with N processes, destroy it,
   and assert the event sequence is monotonic in `completed`, ends with
-  `completed === total`, and emits at most one event per count change. This is
+  `completed === total` and `totalProvisional: false`, never lowers `total`,
+  and emits at most one event per count change. This is
   the test that proves the numbers are real rather than plausible.
 - `apps/browser-demos` unit (now wired into CI via `npm run test:unit`) —
-  overlay formatting for both units: `3 of 7 processes` and `1.1 MiB / 2.3 MiB`.
+  overlay formatting for both units and both total states: `3 of 7+ processes`,
+  `9 of 9 processes`, and `1.1 MiB / 2.3 MiB`.
 - Playwright — a gallery switch shows the overlay with `Unloading <old>` then
   `Loading <new>`, and it disappears at `running`. Transfer throttled through
   CDP, as in `boot-progress-live.spec.ts`, because a locally served image lands
