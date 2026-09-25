@@ -36,6 +36,7 @@ import {
   saveSlotThunk,
   admitActivation,
   admitInto,
+  bindActivation,
   driveBase,
   sideTemplate,
   voidSlotThunk,
@@ -47,30 +48,13 @@ import { bind } from "./support/fork-admission";
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
 
 /**
- * Where a test stages the sides vector `fm_parent_begin_capture` reads, and
- * the child's copy of it: LOW scratch, beside the template ids at 2048, the
- * same page `openCapture` in the fixture uses.
- *
- * NOT inside the responder's mmap range. The responder bump-allocates upward
- * from `MMAP_FLOOR` and never clears a page, so a vector staged at
- * `MMAP_FLOOR + 3 * PAGE` survives only as long as exactly three mappings
- * precede the one the capture takes -- and that count is not this file's to
- * control. Putting the KFIG sections on the arena added two mappings ahead of
- * the capture (its directory chunk and its record chunk), and the capture's
- * own mapping then landed on the vector: side activation 1 read back as 0, a
- * duplicate of the main activation, and the capture refused with `EINVAL`.
- */
-const SIDES_SCRATCH = 4096;
-const CHILD_SIDES_SCRATCH = SIDES_SCRATCH + 64;
-
-/**
  * Where the borrowed-workspace test admits a region: page 7, free in the
  * fixture's layout and below the responder's range. It was `MMAP_FLOOR + 8 *
  * PAGE`, harmless only while nothing was mapped there -- and since the bump
  * heap lost its static floor, a capture's FIRST allocation maps a 1 MiB chunk
  * from `MMAP_FLOOR`, which is sixteen pages over that address. The seed itself
- * writes nothing, so the collision was silent; it is moved for the same reason
- * the sides vector above was.
+ * writes nothing, so the collision was silent: bytes staged inside the
+ * responder's range survive only until a mapping lands on them.
  */
 const BORROWED_WORKSPACE_SCRATCH = 7 * PAGE;
 
@@ -84,8 +68,6 @@ describe("capture begin, driven through a serviced channel", () => {
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0, // ask the module to allocate the arena
-      0,
-      0,
     );
     expect(f.errno(), "capture begin should succeed").toBe(0);
 
@@ -97,21 +79,16 @@ describe("capture begin, driven through a serviced channel", () => {
 
   it("captures a fork with a SIDE activation, the way a dlopen fork does", () => {
     // The multi-activation capture path, which nothing exercised until the
-    // dlopen e2e suite could run again. A side activation is added to the SAME
-    // capture from a host-staged `(id, fixed_prefix)` list, and every step that
-    // follows -- the arena, the Module records, the guest save drive -- has to
-    // cover both activations or the child rebuilds only one.
+    // dlopen e2e suite could run again. A bound side activation is added to
+    // the SAME capture -- the module walks the activations it bound, the host
+    // names none -- and every step that follows -- the arena, the Module
+    // records, the guest save drive -- has to cover both activations or the
+    // child rebuilds only one.
     const f = fixture();
     admitActivation(f, 0);
     admitActivation(f, 1, { template: sideTemplate(1) });
+    bindActivation(f.x, f.memory, 1);
     expect(f.errno(), "both template ids seed").toBe(0);
-
-    // The sides list: one `(id, fixedPrefix)` pair, as `fm_parent_begin_capture`
-    // reads it.
-    const sidesPtr = SIDES_SCRATCH;
-    const sides = new DataView(f.memory.buffer);
-    sides.setUint32(sidesPtr, 1, true);
-    sides.setUint32(sidesPtr + 4, 0, true);
 
     // Both activations' drive slots, the way `bindActivationDrive` binds them.
     // Without activation 1's the capture `call_indirect`s past the end of the
@@ -138,8 +115,6 @@ describe("capture begin, driven through a serviced channel", () => {
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
-      sidesPtr,
-      1,
     );
     expect(f.errno(), "a two-activation capture begins").toBe(0);
     expect(driven.sort(), "the save walk covers BOTH activations").toEqual([0, 1]);
@@ -155,6 +130,34 @@ describe("capture begin, driven through a serviced channel", () => {
     ).toEqual([0, 1]);
   });
 
+  it("walks only the side activations it BOUND, not every one it admitted", () => {
+    // A `dlopen` can be refused AFTER its admission: the Node/browser host
+    // admits a side module, then refuses the 65th activation while it builds
+    // the imports, and nothing releases the admission
+    // (`fork-dlclose-activation.test.ts`, "refuses the dlopen past the
+    // activation cap"). That activation was never instantiated, so it has no
+    // drive slots; a capture that walked it would `call_indirect` through an
+    // unbound slot and trap. Only BINDING says an activation was instantiated
+    // and registered, so the bound set is the one the capture walks.
+    const f = fixture();
+    admitActivation(f, 1, { template: sideTemplate(1) });
+    expect(f.errno(), "the refused dlopen's admission").toBe(0);
+    const driven: number[] = [];
+    const base = driveBase(0);
+    f.instance.driveTable.set(
+      base + DRIVE_SLOT_MODULE_STATE_SAVE,
+      saveSlotThunk((id) => driven.push(id)) as never,
+    );
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
+    expect(f.errno(), "the capture begins").toBe(0);
+    expect(driven, "only activation 0 is walked").toEqual([0]);
+    const modules = arenaRecords(f.memory, f.root()).filter(
+      (r) => r.kind === RECORD_KIND_MODULE,
+    );
+    expect(modules.map((r) => r.activation), "and declared").toEqual([0]);
+  });
+
   it("records where every activation's continuation begins, for the child", () => {
     // A child reads the launch anchor to find activation 0's continuation, and
     // nothing else says where a SIDE activation's begins -- it is a per-fork
@@ -165,10 +168,7 @@ describe("capture begin, driven through a serviced channel", () => {
     const f = fixture();
     admitActivation(f, 0);
     admitActivation(f, 1, { template: sideTemplate(1) });
-    const sidesPtr = SIDES_SCRATCH;
-    const sides = new DataView(f.memory.buffer);
-    sides.setUint32(sidesPtr, 1, true);
-    sides.setUint32(sidesPtr + 4, 0, true);
+    bindActivation(f.x, f.memory, 1);
     for (const activation of [0, 1]) {
       const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
@@ -189,8 +189,6 @@ describe("capture begin, driven through a serviced channel", () => {
     const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
-      sidesPtr,
-      1,
     );
     expect(f.errno(), "a two-activation capture begins").toBe(0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
@@ -229,7 +227,7 @@ describe("capture begin, driven through a serviced channel", () => {
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
     expect(
@@ -249,8 +247,6 @@ describe("capture begin, driven through a serviced channel", () => {
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       MMAP_FLOOR - PAGE, // the caller's own arena root
-      0,
-      0,
     );
     expect(
       f.root(),
@@ -343,7 +339,7 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     expect(phase()).toBe(PHASE_IDLE);
 
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno()).toBe(0);
     expect(phase(), "a capture is open").toBe(PHASE_CAPTURE);
 
@@ -369,7 +365,7 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     const workspace = f.x.fm_borrowed_replay_workspace as (field: number) => bigint;
 
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     // Mid-capture the activation set is still growing and the scratch
     // high-water has not peaked, so an answer would be an undercount.
     expect(Number(workspace(WORKSPACE_PREFIX))).toBe(-1);
@@ -424,7 +420,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
     const phase = () => Number((f.x.fm_phase as () => number)());
 
     (f.x.fm_capture_begin as () => void)();
-    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0, []);
+    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0);
     expect(anchor, "activation 0's module-buffer anchor").toBeGreaterThan(0);
     expect(phase()).toBe(PHASE_CAPTURE);
     // Passing 0 has to reach the module as 0. It is the difference between the
@@ -456,7 +452,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
     // the frames that did commit.
     const { f, backend } = backendFixture();
     (f.x.fm_capture_begin as () => void)();
-    backend.parentBeginCapture(CHANNEL_BASE, 0, []);
+    backend.parentBeginCapture(CHANNEL_BASE, 0);
     const phase = () => Number((f.x.fm_phase as () => number)());
     expect(phase()).toBe(PHASE_CAPTURE);
 
@@ -505,7 +501,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
     // and the worker would be wedged rather than broken.
     const { f, backend } = backendFixture();
     (f.x.fm_capture_begin as () => void)();
-    backend.parentBeginCapture(CHANNEL_BASE, 0, []);
+    backend.parentBeginCapture(CHANNEL_BASE, 0);
     expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_CAPTURE);
     backend.abort();
     expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_IDLE);
@@ -538,7 +534,7 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture with no imported globals").toBe(0);
   });
 
@@ -558,7 +554,7 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     expect(f.errno(), "provenance published").toBe(0);
 
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture must refuse rather than bind blind").not.toBe(0);
   });
 });
@@ -806,7 +802,7 @@ describe("the binding records the module assembles at capture", () => {
 
     // And the phase: open a capture, then do what a fresh worker does.
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect((f.x.fm_phase as () => number)(), "mid-capture").toBe(PHASE_CAPTURE);
     (f.x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
     expect(f.errno(), "the format seed is accepted").toBe(0);
@@ -837,7 +833,7 @@ describe("the binding records the module assembles at capture", () => {
     saveWrites(f, 0, 1);
 
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
 
     const records = arenaRecords(f.memory, f.root());
@@ -882,8 +878,6 @@ describe("the binding records the module assembles at capture", () => {
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       MMAP_FLOOR - PAGE, // the caller's own arena root
-      0,
-      0,
     );
     expect(f.errno(), "capture must refuse rather than drop the record").toBe(22);
   });
@@ -911,7 +905,7 @@ describe("the binding records the module assembles at capture", () => {
       label: "sealed arena",
     });
     (f.x.fm_capture_begin as () => void)();
-    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0, []);
+    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
     backend.sealCaptureAndSerialize();
     expect(Number((f.x.fm_phase as () => number)()), "sealed").toBe(
@@ -958,7 +952,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     saveWrites(f, 0, 1);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
@@ -1114,7 +1108,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "a fork is open").toBe(0);
     expect(
       (f.x.fm_capture_peer_tables as (c: number) => number)(CHANNEL_BASE),
@@ -1172,7 +1166,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 99, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
     const root = f.root();
 
@@ -1204,6 +1198,7 @@ describe("the binding records the module assembles at capture", () => {
       });
       expect(f.errno(), `KFIG admitted for activation ${activation}`).toBe(0);
     }
+    bindActivation(f.x, f.memory, 1);
     const { provenance } = publish(f);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
     provenance(SPACE_GLOBAL, 1, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
@@ -1228,16 +1223,10 @@ describe("the binding records the module assembles at capture", () => {
       );
     }
 
-    const sidesPtr = SIDES_SCRATCH;
-    const sides = new DataView(f.memory.buffer);
-    sides.setUint32(sidesPtr, 1, true);
-    sides.setUint32(sidesPtr + 4, 0, true);
     (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
-      sidesPtr,
-      1,
     );
     expect(f.errno(), "a two-activation capture with imports begins").toBe(0);
     expect(driven.sort(), "both saves ran").toEqual([0, 1]);
@@ -1259,7 +1248,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
 
     const plan = readPlan(f.x, () => f.errno(), 0, f.root());
@@ -1280,7 +1269,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
     expect(
       (f.x.fm_child_import_plan as (a: number, r: number) => number)(
@@ -1304,7 +1293,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     const count = (f.x.fm_child_import_plan as (a: number, r: number) => number)(
       0,
       f.root(),
@@ -1328,7 +1317,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     const root = f.root();
     const ok = (f.x.fm_child_import_plan as (a: number, r: number) => number)(0, root);
     expect(ok, "the intact arena plans").toBeGreaterThan(0);
@@ -1360,7 +1349,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     saveWrites(f, 0, 1);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
     const root = f.root();
@@ -1388,7 +1377,7 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
     const root = f.root();
@@ -1412,16 +1401,13 @@ describe("the binding records the module assembles at capture", () => {
     // there -- which is exactly what the dlopen e2e hit once the seed was wired
     // back up (its caller went with the fork coordinator).
     //
-    // A SIDE activation's record carries no root at all, on purpose: a host
-    // cannot know one (it is a per-fork address), so the module resolves it
-    // from the KFAC manifest it wrote at seal.
+    // The child names no side activation at all: it seeds the ones it
+    // admitted, and resolves each one's root -- a per-fork address no host can
+    // know -- from the KFAC manifest the parent wrote at seal.
     const f = fixture();
     admitActivation(f, 0);
     admitActivation(f, 1, { template: sideTemplate(1) });
-    const sidesPtr = SIDES_SCRATCH;
-    const sides = new DataView(f.memory.buffer);
-    sides.setUint32(sidesPtr, 1, true);
-    sides.setUint32(sidesPtr + 4, 0, true);
+    bindActivation(f.x, f.memory, 1);
     for (const activation of [0, 1]) {
       const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
@@ -1440,23 +1426,14 @@ describe("the binding records the module assembles at capture", () => {
     const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
-      sidesPtr,
-      1,
     );
     expect(f.errno(), "a two-activation capture begins").toBe(0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "and seals").toBe(0);
     const root = f.root();
 
-    // The child's side record is the SAME `(id, fixedPrefix)` pair the capture
-    // side reads: the host owns the fixed prefix and nothing else about it.
-    const childSides = CHILD_SIDES_SCRATCH;
-    const sideRecord = new DataView(f.memory.buffer);
-    sideRecord.setUint32(childSides, 1, true);
-    sideRecord.setUint32(childSides + 4, 0, true);
-
     const child = childModule(f);
-    const childSeed = child.fm_child_seed as (r: number, a: number, s: number, n: number) => void;
+    const childSeed = child.fm_child_seed as (r: number, a: number) => void;
     // NEVER ADMITTED IS REFUSED. Neither activation has a resume catalog in this
     // child yet, and the module no longer numbers slots from the committed
     // ordinals when it finds none: a binary arriving with nothing seeded is a
@@ -1465,7 +1442,7 @@ describe("the binding records the module assembles at capture", () => {
     // catalog exists to rule out. `EINVAL` (22), from the phase the entry
     // never left -- a failed seed enters no phase, so the retry below is
     // clean.
-    childSeed(root, act0Root, childSides, 1);
+    childSeed(root, act0Root);
     expect(
       (child.fm_last_errno as () => number)(),
       "a child whose catalogs were never seeded is refused",
@@ -1486,7 +1463,10 @@ describe("the binding records the module assembles at capture", () => {
         `an empty catalog is a legitimate admission for activation ${activation}`,
       ).toBe(0);
     }
-    childSeed(root, act0Root, childSides, 1);
+    // And the side BOUND, as the child's dlopen replay registers it: the seed
+    // walks the side activations the module has bound.
+    expect(bindActivation(child, f.memory, 1), "binding the child's side").not.toBeNull();
+    childSeed(root, act0Root);
     expect(
       (child.fm_last_errno as () => number)(),
       "the seed resolves the side root from the manifest",
@@ -1556,14 +1536,11 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     admitActivation(f, 0);
     admitActivation(f, 1, { template: sideTemplate(1) });
+    bindActivation(f.x, f.memory, 1);
     // The side activation is declared by hand here rather than through
     // `openCapture`, so its (empty) resume catalog is seeded by hand too: the
     // replay below registers every activation's slots from its catalog and
     // refuses one that never seeded.
-    const sidesPtr = SIDES_SCRATCH;
-    const sides = new DataView(f.memory.buffer);
-    sides.setUint32(sidesPtr, 1, true);
-    sides.setUint32(sidesPtr + 4, 0, true);
     for (const activation of [0, 1]) {
       const base = driveBase(activation);
       const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
@@ -1586,8 +1563,6 @@ describe("the binding records the module assembles at capture", () => {
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
-      sidesPtr,
-      1,
     );
     expect(f.errno(), "a two-activation capture begins").toBe(0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
@@ -1706,7 +1681,7 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "the capture opens").toBe(0);
     // A leaf through the guest-facing i31 capture entry, as the generated
     // codec interns one.
@@ -1735,8 +1710,6 @@ describe("the binding records the module assembles at capture", () => {
     (f.x.fm_capture_begin as () => void)();
     const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
-      0,
-      0,
       0,
     );
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
@@ -1774,7 +1747,7 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture open").toBe(0);
     expect((f.x.fm_phase as () => number)(), "in capture").toBe(PHASE_CAPTURE);
     (f.x.fm_attach_child as (r: number, pid: number) => number)(
@@ -1792,7 +1765,7 @@ describe("the binding records the module assembles at capture", () => {
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
     const root = f.root();
@@ -1815,7 +1788,7 @@ describe("the binding records the module assembles at capture", () => {
     saveWrites(f, 0, 1);
 
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
 
     const globals = arenaRecords(f.memory, f.root()).find(

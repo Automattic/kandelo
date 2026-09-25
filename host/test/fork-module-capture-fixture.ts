@@ -410,6 +410,37 @@ export function admitActivation(
   return admit(f.x, f.memory, ARENA_STAGING_AT, activation, facts);
 }
 
+/** The catalog lengths each rig's module bound an activation with. */
+const boundLengths = new WeakMap<Record<string, unknown>, Map<number, [number, number]>>();
+
+/**
+ * Bind `activation` in `x` -- this rig's module, or a child's -- the way
+ * registration binds it, and return the row (`null` with the refusal in
+ * `fm_last_errno`). The capture and both child seeds walk the activations
+ * the module has BOUND, so a side activation a test captures must be bound.
+ *
+ * Binding again answers the same row, so with no lengths given this re-binds
+ * with the lengths the activation was bound with before (0, 0 if never): a
+ * helper that only needs the activation in the bound set does not disturb
+ * catalogs another helper already placed.
+ */
+export function bindActivation(
+  x: Record<string, unknown>,
+  memory: WebAssembly.Memory,
+  activation: number,
+  funcLen?: number,
+  staticLen?: number,
+): BindRow | null {
+  let lengths = boundLengths.get(x);
+  if (!lengths) boundLengths.set(x, (lengths = new Map()));
+  const [f0, s0] = lengths.get(activation) ?? [0, 0];
+  const func = funcLen ?? f0;
+  const statics = staticLen ?? s0;
+  const row = bind(x, memory, activation, func, statics);
+  if (row) lengths.set(activation, [func, statics]);
+  return row;
+}
+
 /**
  * `admitActivation` against another module instance over the same memory --
  * a CHILD's module, which admits for itself as a fork child's worker does.
@@ -556,9 +587,10 @@ export interface CaptureOptions {
 /**
  * Seed every activation the capture will declare, then open the capture.
  *
- * Activation 0 is always present. A side activation reaches the module as an
- * `(id, fixedPrefix)` u32 pair in the sides vector `fm_parent_begin_capture`
- * reads -- the same 8-byte record the child seed reads back.
+ * Activation 0 is always present. The capture adds every side activation the
+ * module has BOUND -- the host names none -- so `sides` is the set this helper
+ * admits, binds and binds drive slots for; a test that bound another
+ * activation must bind its drive slots too.
  *
  * Returns the activations whose module-state save the capture drove, in the
  * order it drove them: the observable that a capture really was
@@ -574,10 +606,13 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): number[]
     // DISTINCT TEMPLATE TODAY: admitting every side with zeros leaves every
     // caller of this fixture passing. It is here because a fixture that
     // produces an impossible state teaches the next reader the wrong thing.
+    // Then BOUND, as registration binds it: the capture walks bound sides.
     expect(
       admitActivation(f, activation, { template: sideTemplate(activation) }),
       `admitting activation ${activation}`,
     ).toBe(0);
+    expect(bindActivation(f.x, f.memory, activation), `binding activation ${activation}`)
+      .not.toBeNull();
   }
 
   const saved: number[] = [];
@@ -601,26 +636,8 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): number[]
     );
   }
 
-  // Low scratch, beside the template ids: the responder bump-allocates its
-  // mmaps upward from `MMAP_FLOOR`, so staging there would be handed out from
-  // under this vector by the capture's own arena allocation.
-  let sidesPtr = 0;
-  if (sides.length > 0) {
-    sidesPtr = 4096;
-    const view = new DataView(f.memory.buffer);
-    sides.forEach((activation, index) => {
-      view.setUint32(sidesPtr + index * 8, activation, true);
-      view.setUint32(sidesPtr + index * 8 + 4, 0, true);
-    });
-  }
-
   (f.x.fm_capture_begin as () => void)();
-  (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
-    CHANNEL_BASE,
-    0,
-    sidesPtr,
-    sides.length,
-  );
+  (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
   expect(f.errno(), "the capture opens").toBe(0);
   return saved;
 }
@@ -662,7 +679,7 @@ function bindCatalogBases(
     }
     const next = sorted[index + 1] ?? activation + 1;
     const length = (next - activation) * CATALOG_STRIDE;
-    const row = bind(f.x, f.memory, activation, length, length);
+    const row = bindActivation(f.x, f.memory, activation, length, length);
     expect(f.errno(), `fm_bind_activation(${activation})`).toBe(0);
     expect(row?.func, `activation ${activation}'s function catalog`).toBe(activation * CATALOG_STRIDE);
     expect(row?.statics, `activation ${activation}'s static roots`).toBe(activation * CATALOG_STRIDE);
@@ -785,8 +802,7 @@ export interface CapturedAggregate {
  */
 /**
  * Where `captureGraph` stages aggregate scalars by default: page 0, above the
- * template ids (2048), the sides vector (4096) and the GC codec some tests
- * stage at 8192, and far below `CHANNEL_BASE`.
+ * low scratch some tests use (up to 8192), and far below `CHANNEL_BASE`.
  */
 const SCALAR_SCRATCH = 16384;
 
@@ -815,10 +831,9 @@ export function captureGraph(
   // LOW scratch, not `MMAP_FLOOR + 6 * PAGE` as it was: the responder
   // bump-allocates upward from `MMAP_FLOOR` and never clears a page, so bytes
   // staged there survive only while fewer than six mappings precede the one
-  // that lands on them -- and the seeds `fixture()` and `openCapture` now make
-  // (an empty resume catalog per activation, a directory chunk and a record
-  // chunk for the first) take mappings BEFORE the capture's own. Same finding
-  // as the sides vector in `fork-module-capture-drive.test.ts` and the codec
+  // that lands on them -- and the admissions `fixture()` and `openCapture` now
+  // make (a bump-heap chunk for decoding, a directory chunk and a record chunk)
+  // take mappings BEFORE the capture's own. Same finding as the scalar loads
   // in `fork-module-gc-replay.test.ts`.
   let scalarAt = options.scalarStagingBase ?? SCALAR_SCRATCH;
   const stage = (bytes: Uint8Array): number => {

@@ -183,16 +183,6 @@ describe("the host's record of live activations", () => {
     expect(activations.ordered().map((a) => a.activationId)).toEqual([0, 2, 5]);
   });
 
-  it("names every activation but 0 as a side, by id only", () => {
-    // Activation 0 is opened by the capture itself; including it here would add
-    // it twice, and the module refuses a second add of an activation it already
-    // opened. No prefix travels with a side: the module has it from admission.
-    const activations = new ForkActivations(recordingDrive().sink, "test");
-    activations.register(activation(0));
-    activations.register(activation(4));
-    activations.register(activation(1));
-    expect(activations.sides()).toEqual([1, 4]);
-  });
 });
 
 describe("running an activation's module-state bootstrap", () => {

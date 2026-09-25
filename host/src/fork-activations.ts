@@ -323,16 +323,4 @@ export class ForkActivations {
     );
   }
 
-  /**
-   * The side activations a capture must be told about; activation 0 is not one.
-   *
-   * Ids only: each side's fixed prefix is the module's, from its admission.
-   * The `(id, fixed_prefix)` records the module still reads carry 0 in the
-   * prefix word until stage 1d drops it.
-   */
-  sides(): readonly number[] {
-    return this.ordered()
-      .map(({ activationId }) => activationId)
-      .filter((activationId) => activationId !== 0);
-  }
 }

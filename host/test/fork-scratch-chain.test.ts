@@ -232,7 +232,7 @@ describe("guest-facing scratch chain", () => {
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "the capture opens").toBe(0);
     const reserve = f.x.__wpk_fork_ref_scratch_reserve as (n: number) => number;
     const release = f.x.__wpk_fork_ref_scratch_release as (p: number, n: number) => void;

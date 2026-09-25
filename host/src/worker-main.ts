@@ -3893,11 +3893,7 @@ export async function centralizedWorkerMain(
           forkMergedStaticRoots.fill(forkActivations.ordered());
           publishProcessLaunchRoot(0);
           publishProcessLaunchRoot(
-            forkModule().parentBeginCapture(
-              channelOffset,
-              0,
-              forkActivations.sides(),
-            ),
+            forkModule().parentBeginCapture(channelOffset, 0),
           );
         } catch (error) {
           // Both halves ask the MODULE now, which is what makes this safe. It
@@ -4463,15 +4459,14 @@ export async function centralizedWorkerMain(
         // The coordinator did this; deleting it took the call with no caller
         // left to notice. Census 183.
         //
-        // Activation 0's root is the launch anchor this child already read. Each
-        // side activation contributes only its `fixedPrefix`; its continuation
-        // root is a per-fork address the parent recorded in the arena, which the
-        // module reads back itself.
+        // Activation 0's root is the launch anchor this child already read. The
+        // side activations are the ones this child registered; each one's
+        // continuation root is a per-fork address the parent recorded in the
+        // arena, which the module reads back itself.
         const installPlan = forkModule().installChild(
           childArenaRoot,
           inheritedLaunchRoot,
           pid,
-          forkActivations.sides(),
           borrowedWorkspace,
         );
         forkModule().driveRestoredPlan(installPlan);
@@ -6085,11 +6080,7 @@ export async function centralizedThreadWorkerMain(
           threadForkModuleBackend?.captureBegin();
           publishThreadLaunchRoot(0);
           publishThreadLaunchRoot(
-            threadForkModule().parentBeginCapture(
-              channelOffset,
-              0,
-              threadForkActivations?.sides() ?? [],
-            ),
+            threadForkModule().parentBeginCapture(channelOffset, 0),
           );
         } catch (error) {
           // The module owns this thread's arena too, and its abort releases it.

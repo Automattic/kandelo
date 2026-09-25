@@ -85,7 +85,7 @@ describe("borrowed replay workspace sizing", () => {
     fm.workspace(FIELD_PREFIX);
     // Legal from idle and fails for its OWN reason (it needs a live guest), so
     // reaching that failure at all proves the phase gate let it through.
-    fm.call("fm_parent_begin_capture", 0, 0, 0, 0);
+    fm.call("fm_parent_begin_capture", 0, 0);
     expect(fm.errno()).not.toBe(EBUSY);
   });
 });

@@ -6076,16 +6076,16 @@ pub struct ForkModule {
     // phase-flip bind in `spawn_guest_thread`/`run_worker_thread`) and then
     // issues these coarse calls, mirroring `host/src/fork-process-
     // continuation.ts`'s coarse-only orchestration. Native is single-activation
-    // (base 0), so it never passes side activations (`sides_count == 0`).
-    /// `fm_parent_begin_capture(channel_base, arena_root, sides_ptr,
-    /// sides_count) -> act0_root` — opens the capture and drives each guest
-    /// `wpk_fork_unwind_begin(root)`.
+    // (base 0): it admits and binds only activation 0, so the module has no
+    // side activation to walk.
+    /// `fm_parent_begin_capture(channel_base, arena_root) -> act0_root` —
+    /// opens the capture and drives each guest `wpk_fork_unwind_begin(root)`.
     /// Arms the module's reference-graph builder for this fork and resets its
     /// bump heap. Separate from `fm_parent_begin_capture`, which begins the
     /// UNWIND: `begin_capture_impl` does not arm the builder, so a host that
     /// calls only the latter seals with no builder at all.
     pub fm_capture_begin: wasmtime::TypedFunc<(), ()>,
-    pub fm_parent_begin_capture: wasmtime::TypedFunc<(u32, u32, u32, u32), u32>,
+    pub fm_parent_begin_capture: wasmtime::TypedFunc<(u32, u32), u32>,
     /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` — drives each
     /// guest `wpk_fork_unwind_end()`, seals, and serializes the child image
     /// (`fm_journal_image_len` reports its length; 0 return == failure).
@@ -6104,13 +6104,12 @@ pub struct ForkModule {
     /// (abort==0) or `wpk_fork_abort_end()` (abort!=0), then finishes the
     /// replay/abort.
     pub fm_parent_finish: wasmtime::TypedFunc<u32, ()>,
-    /// `fm_child_seed(module_state_root, act0_root, sides_ptr, sides_count)` —
-    /// seeds a COW child's replay from the inherited journal image.
-    pub fm_child_seed: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
-    /// `fm_child_seed_borrowed(module_state_root, act0_root,
-    /// act0_private_prefix, sides_ptr, sides_count)` — the vfork borrowed
-    /// sibling of `fm_child_seed`.
-    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
+    /// `fm_child_seed(module_state_root, act0_root)` — seeds a COW child's
+    /// replay from the inherited journal image.
+    pub fm_child_seed: wasmtime::TypedFunc<(u32, u32), ()>,
+    /// `fm_child_seed_borrowed(module_state_root, act0_root)` — the vfork
+    /// borrowed sibling of `fm_child_seed`.
+    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32), ()>,
     /// Seed the vfork BORROWED child's admitted replay workspace.
     ///
     /// The host knows where the kernel put the region; the module knows how much
@@ -6538,13 +6537,13 @@ pub(crate) fn instantiate_fork_module(
         fm_funcref_ordinal: fm_func!("fm_funcref_ordinal": u32 => i32),
         fm_static_root_slot: fm_func!("fm_static_root_slot": u32 => i32),
         fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
-        fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32, u32, u32) => u32),
+        fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32) => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
         fm_parent_abort_seal: fm_func!("fm_parent_abort_seal": () => ()),
         fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
         fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
-        fm_child_seed: fm_func!("fm_child_seed": (u32, u32, u32, u32) => ()),
-        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32, u32, u32) => ()),
+        fm_child_seed: fm_func!("fm_child_seed": (u32, u32) => ()),
+        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32) => ()),
         fm_set_borrowed_workspace: fm_func!("fm_set_borrowed_workspace": (u32, u32) => ()),
         fm_child_reconstruct: fm_func!("fm_child_reconstruct": () => ()),
         gc_transit_table,
@@ -7537,8 +7536,8 @@ fn spawn_guest_thread(
                                 // injector shim (slot bound at instantiation) — folding
                                 // the former `fm_begin_unwind` + `caller_export_typed(
                                 // UNWIND_BEGIN)` + direct call. Native is single-
-                                // activation, so no side activations are passed
-                                // (`sides_count == 0`).
+                                // activation, so the module has no bound side
+                                // activation to add.
                                 // ARM the module's reference-graph builder first.
                                 // `fm_parent_begin_capture` begins the UNWIND; it does not create
                                 // the builder, and `capture_builder()` refuses to make one lazily
@@ -7550,7 +7549,7 @@ fn spawn_guest_thread(
                                 fm.fm_capture_begin.call(&mut caller, ())?;
                                 let root = fm.fm_parent_begin_capture.call(
                                     &mut caller,
-                                    (ch as u32, fm.empty_module_state_root, 0, 0),
+                                    (ch as u32, fm.empty_module_state_root),
                                 )?;
                                 let errno = fm.fm_last_errno.call(&mut caller, ())?;
                                 if errno != 0 {
@@ -9283,9 +9282,9 @@ fn run_fork_capable_entry(
         // appended the journal-image record there, so the module reads
         // (image_ptr, image_len) from the arena rather than from the now-
         // redundant smuggled channel words. `root` is activation 0's inherited
-        // continuation anchor. Single-activation: `sides_count == 0`.
+        // continuation anchor. Single-activation: no bound side activation.
         if let Err(e) =
-            fm.fm_child_seed.call(&mut *store, (fm.empty_module_state_root, root, 0, 0))
+            fm.fm_child_seed.call(&mut *store, (fm.empty_module_state_root, root))
         {
             eprintln!("fm_child_seed failed: {e:#}");
             return;
@@ -9347,8 +9346,8 @@ fn run_fork_capable_entry(
         // address the parent never wrote) and seed activation 0's borrowed
         // replay, copying the parent's fixed prefix into `private_prefix`.
         // Folds the former `fm_begin_borrowed_child_replay(root, image_ptr,
-        // image_len, private_prefix)`. Single-activation vfork: `sides_count
-        // == 0`.
+        // image_len, private_prefix)`. Single-activation vfork: no bound side
+        // activation.
         // Seed the admitted workspace FIRST: the module carves each
         // activation's private prefix out of it rather than being handed one.
         // `compute_vfork_borrowed_region` reserves exactly one page below the
@@ -9372,10 +9371,7 @@ fn run_fork_capable_entry(
                 return;
             }
         }
-        if let Err(e) = fm.fm_child_seed_borrowed.call(
-            &mut *store,
-            (arena_root, root, 0, 0),
-        ) {
+        if let Err(e) = fm.fm_child_seed_borrowed.call(&mut *store, (arena_root, root)) {
             eprintln!("fm_child_seed_borrowed failed: {e:#}");
             return;
         }
@@ -10327,7 +10323,7 @@ fn run_worker_thread(
                         fm.fm_capture_begin.call(&mut caller, ())?;
                         let root = fm.fm_parent_begin_capture.call(
                             &mut caller,
-                            (ch as u32, fm.empty_module_state_root, 0, 0),
+                            (ch as u32, fm.empty_module_state_root),
                         )?;
                         let errno = fm.fm_last_errno.call(&mut caller, ())?;
                         if errno != 0 {

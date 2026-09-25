@@ -263,7 +263,7 @@ export class ForkModuleContinuationBackend {
       | (this.options.borrowedChild ? FORK_ADMISSION_BORROWED_CHILD : 0);
     const desc = encodeForkAdmission(activationId, flags, templateId, module);
     // The module releases a buffer it mapped for this (`stage`) as it returns.
-    this.call("fm_admit_activation", this.stage(desc, `activation ${activationId} admission`, true), desc.length);
+    this.call("fm_admit_activation", this.stage(desc), desc.length);
   }
 
   /**
@@ -408,7 +408,9 @@ export class ForkModuleContinuationBackend {
 
   /**
    * Open this fork's capture: register the activations, publish each one's arena
-   * root, and drive every guest `wpk_fork_unwind_begin` — one module call.
+   * root, and drive every guest `wpk_fork_unwind_begin` — one module call. The
+   * activations are the ones this worker registered, which the module knows as
+   * the ones it BOUND (`bindActivation`), so nothing about them is passed in.
    *
    * `0` for the arena root asks the module to allocate its own and declare the
    * activation set into it. A caller that brings its own root keeps the older
@@ -419,11 +421,7 @@ export class ForkModuleContinuationBackend {
    * module records every activation's root in the continuation manifest it
    * writes into the arena at seal.
    */
-  parentBeginCapture(
-    channelBase: number,
-    arenaRoot: number,
-    sides: readonly number[],
-  ): number {
+  parentBeginCapture(channelBase: number, arenaRoot: number): number {
     // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
     // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
     // memory exhaustion that fails with ENOMEM -- which is the case
@@ -440,8 +438,6 @@ export class ForkModuleContinuationBackend {
     const root = (this.exports.fm_parent_begin_capture as (...a: number[]) => number)(
       channelBase,
       arenaRoot,
-      this.stageSides(sides),
-      sides.length,
     );
     const errno = this.lastErrno();
     if (errno === FORK_MODULE_ENOMEM) {
@@ -472,10 +468,12 @@ export class ForkModuleContinuationBackend {
    * which the guest reads as a page header at address 0 and traps on. The
    * seed's only caller was the fork coordinator; census 183.
    *
-   * Each side activation is named by id only: its fixed prefix is the module's,
-   * from its admission, and its continuation root is a per-fork address the
-   * parent recorded in the arena's `ActivationContinuations` manifest, which
-   * the module reads back itself.
+   * The side activations are the ones this child registered -- the ones the
+   * module bound -- so it knows them without being told: each one's fixed
+   * prefix is its admission's, and
+   * its continuation root is a per-fork address the parent recorded in the
+   * arena's `ActivationContinuations` manifest, which the module reads back
+   * itself.
    *
    * ONE call for both child shapes. A COW child and a vfork BORROWED child
    * share an identical install plan -- the only borrowed-specific work is the
@@ -490,7 +488,6 @@ export class ForkModuleContinuationBackend {
     moduleStateRoot: number,
     act0Root: number,
     pid: number,
-    sides: readonly number[],
     /**
      * A vfork BORROWED child's admitted replay workspace: where the kernel put
      * it and how big it is. That is the whole of what a host knows about it and
@@ -512,8 +509,6 @@ export class ForkModuleContinuationBackend {
       borrowed ? "fm_child_seed_borrowed" : "fm_child_seed",
       moduleStateRoot,
       act0Root,
-      this.stageSides(sides),
-      sides.length,
     );
     return this.call("fm_attach_child", moduleStateRoot, pid);
   }
@@ -764,20 +759,13 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Stage a side-activation list as the `(id, fixed_prefix)` u32 pairs the
-   * capture and both child seeds read, with 0 for every prefix: the module
-   * answers each from the activation's admission. Stage 1d drops the word.
-   */
-  private stageSides(sides: readonly number[]): number {
-    if (sides.length === 0) return 0;
-    const words = new Uint32Array(sides.length * 2);
-    sides.forEach((id, index) => { words[index * 2] = id >>> 0; });
-    return this.stage(new Uint8Array(words.buffer), `${sides.length} side activation(s)`);
-  }
-
-  /**
-   * Copy `bytes` to the start of the module's staging slab and return their
-   * address. VALID UNTIL THE NEXT STAGE, whoever makes it.
+   * Stage one activation's admission descriptor and return its address:
+   * the start of the module's staging slab, or -- for a descriptor larger
+   * than the slab -- a buffer the module maps to its size. VALID UNTIL THE
+   * NEXT STAGE, whoever makes it. An admission is the only thing a host
+   * stages; the side-activation list the capture and child seeds used to
+   * read went in lane F stage 1d, when the module began walking the
+   * activations it had admitted.
    *
    * One lifetime, not two. The slab used to be a bump cursor with a per-fork
    * rewind mark, because the module kept the POINTER to every durable seed
@@ -788,27 +776,17 @@ export class ForkModuleContinuationBackend {
    * template id into its own table, all during the entry that seeds them.
    * Nothing outlives its call, so nothing needs a cursor, and the slab
    * only has to hold one request at a time rather than the sum of every
-   * activation's seeds. An ADMISSION larger than the slab goes to a buffer the
-   * module maps to its size (`fm_admission_buffer`) and releases as
-   * `fm_admit_activation` returns, accepted or refused; any other request
-   * larger than the slab is refused.
+   * activation's seeds. An admission larger than the slab goes to a buffer
+   * the module maps to its size (`fm_admission_buffer`) and releases as
+   * `fm_admit_activation` returns, accepted or refused, so nothing is ever
+   * truncated.
    *
    * `host/test/fork-arena-release.test.ts` is where the copy is proven: it
-   * seeds a GC codec and then an exception codec over the same staging page,
-   * and the module still answers from the codec's own bytes.
-   *
-   * Overflow is an error rather than a truncation, because a truncated
-   * section would be refused by the module's decoder at best and seed a wrong
-   * one at worst; the message carries both sizes so the boundary is readable.
+   * admits codecs and sections over the same staging page, and the module
+   * still answers from its own copies of their bytes.
    */
-  private stage(bytes: Uint8Array, what: string, admission = false): number {
+  private stage(bytes: Uint8Array): number {
     const limit = this.options.instance.stagingBytes;
-    if (bytes.length > limit && !admission) {
-      throw new Error(
-        `${this.label}: staging slab exhausted placing ${what} ` +
-          `(${bytes.length} bytes against a ${limit}-byte slab)`,
-      );
-    }
     const at = bytes.length > limit ? this.call("fm_admission_buffer", bytes.length) >>> 0 : this.options.instance.stagingBase;
     new Uint8Array(this.options.memory.buffer).set(bytes, at);
     return at;

@@ -5693,23 +5693,16 @@ mod wasm {
     /// + `wpk_fork_unwind_begin` loop into ONE module call.
     ///
     /// Activation 0 opens the FRESH capture (`begin_unwind_impl`, which reclaims
-    /// the previous fork's state). Each side activation (a dlopen fork's side
-    /// module) is read as an `(id: u32, fixed_prefix: u32)` pair from the
-    /// host-seeded `sides` scratch (`[sides_ptr, sides_ptr + sides_count*8)`) and
-    /// added to the SAME capture (`add_activation_unwind_impl`). A single-activation
-    /// fork passes `sides_count == 0`. Returns activation 0's module-buffer anchor
+    /// the previous fork's state). Each bound side activation (a dlopen fork's
+    /// side module; `bound_sides`) is added to the SAME capture
+    /// (`add_activation_unwind_impl`). Returns activation 0's module-buffer anchor
     /// (0 on failure; check `fm_last_errno`) — the host publishes it as the process
     /// launch root and records `forkBufAddr`. Each side activation's anchor goes
     /// into the activation-continuation manifest the module writes at seal
     /// (`write_activation_continuations`). A guest reconstruction failure traps
     /// inside the shim exactly as it
     /// did under the host loop; a create/plan-build failure is a truthful errno.
-    fn begin_capture_impl(
-        channel_base: u64,
-        arena_root: u64,
-        sides_ptr: u64,
-        sides_count: u64,
-    ) -> Result<u64, Errno> {
+    fn begin_capture_impl(channel_base: u64, arena_root: u64) -> Result<u64, Errno> {
         // Activation 0: open the fresh capture (reclaims prior fork state) and
         // publish its arena root.
         let root0 = begin_unwind_impl(0, channel_base)?;
@@ -5754,27 +5747,11 @@ mod wasm {
         };
         write_module_state_root(root0, arena_root)?;
 
-        // Side activations (a dlopen fork): read each (id, fixed_prefix) pair from
-        // the host-seeded scratch, add it to the SAME capture, publish its root.
-        let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
-        if count > 0 {
-            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
-            let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
-            if sides_ptr == 0 || end > mem_len_bytes() as u64 {
-                return Err(Errno::EINVAL);
-            }
-            for i in 0..count {
-                let off = (i as u64) * 8;
-                let id = unsafe { ch_read_u32(sides_ptr, off as usize) };
-                if id == 0 {
-                    // Activation 0 is opened above; a side entry naming it is a
-                    // host bug, not a silent double-open.
-                    return Err(Errno::EINVAL);
-                }
-                let fixed_prefix = side_fixed_prefix(id, unsafe { ch_read_u32(sides_ptr, (off + 4) as usize) })?;
-                let root = add_activation_unwind_impl(id, channel_base, fixed_prefix)?;
-                write_module_state_root(root, arena_root)?;
-            }
+        // Side activations (a dlopen fork): every one this worker admitted, each
+        // added to the SAME capture with its root published.
+        for (id, fixed_prefix) in bound_sides() {
+            let root = add_activation_unwind_impl(id, channel_base, fixed_prefix)?;
+            write_module_state_root(root, arena_root)?;
         }
 
         // Drive each activation's guest `wpk_fork_unwind_begin(root)` in ascending
@@ -6586,24 +6563,21 @@ mod wasm {
     /// `attachModuleChild` into ONE module call.
     ///
     /// `act0_root` is activation 0's inherited continuation anchor (the launch
-    /// anchor the host reads). The `sides` scratch is an array of 16-byte records
-    /// `[sides_ptr, sides_ptr + sides_count*16)`, each `(id: u32, fixed_prefix: u32,
-    /// root_lo: u32, root_hi: u32)`: a side activation's id, its own module-buffer
-    /// fixed prefix, and its inherited continuation anchor (low/high words). The
-    /// `fixed_prefix` is a static property of the child's loaded side module —
-    /// absent from every inherited KFMS record (see `add_activation_child_replay_impl`),
-    /// so the host supplies it. A single-activation fork passes `sides_count == 0`
-    /// (only activation 0 is seeded from the launch anchor + journal image).
-    /// Truthful failure: a malformed inheritance or an already-seeded activation is
-    /// a `fm_last_errno`.
+    /// anchor the host reads). The side activations are the ones this child
+    /// bound (`bound_sides`): each one's fixed prefix is its admitted
+    /// linked-frame format -- a static property of the side module the child
+    /// loaded, absent from every inherited KFMS record -- and its root comes
+    /// from the parent's manifest (`activation_continuation_root`). Truthful
+    /// failure: a malformed inheritance or an already-seeded activation is a
+    /// `fm_last_errno`.
     /// A side activation's inherited continuation root, from the `KFAC`
     /// manifest the parent's seal wrote into this arena.
     ///
     /// The host cannot supply this and should not try: it is a PER-FORK address
     /// the parent allocated, not a static property of the side module the child
-    /// loaded. The host owns the other half of the pair -- `fixed_prefix` --
-    /// which is static and which no inherited record carries. So each side
-    /// tells the other exactly what only it knows.
+    /// loaded. The other half of the pair -- `fixed_prefix` -- is static, no
+    /// inherited record carries it, and the child's own admission of the side
+    /// module supplied it.
     fn activation_continuation_root(
         module_state_root: u64,
         activation_id: u32,
@@ -6663,40 +6637,14 @@ mod wasm {
         Err(Errno::EINVAL) // no manifest, or it does not name this activation
     }
 
-    fn child_seed_impl(
-        module_state_root: u64,
-        act0_root: u64,
-        sides_ptr: u64,
-        sides_count: u64,
-    ) -> Result<(), Errno> {
+    fn child_seed_impl(module_state_root: u64, act0_root: u64) -> Result<(), Errno> {
         let (image_ptr, image_len) = journal_image_from_arena(module_state_root)?;
         begin_child_replay_impl(act0_root, image_ptr, image_len)?;
-        let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
-        if count > 0 {
-            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
-            let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
-            if sides_ptr == 0 || end > mem_len_bytes() as u64 {
-                return Err(Errno::EINVAL);
-            }
-            for i in 0..count {
-                let base = (i as u64) * 8;
-                let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
-                if id == 0 {
-                    // Activation 0 is seeded from the launch anchor + journal image
-                    // above; a side entry naming it is a host bug.
-                    return Err(Errno::EINVAL);
-                }
-                let fixed_prefix = side_fixed_prefix(id, unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) })?;
-                // The host knows this activation's `fixed_prefix` -- a static
-                // property of the module it loaded -- and CANNOT know its
-                // continuation root, which is a per-fork address the parent
-                // recorded at seal. So the record carries only what the host
-                // owns, and the root comes from the manifest; see
-                // `activation_continuation_root`. Same `(id, fixed_prefix)`
-                // layout the capture side reads, for the same reason.
-                let root = activation_continuation_root(module_state_root, id)?;
-                add_activation_child_replay_impl(id, root, fixed_prefix)?;
-            }
+        for (id, fixed_prefix) in bound_sides() {
+            // The prefix is the admitted module's; the root is a per-fork
+            // address the parent recorded at seal, read from its manifest.
+            let root = activation_continuation_root(module_state_root, id)?;
+            add_activation_child_replay_impl(id, root, fixed_prefix)?;
         }
         Ok(())
     }
@@ -6715,23 +6663,13 @@ mod wasm {
     /// child-PRIVATE prefix the module copies the parent's fixed runtime prefix
     /// into (so the guest's per-activation rewind writes its active-frame pointer
     /// THERE, never the parked parent's prefix). `act0_root` is activation 0's
-    /// borrowed continuation anchor (the parent launch anchor); `act0_private_prefix`
-    /// its child-private prefix. The `sides` scratch is an array of 24-byte records
-    /// `[sides_ptr, sides_ptr + sides_count*24)`, each `(id: u32, fixed_prefix: u32,
-    /// root_lo: u32, root_hi: u32, private_lo: u32, private_hi: u32)`: a side
-    /// activation's id, its own module-buffer fixed prefix, its inherited borrowed
-    /// continuation anchor (low/high words), and its child-private prefix (low/high
-    /// words). The `fixed_prefix` and `private_prefix` are host-supplied for the
-    /// same reasons as the fine-grained path. A single-activation vfork passes
-    /// `sides_count == 0`. Truthful failure: a malformed inheritance, an
-    /// already-seeded activation, or an out-of-range/aliasing private prefix is a
-    /// `fm_last_errno`.
-    fn child_seed_borrowed_impl(
-        module_state_root: u64,
-        act0_root: u64,
-        sides_ptr: u64,
-        sides_count: u64,
-    ) -> Result<(), Errno> {
+    /// borrowed continuation anchor (the parent launch anchor). Each side
+    /// activation is one this child bound (`bound_sides`); its root comes
+    /// from the parent's manifest and its private prefix is carved from the
+    /// admitted workspace, exactly as activation 0's is. Truthful failure: a
+    /// malformed inheritance, an already-seeded activation, or an
+    /// out-of-range/aliasing private prefix is a `fm_last_errno`.
+    fn child_seed_borrowed_impl(module_state_root: u64, act0_root: u64) -> Result<(), Errno> {
         let (image_ptr, image_len) = journal_image_from_arena(module_state_root)?;
         // Activation 0's private prefix is CARVED, not passed. The host seeded
         // the region the kernel admitted (`fm_set_borrowed_workspace`); the
@@ -6742,57 +6680,43 @@ mod wasm {
         let act0_prefix_size = borrowed_fixed_prefix(module_state_root, 0)?;
         let act0_private_prefix = carve_borrowed_prefix(act0_prefix_size)?;
         begin_borrowed_child_replay_impl(act0_root, image_ptr, image_len, act0_private_prefix)?;
-        let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
-        if count > 0 {
-            // The SAME `(id, fixed_prefix)` 8-byte record the COW seed and the
-            // capture side read. A borrowed child's records used to be 24 bytes
-            // because they also carried a root and a private prefix; the module
-            // reads the root from its own manifest and carves the prefix, so
-            // neither is the host's to say.
-            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
-            let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
-            if sides_ptr == 0 || end > mem_len_bytes() as u64 {
-                return Err(Errno::EINVAL);
-            }
-            for i in 0..count {
-                let base = (i as u64) * 8;
-                let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
-                if id == 0 {
-                    // Activation 0 is seeded from the launch anchor + journal image
-                    // above; a side entry naming it is a host bug.
-                    return Err(Errno::EINVAL);
-                }
-                let fixed_prefix = side_fixed_prefix(id, unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) })?;
-                let root = activation_continuation_root(module_state_root, id)?;
-                let private_prefix = carve_borrowed_prefix(fixed_prefix as u64)?;
-                add_activation_borrowed_child_replay_impl(id, root, fixed_prefix, private_prefix)?;
-            }
+        for (id, fixed_prefix) in bound_sides() {
+            let root = activation_continuation_root(module_state_root, id)?;
+            let private_prefix = carve_borrowed_prefix(fixed_prefix as u64)?;
+            add_activation_borrowed_child_replay_impl(id, root, fixed_prefix, private_prefix)?;
         }
         Ok(())
     }
 
-    /// A side activation's fixed prefix, for the `(id, fixed_prefix)` records
-    /// the capture and both child seeds read.
+    /// Every SIDE activation this worker has BOUND, ascending by id, with the
+    /// fixed prefix its admitted linked-frame format declares: the activation
+    /// set a capture and both child seeds walk after activation 0.
     ///
-    /// The ADMITTED linked-frame record is the authority (lane F stage 1b): a
-    /// host that admits its activations no longer decodes the linked-frame
-    /// section, so it writes 0 in the record's prefix word and the module
-    /// answers from what it decoded at admission. A non-zero word is still
-    /// used as given from a caller that does not admit yet (host-native until
-    /// stage 1c, and module tests, where 0 is a real prefix), and is
-    /// cross-checked when both exist -- two prefixes for one activation mean
-    /// two different modules. An admitting host cannot reach here with an
-    /// unadmitted side: its sides are registered activations, and
-    /// registration binds, which refuses an unadmitted one. Stage 1d drops the
-    /// word from the record.
-    fn side_fixed_prefix(id: u32, host_word: u32) -> Result<u32, Errno> {
-        match arena_find(id, REC_KIND_LINKED_FORMAT) {
-            Some((at, _)) => {
-                let admitted = arena_u32(at + 4);
-                if host_word != 0 && host_word != admitted { Err(Errno::EINVAL) } else { Ok(admitted) }
+    /// The module's own record, not a host-staged list (lane F stage 1d).
+    /// Passing the ids back in was a second copy of a set the module already
+    /// held, and the prefix beside each id a second copy of a fact admission
+    /// decoded.
+    ///
+    /// BOUND, not merely admitted, because binding is the step that says the
+    /// activation was instantiated: a host binds an activation as it registers
+    /// it, and only a registered activation has its drive slots in the table
+    /// the capture calls through. An admission alone can outlive a `dlopen`
+    /// refused after it -- the Node/browser host admits a side module and then
+    /// refuses the 65th activation while building its imports, with nothing
+    /// released -- and walking that activation would `call_indirect` through
+    /// an unbound slot. Every bound activation is admitted (`fm_bind_activation`
+    /// refuses one that is not), so the prefix is always there.
+    fn bound_sides() -> Vec<(u32, u32)> {
+        let mut sides = Vec::new();
+        arena_for_each_record(REC_KIND_FUNC_CATALOG_BASE, |id, _, _| {
+            if id != 0 {
+                if let Some((at, _)) = arena_find(id, REC_KIND_LINKED_FORMAT) {
+                    sides.push((id, arena_u32(at + 4)));
+                }
             }
-            None => Ok(host_word),
-        }
+        });
+        sides.sort_unstable();
+        sides
     }
 
     /// One activation's fixed prefix size, as the SEEDED format reports it.
@@ -7905,31 +7829,20 @@ mod wasm {
     /// Sequence a whole CHILD SEED in the module (control-flow inversion): decode
     /// the inherited `JournalImage` record from the COPIED KFMS arena rooted at
     /// `module_state_root` and seed activation 0's replay from it, then seed each
-    /// side activation from the host-passed `sides` scratch (`[sides_ptr, sides_ptr
-    /// + sides_count*16)`, each a `(id, fixed_prefix, root_lo, root_hi)` 16-byte
-    /// record). Folds the host's former `fm_begin_child_replay` +
-    /// per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
-    /// into ONE module call. `act0_root` is activation 0's inherited launch anchor.
-    /// A single-activation fork passes `sides_count == 0`. Check `fm_last_errno`.
+    /// side activation this child BOUND (`bound_sides`). Folds the host's
+    /// former `fm_begin_child_replay` + per-activation
+    /// `fm_add_activation_child_replay` loop in `attachModuleChild` into ONE
+    /// module call. `act0_root` is activation 0's inherited launch anchor. Check
+    /// `fm_last_errno`.
     /// Both fine-grained exports this replaced -- `fm_begin_child_replay` and
     /// `fm_add_activation_child_replay` -- have been deleted; the side-activation
     /// seeding they performed is `add_activation_child_replay_impl` below, which
     /// this entry calls directly.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_child_seed(
-        module_state_root: usize,
-        act0_root: usize,
-        sides_ptr: usize,
-        sides_count: usize,
-    ) {
-        match require_phase(PHASE_IDLE).and_then(|()| {
-            child_seed_impl(
-                module_state_root as u64,
-                act0_root as u64,
-                sides_ptr as u64,
-                sides_count as u64,
-            )
-        }) {
+    pub extern "C" fn fm_child_seed(module_state_root: usize, act0_root: usize) {
+        match require_phase(PHASE_IDLE)
+            .and_then(|()| child_seed_impl(module_state_root as u64, act0_root as u64))
+        {
             Ok(()) => {
                 enter_phase(PHASE_CHILD_REPLAY);
                 set_ok()
@@ -7941,35 +7854,24 @@ mod wasm {
     /// Sequence a whole BORROWED (vfork) CHILD SEED in the module (control-flow
     /// inversion): decode the inherited `JournalImage` record from the KFMS arena
     /// rooted at `module_state_root` and seed activation 0's borrowed replay from
-    /// it, then seed each side activation from the host-passed `sides` scratch
-    /// (`[sides_ptr, sides_ptr + sides_count*24)`, each a `(id, fixed_prefix,
-    /// root_lo, root_hi, private_lo, private_hi)` 24-byte record). Folds the host's
-    /// former `fm_begin_borrowed_child_replay` + per-activation
-    /// `fm_add_activation_borrowed_child_replay` loop in `attachBorrowedModuleChild`
-    /// into ONE module call — the borrowed sibling of `fm_child_seed`. `act0_root`
-    /// is activation 0's borrowed launch anchor; `act0_private_prefix` its
-    /// child-private prefix. A single-activation vfork passes `sides_count == 0`.
-    /// Check `fm_last_errno`. Both fine-grained exports this replaced --
+    /// it, then seed each side activation this child BOUND
+    /// (`bound_sides`). Folds the host's former
+    /// `fm_begin_borrowed_child_replay` + per-activation
+    /// `fm_add_activation_borrowed_child_replay` loop in
+    /// `attachBorrowedModuleChild` into ONE module call — the borrowed sibling
+    /// of `fm_child_seed`. `act0_root` is activation 0's borrowed launch anchor;
+    /// every activation's child-private prefix is carved from the workspace
+    /// `fm_set_borrowed_workspace` seeded. Check `fm_last_errno`. Both fine-grained exports this replaced --
     /// `fm_begin_borrowed_child_replay` and
     /// `fm_add_activation_borrowed_child_replay` -- have been deleted; the
     /// side-activation seeding they performed is
     /// `add_activation_borrowed_child_replay_impl` below, which this entry calls
     /// directly.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_child_seed_borrowed(
-        module_state_root: usize,
-        act0_root: usize,
-        sides_ptr: usize,
-        sides_count: usize,
-    ) {
-        match require_phase(PHASE_IDLE).and_then(|()| {
-            child_seed_borrowed_impl(
-                module_state_root as u64,
-                act0_root as u64,
-                sides_ptr as u64,
-                sides_count as u64,
-            )
-        }) {
+    pub extern "C" fn fm_child_seed_borrowed(module_state_root: usize, act0_root: usize) {
+        match require_phase(PHASE_IDLE)
+            .and_then(|()| child_seed_borrowed_impl(module_state_root as u64, act0_root as u64))
+        {
             Ok(()) => {
                 enter_phase(PHASE_CHILD_REPLAY);
                 set_ok()
@@ -8633,9 +8535,8 @@ mod wasm {
 
     /// Sequence a whole capture BEGIN in the module (control-flow inversion): open
     /// activation 0 (`begin_unwind_impl`, reclaiming the previous fork), add each
-    /// side activation read as an `(id: u32, fixed_prefix: u32)` pair from the
-    /// host-seeded scratch `[sides_ptr, sides_ptr + sides_count*8)`
-    /// (`add_activation_unwind_impl`), publish each activation's `arena_root` into
+    /// bound side activation (`bound_sides`, `add_activation_unwind_impl`),
+    /// publish each activation's `arena_root` into
     /// its module-buffer prefix (the module-side `writeForkModuleStateRoot`), then
     /// DRIVE each activation's guest `wpk_fork_unwind_begin(root)` through the
     /// injector-wired `fm_drive_execute` shim in ascending id order.
@@ -8653,20 +8554,10 @@ mod wasm {
     /// traps inside the shim exactly as it did under the host loop; a create /
     /// plan-build failure is a truthful errno.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_begin_capture(
-        channel_base: usize,
-        arena_root: usize,
-        sides_ptr: usize,
-        sides_count: usize,
-    ) -> usize {
-        match require_phase(PHASE_IDLE).and_then(|()| {
-            begin_capture_impl(
-                channel_base as u64,
-                arena_root as u64,
-                sides_ptr as u64,
-                sides_count as u64,
-            )
-        }) {
+    pub extern "C" fn fm_parent_begin_capture(channel_base: usize, arena_root: usize) -> usize {
+        match require_phase(PHASE_IDLE)
+            .and_then(|()| begin_capture_impl(channel_base as u64, arena_root as u64))
+        {
             Ok(root) => {
                 enter_phase(PHASE_CAPTURE);
                 set_ok();

@@ -100,10 +100,8 @@ const SHADOW_STACK_BYTES = 1024 * 1024;
  *
  * It was four pages from lane F stage 1b, sized so the largest admission fit,
  * which charged every thread of every forking program 256 KiB for php's
- * extensions. The side-activation list (`stageSides`, 8 bytes per activation)
- * always stages here; a request too large for the slab is refused loudly
- * ("staging slab exhausted"). Written as a product of two integer literals,
- * which the storage ledger's recorder parses.
+ * extensions. Written as a product of two integer literals, which the
+ * storage ledger's recorder parses.
  */
 const STAGING_SLAB_BYTES = 64 * 1024;
 

@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
 import {
   admitActivation,
+  bindActivation,
   fixture,
   openCapture,
   sideTemplate,
   type Fixture,
 } from "./fork-module-capture-fixture";
-import { bind } from "./support/fork-admission";
 
 /** The per-activation drive stride: one slot per binding, as the host binds it. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
@@ -49,7 +49,7 @@ function module(f: Fixture) {
      */
     place: (activation: number, funcLen: number, staticLen: number) => {
       expect(admitActivation(f, activation, { template: sideTemplate(activation) })).toBe(0);
-      const row = bind(f.x, f.memory, activation, funcLen, staticLen);
+      const row = bindActivation(f.x, f.memory, activation, funcLen, staticLen);
       return { func: row?.func ?? -1, statics: row?.statics ?? -1 };
     },
     release: (activation: number, unplaced = false) =>

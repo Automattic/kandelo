@@ -71,7 +71,7 @@ function freshModule(): Fm {
  * argument check at all means the phase gate let it through.
  */
 function idleIsStillReachable(fm: Fm): boolean {
-  fm.call("fm_parent_begin_capture", 0, 0, 0, 0);
+  fm.call("fm_parent_begin_capture", 0, 0);
   return fm.errno() !== EBUSY;
 }
 
@@ -154,7 +154,7 @@ describe("fork module lifecycle phase", () => {
     // The point of EBUSY. Without this, every assertion above would pass
     // against a module whose entry points simply reject their arguments.
     const fm = freshModule();
-    fm.call("fm_parent_begin_capture", 0, 0, 0, 0);
+    fm.call("fm_parent_begin_capture", 0, 0);
     expect(fm.errno()).not.toBe(EBUSY);
     expect(fm.errno()).not.toBe(0);
   });
