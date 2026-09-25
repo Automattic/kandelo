@@ -23,9 +23,11 @@ audio?", so it treats *audio exists and is idle* as *audio is broken*:
 2. `host/src/browser-kernel-host.ts:1263` — `getAudioState()` returns
    `"unprepared"` rather than `"unavailable"` because step 1 always supplied a
    transport.
-3. `host/src/browser-kernel-host.ts:1269` — `onAudioStateChange()` *constructs*
-   a `BrowserPcmDriver` as a side effect of subscribing. The UI subscribes on
-   mount, so every machine gets an `AudioContext`, which then reports
+3. `host/src/browser-kernel-host.ts:1595-1608` — the `ready` handler calls
+   `prepareAudio()` for every machine that has an `AudioContext` constructor
+   available, and `onAudioStateChange()` (browser-kernel-host.ts:1269)
+   *constructs* a `BrowserPcmDriver` as a side effect of subscribing. Either
+   way every machine ends up with an `AudioContext`, which then reports
    `"suspended"` under the browser's autoplay policy.
 4. `apps/browser-demos/pages/kandelo/app/App.tsx:398` renders the toast whenever
    `surface.status === "running" && audioState !== "running"`. Nothing in that
@@ -106,25 +108,51 @@ because that is exactly the case where losing the warning costs the user the
 most. The alternative — tracking the live stream so the toast disappears when
 the program closes the device — was rejected for that reason.
 
-### 3. Subscribing stops constructing a driver
+### 3. Driver construction is left alone — and why
 
-`onAudioStateChange()` (host/src/browser-kernel-host.ts:1269) no longer builds a
-`BrowserPcmDriver`. `BrowserKernel` keeps its own listener set, reports the
-existing truthful `"unprepared"` (transport present, sink not prepared) or
-`"unavailable"` (no transport) until a driver exists, and forwards driver states
-once one does.
+An earlier draft of this design proposed removing the driver-construction side
+effect in `onAudioStateChange()` (host/src/browser-kernel-host.ts:1269) on the
+grounds that it is what manufactures an `AudioContext` for every machine at
+mount. Reading the rest of the file shows that is not the whole story, and the
+conclusion changes.
 
-A driver is built only by `prepareAudio()` / `resumeAudio()` — that is, from a
-real user gesture. Nothing is created at boot.
+`handleWorkerMessage`'s `ready` case (host/src/browser-kernel-host.ts:1595-1608)
+*already* calls `prepareAudio()` eagerly for every machine whenever the browser
+has an `AudioContext` constructor at all. `prepareAudio()` assigns
+`this.pcmDriver` synchronously (browser-kernel-host.ts:1246) before it awaits,
+so by the time the UI mounts and subscribes, the driver always exists and the
+branch at 1269 is unreachable in practice. Removing it would change nothing a
+user can observe.
 
-This is a fix in its own right, not a gate: it is what manufactures an
-`AudioContext` and an AudioWorklet rendering thread for every machine on mount.
+That eager prepare is also load-bearing for the behaviour this fix must keep.
+`resumeAudio()` is `await prepareAudio(); await driver.resume()`, and
+`prepareAudio()` loads the AudioWorklet module. Preparing at kernel ready is
+what lets the first gesture's `resume()` run immediately instead of after a
+module fetch — which is precisely the ordering WebKit's autoplay policy is
+strictest about. Deferring it to demand time is the extra-click risk this design
+set out to avoid.
+
+So driver construction is not touched. The `AudioContext` at boot stays. That is
+a deliberate cost, stated plainly: a user who only ever boots audio-free
+machines still pays one `AudioContext` and one AudioWorklet rendering thread per
+page, and on iOS that context can duck audio playing elsewhere. Avoiding it
+means moving preparation to demand time, which needs a WebKit/Chromium probe of
+whether a post-gesture context still resumes under sticky activation. That probe
+is follow-on work this design deliberately leaves open, not a decision this fix
+has to make.
+
+The result is that the whole fix is the demand signal plus the toast gate. It
+changes what the UI *warns about*, and nothing about what the audio stack
+*does*.
 
 ### 4. Eager resume is preserved
 
 The gesture-driven resume path stays exactly as it is. `activateAudio` and its
 `pointerdown` / `keydown` listeners (App.tsx:120-135) are unchanged, and
 `apps/browser-demos/pages/kandelo/panes/Framebuffer.tsx:171` is untouched.
+
+With §3, that path is untouched end to end: prepare at kernel ready, resume on
+the first gesture.
 
 This matters because the resume attempt and the warning are independent axes.
 A successful eager resume already produces no toast today — `audioState` becomes
@@ -138,15 +166,6 @@ A successful eager resume already produces no toast today — `audioState` becom
   context, so when the guest opens `/dev/dsp` it plays immediately — no toast,
   no extra click, identical to today's good path. If resume had failed, the
   latch flips and the toast appears carrying the real state.
-
-Keeping the resume inside the gesture handler also avoids a WebKit
-sticky-activation risk: a context created *after* a gesture rather than during
-one may refuse to resume on Safari, which would cost audio demos an extra click.
-Deferring driver creation to demand would additionally save one `AudioContext`
-and one worklet thread per page for users who only ever boot audio-free
-machines, and on iOS would avoid a resume that can duck audio playing elsewhere.
-That is a follow-on optimisation gated on a WebKit/Chromium probe, deliberately
-out of scope here.
 
 ### 5. Session contract
 
@@ -173,14 +192,11 @@ implement them, and tearing the subscription down on the same paths that drop
 - the toast condition at App.tsx:398 becomes
   `surface.status === "running" && audioActive && audioState !== "running"`.
 
-With §3 in place, a machine whose guest opens `/dev/dsp` before anyone has
-clicked reports `"unprepared"` rather than `"suspended"`. Both mean the same
-thing to a user — audio has not started; interact to enable — so
-`AudioStatusToast` must speak `"unprepared"` with that copy instead of falling
-through to the suspended wording by accident. `"error"`, `"interrupted"` and
-`"unavailable"` keep their distinct text. This is labelling a state we are
-already in, not renaming it: `data-audio-state` (App.tsx:346) still carries the
-real state, and the toast title still names it.
+No change to `AudioStatusToast` itself. Its existing fall-through copy already
+covers `"unprepared"` with the same wording as `"suspended"` ("Browser policy
+pauses audio until you interact with this computer"), which is the right message
+for both, and `"error"`, `"interrupted"` and `"unavailable"` keep their distinct
+text. `data-audio-state` (App.tsx:346) continues to carry the real state.
 
 ### 7. Node
 
@@ -223,10 +239,10 @@ A component test cannot prove this. The evidence has to include a real boot.
    (`apps/browser-demos/test/kandelo-espeak.spec.ts` already boots it) asserts
    the toast still appears once `espeak-ng` opens `/dev/dsp` without an enabled
    sink, and that Enable works. Green before *and* after.
-3. **Unit coverage.** `pcmGuestAudioActivity` over a synthetic header in
-   `host/test/`; and that subscribing to audio state creates no `AudioContext`,
-   driven through the existing `apps/browser-demos/pages/test-runner/main.ts`
-   harness in a real browser.
+3. **Unit coverage.** `pcmGuestAudioActivity` over a synthetic control header in
+   `host/test/pcm-transport.test.ts`: false for a freshly claimed transport,
+   true after a simulated open, and still true after the stream closes again —
+   the latch's whole point.
 4. **Gates.** `cd host && npm run typecheck`; `cd apps/browser-demos && npm run
    test:unit`; the host Vitest audio suites; `./run.sh browser` by hand for both
    directions.
