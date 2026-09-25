@@ -111,4 +111,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
   { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: ["/bin/sqlite3"] },
+  { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: ["/bin/lha"] },
+  { id: "tyrquake", resolverPath: "programs/quake.wasm", vfsPath: "/usr/bin/quake", symlinks: ["/bin/quake"] },
 ] as const satisfies readonly VfsBinarySpec[];

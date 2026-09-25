@@ -216,7 +216,42 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     executable: "/usr/local/bin/modeset",
     command: "/usr/local/bin/modeset",
   },
+  quake: {
+    executable: "/usr/local/bin/quake",
+    command: "/usr/local/bin/quake",
+  },
 } as const;
+
+/**
+ * The Quake software demo's launch wrapper, written eagerly to
+ * /usr/local/bin/quake. It extracts id1/pak0.pak from id's original shareware
+ * archive on first launch using the image's own lazy tools (unzip -> lha), then
+ * execs the lazy engine at /usr/bin/quake with the shareware basedir. Using an
+ * absolute engine path avoids recursing back into this wrapper via PATH. The
+ * step is idempotent and surfaces failure honestly; the engine then reports its
+ * own missing-data error rather than faking success.
+ */
+const QUAKE_LAUNCH_SCRIPT = `#!/bin/sh
+set -e
+BASE=/usr/share/quake
+PAK="$BASE/id1/pak0.pak"
+ZIP="$BASE/quake106.zip"
+if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
+    echo "quake: extracting shareware data from quake106.zip..." >&2
+    mkdir -p "$BASE/id1"
+    cd "$BASE"
+    unzip -o "$ZIP" >/dev/null
+    lha xf resource.1 >/dev/null 2>&1 || true
+    src="$(find "$BASE" -iname 'pak0.pak' 2>/dev/null | head -n1)"
+    if [ -n "$src" ] && [ "$src" != "$PAK" ]; then cp "$src" "$PAK"; fi
+    if [ -f "$PAK" ]; then
+        echo "quake: extracted id1/pak0.pak" >&2
+    else
+        echo "quake: extraction failed; no pak0.pak produced" >&2
+    fi
+fi
+exec /usr/bin/quake -basedir "$BASE" "$@"
+`;
 
 export function composeSourceRootfsDemoConfig(
   basePath: string,
@@ -784,6 +819,14 @@ export async function buildSourceRootfsShellImage(
   writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/sdl2", sdl2, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/evdev_demo", evdevDemo, 0o755);
+  // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
+  // small extraction+launch wrapper is written eagerly.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/quake",
+    new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
+    0o755,
+  );
   ensureDirRecursive(fs, "/usr/bin");
   writeVfsBinary(fs, "/usr/bin/espeak-ng", espeakNg, 0o755);
   writeEspeakVoiceData(fs, espeakNgData);
