@@ -267,6 +267,12 @@ export interface Fixture {
    * (`readForkModuleStateRoot`). There is no module entry that answers it.
    */
   root: () => number;
+  /**
+   * Activation 0's continuation anchor from the LAST capture opened through
+   * `x.fm_parent_begin_capture`, or 0 -- the launch root a parent's host
+   * publishes in its archive control word before `SYS_FORK`.
+   */
+  anchor: () => number;
   worker: Worker;
 }
 
@@ -387,6 +393,7 @@ export function fixture(): Fixture {
     memory,
     errno: () => (x.fm_last_errno as () => number)(),
     root: () => moduleStateRootAt(f, lastAnchor),
+    anchor: () => lastAnchor,
     worker,
   };
   return f;

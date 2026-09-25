@@ -11334,6 +11334,177 @@ mod wasm {
         }
     }
 
+    // -- Child install: one entry (lane F stage 1e) -------------------------
+
+    /// One pointer-width little-endian word of guest memory at `addr`, or
+    /// `EINVAL` when the format is unseeded or the word is outside memory.
+    fn read_guest_word(addr: u64) -> Result<u64, Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw != 4 && pw != 8 {
+            return Err(Errno::EINVAL);
+        }
+        let end = addr.checked_add(pw as u64).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() as u64 {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: `[addr, addr + pw)` is inside guest linear memory (checked
+        // above); the same guest-offset-as-pointer read the channel uses.
+        Ok(if pw == 4 {
+            u64::from(unsafe { ch_read_u32(addr, 0) })
+        } else {
+            unsafe { ch_read_i64(addr, 0) as u64 }
+        })
+    }
+
+    /// Publish a COW child's launch root in its OWN copy of the archive
+    /// control word, where a later fork from this child -- and the kernel,
+    /// which reads the anchor before `SYS_FORK` -- expects to find it.
+    ///
+    /// For a child of the main thread the copied word already holds this
+    /// value; for a child of a pthread it holds the MAIN thread's anchor,
+    /// because the parent published the thread's root in the thread's own
+    /// channel word. Writing it unconditionally makes both the same. Never
+    /// called for a borrowed child: its control word is its parked parent's.
+    ///
+    /// A COW child with no control block has nowhere to publish, and the next
+    /// fork from it would find no anchor, so it is refused.
+    fn publish_launch_root(launch_root: u64) -> Result<(), Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed) as u64;
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if control == 0 || (pw != 4 && pw != 8) {
+            return Err(Errno::EINVAL);
+        }
+        let end = control.checked_add(pw as u64).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() as u64 {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: `[control, control + pw)` is inside guest memory (checked
+        // above); the same scalar write the channel paths use.
+        unsafe {
+            if pw == 4 {
+                ch_write_u32(control, 0, launch_root as u32);
+            } else {
+                ch_write_i64(control, 0, launch_root as i64);
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse a child that has not bound every side activation its parent
+    /// captured.
+    ///
+    /// The seeds walk what this worker BOUND (`bound_sides`); the arena's
+    /// `Module` records are what the parent captured. A side in the second
+    /// and not the first is a library the continuation runs through that this
+    /// child never instantiated -- its frames would replay with nothing to
+    /// resume into -- so the install stops here rather than seeding a subset.
+    fn assert_captured_sides_bound(module_state_root: u64) -> Result<(), Errno> {
+        let bound = bound_sides();
+        for id in arena_module_activations(module_state_root)? {
+            if id != 0 && !bound.iter().any(|(side, _)| *side == id) {
+                return Err(Errno::EINVAL);
+            }
+        }
+        Ok(())
+    }
+
+    fn child_install_impl(
+        pid: u32,
+        launch_root: u64,
+        borrowed_base: usize,
+        borrowed_bytes: usize,
+    ) -> Result<(), Errno> {
+        require_phase(PHASE_IDLE)?;
+        // Either word non-zero makes this a borrowed (vfork) child, and
+        // `set_borrowed_workspace_impl` refuses a region with the other one
+        // zero: a base with no size, or a size with no base, is not a
+        // workspace.
+        let borrowed = borrowed_base != 0 || borrowed_bytes != 0;
+        // The launch root is the kernel-validated anchor the host received
+        // with the fork (`forkBufAddr`): activation 0's continuation for a
+        // main-thread and a pthread fork alike, COW or borrowed. The arena
+        // root is the word the capture wrote into its prefix
+        // (`write_module_state_root`). No zero or alignment checks on either:
+        // the arena decode in the seed refuses a zero or misaligned root, and
+        // a check here survived perturbation as a second opinion.
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed) as u64;
+        let prefix_word = launch_root
+            .checked_add(abi::WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET as u64 * pw)
+            .ok_or(Errno::EINVAL)?;
+        let module_state_root = read_guest_word(prefix_word)?;
+        assert_captured_sides_bound(module_state_root)?;
+        if borrowed {
+            set_borrowed_workspace_impl(borrowed_base, borrowed_bytes)?;
+            child_seed_borrowed_impl(module_state_root, launch_root)?;
+        } else {
+            publish_launch_root(launch_root)?;
+            child_seed_impl(module_state_root, launch_root)?;
+        }
+        // Entered BEFORE the drive, as `fm_child_seed` did: the guest's restore
+        // reads its reference feed during the drive, and the feed answers from
+        // the decoded child graph only outside a capture.
+        enter_phase(PHASE_CHILD_REPLAY);
+        // Seed, exnref admission, arena adoption, reconstruction + restore /
+        // finish + rewind-begin steps. Building the plan also grows this
+        // module's `__wpk_fork_ref_gc_transit` to the plan's largest recipe + 2
+        // (`serialize_and_store_plan` -> `size_transit_for`), before the drive
+        // publishes into it.
+        let plan = attach_from_arena_impl(module_state_root, pid)?;
+        let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
+        if count > 0 {
+            drive_plan_via_injector(plan, count);
+        }
+        // The drive published every static root into the transit, where the
+        // child's instance now holds it. The merged static-root catalog was
+        // filled only so the drive could read it; null it so it does not
+        // extend a root's lifetime past replay. Table 1 is that catalog, and
+        // the thunk clamps the length to its size.
+        // SAFETY: after injection a local thunk doing one clamped `table.fill`
+        // of a null on a module-imported table.
+        unsafe { __wpk_fork_table_null(1, 0, u32::MAX) }
+        Ok(())
+    }
+
+    /// Install this worker's fork child: ONE call for a COW child and a vfork
+    /// BORROWED child. Answers 0, or an errno (also in `fm_last_errno`).
+    ///
+    /// `launch_root` is activation 0's continuation anchor, the
+    /// kernel-validated `forkBufAddr` the host received with the fork. The
+    /// module reads the arena root from that root's prefix, publishes the root
+    /// in a COW child's own control word, carves the borrowed workspace when
+    /// `borrowed_base` or `borrowed_bytes` is non-zero, seeds every bound
+    /// activation (`child_seed_impl` / `child_seed_borrowed_impl`), attaches
+    /// (`attach_from_arena_impl`), drives the install plan and nulls the
+    /// merged static-root catalog.
+    ///
+    /// ADDITIVE for now (lane F stage 1e). It replaces the host sequence
+    /// anchor write -> `fm_set_borrowed_workspace` ->
+    /// `fm_child_seed[_borrowed]` -> `fm_attach_child` -> `fm_gc_plan_count` +
+    /// `fm_drive_execute` -> catalog null, which stays until the hosts switch
+    /// (stages 1f and 1f-native).
+    ///
+    /// The host still owns what only it can do before this call: binding each
+    /// activation's drive slots and filling the merged static-root catalog
+    /// (reference `Table.set`s).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_install(
+        pid: u32,
+        launch_root: usize,
+        borrowed_base: usize,
+        borrowed_bytes: usize,
+    ) -> i32 {
+        match child_install_impl(pid, launch_root as u64, borrowed_base, borrowed_bytes) {
+            Ok(()) => {
+                set_ok();
+                0
+            }
+            Err(errno) => {
+                set_err(errno);
+                errno as i32
+            }
+        }
+    }
+
     /// Read one field of the module's proof-of-use statistics record by index.
     ///
     /// This single export folds the former 11 individual counter exports
