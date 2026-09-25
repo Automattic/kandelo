@@ -4,12 +4,25 @@ import {
   type VfsMountIntentV1,
 } from "../../../../../host/src/vfs/product-mount-contract";
 import type { BootDescriptor } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+// Type-only: erased at runtime, so this does not create an import cycle with
+// optional-demo-vfs.ts, which imports this module for its resolver.
+import type { OptionalDemoVfsImage } from "./optional-demo-vfs";
 import {
   readExactSizedBody,
   type SizedDownloadProgress,
 } from "../../../../../web-libs/kandelo-session/src/sized-download";
 
-export type CandidateOptionalDemoVfsImage = "node" | "wordpress" | "lamp";
+/**
+ * Optional-demo images a candidate may name.
+ *
+ * Bound to {@link OptionalDemoVfsImage} rather than restated, because the
+ * resolver keys `OPTIONAL_DEMO_VFS_PATHS` by that type: a value accepted here
+ * but absent there resolves to `undefined` and throws while reading its paths.
+ * This alias turns any future divergence into a compile error. (It once
+ * admitted "node", which the resolver never had an entry for; node now ships
+ * as a profile inside the main shell image, not as an image of its own.)
+ */
+export type CandidateOptionalDemoVfsImage = OptionalDemoVfsImage;
 
 export interface ProtectedCandidateVfsSource {
   schema: 1;
@@ -423,7 +436,6 @@ function validateCandidateVfs(value: unknown): ProtectedCandidateVfsSource {
   let optionalImage: CandidateOptionalDemoVfsImage | undefined;
   if (vfs.optionalImage !== undefined) {
     if (
-      vfs.optionalImage !== "node" &&
       vfs.optionalImage !== "wordpress" &&
       vfs.optionalImage !== "lamp"
     ) {
