@@ -12,14 +12,14 @@ import "../../pages/kandelo/styles.css";
 
 import { KernelHostProvider } from "../../pages/kandelo/kernel-host/react";
 import { Shell } from "../../pages/kandelo/panes/Shell";
-import { BootProgressBar } from "../../pages/kandelo/panes/BootProgressBar";
+import { MachineProgressOverlay } from "../../pages/kandelo/panes/MachineProgressOverlay";
 import {
   LiveKernelHost,
-  type BootProgress,
+  type MachineProgress,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface BootProgressFixture {
-  setProgress(progress: BootProgress | null): void;
+  setProgress(progress: MachineProgress | null): void;
   finishBoot(): void;
   unmount(): void;
 }
@@ -31,13 +31,13 @@ export function mountBootScreen(container: HTMLElement): BootProgressFixture {
     React.createElement(
       KernelHostProvider,
       { host },
-      React.createElement(BootProgressBar, {}),
+      React.createElement(MachineProgressOverlay, {}),
       React.createElement(Shell, {}),
     ),
   );
   return {
     setProgress(progress) {
-      host.setBootProgress(progress);
+      host.setMachineProgress(progress);
     },
     finishBoot() {
       host.setStatus("running");

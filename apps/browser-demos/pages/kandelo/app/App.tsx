@@ -5,6 +5,7 @@ import * as React from "react";
 import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
+import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
 import { Gallery } from "../views/Gallery";
 import { EmptyState } from "../views/EmptyState";
@@ -430,6 +431,8 @@ export const App: React.FC = () => {
         onHeightChange={setDockHeight}
         onLayoutChange={onDockLayoutChange}
       />
+
+      <MachineProgressOverlay />
     </div>
   );
 };
