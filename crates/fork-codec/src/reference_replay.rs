@@ -180,7 +180,7 @@ impl ReferenceReplayDriver {
     /// declared no exception codec at all — is a violation.
     ///
     /// This is the exnref tag-validity ADMISSION gate. The module runs it at the
-    /// child-install ENTRY (`fm_attach_child`, COW and borrowed alike), BEFORE
+    /// child-install ENTRY (`fm_child_install`, COW and borrowed alike), BEFORE
     /// it builds the reconstruction drive plan whose
     /// [`DRIVE_OP_EXN`](crate::drive_plan) step would otherwise `call_indirect` the
     /// guest exception-materialize export blindly. A corrupt / mismatched exnref

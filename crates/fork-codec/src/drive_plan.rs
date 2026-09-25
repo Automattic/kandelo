@@ -715,7 +715,7 @@ pub fn build_drive_plan<H: DrivePlanHints>(
     Ok(walk.steps)
 }
 
-/// Append the child-install steps (the module-owned `fm_attach_child` tail, for
+/// Append the child-install steps (the module-owned `fm_child_install` tail, for
 /// COW and vfork borrowed children alike) to a drive plan: one `DRIVE_OP_RESTORE` step
 /// per activation, THEN one `DRIVE_OP_FINISH_RESTORE` step per activation, in the
 /// caller's activation order. This reproduces the JS

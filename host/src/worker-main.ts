@@ -3186,7 +3186,6 @@ export async function centralizedWorkerMain(
           throw new Error(`pid=${pid}: fork child is missing a valid fork mode`);
         })())
       : PROCESS_FORK_MODE_FORK;
-    let forkBufAddr = initData.forkBufAddr ?? 0;
     const forkMemoryOwnership = initData.isForkChild
       ? (initData.forkMemoryOwnership ?? "copied")
       : "copied";
@@ -3641,62 +3640,24 @@ export async function centralizedWorkerMain(
       // root decoder and GC codec provider. `fm_child_plan` resolves a child's
       // raw reference imports to a slot of the owning activation's own
       // catalog, so there is no per-activation registration left to do.
-      const readProcessLaunchRoot = (): number => {
-        if (borrowedForkChild) return forkBufAddr;
-        const view = new DataView(memory.buffer);
-        return ptrWidth === 8
-          ? Number(view.getBigUint64(dlopenArchiveControlAddr, true))
-          : view.getUint32(dlopenArchiveControlAddr, true);
-      };
-      let inheritedLaunchRoot = 0;
-      /** The KFMS arena this child inherited, or 0 when it is not a child. */
-      let childArenaRoot = 0;
-      if (initData.isForkChild) {
-        if (
-          !borrowedForkChild &&
-          initData.forkChildThreadFnPtr !== undefined &&
-          initData.forkBufAddr !== undefined
-        ) {
-          // A pthread continuation is rooted in the caller's channel page,
-          // not the process-main anchor copied into the child. Publish the
-          // kernel-validated launch root under activation zero before any
-          // child reconstruction recipe is inspected.
-          writeForkContinuationAnchor(
-            memory,
-            dlopenArchiveControlAddr,
-            ptrWidth,
-            initData.forkBufAddr,
-          );
-        }
-        inheritedLaunchRoot = readProcessLaunchRoot();
-        if (
-          initData.forkBufAddr !== undefined &&
-          inheritedLaunchRoot !== initData.forkBufAddr
-        ) {
-          throw new Error(
-            `pid=${pid}: inherited process launch root ${inheritedLaunchRoot} ` +
-              `does not match launch root ${initData.forkBufAddr}`,
-          );
-        }
-        if (
-          !Number.isSafeInteger(inheritedLaunchRoot)
-          || inheritedLaunchRoot <= 0
-        ) {
-          throw new Error(
-            `pid=${pid}: fork child has no inherited process launch root`,
-          );
-        }
-        const moduleStateRoot = readForkModuleStateRoot(
-          memory,
-          inheritedLaunchRoot,
-          ptrWidth,
-        );
-        // The address, and nothing else. A host arena used to be attached here
-        // to validate the inherited chain before anything read it; the module
-        // validates it at `fm_attach_child`, which is the reader, so attaching
-        // a second view only moved the check earlier and duplicated the format.
-        childArenaRoot = moduleStateRoot;
-      }
+      //
+      // A child's launch root is the kernel-validated `forkBufAddr` it was
+      // handed: activation 0's continuation for a main-thread and a pthread
+      // fork, COW and borrowed alike. `fm_child_install` takes it, publishes it
+      // in a COW child's own control word and reads the arena root out of its
+      // prefix itself. WHAT USED TO BE HERE: reading the copied control word
+      // back, checking it against `forkBufAddr`, and the pthread child's anchor
+      // write that made the two agree -- all three are the module's now.
+      const childLaunchRoot = initData.isForkChild
+        ? (initData.forkBufAddr ?? 0)
+        : 0;
+      // The KFMS arena this child inherited, or 0 when it is not a child. Read
+      // here only for the import plan, which still takes it as an argument
+      // (`fm_child_plan`); the install reads its own. Throws on a missing
+      // launch root.
+      const childArenaRoot = initData.isForkChild
+        ? readForkModuleStateRoot(memory, childLaunchRoot, ptrWidth)
+        : 0;
       // The fresh child's route to the main activation, written into the copied
       // control-page word because no JavaScript closure survives a fork. A
       // BORROWED vfork child never writes it: that word still belongs to its
@@ -3709,7 +3670,6 @@ export async function centralizedWorkerMain(
           ptrWidth,
           address,
         );
-        forkBufAddr = address;
       };
 
       const releaseProcessForkArchiveReader = (): void => {
@@ -3885,7 +3845,6 @@ export async function centralizedWorkerMain(
             }
           }
           releaseProcessForkArchiveReader();
-          forkBufAddr = 0;
           if (error instanceof ContinuationAllocationError) return -error.errno;
           throw error;
         }
@@ -4034,7 +3993,7 @@ export async function centralizedWorkerMain(
         // tag-validity check the module ALSO now re-checks itself: each
         // activation's admission carries its exception codec, from which the
         // module derives the declared exnref tag ordinals, and the child-install entry
-        // (`fm_attach_child`, COW and borrowed alike) fails loud with `EINVAL`
+        // (`fm_child_install`, COW and borrowed alike) fails loud with `EINVAL`
         // on an exnref recipe whose tag its owning activation never declared,
         // BEFORE the DRIVE_OP_EXN step materializes it — the fail-loud boundary
         // that formerly lived here as `assertForkModuleExnrefTagsDeclared`. The one
@@ -4253,7 +4212,7 @@ export async function centralizedWorkerMain(
         // the part of it that genuinely cannot leave the host. See census 157.
         // WHAT `adoptEarlyReferences` DID: hand the early view's materialized
         // roots to the replay transaction, so the two did not resolve the same
-        // recipe to different objects. `fm_attach_child` seeds the driver from
+        // recipe to different objects. `fm_child_install` seeds the driver from
         // the arena itself now, and the early view retains nothing to hand
         // over -- it resolves each coordinate through the module and keeps no
         // table of its own.
@@ -4347,47 +4306,13 @@ export async function centralizedWorkerMain(
           // nulls them once the drive has run.
           forkMergedStaticRoots.fill(sortedActivations);
         }
-        // ONE install call for both child shapes. A COW child and a vfork
-        // BORROWED child share an identical plan in the module; the only
-        // borrowed-specific work is the host-side child-private replay-prefix
-        // reservation, which is raw memory placement carrying no reference
-        // values and never entered the module.
-        //
-        // This is the first production caller `fm_attach_child` has ever had.
-        // It went unwired long enough that census section 128 went looking for
-        // why and found a child's `record_find` answering from a writer root
-        // that is always 0, so every lookup missed silently.
-        // `ModuleStateWriter::adopt` closes that; whether it was the ONLY thing
-        // missing is what running this will say.
-        // Seed the child's module state BEFORE attaching. Without it the module
-        // has no state at all, so every `record_find` the guest's restore makes
-        // answers 0 and the guest traps reading a page header from address 0.
-        // The coordinator did this; deleting it took the call with no caller
-        // left to notice. Census 183.
-        //
-        // Activation 0's root is the launch anchor this child already read. The
-        // side activations are the ones this child registered; each one's
-        // continuation root is a per-fork address the parent recorded in the
-        // arena, which the module reads back itself.
-        const installPlan = forkModule().installChild(
-          childArenaRoot,
-          inheritedLaunchRoot,
-          pid,
-          borrowedWorkspace,
-        );
-        forkModule().driveRestoredPlan(installPlan);
-        // Static-root binder: the attach synchronously drove the plan, so the
-        // static roots are now rooted in the anyref transit (and the child
-        // instance holds them as immutable roots). Null the merged catalog mirror
-        // so it never extends a child root's lifetime past replay — the same
-        // no-leak contract the harvest-table clear and `finishReplay` transit
-        // clear keep for the JS path.
-        if (forkModuleInstance) {
-          const mirror = forkModuleInstance.staticRootCatalog;
-          for (let slot = 0; slot < mirror.length; slot += 1) {
-            mirror.set(slot, null);
-          }
-        }
+        // ONE install call for a COW and a vfork BORROWED child, of the main
+        // thread or a pthread (`fm_child_install`): the module publishes a COW
+        // child's launch root in its own control word, carves a borrowed
+        // child's workspace, seeds every activation this worker bound,
+        // attaches, drives the install plan, and nulls the merged static-root
+        // catalog once the drive has rooted every static root in the transit.
+        forkModule().installChild(pid, childLaunchRoot, borrowedWorkspace);
         importedStatePlanner.clear();
         importedStatePlanner = null;
         forkResult = 0;

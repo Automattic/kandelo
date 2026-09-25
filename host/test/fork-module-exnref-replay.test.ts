@@ -34,7 +34,7 @@ import {
   CAPTURE_KIND_EXNREF,
   INTERN_KIND_FUNCREF,
   captureGraph,
-  admitInto,
+  installableChild,
   childInstance,
   driveBase,
   fixture,
@@ -116,7 +116,6 @@ interface ForkModuleRefExports {
     referenceCount: number,
   ) => number;
   __wpk_fork_ref_exn_cache_index: (recipeId: number) => number;
-  fm_attach_child: (root: number, pid: number) => number;
 }
 
 /**
@@ -234,49 +233,49 @@ describe("fork-module exnref reference reconstruction (Phase 6 D6.3a)", () => {
 // rather than being `call_indirect`-driven blindly through the guest export.
 // This is the module-side successor to the deleted host boundary
 // `assertForkModuleExnrefTagsDeclared`.
-describe("fork-module exnref tag-validity admission gate (fm_attach_child)", () => {
+describe("fork-module exnref tag-validity admission gate (fm_child_install)", () => {
   const EINVAL = 22;
 
-  /** Seed activation 0's declared exnref tags, then invoke the coarse
-   *  child-install entry against `root` and return its `fm_last_errno`. */
   /**
-   * Attach a child after declaring an activation's exception tags -- or not.
+   * Install a child after declaring an activation's exception tags -- or not
+   * -- and answer the install's errno.
    *
    * The tags arrive as the guest's own KFEC SECTION, not as a host-decoded u32
    * array. `fm_set_activation_exception_tags` took the array and was DELETED
    * for exactly that reason: decoding the section to produce it made the host a
    * second decoder of a module-owned format. The committed fixture declares
-   * tags {0, 1, 2}, which is what `declareTags` admits; `false` admits nothing,
-   * for the activation-declared-no-codec case.
+   * tags {0, 1, 2}, which is what `declareTags` admits; `false` admits
+   * activation 0 with no exception codec, for the declared-no-codec case.
    */
   function attachWithSeededTags(
     f: Fixture,
-    root: number,
     declareTags: boolean,
-  ): { errno: number; x: ForkModuleRefExports } {
-    const memory = f.memory;
-    const { fm, x } = replayChild(f);
-
-    if (declareTags) {
-      expect(
-        admitInto(fm.exports as Record<string, unknown>, memory, 0, {
-          exceptionCodec: EXCEPTION_CODEC,
-        }),
-        "the codec section is admitted",
-      ).toBe(0);
-    }
-
-    x.fm_attach_child(root, PID);
-    return { errno: x.fm_last_errno(), x };
+  ): { errno: number; guest: ReturnType<typeof bindFaithfulGuest>["guest"] } {
+    // The child as a fork child's worker prepares it for `fm_child_install`:
+    // a control block, activation 0 admitted (with the codec, or without),
+    // and its restore/finish/rewind slots bound; the faithful guest's
+    // materialize bound beside them, so an admitted exnref is really driven.
+    const child = installableChild(
+      f,
+      declareTags ? { exceptionCodec: EXCEPTION_CODEC } : {},
+      { label: "exnref-install-child" },
+    );
+    const { guest } = bindFaithfulGuest(
+      child.instance,
+      child.x as unknown as ForkModuleRefExports,
+      2,
+    );
+    return { errno: child.install(f.anchor(), PID), guest };
   }
 
   it("REJECTS an exnref recipe naming a tag its activation never declared (EINVAL)", () => {
     const f = fixture();
     // The captured exnref names tag 7, but activation 0's exception codec
     // declares {0, 1, 2}: a corrupt / mismatched recipe the gate must reject.
-    const { root } = captureExnref(f, 7);
-    const { errno } = attachWithSeededTags(f, root, true);
+    captureExnref(f, 7);
+    const { errno, guest } = attachWithSeededTags(f, true);
     expect(errno).toBe(EINVAL);
+    expect(guest.order(), "the EXN step never ran").toBe(0);
   });
 
   it("REJECTS an exnref whose activation declared no exception tags at all (EINVAL)", () => {
@@ -284,17 +283,19 @@ describe("fork-module exnref tag-validity admission gate (fm_attach_child)", () 
     // A well-formed tag ordinal (0), but NOTHING seeded for activation 0: an
     // exnref naming an activation with no declared codec is still a violation,
     // never a silent admit.
-    const { root } = captureExnref(f, 0);
-    const { errno } = attachWithSeededTags(f, root, false);
+    captureExnref(f, 0);
+    const { errno, guest } = attachWithSeededTags(f, false);
     expect(errno).toBe(EINVAL);
+    expect(guest.order(), "the EXN step never ran").toBe(0);
   });
 
   it("ADMITS an exnref recipe whose tag its activation declares (well-formed fork)", () => {
     const f = fixture();
     // The well-formed case: tag 0 is declared, so the gate passes and the
-    // child-install entry builds the reconstruction plan (errno 0).
-    const { root } = captureExnref(f, 0);
-    const { errno } = attachWithSeededTags(f, root, true);
+    // child-install entry builds and drives the reconstruction plan.
+    captureExnref(f, 0);
+    const { errno, guest } = attachWithSeededTags(f, true);
     expect(errno).toBe(0);
+    expect(guest.order(), "the EXN step materialized the exnref").toBe(3);
   });
 });

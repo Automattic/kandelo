@@ -2202,7 +2202,7 @@ mod wasm {
     /// other activation, and the Node/browser host re-seeds every replayed
     /// activation (`worker-main.ts`'s per-activation `setActivationGcCodec`)
     /// before the first reader of a stored codec (`decoded_gc_codecs`, via
-    /// `fm_attach_child` / `fm_build_gc_plan`) can run. Nothing reads a codec
+    /// `fm_child_install` / `fm_build_gc_plan`) can run. Nothing reads a codec
     /// between the scrub and the re-seed, so a kept record served no one --
     /// and cost every forked child up to two inherited 64 KiB mappings whose
     /// live content was a few hundred bytes, carried down every lineage.
@@ -2967,7 +2967,7 @@ mod wasm {
     //    gate's seeding) ---------------------------------------------------------
     //
     // The module owns the exnref tag-validity ADMISSION gate at the child-install
-    // entry (`fm_attach_child`, COW and borrowed alike): before it builds the
+    // entry (`fm_child_install`, COW and borrowed alike): before it builds the
     // reconstruction drive plan whose `DRIVE_OP_EXN` step `call_indirect`s the
     // guest exception-materialize export, it re-checks that every captured exnref
     // recipe names a tag its OWNING activation's exception codec declared. This
@@ -3359,7 +3359,7 @@ mod wasm {
 
     /// Write the capture graph into the arena, as the records a child decodes.
     ///
-    /// **Without this a child cannot be installed at all.** `fm_attach_child`
+    /// **Without this a child cannot be installed at all.** `fm_child_install`
     /// begins with `decode_reference_transaction_from_arena`, which reads the
     /// `KFRS` sections and the `KFRV` manifest out of the arena's records. The
     /// only thing that ever wrote them was the JavaScript capture session's
@@ -5488,18 +5488,10 @@ mod wasm {
 
     /// Refuse an entry point legal from either of two phases.
     ///
-    /// Two shapes need this, and neither is "accept every phase":
-    ///
-    /// - The replay-FINISH entries: a parent replay and a child replay both end
-    ///   at idle through the same call.
-    /// - The child-INSTALL entries: a COW/borrowed child install is ONE arrival
-    ///   at `PHASE_CHILD_REPLAY` spread over two calls (`fm_child_seed` seeds
-    ///   the per-activation replay drivers, `fm_attach_child` seeds the
-    ///   reference graph and builds the install plan), so whichever runs first
-    ///   makes the transition and the second must be legal from the phase its
-    ///   sibling just entered. Accepting `PHASE_CHILD_REPLAY` here still
-    ///   refuses an attach during capture, sealed-parent, parent replay, or
-    ///   abort replay -- everything the single-phase guard refused.
+    /// The replay-FINISH entries need this, and it is not "accept every
+    /// phase": a parent replay and a child replay both end at idle through the
+    /// same call. (The child install used it too while it was two calls; since
+    /// `fm_child_install` it is one entry that requires idle.)
     fn require_phase_either(first: u32, second: u32) -> Result<(), Errno> {
         let current = PHASE.load(Ordering::Relaxed);
         if current == first || current == second {
@@ -7140,7 +7132,7 @@ mod wasm {
         Ok(())
     }
 
-    /// Child-install ENTRY (the module-owned `fm_attach_child`, which serves the
+    /// Child-install body (inside `fm_child_install`, which serves the
     /// COW and the vfork borrowed child alike). Seeds the reference replay driver/feed AND
     /// builds ONE drive plan that first reconstructs the reference graph
     /// (Phase 0/0b/3/4/5, identical to `restore_from_arena_impl`) and THEN — as the
@@ -11281,59 +11273,6 @@ mod wasm {
         }
     }
 
-    /// Child-install ENTRY for a COW (`fork`/`posix_spawn`) module-backed child:
-    /// seed the reference replay driver AND build the drive plan whose tail drives
-    /// every activation's guest restore/finish install through the module (see
-    /// `attach_from_arena_impl`). Returns the plan's guest address (0 on failure;
-    /// reason in `fm_last_errno`); the step count is read from `fm_gc_plan_count`.
-    /// Supersedes a separate `fm_restore_from_arena` call on the module-on child
-    /// attach path: it does the same reconstruction seed + plan build and then
-    /// appends the module-owned restore/finish sequencing.
-    ///
-    /// This is ALSO the vfork BORROWED child-install entry. A separate
-    /// `fm_attach_borrowed_child` export existed and its body was identical to
-    /// this one, character for character, because the install plan IS identical:
-    /// the reconstructed reference values and the guest restore/finish
-    /// sequencing do not depend on whether the child is COW or borrowed. Its
-    /// stated reason to exist was to give "any future borrowed-specific install
-    /// divergence a home" — a home for a divergence that has not appeared, paid
-    /// for now in the surface every new host must implement.
-    ///
-    /// The borrowed path is still explicit where its borrowed-specific work
-    /// actually lives: reserving the child-private replay prefix, so the guest's
-    /// rewind never writes the parked parent's storage. That is raw host memory
-    /// management with no reference values in it, it is done by the coordinator,
-    /// and it never entered this module. `ForkModuleBackend.attachBorrowedChild`
-    /// remains a named host entry point for it.
-    ///
-    /// If borrowed-specific install work ever does appear, re-splitting is a
-    /// smaller change than carrying a duplicate export until then.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_attach_child(module_state_root: usize, pid: u32) -> usize {
-        // A child install arrives at `PHASE_CHILD_REPLAY` through TWO calls, and
-        // the host is free to order them: `fm_child_seed` seeds each
-        // activation's replay driver from the inherited journal image, this
-        // entry seeds the reference graph and builds the install plan. A host
-        // that seeds first (the JS hosts do -- the plan's restore/finish tail
-        // is built per activation, so the activations must exist) finds the
-        // phase already at `PHASE_CHILD_REPLAY`; one that attaches first (the
-        // shape the module's own unit tests drive) finds it idle. Both are the
-        // same install, so both are legal here; every other phase is not.
-        match require_phase_either(PHASE_IDLE, PHASE_CHILD_REPLAY)
-            .and_then(|()| attach_from_arena_impl(module_state_root as u64, pid))
-        {
-            Ok(ptr) => {
-                enter_phase(PHASE_CHILD_REPLAY);
-                set_ok();
-                ptr
-            }
-            Err(e) => {
-                set_err(e);
-                0
-            }
-        }
-    }
-
     // -- Child install: one entry (lane F stage 1e) -------------------------
 
     /// One pointer-width little-endian word of guest memory at `addr`, or
@@ -11477,11 +11416,12 @@ mod wasm {
     /// (`attach_from_arena_impl`), drives the install plan and nulls the
     /// merged static-root catalog.
     ///
-    /// ADDITIVE for now (lane F stage 1e). It replaces the host sequence
-    /// anchor write -> `fm_set_borrowed_workspace` ->
-    /// `fm_child_seed[_borrowed]` -> `fm_attach_child` -> `fm_gc_plan_count` +
-    /// `fm_drive_execute` -> catalog null, which stays until the hosts switch
-    /// (stages 1f and 1f-native).
+    /// It replaced the host sequence anchor write -> `fm_set_borrowed_workspace`
+    /// -> `fm_child_seed[_borrowed]` -> `fm_attach_child` -> `fm_gc_plan_count`
+    /// + `fm_drive_execute` -> catalog null. The Node/browser host calls only
+    /// this (lane F stage 1f), and `fm_attach_child` is deleted; host-native
+    /// still runs its own sequence over `fm_set_borrowed_workspace` and
+    /// `fm_child_seed[_borrowed]` until stage 1f-native.
     ///
     /// The host still owns what only it can do before this call: binding each
     /// activation's drive slots and filling the merged static-root catalog

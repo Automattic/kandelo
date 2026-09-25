@@ -470,61 +470,38 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Install this fork's child: SEED every activation's replay driver from the
-   * inherited journal image, then seed the reference replay from the inherited
-   * arena, admit its exnref tags, and build the whole reconstruction plan.
+   * Install this fork's child: ONE module call for a COW child and a vfork
+   * BORROWED child, forked from the main thread or from a pthread.
    *
-   * Both module calls, in this order, because they are one arrival at the
-   * child-replay phase and the install plan's restore/finish tail is built per
-   * activation -- so the activations must exist before the plan is built.
-   * WITHOUT THE SEED THE CHILD HAS NO MODULE STATE AT ALL: every
-   * `__wpk_fork_module_state_record_find` the guest's restore makes answers 0,
-   * which the guest reads as a page header at address 0 and traps on. The
-   * seed's only caller was the fork coordinator; census 183.
+   * `launchRoot` is activation 0's continuation anchor, the kernel-validated
+   * `forkBufAddr` the host received with the fork. `fm_child_install` reads the
+   * arena root out of its prefix, publishes it in a COW child's own control
+   * word (never a borrowed child's: that word is its parked owner's), carves a
+   * borrowed child's workspace, seeds every activation this worker bound,
+   * attaches, drives the install plan and nulls the merged static-root catalog
+   * the drive read.
    *
-   * The side activations are the ones this child registered -- the ones the
-   * module bound -- so it knows them without being told: each one's fixed
-   * prefix is its admission's, and
-   * its continuation root is a per-fork address the parent recorded in the
-   * arena's `ActivationContinuations` manifest, which the module reads back
-   * itself.
-   *
-   * ONE call for both child shapes. A COW child and a vfork BORROWED child
-   * share an identical install plan -- the only borrowed-specific work is the
-   * host-side child-private replay-prefix reservation, which is raw memory
-   * placement carrying no reference values and never entered the module.
-   *
-   * Returns the plan's guest address; drive it with `driveRestoredPlan`. The
-   * step count comes from the module rather than the caller, so the two cannot
-   * disagree about how much of the plan to run.
+   * What stays the host's, before this call: binding each activation's drive
+   * slots and filling the merged static-root catalog (reference `Table.set`s).
    */
   installChild(
-    moduleStateRoot: number,
-    act0Root: number,
     pid: number,
+    launchRoot: number,
     /**
      * A vfork BORROWED child's admitted replay workspace: where the kernel put
-     * it and how big it is. That is the whole of what a host knows about it and
-     * the module cannot derive. The module carves each activation's private
-     * prefix out of it, using the same walk it already reports the total for
-     * through `fm_borrowed_replay_workspace` -- so the host does not run that
-     * arithmetic a second time to hand the answers back.
+     * it and how big it is -- the whole of what a host knows about it and the
+     * module cannot derive. The module carves each activation's private prefix
+     * out of it.
      */
     borrowed?: { readonly prefixBase: number; readonly prefixBytes: number },
-  ): number {
-    if (borrowed) {
-      this.call(
-        "fm_set_borrowed_workspace",
-        borrowed.prefixBase,
-        borrowed.prefixBytes,
-      );
-    }
+  ): void {
     this.call(
-      borrowed ? "fm_child_seed_borrowed" : "fm_child_seed",
-      moduleStateRoot,
-      act0Root,
+      "fm_child_install",
+      pid,
+      launchRoot,
+      borrowed?.prefixBase ?? 0,
+      borrowed?.prefixBytes ?? 0,
     );
-    return this.call("fm_attach_child", moduleStateRoot, pid);
   }
 
   /**

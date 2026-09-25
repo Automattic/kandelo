@@ -1,14 +1,14 @@
 // Lane F stage 1e: `fm_child_install`, the ONE child-install entry.
 //
-// It folds the host sequence a child worker runs today -- publish the launch
+// It folds the host sequence a child worker used to run -- publish the launch
 // root in a COW child's control word, read the arena root out of that root's
 // prefix, seed the borrowed workspace, `fm_child_seed[_borrowed]`,
 // `fm_attach_child`, `fm_gc_plan_count` + `fm_drive_execute`, then null the
-// merged static-root catalog -- into the module. The host switch is stage 1f;
-// until then this file is the entry's only caller, so it drives the whole
-// install the way a child worker will: a PARENT module captures and seals, and
-// a second module instance over the same memory -- the child's -- installs
-// from the launch root the kernel handed the host (`forkBufAddr`).
+// merged static-root catalog -- into the module. The Node/browser host calls it
+// since stage 1f (`worker-main.ts`); this file drives the whole install the way
+// a child worker does: a PARENT module captures and seals, and a second module
+// instance over the same memory -- the child's -- installs from the launch
+// root the kernel handed the host (`forkBufAddr`).
 //
 // What stands in for the guest is the fixture's: wasm thunks bound into the
 // child's drive table at the restore, finish-restore and rewind-begin slots,

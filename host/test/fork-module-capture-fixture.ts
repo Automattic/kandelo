@@ -565,6 +565,58 @@ export function childInstance(
   return child;
 }
 
+/**
+ * A COW child's archive control block: page 9, free in `fixture()`'s layout.
+ * Its first word is the launch anchor `fm_child_install` publishes.
+ */
+export const CHILD_CONTROL = 9 * PAGE;
+/** The install plan's guest-restore drive slots, from `fork_codec::drive_plan`. */
+export const DRIVE_SLOT_RESTORE = 3;
+export const DRIVE_SLOT_FINISH_RESTORE = 4;
+
+/**
+ * A COW fork child's module, prepared the way a child worker prepares one
+ * before its single `fm_child_install` call: the format seeded with a control
+ * block, activation 0 admitted with `facts`, and activation 0's restore,
+ * finish-restore and rewind-begin drive slots bound to recording thunks.
+ * `install(anchor)` makes the call and answers its errno.
+ */
+export function installableChild(
+  f: Fixture,
+  facts: AdmissionFacts = {},
+  options: ChildModuleOptions = {},
+): {
+  readonly instance: ReturnType<typeof instantiateForkModule>;
+  readonly x: Record<string, unknown>;
+  readonly driven: Array<readonly [number, number]>;
+  readonly install: (anchor: number, pid?: number) => number;
+} {
+  const instance = childInstance(f, options);
+  const x = instance.exports as Record<string, unknown>;
+  new Uint8Array(f.memory.buffer, CHILD_CONTROL, 64).fill(0);
+  (x.fm_set_format as (...a: number[]) => void)(4, 0, CHILD_CONTROL, CHANNEL_BASE);
+  expect(admitInto(x, f.memory, 0, facts), "the child admits activation 0").toBe(0);
+  const driven: Array<readonly [number, number]> = [];
+  const base = driveBase(0);
+  const table = instance.driveTable;
+  const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+  if (table.length < needed) table.grow(needed - table.length);
+  for (const slot of [
+    DRIVE_SLOT_RESTORE,
+    DRIVE_SLOT_FINISH_RESTORE,
+    DRIVE_SLOT_REWIND_BEGIN,
+  ]) {
+    table.set(base + slot, saveSlotThunk((arg) => driven.push([slot, arg])) as never);
+  }
+  return {
+    instance,
+    x,
+    driven,
+    install: (anchor, pid = 1) =>
+      (x.fm_child_install as (...a: number[]) => number)(pid, anchor, 0, 0),
+  };
+}
+
 
 /**
  * Leaf kinds a capture helper below accepts. The numbers mirror the module's

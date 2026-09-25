@@ -31,7 +31,12 @@ import {
   PHASE_SEALED_PARENT,
   WORKSPACE_PREFIX,
   WORKSPACE_SCRATCH,
+  CHILD_CONTROL,
+  DRIVE_SLOT_FINISH_RESTORE,
+  DRIVE_SLOT_RESTORE,
+  childInstance,
   childModule,
+  installableChild,
   fixture,
   moduleStateRootAt,
   saveSlotThunk,
@@ -471,16 +476,11 @@ describe("the backend's lifecycle methods, against a live module", () => {
     expect(phase()).toBe(PHASE_IDLE);
   });
 
-  it("refuses a child install from an arena root that is not one", () => {
-    // fm_attach_child had never had a production caller until this commit, so
-    // the first thing worth pinning is that it REFUSES rather than proceeding
-    // on a root it cannot decode. A child install that half-succeeds leaves a
-    // process running on a reference graph nobody reconstructed, which is the
-    // silent-corruption shape this whole path has to avoid.
-    const { backend } = backendFixture();
-    expect(() => backend.attachChild(0, 1)).toThrow();
-    expect(() => backend.attachChild(MMAP_FLOOR - PAGE, 1)).toThrow();
-  });
+  // WHAT USED TO BE HERE: "refuses a child install from an arena root that is
+  // not one", which called a backend `attachChild` that no longer existed, so
+  // it passed on the TypeError. The refusal it meant to pin is
+  // `fork-module-child-install.test.ts`'s "refuses a launch root whose prefix
+  // names no arena, or not a page", against `fm_child_install`.
 
   it("drives nothing when the module built an empty plan", () => {
     // driveRestoredPlan reads the step count from the MODULE rather than
@@ -957,15 +957,13 @@ describe("the binding records the module assembles at capture", () => {
     expect(f.errno(), "capture").toBe(0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
-    const root = f.root();
 
-    const child = childModule(f);
-    const plan = (child.fm_attach_child as (root: number, pid: number) => number)(
-      root,
-      1,
-    );
-    expect((child.fm_last_errno as () => number)(), "the child attaches").toBe(0);
-    expect(plan, "and gets an install plan").toBeGreaterThan(0);
+    const child = installableChild(f);
+    expect(child.install(f.anchor()), "the child installs").toBe(0);
+    expect(
+      child.driven.map(([slot]) => slot),
+      "and drives the install plan it built",
+    ).toEqual([DRIVE_SLOT_RESTORE, DRIVE_SLOT_FINISH_RESTORE, DRIVE_SLOT_REWIND_BEGIN]);
   });
 
   /** `CHILD_PLAN_RESOLVE_*`, in `crates/fork-codec/src/child_plan.rs`. */
@@ -1283,11 +1281,12 @@ describe("the binding records the module assembles at capture", () => {
   });
 
   it("refuses a child install whose inherited binding record is corrupt", () => {
-    // The same arena, one byte apart. The intact case attaches; flipping a
-    // binding's kind to one no child could materialise is refused, before the
-    // reference graph is even decoded. Without that check the corrupt record
-    // would be read much later, by the host building the child's imports, and
-    // by then it is a wrong child rather than a refused fork.
+    // The same arena as "hands a child an arena it can actually attach", one
+    // byte apart. The intact case installs; flipping a binding's kind to one
+    // no child could materialise is refused, before the reference graph is
+    // even decoded. Without that check the corrupt record would be read much
+    // later, by the host building the child's imports, and by then it is a
+    // wrong child rather than a refused fork.
     const f = fixture();
     admitActivation(f, 0);
     seedSections(f);
@@ -1308,50 +1307,28 @@ describe("the binding records the module assembles at capture", () => {
     expect(bindings, "a KFBG record to corrupt").toBeDefined();
     bindings!.payload.setUint8(24 + 32, 99);
 
-    const child = childModule(f);
-    (child.fm_attach_child as (root: number, pid: number) => number)(root, 1);
-    expect(
-      (child.fm_last_errno as () => number)(),
-      "the corrupt record is refused",
-    ).toBe(22);
+    const child = installableChild(f);
+    expect(child.install(f.anchor()), "the corrupt record is refused").toBe(22);
+    expect(child.driven, "and nothing is driven").toEqual([]);
   });
 
-  it("puts a restore AND a finish-restore in the child's install plan", () => {
-    // The guest's `finish_restore` TRAPS when `bootstrap_done` is 0, and the
-    // only thing that sets it in a child is the guest's own `restore` -- so the
-    // plan must carry both, in that order, for every activation the arena
-    // declares. A plan missing the restores traps inside the guest with no
-    // errno to read, which is what the dlopen e2e hit (census 182).
-    const f = fixture();
-    admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-    expect(f.errno(), "seal").toBe(0);
-    const root = f.root();
+  // WHAT USED TO BE HERE: "puts a restore AND a finish-restore in the child's
+  // install plan", which counted the steps `fm_attach_child` built. The plan is
+  // driven inside `fm_child_install` now, so the order it drives is what is
+  // pinned: "hands a child an arena it can actually attach" above, and every
+  // install case in `fork-module-child-install.test.ts`.
 
-    const child = childModule(f);
-    (child.fm_attach_child as (r: number, pid: number) => number)(root, 1);
-    expect((child.fm_last_errno as () => number)(), "the child attaches").toBe(0);
-    const steps = (child.fm_gc_plan_count as () => number)();
-    expect(
-      steps,
-      "one activation: a restore and a finish-restore at least",
-    ).toBeGreaterThanOrEqual(2);
-  });
-
-  it("seeds a child from the arena, then attaches it in the phase that left", () => {
-    // The two halves of a child install, in the order a host performs them.
-    // `fm_child_seed` rebuilds every activation's replay driver from the
-    // inherited journal image; `fm_attach_child` seeds the reference graph and
-    // builds the install plan. The seed moves the module to CHILD_REPLAY, so an
-    // attach that insisted on IDLE answered EBUSY and the whole install stopped
-    // there -- which is exactly what the dlopen e2e hit once the seed was wired
-    // back up (its caller went with the fork coordinator).
+  it("installs a two-activation child only once it has admitted both", () => {
+    // NEVER ADMITTED IS REFUSED. A child with no resume catalog seeded is a
+    // build whose instrumentation step did not run, and numbering slots by a
+    // rule the guest's resume table does not share is the divergence the
+    // seeded catalog exists to rule out. `EINVAL` (22), from the phase the
+    // install never left -- a failed install enters no phase, so the retry
+    // below is clean.
     //
-    // The child names no side activation at all: it seeds the ones it
-    // admitted, and resolves each one's root -- a per-fork address no host can
-    // know -- from the KFAC manifest the parent wrote at seal.
+    // The child names no side activation at all: it seeds the ones it bound,
+    // and resolves each one's root -- a per-fork address no host can know --
+    // from the KFAC manifest the parent wrote at seal.
     const f = fixture();
     admitActivation(f, 0);
     admitActivation(f, 1, { template: sideTemplate(1) });
@@ -1378,24 +1355,36 @@ describe("the binding records the module assembles at capture", () => {
     expect(f.errno(), "a two-activation capture begins").toBe(0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "and seals").toBe(0);
-    const root = f.root();
 
-    const child = childModule(f);
-    const childSeed = child.fm_child_seed as (r: number, a: number) => void;
-    // NEVER ADMITTED IS REFUSED. Neither activation has a resume catalog in this
-    // child yet, and the module no longer numbers slots from the committed
-    // ordinals when it finds none: a binary arriving with nothing seeded is a
-    // build whose instrumentation step did not run, and numbering by a rule
-    // the guest's resume table does not share is the divergence the seeded
-    // catalog exists to rule out. `EINVAL` (22), from the phase the entry
-    // never left -- a failed seed enters no phase, so the retry below is
-    // clean.
-    childSeed(root, act0Root);
-    expect(
-      (child.fm_last_errno as () => number)(),
-      "a child whose catalogs were never seeded is refused",
-    ).toBe(22);
+    const instance = childInstance(f);
+    const child = instance.exports as Record<string, unknown>;
+    new Uint8Array(f.memory.buffer, CHILD_CONTROL, 64).fill(0);
+    (child.fm_set_format as (...a: number[]) => void)(4, 0, CHILD_CONTROL, CHANNEL_BASE);
+    const driven: Array<readonly [number, number]> = [];
+    for (const activation of [0, 1]) {
+      const base = driveBase(activation);
+      const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+      if (instance.driveTable.length < needed) {
+        instance.driveTable.grow(needed - instance.driveTable.length);
+      }
+      for (const slot of [
+        DRIVE_SLOT_RESTORE,
+        DRIVE_SLOT_FINISH_RESTORE,
+        DRIVE_SLOT_REWIND_BEGIN,
+      ]) {
+        instance.driveTable.set(
+          base + slot,
+          saveSlotThunk((arg) => driven.push([slot, arg])) as never,
+        );
+      }
+    }
+    const install = () =>
+      (child.fm_child_install as (...a: number[]) => number)(1, act0Root, 0, 0);
+
+    // Activation 0 only, never admitted: refused at the seed.
+    expect(install(), "a child whose catalogs were never seeded is refused").toBe(22);
     expect((child.fm_phase as () => number)(), "and no phase was entered").toBe(PHASE_IDLE);
+    expect(driven, "and nothing was driven").toEqual([]);
     // AN EMPTY CATALOG IS NOT THAT CASE. This capture committed no frame, so
     // both activations hold zero resume targets -- which is what
     // `libneeded-provider.so` admits in `fork-from-dlopen-side-module-e2e`,
@@ -1414,25 +1403,11 @@ describe("the binding records the module assembles at capture", () => {
     // And the side BOUND, as the child's dlopen replay registers it: the seed
     // walks the side activations the module has bound.
     expect(bindActivation(child, f.memory, 1), "binding the child's side").not.toBeNull();
-    childSeed(root, act0Root);
-    expect(
-      (child.fm_last_errno as () => number)(),
-      "the seed resolves the side root from the manifest",
-    ).toBe(0);
+    expect(install(), "the install resolves the side root from the manifest").toBe(0);
     expect(
       (child.fm_phase as () => number)(),
-      "and the seed is what enters child replay",
+      "and leaves the child replaying",
     ).toBe(PHASE_CHILD_REPLAY);
-
-    const plan = (child.fm_attach_child as (r: number, pid: number) => number)(
-      root,
-      1,
-    );
-    expect(
-      (child.fm_last_errno as () => number)(),
-      "the attach is legal from the phase the seed left",
-    ).toBe(0);
-    expect(plan, "and it builds an install plan").toBeGreaterThan(0);
 
     // The install plan must END in a REWIND BEGIN per activation, carrying that
     // activation's continuation root. Without those steps the child's guest is
@@ -1440,35 +1415,17 @@ describe("the binding records the module assembles at capture", () => {
     // and runs `_start` LEXICALLY, so the program begins again from `main`
     // instead of resuming after `fork()`. No trap, no errno -- the child just
     // runs the whole program a second time. Census 185.
-    const DRIVE_OP_REWIND_BEGIN = 8;
-    const DRIVE_STEP_SIZE = 16;
-    const count = (child.fm_gc_plan_count as () => number)();
-    const steps = new DataView(f.memory.buffer);
-    const tail = [];
-    for (let i = count - 2; i < count; i += 1) {
-      const at = plan + i * DRIVE_STEP_SIZE;
-      tail.push({
-        op: steps.getUint32(at, true),
-        recipe: steps.getUint32(at + 8, true),
-        arg: steps.getUint32(at + 12, true),
-      });
-    }
-    // eslint-disable-next-line no-console
+    const tail = driven.slice(-2);
     expect(
-      tail.map((step) => step.op),
+      tail.map(([slot]) => slot),
       "the last two steps are the two activations' rewind begins",
-    ).toEqual([DRIVE_OP_REWIND_BEGIN, DRIVE_OP_REWIND_BEGIN]);
-    // `pack_root` splits the root across (recipe, arg); on wasm32 it is all arg.
+    ).toEqual([DRIVE_SLOT_REWIND_BEGIN, DRIVE_SLOT_REWIND_BEGIN]);
     expect(
-      tail.map((step) => step.recipe),
-      "a wasm32 root fits the low word",
-    ).toEqual([0, 0]);
-    expect(
-      tail.map((step) => step.arg).includes(act0Root),
+      tail[0]![1],
       "activation 0 rewinds from the anchor the capture returned",
-    ).toBe(true);
+    ).toBe(act0Root);
     expect(
-      new Set(tail.map((step) => step.arg)).size,
+      new Set(tail.map(([, root]) => root)).size,
       "and each activation rewinds from a root of its own",
     ).toBe(2);
   });
@@ -1663,21 +1620,26 @@ describe("the binding records the module assembles at capture", () => {
     ).toBe(0);
   });
 
-  it("still refuses a child install from a phase that is not an install", () => {
-    // Widening the attach to accept CHILD_REPLAY must not widen it to accept
-    // everything: an attach while THIS worker is capturing its own fork would
-    // seed a replay driver over a live capture.
+  it("refuses a child install from a phase that is not an install", () => {
+    // An install while THIS worker is capturing its own fork would seed a
+    // replay driver over a live capture. (`fork-module-child-install.test.ts`
+    // pins the refusal from child replay, a second install.)
     const f = fixture();
     admitActivation(f, 0);
     (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
+    const anchor = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      0,
+    );
     expect(f.errno(), "capture open").toBe(0);
     expect((f.x.fm_phase as () => number)(), "in capture").toBe(PHASE_CAPTURE);
-    (f.x.fm_attach_child as (r: number, pid: number) => number)(
-      f.root(),
-      1,
+    expect(
+      (f.x.fm_child_install as (...a: number[]) => number)(1, anchor, 0, 0),
+      "an install mid-capture is refused",
+    ).toBe(EBUSY);
+    expect((f.x.fm_phase as () => number)(), "and the capture is untouched").toBe(
+      PHASE_CAPTURE,
     );
-    expect(f.errno(), "an attach mid-capture is refused").toBe(EBUSY);
   });
 
   it("falls back to a base import when no activation provides the object", () => {
