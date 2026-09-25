@@ -5,7 +5,12 @@
 import * as React from "react";
 import { useGalleryItems, useKernelHost, useStatus } from "../kernel-host/react";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
-import { galleryItemUrl, vfsImageUrlFromDescriptor } from "../url-state";
+import {
+  galleryItemUrl,
+  readKandeloBootQuery,
+  vfsImageUrlFromDescriptor,
+} from "../url-state";
+import { galleryItemMatchesCurrent } from "./gallery-current";
 import { encodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   GalleryItem,
@@ -34,6 +39,13 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = f
   const currentDescriptor = React.useMemo(() => host.getBootDescriptor(), [host, status]);
   const currentVfsImageUrl = React.useMemo(
     () => vfsImageUrlFromDescriptor(currentDescriptor),
+    [currentDescriptor],
+  );
+  // `&profile=` names which machine inside a shared image booted. Read it
+  // alongside the descriptor: a launch rewrites the address bar, so this is
+  // re-read whenever the machine changes.
+  const requestedProfileId = React.useMemo(
+    () => readKandeloBootQuery().profileId,
     [currentDescriptor],
   );
 
@@ -123,7 +135,12 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = f
                 <GalleryRow
                   key={item.id}
                   item={item}
-                  current={galleryItemMatchesCurrent(item, currentDescriptor, currentVfsImageUrl)}
+                  current={galleryItemMatchesCurrent(
+                    item,
+                    currentDescriptor,
+                    currentVfsImageUrl,
+                    requestedProfileId,
+                  )}
                   descriptionExpanded={expandedDescriptions.has(item.id)}
                   copyStatus={copyState?.itemId === item.id ? copyState.status : null}
                   onLaunch={() => onLaunch(item)}
@@ -255,16 +272,6 @@ const GalleryRow: React.FC<{
     </tr>
   );
 };
-
-function galleryItemMatchesCurrent(
-  item: GalleryItem,
-  descriptor: BootDescriptor,
-  descriptorVfsImageUrl: string | null,
-): boolean {
-  if (item.id === descriptor.id) return true;
-  return item.vfsImageUrl !== undefined && descriptorVfsImageUrl !== null &&
-    item.vfsImageUrl === descriptorVfsImageUrl;
-}
 
 async function shareUrlForGalleryItem(
   item: GalleryItem,
