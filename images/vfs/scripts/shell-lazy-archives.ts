@@ -131,6 +131,7 @@ export function registerShellProfileScripts(fs: MemoryFileSystem): void {
   for (const script of SHELL_PROFILE_SCRIPTS) script.register(fs);
 }
 
+
 /**
  * The one list. Each entry pairs the guest path with the registrar that
  * writes it, so "what the images ship" and "what a test may assert" are the
@@ -144,6 +145,7 @@ const SHELL_PROFILE_SCRIPTS = [
   { path: "/etc/profile.d/python.sh", register: registerPythonShellProfile },
   { path: "/etc/profile.d/node.sh", register: registerNodeShellProfile },
   { path: "/etc/profile.d/man.sh", register: registerManShellProfile },
+  { path: "/etc/profile.d/mc.sh", register: registerMidnightCommanderShellProfile },
 ] as const satisfies ReadonlyArray<{
   path: string;
   register: (fs: MemoryFileSystem) => void;
@@ -193,6 +195,44 @@ export function registerDemoShellProfile(fs: MemoryFileSystem): void {
 // the interpreter stops probing and the REPL starts cleanly. This mirrors the
 // dedicated python VFS product, which sets the same value in its boot env.
 // Sourced by /etc/profile for interactive login shells.
+/**
+ * Midnight Commander's default skin.
+ *
+ * mc's built-in "default" skin is lightgray-on-blue with a cyan selection
+ * bar — readable on a 1990s console, washed out against this app's terminal
+ * palette, where the panel frames and the function-key labels nearly
+ * disappear. `modarin256` paints its own dark background instead of
+ * inheriting the terminal's, so it stays legible whichever way the app theme
+ * is set; skins that keep the default background (julia256 among them) turn
+ * dark-on-light and become unreadable under the light theme.
+ *
+ * WHY THIS IS SEEDED AT LOGIN RATHER THAN BAKED INTO THE IMAGE: mc reads its
+ * skin from the user config under $HOME, and `/home/maker` is a scratch mount
+ * (see host/src/vfs/default-mounts.ts). A file written to ~/.config/mc/ini at
+ * image-build time is shadowed by that mount the moment the machine boots, so
+ * it can never be read. /etc/profile.d is part of the image and is not
+ * shadowed, so the script runs after the mount exists and can populate it.
+ *
+ * Only seeds when absent, so a user who changes skins and lets mc save its
+ * settings keeps that choice for the life of the machine. `mc -S <skin>`
+ * overrides it for a single run either way.
+ */
+export function registerMidnightCommanderShellProfile(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/mc.sh",
+    "# Midnight Commander's default skin. $HOME is a scratch mount, so this\n" +
+      "# cannot be baked into the image -- seed it once per machine instead.\n" +
+      'if [ -n "${HOME:-}" ] && [ ! -e "$HOME/.config/mc/ini" ]; then\n' +
+      '  mkdir -p "$HOME/.config/mc" 2>/dev/null &&\n' +
+      "    printf '[Midnight-Commander]\\nskin=modarin256\\n' \\\n" +
+      '      >"$HOME/.config/mc/ini" 2>/dev/null || true\n' +
+      "fi\n",
+    0o644,
+  );
+}
+
 export function registerPythonShellProfile(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(

@@ -48,6 +48,11 @@ export class PtyTerminal {
         foreground: "#d4d4d4",
         cursor: "#d4d4d4",
       },
+      // See the note in pages/kandelo/panes/Shell.tsx: without this, macOS
+      // Option never reaches the guest as Meta and every Alt binding in a
+      // terminal program silently does nothing. Declared before the caller's
+      // overrides so an embedder can still opt out.
+      macOptionIsMeta: true,
       ...termOptions,
     });
 

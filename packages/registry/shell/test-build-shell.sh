@@ -33,8 +33,8 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*35$' "$BUILD_TOML" ||
-    fail "canonical source shell revision must be 35"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*36$' "$BUILD_TOML" ||
+    fail "canonical source shell revision must be 36"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical source shell must await publication"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
