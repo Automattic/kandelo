@@ -100,3 +100,8 @@ make CC=wasm32posix-cc \
 cp bin/tyr-quake "$OUT_BIN"
 ls -la "$OUT_BIN"
 echo "==> quake.wasm built (VID=$QUAKE_VID_TARGET IN=$QUAKE_IN_TARGET SND=$QUAKE_SND_TARGET)."
+
+# TyrQuake does not fork, so it must remain free of fork instrumentation.
+cd "$REPO_ROOT"
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary tyrquake "$OUT_BIN" quake.wasm
