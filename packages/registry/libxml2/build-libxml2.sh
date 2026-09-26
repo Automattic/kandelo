@@ -199,10 +199,15 @@ wasm32posix-ar rcs libxml2.a "${OBJS[@]}"
 
 # --- Install ---
 echo "==> Installing to $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include/libxml" "$INSTALL_DIR/lib/pkgconfig"
+# Install the layout upstream's `make install` produces: headers under
+# include/libxml2/libxml/ and Cflags pointing at include/libxml2. Software
+# written against libxml2 relies on it (FFmpeg's configure probes
+# <libxml2/libxml/xmlversion.h>); an earlier include/libxml/ layout forced
+# consumers to add their own -I to compensate.
+mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include/libxml2/libxml" "$INSTALL_DIR/lib/pkgconfig"
 
 cp libxml2.a "$INSTALL_DIR/lib/"
-cp include/libxml/*.h "$INSTALL_DIR/include/libxml/"
+cp include/libxml/*.h "$INSTALL_DIR/include/libxml2/libxml/"
 
 # Write relocatable pkg-config metadata. The resolver supplies direct
 # dependency prefixes through PKG_CONFIG_PATH, so Requires.private carries
@@ -220,7 +225,7 @@ Version: $LIBXML2_VERSION
 Requires.private: libiconv zlib
 Libs: -L\${libdir} -lxml2
 Libs.private: -lm
-Cflags: -I\${includedir}
+Cflags: -I\${includedir}/libxml2
 PCEOF
 
 if [ -f "$INSTALL_DIR/lib/libxml2.a" ]; then
