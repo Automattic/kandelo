@@ -27,11 +27,10 @@ url = "https://gitlab.gnome.org/GNOME/libxml2/-/blob/v2.13.8/Copyright"
 script_path = "packages/registry/libxml2/build-libxml2.sh"
 
 [outputs]
-# Note: the in-tree build installs headers directly under
-# include/libxml/ rather than upstream's include/libxml2/libxml/ —
-# consumers link with `-I$prefix/include` + `#include <libxml/...>`.
-# See build-libxml2.sh for context (libtool mishandles the wasm .o
-# naming, so the script compiles + installs by hand).
+# Headers use upstream's layout, include/libxml2/libxml/, with
+# pkg-config Cflags -I${includedir}/libxml2. The script compiles and
+# installs by hand (libtool mishandles the wasm .o naming) but installs
+# what upstream's `make install` would.
 libs = ["lib/libxml2.a"]
-headers = ["include/libxml"]
+headers = ["include/libxml2"]
 pkgconfig = ["lib/pkgconfig/libxml-2.0.pc"]

@@ -80,7 +80,7 @@ for tu in registry.c util-list.c; do
         "-I$SRC_DIR" \
         "-I$SRC" \
         "-I$SRC_DIR/include" \
-        "-I$LIBXML2_PREFIX/include" \
+        "-I$LIBXML2_PREFIX/include/libxml2" \
         -Wno-unused-parameter \
         "$SRC/$tu" -o "$obj"
     OBJS+=("$obj")

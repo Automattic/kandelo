@@ -105,7 +105,7 @@ echo "==> Configuring fontconfig for wasm32 (freetype at $FREETYPE_PREFIX, libxm
         PKG_CONFIG=wasm32posix-pkg-config \
         FREETYPE_CFLAGS="-I$FREETYPE_PREFIX/include/freetype2" \
         FREETYPE_LIBS="-L$FREETYPE_PREFIX/lib -lfreetype" \
-        LIBXML2_CFLAGS="-I$LIBXML2_PREFIX/include" \
+        LIBXML2_CFLAGS="-I$LIBXML2_PREFIX/include/libxml2" \
         LIBXML2_LIBS="-L$LIBXML2_PREFIX/lib -lxml2"
 
     echo "==> Building fontconfig (library only)..."
