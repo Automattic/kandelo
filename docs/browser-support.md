@@ -102,9 +102,23 @@ Service Worker ──MessagePort──> Kernel Worker       │
   - Fork instrumentation does not lower the cold limit. In a Kandelo process
     on WebKit, one cold call of P-10's recursion shape overflowed between
     1,280 and 1,792 frames both with and without fork instrumentation. Once
-    tiered up, instrumented frames are about five times larger: a stepped
+    tiered up, instrumented frames were about five times larger: a stepped
     probe reached 3,104 instrumented against 14,944 uninstrumented frames on
-    WebKit, and 4,352 against 23,808 on Chromium.
+    WebKit, and 4,352 against 23,808 on Chromium. Most of that was lost
+    inlining: WebKit and Chromium inline a function of at most 500 wire
+    bytes, P-10's recursive function was 202 bytes uninstrumented and 567
+    instrumented, so only the uninstrumented build was inlined into itself.
+    Since 2026-09-26 the instrumenter moves frame save and restore into
+    shared helpers and the function is 466 bytes. In a standalone Worker
+    probe of the same function (fork inlined, tiered up) the deepest
+    recursion rose from 3,550 to 9,559 on WebKit (uninstrumented 15,534)
+    and from 5,288 to 13,219 on Chromium (uninstrumented 26,444). The cold
+    limit did not change (1,263 to 2,444 frames on WebKit across all builds),
+    so the P-10 and P-11 gate below still skips on WebKit. Run with the gate
+    disabled, both fixtures still end with exit status 139: P-10 prints
+    `PRE_DEEP_FORK` and overflows in its first, cold descent. See
+    [fork-instrumentation.md](fork-instrumentation.md#activation-frame-cost)
+    for the per-engine attribution and what remains.
   - A fork rewinds the whole stack after the capture, in the parent and in
     the child, and on WebKit a rewind overflows far sooner than the descent
     did. A fork at depth 384 completes, and one at 512 or deeper overflows

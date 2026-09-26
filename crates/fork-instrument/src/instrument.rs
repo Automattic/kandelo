@@ -358,6 +358,11 @@ pub fn instrument_functions_with_targets_and_tail_sites(
     );
     rewrite_activation_unwind_boundaries(module, &targets, tail_call_sites, &transport_helpers);
     let unwind_frame_select = emit_unwind_frame_select_helper(module, runtime);
+    // Every body rewritten below moves its frame bytes through one shared
+    // set of out-of-line helpers (see `FrameIo`).
+    let mut runtime_with_frame_io = runtime.clone();
+    runtime_with_frame_io.frame_io = Some(emit_frame_io(module, runtime));
+    let runtime = &runtime_with_frame_io;
     let mut transformed_call_targets = fork_path_targets.clone();
     transformed_call_targets.extend(transport_helpers.values().copied());
 
@@ -653,6 +658,354 @@ fn inject_unwind_transport_helpers(
         .into_iter()
         .map(|key| (key, emit_unwind_transport_helper(module, runtime, key)))
         .collect()
+}
+
+// ----------------------------------------------------------------------
+// Out-of-line frame I/O
+// ----------------------------------------------------------------------
+
+/// Longest run of same-typed frame slots that one helper call moves. Runs
+/// longer than this are split, so the set of helpers is bounded by
+/// `value types x FRAME_IO_RUN_MAX x 2`.
+///
+/// WHY 2: a load helper returns its run as multiple values. V8 returns at
+/// most two values of a class in registers and gives every further result a
+/// stack slot in the caller's frame, so a three-value restore made the
+/// instrumented function's own optimized and baseline frames 16 bytes larger
+/// (measured: P-10's recursion, 96 -> 112 bytes TurboFan and 80 -> 96 bytes
+/// Liftoff without inlining). Two-slot runs keep both frames at their prior
+/// size and still replace ~10 bytes of inline code per slot with ~5.
+const FRAME_IO_RUN_MAX: usize = 2;
+
+/// Module-shared helpers that move activation-frame bytes on the unwind
+/// (capture) and rewind (replay) paths.
+///
+/// WHY: the rewind preamble and unwind postamble used to spell out one
+/// `buf -> frame -> load/store` sequence per frame slot, plus the frame
+/// header, reservation and commit, inside every instrumented body. Those
+/// bytes execute only while a fork is captured or replayed, but they count
+/// toward every engine's size limit for inlining a function into its caller
+/// (500 wire bytes in both V8 and JavaScriptCore). An instrumented small
+/// function therefore stopped being inlined, and a deep recursion of it paid
+/// a full optimized frame per activation where the uninstrumented build paid
+/// a fraction of one. Moving the cold sequences into shared helpers keeps
+/// the frame format byte-identical while shrinking each body to a call per
+/// run of slots.
+#[derive(Debug, Clone)]
+pub struct FrameIo {
+    /// `(frame_size: ptr) -> ()`: select the frame being replayed and make it
+    /// current (`*(buf + 0)`).
+    enter: FunctionId,
+    /// `(ordinal: i32, catch_selector: i32) -> ()`: write the fixed frame
+    /// header of the current frame.
+    header: FunctionId,
+    /// `() -> ()` (linked) or `(frame_size: ptr) -> ()` (contiguous): publish
+    /// the current frame once its activation-owned payload is complete.
+    commit: FunctionId,
+    /// `() -> i32`: the current frame's call index.
+    call_index: FunctionId,
+    /// `(ty, len) -> (load, store)` run helpers, created on first use.
+    /// `load: (base: i32) -> [ty; len]`, `store: (base: i32, [ty; len]) -> ()`.
+    runs: std::cell::RefCell<BTreeMap<(ValType, usize), (FunctionId, FunctionId)>>,
+}
+
+/// One run of consecutive same-typed frame slots, moved by one helper call.
+struct FrameRun {
+    base: u32,
+    locals: Vec<LocalId>,
+    load: FunctionId,
+    store: FunctionId,
+}
+
+fn frame_io(runtime: &Runtime) -> &FrameIo {
+    runtime
+        .frame_io
+        .as_ref()
+        .expect("body instrumentation installs the frame I/O helpers first")
+}
+
+fn helper_body(module: &mut Module, helper: FunctionId) -> &mut Vec<(Instr, InstrLocId)> {
+    let local = local_mut(module, helper);
+    let entry = local.entry_block();
+    &mut local.block_mut(entry).instrs
+}
+
+fn emit_frame_io(module: &mut Module, runtime: &Runtime) -> FrameIo {
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    // enter(frame_size)
+    let frame_size = module.locals.add(ptr_ty);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ptr_ty], &[]);
+    builder.name("__wpk_fork_frame_io_enter".into());
+    let enter = builder.finish(vec![frame_size], &mut module.funcs);
+    {
+        let s = helper_body(module, enter);
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        if let Some(frame_next) = runtime.frame_next {
+            push_instr(s, Instr::LocalGet(LocalGet { local: frame_size }));
+            push_instr(s, Instr::Call(Call { func: frame_next }));
+        } else {
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_instr(s, load_ptr(memory, ptr_ty, 0));
+            push_instr(s, Instr::LocalGet(LocalGet { local: frame_size }));
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: ptr_sub(ptr_ty),
+                }),
+            );
+        }
+        push_instr(s, store_ptr(memory, ptr_ty, 0));
+    }
+
+    // header(ordinal, catch_selector)
+    let ordinal = module.locals.add(ValType::I32);
+    let selector = module.locals.add(ValType::I32);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32, ValType::I32], &[]);
+    builder.name("__wpk_fork_frame_io_header".into());
+    let header = builder.finish(vec![ordinal, selector], &mut module.funcs);
+    {
+        let s = helper_body(module, header);
+        for (value, offset) in [
+            (Some(ordinal), FUNC_INDEX_OFFSET),
+            (Some(selector), CATCH_SELECTOR_OFFSET),
+            // The call-specific reference save dispatch replaces the
+            // canonical empty reference-vector ordinal only when its landing
+            // owns non-null recipe values.
+            (None, REFERENCE_VECTOR_OFFSET),
+        ] {
+            push_current_frame_ptr(s, runtime, memory, ptr_ty);
+            match value {
+                Some(local) => push_instr(s, Instr::LocalGet(LocalGet { local })),
+                None => push_instr(
+                    s,
+                    Instr::Const(Const {
+                        value: Value::I32(0),
+                    }),
+                ),
+            }
+            push_instr(s, store_i32(memory, offset));
+        }
+    }
+
+    // commit()
+    let (commit_params, commit_args) = if runtime.frame_commit.is_some() {
+        (Vec::new(), Vec::new())
+    } else {
+        let size = module.locals.add(ptr_ty);
+        (vec![ptr_ty], vec![size])
+    };
+    let mut builder = FunctionBuilder::new(&mut module.types, &commit_params, &[]);
+    builder.name("__wpk_fork_frame_io_commit".into());
+    let commit = builder.finish(commit_args.clone(), &mut module.funcs);
+    {
+        let s = helper_body(module, commit);
+        if let Some(frame_commit) = runtime.frame_commit {
+            // Publish only after the complete activation-owned payload exists.
+            push_current_frame_ptr(s, runtime, memory, ptr_ty);
+            push_instr(s, Instr::Call(Call { func: frame_commit }));
+        } else {
+            // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_current_frame_ptr(s, runtime, memory, ptr_ty);
+            push_instr(
+                s,
+                Instr::LocalGet(LocalGet {
+                    local: commit_args[0],
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: ptr_add(ptr_ty),
+                }),
+            );
+            push_instr(s, store_ptr(memory, ptr_ty, 0));
+        }
+    }
+
+    // call_index()
+    let mut builder = FunctionBuilder::new(&mut module.types, &[], &[ValType::I32]);
+    builder.name("__wpk_fork_frame_io_call_index".into());
+    let call_index = builder.finish(Vec::new(), &mut module.funcs);
+    {
+        let s = helper_body(module, call_index);
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(s, load_i32(memory, CALL_INDEX_OFFSET));
+    }
+
+    FrameIo {
+        enter,
+        header,
+        commit,
+        call_index,
+        runs: std::cell::RefCell::new(BTreeMap::new()),
+    }
+}
+
+fn value_type_label(ty: ValType) -> &'static str {
+    match ty {
+        ValType::I32 => "i32",
+        ValType::I64 => "i64",
+        ValType::F32 => "f32",
+        ValType::F64 => "f64",
+        ValType::V128 => "v128",
+        ValType::Ref(_) => panic!("frame runs hold scalar slots only"),
+    }
+}
+
+/// Return the `(load, store)` helpers for `len` consecutive `ty` slots.
+fn frame_run_helpers(
+    module: &mut Module,
+    runtime: &Runtime,
+    ty: ValType,
+    len: usize,
+) -> (FunctionId, FunctionId) {
+    let io = frame_io(runtime);
+    if let Some(&helpers) = io.runs.borrow().get(&(ty, len)) {
+        return helpers;
+    }
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    let size = scalar_size(ty) as u64;
+    let label = value_type_label(ty);
+    let results = vec![ty; len];
+
+    // Both helpers address `current frame + base`; `base` is the run's
+    // static offset inside the activation's frame.
+    let push_run_address = |s: &mut Vec<(Instr, InstrLocId)>, base: LocalId, address: LocalId| {
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(s, Instr::LocalGet(LocalGet { local: base }));
+        if ptr_ty == ValType::I64 {
+            push_instr(
+                s,
+                Instr::Unop(walrus::ir::Unop {
+                    op: UnaryOp::I64ExtendUI32,
+                }),
+            );
+        }
+        push_instr(
+            s,
+            Instr::Binop(Binop {
+                op: ptr_add(ptr_ty),
+            }),
+        );
+        push_instr(s, Instr::LocalSet(LocalSet { local: address }));
+    };
+
+    let base = module.locals.add(ValType::I32);
+    let address = module.locals.add(ptr_ty);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &results);
+    builder.name(format!("__wpk_fork_frame_io_load_{label}x{len}"));
+    let load = builder.finish(vec![base], &mut module.funcs);
+    {
+        let s = helper_body(module, load);
+        push_run_address(s, base, address);
+        for i in 0..len as u64 {
+            push_instr(s, Instr::LocalGet(LocalGet { local: address }));
+            push_instr(s, load_scalar(memory, ty, i * size));
+        }
+    }
+
+    let base = module.locals.add(ValType::I32);
+    let address = module.locals.add(ptr_ty);
+    let values: Vec<LocalId> = (0..len).map(|_| module.locals.add(ty)).collect();
+    let mut params = vec![ValType::I32];
+    params.extend(std::iter::repeat_n(ty, len));
+    let mut args = vec![base];
+    args.extend(values.iter().copied());
+    let mut builder = FunctionBuilder::new(&mut module.types, &params, &[]);
+    builder.name(format!("__wpk_fork_frame_io_store_{label}x{len}"));
+    let store = builder.finish(args, &mut module.funcs);
+    {
+        let s = helper_body(module, store);
+        push_run_address(s, base, address);
+        for (i, &value) in values.iter().enumerate() {
+            push_instr(s, Instr::LocalGet(LocalGet { local: address }));
+            push_instr(s, Instr::LocalGet(LocalGet { local: value }));
+            push_instr(s, store_scalar(memory, ty, i as u64 * size));
+        }
+    }
+
+    io.runs.borrow_mut().insert((ty, len), (load, store));
+    (load, store)
+}
+
+/// Split a function's frame-backed scalar slots into helper-sized runs.
+fn plan_frame_runs(
+    module: &mut Module,
+    runtime: &Runtime,
+    locals_with_offsets: &[(LocalId, ValType, u32)],
+) -> Vec<FrameRun> {
+    let mut runs: Vec<(ValType, u32, Vec<LocalId>)> = Vec::new();
+    for &(local, ty, offset) in locals_with_offsets {
+        match runs.last_mut() {
+            Some((run_ty, base, locals))
+                if *run_ty == ty
+                    && locals.len() < FRAME_IO_RUN_MAX
+                    && *base + locals.len() as u32 * scalar_size(ty) == offset =>
+            {
+                locals.push(local);
+            }
+            _ => runs.push((ty, offset, vec![local])),
+        }
+    }
+    runs.into_iter()
+        .map(|(ty, base, locals)| {
+            let (load, store) = frame_run_helpers(module, runtime, ty, locals.len());
+            FrameRun {
+                base,
+                locals,
+                load,
+                store,
+            }
+        })
+        .collect()
+}
+
+fn emit_frame_run_restores(out: &mut Vec<(Instr, InstrLocId)>, runs: &[FrameRun]) {
+    for run in runs {
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(run.base as i32),
+            }),
+        );
+        push_instr(out, Instr::Call(Call { func: run.load }));
+        for &local in run.locals.iter().rev() {
+            push_instr(out, Instr::LocalSet(LocalSet { local }));
+        }
+    }
+}
+
+fn emit_frame_run_saves(out: &mut Vec<(Instr, InstrLocId)>, runs: &[FrameRun]) {
+    for run in runs {
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(run.base as i32),
+            }),
+        );
+        for &local in &run.locals {
+            push_instr(out, Instr::LocalGet(LocalGet { local }));
+        }
+        push_instr(out, Instr::Call(Call { func: run.store }));
+    }
 }
 
 /// Emit the cold unwind-only frame-selection path once per module.
@@ -1266,6 +1619,7 @@ fn instrument_one_function_switch(
     // dispatch structure inside `$unwind_save`, then the postamble as
     // a flat list that follows the Block($unwind_save) in the entry
     // block.
+    let frame_runs = plan_frame_runs(module, runtime, &locals_with_offsets);
     let local = local_mut(module, func_id);
 
     let preamble_then = local
@@ -1317,7 +1671,7 @@ fn instrument_one_function_switch(
         memory,
         ptr_ty,
         catch_state_locals,
-        &locals_with_offsets,
+        &frame_runs,
         catch_scalar_restore_dispatch,
         &reference_frame,
         frame_size,
@@ -1361,10 +1715,9 @@ fn instrument_one_function_switch(
     populate_postamble(
         &mut postamble,
         runtime,
-        memory,
         ptr_ty,
         catch_state_locals,
-        &locals_with_offsets,
+        &frame_runs,
         catch_scalar_save_dispatch,
         reference_save_dispatch,
         frame_size,
@@ -3862,7 +4215,7 @@ fn populate_preamble_then(
     memory: MemoryId,
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
-    locals_with_offsets: &[(LocalId, ValType, u32)],
+    frame_runs: &[FrameRun],
     catch_scalar_restore_dispatch: Option<InstrSeqId>,
     reference_plan: &ReferenceFramePlan,
     frame_size: u32,
@@ -3871,32 +4224,13 @@ fn populate_preamble_then(
     // asks the host-managed chain for the next committed frame; the legacy
     // format walks its contiguous buffer backward.
     let s = &mut local.block_mut(preamble_then).instrs;
+    push_instr(s, ptr_const(ptr_ty, frame_size as i64));
     push_instr(
         s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
+        Instr::Call(Call {
+            func: frame_io(runtime).enter,
         }),
     );
-    if let Some(frame_next) = runtime.frame_next {
-        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-        push_instr(s, Instr::Call(Call { func: frame_next }));
-    } else {
-        push_instr(
-            s,
-            Instr::GlobalGet(GlobalGet {
-                global: runtime.buf_global,
-            }),
-        );
-        push_instr(s, load_ptr(memory, ptr_ty, 0));
-        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-        push_instr(
-            s,
-            Instr::Binop(Binop {
-                op: ptr_sub(ptr_ty),
-            }),
-        );
-    }
-    push_instr(s, store_ptr(memory, ptr_ty, 0));
 
     if let Some(catch_state) = catch_state_locals {
         // Frame word +8 owns the exact `(region, arm)` selector. Scalar arm
@@ -3912,11 +4246,7 @@ fn populate_preamble_then(
     }
 
     // Restore scalar user locals (includes arg-spill locals).
-    for &(lid, ty, off) in locals_with_offsets {
-        push_current_frame_ptr(s, runtime, memory, ptr_ty);
-        push_instr(s, load_scalar(memory, ty, off as u64));
-        push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
-    }
+    emit_frame_run_restores(s, frame_runs);
     if let Some(dispatch) = catch_scalar_restore_dispatch {
         push_instr(s, Instr::Block(Block { seq: dispatch }));
     }
@@ -3934,64 +4264,42 @@ fn populate_preamble_then(
 fn populate_postamble(
     out: &mut Vec<(Instr, InstrLocId)>,
     runtime: &Runtime,
-    memory: MemoryId,
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
-    locals_with_offsets: &[(LocalId, ValType, u32)],
+    frame_runs: &[FrameRun],
     catch_scalar_save_dispatch: Option<InstrSeqId>,
     reference_save_dispatch: Option<InstrSeqId>,
     frame_size: u32,
     func_ordinal: u32,
 ) {
-    // frame[0] = func_ordinal
-    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    let io = frame_io(runtime);
+    // Header: frame[0] = func_ordinal; frame[8] = the exact non-zero
+    // `(region, arm)` selector inside a catch, else 0; frame[12] = the
+    // canonical empty reference-vector ordinal.
     push_instr(
         out,
         Instr::Const(Const {
             value: Value::I32(func_ordinal as i32),
         }),
     );
-    push_instr(out, store_i32(memory, FUNC_INDEX_OFFSET));
-
-    if let Some(catch_state) = catch_state_locals {
-        // frame[8] = exact non-zero `(region, arm)` selector in a catch.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(
+    match catch_state_locals {
+        Some(catch_state) => push_instr(
             out,
             Instr::LocalGet(LocalGet {
                 local: catch_state.catch_selector,
             }),
-        );
-        push_instr(out, store_i32(memory, CATCH_SELECTOR_OFFSET));
-    } else {
-        // frame[8] = no active catch region.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(
+        ),
+        None => push_instr(
             out,
             Instr::Const(Const {
                 value: Value::I32(0),
             }),
-        );
-        push_instr(out, store_i32(memory, CATCH_SELECTOR_OFFSET));
+        ),
     }
-    // frame[12] starts as the canonical empty reference-vector ordinal. The
-    // call-specific save dispatch replaces it only when this landing owns
-    // non-null recipe values.
-    push_current_frame_ptr(out, runtime, memory, ptr_ty);
-    push_instr(
-        out,
-        Instr::Const(Const {
-            value: Value::I32(0),
-        }),
-    );
-    push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
+    push_instr(out, Instr::Call(Call { func: io.header }));
 
     // Save scalar user + arg-spill locals
-    for &(lid, ty, off) in locals_with_offsets {
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(out, Instr::LocalGet(LocalGet { local: lid }));
-        push_instr(out, store_scalar(memory, ty, off as u64));
-    }
+    emit_frame_run_saves(out, frame_runs);
     if let Some(dispatch) = catch_scalar_save_dispatch {
         push_instr(out, Instr::Block(Block { seq: dispatch }));
     }
@@ -4002,28 +4310,11 @@ fn populate_postamble(
         push_instr(out, Instr::Block(Block { seq: dispatch }));
     }
 
-    if let Some(frame_commit) = runtime.frame_commit {
-        // Publish only after the complete activation-owned payload exists.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(out, Instr::Call(Call { func: frame_commit }));
-    } else {
-        // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
-        push_instr(
-            out,
-            Instr::GlobalGet(GlobalGet {
-                global: runtime.buf_global,
-            }),
-        );
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    // Publish only after the complete activation-owned payload exists.
+    if runtime.frame_commit.is_none() {
         push_instr(out, ptr_const(ptr_ty, frame_size as i64));
-        push_instr(
-            out,
-            Instr::Binop(Binop {
-                op: ptr_add(ptr_ty),
-            }),
-        );
-        push_instr(out, store_ptr(memory, ptr_ty, 0));
     }
+    push_instr(out, Instr::Call(Call { func: io.commit }));
 
     // WHY: a synthesized default is not a value owned by this activation,
     // and non-nullable reference results do not have a valid default at all.
@@ -4153,10 +4444,6 @@ fn emit_replay_routed_call(
     arguments: &CallArgMaterialization,
     runtime: &Runtime,
 ) {
-    let branch_ty = InstrSeqType::MultiValue(resume_ty);
-    let normal = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    let replay = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    populate_lexical_call(local, normal, target, sig_ty, location, arguments);
     if direct_activation {
         // WHY: adding a no-argument resume thunk in front of every ordinary
         // recursive activation doubles native rewind depth. A materialized
@@ -4165,21 +4452,29 @@ fn emit_replay_routed_call(
         // consuming it. Tail-transparent, indirect, and reference calls still
         // require the process router because their lexical target need not be
         // the next materialized activation.
+        //
+        // Replay therefore makes the same call as ordinary execution, so the
+        // call is emitted once rather than behind a state test with two
+        // identical arms; the duplicate only enlarged the body.
         debug_assert!(matches!(target, CallTarget::Direct(_)));
-        populate_lexical_call(local, replay, target, sig_ty, location, arguments);
-    } else {
-        emit_resume_selected_call(
-            local,
-            replay,
-            target,
-            sig_ty,
-            resume_ty,
-            location,
-            arguments,
-            runtime,
-            sig_ty.index() as i32,
-        );
+        populate_lexical_call(local, sequence, target, sig_ty, location, arguments);
+        return;
     }
+    let branch_ty = InstrSeqType::MultiValue(resume_ty);
+    let normal = local.builder_mut().dangling_instr_seq(branch_ty).id();
+    let replay = local.builder_mut().dangling_instr_seq(branch_ty).id();
+    populate_lexical_call(local, normal, target, sig_ty, location, arguments);
+    emit_resume_selected_call(
+        local,
+        replay,
+        target,
+        sig_ty,
+        resume_ty,
+        location,
+        arguments,
+        runtime,
+        sig_ty.index() as i32,
+    );
     let out = &mut local.block_mut(sequence).instrs;
     push_instr(
         out,
@@ -5220,7 +5515,26 @@ fn push_current_frame_ptr(
     push_instr(out, load_ptr(memory, ptr_ty, 0));
 }
 
+/// Push the current frame's call index. Used only on the capture and replay
+/// paths, so the read goes through the shared out-of-line helper.
 fn push_current_call_index(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    runtime: &Runtime,
+    _memory: MemoryId,
+    _ptr_ty: ValType,
+) {
+    push_instr(
+        out,
+        Instr::Call(Call {
+            func: frame_io(runtime).call_index,
+        }),
+    );
+}
+
+/// Inline read of the current frame's call index, for operands that ordinary
+/// execution also evaluates (a `select` operand), where a helper call would
+/// add a call to the normal path.
+fn push_current_call_index_inline(
     out: &mut Vec<(Instr, InstrLocId)>,
     runtime: &Runtime,
     memory: MemoryId,
@@ -7886,6 +8200,7 @@ fn instrument_one_function_nested_switch(
     }
 
     // Build preamble + unwind_save wrapper + postamble seqs.
+    let frame_runs = plan_frame_runs(module, runtime, &locals_with_offsets);
     let local = local_mut(module, func_id);
     let preamble_then = local
         .builder_mut()
@@ -7923,7 +8238,7 @@ fn instrument_one_function_nested_switch(
         memory,
         ptr_ty,
         catch_state_locals,
-        &locals_with_offsets,
+        &frame_runs,
         catch_scalar_restore_dispatch,
         &reference_frame,
         frame_size,
@@ -8041,10 +8356,9 @@ fn instrument_one_function_nested_switch(
     populate_postamble(
         &mut postamble,
         runtime,
-        memory,
         ptr_ty,
         catch_state_locals,
-        &locals_with_offsets,
+        &frame_runs,
         catch_scalar_save_dispatch,
         reference_save_dispatch,
         frame_size,
@@ -9101,7 +9415,7 @@ fn emit_post_landing(
                 (Some((tlo, thi)), Some(_)) => {
                     // Both branches have fork calls. Use range
                     // membership on THEN's range.
-                    push_current_call_index(s, runtime, memory, ptr_ty);
+                    push_current_call_index_inline(s, runtime, memory, ptr_ty);
                     push_instr(
                         s,
                         Instr::Const(Const {
@@ -9114,7 +9428,7 @@ fn emit_post_landing(
                             op: BinaryOp::I32GeS,
                         }),
                     );
-                    push_current_call_index(s, runtime, memory, ptr_ty);
+                    push_current_call_index_inline(s, runtime, memory, ptr_ty);
                     push_instr(
                         s,
                         Instr::Const(Const {

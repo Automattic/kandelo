@@ -396,6 +396,50 @@ fn assert_direct_activation_replay_is_lexical(module: &Module, owner_name: &str)
     );
 }
 
+/// The instruction immediately before the first line equal to `needle` in a
+/// wasmprinter function body.
+fn instruction_before<'a>(section: &'a str, needle: &str) -> &'a str {
+    let lines: Vec<&str> = section.lines().map(str::trim).collect();
+    let at = lines
+        .iter()
+        .position(|line| *line == needle)
+        .unwrap_or_else(|| panic!("`{needle}` not found in:\n{section}"));
+    assert!(at > 0, "`{needle}` has no preceding instruction");
+    lines[at - 1]
+}
+
+/// Assert that `seq` of `owner` calls the named generated helper.
+fn assert_calls_helper(module: &Module, owner: FunctionId, seq: InstrSeqId, helper: &str) {
+    let helper_id = func_by_name(module, helper);
+    let f = local_func(module, owner);
+    assert!(
+        f.block(seq).instrs.iter().any(
+            |(instruction, _)| matches!(instruction, Instr::Call(call) if call.func == helper_id)
+        ),
+        "sequence must call the shared frame helper {helper}",
+    );
+}
+
+/// Assert that a generated helper calls the named host import exactly once.
+fn assert_helper_calls_import(module: &Module, helper: FunctionId, import: &str) {
+    let import_id = module
+        .imports
+        .iter()
+        .find_map(|entry| match &entry.kind {
+            walrus::ImportKind::Function(function) if entry.name == import => Some(*function),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{import} import"));
+    let f = local_func(module, helper);
+    let mut calls = 0;
+    walk_all(f, f.entry_block(), &mut |_, instruction| {
+        if matches!(instruction, Instr::Call(call) if call.func == import_id) {
+            calls += 1;
+        }
+    });
+    assert_eq!(calls, 1, "helper must call {import} exactly once");
+}
+
 fn count_br_tables(f: &LocalFunction) -> usize {
     let mut n = 0usize;
     walk_all(f, f.entry_block(), &mut |_, instr| {
@@ -1071,7 +1115,11 @@ fn call_with_pure_args_replays_tail_without_spill_locals() {
     // replaying the pure tail here preserves the call arguments without
     // adding frame-backed arg locals.
     let lexical = sequences_with_direct_call(&module, "caller_with_args", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(
+        lexical.len(),
+        1,
+        "direct replay makes NORMAL's lexical call, emitted once rather than in two identical arms",
+    );
     assert!(
         lexical
             .iter()
@@ -1102,7 +1150,11 @@ fn call_with_non_pure_arg_falls_back_to_spill_local() {
     let caller = func_by_name(&module, "caller_with_load_arg");
     let unwind_save = protected_unwind_body_seq(&module, caller);
     let lexical = sequences_with_direct_call(&module, "caller_with_load_arg", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(
+        lexical.len(),
+        1,
+        "direct replay makes NORMAL's lexical call, emitted once rather than in two identical arms",
+    );
     assert!(
         lexical
             .iter()
@@ -1132,7 +1184,11 @@ fn call_with_i64_shift_arg_replays_shift_tail() {
     let caller = func_by_name(&module, "caller_with_i64_shift_arg");
     let unwind_save = protected_unwind_body_seq(&module, caller);
     let lexical = sequences_with_direct_call(&module, "caller_with_i64_shift_arg", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(
+        lexical.len(),
+        1,
+        "direct replay makes NORMAL's lexical call, emitted once rather than in two identical arms",
+    );
     assert!(lexical.iter().all(|kinds| {
         kinds
             == &vec![
@@ -1395,12 +1451,22 @@ fn preamble_then_requests_next_linked_frame() {
     assert_eq!(
         kinds,
         vec![
+            InstrKind::Const, // frame_size
+            InstrKind::Call,  // __wpk_fork_frame_enter
+        ],
+    );
+    assert_calls_helper(&module, caller, preamble_then, "__wpk_fork_frame_io_enter");
+    let enter = func_by_name(&module, "__wpk_fork_frame_io_enter");
+    assert_eq!(
+        entry_instr_kinds(&module, enter),
+        vec![
             InstrKind::GlobalGet, // buf store address
-            InstrKind::Const,     // frame_size
+            InstrKind::LocalGet,  // frame_size
             InstrKind::Call,      // __wpk_fork_frame_next
             InstrKind::Other,     // Store current frame pointer
         ],
     );
+    assert_helper_calls_import(&module, enter, "__wpk_fork_frame_next");
 }
 
 #[test]
@@ -1414,24 +1480,42 @@ fn postamble_writes_and_commits_the_reserved_linked_frame() {
     let postamble: Vec<InstrKind> = kinds[postamble_start..].to_vec();
 
     let expected = vec![
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store func_index
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store zero catch_region_id
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store reserved zero catch metadata
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Call,  // __wpk_fork_frame_commit
+        InstrKind::Const, // func_index
+        InstrKind::Const, // zero catch_region_id
+        InstrKind::Call,  // __wpk_fork_frame_header
+        InstrKind::Call,  // __wpk_fork_frame_commit (generated helper)
         InstrKind::Throw, // process-owned unwind transport
     ];
     assert_eq!(postamble, expected);
+
+    let header = func_by_name(&module, "__wpk_fork_frame_io_header");
+    assert_eq!(
+        entry_instr_kinds(&module, header),
+        vec![
+            InstrKind::GlobalGet,
+            InstrKind::Other, // Load current frame
+            InstrKind::LocalGet,
+            InstrKind::Other, // Store func_index
+            InstrKind::GlobalGet,
+            InstrKind::Other, // Load current frame
+            InstrKind::LocalGet,
+            InstrKind::Other, // Store catch_region_id
+            InstrKind::GlobalGet,
+            InstrKind::Other, // Load current frame
+            InstrKind::Const,
+            InstrKind::Other, // Store reserved zero catch metadata
+        ],
+    );
+    let commit = func_by_name(&module, "__wpk_fork_frame_io_commit");
+    assert_eq!(
+        entry_instr_kinds(&module, commit),
+        vec![
+            InstrKind::GlobalGet,
+            InstrKind::Other, // Load current frame
+            InstrKind::Call,  // __wpk_fork_frame_commit host hook
+        ],
+    );
+    assert_helper_calls_import(&module, commit, "__wpk_fork_frame_commit");
 }
 
 #[test]
@@ -1441,14 +1525,21 @@ fn no_catch_postamble_writes_deterministic_zero_catch_header_fields() {
 
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
+    assert_eq!(
+        instruction_before(&caller_section, "call $__wpk_fork_frame_io_header"),
+        "i32.const 0",
+        "no-catch postamble should pass a zero catch region:\n{caller_section}",
+    );
+    let header_section = extract_function_text(&printed, "__wpk_fork_frame_io_header");
     assert!(
-        caller_section.contains("i32.store offset=8")
-            && caller_section.contains("i32.store offset=12"),
-        "no-catch postamble should zero the catch region and reserved field:\n{caller_section}",
+        header_section.contains("i32.store offset=8")
+            && header_section.contains("i32.store offset=12"),
+        "the header helper should store the catch region and zero the reserved field:\n\
+         {header_section}",
     );
     assert!(
-        !caller_section.contains("i64.store offset=8"),
-        "ABI 43 uses explicit versioned header fields:\n{caller_section}",
+        !header_section.contains("i64.store offset=8"),
+        "ABI 43 uses explicit versioned header fields:\n{header_section}",
     );
 }
 
@@ -1460,16 +1551,23 @@ fn catch_capable_postamble_keeps_dynamic_catch_header_stores() {
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
     assert!(
-        caller_section.contains("i32.store offset=8"),
-        "catch-capable postamble must store dynamic catch_region_id:\n{caller_section}",
+        instruction_before(&caller_section, "call $__wpk_fork_frame_io_header")
+            .starts_with("local.get "),
+        "catch-capable postamble must pass its dynamic catch_region_id:\n{caller_section}",
+    );
+    let header_section = extract_function_text(&printed, "__wpk_fork_frame_io_header");
+    assert!(
+        header_section.contains("i32.store offset=8"),
+        "the header helper must store the dynamic catch_region_id:\n{header_section}",
     );
     assert!(
-        caller_section.contains("i32.store offset=12"),
-        "catch-capable postamble must zero the reserved former exnref slot:\n{caller_section}",
+        header_section.contains("i32.store offset=12"),
+        "the header helper must zero the reserved former exnref slot:\n{header_section}",
     );
     assert!(
-        !caller_section.contains("i64.store offset=8"),
-        "catch-capable postamble must not replace dynamic fields with a packed zero store:\n{caller_section}",
+        !header_section.contains("i64.store offset=8"),
+        "the header helper must not replace dynamic fields with a packed zero store:\n\
+         {header_section}",
     );
 }
 
@@ -1482,20 +1580,32 @@ fn user_scalar_locals_are_saved_and_restored_in_frame() {
     let caller = func_by_name(&module, "caller");
     let (preamble_then, _, _) = entry_preamble_and_postamble(&module, caller);
 
-    // With one i32 user local, preamble-then should end by loading
-    // the current frame pointer, loading the scalar, and setting the
-    // user local.
+    // With one i32 user local, preamble-then should end by loading the
+    // one-slot i32 run at the first payload offset and setting the local.
     let kinds = seq_kinds(&module, caller, preamble_then);
-    let tail: Vec<_> = kinds.iter().copied().rev().take(4).collect();
+    let tail: Vec<_> = kinds.iter().copied().rev().take(3).collect();
     assert_eq!(
         tail,
-        vec![
-            InstrKind::LocalSet,
-            InstrKind::Other,
-            InstrKind::Other,
-            InstrKind::GlobalGet,
-        ],
+        vec![InstrKind::LocalSet, InstrKind::Call, InstrKind::Const],
         "preamble-then must restore the i32 user local: {kinds:?}",
+    );
+    assert_calls_helper(
+        &module,
+        caller,
+        preamble_then,
+        "__wpk_fork_frame_io_load_i32x1",
+    );
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    assert_eq!(
+        instruction_before(&caller_section, "call $__wpk_fork_frame_io_load_i32x1"),
+        "i32.const 16",
+        "the first scalar slot follows the 16-byte frame header:\n{caller_section}",
+    );
+    let load_section = extract_function_text(&printed, "__wpk_fork_frame_io_load_i32x1");
+    assert!(
+        load_section.contains("i32.load") && !load_section.contains("i32.load offset=4"),
+        "a one-slot run helper reads the slot at the run base:\n{load_section}",
     );
 }
 
@@ -1511,20 +1621,28 @@ fn postamble_serializes_user_scalar_locals() {
     let kinds = entry_instr_kinds(&module, caller);
     let postamble = &kinds[postamble_start..];
 
-    // Postamble with one user local:
-    //   4 current-frame pointer loads/stores plus four payload stores
-    //   (func_index, catch_region_id, reserved zero, user_x) = 8 stores/loads,
-    //   plus the linked-frame reservation result = 9 Others. The catch fields
-    //   remain separate i32 slots so a catch-capable function can store its
-    //   dynamic region identifier without changing the frame shape. The final
-    //   private Throw has its own instruction kind and is not counted here.
-    let other_count = postamble
-        .iter()
-        .filter(|k| matches!(k, InstrKind::Other))
-        .count();
+    // Postamble with one user local: the header helper call, one one-slot
+    // i32 run saved at the first payload offset, the commit helper call, and
+    // the private throw.
     assert_eq!(
-        other_count, 9,
-        "postamble should load/store the active payload and serialize its fields: {postamble:?}",
+        postamble,
+        &[
+            InstrKind::Const, // func_index
+            InstrKind::Const, // catch_region_id
+            InstrKind::Call,  // __wpk_fork_frame_io_header
+            InstrKind::Const, // run base
+            InstrKind::LocalGet,
+            InstrKind::Call, // __wpk_fork_frame_io_store_i32x1
+            InstrKind::Call, // __wpk_fork_frame_io_commit
+            InstrKind::Throw,
+        ],
+        "postamble should serialize its fields through the frame helpers: {postamble:?}",
+    );
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let store_section = extract_function_text(&printed, "__wpk_fork_frame_io_store_i32x1");
+    assert!(
+        store_section.contains("i32.store") && !store_section.contains("i32.store offset=4"),
+        "a one-slot run helper writes the slot at the run base:\n{store_section}",
     );
 }
 
@@ -3572,11 +3690,14 @@ fn catch_arm_uses_header_selector_without_an_active_arm_frame_local() {
         caller_section.contains("try_table"),
         "caller must still have a try_table:\n{caller_section}"
     );
+    let header_section = extract_function_text(&printed, "__wpk_fork_frame_io_header");
     assert!(
-        caller_section.contains("i32.store offset=8")
+        instruction_before(&caller_section, "call $__wpk_fork_frame_io_header")
+            .starts_with("local.get ")
+            && header_section.contains("i32.store offset=8")
             && caller_section.contains("i32.load offset=8"),
         "the exact catch selector must round-trip through header word +8:\n\
-         {caller_section}",
+         {caller_section}\n{header_section}",
     );
     assert!(
         !caller_section.contains("store offset=16") && !caller_section.contains("load offset=16"),
