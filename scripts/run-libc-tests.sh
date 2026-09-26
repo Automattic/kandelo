@@ -46,10 +46,14 @@ FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
 )
 REGRESSION_EXPECTED_FAIL=(
-    # malloc(10000) returns ENOMEM after the test fills memory and unmaps a
-    # hole, although mmap itself reuses that hole (checked 2026-09-25 with a
-    # direct mmap after the same fill). The allocator-side reason is not
-    # established. malloc-oom, setenv-oom, and pthread_create-oom are not
+    # The test unmaps a fixed 64 KiB hole and expects malloc(10000) to fit.
+    # That is 16 pages on the 4 KiB-page systems it was written for, but one
+    # page here, where the page size is WebAssembly's 64 KiB page. With brk
+    # unavailable, musl's allocator needs three pages for a first small
+    # allocation: measured 2026-09-26, holes of 1-2 pages fail and 3 or more
+    # succeed, and a direct mmap reuses the hole correctly throughout. At the
+    # test's intended 16-page geometry it passes. malloc-oom, setenv-oom, and
+    # pthread_create-oom are not
     # listed: they pass once t_memfill() is compiled correctly (see
     # -fno-builtin-malloc below).
     malloc-brk-fail

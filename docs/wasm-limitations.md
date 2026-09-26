@@ -45,7 +45,7 @@ Wasm floating-point is non-trapping IEEE 754 with a fixed round-to-nearest mode.
 
 Memory limits are enforced (`RLIMIT_AS`), and the libc-test out-of-memory checks for `malloc`, `setenv`, and `pthread_create` (`malloc-oom`, `setenv-oom`, `pthread_create-oom`) pass. Until 2026-09-25 all three were listed here as Wasm limits; they had been XFAIL because the libc-test harness compiled `t_memfill()` to return -1 unconditionally, so they failed in setup with "memfill failed" before testing anything (fixed 2026-09-25 with `-fno-builtin-malloc`).
 
-**Affected libc-tests:** `malloc-brk-fail`. After filling memory and unmapping a hole, `malloc(10000)` returns `ENOMEM`, while a direct `mmap` of the same size succeeds and reuses that hole — so the kernel's address-space bookkeeping is not the cause. Why the allocator cannot use the hole has not been established, and this is not yet shown to be a Wasm limitation rather than a fixable gap.
+**Affected libc-tests:** `malloc-brk-fail`, because of page size rather than out-of-memory behavior. The test fills memory, unmaps a fixed 64 KiB hole, and expects `malloc(10000)` to fit in it. On the 4 KiB-page systems it was written for that hole is 16 pages; here it is one, because Kandelo's page size is WebAssembly's 64 KiB page. With `brk` unavailable, musl's allocator needs three pages for a first small allocation — measured: holes of one or two pages fail, three or more succeed, and a direct `mmap` reuses the hole correctly in every case. At the test's intended 16-page geometry it passes. POSIX does not promise that 64 KiB is many pages.
 
 ## 5. No dlopen for TLS
 
@@ -134,6 +134,6 @@ changes made by an external host writer do not invalidate Kandelo's page cache.
 
 306 pass, 0 unexpected failures, 17 expected failures (XFAIL), out of 324:
 - 14 math precision (musl ULP issues)
-- 1 allocator after memory exhaustion (malloc-brk-fail — reason not established; see §4)
+- 1 page-size geometry (malloc-brk-fail — assumes 4 KiB pages; see §4)
 - 1 asynchronous cancellation (pthread_cancel — deferred cancellation passes; see §2)
 - 1 dynamic TLS (tls_get_new-dtv)

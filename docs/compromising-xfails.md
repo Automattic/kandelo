@@ -190,7 +190,7 @@ These XFAILs are **not** kernel-functionality gaps — don't put effort into the
 | XFAIL class | Why |
 |---|---|
 | 14 math tests (`acosh`, `asinh`, `j0`, …) | Soft-float 1-2 ULP precision, no hardware FE_*. Wasm limit — see [wasm-limitations.md §3](wasm-limitations.md). |
-| `malloc-brk-fail` | Reason not established — see [wasm-limitations.md §4](wasm-limitations.md). It was listed here with `malloc-oom` and `setenv-oom` as "can't reproduce real OOM"; those two pass now that the harness compiles `t_memfill()` correctly, so that blanket rationale was wrong, and this row may yet turn out to be a fixable gap. |
+| `malloc-brk-fail` | Assumes 4 KiB pages: its fixed 64 KiB hole is one 64 KiB Wasm page here, and musl's allocator needs three without `brk` (measured; the test passes at its intended 16-page geometry). See [wasm-limitations.md §4](wasm-limitations.md). It was once grouped with `malloc-oom` and `setenv-oom` as "can't reproduce real OOM"; those two pass now that the harness compiles `t_memfill()` correctly. |
 | libc-test functional `pthread_cancel` | Deferred cancellation is implemented (see target 1) and `pthread_cancel-points` passes. This test's first subcase async-cancels a thread parked in `for (;;)`, which wasm cannot preempt — see [wasm-limitations.md §2](wasm-limitations.md). |
 | `tls_get_new-dtv` | DTV management across dlopened modules. Out of scope. |
 | `strings/ffsll` (sortix) | Wasm32 test bug: `long` (32-bit) vs `long long` (64-bit) constant mismatch. |
