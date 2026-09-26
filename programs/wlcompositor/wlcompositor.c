@@ -443,6 +443,13 @@ static void surface_resource_destroy(struct wl_resource *r) {
     /* Clearing our references avoids a dangling send after destroy; the
      * callbacks themselves are owned by the client and freed with it. */
     s->n_frame_cbs = 0;
+    /* xdg_surface/xdg_toplevel hold this surface as user_data and outlive it
+     * whenever a client destroys wl_surface first — which libwayland permits.
+     * Without this, xdg_toplevel.set_app_id writes into freed heap and
+     * xdg_toplevel.move parks a dangling pointer in g.grab. Every xdg handler
+     * already treats a NULL user_data as "no surface". */
+    if (s->xdg_toplevel) wl_resource_set_user_data(s->xdg_toplevel, NULL);
+    if (s->xdg_surface) wl_resource_set_user_data(s->xdg_surface, NULL);
     free(s);
     schedule_repaint();
 }
@@ -527,6 +534,31 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *r,
     if (format != WL_SHM_FORMAT_XRGB8888 && format != WL_SHM_FORMAT_ARGB8888) {
         wl_resource_post_error(r, WL_SHM_ERROR_INVALID_FORMAT,
                                "unsupported wl_shm format");
+        return;
+    }
+    /* Geometry is untrusted client input, and the import maps exactly
+     * stride * height bytes (libgbm_stub sets bo->size from the same two
+     * numbers). blit_surface clips columns against the OUTPUT width, never
+     * against the source stride, so a stride under width * 4 makes it memcpy
+     * past the end of the mapping and composite the overrun onto the screen.
+     * These are upstream wl_shm's own checks (wl_shm_pool_create_buffer). */
+    if (width <= 0 || height <= 0) {
+        wl_resource_post_error(r, WL_SHM_ERROR_INVALID_STRIDE,
+                               "buffer size %dx%d is not positive",
+                               width, height);
+        return;
+    }
+    /* stride / 4 < width is stride < width * 4 without overflowing int32. */
+    if (stride <= 0 || stride / 4 < width) {
+        wl_resource_post_error(r, WL_SHM_ERROR_INVALID_STRIDE,
+                               "stride %d is too small for width %d",
+                               stride, width);
+        return;
+    }
+    if ((int64_t)stride * (int64_t)height > (int64_t)p->size) {
+        wl_resource_post_error(r, WL_SHM_ERROR_INVALID_STRIDE,
+                               "stride %d x height %d overruns the %d-byte pool",
+                               stride, height, p->size);
         return;
     }
     struct shm_buffer *b = calloc(1, sizeof(*b));
@@ -730,6 +762,16 @@ static const struct xdg_toplevel_interface toplevel_impl = {
 static void xdg_surface_destroy(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
 }
+/* Clear the surface's back-pointer so a later destroy does not null the
+ * user_data of a resource that is already gone. */
+static void xdg_surface_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (s && s->xdg_surface == r) s->xdg_surface = NULL;
+}
+static void toplevel_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (s && s->xdg_toplevel == r) s->xdg_toplevel = NULL;
+}
 static void xdg_surface_get_toplevel(struct wl_client *client,
                                      struct wl_resource *resource,
                                      uint32_t id) {
@@ -737,7 +779,8 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
     struct wl_resource *tl = wl_resource_create(
         client, &xdg_toplevel_interface, wl_resource_get_version(resource), id);
     if (!tl) { wl_client_post_no_memory(client); return; }
-    wl_resource_set_implementation(tl, &toplevel_impl, s, NULL);
+    wl_resource_set_implementation(tl, &toplevel_impl, s,
+                                   toplevel_resource_destroy);
     if (s) s->xdg_toplevel = tl;
 
     /* Advertise a suggested size of 0x0 ("you decide") plus the initial
@@ -788,7 +831,8 @@ static void wm_base_get_xdg_surface(struct wl_client *client,
     struct wl_resource *xs = wl_resource_create(
         client, &xdg_surface_interface, wl_resource_get_version(resource), id);
     if (!xs) { wl_client_post_no_memory(client); return; }
-    wl_resource_set_implementation(xs, &xdg_surface_impl, s, NULL);
+    wl_resource_set_implementation(xs, &xdg_surface_impl, s,
+                                   xdg_surface_resource_destroy);
     if (s) s->xdg_surface = xs;
 }
 static void wm_base_pong(struct wl_client *c, struct wl_resource *r,
