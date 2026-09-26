@@ -1,0 +1,11 @@
+{
+  "bbb.audio-fixed.streamhash": "f1b01f3d34d762f5c49c9410324f8dc0ae4b60ed1ad1c93d7eb63f94a4bc3c96",
+  "bbb.seek300.framecrc": "e965aa941f53b3024f2fad6eadd1382ce01999bffaa4214e32f4daff83debf32",
+  "bbb.video.streamhash": "5452a9db197157dfb485a404bd2bca1ed2556b0bebc43a139e72f960c4e7e27f",
+  "fixture.audio-fixed.framecrc": "52648e5e47fd8028e63389bcf63bad659e5d67b55638adca34edacc91c42125e",
+  "fixture.audio-float.s16le": "440c0418505cb1b8e33d5a7ac8ad9d4d212ffe5febd0716a26646ce6546a3f07",
+  "fixture.browser-encode.framecrc": "d14cd7cbf470423bfd4656c9d8ed4951c3666df67e51ff1fc2a6f05cb5ae7748",
+  "fixture.ffprobe.json": "caaef08eb36446573eb954f49f55708029a5ccb2be05a664f8636b68dc4a238b",
+  "fixture.mp4": "f357f7f94bcf8dfed1f8ba0579b2a3b0bbc2c2489b8cfa20f0e1fe4e3ab7889f",
+  "fixture.video.framecrc": "e303b0770bfb7159f59b84b725c0a3118f7becbf8d638cdabc73858600a2b969"
+}

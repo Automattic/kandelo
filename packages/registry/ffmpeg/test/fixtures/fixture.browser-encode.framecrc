@@ -1,0 +1,25 @@
+#tb 0: 1/10
+#media_type 0: video
+#codec_id 0: mpeg4
+#dimensions 0: 176x144
+#sar 0: 1/1
+0,         -1,          0,        1,     5999, 0x9530d8a1, S=1, Quality stats,        8, 0x02820051
+0,          0,          2,        1,      644, 0x92e1361b, F=0x0, S=1, Quality stats,        8, 0x02860052
+0,          1,          1,        1,      157, 0x3f6f4f93, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,          2,          4,        1,      704, 0x22096414, F=0x0, S=1, Quality stats,        8, 0x02860052
+0,          3,          3,        1,      154, 0x41904cd0, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,          4,          6,        1,     5992, 0x95e3dd67, S=1, Quality stats,        8, 0x02820051
+0,          5,          5,        1,      115, 0x5e393ecd, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,          6,          8,        1,      576, 0x438c24c1, F=0x0, S=1, Quality stats,        8, 0x02860052
+0,          7,          7,        1,      160, 0x85495125, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,          8,         10,        1,     5787, 0x98ef925d, S=1, Quality stats,        8, 0x02820051
+0,          9,          9,        1,       88, 0xff652c0c, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,         10,         12,        1,      633, 0x3c423070, F=0x0, S=1, Quality stats,        8, 0x02860052
+0,         11,         11,        1,      144, 0xa91246f9, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,         12,         14,        1,     5687, 0x7c5a80f6, S=1, Quality stats,        8, 0x02820051
+0,         13,         13,        1,      123, 0x5b5744f3, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,         14,         16,        1,      562, 0x9dfb0d59, F=0x0, S=1, Quality stats,        8, 0x02860052
+0,         15,         15,        1,      139, 0x2ac44560, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,         16,         18,        1,     5612, 0x54dc4b4f, S=1, Quality stats,        8, 0x02820051
+0,         17,         17,        1,      113, 0xb9cb36d4, F=0x0, S=1, Quality stats,        8, 0x028a0053
+0,         18,         19,        1,      339, 0x5912ab7a, F=0x0, S=1, Quality stats,        8, 0x02860052
