@@ -17,6 +17,9 @@ SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 OS_TEST="$REPO_ROOT/tests/sortix/os-test"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
+# Upstream tests that do not test a POSIX requirement on Kandelo are
+# reported as SKIP; see scripts/sortix-not-applicable.sh.
+source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
@@ -463,6 +466,15 @@ run_runtime_suite() {
     local build_fail_count=0
 
     for test_name in "${tests[@]}"; do
+        local skip_reason
+        skip_reason="$(not_applicable_reason "$suite" "$test_name")"
+        if [ -n "$skip_reason" ]; then
+            TOTAL=$((TOTAL + 1))
+            echo "SKIP  ${suite}/${test_name} (${skip_reason})"
+            RESULTS+=("SKIP  ${suite}/${test_name}")
+            SKIP=$((SKIP + 1))
+            continue
+        fi
         if build_runtime_test "$suite" "$test_name" 2>/dev/null; then
             wasm_files+=("$BUILD_DIR/$suite/${test_name}.wasm")
             test_names+=("$test_name")

@@ -65,6 +65,11 @@ IO_EXPECTED_FAIL=(
 )
 
 SIGNAL_EXPECTED_FAIL=()
+
+# Upstream tests that do not test a POSIX requirement on Kandelo are
+# reported as SKIP; see scripts/sortix-not-applicable.sh.
+source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
+
 PROCESS_EXPECTED_FAIL=()
 PATHS_EXPECTED_FAIL=()
 UDP_EXPECTED_FAIL=(
@@ -625,6 +630,13 @@ _run_runtime_test_worker() {
     local result_dir="$3"
     local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
 
+    local skip_reason
+    skip_reason="$(not_applicable_reason "$suite" "$test_name")"
+    if [ -n "$skip_reason" ]; then
+        { echo "SKIP"; echo "$skip_reason"; } > "$result_dir/${test_name//\//__}.result"
+        return
+    fi
+
     local is_xfail=false
     if _check_xfail_serialized "$test_name" 2>/dev/null; then
         is_xfail=true
@@ -913,6 +925,11 @@ _collect_result() {
             RESULTS+=("XFAIL ${suite}/${test_name}")
             XFAIL=$((XFAIL + 1))
             ;;
+        SKIP)
+            echo "SKIP  ${suite}/${test_name} ($(sed -n 2p "$result_file"))"
+            RESULTS+=("SKIP  ${suite}/${test_name}")
+            SKIP=$((SKIP + 1))
+            ;;
         XPASS)
             echo "XPASS ${suite}/${test_name}"
             RESULTS+=("XPASS ${suite}/${test_name}")
@@ -1045,7 +1062,7 @@ run_suite() {
         # Export everything needed by the worker function
         export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
         export -f _run_runtime_test_worker _run_runtime_test_with_private_fixture
-        export -f _check_xfail_serialized run_with_timeout
+        export -f _check_xfail_serialized run_with_timeout not_applicable_reason
 
         # Export serialized XFAIL list for this suite
         _export_xfail_for_suite "$suite"
