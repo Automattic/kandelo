@@ -199,10 +199,10 @@ instrument_wasm() {
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
-# The per-test budget. It is forwarded to examples/run-example.ts as TIMEOUT
-# (its own guest watchdog, 30 s by default), so raising TEST_TIMEOUT really
-# lets a slow guest run longer; the outer kill gets a few seconds of grace so
-# the runner's own "Process timed out" diagnostic is what gets reported.
+# The per-test budget in seconds. It is forwarded to examples/run-example.ts
+# as TIMEOUT (its own guest watchdog, 30 s by default, which exits 124 like
+# timeout(1)), so raising TEST_TIMEOUT really lets a slow guest run longer;
+# the outer kill gets a few seconds of grace behind it.
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 XFAIL_TIMEOUT=${XFAIL_TIMEOUT:-10}  # Shorter timeout for known-failing tests
 PARALLEL=${PARALLEL:-$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)}

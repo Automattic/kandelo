@@ -162,8 +162,11 @@ instrument_wasm() {
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
-# Timeout per test (seconds)
-TEST_TIMEOUT=30
+# The per-test budget in seconds. It is forwarded to examples/run-example.ts
+# as TIMEOUT (its own guest watchdog, 30 s by default, which exits 124 like
+# timeout(1)), so raising TEST_TIMEOUT really lets a slow guest run longer;
+# the outer kill gets a few seconds of grace behind it.
+TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 
 # ── Test discovery ──────────────────────────────────────────
 
@@ -341,7 +344,8 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM= \
         KANDELO_RUNNER_VFS=isolated \
-        timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
+        TIMEOUT="$((TEST_TIMEOUT * 1000))" \
+        timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null 2>&1)
     rc=$?

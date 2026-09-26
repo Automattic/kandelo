@@ -565,11 +565,22 @@ async function main() {
                 processArgv,
                 spawnOptions,
             ).then(({ exit }) => exit);
-        const timeoutPromise = new Promise<number>((_, reject) => {
-            setTimeout(() => reject(new Error("Process timed out")), timeoutMs);
+        // On the watchdog, exit 124 as timeout(1) does: the conformance
+        // runners tell a time-out from a failure by that status, and a
+        // runner's TEST_TIMEOUT arrives here as TIMEOUT, so this watchdog,
+        // not the runner's outer kill, is usually the one that fires.
+        const timedOut = Symbol("timed out");
+        const timeoutPromise = new Promise<typeof timedOut>((resolve) => {
+            setTimeout(() => resolve(timedOut), timeoutMs);
         });
 
-        status = await Promise.race([exitPromise, timeoutPromise]);
+        const outcome = await Promise.race([exitPromise, timeoutPromise]);
+        if (outcome === timedOut) {
+            console.error(`Process timed out after ${timeoutMs} ms`);
+            status = 124;
+        } else {
+            status = outcome;
+        }
     } finally {
         await host?.destroy().catch(() => {});
         if (guestOutputFd !== null) closeSync(guestOutputFd);
