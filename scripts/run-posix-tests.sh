@@ -323,6 +323,17 @@ if [ ${#INTERFACES[@]} -eq 0 ]; then
     exit 1
 fi
 
+# Reject a misspelled or unvendored interface before building anything; a
+# run that tested nothing must not reach the summary looking like one that
+# passed.
+for iface in "${INTERFACES[@]}"; do
+    if [ ! -d "$IFACE_DIR/$iface" ]; then
+        echo "Error: interface '$iface' not found in $IFACE_DIR" >&2
+        echo "Run $0 --list for the available interfaces." >&2
+        exit 1
+    fi
+done
+
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
