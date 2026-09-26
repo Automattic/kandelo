@@ -183,11 +183,19 @@ describe("the fork module refuses an array no constructor can rebuild", () => {
     expect(admitActivation(f, SIDE, { gcCodec: immutableBytesCodec() })).toBe(0);
     openCapture(f);
     defineArray(f, [1, 2, 3]);
+    bindAbortSlots(f);
     seal(f);
     expect(f.errno(), "the seal reports the refusal").toBe(EOPNOTSUPP);
-    expect(phase(f), "a refused capture is still a sealed parent").toBe(
-      PHASE_SEALED_PARENT,
+    // Since the parent lifecycle folded into the module (lane F 1i), a
+    // refused seal starts the abort replay itself, exactly as the host-object
+    // refusal above does: the parent's committed frames replay and `fork()`
+    // returns -EOPNOTSUPP.
+    expect(phase(f), "a refused capture is abort-replaying").toBe(
+      PHASE_ABORT_REPLAY,
     );
+    const report = (f.x.fm_parent_finish as (abort: number) => number)(1);
+    expect(report, "with the seal's cause (2) and EOPNOTSUPP").toBe((2 << 16) | EOPNOTSUPP);
+    expect(phase(f)).toBe(PHASE_IDLE);
   });
 
   it("seals when a constructor the program has reproduces the contents", () => {
