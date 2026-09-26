@@ -808,7 +808,8 @@ Numbered callouts:
    `__wpk_fork_frame_next(frame_size)`, stores the returned payload in
    `*(buf + 0)`, and deserializes every frame scalar: user locals,
    argument/carryover spills, and tagged-catch activation state. Dispatch reads
-   `call_index` directly from that active frame payload.
+   `call_index` directly from that active frame payload. The frame moves go
+   through shared helpers (see [Activation frame cost](#activation-frame-cost)).
 2. **Body wrapper (Phase 4b/4c).** The original body is wrapped in a `$unwind_save`
    block. On `REWINDING`, a `br_table` keyed by `frame.call_index` jumps to
    the selected post-call landing. On `NORMAL`, dispatch falls through and
@@ -1460,6 +1461,108 @@ For the concrete numbers landed by the Phase 7 rollout PR, see Task 15 of
 for fork-heavy programs is expected to be equal or smaller than under the
 prior full-module fork-continuation carve-out (most notably git), since the tool instruments
 a tighter reachable set.
+
+### Activation frame cost
+
+Instrumentation makes a fork-path function's native (engine) stack frame
+larger, which lowers how deep a guest can recurse on a fixed stack. This is
+separate from the continuation bytes above: it is paid by every activation
+of an instrumented function in ordinary execution, whether or not it ever
+forks.
+
+**Where the cost came from.** Measured on 2026-09-26 with a standalone
+harness that recurses P-10's `fork_at_depth` (fork inlined at the bottom,
+built through the SDK at `-O2`) without a kernel, calling it repeatedly
+until the engine has tiered it up. The instrumented body grew from 202 to
+567 wire bytes. Both V8 and JavaScriptCore inline a callee only when its
+body is at most 500 wire bytes (V8 `--wasm-inlining-max-size`, JSC
+`wasmInliningMaximumWasmCalleeSize`), and both inline a small recursive
+function into itself several levels deep. The uninstrumented function was
+therefore inlined and the instrumented one was not:
+
+| Bytes per activation (tiered up) | uninstrumented | instrumented, before | inlining limit raised to 600 |
+|---|---|---|---|
+| V8 (Node 24) | 19.2 | 96 | 32 |
+| JavaScriptCore (Playwright WebKit `jsc`) | 26.4 | 115.3 | 39.5 |
+
+Most of the "about five times" measured in browsers is that lost inlining.
+The rest is real growth of the non-inlined frame, measured with inlining
+disabled (`--no-wasm-inlining`, `--wasmInliningMaximumWasmCalleeSize=0`) and
+in wasmtime/Cranelift, which does not inline:
+
+| Bytes per activation, no inlining | uninstrumented | instrumented |
+|---|---|---|
+| V8 TurboFan | 64 | 96 |
+| V8 Liftoff (baseline) | 64 | 80 |
+| JavaScriptCore OMG | 82.4 | 115.3 |
+| wasmtime 48 (Cranelift, aarch64) | 64 | 256 |
+
+Ablating the instrumented module attributes that growth to the exception-
+based unwind transport and the rewind merge, not to spill locals (P-10's
+function has three frame scalars): turning every private-tag `try_table`
+into a plain `block` *and* folding the state tests to `NORMAL` restores the
+uninstrumented frame on every engine, while either change alone does not
+(V8 96 -> 80 each, JSC unchanged). In Cranelift, 112 of the 192 extra
+bytes are callee-saved registers: a function that contains a `try_table`
+catch or a `throw` saves all of x19-x28 and d8-d15 in its prologue (the
+disassembly shows ten register pairs where the uninstrumented function
+saves three), and its spill area grows from 16 to 96 bytes. Removing only
+the throw (moving it into a callee) or only the catches leaves the cost in
+place.
+
+**What the instrumenter does about it.** The rewind preamble and unwind
+postamble no longer spell out one `buf -> frame -> load/store` sequence per
+frame slot inside each body. Shared, module-level helpers do it:
+`__wpk_fork_frame_io_enter(frame_size)` selects the replayed frame,
+`__wpk_fork_frame_io_header(ordinal, catch_selector)` writes the fixed
+header, `__wpk_fork_frame_io_commit()` publishes the frame,
+`__wpk_fork_frame_io_call_index()` reads the dispatch index, and
+`__wpk_fork_frame_io_{load,store}_<type>x<n>(base, ...)` move a run of at
+most two consecutive same-typed slots. Runs are capped at two because a
+load helper returns its run as multiple values and V8 gives every result
+past the second a stack slot in the caller's frame; three-value runs made
+the non-inlined V8 frame 16 bytes larger. A direct-activation call site
+also emits its call once instead of behind a state test with two identical
+arms. The frame byte layout, imports, exports, and custom sections are
+unchanged, so the ABI snapshot does not change; every instrumented artifact
+must still be rebuilt, because the bodies differ.
+
+P-10's instrumented function is now 466 bytes, under the inlining limit
+again:
+
+| P-10 recursion, tiered up | uninstrumented | before | after |
+|---|---|---|---|
+| V8 (Node), bytes per activation | 19.2 | 96 | 38.4 |
+| JavaScriptCore `jsc`, bytes per activation | 26.4 | 115.3 | 42.8 |
+| Chromium Worker, deepest recursion | 26,444 | 5,288 | 13,219 |
+| WebKit Worker, deepest recursion | 15,534 | 3,550 | 9,559 |
+| wasmtime, bytes per activation | 64 | 256 | 256 |
+
+In a real Kandelo process on Node (32 MiB worker stack), a stepped probe
+of the same recursion (warmed up, then deepened 8,192 frames at a time)
+reached 344,064 frames before and 868,544 after; the no-fork build of the
+same shape reached 1,371,712.
+
+The helpers also shrink whole artifacts, because every instrumented body
+loses its inline frame moves. Rebuilt through the normal path, `php.wasm`
+went from 42,926,222 to 36,314,213 bytes, `bash.wasm` from 3,025,665 to
+2,525,489, and `dash.wasm` from 628,913 to 506,246. The number of function
+bodies at or under the 500-byte inlining limit rose by 2,511 in
+`php.wasm`, 170 in `bash.wasm` and 78 in `dash.wasm` (each count includes
+the module's 14 to 20 new helpers).
+
+Non-inlined frames are unchanged (V8 TurboFan 96, Liftoff 80, JSC 115.3,
+wasmtime 256), and the cold first-call limit is unchanged (see
+[browser-support.md](browser-support.md), WebKit Worker recursion depth).
+The recovery comes from inlining, so it applies to small fork-path
+functions that fit under the limit once instrumented; a function whose
+instrumented body is still above 500 bytes keeps the non-inlined frame
+sizes above. Removing the remaining exception-transport cost would mean
+changing how unwind leaves an activation (for example, returning a default
+result and testing the state after each call instead of catching the
+private tag), which the current design rejects on purpose; see the
+`FrameIo` and postamble comments in
+`crates/fork-instrument/src/instrument.rs`.
 
 ## Maintainer notes
 

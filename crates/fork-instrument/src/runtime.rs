@@ -300,6 +300,11 @@ pub struct Runtime {
     /// area after `frames_start_offset` for the still-live activation that
     /// reverses a failed partial unwind.
     pub fixed_prefix_size: u32,
+
+    /// Shared out-of-line frame I/O helpers. Body instrumentation installs
+    /// them before rewriting the first function; they are absent while the
+    /// runtime is only injected.
+    pub frame_io: Option<crate::instrument::FrameIo>,
 }
 
 /// Return the pointer type appropriate for the module's primary
@@ -612,6 +617,7 @@ fn inject_runtime_with_frame_storage(
         saved_globals,
         frames_start_offset,
         fixed_prefix_size,
+        frame_io: None,
     }
 }
 
