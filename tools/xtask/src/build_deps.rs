@@ -8102,9 +8102,15 @@ where
         ancestor_paths.push(current_path.clone());
     }
 
+    // Same file-selection rule as `hash_build_input` (ignored generated output
+    // below a tracked directory stays out of the key), so strict and legacy
+    // digests keep agreeing on valid inputs. Git classifies by path; the bytes
+    // that do enter the key are still read only through the descriptor chain.
+    let scope = crate::input_scope::InputScope::for_input(input)?;
     let mut hasher = Sha256::new();
     strict_source_hash_entry_unix(
         &mut hasher,
+        &scope,
         descriptors
             .last()
             .expect("source root descriptor starts the ancestor chain"),
@@ -8162,6 +8168,7 @@ where
 #[cfg(unix)]
 fn strict_source_hash_entry_unix<BeforeRead>(
     hasher: &mut Sha256,
+    scope: &crate::input_scope::InputScope,
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
     path: &Path,
@@ -8216,12 +8223,25 @@ where
             entries.push(OsString::from_vec(bytes.to_vec()));
         }
         entries.sort();
+        // A directory below the input that is its own repository (a
+        // submodule) answers for its files with its own ignore rules.
+        let nested = if relative.as_os_str().is_empty() {
+            None
+        } else {
+            scope.nested(path)?
+        };
+        let scope = nested.as_ref().unwrap_or(scope);
         for child in entries {
+            let child_path = path.join(&child);
+            if scope.skips(&child_path, &child) {
+                continue;
+            }
             strict_source_hash_entry_unix(
                 hasher,
+                scope,
                 &opened,
                 &child,
-                &path.join(&child),
+                &child_path,
                 &relative.join(&child),
                 before_read,
             )?;
@@ -8673,13 +8693,24 @@ fn require_selected_registry_build_input(
     ))
 }
 
+/// Content digest of one build input. A directory input that the repository
+/// tracks skips the files git ignores below it (generated output, not
+/// source); see [`crate::input_scope`] for the rule and its edge cases. The
+/// record format is unchanged, so a tree with no ignored files keys exactly
+/// as it did before that rule existed.
 pub(crate) fn hash_build_input(path: &Path) -> Result<[u8; 32], String> {
+    let scope = crate::input_scope::InputScope::for_input(path)?;
     let mut h = Sha256::new();
-    hash_build_input_entry(&mut h, path, path)?;
+    hash_build_input_entry(&mut h, &scope, path, path)?;
     Ok(h.finalize().into())
 }
 
-fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<(), String> {
+fn hash_build_input_entry(
+    h: &mut Sha256,
+    scope: &crate::input_scope::InputScope,
+    root: &Path,
+    path: &Path,
+) -> Result<(), String> {
     let meta =
         std::fs::symlink_metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
     let rel = path.strip_prefix(root).unwrap_or(path);
@@ -8718,7 +8749,16 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
             .map_err(|e| format!("read_dir {}: {e}", path.display()))?;
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
-            hash_build_input_entry(h, root, &entry.path())?;
+            let child = entry.path();
+            if scope.skips(&child, &entry.file_name()) {
+                continue;
+            }
+            let is_dir = entry
+                .file_type()
+                .map_err(|e| format!("stat {}: {e}", child.display()))?
+                .is_dir();
+            let nested = if is_dir { scope.nested(&child)? } else { None };
+            hash_build_input_entry(h, nested.as_ref().unwrap_or(scope), root, &child)?;
         }
         return Ok(());
     }
@@ -17203,6 +17243,9 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
 }
 
 fn cmd_sha(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
+    // Keying one package keys its whole dependency closure; nothing writes
+    // the tree meanwhile, so one pass memo serves it (`KeyingPass`).
+    let _pass = crate::cargo_closure::KeyingPass::begin();
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
     let sha = compute_sha(
@@ -21465,6 +21508,8 @@ pub fn run_compute_cache_key_sha(args: Vec<String>) -> Result<(), String> {
     let (package_dir, arch) = parse_compute_cache_key_sha_args(args)?;
     let repo = repo_root();
     let registry = Registry::from_env(&repo);
+    // A read-only keying of one package's closure; see `cmd_sha`.
+    let _pass = crate::cargo_closure::KeyingPass::begin();
     let sha =
         compute_cache_key_sha_for_package(&package_dir, &registry, arch, current_abi_version())?;
     println!("{sha}");
@@ -23705,6 +23750,309 @@ allow_uninitialized_gitlinks = true
         assert_ne!(actual, digest_for(head_oid));
     }
 
+    // ── Ignored generated output below tracked inputs (input_scope.rs) ──
+
+    /// A repository with one tracked crate directory whose `fuzz/.gitignore`
+    /// ignores `target` and `corpus`, the shape a fuzz run leaves behind.
+    fn ignored_output_fixture(label: &str) -> (PathBuf, PathBuf) {
+        let root = tempdir(label);
+        fixture_git(&root, &["init", "--quiet"]);
+        let krate = root.join("crates/demo");
+        fs::create_dir_all(krate.join("src")).unwrap();
+        fs::create_dir_all(krate.join("fuzz")).unwrap();
+        fs::write(krate.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        fs::write(krate.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+        fs::write(krate.join("fuzz/.gitignore"), "target\ncorpus\n").unwrap();
+        fixture_git(&root, &["add", "crates/demo"]);
+        (root, krate)
+    }
+
+    fn write_fuzz_output(krate: &Path, contents: &str) {
+        fs::create_dir_all(krate.join("fuzz/target/release/deps")).unwrap();
+        fs::create_dir_all(krate.join("fuzz/corpus/fuzz_demo")).unwrap();
+        fs::create_dir_all(krate.join("fuzz/target/empty")).unwrap();
+        fs::write(krate.join("fuzz/target/release/deps/big.rlib"), contents).unwrap();
+        for i in 0..8 {
+            fs::write(krate.join(format!("fuzz/corpus/fuzz_demo/{i}")), contents).unwrap();
+        }
+    }
+
+    /// The same tree with no repository around it: what the digest was before
+    /// the ignore rule existed (every file hashed, same record format).
+    fn legacy_digest_of_copy(src: &Path, label: &str) -> [u8; 32] {
+        let copy = tempdir(label).join("demo");
+        copy_dir_recursive(src, &copy).unwrap();
+        hash_build_input(&copy).unwrap()
+    }
+
+    #[test]
+    fn tracked_input_digest_ignores_gitignored_generated_output() {
+        let (_root, krate) = ignored_output_fixture("input-scope-tracked");
+        let clean = hash_build_input(&krate).unwrap();
+        assert_eq!(
+            clean,
+            legacy_digest_of_copy(&krate, "input-scope-tracked-legacy"),
+            "a tree with no ignored files must key exactly as before the rule"
+        );
+
+        write_fuzz_output(&krate, "first fuzz run");
+        assert_eq!(
+            hash_build_input(&krate).unwrap(),
+            clean,
+            "ignored fuzz output must not enter the key"
+        );
+        write_fuzz_output(&krate, "second fuzz run, different bytes");
+        assert_eq!(
+            hash_build_input(&krate).unwrap(),
+            clean,
+            "changing ignored files must not move the key"
+        );
+        assert_eq!(
+            hash_build_input(&krate.join("fuzz")).unwrap(),
+            {
+                let copy = tempdir("input-scope-tracked-fuzz-legacy").join("fuzz");
+                fs::create_dir_all(&copy).unwrap();
+                fs::write(copy.join(".gitignore"), "target\ncorpus\n").unwrap();
+                hash_build_input(&copy).unwrap()
+            },
+            "a tracked subdirectory input applies the same rule"
+        );
+
+        // Untracked files that no rule ignores are source.
+        fs::write(krate.join("src/new.rs"), "pub fn g() {}\n").unwrap();
+        let with_untracked = hash_build_input(&krate).unwrap();
+        assert_ne!(with_untracked, clean, "an untracked, unignored file is source");
+        fs::remove_file(krate.join("src/new.rs")).unwrap();
+        assert_eq!(hash_build_input(&krate).unwrap(), clean);
+
+        // Tracked edits still move the key.
+        fs::write(krate.join("src/lib.rs"), "pub fn f() { /* edit */ }\n").unwrap();
+        assert_ne!(hash_build_input(&krate).unwrap(), clean, "tracked edits move the key");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_source_digest_applies_the_same_ignore_rule() {
+        let (root, krate) = ignored_output_fixture("input-scope-strict");
+        let root = fs::canonicalize(root).unwrap();
+        let krate = root.join("crates/demo");
+        let clean = strict_source_build_input_digest(&root, &krate).unwrap();
+        assert_eq!(clean, hash_build_input(&krate).unwrap());
+        write_fuzz_output(&krate, "fuzz bytes");
+        assert_eq!(
+            strict_source_build_input_digest(&root, &krate).unwrap(),
+            clean,
+            "strict digest must skip ignored output as the legacy digest does"
+        );
+        fs::write(krate.join("src/lib.rs"), "changed\n").unwrap();
+        assert_ne!(strict_source_build_input_digest(&root, &krate).unwrap(), clean);
+    }
+
+    #[test]
+    fn ignored_input_directory_keys_on_all_of_its_contents() {
+        let root = tempdir("input-scope-ignored-input");
+        fixture_git(&root, &["init", "--quiet"]);
+        fs::write(root.join(".gitignore"), "/sysroot/\n*.o\n").unwrap();
+        fixture_git(&root, &["add", ".gitignore"]);
+        let sysroot = root.join("sysroot");
+        fs::create_dir_all(sysroot.join("lib")).unwrap();
+        fs::write(sysroot.join("lib/libc.a"), "archive v1").unwrap();
+        fs::write(sysroot.join("lib/crt1.o"), "object v1").unwrap();
+
+        let whole = hash_build_input(&sysroot).unwrap();
+        let lib = hash_build_input(&sysroot.join("lib")).unwrap();
+        assert_eq!(
+            whole,
+            legacy_digest_of_copy(&sysroot, "input-scope-ignored-input-legacy"),
+            "an ignored input is hashed whole"
+        );
+        fs::write(sysroot.join("lib/libc.a"), "archive v2").unwrap();
+        assert_ne!(hash_build_input(&sysroot).unwrap(), whole);
+        assert_ne!(
+            hash_build_input(&sysroot.join("lib")).unwrap(),
+            lib,
+            "an input below an ignored ancestor is hashed whole"
+        );
+        let before_object = hash_build_input(&sysroot).unwrap();
+        fs::write(sysroot.join("lib/crt1.o"), "object v2").unwrap();
+        assert_ne!(
+            hash_build_input(&sysroot).unwrap(),
+            before_object,
+            "files matching other ignore patterns count inside an ignored input"
+        );
+    }
+
+    #[test]
+    fn tracked_files_count_even_when_an_ignore_pattern_matches_them() {
+        let root = tempdir("input-scope-force-added");
+        fixture_git(&root, &["init", "--quiet"]);
+        fs::write(root.join(".gitignore"), "*.o\n").unwrap();
+        let dir = root.join("src");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("vendored.o"), "tracked object v1").unwrap();
+        fs::write(dir.join("stray.o"), "generated").unwrap();
+        fixture_git(&root, &["add", ".gitignore"]);
+        fixture_git(&root, &["add", "-f", "src/vendored.o"]);
+        let before = hash_build_input(&dir).unwrap();
+        fs::write(dir.join("stray.o"), "regenerated").unwrap();
+        assert_eq!(hash_build_input(&dir).unwrap(), before);
+        fs::write(dir.join("vendored.o"), "tracked object v2").unwrap();
+        assert_ne!(hash_build_input(&dir).unwrap(), before);
+    }
+
+    #[test]
+    fn only_committed_gitignore_rules_decide_what_is_generated() {
+        // .git/info/exclude is per-checkout state; honoring it would give
+        // identical trees different keys on different machines.
+        let (root, krate) = ignored_output_fixture("input-scope-info-exclude");
+        let clean = hash_build_input(&krate).unwrap();
+        fs::write(root.join(".git/info/exclude"), "notes.txt\n").unwrap();
+        fs::write(krate.join("notes.txt"), "local notes").unwrap();
+        assert_ne!(
+            hash_build_input(&krate).unwrap(),
+            clean,
+            "a file only info/exclude ignores is still keyed"
+        );
+    }
+
+    #[test]
+    fn deleted_but_indexed_files_leave_the_key_like_any_deleted_file() {
+        let (_root, krate) = ignored_output_fixture("input-scope-deleted");
+        fs::remove_file(krate.join("src/lib.rs")).unwrap();
+        assert_eq!(
+            hash_build_input(&krate).unwrap(),
+            legacy_digest_of_copy(&krate, "input-scope-deleted-legacy"),
+            "the working tree, not the index, is hashed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_keep_their_target_string_semantics_under_the_ignore_rule() {
+        use std::os::unix::fs::symlink;
+        let (root, krate) = ignored_output_fixture("input-scope-symlink");
+        symlink("src/lib.rs", krate.join("lib-link")).unwrap();
+        fixture_git(&root, &["add", "crates/demo/lib-link"]);
+        let tracked_link = hash_build_input(&krate).unwrap();
+        assert_eq!(
+            tracked_link,
+            {
+                let copy = tempdir("input-scope-symlink-legacy").join("demo");
+                copy_dir_recursive(&krate, &copy).unwrap();
+                symlink("src/lib.rs", copy.join("lib-link")).unwrap();
+                hash_build_input(&copy).unwrap()
+            },
+            "a tracked symlink is hashed by its target string, as before"
+        );
+        fs::remove_file(krate.join("lib-link")).unwrap();
+        symlink("Cargo.toml", krate.join("lib-link")).unwrap();
+        assert_ne!(hash_build_input(&krate).unwrap(), tracked_link, "retargeting moves the key");
+
+        // An ignored symlink (fuzz/target pointing anywhere) stays out.
+        let before = hash_build_input(&krate).unwrap();
+        symlink("/nonexistent/elsewhere", krate.join("fuzz/target")).unwrap();
+        assert_eq!(hash_build_input(&krate).unwrap(), before);
+
+        // A symlink input is its target string, whatever git thinks of it.
+        let link_input = hash_build_input(&krate.join("fuzz/target")).unwrap();
+        fs::remove_file(krate.join("fuzz/target")).unwrap();
+        symlink("/nonexistent/other", krate.join("fuzz/target")).unwrap();
+        assert_ne!(hash_build_input(&krate.join("fuzz/target")).unwrap(), link_input);
+    }
+
+    #[test]
+    fn nested_repositories_answer_with_their_own_ignore_rules() {
+        let (root, krate) = ignored_output_fixture("input-scope-nested");
+        // A submodule-shaped nested checkout: a gitlink in the outer index and
+        // its own repository, whose own .gitignore marks build/ as generated.
+        let vendor = krate.join("vendor");
+        fs::create_dir_all(&vendor).unwrap();
+        fixture_git(&vendor, &["init", "--quiet"]);
+        fs::write(vendor.join(".gitignore"), "build/\n").unwrap();
+        fs::write(vendor.join("vendor.c"), "int v;\n").unwrap();
+        fixture_git(&vendor, &["add", ".gitignore", "vendor.c"]);
+        fixture_git(
+            &root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000,3333333333333333333333333333333333333333,crates/demo/vendor",
+            ],
+        );
+        let before = hash_build_input(&krate).unwrap();
+
+        fs::create_dir_all(vendor.join("build")).unwrap();
+        fs::write(vendor.join("build/vendor.o"), "object").unwrap();
+        assert_eq!(
+            hash_build_input(&krate).unwrap(),
+            before,
+            "the nested repository's ignored output stays out"
+        );
+        fs::write(vendor.join("untracked.c"), "int u;\n").unwrap();
+        let with_untracked = hash_build_input(&krate).unwrap();
+        assert_ne!(with_untracked, before, "its unignored files are source");
+        fixture_git(&vendor, &["add", "untracked.c"]);
+        assert_eq!(
+            hash_build_input(&krate).unwrap(),
+            with_untracked,
+            "repository metadata (.git) never enters the key"
+        );
+        fs::write(vendor.join("vendor.c"), "int v = 1;\n").unwrap();
+        assert_ne!(hash_build_input(&krate).unwrap(), with_untracked);
+    }
+
+    #[test]
+    fn gitlink_inputs_keep_keying_by_the_index_entry() {
+        // `libc/musl` keys by its gitlink, not by walking the checkout, so
+        // build objects inside the submodule never reached its key and the
+        // ignore rule does not change that.
+        let root = tempdir("input-scope-gitlink");
+        fixture_git(&root, &["init", "--quiet"]);
+        let oid = "4444444444444444444444444444444444444444";
+        fixture_git(
+            &root,
+            &["update-index", "--add", "--cacheinfo", &format!("160000,{oid},libc/musl")],
+        );
+        let musl = root.join("libc/musl");
+        fs::create_dir_all(musl.join("obj")).unwrap();
+        let first =
+            hash_global_package_build_input(&root, "libc/musl", &musl).unwrap();
+        fs::write(musl.join("obj/foo.o"), "object").unwrap();
+        fs::write(musl.join("src.c"), "int x;\n").unwrap();
+        assert_eq!(
+            hash_global_package_build_input(&root, "libc/musl", &musl).unwrap(),
+            first
+        );
+        assert_eq!(first, hash_gitlink_input(&root, "libc/musl").unwrap().unwrap());
+    }
+
+    #[test]
+    fn no_repository_means_every_file_is_input() {
+        let root = tempdir("input-scope-no-repo");
+        let dir = root.join("tree");
+        fs::create_dir_all(dir.join("target")).unwrap();
+        fs::write(dir.join(".gitignore"), "target\n").unwrap();
+        fs::write(dir.join("target/out"), "v1").unwrap();
+        let before = hash_build_input(&dir).unwrap();
+        fs::write(dir.join("target/out"), "v2").unwrap();
+        assert_ne!(
+            hash_build_input(&dir).unwrap(),
+            before,
+            "without a repository no file is known to be generated"
+        );
+    }
+
+    #[test]
+    fn a_repository_git_cannot_read_fails_loudly() {
+        let root = tempdir("input-scope-broken-repo");
+        fs::write(root.join(".git"), "gitdir: /nonexistent/kandelo/worktree\n").unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.c"), "int a;\n").unwrap();
+        let error = hash_build_input(&root.join("src")).unwrap_err();
+        assert!(error.contains("git ls-files"), "{error}");
+    }
+
     #[test]
     fn program_projection_cache_keys_change_with_global_toolchain_inputs() {
         let root = tempdir("program-projection-global-build-inputs");
@@ -23803,14 +24151,18 @@ allow_uninitialized_gitlinks = true
         assert_eq!(paths, sorted, "must be sorted and deduped");
     }
 
-    /// Extracts the whitespace-separated root arguments of the script's
-    /// `find <roots...> -type f -print` invocation.
+    /// Extracts the whitespace-separated crate roots from the script's
+    /// `FORK_INSTRUMENT_TOOL_CRATE_ROOTS="<roots...>"` assignment, the one list
+    /// both its git listing and its no-repository `find` fallback read.
     fn fork_instrument_hash_script_find_roots(script: &str) -> BTreeSet<String> {
-        let find_idx = script
-            .find("find ")
-            .expect("scripts/fork-instrument-tool-input-hash.sh must invoke `find`");
-        let rest = &script[find_idx + "find ".len()..];
-        let end = rest.find(" -").unwrap_or(rest.len());
+        const ASSIGNMENT: &str = "\nFORK_INSTRUMENT_TOOL_CRATE_ROOTS=\"";
+        let start = script.find(ASSIGNMENT).expect(
+            "scripts/fork-instrument-tool-input-hash.sh must assign FORK_INSTRUMENT_TOOL_CRATE_ROOTS",
+        ) + ASSIGNMENT.len();
+        let rest = &script[start..];
+        let end = rest
+            .find('"')
+            .expect("unterminated FORK_INSTRUMENT_TOOL_CRATE_ROOTS");
         rest[..end].split_whitespace().map(str::to_string).collect()
     }
 
@@ -23870,8 +24222,8 @@ allow_uninitialized_gitlinks = true
         let script_crate_roots = fork_instrument_hash_script_find_roots(&script);
         assert_eq!(
             script_crate_roots, crate_dirs,
-            "fork-instrument's workspace deps changed; update the shell script's `find` \
-             roots and re-check the cache-key coverage.",
+            "fork-instrument's workspace deps changed; update the shell script's \
+             FORK_INSTRUMENT_TOOL_CRATE_ROOTS and re-check the cache-key coverage.",
         );
     }
 
@@ -34714,7 +35066,19 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
         );
         write_source_only_repository_inputs(&registry_root, "spawnConsumer");
         let (base, _compiled) = source_only_test_roots("source-consumer-spawn-cache");
+        // A PATH holding only git: keying this checkout's global inputs asks
+        // git which files are generated output (input_scope.rs), and that
+        // must succeed so the build reaches the `bash` spawn under test.
         let empty_path = tempdir("source-consumer-spawn-empty-path");
+        let git = std::env::var_os("PATH")
+            .and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join("git"))
+                    .find(|candidate| candidate.is_file())
+            })
+            .expect("git on PATH");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&git, empty_path.join("git")).unwrap();
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

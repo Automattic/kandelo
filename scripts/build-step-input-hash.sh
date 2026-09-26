@@ -46,27 +46,122 @@
 # wrong signal (retargeting a symlink without touching the pointed-to file
 # would go undetected) and unsafe (fails outright on a dangling symlink or
 # one that points at a directory).
+#
+# A directory argument follows the package cache key's rule
+# (tools/xtask/src/input_scope.rs): inside a directory the repository
+# tracks, a file git ignores is generated output and is left out; a
+# directory that is itself ignored is a generated artifact and is listed
+# whole. See repo_input_dir_files below.
+
+# git with the repository chosen by path alone: an inherited GIT_DIR /
+# GIT_WORK_TREE / GIT_INDEX_FILE must not redirect the question.
+_repo_input_git() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+        git -c "safe.directory=$(pwd -P)" -c core.quotePath=false --literal-pathspecs "$@"
+}
+
+# _repo_input_owner <dir>
+# The nearest ancestor of the relative path <dir> (itself included) holding a
+# .git entry, or `.` when none below the current directory does.
+_repo_input_owner() {
+    local candidate="$1"
+    while :; do
+        if [ -e "$candidate/.git" ]; then
+            printf '%s' "$candidate"
+            return
+        fi
+        case "$candidate" in
+            */*) candidate="${candidate%/*}" ;;
+            *) break ;;
+        esac
+    done
+    printf '.'
+}
+
+# repo_input_dir_files <owner> <dir>
+# Print every regular file and symlink below <dir> that is source, one path
+# per line, relative to the current directory. <owner> is the repository
+# that owns <dir> (`.` for the current directory). Only the committed
+# .gitignore files decide what is ignored -- not .git/info/exclude or a
+# personal core.excludesFile, which would make two machines with identical
+# trees disagree. Tracked files are never ignored; untracked files no rule
+# ignores are source; deleted-but-indexed paths are skipped (the digest is of
+# the working tree). A directory git lists as one entry (a submodule or a
+# nested checkout) is walked with its own repository's rules. Without a .git
+# entry nothing marks a file as generated, so everything is listed; with one,
+# a git failure fails the hash instead of silently hashing a different set.
+repo_input_dir_files() {
+    local owner="$1" dir="$2" rel listing entry path
+    if [ "$owner" = . ]; then
+        rel="$dir"
+    elif [ "$dir" = "$owner" ]; then
+        rel=.
+    else
+        rel="${dir#"$owner"/}"
+    fi
+    if [ ! -e "$owner/.git" ]; then
+        find "$dir" \( -type f -o -type l \) -print
+        return
+    fi
+    listing="$(cd "$owner" && _repo_input_git ls-files --others --ignored \
+        --exclude-per-directory=.gitignore --directory -- "$rel")" || {
+        echo "build-step-input-hash: git ls-files failed in $owner" >&2
+        return 1
+    }
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        entry="${entry%/}"
+        case "$rel/" in
+            "$entry"/*)
+                # The input itself (or an ancestor) is ignored: it is a
+                # generated artifact, and all of it is the input.
+                find "$dir" \( -type f -o -type l \) -print
+                return
+                ;;
+        esac
+    done <<<"$listing"
+    listing="$(cd "$owner" && _repo_input_git ls-files --cached --others \
+        --exclude-per-directory=.gitignore -- "$rel")" || {
+        echo "build-step-input-hash: git ls-files failed in $owner" >&2
+        return 1
+    }
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        entry="${entry%/}"
+        if [ "$owner" = . ]; then path="$entry"; else path="$owner/$entry"; fi
+        if [ -L "$path" ] || [ -f "$path" ]; then
+            printf '%s\n' "$path"
+        elif [ -d "$path" ]; then
+            repo_input_dir_files "$path" "$path" || return 1
+        fi
+    done <<<"$listing"
+}
+
 repo_input_hash() {
     local repo_root="$1"
     shift
     (
         cd "$repo_root" || exit 1
-        local path
+        local path listed="" files
         for path in "$@"; do
             case "$path" in
                 literal:*)
-                    printf '%s\n' "$path"
+                    listed+="$path"$'\n'
                     continue
                     ;;
             esac
             if [ -L "$path" ]; then
-                printf '%s\n' "$path"
+                listed+="$path"$'\n'
             elif [ -d "$path" ]; then
-                find "$path" \( -type f -o -type l \) -print
+                # Collected before the pipeline so a git failure fails the
+                # hash instead of silently hashing a shorter list.
+                files="$(repo_input_dir_files "$(_repo_input_owner "$path")" "$path")" || exit 1
+                [ -z "$files" ] || listed+="$files"$'\n'
             elif [ -f "$path" ]; then
-                printf '%s\n' "$path"
+                listed+="$path"$'\n'
             fi
-        done | LC_ALL=C sort -u | while IFS= read -r relative_path; do
+        done
+        printf '%s' "$listed" | LC_ALL=C sort -u | while IFS= read -r relative_path; do
             printf '%s\0' "$relative_path"
             case "$relative_path" in
                 literal:*)

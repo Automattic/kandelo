@@ -33,6 +33,35 @@ pub(crate) const CARGO_INPUT_PREFIX: &str = "cargo:";
 struct KeyingPassMemo {
     metadata: BTreeMap<std::path::PathBuf, std::rc::Rc<serde_json::Value>>,
     digests: BTreeMap<(std::path::PathBuf, bool), [u8; 32]>,
+    /// Per repository root: the entries git reports as ignored
+    /// (`crate::input_scope`). Every directory input of every package asks
+    /// the same few repositories, so one listing serves the whole pass.
+    ignored: BTreeMap<std::path::PathBuf, std::rc::Rc<BTreeSet<std::path::PathBuf>>>,
+}
+
+/// The ignored-entry listing for repository `owner`, memoized within a
+/// [`KeyingPass`] like the closure digests above; outside one, `compute`
+/// runs every time.
+pub(crate) fn repository_ignored_entries(
+    owner: &Path,
+    compute: impl FnOnce() -> Result<BTreeSet<std::path::PathBuf>, String>,
+) -> Result<std::rc::Rc<BTreeSet<std::path::PathBuf>>, String> {
+    let hit = KEYING_PASS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|memo| memo.ignored.get(owner).cloned())
+    });
+    if let Some(entries) = hit {
+        return Ok(entries);
+    }
+    let entries = std::rc::Rc::new(compute()?);
+    KEYING_PASS.with(|slot| {
+        if let Some(memo) = slot.borrow_mut().as_mut() {
+            memo.ignored
+                .insert(owner.to_path_buf(), std::rc::Rc::clone(&entries));
+        }
+    });
+    Ok(entries)
 }
 
 thread_local! {

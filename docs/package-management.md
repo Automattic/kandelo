@@ -727,6 +727,9 @@ commit     = "<exact 40-character lowercase commit>"
   before cache lookup as described above. These stricter checks are limited to
   source-only Repository/DevShell inputs, so Archive, Default, and published
   cache-key bytes retain their historical behavior and identity.
+  Both digests leave gitignored generated output inside a tracked input
+  directory out of the key; see
+  [Ignored generated output is not a build input](#ignored-generated-output-is-not-a-build-input).
 - `repo_url` + `commit` record the project's recipe provenance.
 - `revision` is the counter the resolver hashes into the cache-key.
   Bump when output bytes legitimately change (build flag tweaks,
@@ -876,9 +879,56 @@ the rest) even if the tree underneath them changed mid-build. The drift report
 re-reads those inputs **uncached** so that case becomes visible, and says
 explicitly that the key comparison understates the drift when it fires.
 
-Note that global toolchain input digests are unfiltered directory walks of the
-working tree. `libc/musl` is therefore sensitive to build state: building musl
-in-tree adds its object files to that digest.
+Global toolchain input digests are directory walks of the working tree under
+the same ignored-output rule as every other input (below). `libc/musl` is the
+exception: in a Git checkout it keys by the submodule's gitlink entry in the
+index, so building musl in-tree does not move it.
+
+### Ignored generated output is not a build input
+
+Every directory input — a declared `build.toml` path, each directory a
+`cargo:<crate>` input expands to, the global toolchain inputs, and the
+fork-instrument tool inputs — is hashed under one rule
+(`tools/xtask/src/input_scope.rs`):
+
+- **Inside a directory the repository tracks, a file Git ignores is generated
+  output, not source, and does not enter the key.** A fuzz run's gitignored
+  `crates/fork-instrument/fuzz/target` and `fuzz/corpus` (hundreds of MB)
+  used to be hashed for every program on every keying pass, which cost hours
+  of `./run.sh setup` and moved every package identity although no source had
+  changed.
+- **An input that is itself ignored keeps hashing everything below it**
+  (a sysroot, `local-binaries/`, a package's `bin/`, any generated artifact
+  named as an input): there the artifact is the input.
+- "Ignored" is Git's own answer (`git ls-files --others --ignored
+  --directory`), asked of the repository that owns the path: the nearest
+  ancestor with a `.git` entry, and again, with its own rules, when the walk
+  enters a nested repository such as a submodule or a registry root that is
+  its own checkout. That repository's `.git` metadata is never hashed.
+- Only the committed `.gitignore` files count. `.git/info/exclude` and a
+  personal `core.excludesFile` are per-machine state; honoring them would give
+  identical trees different keys on different machines.
+- Tracked files are never ignored, even when a pattern matches them.
+  Untracked files that no rule ignores are source, so a new file changes the
+  key before it is committed. A deleted-but-still-indexed file is absent, as
+  any deleted file is: the key hashes the working tree, not the index.
+  Symlinks keep their existing meaning (hashed by target string, never
+  followed); an ignored symlink below a tracked directory is skipped.
+- With no `.git` entry above an input (an exported tarball, a temp-directory
+  fixture) nothing marks a file as generated, so everything is hashed. With a
+  `.git` entry that Git cannot read (Git missing, a broken worktree link, an
+  unsafe repository), keying fails loudly rather than guessing, because a
+  silent fallback would give one tree two identities.
+
+The record format did not change: a tree with no ignored files keys exactly as
+it did before the rule. The shell staleness stamps follow the same rule:
+`scripts/fork-instrument-tool-input-hash.sh` (the installed
+`wasm-fork-instrument` stamp) and `scripts/build-step-input-hash.sh` (the
+`rootfs.vfs` and `host/dist` stamps).
+
+A build that really consumes a gitignored file from inside a tracked input
+directory must name that file (or its ignored directory) as its own input;
+the directory input alone no longer covers it.
 
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
