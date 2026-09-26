@@ -443,7 +443,10 @@ async function main() {
     }
 
     let programPath: string;
-    if (name.endsWith(".wasm")) {
+    if (name.endsWith(".wasm") || (isAbsolute(name) && existsSync(name))) {
+        // WHY: cross-built programs for a target without an executable
+        // suffix are still Wasm modules (FFmpeg's FATE runs `…/ffmpeg`
+        // through --target-exec); an explicit absolute path is unambiguous.
         programPath = resolve(name);
     } else if (builtinPrograms[name]) {
         programPath = builtinPrograms[name]!;
