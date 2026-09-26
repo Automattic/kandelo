@@ -15,6 +15,8 @@ describe("browser demo CORS proxy configuration", () => {
         "accept",
         "content-type",
         "git-protocol",
+        "if-range",
+        "range",
         "wp_blog",
         "wp_install",
       ],

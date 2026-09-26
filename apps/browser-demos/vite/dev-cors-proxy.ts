@@ -3,9 +3,14 @@ import type {
   IncomingMessage,
   ServerResponse,
 } from "node:http";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "../lib/browser-cors-proxy";
 
 export const DEV_CORS_PROXY_MAX_REQUEST_BYTES = 1024 * 1024;
+// Bounds the bytes one relayed response actually carries. A ranged response
+// carries only its slice, so a small read of a huge entity stays in bounds.
 export const DEV_CORS_PROXY_MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST"]);
@@ -28,9 +33,11 @@ const ALLOWED_REQUEST_HEADERS = new Set(
 // Copying an arbitrary upstream header would therefore give an external host
 // same-origin authority such as clearing storage, setting client hints, or
 // changing connection policy. Keep this to inert payload/cache metadata.
+// `content-range` qualifies: it only locates a 206 body within its entity.
 const ALLOWED_RESPONSE_HEADERS = new Set([
   "accept-ranges",
   "cache-control",
+  "content-range",
   "content-type",
   "etag",
   "expires",
@@ -45,7 +52,7 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 }
 
 /**
- * Preserve only inert cache/data and Git protocol headers.
+ * Preserve only inert cache/data, byte-range, and Git protocol headers.
  *
  * WHY: a denylist lets newly standardized browser or proxy authority cross
  * this boundary by default. New forwarded headers need an explicit review.
@@ -61,6 +68,15 @@ export function devCorsProxyRequestHeaders(
     if (!ALLOWED_REQUEST_HEADERS.has(lower)) continue;
     const value = headerValue(rawValue);
     if (value !== undefined) headers.set(name, value);
+  }
+  if (headers.has("range")) {
+    // WHY: byte offsets address one representation. A fetch that negotiated
+    // a compressed one and decoded it would relay a 206 body that is not the
+    // bytes its Content-Range names. Standard Fetch (browsers, Node's undici)
+    // also appends this for a ranged request, so upstream may see the value
+    // listed twice; that is the same field value. The relay states it itself
+    // rather than depend on the injected fetch implementation.
+    headers.set("accept-encoding", "identity");
   }
   return headers;
 }
@@ -115,22 +131,55 @@ function readRequestBody(request: IncomingMessage): Promise<Uint8Array> {
   });
 }
 
-async function readResponseBody(response: Response): Promise<Uint8Array> {
-  if (response.body === null) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+async function* boundedResponseBytes(
+  source: AsyncIterable<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
   let total = 0;
-  for (;;) {
-    const result = await reader.read();
-    if (result.done) break;
-    total += result.value.byteLength;
+  for await (const chunk of source) {
+    total += chunk.byteLength;
     if (total > DEV_CORS_PROXY_MAX_RESPONSE_BYTES) {
-      await reader.cancel();
       throw new EntityTooLargeError();
     }
-    chunks.push(result.value);
+    yield chunk;
   }
-  return Buffer.concat(chunks, total);
+}
+
+/**
+ * Stream the upstream body to the client without buffering it.
+ *
+ * WHY: the relay only moves bytes; holding a whole response in memory made
+ * its size cap a memory cap. Streaming also lets a client disconnect reach
+ * upstream: pipeline() cancels the source when the client response closes.
+ */
+async function streamResponseBody(
+  upstream: Response,
+  response: ServerResponse,
+): Promise<void> {
+  if (upstream.body === null) {
+    response.end();
+    return;
+  }
+  await pipeline(
+    Readable.fromWeb(upstream.body as NodeReadableStream<Uint8Array>),
+    boundedResponseBytes,
+    response,
+  );
+}
+
+/**
+ * Forward Content-Length only when it describes the bytes the client gets.
+ *
+ * Node's fetch decodes a Content-Encoding it negotiated, which leaves the
+ * upstream length describing encoded bytes the relay never sends.
+ */
+function relayedContentLength(upstream: Response): string | undefined {
+  const raw = upstream.headers.get("content-length");
+  if (raw === null || !/^\d+$/.test(raw)) return undefined;
+  const encoding = upstream.headers.get("content-encoding");
+  if (encoding !== null && encoding.trim().toLowerCase() !== "identity") {
+    return undefined;
+  }
+  return raw;
 }
 
 function fail(response: ServerResponse, status: number, message: string): void {
@@ -213,6 +262,11 @@ export async function handleDevCorsProxyRequest(
  * WHY: Git smart HTTP discovers a repository with GET, then transfers its
  * protocol request with POST. A GET-only relay lets guest Git start discovery
  * but always fails before it can fetch any objects.
+ *
+ * Byte-range reads pass through unchanged: `Range`/`If-Range` go upstream,
+ * the upstream status (including `206`) and `Content-Range` come back, and
+ * the body streams. The relay never interprets range syntax; a client must
+ * still treat a `200` answer to a ranged request as the whole entity.
  */
 export async function relayDevCorsProxyRequest(
   request: IncomingMessage,
@@ -274,10 +328,20 @@ export async function relayDevCorsProxyRequest(
     return;
   }
 
+  // WHY: a client that gives up (an aborted fetch, a closed tab) must not
+  // leave the relay downloading on its behalf. Before the body streams this
+  // signal cancels the upstream request; afterwards pipeline() does.
+  const upstreamAbort = new AbortController();
+  const abortUpstream = () => {
+    if (!response.writableFinished) upstreamAbort.abort();
+  };
+  response.once("close", abortUpstream);
+
   try {
     const upstream = await fetchImpl(targetUrl, {
       method,
       headers: devCorsProxyRequestHeaders(request.headers),
+      signal: upstreamAbort.signal,
       body:
         method === "POST" && requestBody.byteLength > 0
           ? Uint8Array.from(requestBody).buffer
@@ -296,6 +360,8 @@ export async function relayDevCorsProxyRequest(
       fail(response, 502, "Git upload-pack redirects are not supported");
       return;
     }
+    // For a 206 this is the slice length, not the entity length, so a small
+    // range of an entity larger than the cap is relayed.
     const rawDeclaredLength = upstream.headers.get("content-length");
     const declaredLength = Number(rawDeclaredLength ?? 0);
     if (
@@ -318,17 +384,30 @@ export async function relayDevCorsProxyRequest(
       return;
     }
 
-    const bytes = await readResponseBody(upstream);
     response.statusCode = upstream.status;
     response.statusMessage = upstream.statusText;
     copySafeResponseHeaders(upstream.headers, response);
-    response.setHeader("Content-Length", String(bytes.byteLength));
-    response.end(Buffer.from(bytes));
+    const contentLength = relayedContentLength(upstream);
+    if (contentLength !== undefined) {
+      response.setHeader("Content-Length", contentLength);
+    }
+    await streamResponseBody(upstream, response);
   } catch (error) {
+    if (response.headersSent) {
+      // The status line is already on the wire, so a late failure (an upstream
+      // reset, or a body that outgrew an undeclared length past the cap) can
+      // only be reported by cutting the response short. The client sees a
+      // truncated transfer, never a complete-looking body.
+      response.destroy();
+      return;
+    }
+    if (upstreamAbort.signal.aborted) return;
     if (error instanceof EntityTooLargeError) {
       fail(response, 413, "Response Entity Too Large");
       return;
     }
     fail(response, 502, "Bad Gateway");
+  } finally {
+    response.off("close", abortUpstream);
   }
 }

@@ -6,6 +6,7 @@ import {
 } from "node:http";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -129,15 +130,30 @@ describe("development CORS proxy", () => {
       authorization: "Bearer secret",
       "cache-control": "no-cache",
       range: "bytes=0-9",
+      "if-range": '"v1"',
+      "accept-encoding": "gzip, br",
       "x-arbitrary-metadata": "not transport authority",
     });
 
     expect(Object.fromEntries(projected.entries())).toEqual({
       accept: "application/json",
+      "accept-encoding": "identity",
       "content-type": "application/json",
       "git-protocol": "version=2",
+      "if-range": '"v1"',
+      range: "bytes=0-9",
       wp_blog: "https://blog.example/",
       wp_install: "yes",
+    });
+  });
+
+  it("leaves content negotiation to Fetch when no range is requested", () => {
+    const projected = devCorsProxyRequestHeaders({
+      accept: "text/plain",
+      "accept-encoding": "identity",
+    });
+    expect(Object.fromEntries(projected.entries())).toEqual({
+      accept: "text/plain",
     });
   });
 
@@ -434,6 +450,265 @@ describe("development CORS proxy", () => {
       });
       expect(oversized.status).toBe(413);
     } finally {
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("relays a real ranged read as the exact requested bytes", async () => {
+    // Byte N of the entity is N mod 251, so a slice from the wrong offset
+    // cannot match the expected bytes.
+    const entity = Buffer.from(
+      Array.from({ length: 4096 }, (_, index) => index % 251),
+    );
+    const observed: IncomingHttpHeaders[] = [];
+    const upstream = createServer((request, response) => {
+      observed.push(request.headers);
+      const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? "");
+      if (match === null) {
+        response.writeHead(200, {
+          "Accept-Ranges": "bytes",
+          "Content-Length": String(entity.byteLength),
+        });
+        response.end(entity);
+        return;
+      }
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), entity.byteLength - 1);
+      response.writeHead(206, {
+        "Accept-Ranges": "bytes",
+        "Content-Length": String(end - start + 1),
+        "Content-Range": `bytes ${start}-${end}/${entity.byteLength}`,
+        "Content-Type": "application/zip",
+        ETag: '"v1"',
+      });
+      response.end(entity.subarray(start, end + 1));
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+
+    try {
+      const tail = await sendRequest({
+        url: proxyUrl(relayRoot, `${upstreamRoot}/archive.zip`),
+        method: "GET",
+        headers: { Range: "bytes=4074-4095", "If-Range": '"v1"' },
+      });
+      expect(tail.status).toBe(206);
+      expect(tail.headers["content-range"]).toBe("bytes 4074-4095/4096");
+      expect(tail.headers["content-length"]).toBe("22");
+      expect(tail.headers["accept-ranges"]).toBe("bytes");
+      expect(tail.body).toEqual(entity.subarray(4074, 4096));
+      expect(tail.body).not.toEqual(entity.subarray(0, 22));
+
+      expect(observed[0]!.range).toBe("bytes=4074-4095");
+      expect(observed[0]!["if-range"]).toBe('"v1"');
+      // Fetch appends its own `identity` for a ranged request, so the field
+      // may list it twice; every listed coding must be identity.
+      expect(
+        observed[0]!["accept-encoding"]!.split(",").map((coding) =>
+          coding.trim()
+        ),
+      ).toSatisfy((codings: string[]) =>
+        codings.length > 0 && codings.every((coding) => coding === "identity")
+      );
+
+      const whole = await sendRequest({
+        url: proxyUrl(relayRoot, `${upstreamRoot}/archive.zip`),
+        method: "GET",
+      });
+      expect(whole.status).toBe(200);
+      expect(whole.headers["content-range"]).toBeUndefined();
+      expect(whole.body).toEqual(entity);
+    } finally {
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("relays a small slice of an entity larger than the response cap", async () => {
+    const entityLength = 4 * 1024 * 1024 * 1024;
+    const sliceStart = entityLength - 16;
+    const slice = Buffer.from("PK\u0005\u0006-end-of-4GiB");
+    expect(slice.byteLength).toBe(16);
+    const upstream = createServer((request, response) => {
+      if (request.headers.range === `bytes=${sliceStart}-${entityLength - 1}`) {
+        response.writeHead(206, {
+          "Content-Length": "16",
+          "Content-Range": `bytes ${sliceStart}-${entityLength - 1}/${entityLength}`,
+        });
+        response.end(slice);
+        return;
+      }
+      // Declaring the whole entity is enough; never send 4 GiB.
+      response.writeHead(200, { "Content-Length": String(entityLength) });
+      response.end();
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+
+    try {
+      expect(entityLength).toBeGreaterThan(DEV_CORS_PROXY_MAX_RESPONSE_BYTES);
+      const ranged = await sendRequest({
+        url: proxyUrl(relayRoot, `${upstreamRoot}/huge.zip`),
+        method: "GET",
+        headers: { Range: `bytes=${sliceStart}-${entityLength - 1}` },
+      });
+      expect(ranged.status).toBe(206);
+      expect(ranged.headers["content-range"]).toBe(
+        `bytes ${sliceStart}-${entityLength - 1}/${entityLength}`,
+      );
+      expect(ranged.body).toEqual(slice);
+
+      const whole = await sendRequest({
+        url: proxyUrl(relayRoot, `${upstreamRoot}/huge.zip`),
+        method: "GET",
+      });
+      expect(whole.status).toBe(413);
+    } finally {
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("relays a range-ignoring 200 verbatim instead of shaping a 206", async () => {
+    const entity = Buffer.from("0123456789abcdef");
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Length": String(entity.byteLength) });
+      response.end(entity);
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+
+    try {
+      const result = await sendRequest({
+        url: proxyUrl(relayRoot, `${upstreamRoot}/no-ranges`),
+        method: "GET",
+        headers: { Range: "bytes=8-11" },
+      });
+      expect(result.status).toBe(200);
+      expect(result.headers["content-range"]).toBeUndefined();
+      expect(result.body).toEqual(entity);
+    } finally {
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("streams the body instead of buffering the whole response", async () => {
+    let finishUpstream!: () => void;
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/octet-stream" });
+      response.write("first chunk");
+      finishUpstream = () => response.end("last chunk");
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+
+    try {
+      const response = await fetch(proxyUrl(relayRoot, `${upstreamRoot}/slow`));
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      // The relay delivered bytes while upstream is still holding its body
+      // open, which a buffering relay cannot do.
+      expect(Buffer.from(first.value!).toString()).toBe("first chunk");
+      finishUpstream();
+      let rest = "";
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        rest += Buffer.from(next.value).toString();
+      }
+      expect(rest).toBe("last chunk");
+    } finally {
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("cancels the upstream request when the client aborts", async () => {
+    const upstreamClosed: string[] = [];
+    let requestSeen!: () => void;
+    const seen = new Promise<void>((resolve) => {
+      requestSeen = resolve;
+    });
+    const upstream = createServer((request, response) => {
+      response.once("close", () => upstreamClosed.push(request.url ?? ""));
+      requestSeen();
+      if (request.url === "/streaming") {
+        response.writeHead(200);
+        response.write("partial");
+      }
+      // Otherwise hold the request open without ever answering.
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+
+    try {
+      // Before headers: only the relay's abort signal can reach upstream.
+      const beforeHeaders = new AbortController();
+      const pending = fetch(proxyUrl(relayRoot, `${upstreamRoot}/stalled`), {
+        signal: beforeHeaders.signal,
+      });
+      await seen;
+      beforeHeaders.abort();
+      await expect(pending).rejects.toThrow();
+      await expect.poll(() => upstreamClosed).toContain("/stalled");
+
+      // Mid-body: dropping the client response cancels the upstream body.
+      const midBody = new AbortController();
+      const response = await fetch(
+        proxyUrl(relayRoot, `${upstreamRoot}/streaming`),
+        { signal: midBody.signal },
+      );
+      await response.body!.getReader().read();
+      midBody.abort();
+      await expect.poll(() => upstreamClosed).toContain("/streaming");
+    } finally {
+      upstream.closeAllConnections();
+      relay.closeAllConnections();
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("truncates an undeclared body that outgrows the cap mid-stream", async () => {
+    const chunk = Buffer.alloc(1024 * 1024);
+    const chunkCount = DEV_CORS_PROXY_MAX_RESPONSE_BYTES / chunk.byteLength + 1;
+    const upstream = createServer((_request, response) => {
+      // Chunked, so no Content-Length lets the relay reject it up front.
+      response.writeHead(200, { "Content-Type": "application/octet-stream" });
+      Readable.from(
+        (function* () {
+          for (let index = 0; index < chunkCount; index += 1) yield chunk;
+        })(),
+      ).pipe(response);
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+
+    try {
+      const outcome = await new Promise<{ status: number; complete: boolean }>(
+        (resolve, reject) => {
+          const request = httpRequest(
+            proxyUrl(relayRoot, `${upstreamRoot}/unbounded`),
+            { agent: false, headers: { Connection: "close" } },
+            (response) => {
+              response.resume();
+              response.once("end", () =>
+                resolve({ status: response.statusCode ?? 0, complete: true }));
+              response.once("error", () =>
+                resolve({ status: response.statusCode ?? 0, complete: false }));
+              response.once("aborted", () =>
+                resolve({ status: response.statusCode ?? 0, complete: false }));
+            },
+          );
+          request.once("error", reject);
+          request.end();
+        },
+      );
+      expect(outcome).toEqual({ status: 200, complete: false });
+    } finally {
+      upstream.closeAllConnections();
       await Promise.all([close(relay), close(upstream)]);
     }
   });

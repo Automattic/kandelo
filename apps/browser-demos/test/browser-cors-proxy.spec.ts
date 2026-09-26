@@ -27,6 +27,8 @@ const EFFECTIVE_PROXY_CONFIG = {
     "accept",
     "content-type",
     "git-protocol",
+    "if-range",
+    "range",
     "wp_blog",
     "wp_install",
   ],
@@ -128,7 +130,7 @@ test("Vite serves a service worker with the complete proxy profile", async ({
   expect(source).not.toContain("__CORS_PROXY_CONFIG__");
   expect(source).not.toContain("__CORS_PROXY_URL__");
   expect(source).toContain(
-    '"allowedRequestHeaderNames":["accept","content-type","git-protocol","wp_blog","wp_install"]',
+    '"allowedRequestHeaderNames":["accept","content-type","git-protocol","if-range","range","wp_blog","wp_install"]',
   );
   expect(source).toContain('"allowAnonymousGetHeaderOmission":true');
 });
@@ -270,6 +272,119 @@ test("service worker projects both configured proxy boundaries", async ({
     expect(corsErrors).toEqual([]);
   } finally {
     await Promise.all([close(app), close(proxy)]);
+  }
+});
+
+test("service worker relays byte-range reads through the development relay", async ({
+  page,
+}) => {
+  // Byte N of the entity is N mod 251, so a slice from the wrong offset
+  // cannot match the expected bytes.
+  const entity = Buffer.from(
+    Array.from({ length: 8192 }, (_, index) => index % 251),
+  );
+  let streamingClosed = false;
+  const upstreamRanges: Array<string | undefined> = [];
+  const upstream = createServer((request, response) => {
+    upstreamRanges.push(request.headers.range);
+    if (request.url === "/streaming") {
+      // Send one chunk and hold the body open: only a cancellation that
+      // crosses the service worker and the relay can close this request.
+      response.once("close", () => {
+        streamingClosed = true;
+      });
+      response.writeHead(206, {
+        "Content-Range": `bytes 0-${entity.byteLength - 1}/${entity.byteLength}`,
+        "Content-Type": "application/octet-stream",
+      });
+      response.write(entity.subarray(0, 1024));
+      return;
+    }
+    const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? "");
+    if (request.url === "/ranged" && match !== null) {
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      response.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${entity.byteLength}`,
+        "Content-Type": "application/octet-stream",
+      });
+      response.end(entity.subarray(start, end + 1));
+      return;
+    }
+    // A range-ignoring origin, like the production proxy today.
+    response.writeHead(200, { "Content-Type": "application/octet-stream" });
+    response.end(entity);
+  });
+  const upstreamRoot = await listen(upstream);
+
+  try {
+    await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/service-worker.js", {
+        scope: "/",
+        updateViaCache: "none",
+      });
+      await navigator.serviceWorker.ready;
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+
+    const results = await page.evaluate(async (root) => {
+      async function read(path: string, range: string) {
+        const response = await fetch(`${root}${path}`, {
+          headers: { Range: range },
+        });
+        return {
+          status: response.status,
+          contentRange: response.headers.get("content-range"),
+          bytes: Array.from(new Uint8Array(await response.arrayBuffer())),
+        };
+      }
+      return {
+        tail: await read("/ranged", "bytes=8170-8191"),
+        middle: await read("/ranged", "bytes=1000-1015"),
+        ignored: await read("/no-ranges", "bytes=1000-1015"),
+      };
+    }, upstreamRoot);
+
+    expect(results.tail).toEqual({
+      status: 206,
+      contentRange: "bytes 8170-8191/8192",
+      bytes: Array.from(entity.subarray(8170, 8192)),
+    });
+    expect(results.middle).toEqual({
+      status: 206,
+      contentRange: "bytes 1000-1015/8192",
+      bytes: Array.from(entity.subarray(1000, 1016)),
+    });
+    // A range-ignoring answer stays a 200 with the whole entity from offset
+    // 0; nothing on the path reshapes it into a fake slice.
+    expect(results.ignored.status).toBe(200);
+    expect(results.ignored.contentRange).toBeNull();
+    expect(results.ignored.bytes).toEqual(Array.from(entity));
+    expect(upstreamRanges).toEqual([
+      "bytes=8170-8191",
+      "bytes=1000-1015",
+      "bytes=1000-1015",
+    ]);
+
+    // Abandoning a read mid-body cancels the upstream transfer. An abort
+    // before response headers is not covered: Chromium and WebKit did not
+    // propagate it to the service worker's request signal when measured, so
+    // it is a documented browser boundary (docs/browser-support.md).
+    await page.evaluate(async (root) => {
+      const controller = new AbortController();
+      const response = await fetch(`${root}/streaming`, {
+        headers: { Range: "bytes=0-" },
+        signal: controller.signal,
+      });
+      await response.body!.getReader().read();
+      controller.abort();
+    }, upstreamRoot);
+    await expect.poll(() => streamingClosed, { timeout: 10_000 }).toBe(true);
+  } finally {
+    upstream.closeAllConnections();
+    await close(upstream);
   }
 });
 

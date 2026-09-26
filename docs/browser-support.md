@@ -449,8 +449,9 @@ proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
 directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
-`wp_blog`, and `wp_install`. Every actual proxy boundary projects by
-case-insensitive field name only and preserves browser-representable values and
+`If-Range`, `Range`, `wp_blog`, and `wp_install`. Every actual proxy boundary
+projects by case-insensitive field name only and preserves
+browser-representable values and
 occurrences as far as Fetch permits. Request fields the browser sets or
 forbids on every `fetch()` — the Fetch forbidden request-header names plus
 browser-owned identity/client-hint fields such as `content-length`,
@@ -469,6 +470,55 @@ dispatch. Any other application-owned unsupported field still fails a
 credentialed, body-bearing, or non-GET request before dispatch. Direct Fetch
 attempts remain unprojected. The development same-origin relay enforces the same
 profile as production.
+
+#### Byte-range reads through the proxy
+
+`Range` and `If-Range` are in the profile so that a byte-range read (for
+example, reading a ZIP archive's central directory from its last 64 KiB
+without downloading the archive) can reach the origin. They are relayed
+opaquely: no Kandelo proxy boundary parses range syntax.
+
+Cancelling a read that the service worker proxies reaches the relay once
+response headers have arrived: cancelling the body cancels the proxied
+transfer. Before headers it depends on the browser. The service worker copies
+the page request's abort signal onto the proxied request, but measured on
+2026-09-26 in Playwright Chromium and WebKit, a page abort before headers
+never fired that signal (a plain pass-through `fetch(event.request)` behaved
+the same way). The upstream request then runs until it answers. This is a
+browser boundary, not relay behavior: a direct abort of a relay request
+cancels upstream in both engines.
+
+Whether a range is honored depends on the relay that answers:
+
+- **Development (`__kandelo_cors_proxy`) is range-capable.** It forwards
+  `Range`/`If-Range`, asks upstream for the identity encoding so byte offsets
+  address the stored bytes, relays the upstream status verbatim (a `206`
+  stays a `206`), exposes `Content-Range`, and streams the body. Its 100 MiB
+  cap bounds the bytes one response actually carries, so a 16-byte slice of a
+  4 GiB file is relayed while an undeclared body that outgrows the cap is cut
+  off mid-transfer. A client disconnect cancels the upstream request, before
+  or after response headers.
+- **The default production proxy is not range-capable yet.** Measured on
+  2026-09-26, `wordpress-playground-cors-proxy.net` answers a ranged request
+  with `200` and the whole entity, and its preflight does not list `Range`.
+  A ranged read through it therefore either fails at CORS preflight or
+  arrives as the complete entity. It never arrives as the requested slice.
+  The fix belongs to that service, not to Kandelo.
+
+A `200` answer to a ranged request is legal HTTP: any server or relay may
+ignore `Range`. Kandelo code that issues a ranged read must use
+`fetchByteRange()` from `host/src/networking/byte-range-fetch.ts`. The helper
+returns `partial` only for a `206` whose `Content-Range` is exactly the range
+requested, and `bytes()` rejects a body of the wrong length. A `200` becomes
+`whole-entity`: a body that starts at offset 0 and is never the slice. Any
+other answer becomes `failed`.
+
+Guest HTTP(S) requests reach the proxy through the same profile and get the
+relayed status unchanged. The Node.js host never projects guest requests; it
+fetches them directly with `Range` intact. Behind a range-capable relay, a
+guest `curl -r` therefore sees the same `206` on both hosts. Behind the
+production proxy it sees a `200`, which HTTP clients already treat as "range
+not honored".
 
 Bridge initialization now rejects typed CacheStorage and transition failures.
 A worker disappearance or lost acknowledgement after `postMessage` remains a

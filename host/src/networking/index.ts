@@ -7,6 +7,16 @@ export {
   validateBrowserCorsProxyConfig,
 } from "./browser-cors-proxy";
 export type { BrowserCorsProxyConfig, HttpHeaderOccurrence } from "./browser-cors-proxy";
+export { byteRangeHeaderValue, fetchByteRange } from "./byte-range-fetch";
+export type {
+  ByteRange,
+  ByteRangeFetch,
+  ByteRangeFetchOptions,
+  ByteRangeFetchResult,
+  FailedByteRange,
+  PartialByteRange,
+  WholeEntityInsteadOfRange,
+} from "./byte-range-fetch";
 export {
   LocalVirtualNetwork,
   VirtualNetworkBackend,
