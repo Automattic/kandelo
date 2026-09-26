@@ -2878,11 +2878,6 @@ fn render_ts_module() -> String {
     out.push_str(
         "export type ProcessForkMode =\n  | typeof PROCESS_FORK_MODE_FORK\n  | typeof PROCESS_FORK_MODE_VFORK;\n",
     );
-    out.push_str(&format!(
-        "/** Host-only `kernel_fork_process` mode bit: the kernel completes the launch. */\n\
-         export const PROCESS_FORK_LAUNCH_KERNEL_COMPLETES = {} as const;\n",
-        shared::fork_contract::LAUNCH_KERNEL_COMPLETES,
-    ));
     let process_fork_import = shared::abi::WPK_FORK_PROCESS_IMPORT;
     out.push_str(&format!(
         "export const WPK_FORK_PROCESS_IMPORT = {{ module: {:?}, name: {:?}, params: {}, results: {} }} as const;\n",
@@ -4866,10 +4861,6 @@ fn fork_lifecycle_event_wire() -> Value {
         json!(shared::fork_lifecycle_event_wire::RECORD_BYTES),
     );
     root.insert("fields".into(), Value::Array(fields));
-    root.insert(
-        "launch_kernel_completes".into(),
-        json!(shared::fork_contract::LAUNCH_KERNEL_COMPLETES),
-    );
     for (group, values) in groups {
         root.insert(group.into(), Value::Object(values.into_iter().collect()));
     }
@@ -8547,7 +8538,7 @@ mod tests {
             wire["kinds"],
             json!({ "parentComplete": 1, "vforkAwaitingQuiescence": 2 })
         );
-        assert_eq!(wire["launch_kernel_completes"], json!(256));
+        assert!(wire.get("launch_kernel_completes").is_none());
         let rendered = render_ts_fork_lifecycle_event_wire();
         assert!(rendered.contains("export const FORK_LIFECYCLE_EVENT_RECORD_BYTES = 24 as const;"));
         assert!(rendered.contains("export const VFORK_RELEASE_DISPOSITIONS = {\n  resume: 0,\n  contain: 1,\n} as const;"));

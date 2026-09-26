@@ -248,57 +248,22 @@ pub mod fork_contract {
     pub const MODE_FORK: u32 = Mode::Fork as u32;
     pub const MODE_VFORK: u32 = Mode::Vfork as u32;
 
-    /// Host-only request bit on the `kernel_fork_process` export's `mode`
-    /// argument: the kernel owns this launch's completion.
-    ///
-    /// With the bit set the kernel records a `PendingForkLaunch` on the
-    /// child, answers `SYS_FORK_REPLAY_READY` from it, and reports the
-    /// parent's SYS_FORK/SYS_VFORK result through the fork-lifecycle event
-    /// queue ([`super::fork_lifecycle_event_wire`]). A vfork additionally
-    /// records the borrowed address space and its borrower. Without the bit
-    /// the kernel keeps no launch state and emits no fork-lifecycle events;
-    /// the host that created the child completes the parent itself.
-    ///
-    /// WHY a separate bit instead of a new `Mode`: the mode is guest-carried
-    /// (the `kernel_fork` import) and names *what* the guest asked for;
-    /// who completes the parent is a property of the host's launch path,
-    /// which the guest must never select. The bit is outside every `Mode`
-    /// value, so `Mode::from_u32` still refuses it.
-    pub const LAUNCH_KERNEL_COMPLETES: u32 = 1 << 8;
-
-    /// Split a `kernel_fork_process` mode argument into the guest-visible
-    /// mode and the host-only kernel-completion request.
-    pub const fn decode_process_request(value: u32) -> Option<(Mode, bool)> {
-        let kernel_completes = value & LAUNCH_KERNEL_COMPLETES != 0;
-        match Mode::from_u32(value & !LAUNCH_KERNEL_COMPLETES) {
-            Some(mode) => Some((mode, kernel_completes)),
-            None => None,
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn process_request_keeps_mode_and_completion_bit_separate() {
-            assert_eq!(decode_process_request(MODE_FORK), Some((Mode::Fork, false)));
-            assert_eq!(decode_process_request(MODE_VFORK), Some((Mode::Vfork, false)));
-            assert_eq!(
-                decode_process_request(MODE_VFORK | LAUNCH_KERNEL_COMPLETES),
-                Some((Mode::Vfork, true))
-            );
-            assert_eq!(Mode::from_u32(LAUNCH_KERNEL_COMPLETES), None);
-            assert_eq!(decode_process_request(2), None);
-            assert_eq!(decode_process_request(LAUNCH_KERNEL_COMPLETES | 2), None);
-        }
-    }
+    // There is no host-only "the kernel completes this launch" bit. Every
+    // `kernel_fork_process` launch is kernel-completed: the kernel records a
+    // `PendingForkLaunch` on the child, answers `SYS_FORK_REPLAY_READY` from
+    // it, and reports the parent's SYS_FORK/SYS_VFORK result through the
+    // fork-lifecycle event queue ([`super::fork_lifecycle_event_wire`]).
+    // Lane F stages 2b and 2d moved the Node, browser and native hosts onto
+    // that path, after which a bit that every host must set carried no
+    // information. The mode argument is therefore exactly the guest-carried
+    // `Mode`, and any other value (including the retired bit 0x100) is
+    // `EINVAL`, so a host built against the old contract fails loudly.
 }
 
 /// Packed kernel/host wire layout for one fork-lifecycle event.
 ///
-/// The kernel owns fork and vfork launch state for launches created with
-/// [`fork_contract::LAUNCH_KERNEL_COMPLETES`]. Each state change the host
+/// The kernel owns fork and vfork launch state for every launch created by
+/// `kernel_fork_process`. Each state change the host
 /// must act on is queued as one fixed 24-byte little-endian record and
 /// drained with `kernel_drain_fork_lifecycle_events(out_ptr, out_len,
 /// max_events)`, which returns the number of records written (never
@@ -4015,8 +3980,7 @@ pub mod abi {
         pub const SYS_THREAD_CANCEL: u32 = 415;
         /// Issued by a fork child on its own channel once replay reached the
         /// inherited fork site. The kernel validates that the caller is a live
-        /// child of a kernel-completed launch (see
-        /// `fork_contract::LAUNCH_KERNEL_COMPLETES`), records the transition,
+        /// fork child whose launch is still pending, records the transition,
         /// and returns 0, which becomes the child's fork() return. Not a libc
         /// syscall: only the fork replay path issues it. No arguments.
         pub const SYS_FORK_REPLAY_READY: u32 = 416;

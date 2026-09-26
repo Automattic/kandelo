@@ -1047,32 +1047,21 @@ impl ProcessTable {
         )
     }
 
-    /// Fork a process with an explicit host address-space lifetime mode.
+    /// Fork on behalf of a validated parent task.
     ///
-    /// Both modes inherit identical POSIX process state. The vfork marker is
-    /// kernel-internal authority that rejects creation of another process or
-    /// pthread owner while the child still borrows its parent's Memory.
+    /// Both modes inherit identical POSIX process state. Every launch is
+    /// kernel-completed: the child carries a `PendingForkLaunch` (and, for
+    /// vfork, the borrowed address space and its borrower record), and the
+    /// parent's SYS_FORK/SYS_VFORK result is reported through the
+    /// fork-lifecycle event queue rather than decided by the host. The vfork
+    /// marker is kernel-internal authority that rejects creation of another
+    /// process or pthread owner while the child still borrows its parent's
+    /// Memory.
     pub fn fork_process_for_caller_with_mode(
         &mut self,
         parent_pid: u32,
         caller_tid: u32,
         mode: wasm_posix_shared::fork_contract::Mode,
-    ) -> Result<u32, Errno> {
-        self.fork_process_for_caller_with_request(parent_pid, caller_tid, mode, false)
-    }
-
-    /// Fork on behalf of a validated parent task.
-    ///
-    /// `kernel_completes` is `fork_contract::LAUNCH_KERNEL_COMPLETES`: the
-    /// kernel then records the launch on the child (and, for vfork, the
-    /// borrowed address space) and reports the parent's result through the
-    /// fork-lifecycle event queue instead of leaving it to the host.
-    pub fn fork_process_for_caller_with_request(
-        &mut self,
-        parent_pid: u32,
-        caller_tid: u32,
-        mode: wasm_posix_shared::fork_contract::Mode,
-        kernel_completes: bool,
     ) -> Result<u32, Errno> {
         use crate::fork_lifecycle::{ForkLaunchPhase, PendingForkLaunch, VforkBorrow, VforkParentLink};
         use wasm_posix_shared::fork_contract::Mode;
@@ -1134,20 +1123,18 @@ impl ProcessTable {
         if mode == Mode::Vfork {
             child.address_space = parent_address_space;
         }
-        if kernel_completes {
-            child.fork_launch = Some(PendingForkLaunch {
+        child.fork_launch = Some(PendingForkLaunch {
+            parent_pid,
+            parent_tid: caller_tid,
+            mode,
+            phase: ForkLaunchPhase::Launching,
+        });
+        if mode == Mode::Vfork {
+            child.vfork_parent = Some(VforkParentLink {
                 parent_pid,
                 parent_tid: caller_tid,
-                mode,
-                phase: ForkLaunchPhase::Launching,
+                address_space: parent_address_space,
             });
-            if mode == Mode::Vfork {
-                child.vfork_parent = Some(VforkParentLink {
-                    parent_pid,
-                    parent_tid: caller_tid,
-                    address_space: parent_address_space,
-                });
-            }
         }
 
         // Bump cross-process refcounts on inherited fd state (host handles,
@@ -1161,7 +1148,7 @@ impl ProcessTable {
         child.fork_pipe_replay = build_fork_pipe_replay(&child);
 
         self.processes.insert(child_pid, child);
-        if kernel_completes && mode == Mode::Vfork {
+        if mode == Mode::Vfork {
             self.vfork_borrowers.insert(
                 parent_address_space,
                 VforkBorrow {
@@ -1185,7 +1172,7 @@ impl ProcessTable {
     /// `SYS_FORK_REPLAY_READY` from `child_pid`: its replay reached the
     /// inherited fork site.
     ///
-    /// The caller must be a live child of a kernel-completed launch that has
+    /// The caller must be a live fork child whose launch has
     /// not reported ready before. This single check replaces the host's
     /// Worker-generation comparison and its pending-child liveness probe: the
     /// channel that issued the syscall is bound to exactly this process, and
@@ -1195,7 +1182,7 @@ impl ProcessTable {
     /// child pid. A vfork child starts running on the borrowed image; its
     /// parent stays parked until the address space is released.
     ///
-    /// Errors: `ESRCH` no live process; `EINVAL` not a kernel-completed fork
+    /// Errors: `ESRCH` no live process; `EINVAL` not a fork
     /// child (or its launch record ended with an exec); `EALREADY` readiness
     /// was already reported or the launch already resolved.
     pub fn fork_replay_ready(&mut self, child_pid: u32) -> Result<(), Errno> {

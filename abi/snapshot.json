@@ -1142,7 +1142,6 @@
       "alreadyResolved": 1,
       "rolledBack": 0
     },
-    "launch_kernel_completes": 256,
     "quiescence_reasons": {
       "exec": 1,
       "exit": 2

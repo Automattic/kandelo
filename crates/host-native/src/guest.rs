@@ -1826,6 +1826,12 @@ pub struct GuestOptions {
     /// wasm.sh`) should set this `true` — `run_guest` fails loudly (never
     /// silently skips) if it is `true` but the artifact is missing.
     pub enable_fork_module: bool,
+    /// Test hook: deliver this signal to every fork child right after it is
+    /// registered and its thread started, before its replay can report
+    /// `SYS_FORK_REPLAY_READY`. `None` (the default) in every real run. Lets
+    /// a test prove that a child killed inside its launch window still gives
+    /// the parent its pid and a reapable zombie.
+    pub fork_child_launch_signal: Option<u32>,
 }
 
 /// Boot the real `kernel.wasm` and run `guest_wasm` to completion through the
@@ -2074,6 +2080,17 @@ fn run_guest_inner(
     // above).
     let fork_process =
         kernel.get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_fork_process")?;
+    // Lane F step 2: the kernel owns every fork launch. These report what
+    // only this host can observe (a launch that could not start, a vfork
+    // image whose threads were joined) and drain the kernel's decisions.
+    let fork_launch_failed =
+        kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_fork_launch_failed")?;
+    let vfork_address_space_released = kernel
+        .get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_vfork_address_space_released")?;
+    let drain_fork_lifecycle_events = kernel
+        .get_typed_func::<(i32, u32, u32), u32>(&mut kernel_store, "kernel_drain_fork_lifecycle_events")?;
+    let generate_host_signal =
+        kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_generate_host_signal")?;
     // N1-I3b Task 1: the exec-target authority `handle_spawn` uses to source
     // the spawned child's program bytes from the in-kernel VFS instead of a
     // host-side program map. `kernel_spawn_exec_target_prepare` resolves
@@ -2342,6 +2359,20 @@ fn run_guest_inner(
     // above it exists in this host's process model).
     wait_table.lock().unwrap().parent_of.insert(pid, 0);
 
+    let fork_launch = ForkLaunchKernel {
+        fork_process,
+        launch_failed: fork_launch_failed,
+        vfork_released: vfork_address_space_released,
+        drain: drain_fork_lifecycle_events,
+        drain_scratch: KernelScratch::allocate(
+            &alloc_scratch,
+            &mut kernel_store,
+            (64 * wasm_posix_shared::fork_lifecycle_event_wire::RECORD_BYTES) as u32,
+            "the fork-lifecycle event drain",
+        )?,
+        generate_host_signal,
+    };
+
     // --- The channel pump ---------------------------------------------------
     let mut syscall_trace = Vec::new();
     let exit_code = run_pump(
@@ -2378,7 +2409,8 @@ fn run_guest_inner(
         &exec_target_prepare,
         &exec_commit,
         &exec_target_resolve_shebang,
-        &fork_process,
+        &fork_launch,
+        options.fork_child_launch_signal,
         &current_memory,
         &current_pid,
         &wait_table,
@@ -6943,8 +6975,7 @@ fn launch_process(
         channels: vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }],
         thread_handles,
         fork_format,
-        vfork_parent_release: None,
-        vfork_awaiting_child: false,
+        signal_killed: false,
     })
 }
 
@@ -6965,9 +6996,8 @@ fn launch_process(
 ///     reserved, never the parent's own (which would collide inside the
 ///     literally-shared memory).
 ///
-/// Does not set `vfork_parent_release` — the caller (`handle_fork`) does,
-/// once this returns, since only it knows the parent's own channel/request
-/// to defer.
+/// The parent's own channel stays parked in `handle_fork`'s
+/// [`ParkedForkParent`] record; the kernel decides when it completes.
 #[allow(clippy::too_many_arguments)]
 fn launch_vfork_borrowed_child(
     engine: &Engine,
@@ -7065,8 +7095,7 @@ fn launch_vfork_borrowed_child(
         channels: vec![PumpChannel { offset: child_layout.channel_offset, tid: pid, is_main: true }],
         thread_handles,
         fork_format,
-        vfork_parent_release: None,
-        vfork_awaiting_child: false,
+        signal_killed: false,
     })
 }
 
@@ -7503,6 +7532,12 @@ fn spawn_guest_thread(
                             let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
                             loop {
                                 let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                                if s == ChannelStatus::Teardown as u32 {
+                                    // The kernel ended this process while it
+                                    // was parked in fork: unwind, as the glue
+                                    // does, instead of reading a stale reply.
+                                    return Err(wasmtime::Trap::UnreachableCodeReached.into());
+                                }
                                 if s != STATUS_PENDING {
                                     break;
                                 }
@@ -9841,6 +9876,12 @@ fn drive_fork_capture_seal_and_launch_child(
     let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
     loop {
         let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+        if s == ChannelStatus::Teardown as u32 {
+            // The kernel ended this process while it was parked in fork (a
+            // fatal signal, or a vfork containment): end this thread without
+            // resuming guest code.
+            return false;
+        }
         if s != STATUS_PENDING {
             break;
         }
@@ -10071,10 +10112,9 @@ fn spawn_worker_thread(
 /// Only `fork()`/`_Fork()` (`mode != MODE_VFORK`) is serviced from a
 /// non-main channel — `handle_fork`'s vfork-is-main-thread-only invariant is
 /// unchanged by this task (a `vfork()`'d child borrows the WHOLE process
-/// address space and only one such borrow can be in flight per process,
-/// tracked by a single per-process `GuestProcess::vfork_awaiting_child`
-/// flag — extending that to multiple concurrent worker-thread borrowers is
-/// out of this task's scope). A `vfork()` call on this thread gets a
+/// address space, the kernel refuses a second borrower of one address space
+/// with `EAGAIN`, and this host's borrowed-child region is laid out for the
+/// main thread only). A `vfork()` call on this thread gets a
 /// truthful, immediate `-ENOSYS` instead of ever touching the channel:
 /// `run_pump`'s dispatch has no path for a non-main `SYS_VFORK` request, so
 /// posting one here would simply hang until the pump's 30s hard cap.
@@ -10082,9 +10122,8 @@ fn spawn_worker_thread(
 /// Known limitation (documented, not fixed by this task): this reuses the
 /// SAME `layout`-derived fork-module memory region every guest OS thread of
 /// this process (including the main thread) uses — safe as long as at most
-/// one thread of a process is mid-fork-capture/replay at any instant (the
-/// same assumption `GuestProcess::vfork_awaiting_child`'s doc comment makes
-/// for vfork). Two threads of the SAME process calling `fork()`
+/// one thread of a process is mid-fork-capture/replay at any instant. Two
+/// threads of the SAME process calling `fork()`
 /// *concurrently* is not race-safe under this design; POSIX programs that do
 /// this are already on thin ice (a forked child inherits only the calling
 /// thread, so any lock held by another thread never releases in the child),
@@ -10687,29 +10726,14 @@ struct GuestProcess {
     /// drive a real [`ForkEntry::ChildReplay`] or must fall back to
     /// [`ForkEntry::ChildPendingStub`].
     fork_format: Option<Arc<GuestForkFormat>>,
-    /// Real vfork (N1 residual): `Some` only for a BORROWED vfork child —
-    /// its still-parked parent's own `SYS_FORK`/`SYS_VFORK` channel and
-    /// request, resolved (this pump loop calls `resolve_vfork_parent_
-    /// release`) the moment THIS process reaches `_exit` or a successful
-    /// `execve`/`execveat` commit, and never before — the real POSIX vfork
-    /// contract. `None` for every ordinary process (including an ordinary
-    /// COW fork child, which never defers its parent's completion).
-    vfork_parent_release: Option<VforkParentRelease>,
-    /// Real vfork (N1 residual): `true` on a PARENT process for exactly as
-    /// long as one of its own `vfork()` calls is genuinely parked (its
-    /// `SYS_FORK`/`SYS_VFORK` channel deliberately left `STATUS_PENDING` —
-    /// see `handle_fork`'s `MODE_VFORK` branch). Without this guard, the
-    /// pump's own scan loop would see that SAME still-`STATUS_PENDING`
-    /// request on every later iteration and call `handle_fork` again —
-    /// launching a second, third, ... child from the identical request (a
-    /// self-sustaining fork bomb; this is not hypothetical, it is exactly
-    /// what happened before this field existed). Only one `vfork()` can
-    /// ever be in flight per process at a time (native's own "fork/vfork is
-    /// main-thread-only" restriction — see `kernel_fork`'s doc comment — and
-    /// a single OS thread cannot issue a second synchronous call while the
-    /// first has not returned), so a bare `bool` is enough; cleared by
-    /// `resolve_vfork_parent_release`.
-    vfork_awaiting_child: bool,
+    /// The kernel recorded this process's death by a signal (another
+    /// process's `kill`, a host-generated signal, or a vfork containment),
+    /// and the pump has recorded its wait status. From then on every one of
+    /// its threads is torn down (`CH_TEARDOWN` + join) the moment it parks
+    /// on its channel, and none of its requests is dispatched: the kernel
+    /// must never see another syscall from a process it already ended. Set
+    /// only by `retire_signal_killed_processes`.
+    signal_killed: bool,
 }
 
 /// A blocking syscall parked awaiting readiness (or its timeout deadline). The
@@ -10906,54 +10930,226 @@ fn complete_channel(
     Ok(())
 }
 
-/// Real vfork (N1 residual): what `handle_fork`'s `MODE_VFORK` branch defers
-/// instead of completing immediately — the still-parked parent's own
-/// `SYS_FORK`/`SYS_VFORK` channel and request. Resolved later by whichever
-/// pump-loop site first observes THIS specific child reaching `_exit` or a
-/// successful `execve`/`execveat` commit (see [`GuestProcess::vfork_parent_
-/// release`]'s doc comment) — never before, matching real POSIX vfork's
-/// contract that the parent stays suspended for exactly that long.
-struct VforkParentRelease {
+/// The kernel exports behind a kernel-owned fork launch (lane F step 2).
+///
+/// The kernel decides when a parked fork or vfork parent returns: at the
+/// child's `SYS_FORK_REPLAY_READY`, at its death before that, at a reported
+/// launch failure, or (vfork) once the borrowed image is released. This host
+/// keeps only what the kernel cannot observe -- whether a child realm could
+/// be launched, and whether every thread that ran on a borrowed image has
+/// been joined -- and reports those facts through these exports. It is the
+/// contract the Node and browser hosts run in `host/src/kernel-worker.ts`.
+struct ForkLaunchKernel {
+    fork_process: wasmtime::TypedFunc<(u32, u32, u32), i32>,
+    launch_failed: wasmtime::TypedFunc<(u32, u32), i32>,
+    vfork_released: wasmtime::TypedFunc<(u32, u32), i32>,
+    drain: wasmtime::TypedFunc<(i32, u32, u32), u32>,
+    /// Kernel scratch the fork-lifecycle records are drained into.
+    drain_scratch: KernelScratch,
+    /// `kernel_generate_host_signal`, used only by the test hook that kills
+    /// a fork child inside its launch window
+    /// (`GuestOptions::fork_child_launch_signal`).
+    generate_host_signal: wasmtime::TypedFunc<(u32, u32), i32>,
+}
+
+/// A parent's `SYS_FORK`/`SYS_VFORK` request, left `STATUS_PENDING` (so its
+/// calling thread stays parked) until the kernel's fork-lifecycle queue
+/// decides its result. The pump never re-dispatches a parked request.
+struct ParkedForkParent {
+    child_pid: u32,
+    process_index: usize,
+    /// The image the request was posted from. An exec of the parent replaces
+    /// `processes[process_index].memory`; the record then no longer names a
+    /// live channel even if the new image reuses the same channel offset.
     parent_mem: SharedMemory,
-    /// Index into the pump's `processes` vec owning the parked parent
-    /// channel — stable for a pid's whole lifetime (`processes` entries are
-    /// only ever appended or replaced in place via `std::mem::replace`,
-    /// never removed/reordered), so this stays valid from `handle_fork`'s
-    /// `MODE_VFORK` branch (where it is recorded as `pi`) until whichever
-    /// release call site runs, however much later that is.
-    parent_process_index: usize,
     scratch_ptr: usize,
     ch: PumpChannel,
     syscall_nr: u32,
     args: [i64; 6],
-    child_pid: u32,
 }
 
-/// Resolve a still-parked vfork parent's channel with its child's real pid,
-/// and clear the parent's own [`GuestProcess::vfork_awaiting_child`] guard
-/// so the pump's scan loop can service that channel (or a LATER `vfork()`
-/// from the same process) normally again. The two call sites (child
-/// `_exit`, child `execve`/`execveat` success) are the ONLY two ways a real
-/// vfork's borrow window ends.
-fn resolve_vfork_parent_release(
-    kernel_mem: &SharedMemory,
-    processes: &mut [GuestProcess],
-    release: VforkParentRelease,
-) -> anyhow::Result<()> {
-    if let Some(parent) = processes.get_mut(release.parent_process_index) {
-        parent.vfork_awaiting_child = false;
+impl ParkedForkParent {
+    /// Whether the parked thread still exists: same image, not killed, and
+    /// its channel is still one the pump services.
+    fn still_parked(&self, processes: &[GuestProcess]) -> bool {
+        processes.get(self.process_index).is_some_and(|p| {
+            mem_base(&p.memory) == mem_base(&self.parent_mem)
+                && !p.signal_killed
+                && p.channels.iter().any(|c| c.offset == self.ch.offset && c.tid == self.ch.tid)
+        })
     }
-    complete_channel(
-        &release.parent_mem,
-        kernel_mem,
-        release.scratch_ptr,
-        release.ch,
-        release.syscall_nr,
-        &release.args,
-        &[],
-        release.child_pid as i64,
-        0,
-    )
+}
+
+/// Report that a fork child could not be launched: no realm was started, so
+/// the kernel rolls a still-launching child back and queues the parent's
+/// `-errno`. A child that already died stays the parent's zombie.
+fn report_fork_launch_failed(
+    kernel_store: &mut Store<()>,
+    launch: &ForkLaunchKernel,
+    child_pid: u32,
+    errno: i32,
+) -> anyhow::Result<()> {
+    let outcome = launch.launch_failed.call(&mut *kernel_store, (child_pid, errno as u32))?;
+    anyhow::ensure!(
+        outcome >= 0,
+        "kernel_fork_launch_failed({child_pid}, {errno}) refused: {outcome}"
+    );
+    Ok(())
+}
+
+/// End a vfork borrow after this host tore down a realm that may have run on
+/// the parent's image: `RESUME` when every one of its threads was joined
+/// (exact quiescence), `CONTAIN` when one is still running and cannot be
+/// stopped. Called at every image end; the kernel is the authority on
+/// whether `pid` was a borrower at all (`ESRCH` when it was not).
+fn release_vfork_address_space(
+    kernel_store: &mut Store<()>,
+    launch: &ForkLaunchKernel,
+    pid: u32,
+    quiescent: bool,
+) -> anyhow::Result<()> {
+    use wasm_posix_shared::fork_lifecycle_event_wire::{RELEASE_CONTAIN, RELEASE_RESUME};
+    let disposition = if quiescent { RELEASE_RESUME } else { RELEASE_CONTAIN };
+    let rc = launch.vfork_released.call(&mut *kernel_store, (pid, disposition))?;
+    anyhow::ensure!(
+        rc == 0 || rc == -libc_errno::ESRCH,
+        "kernel_vfork_address_space_released({pid}, {disposition}) refused: {rc}"
+    );
+    Ok(())
+}
+
+/// Complete parked fork parents from the kernel's fork-lifecycle records:
+/// the one place a parked parent is completed. `KIND_VFORK_AWAITING_
+/// QUIESCENCE` needs no action here, because this host already releases at
+/// each image end (`release_vfork_address_space`).
+fn complete_parked_fork_parents(
+    kernel_store: &mut Store<()>,
+    kernel_mem: &SharedMemory,
+    launch: &ForkLaunchKernel,
+    processes: &[GuestProcess],
+    parked: &mut Vec<ParkedForkParent>,
+) -> anyhow::Result<()> {
+    use wasm_posix_shared::fork_lifecycle_event_wire as wire;
+    if parked.is_empty() {
+        return Ok(());
+    }
+    let (drain_ptr, drain_capacity) = (launch.drain_scratch.ptr(), launch.drain_scratch.capacity());
+    let max = drain_capacity / wire::RECORD_BYTES as u32;
+    loop {
+        let count = launch.drain.call(&mut *kernel_store, (drain_ptr, drain_capacity, max))?;
+        anyhow::ensure!(count <= max, "fork-lifecycle drain returned {count} of at most {max}");
+        let bytes = unsafe {
+            read_bytes(kernel_mem, drain_ptr as u32 as usize, count as usize * wire::RECORD_BYTES)
+        };
+        for record in bytes.chunks_exact(wire::RECORD_BYTES) {
+            let field = |offset: usize| {
+                i32::from_le_bytes(record[offset..offset + 4].try_into().expect("4-byte field"))
+            };
+            if field(wire::KIND_OFFSET) as u32 != wire::KIND_PARENT_COMPLETE {
+                continue;
+            }
+            let child_pid = field(wire::CHILD_PID_OFFSET) as u32;
+            let Some(index) = parked.iter().position(|p| p.child_pid == child_pid) else {
+                continue;
+            };
+            let parent = parked.swap_remove(index);
+            // A sibling thread may have exec'd the parent image, or the parent
+            // may have been killed, while this thread was parked.
+            if !parent.still_parked(processes) {
+                continue;
+            }
+            anyhow::ensure!(
+                processes[parent.process_index].pid == field(wire::PARENT_PID_OFFSET) as u32
+                    && parent.ch.tid == field(wire::PARENT_TID_OFFSET) as u32,
+                "fork child {child_pid} completed a parent this host did not park"
+            );
+            let value = field(wire::VALUE_OFFSET);
+            let (ret, errno) = if value > 0 { (value as i64, 0) } else { (-1, (-value) as u32) };
+            complete_channel(
+                &parent.parent_mem, kernel_mem, parent.scratch_ptr, parent.ch, parent.syscall_nr,
+                &parent.args, &[], ret, errno,
+            )?;
+        }
+        if count < max {
+            return Ok(());
+        }
+    }
+}
+
+/// The native kill path: retire every process the kernel has ended by a
+/// signal since the last pass.
+///
+/// Signal death is decided in the kernel (a guest `kill`, a host-generated
+/// signal, a vfork containment). This host learns of it here, as
+/// `reapKilledProcessesAfterSyscall` does on the JavaScript hosts: it records
+/// the wait status, drops the process's parked and blocked requests, and
+/// tears down every thread already parked on its channel (`CH_TEARDOWN` +
+/// join). A thread still computing cannot be stopped from outside; the pump
+/// tears it down the moment it next parks, and never dispatches its request.
+/// If the process borrowed a vfork parent's image, the borrow ends here:
+/// `RESUME` when every thread was joined, `CONTAIN` otherwise.
+#[allow(clippy::too_many_arguments)]
+fn retire_signal_killed_processes(
+    kernel_store: &mut Store<()>,
+    launch: &ForkLaunchKernel,
+    get_exit_status: &wasmtime::TypedFunc<u32, i32>,
+    get_exit_signal: &wasmtime::TypedFunc<u32, i32>,
+    processes: &mut [GuestProcess],
+    blocked: &mut Vec<BlockedOp>,
+    parked: &mut Vec<ParkedForkParent>,
+    wait_table: &Arc<Mutex<WaitTable>>,
+    root_exit_code: &mut Option<i32>,
+) -> anyhow::Result<()> {
+    for pi in 0..processes.len() {
+        if processes[pi].signal_killed || processes[pi].channels.is_empty() {
+            continue;
+        }
+        let pid = processes[pi].pid;
+        let signal = get_exit_signal.call(&mut *kernel_store, pid)?;
+        if signal <= 0 {
+            continue;
+        }
+        let code = get_exit_status.call(&mut *kernel_store, pid)?;
+        wait_table.lock().unwrap().exited.insert(pid, encode_wait_status(code, signal));
+        if pi == 0 {
+            *root_exit_code = Some(code);
+        }
+        blocked.retain(|op| op.process_index != pi);
+        parked.retain(|p| p.process_index != pi);
+        let proc_ = &mut processes[pi];
+        proc_.signal_killed = true;
+        let memory = proc_.memory.clone();
+        let parked_channels: Vec<PumpChannel> = proc_
+            .channels
+            .iter()
+            .copied()
+            .filter(|ch| {
+                unsafe { atomic_u32(&memory, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst)
+                    == STATUS_PENDING
+            })
+            .collect();
+        for ch in &parked_channels {
+            teardown_parked_thread(proc_, ch);
+        }
+        let quiescent = proc_.channels.is_empty();
+        release_vfork_address_space(kernel_store, launch, pid, quiescent)?;
+    }
+    Ok(())
+}
+
+/// Unwind one parked thread of a signal-killed process and drop its channel.
+fn teardown_parked_thread(proc_: &mut GuestProcess, ch: &PumpChannel) {
+    reclaim_parked_thread(&proc_.memory, ch);
+    if let Some(handle) = proc_.thread_handles.remove(&ch.offset) {
+        if handle.join().is_err() {
+            eprintln!(
+                "[host-native] pid {}'s signal-killed thread panicked instead of unwinding on \
+                 TEARDOWN",
+                proc_.pid
+            );
+        }
+    }
+    proc_.channels.retain(|c| c.offset != ch.offset);
 }
 
 /// Test-only hook (N1-R Task 2): counts every reclaimed guest thread whose
@@ -11052,13 +11248,18 @@ fn join_reclaimed_thread(handle: thread::JoinHandle<()>) {
 /// is the documented, out-of-scope multi-threaded-execve residual (the
 /// handle is dropped unjoined, same shape as the pre-N1-R single-channel
 /// leak this task replaces for the common, single-threaded case).
-fn reclaim_all_channels(proc_: GuestProcess) {
+///
+/// Returns whether every channel's thread was reclaimed and joined: the
+/// exact-quiescence proof a vfork release needs before the parent's image
+/// may be handed back (`release_vfork_address_space`).
+fn reclaim_all_channels(proc_: GuestProcess) -> bool {
     let GuestProcess {
         memory,
         channels,
         mut thread_handles,
         ..
     } = proc_;
+    let mut quiescent = true;
     for ch in &channels {
         let status =
             unsafe { atomic_u32(&memory, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
@@ -11066,6 +11267,7 @@ fn reclaim_all_channels(proc_: GuestProcess) {
             // Compute-bound sibling, not parked — leave it alone (see this
             // function's doc comment); drop its handle unjoined.
             thread_handles.remove(&ch.offset);
+            quiescent = false;
             continue;
         }
         reclaim_parked_thread(&memory, ch);
@@ -11073,6 +11275,7 @@ fn reclaim_all_channels(proc_: GuestProcess) {
             join_reclaimed_thread(handle);
         }
     }
+    quiescent
 }
 
 /// The channel pump: a single-threaded event loop that services every live
@@ -11143,7 +11346,8 @@ fn run_pump(
     exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, i32, u32, u32, u32), i32>,
     exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
-    fork_process: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
+    launch: &ForkLaunchKernel,
+    fork_child_launch_signal: Option<u32>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     current_pid: &Arc<Mutex<u32>>,
     wait_table: &Arc<Mutex<WaitTable>>,
@@ -11152,6 +11356,8 @@ fn run_pump(
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
     let mut blocked: Vec<BlockedOp> = Vec::new();
+    // Fork and vfork parents whose result the kernel has not decided yet.
+    let mut parked_forks: Vec<ParkedForkParent> = Vec::new();
     let hard_cap = Instant::now() + Duration::from_secs(30);
     // Set once `processes[0]` (the boot process) posts exit/exit_group; the
     // pump keeps running until every spawned child (`processes[1..]`) has
@@ -11171,6 +11377,14 @@ fn run_pump(
             );
         }
         let mut progressed = false;
+
+        // 0) Retire processes the kernel ended by a signal, and forget parked
+        // fork parents whose thread no longer exists (exec'd or killed).
+        retire_signal_killed_processes(
+            kernel_store, launch, get_exit_status, get_exit_signal, processes, &mut blocked,
+            &mut parked_forks, wait_table, &mut root_exit_code,
+        )?;
+        parked_forks.retain(|parent| parent.still_parked(processes));
 
         // 1) Re-dispatch parked blocking ops under their tokens. The kernel
         // re-decides readiness each attempt; on a timeout deadline a final
@@ -11260,6 +11474,20 @@ fn run_pump(
                     ci += 1;
                     continue;
                 }
+                // A thread of a process the kernel already killed has just
+                // parked: unwind it instead of dispatching into a dead
+                // process (see `retire_signal_killed_processes`).
+                if processes[pi].signal_killed {
+                    teardown_parked_thread(&mut processes[pi], &ch);
+                    progressed = true;
+                    continue; // the vec shifted; do not advance ci
+                }
+                // A fork/vfork parent stays parked until the kernel decides
+                // its result (`complete_parked_fork_parents`).
+                if parked_forks.iter().any(|p| p.process_index == pi && p.ch.offset == ch.offset) {
+                    ci += 1;
+                    continue;
+                }
                 progressed = true;
                 let (syscall_nr, mut args, is_record) = read_channel_request(&guest_mem, ch.offset);
                 trace.push(syscall_nr);
@@ -11295,15 +11523,6 @@ fn run_pump(
                     // unwaitable — see `run_guest`), for one uniform path.
                     let signal = get_exit_signal.call(&mut *kernel_store, pid).unwrap_or(0);
                     wait_table.lock().unwrap().exited.insert(pid, encode_wait_status(code, signal));
-                    // Real vfork (N1 residual): this pid may be a BORROWED
-                    // vfork child reaching `_exit` — release its still-
-                    // parked parent NOW, with this child's real pid. This is
-                    // one of the only two moments a real vfork's borrow
-                    // window may end (see `VforkParentRelease`'s doc
-                    // comment); `None` for every ordinary process.
-                    if let Some(release) = processes[pi].vfork_parent_release.take() {
-                        resolve_vfork_parent_release(kernel_mem, processes, release)?;
-                    }
                     // The exit is recorded, so unwind the thread that posted
                     // it, as a JavaScript host does: its `kernel_exit` waits
                     // for this same commit and then traps, and the worker
@@ -11339,6 +11558,12 @@ fn run_pump(
                     // recorded in `wait_table`, ready for `host_waitpid` to
                     // resolve a parked or future `waitpid`.
                     processes[pi].channels.remove(ci);
+                    // If this process borrowed a vfork parent's image, the
+                    // exit ended the borrow in the kernel; the join above is
+                    // the quiescence proof (a vfork child has no other
+                    // threads, which the kernel enforces).
+                    let quiescent = processes[pi].channels.is_empty();
+                    release_vfork_address_space(kernel_store, launch, pid, quiescent)?;
                     continue; // the vec shifted; do not advance ci
                 }
 
@@ -11510,23 +11735,10 @@ fn run_pump(
                 // `handle_fork`'s doc comment for the full child-identity +
                 // private-memory-copy + co-resident-module sequence, and why
                 // the child never executes any of its copied program in this
-                // increment (that is Task 3's job).
-                if ch.is_main
-                    && (syscall_nr == SYS_FORK || syscall_nr == SYS_VFORK)
-                    && processes[pi].vfork_awaiting_child
-                {
-                    // Real vfork (N1 residual): this request is a `vfork()`
-                    // ALREADY serviced by `handle_fork`, which deliberately
-                    // left `ch` at `STATUS_PENDING` to keep the calling OS
-                    // thread parked — see `GuestProcess::vfork_awaiting_
-                    // child`'s doc comment. Do NOT call `handle_fork` again
-                    // (it would launch a second child from the identical,
-                    // still-posted request); leave it for `resolve_vfork_
-                    // parent_release` to complete once the borrowed child
-                    // reaches `_exit`/`execve`.
-                    ci += 1;
-                    continue;
-                }
+                // increment (that is Task 3's job). A request `handle_fork`
+                // already serviced stays PENDING in `parked_forks` and is
+                // skipped above, so it can never launch a second child.
+                //
                 // N1 residual #4a: `fork()`/`_Fork()` (never `vfork()` — see
                 // `run_worker_thread`'s doc comment for why that stays
                 // main-channel-only) is now serviced from ANY channel, not
@@ -11538,8 +11750,8 @@ fn run_pump(
                 if syscall_nr == SYS_FORK || (ch.is_main && syscall_nr == SYS_VFORK) {
                     handle_fork(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
-                        fork_process, remove_process, alloc_scratch, set_thread_slot_quota,
-                        set_brk_base, set_mmap_base,
+                        launch, &mut parked_forks, fork_child_launch_signal, alloc_scratch,
+                        set_thread_slot_quota, set_brk_base, set_mmap_base,
                         set_max_addr, set_pointer_width, use_fork_module, fork_proof_of_use, wait_table,
                     )?;
                     ci += 1;
@@ -11589,7 +11801,7 @@ fn run_pump(
                         set_pointer_width,
                         exec_target_prepare, exec_target_size,
                         exec_target_read, exec_commit, exec_target_cancel, exec_target_resolve_shebang,
-                        remove_process, wait_table, use_fork_module, fork_proof_of_use,
+                        remove_process, launch, wait_table, use_fork_module, fork_proof_of_use,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -11628,8 +11840,8 @@ fn run_pump(
                         set_brk_base, set_mmap_base,
                         set_max_addr, set_pointer_width, exec_target_prepare, exec_target_size,
                         exec_target_read, exec_commit,
-                        exec_target_cancel, exec_target_resolve_shebang, remove_process, wait_table,
-                        use_fork_module, fork_proof_of_use,
+                        exec_target_cancel, exec_target_resolve_shebang, remove_process, launch,
+                        wait_table, use_fork_module, fork_proof_of_use,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -11699,6 +11911,13 @@ fn run_pump(
                 ci += 1;
             }
         }
+
+        // 3) Complete the fork and vfork parents whose result the kernel
+        // decided during this pass (a child's replay-ready report, its death,
+        // a launch failure, or a vfork release).
+        let parked_before = parked_forks.len();
+        complete_parked_fork_parents(kernel_store, kernel_mem, launch, processes, &mut parked_forks)?;
+        progressed |= parked_forks.len() != parked_before;
 
         // The boot process has exited AND every spawned child
         // (`processes[1..]`) has finished all of its channels: the run is
@@ -12179,16 +12398,16 @@ fn handle_spawn(
 ///     `ChildPendingStub` (Task 2's original behavior, preserved for a
 ///     non-instrumented `use_fork_module` guest).
 ///
-/// The PARENT always gets a truthful POSIX-shaped return: `child_pid` on
-/// success, or a negative-errno completion on failure (mirroring
-/// `fail_spawn`'s convention, generalized to this sentinel's `syscall_nr`
-/// rather than the fixed `SYS_SPAWN`). A `kernel_fork_process` failure
-/// creates nothing to roll back; a post-fork memory-clone failure DOES need
-/// `remove_process` to reclaim the now-orphaned kernel-side record before
-/// reporting `ENOMEM` to the parent. A `launch_process` failure past that
-/// point propagates via `?` (mirroring `handle_spawn`'s OWN `launch_process`
-/// call, which is equally unguarded) — this deep, its failures are host
-/// resource exhaustion, not a POSIX-shaped fork() error.
+/// The kernel, not this function, decides the PARENT's result (lane F step
+/// 2). A `kernel_fork_process` refusal creates nothing and is answered at
+/// once. Otherwise the parent's request stays `STATUS_PENDING` in
+/// `parked_forks` and `complete_parked_fork_parents` answers it from the
+/// kernel's fork-lifecycle record: the child pid once the child's replay
+/// reports `SYS_FORK_REPLAY_READY` (or the child dies first, or, for vfork,
+/// once the borrowed image is released), or `-errno` once a launch failure
+/// is reported. Every host-side failure before the child's thread starts
+/// (region layout, memory clone, launch) is reported through
+/// `kernel_fork_launch_failed(ENOMEM)`; nothing here removes the child.
 #[allow(clippy::too_many_arguments)]
 fn handle_fork(
     kernel_store: &mut Store<()>,
@@ -12199,8 +12418,9 @@ fn handle_fork(
     ch: PumpChannel,
     syscall_nr: u32,
     args: &[i64; 6],
-    fork_process: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
-    remove_process: &wasmtime::TypedFunc<u32, i32>,
+    launch: &ForkLaunchKernel,
+    parked_forks: &mut Vec<ParkedForkParent>,
+    fork_child_launch_signal: Option<u32>,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
     set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -12254,7 +12474,7 @@ fn handle_fork(
         None => ForkEntry::ChildPendingStub,
     };
 
-    let child_pid = fork_process.call(&mut *kernel_store, (parent_pid, caller_tid, mode))?;
+    let child_pid = launch.fork_process.call(&mut *kernel_store, (parent_pid, caller_tid, mode))?;
     if child_pid <= 0 {
         let errno = if child_pid < 0 { -child_pid } else { libc_errno::EAGAIN };
         return complete_channel(
@@ -12262,18 +12482,27 @@ fn handle_fork(
         );
     }
     let child_pid = child_pid as u32;
+    // From here the kernel owns the parent's result: park the request.
+    parked_forks.push(ParkedForkParent {
+        child_pid,
+        process_index: pi,
+        parent_mem: guest_mem.clone(),
+        scratch_ptr,
+        ch,
+        syscall_nr,
+        args: *args,
+    });
 
     let layout = processes[pi].layout;
 
     // Real vfork (N1 residual): a fork-instrumented parent's `vfork()` gets
     // a genuinely BORROWED child instead of the ordinary COW path below —
     // the child shares the parent's OWN `SharedMemory` handle (never
-    // `clone_guest_memory`'s private byte-copy) and the parent's own
-    // channel is deliberately NOT completed here; it stays parked (this
-    // pump-serviced call already returns without writing anything to `ch`)
-    // until this exact child reaches `_exit` or a successful `execve`/
-    // `execveat` (`resolve_vfork_parent_release`'s two call sites) — real
-    // POSIX vfork semantics. A NON-instrumented guest's vfork
+    // `clone_guest_memory`'s private byte-copy). The parent stays parked
+    // until the kernel completes it: after this child's exec or exit, once
+    // this host proved the child's threads joined and released the image
+    // (`release_vfork_address_space`) — real POSIX vfork semantics. A
+    // NON-instrumented guest's vfork
     // (`ForkEntry::ChildPendingStub`) has no coordinator to drive a real
     // borrowed replay and falls through to the ordinary COW path below,
     // unchanged from this host's pre-existing (POSIX-permissible, if
@@ -12284,17 +12513,7 @@ fn handle_fork(
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[host-native] vfork {child_pid}: borrowed-region layout failed: {e:#}");
-                    let removed = remove_process.call(&mut *kernel_store, child_pid)?;
-                    if removed < 0 {
-                        eprintln!(
-                            "[host-native] kernel_remove_process({child_pid}) after a vfork \
-                             region-layout failure failed: {removed}"
-                        );
-                    }
-                    return complete_channel(
-                        &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, args, &[], -1,
-                        libc_errno::ENOMEM as u32,
-                    );
+                    return report_fork_launch_failed(kernel_store, launch, child_pid, libc_errno::ENOMEM);
                 }
             };
             // Defensive: `launch_process`'s own `kernel_set_max_addr` already
@@ -12336,40 +12555,18 @@ fn handle_fork(
                 fork_format.clone(),
                 Arc::clone(fork_proof_of_use),
             );
-            let mut child = match launched {
+            let child = match launched {
                 Ok(c) => c,
                 Err(e) => {
+                    // The child's thread never started (the launch spawns it
+                    // last), so no realm touched the borrowed image.
                     eprintln!("[host-native] vfork child {child_pid} launch failed: {e:#}");
-                    let removed = remove_process.call(&mut *kernel_store, child_pid)?;
-                    if removed < 0 {
-                        eprintln!(
-                            "[host-native] kernel_remove_process({child_pid}) after a vfork \
-                             launch failure failed: {removed}"
-                        );
-                    }
-                    return complete_channel(
-                        &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, args, &[], -1,
-                        libc_errno::ENOMEM as u32,
-                    );
+                    wait_table.lock().unwrap().parent_of.remove(&child_pid);
+                    return report_fork_launch_failed(kernel_store, launch, child_pid, libc_errno::ENOMEM);
                 }
             };
-            child.vfork_parent_release = Some(VforkParentRelease {
-                parent_mem: guest_mem.clone(),
-                parent_process_index: pi,
-                scratch_ptr,
-                ch,
-                syscall_nr,
-                args: *args,
-                child_pid,
-            });
-            processes[pi].vfork_awaiting_child = true;
             processes.push(child);
-            // Deliberately do NOT `complete_channel(ch, ...)` here — see this
-            // block's doc comment. The parent's calling OS thread stays
-            // parked (still busy-polling `STATUS_PENDING` on its own
-            // channel, exactly like an ordinary blocking syscall) until one
-            // of `resolve_vfork_parent_release`'s two call sites runs.
-            return Ok(());
+            return signal_fork_child_on_launch(kernel_store, launch, child_pid, fork_child_launch_signal);
         }
     }
 
@@ -12377,17 +12574,7 @@ fn handle_fork(
         Ok(m) => m,
         Err(e) => {
             eprintln!("[host-native] fork child {child_pid} memory clone failed: {e:#}");
-            let removed = remove_process.call(&mut *kernel_store, child_pid)?;
-            if removed < 0 {
-                eprintln!(
-                    "[host-native] kernel_remove_process({child_pid}) after a fork memory-clone \
-                     failure failed: {removed}"
-                );
-            }
-            return complete_channel(
-                &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, args, &[], -1,
-                libc_errno::ENOMEM as u32,
-            );
+            return report_fork_launch_failed(kernel_store, launch, child_pid, libc_errno::ENOMEM);
         }
     };
     // The byte-for-byte copy above ALSO copied the parent's own channel
@@ -12449,12 +12636,42 @@ fn handle_fork(
         fork_format,
         Arc::clone(fork_proof_of_use),
         false, // a fork child's address space is new to this host
-    )?;
+    );
+    let child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            // `launch_process` spawns the child's thread last, so no realm
+            // started: a truthful launch failure, not a host abort.
+            eprintln!("[host-native] fork child {child_pid} launch failed: {e:#}");
+            wait_table.lock().unwrap().parent_of.remove(&child_pid);
+            return report_fork_launch_failed(kernel_store, launch, child_pid, libc_errno::ENOMEM);
+        }
+    };
     processes.push(child);
 
-    // POSIX: fork() returns the child's pid to the PARENT. The child's own
-    // "0" return is Task 3's job (real replay), never produced here.
-    complete_channel(&guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, args, &[], child_pid as i64, 0)
+    // POSIX: fork() returns the child's pid to the PARENT, but only once the
+    // kernel decides it (the child's replay-ready report, or its death).
+    signal_fork_child_on_launch(kernel_store, launch, child_pid, fork_child_launch_signal)
+}
+
+/// Test hook: deliver `signal` to a fork child right after this host
+/// registered it and started its thread, before its replay can report
+/// `SYS_FORK_REPLAY_READY` -- the native mate of `onForkChildRegistered` in
+/// `host/test/centralized-test-helper.ts`. `None` (every production run)
+/// does nothing. The pump is single-threaded, so the child cannot reach its
+/// replay-ready request before this returns.
+fn signal_fork_child_on_launch(
+    kernel_store: &mut Store<()>,
+    launch: &ForkLaunchKernel,
+    child_pid: u32,
+    signal: Option<u32>,
+) -> anyhow::Result<()> {
+    let Some(signal) = signal else {
+        return Ok(());
+    };
+    let rc = launch.generate_host_signal.call(&mut *kernel_store, (child_pid, signal))?;
+    anyhow::ensure!(rc == 0, "kernel_generate_host_signal({child_pid}, {signal}) failed: {rc}");
+    Ok(())
 }
 
 /// Complete a failed `SYS_SPAWN` request: `ret == -1` and a positive errno,
@@ -12587,6 +12804,7 @@ fn handle_exec_common(
     exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
     exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
+    launch: &ForkLaunchKernel,
     wait_table: &Arc<Mutex<WaitTable>>,
     use_fork_module: bool,
     fork_proof_of_use: &Arc<Mutex<ForkProofOfUse>>,
@@ -12775,7 +12993,7 @@ fn handle_exec_common(
         Ok(v) => v,
         Err(error) => {
             return Ok(Some(terminate_process_after_failed_exec_commit(
-                kernel_store, kernel_mem, processes, pi, pid, remove_process, wait_table,
+                kernel_store, processes, pi, pid, remove_process, launch, wait_table,
                 "compute_guest_memory", &error,
             )));
         }
@@ -12805,7 +13023,7 @@ fn handle_exec_common(
         Ok(v) => v,
         Err(error) => {
             return Ok(Some(terminate_process_after_failed_exec_commit(
-                kernel_store, kernel_mem, processes, pi, pid, remove_process, wait_table,
+                kernel_store, processes, pi, pid, remove_process, launch, wait_table,
                 "launch_process", &error,
             )));
         }
@@ -12831,19 +13049,13 @@ fn handle_exec_common(
     // spike, `docs/plans/2026-09-05-native-thread-reclamation-spike.md`,
     // `exp_d`).
     //
-    // Real vfork (N1 residual): `pid` may be a BORROWED vfork child that
-    // just reached a successful `execve`/`execveat` — release its still-
-    // parked parent NOW, before the swap, with this child's real pid. This
-    // is one of the only two moments a real vfork's borrow window may end
-    // (see `VforkParentRelease`'s doc comment). The child's own memory has
-    // already been fully replaced by `compute_guest_memory` above (a fresh,
-    // private `SharedMemory`, never shared with anyone) by this point, so
-    // the borrow is truly over regardless of when the parent wakes up.
-    if let Some(release) = processes[pi].vfork_parent_release.take() {
-        resolve_vfork_parent_release(kernel_mem, processes, release)?;
-    }
+    // `pid` may be a vfork child that borrowed its parent's image. The exec
+    // commit already ended that borrow in the kernel; once the old image's
+    // threads are joined, report the release so the kernel can complete the
+    // parked parent (or contain both images if a thread could not be joined).
     let old_proc = std::mem::replace(&mut processes[pi], new_proc);
-    reclaim_all_channels(old_proc);
+    let quiescent = reclaim_all_channels(old_proc);
+    release_vfork_address_space(kernel_store, launch, pid, quiescent)?;
     Ok(None)
 }
 
@@ -12922,11 +13134,11 @@ fn cancel_exec_target(
 /// (`run_pump`) can fold it into `root_exit_code` when `pi == 0`.
 fn terminate_process_after_failed_exec_commit(
     kernel_store: &mut Store<()>,
-    kernel_mem: &SharedMemory,
     processes: &mut [GuestProcess],
     pi: usize,
     pid: u32,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
+    launch: &ForkLaunchKernel,
     wait_table: &Arc<Mutex<WaitTable>>,
     stage: &str,
     error: &anyhow::Error,
@@ -12953,20 +13165,28 @@ fn terminate_process_after_failed_exec_commit(
     }
     const FATAL_EXIT_CODE: i32 = 128 + 9; // shell convention: "killed by SIGKILL"
     wait_table.lock().unwrap().exited.insert(pid, encode_wait_status(FATAL_EXIT_CODE, 0));
-    // Real vfork (N1 residual): never leave a vfork parent parked forever,
-    // even on this rare post-commit-failure path — see `VforkParentRelease`'s
-    // doc comment. `pid` here is already fatally terminated either way, so
-    // the parent wakes with this dead child's real pid, exactly like the
-    // ordinary `_exit`/`execve` release sites.
-    if let Some(release) = processes[pi].vfork_parent_release.take() {
-        if let Err(e) = resolve_vfork_parent_release(kernel_mem, processes, release) {
-            eprintln!(
-                "[host-native] resolving a vfork parent after a post-commit {stage} failure \
-                 failed: {e:#}"
-            );
+    // Never leave a vfork parent parked forever, even on this rare path: tear
+    // down the old image's parked threads, then report the release. `pid`
+    // may have borrowed its parent's image; the kernel decides.
+    let proc_ = &mut processes[pi];
+    let memory = proc_.memory.clone();
+    let mut quiescent = true;
+    for ch in proc_.channels.clone() {
+        let status =
+            unsafe { atomic_u32(&memory, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
+        if status == STATUS_PENDING {
+            teardown_parked_thread(proc_, &ch);
+        } else {
+            quiescent = false;
         }
     }
-    processes[pi].channels.clear();
+    proc_.channels.clear();
+    if let Err(e) = release_vfork_address_space(kernel_store, launch, pid, quiescent) {
+        eprintln!(
+            "[host-native] releasing a vfork borrow after a post-commit {stage} failure \
+             failed: {e:#}"
+        );
+    }
     FATAL_EXIT_CODE
 }
 

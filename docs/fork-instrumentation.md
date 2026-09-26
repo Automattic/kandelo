@@ -482,12 +482,12 @@ finishes, the fork module's `fm_parent_finish` issues `SYS_FORK_REPLAY_READY`
 (416) on the child's own channel before `fork()` returns 0 in the child. The
 kernel checks that the child is alive and still launching and commits the
 launch; for an ordinary fork that completes the parent with the child pid.
-Node and browser launches all opt in with
-`fork_contract::LAUNCH_KERNEL_COMPLETES`; the module treats the kernel's
-`EINVAL` ("not a kernel-completed launch") as "the host completes this
-parent", which is true only of the native host until lane F stage 2d. For
-the kernel state and events, see "Kernel-owned launch state" in
-`docs/architecture.md`.
+Every launch on every host (Node, browser and native) is kernel-completed,
+so the module treats any refusal (`ESRCH`, `EALREADY`, `EINVAL`) as a broken
+launch. The module's own channel syscalls also trap on `CH_TEARDOWN`, as the
+libc glue does, so a child the kernel killed while its replay was reporting
+readiness never runs guest code. For the kernel state and events, see
+"Kernel-owned launch state" in `docs/architecture.md`.
 
 The vfork mode connects those borrowed APIs to the production Node and browser
 launch paths. It retains the parent's Memory, parks the calling thread, and

@@ -45,7 +45,7 @@ import {
   FORK_LIFECYCLE_EVENT_KINDS,
   FORK_LIFECYCLE_EVENT_RECORD_BYTES,
   HOST_INTERCEPTED_SYSCALLS,
-  PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+  PROCESS_FORK_MODE_FORK,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_FORK_MODE_VFORK,
@@ -378,7 +378,7 @@ function forkLifecycleKernel(
   };
   const exports = {
     kernel_fork_process: vi.fn((parent: number, tid: number, mode: number) => {
-      launch = { parent, tid, mode: mode & ~PROCESS_FORK_LAUNCH_KERNEL_COMPLETES };
+      launch = { parent, tid, mode };
       return childPid;
     }),
     kernel_fork_launch_failed: vi.fn((_child: number, errno: number) => {
@@ -479,7 +479,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(kernelForkProcess).toHaveBeenCalledWith(
       parentPid,
       parentPid,
-      PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+      PROCESS_FORK_MODE_FORK,
     );
     expect(onFork).toHaveBeenCalledWith({
       parentPid,
@@ -539,7 +539,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(kernelForkProcess).toHaveBeenCalledWith(
       parentPid,
       parentPid,
-      PROCESS_FORK_MODE_VFORK | PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+      PROCESS_FORK_MODE_VFORK,
     );
     expect(onFork).toHaveBeenCalledWith({
       parentPid,

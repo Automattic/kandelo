@@ -200,10 +200,13 @@ INSTRUMENTED_FIXTURES=(
     native_fork_gc_two_object_cycle
     native_fork_host_externref_field_refused
     native_fork_host_externref_refused
+    native_fork_kill_before_ready
+    native_fork_parent_returns_first
     native_fork_refs
     native_fork_trap
     native_vfork
     native_vfork_exec
+    native_vfork_exec_waits
 )
 for name in "${INSTRUMENTED_FIXTURES[@]}"; do
     raw="$FIXTURES_DIR/$name.wasm"
