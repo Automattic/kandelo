@@ -3819,6 +3819,117 @@ mod tests {
         Ok(())
     }
 
+    /// A vfork parent is released at the child's exec commit, not at the
+    /// exit of the image it exec'd. The exec'd image (the same fixture, run
+    /// as `/bin/self wait`) cannot exit until the parent writes a byte after
+    /// vfork() returned, so holding the parent until that exit deadlocks
+    /// (the pump's 30 s cap). `smoke_vfork_execve_releases_parent` cannot
+    /// see the difference: its parent only waits for the child.
+    #[test]
+    fn smoke_vfork_parent_released_at_exec_commit() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let program = crate::fixtures::fixture("native_vfork_exec_waits.instrumented.wasm");
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/self", 3, 0o755, program.to_vec()),
+        ]);
+        let options = guest::GuestOptions {
+            enable_fork_module: true,
+            base_image: Some(base_image),
+            ..Default::default()
+        };
+        let outcome = guest::run_guest(&path, program, &options)?;
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(stdout.contains("parent released\n"), "stdout: {stdout:?}");
+        assert_eq!(
+            outcome.exit_code, 0,
+            "the exec'd image must read the parent's byte and exit 0 (stdout: {stdout:?}, \
+             stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        Ok(())
+    }
+
+    /// The kernel completes the parent at the child's replay-ready report,
+    /// not at its exit. The child cannot exit until the parent writes after
+    /// fork() returned, so a host or kernel that completes the parent only
+    /// when the child ends deadlocks (the pump's 30 s cap). The native mate
+    /// of the same case in `host/test/fork-kernel-launch.test.ts`, on the
+    /// same source (`programs/fork-parent-returns-first.c`).
+    #[test]
+    fn smoke_fork_parent_returns_while_child_runs() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = crate::fixtures::fixture("native_fork_parent_returns_first.instrumented.wasm");
+        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("PARENT_RETURNED_FROM_FORK") && stdout.contains("CHILD_EXITED_AFTER_PARENT"),
+            "the parent must return from fork() while the child still runs \
+             (stdout: {stdout:?}, stderr: {:?}, exit: {})",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.exit_code,
+        );
+        assert_eq!(outcome.exit_code, 0, "stdout: {stdout:?}");
+        Ok(())
+    }
+
+    /// A fork child killed after this host registered it and before its
+    /// replay reported `SYS_FORK_REPLAY_READY` is still the parent's child:
+    /// POSIX gives the parent its pid from fork() and a zombie it reaps with
+    /// the kill status. The kernel commits the launch at the child's death;
+    /// this host's kill path unwinds the child's thread when it parks and
+    /// records the SIGKILL status. The native mate of the same case in
+    /// `host/test/fork-kernel-launch.test.ts`, on the same source
+    /// (`programs/fork-kill-before-ready.c`).
+    #[test]
+    fn smoke_fork_child_killed_before_replay_ready_is_reaped() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = crate::fixtures::fixture("native_fork_kill_before_ready.instrumented.wasm");
+        let options = guest::GuestOptions {
+            enable_fork_module: true,
+            fork_child_launch_signal: Some(wasm_posix_shared::signal::SIGKILL),
+            ..Default::default()
+        };
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        let context = format!(
+            "stdout: {stdout:?}, stderr: {:?}, exit: {}, trace: {:?}",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.exit_code,
+            outcome.syscall_trace,
+        );
+        assert!(!stdout.contains("CHILD_RAN"), "the killed child ran guest code ({context})");
+        assert!(!stdout.contains("FORK_FAILED"), "fork() failed in the parent ({context})");
+        assert!(stdout.contains("PARENT_GOT_PID"), "the parent never got the pid ({context})");
+        assert!(
+            stdout.contains("PARENT_REAPED_SIGKILL"),
+            "the parent did not reap a SIGKILL zombie ({context})"
+        );
+        assert_eq!(outcome.exit_code, 0, "{context}");
+        Ok(())
+    }
+
     /// N1-I4 Task 3: a fork of a program with no captured references (the
     /// SAME `native_fork.instrumented.wasm` fixture — its `fork()` call site
     /// carries only scalar locals, no funcref/externref/exnref/GC state)

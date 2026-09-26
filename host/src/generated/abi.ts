@@ -363,8 +363,6 @@ export const PROCESS_FORK_MODE_VFORK = 1 as const;
 export type ProcessForkMode =
   | typeof PROCESS_FORK_MODE_FORK
   | typeof PROCESS_FORK_MODE_VFORK;
-/** Host-only `kernel_fork_process` mode bit: the kernel completes the launch. */
-export const PROCESS_FORK_LAUNCH_KERNEL_COMPLETES = 256 as const;
 export const WPK_FORK_PROCESS_IMPORT = { module: "kernel", name: "kernel_fork", params: ["i32"], results: ["i32"] } as const;
 export const WPK_FORK_REQUIRED_IMPORTS = [
   { module: "env", name: "__wpk_fork_frame_commit", params: ["ptr"], results: [] },

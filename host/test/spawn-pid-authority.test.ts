@@ -23,7 +23,7 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
   HOST_INTERCEPTED_SYSCALLS,
-  PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+  PROCESS_FORK_MODE_FORK,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
@@ -400,7 +400,7 @@ describe("kernel task-ID authority", () => {
     expect(kernelForkProcess).toHaveBeenCalledWith(
       parentPid,
       parentPid,
-      PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
+      PROCESS_FORK_MODE_FORK,
     );
     expect(onFork).toHaveBeenCalledWith({
       parentPid,

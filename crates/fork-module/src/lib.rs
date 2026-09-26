@@ -5221,6 +5221,7 @@ mod wasm {
 
     const CH_PENDING: i32 = ChannelStatus::Pending as i32;
     const CH_IDLE: i32 = ChannelStatus::Idle as i32;
+    const CH_TEARDOWN: i32 = ChannelStatus::Teardown as i32;
 
     /// Issue a channel syscall (`nr` + six i64 args), block in-realm until the
     /// kernel worker services it, and return `(ret, errno)`. Mirrors the JS
@@ -5258,6 +5259,15 @@ mod wasm {
             // Block until the worker clears PENDING. `== 0` is "woken"; a status
             // that already left PENDING returns "not-equal" and exits the loop.
             while wasm_intr::memory_atomic_wait32(status_ptr, CH_PENDING, -1) == 0 {}
+            // `TEARDOWN` is the host unwinding this realm, not an answer: the
+            // kernel already ended the process (a fatal signal, or a
+            // superseded image). Trap exactly as the libc glue does
+            // (`libc/glue/channel_syscall.c`), so no guest code runs after a
+            // death the kernel has recorded. Reading RETURN/ERRNO here instead
+            // would hand the caller a stale value as if the call succeeded.
+            if status.load(Ordering::SeqCst) == CH_TEARDOWN {
+                wasm_intr::unreachable();
+            }
             let ret = ch_read_i64(channel_base, channel::RETURN_OFFSET);
             let err = ch_read_u32(channel_base, channel::ERRNO_OFFSET);
             ch_write_u32(channel_base, channel::REQUEST_FLAGS_OFFSET, 0);
@@ -5305,12 +5315,9 @@ mod wasm {
     /// parent stays parked until the borrow is released). Answers 0, which the
     /// child's fork() returns.
     ///
-    /// `EINVAL` means the launch was not created with
-    /// `fork_contract::LAUNCH_KERNEL_COMPLETES`: that host completes the
-    /// parent itself, so there is nothing to report to. Only host-native still
-    /// launches that way, until lane F stage 2d switches it; delete this arm
-    /// then. Every other refusal (`ESRCH`, `EALREADY`) is a broken launch and
-    /// fails the finish.
+    /// Every host's launches are kernel-completed, so every refusal (`ESRCH`
+    /// a dead child, `EALREADY` a repeat, `EINVAL` a process that is not a
+    /// pending fork child) is a broken launch and fails the finish.
     fn report_fork_replay_ready() -> Result<(), Errno> {
         let (ret, err) = channel_syscall(
             channel_base()?,
@@ -5324,10 +5331,7 @@ mod wasm {
         } else {
             return Ok(());
         };
-        match Errno::from_u32(code).unwrap_or(Errno::EIO) {
-            Errno::EINVAL => Ok(()),
-            errno => Err(errno),
-        }
+        Err(Errno::from_u32(code).unwrap_or(Errno::EIO))
     }
 
     // -- Module-owned growing frame-chunk allocator (Option B) --------------

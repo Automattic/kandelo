@@ -1067,11 +1067,10 @@ pub struct Process {
     /// is given its parent's id, which is what makes the borrow visible to
     /// the kernel.
     pub address_space: crate::fork_lifecycle::AddressSpaceId,
-    /// Kernel-owned launch record for a child created with
-    /// `fork_contract::LAUNCH_KERNEL_COMPLETES`; `None` for every other
-    /// process. See `crate::fork_lifecycle`.
+    /// Kernel-owned launch record for a fork or vfork child; `None` for
+    /// every other process. See `crate::fork_lifecycle`.
     pub fork_launch: Option<crate::fork_lifecycle::PendingForkLaunch>,
-    /// Present while a kernel-completed vfork child runs on its parent's
+    /// Present while a vfork child runs on its parent's
     /// address space; cleared by exec or exit, which queue the
     /// awaiting-quiescence event.
     pub vfork_parent: Option<crate::fork_lifecycle::VforkParentLink>,

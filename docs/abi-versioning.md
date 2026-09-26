@@ -1108,6 +1108,18 @@ snapshot diff.
   and kernel from before 2b must not be mixed with 2b hosts; both are
   rebuilt from source with the host.
 
+  Stage 2d (2026-09-25) switched the native host and made kernel completion
+  unconditional. The host-only bit `LAUNCH_KERNEL_COMPLETES` (`0x100`) is
+  removed: `kernel_fork_process` now takes exactly the guest-carried mode and
+  answers `EINVAL` for any other value, including a mode carrying the old
+  bit. `PROCESS_FORK_LAUNCH_KERNEL_COMPLETES` left `host/src/generated/abi.ts`
+  and `launch_kernel_completes` left the `fork_lifecycle_event_wire` snapshot
+  section. Every launch now records its launch state and borrower and emits
+  fork-lifecycle events. The fork module no longer tolerates `EINVAL` from
+  `SYS_FORK_REPLAY_READY`, and its channel syscalls trap on `CH_TEARDOWN`.
+  Not additive, but 44 is unreleased and every host, kernel and fork-module
+  artifact is rebuilt from source together, so there is no version bump.
+
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
   removed and ten directory-relative `*at` replacements added, taking the built

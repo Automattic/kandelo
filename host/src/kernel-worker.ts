@@ -217,7 +217,6 @@ import {
   FORK_LIFECYCLE_EVENT_FIELDS,
   FORK_LIFECYCLE_EVENT_KINDS,
   FORK_LIFECYCLE_EVENT_RECORD_BYTES,
-  PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
   VFORK_RELEASE_DISPOSITIONS,
   type SyscallArgDesc,
 } from "./generated/abi";
@@ -20949,11 +20948,7 @@ export class CentralizedKernelWorker {
     // (see `#drainForkLifecycleEventsWithinKernelEntry`).
     const kernelForkProcess = this.#kernelInstanceForEntry(entry).exports.kernel_fork_process as
       (parentPid: number, callerTid: number, mode: number) => number;
-    const forkResult = kernelForkProcess(
-      parentPid,
-      callerTid,
-      mode | PROCESS_FORK_LAUNCH_KERNEL_COMPLETES,
-    );
+    const forkResult = kernelForkProcess(parentPid, callerTid, mode);
     if (forkResult <= 0) {
       // Fork failed in kernel (e.g., ESRCH, ENOMEM, EAGAIN for a borrowed
       // address space)

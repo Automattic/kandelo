@@ -1,8 +1,7 @@
 //! Kernel-owned fork and vfork launch state, and the event queue that reports
 //! its transitions to the host.
 //!
-//! A launch created with `fork_contract::LAUNCH_KERNEL_COMPLETES` is tracked
-//! here from `kernel_fork_process` until the parent's SYS_FORK/SYS_VFORK has
+//! Every launch is tracked here from `kernel_fork_process` until the parent's SYS_FORK/SYS_VFORK has
 //! a result:
 //!
 //! * `PendingForkLaunch` on the child records who is parked (parent pid and
@@ -18,8 +17,9 @@
 //! transitions through the queue below, whose record layout is
 //! `wasm_posix_shared::fork_lifecycle_event_wire`.
 //!
-//! Launches created without the bit keep no state here and never produce an
-//! event, so a host that completes fork itself sees no change.
+//! There is no host-completed launch any more: lane F stage 2d moved the
+//! native host onto this state, and every host now completes a parked parent
+//! only from this queue.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -318,7 +318,7 @@ mod table_tests {
     }
 
     fn kernel_fork(table: &mut ProcessTable, parent: u32, mode: Mode) -> Result<u32, Errno> {
-        table.fork_process_for_caller_with_request(parent, parent, mode, true)
+        table.fork_process_for_caller_with_mode(parent, parent, mode)
     }
 
     fn parent_complete(mode: Mode, child: u32, parent: u32, result: i32) -> ForkLifecycleEvent {
@@ -438,8 +438,6 @@ mod table_tests {
         assert_eq!(table.fork_replay_ready(child), Err(Errno::EALREADY));
         // A process that is not a kernel-completed fork child.
         assert_eq!(table.fork_replay_ready(parent), Err(Errno::EINVAL));
-        let host_completed = table.fork_process_for_caller(parent, parent).unwrap();
-        assert_eq!(table.fork_replay_ready(host_completed), Err(Errno::EINVAL));
         // No such process.
         assert_eq!(table.fork_replay_ready(0x7fff_0000), Err(Errno::ESRCH));
         // After exec the launch record belongs to a discarded image.
@@ -517,12 +515,6 @@ mod table_tests {
         let pids_before: alloc::vec::Vec<u32> = table.processes.keys().copied().collect();
         assert_eq!(
             kernel_fork(&mut table, parent, Mode::Vfork),
-            Err(Errno::EAGAIN)
-        );
-        // The host-completed path is refused too: the borrow is a fact about
-        // the address space, not about who completes the launch.
-        assert_eq!(
-            table.fork_process_for_caller_with_mode(parent, parent, Mode::Vfork),
             Err(Errno::EAGAIN)
         );
         // Refusal happens before any child state exists.
@@ -641,30 +633,5 @@ mod table_tests {
         // Neither a parent completion nor a second quiescence request.
         assert!(take_for_test().is_empty());
         assert!(!table.vfork_address_space_borrowed(space));
-    }
-
-    #[test]
-    fn host_completed_launches_keep_no_kernel_state_and_emit_nothing() {
-        let (mut table, parent) = setup();
-        let space = table.get(parent).unwrap().address_space;
-        let child = table
-            .fork_process_for_caller_with_mode(parent, parent, Mode::Vfork)
-            .unwrap();
-        let proc = table.get(child).unwrap();
-        // The address space is still inherited: that is what vfork is.
-        assert_eq!(proc.address_space, space);
-        assert!(proc.fork_launch.is_none());
-        assert!(proc.vfork_parent.is_none());
-        assert!(!table.vfork_address_space_borrowed(space));
-
-        let mut host = NoopHost;
-        crate::syscalls::sys_exit(table.get_mut(child).unwrap(), &mut host, 0);
-        let forked = table.fork_process_for_caller(parent, parent).unwrap();
-        crate::signal::terminate_process_by_signal(
-            table.get_mut(forked).unwrap(),
-            &mut host,
-            SIGKILL,
-        );
-        assert!(take_for_test().is_empty());
     }
 }

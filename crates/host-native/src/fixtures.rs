@@ -118,6 +118,21 @@ fn newest_input() -> Option<std::time::SystemTime> {
     consider(repo_root().join("sysroot/lib/libc.a"));
     consider(repo_root().join("sysroot64/lib/libc.a"));
     consider(repo_root().join("libc/glue/channel_syscall.c"));
+    // Several fixtures are a single `#include` of a shared program under
+    // `examples/` or `programs/`, so the Node and native hosts run
+    // byte-identical source. Their C sources are inputs too (only the
+    // sources: `examples/` also holds `.wasm` outputs `build-programs.sh`
+    // rewrites, which would make every fixture look stale).
+    for tree in ["examples", "programs"] {
+        consider_tree(
+            &mut |p: PathBuf| {
+                if matches!(p.extension().and_then(|x| x.to_str()), Some("c") | Some("h")) {
+                    consider(p);
+                }
+            },
+            repo_root().join(tree),
+        );
+    }
     // The fork instrumenter that `build-fixtures.sh` runs over the
     // instrumented arm. Walked rather than listed, so a NEW source file in
     // that crate counts without anyone remembering to add it here -- a

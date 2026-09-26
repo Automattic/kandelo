@@ -2698,26 +2698,24 @@ pub extern "C" fn kernel_reap_process(pid: u32) -> i32 {
 /// ordinary fork owns a memory clone, while genuine vfork will borrow the
 /// parent's memory and suspend only its calling thread until exec or exit.
 ///
-/// `mode` may carry `fork_contract::LAUNCH_KERNEL_COMPLETES`: the kernel then
-/// owns the launch (see `crate::fork_lifecycle`): the child answers
+/// `mode` is exactly the guest-carried `fork_contract::Mode`; any other value
+/// (including the retired host bit `0x100`) is `EINVAL`. The kernel owns every
+/// launch (see `crate::fork_lifecycle`): the child answers
 /// `SYS_FORK_REPLAY_READY`, the host reports failures through
 /// `kernel_fork_launch_failed` and vfork releases through
 /// `kernel_vfork_address_space_released`, and the parent's result arrives as a
 /// `KIND_PARENT_COMPLETE` record from `kernel_drain_fork_lifecycle_events`.
-/// A vfork (with or without the bit) is refused with `EAGAIN` while the
-/// parent's address space already has a kernel-recorded borrower.
+/// A vfork is refused with `EAGAIN` while the parent's address space already
+/// has a borrower.
 ///
 /// Returns the child pid on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u32) -> i32 {
-    let Some((mode, kernel_completes)) =
-        wasm_posix_shared::fork_contract::decode_process_request(mode)
-    else {
+    let Some(mode) = wasm_posix_shared::fork_contract::Mode::from_u32(mode) else {
         return -(Errno::EINVAL as i32);
     };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.fork_process_for_caller_with_request(parent_pid, caller_tid, mode, kernel_completes)
-    {
+    match table.fork_process_for_caller_with_mode(parent_pid, caller_tid, mode) {
         Ok(child_pid) => child_pid as i32,
         Err(e) => -(e as i32),
     }
@@ -2733,8 +2731,8 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
 /// the kernel removed the still-launching child and queued the parent's
 /// `-errno` completion, `LAUNCH_FAILED_ALREADY_RESOLVED` (1) when the child
 /// had already died (it stays the parent's reapable zombie) or committed, or
-/// a negated errno: `EINVAL` for an errno outside 1..=4095 or a child without
-/// a kernel-completed launch, `ESRCH` for no such child.
+/// a negated errno: `EINVAL` for an errno outside 1..=4095 or a process that
+/// is not a fork child (or whose launch record ended with an exec), `ESRCH` for no such child.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fork_launch_failed(child_pid: u32, errno: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
@@ -7456,7 +7454,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         syscall_numbers::SYS_FORK_REPLAY_READY => {
             // SYS_FORK_REPLAY_READY: (). The channel binds the caller to one
             // process; the table decides whether it is a live, still-launching
-            // kernel-completed fork child.
+            // fork child.
             let table = unsafe { &mut *PROCESS_TABLE.0.get() };
             let pid = table.current_pid();
             match table.fork_replay_ready(pid) {
@@ -15602,8 +15600,7 @@ pub extern "C" fn kernel_drain_wakeup_events(
 ///
 /// Writes whole `fork_lifecycle_event_wire::RECORD_BYTES` records, at most
 /// `max_events` and as many as fit in `out_len`, and returns how many were
-/// written. Records that do not fit stay queued in order. Only launches
-/// created with `fork_contract::LAUNCH_KERNEL_COMPLETES` produce records.
+/// written. Records that do not fit stay queued in order.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_drain_fork_lifecycle_events(
     out_ptr: *mut u8,
