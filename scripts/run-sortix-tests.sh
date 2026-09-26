@@ -196,6 +196,10 @@ instrument_wasm() {
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
 }
 
+# The per-test budget. It is forwarded to examples/run-example.ts as TIMEOUT
+# (its own guest watchdog, 30 s by default), so raising TEST_TIMEOUT really
+# lets a slow guest run longer; the outer kill gets a few seconds of grace so
+# the runner's own "Process timed out" diagnostic is what gets reported.
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 XFAIL_TIMEOUT=${XFAIL_TIMEOUT:-10}  # Shorter timeout for known-failing tests
 PARALLEL=${PARALLEL:-$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)}
@@ -676,7 +680,8 @@ _run_runtime_test_worker() {
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
         KANDELO_RUNNER_VFS=isolated \
-        run_with_timeout "$this_timeout" node --experimental-wasm-exnref \
+        TIMEOUT="$((this_timeout * 1000))" \
+        run_with_timeout "$((this_timeout + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null >"$host_diagnostic_file" 2>&1)
     rc=$?
