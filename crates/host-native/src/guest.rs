@@ -6094,12 +6094,6 @@ pub struct ForkModule {
     pub fm_ref_exn_load: wasmtime::TypedFunc<(u32, u32, u32, u32, u32, u32, u32, u32), i32>,
     /// `__wpk_fork_ref_exn_cache_index(recipe_id) -> index`.
     pub fm_ref_exn_cache_index: wasmtime::TypedFunc<u32, i32>,
-    /// NOT guest-facing: resolves a funcref recipe to a function-catalog
-    /// ordinal (`-1` == the canonical Null reference); TRAPS on inconsistency.
-    pub fm_funcref_ordinal: wasmtime::TypedFunc<u32, i32>,
-    /// NOT guest-facing: resolves a static-root recipe to a merged
-    /// anyref-catalog index; TRAPS on inconsistency.
-    pub fm_static_root_slot: wasmtime::TypedFunc<u32, i32>,
 
     // -- Coarse per-phase entries (the ONE module API every host drives) ----
     //
@@ -6580,8 +6574,6 @@ pub(crate) fn instantiate_fork_module(
         fm_ref_exn_route: fm_func!("__wpk_fork_ref_exn_route": (u32, u32) => i32),
         fm_ref_exn_load: fm_func!("__wpk_fork_ref_exn_load": (u32, u32, u32, u32, u32, u32, u32, u32) => i32),
         fm_ref_exn_cache_index: fm_func!("__wpk_fork_ref_exn_cache_index": u32 => i32),
-        fm_funcref_ordinal: fm_func!("fm_funcref_ordinal": u32 => i32),
-        fm_static_root_slot: fm_func!("fm_static_root_slot": u32 => i32),
         fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
         fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32) => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),

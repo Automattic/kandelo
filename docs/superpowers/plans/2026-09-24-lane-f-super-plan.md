@@ -675,3 +675,33 @@ Getting to 5 needs either dilution, which the maintainer already rejected in §1
    admission size before sizing the staging slab (Q6); keep the proof-of-use
    messages unless step 3 shows a single stats message is strictly simpler and
    its tests move with it (Q5).
+
+## Maintainer rulings (2026-09-25/26)
+
+1. **Staging slab:** one wasm page plus `fm_admission_buffer(len)` for a
+   larger admission, mapped and released by the module (05e6cdc77). To fold
+   later into one module-owned staging entry.
+2. **`fm_child_install` takes the launch root as an argument** (the
+   kernel-validated `forkBufAddr`), which covers a vfork from a pthread.
+3. **A gap in lane F's goal is lane F's regression** whatever commit caused
+   it. WebKit could not start any fork-capable worker (host-built `anyref`
+   table, and `Module.imports()` refusing GC signatures); fixed by making
+   the static-root catalog module-owned and reading imports from module
+   bytes (f2b0aa644, 8b12214eb), with a portability guard.
+4. **2d: the kernel-completed launch is unconditional.** The
+   `LAUNCH_KERNEL_COMPLETES` bit is removed and the fork module's EINVAL
+   fallback deleted (071b59a8d).
+5. **1h's dirty-mark encoding kept:** the top bit of the argument to
+   `__wpk_fork_module_state_table_dirty_mark` marks a host identity group.
+6. **Dead native bindings removed:** `fm_funcref_ordinal` and
+   `fm_static_root_slot` become injector-only; `forkModuleInjectorHelpers`
+   ceiling 13 -> 15 (approved).
+7. **New stage (step 5): instrumented frame size.** Measured on WebKit and
+   Chromium, fork instrumentation makes optimized guest frames about five
+   times larger than uninstrumented ones (repeated-call depth 14,944 vs
+   3,104 on WebKit; 23,808 vs 4,352 on Chromium). The WebKit Worker's cold
+   first-call limit (about 1,000-2,000 frames) is an engine boundary, but
+   frame size is ours. Plan it after step 3: find what the instrumentation
+   adds per frame (spill locals, transport shims, state checks), reduce it,
+   and re-measure depth on WebKit, Chromium and wasmtime, keeping P-10/P-11
+   as the depth gate.
