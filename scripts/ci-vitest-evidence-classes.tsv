@@ -117,6 +117,7 @@ host/test/ifhwaddr.test.ts	prepared-product
 host/test/image-owned-runtime-urls.test.ts	source-only
 host/test/in-kernel-http-bounds.test.ts	source-only
 host/test/in-kernel-http.test.ts	prepared-product
+host/test/int128-division-guest.test.ts	prepared-product
 host/test/interactive-stdin.test.ts	prepared-product
 host/test/ioctl-arg-size.test.ts	source-only
 host/test/kernel-allocator-churn.test.ts	prepared-product
