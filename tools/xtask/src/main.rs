@@ -69,6 +69,7 @@ mod determinism_check;
 mod dump_abi;
 mod dump_wasi_translation;
 mod host_tool_probe;
+mod input_scope;
 mod local_abi_identity;
 mod local_build;
 mod local_build_executor;
