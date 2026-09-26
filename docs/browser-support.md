@@ -86,13 +86,41 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `host/test/wasm-js-api-portability.test.ts` keeps host code to the element
   and value types every engine accepts. Validated on WebKit by the
   `vfork-lifecycle` browser specs, which include an ordinary copying fork.
-  `fork-continuation.spec.ts` is gated to Chromium as the aggregate browser
-  gate. Run by hand on WebKit on 2026-09-25 with the gate lifted, its three
-  reference-reconstruction specs (CatchRef, reference-bearing catches, aliased
-  Wasm GC state) passed, and its two deep-continuation fixtures failed: P-10
-  (4,096 nested frames live across a fork) overflows WebKit's call stack
-  ("Maximum call stack size exceeded" inside the guest's own recursion), and
-  P-11 exits 139. Those two are an open WebKit boundary, not a verified pass.
+  `fork-continuation.spec.ts` runs its reference-reconstruction specs
+  (CatchRef, reference-bearing catches, aliased Wasm GC state) on every
+  engine, and they pass on WebKit.
+- **WebKit Worker recursion depth (boundary)**: a WebKit Worker holds far
+  fewer Wasm frames than a Chromium one before its first tier-up, and every
+  frame of a descent that runs once is a first-tier frame. Measured on
+  2026-09-25 with Playwright's builds, one cold call of a trivial
+  `(i32) -> i32` recursion (a fresh module each attempt) reached 1,003 to
+  2,117 frames in a WebKit Worker and 7,938 to 63,515 in a Chromium Worker.
+  The same function reaches 638,627 frames on WebKit's main thread and
+  49,817 in a WebKit Worker once tiered up, so the limit is the Worker's
+  stack combined with the baseline tier's frame size. No Web API sizes a
+  Worker's stack, and Kandelo processes must run in Workers.
+  - Fork instrumentation does not lower the cold limit. In a Kandelo process
+    on WebKit, one cold call of P-10's recursion shape overflowed between
+    1,280 and 1,792 frames both with and without fork instrumentation. Once
+    tiered up, instrumented frames are about five times larger: a stepped
+    probe reached 3,104 instrumented against 14,944 uninstrumented frames on
+    WebKit, and 4,352 against 23,808 on Chromium.
+  - A fork rewinds the whole stack after the capture, in the parent and in
+    the child, and on WebKit a rewind overflows far sooner than the descent
+    did. A fork at depth 384 completes, and one at 512 or deeper overflows
+    during a rewind at about 457 frames. That is close to the untiered limit:
+    the first call of the trivial function in a fresh WebKit Worker reached
+    553 frames. Why the rewind does not benefit from the descent's tier-up
+    was not established.
+    The overflow ends the process with a truthful SIGSEGV (exit status 139).
+    When the child's Worker dies while it is still launching, the kernel
+    rolls the child back and the parent's `fork` returns ENOMEM before the
+    parent's own rewind overflows.
+  - P-10 and P-11 each keep 4,096 activations live across fork. Their specs
+    measure the Worker's cold-frame capacity first and skip only when even the
+    trivial function cannot reach 4,096 frames. On WebKit they skip; on
+    Chromium they run and pass. P-11's root-allocation ENOMEM checks pass on
+    WebKit before its deep fork overflows.
 - **Signal-wait engine matrix**: the real BrowserKernel worker path runs the
   wasm32 ppoll/pselect interruption matrix and wait4 unknown-option rejection
   on Chromium, Firefox, and WebKit. Chromium and Firefox also run its wasm64

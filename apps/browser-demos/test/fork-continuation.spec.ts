@@ -130,14 +130,104 @@ async function runBrowserFixture(
   );
 }
 
-test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", async ({
+/**
+ * The recursion depth P-10 and P-11 hold live across fork.
+ *
+ * Both fixtures call `fork_at_depth(4096)`, and every one of those 4,096
+ * activations runs on its FIRST call -- the parent's descent, then the child's
+ * rewind -- so an engine that has not tiered the function up yet has to hold
+ * 4,096 frames in its baseline tier.
+ */
+const FIXTURE_FORK_DEPTH = 4096;
+
+/**
+ * Can a dedicated Worker in this engine hold `depth` cold Wasm frames at all?
+ *
+ * A capability measurement, not an engine check. A fresh module is compiled
+ * for each attempt and one trivial `(i32) -> i32` function recurses once, so
+ * no attempt benefits from an earlier attempt's tier-up; the answer is the
+ * deepest of three attempts. Measured on 2026-09-25 (Playwright builds):
+ * Chromium Workers held 7,938 to 63,515 such frames, and WebKit Workers
+ * 1,003 to 2,117. On WebKit the same function reaches 638,627 frames on the
+ * main thread, and 49,817 in a Worker once it has tiered up; no Web API sizes a
+ * Worker's stack, and Kandelo processes must run in Workers. Fork
+ * instrumentation does not change the cold limit: in a Kandelo process on
+ * WebKit, one cold call of P-10's recursion shape overflows between 1,280 and
+ * 1,792 frames with and without instrumentation, so no Kandelo-side change can
+ * fit 4,096 there.
+ *
+ * Fixtures only skip when even a trivial function cannot reach their depth.
+ * An engine that passes this check and still fails the fixture is a real
+ * failure, and the fixture reports it.
+ */
+async function workerHoldsColdWasmFrames(page: Page, depth: number): Promise<{ holds: boolean; deepest: number }> {
+  await page.goto("about:blank");
+  return page.evaluate(async (depth) => {
+    // (module (func $rec (export "rec") (param i32) (result i32)
+    //   (if (result i32) (i32.eqz (local.get 0)) (then (i32.const 0))
+    //     (else (i32.add (call $rec (i32.sub (local.get 0) (i32.const 1)))
+    //                    (i32.const 1))))))
+    const hex =
+      "0061736d0100000001060160017f017f030201000707010372656300000a17011500" +
+      "200045047f410005200041016b100041016a0b0b";
+    const source = `onmessage = (event) => {
+      const bytes = new Uint8Array(event.data.bytes);
+      const holds = (n) => {
+        try {
+          new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports.rec(n);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      let deepest = 0;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let lo = 0, hi = event.data.depth;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (holds(mid)) lo = mid; else hi = mid - 1;
+        }
+        deepest = Math.max(deepest, lo);
+      }
+      postMessage({ holds: deepest >= event.data.depth, deepest });
+    };`;
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    }
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const worker = new Worker(url);
+    try {
+      return await new Promise<{ holds: boolean; deepest: number }>((resolve, reject) => {
+        worker.onmessage = (message) => resolve(message.data);
+        worker.onerror = (error) => reject(new Error(error.message));
+        worker.postMessage({ bytes: Array.from(bytes), depth });
+      });
+    } finally {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+    }
+  }, depth);
+}
+
+/** Skip a deep-continuation fixture only where the engine measurably cannot hold it. */
+async function requireColdFrameDepth(page: Page): Promise<void> {
+  const { holds, deepest } = await workerHoldsColdWasmFrames(page, FIXTURE_FORK_DEPTH);
+  test.skip(
+    !holds,
+    `this engine's Worker holds at most ${deepest} cold Wasm frames of a trivial ` +
+      `function, below the ${FIXTURE_FORK_DEPTH} this fixture keeps live across fork ` +
+      `(see docs/browser-support.md, "Fork on WebKit")`,
+  );
+}
+
+test("grows and replays a continuation beyond ABI 41's fixed reserve", async ({
   page,
   baseURL,
-  browserName,
 }) => {
-  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
   test.setTimeout(180_000);
   expect(baseURL).toBeTruthy();
+  await requireColdFrameDepth(page);
 
   const result = await runBrowserFixture(
     page,
@@ -155,14 +245,13 @@ test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", 
   expect(result.diagnostics).toEqual([]);
 });
 
-test("Chromium preserves the parent across root and later continuation ENOMEM", async ({
+test("preserves the parent across root and later continuation ENOMEM", async ({
   page,
   baseURL,
-  browserName,
 }) => {
-  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
   test.setTimeout(180_000);
   expect(baseURL).toBeTruthy();
+  await requireColdFrameDepth(page);
 
   const result = await runBrowserFixture(
     page,
@@ -188,12 +277,10 @@ test("Chromium preserves the parent across root and later continuation ENOMEM", 
   expect(result.diagnostics).toEqual([]);
 });
 
-test("Chromium reconstructs CatchRef state in a fresh child worker", async ({
+test("reconstructs CatchRef state in a fresh child worker", async ({
   page,
   baseURL,
-  browserName,
 }) => {
-  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
   test.setTimeout(180_000);
   expect(baseURL).toBeTruthy();
 
@@ -242,12 +329,10 @@ test("Chromium reconstructs CatchRef state in a fresh child worker", async ({
   }
 });
 
-test("Chromium reconstructs reference-bearing catches in fresh child workers", async ({
+test("reconstructs reference-bearing catches in fresh child workers", async ({
   page,
   baseURL,
-  browserName,
 }) => {
-  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
   test.setTimeout(180_000);
   expect(baseURL).toBeTruthy();
 
@@ -299,12 +384,10 @@ test("Chromium reconstructs reference-bearing catches in fresh child workers", a
   }
 });
 
-test("Chromium reconstructs aliased Wasm GC state in a fresh child worker", async ({
+test("reconstructs aliased Wasm GC state in a fresh child worker", async ({
   page,
   baseURL,
-  browserName,
 }) => {
-  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
   test.setTimeout(180_000);
   expect(baseURL).toBeTruthy();
 
