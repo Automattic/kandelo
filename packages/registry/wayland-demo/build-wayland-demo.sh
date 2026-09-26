@@ -59,13 +59,20 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # libinput's public header and the wayland-protocols XML are read from their
 # resolved prefixes directly; everything else is now inside $SYSROOT.
 LIBINPUT="${WASM_POSIX_DEP_LIBINPUT_DIR:?resolve wayland-demo through cargo xtask build-deps}"
-PROTOCOLS="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?missing wayland-protocols prefix}"
+# wayland-protocols is a source-only dependency: it stages XML, not a
+# lib/include prefix, so the resolver exports no *_DIR for it. The
+# reviewed copy in-tree is the same file scripts/build-programs.sh scans.
+PROTOCOLS="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:-}"
 
 # --- Generate the xdg-shell protocol glue -----------------------------
 GEN="$WORK_DIR/gen"
 mkdir -p "$GEN"
-XDG_XML="$PROTOCOLS/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
-[ -f "$XDG_XML" ] || XDG_XML="$SOURCE_ROOT/packages/registry/wayland-protocols/xml/xdg-shell.xml"
+XDG_XML="$SOURCE_ROOT/packages/registry/wayland-protocols/xml/xdg-shell.xml"
+if [ -n "$PROTOCOLS" ] && \
+   [ -f "$PROTOCOLS/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml" ]; then
+    XDG_XML="$PROTOCOLS/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
+fi
+[ -f "$XDG_XML" ] || { echo "ERROR: xdg-shell.xml not found at $XDG_XML" >&2; exit 1; }
 echo "==> Generating xdg-shell glue from $XDG_XML..."
 wayland-scanner private-code  "$XDG_XML" "$GEN/xdg-shell-protocol.c"
 wayland-scanner server-header "$XDG_XML" "$GEN/xdg-shell-server-protocol.h"
