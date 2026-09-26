@@ -10,6 +10,7 @@ import {
   MUNMAP_COUNTER,
   startChannelResponder,
 } from "./fork-module-capture-fixture";
+import { exportRow, publishBindings } from "./support/fork-admission";
 
 /**
  * WHY THIS EXISTS
@@ -56,7 +57,7 @@ import {
  */
 const IDENTITY_CHUNK_COUNT_FIELD = 100;
 
-/** `fm_set_identity_group` space for imported globals (`IMPORT_SPACE_GLOBAL`). */
+/** The binding-row space for imported globals (`IMPORT_SPACE_GLOBAL`). */
 const SPACE_GLOBAL = 0;
 
 /** The activation these identities are published under and released with. */
@@ -88,13 +89,8 @@ interface FixtureModule {
   stats: (field: number) => number;
   /** The responder's running `SYS_MUNMAP` tally, read out of shared memory. */
   munmaps: () => number;
-  /** `fm_set_identity_group(space, activation, owner, groupId)`. */
-  identity: (
-    space: number,
-    activation: number,
-    owner: number,
-    groupId: number,
-  ) => void;
+  /** `fm_publish_bindings` of one catalog-export row per owner; the errno. */
+  identities: (space: number, activation: number, owners: readonly number[]) => number;
   /** `fm_resume_slots(op, activation, ordinal)`; op 1 is the dlclose release. */
   slots: (op: number, activation: number, ordinal: number) => number;
   /** The sticky errno of the most recent export call. */
@@ -138,7 +134,10 @@ function instantiateFixtureModule(): FixtureModule {
     // A fresh view each read: `channel_mmap` GROWS the shared memory, and a
     // `DataView` taken before a growth is not guaranteed to survive it.
     munmaps: () => new DataView(memory.buffer).getUint32(MUNMAP_COUNTER, true),
-    identity: x.fm_set_identity_group as FixtureModule["identity"],
+    // Staged at page 6, between the counters (page 5) and the module (8 MiB);
+    // each owner is its own object, so its own group.
+    identities: (space, activation, owners) =>
+      publishBindings(x, memory, 6 * 65536, activation, owners.map((o) => exportRow(space, o, o))),
     slots: x.fm_resume_slots as FixtureModule["slots"],
     errno: () => (x.fm_last_errno as () => number)(),
   };
@@ -151,10 +150,8 @@ describe("identity chunk release", () => {
 
     expect(chunks(), "nothing mapped before any publish").toBe(0);
 
-    for (let owner = 1; owner <= IDENTITIES; owner += 1) {
-      x.identity(SPACE_GLOBAL, ACTIVATION, owner, owner);
-    }
-    expect(x.errno(), `publishing ${IDENTITIES} identities`).toBe(0);
+    const owners = Array.from({ length: IDENTITIES }, (_, i) => i + 1);
+    expect(x.identities(SPACE_GLOBAL, ACTIVATION, owners), `publishing ${IDENTITIES} identities`).toBe(0);
 
     // The EXACT count, not `toBeGreaterThan(1)`. The constants above fix it at
     // 2, and "more than one" would also be satisfied by a publishing loop that

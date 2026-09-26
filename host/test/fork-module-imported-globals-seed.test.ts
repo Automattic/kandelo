@@ -7,7 +7,7 @@ import {
   MMAP_FLOOR,
   startChannelResponder,
 } from "./fork-module-capture-fixture";
-import { admit, type AdmissionFacts } from "./support/fork-admission";
+import { admit, exportRow, importRow, publishBindings, type AdmissionFacts } from "./support/fork-admission";
 
 /**
  * Admitting an activation's imported-global (KFIG) and imported-table (KFIT)
@@ -23,7 +23,7 @@ import { admit, type AdmissionFacts } from "./support/fork-admission";
 
 const EINVAL = 22;
 
-/** `fm_set_import_provenance` / `fm_set_identity_group` spaces. */
+/** Binding-row spaces (`fm_publish_bindings`). */
 const SPACE_GLOBAL = 0;
 const SPACE_TABLE = 1;
 
@@ -72,20 +72,21 @@ function fixture() {
     errno: () => (x.fm_last_errno as () => number)(),
     /** `fm_admit_activation`, staged low; the errno it answered. */
     admit: (activation: number, facts: AdmissionFacts) => admit(x, memory, 4096, activation, facts),
-    provenance: x.fm_set_import_provenance as (
+    /** One import row through `fm_publish_bindings`; the errno is `errno()`. */
+    provenance: (
       space: number,
       consumerActivation: number,
       importOrdinal: number,
       kind: number,
       groupId: number,
       rawBits: bigint,
-    ) => void,
-    identity: x.fm_set_identity_group as (
-      space: number,
-      activation: number,
-      owner: number,
-      groupId: number,
-    ) => void,
+    ): void =>
+      void publishBindings(x, memory, 4096, consumerActivation, [
+        importRow(space, importOrdinal, kind, groupId, rawBits),
+      ]),
+    /** One catalog-export row through `fm_publish_bindings`. */
+    identity: (space: number, activation: number, owner: number, groupId: number): void =>
+      void publishBindings(x, memory, 4096, activation, [exportRow(space, owner, groupId)]),
   };
 }
 

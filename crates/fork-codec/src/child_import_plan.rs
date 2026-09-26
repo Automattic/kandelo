@@ -48,7 +48,7 @@ use crate::module_state_records::{
 };
 
 /// Import space of a plan entry: globals or tables. Same numbering as the
-/// fork module's `IMPORT_SPACE_*` and `fm_set_import_provenance`, deliberately.
+/// fork module's `IMPORT_SPACE_*` and `fm_publish_bindings` rows, deliberately.
 pub const IMPORT_SPACE_GLOBAL: u8 = 0;
 /// See [`IMPORT_SPACE_GLOBAL`].
 pub const IMPORT_SPACE_TABLE: u8 = 1;

@@ -44,11 +44,12 @@ import {
   admitInto,
   bindActivation,
   driveBase,
+  publishInto,
   sideTemplate,
   voidSlotThunk,
   type Fixture,
 } from "./fork-module-capture-fixture";
-import { bind } from "./support/fork-admission";
+import { bind, exportRow, importRow } from "./support/fork-admission";
 
 /** The per-activation drive stride: one slot per binding. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
@@ -549,9 +550,9 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     admitActivation(f, 0, { importedGlobals: emptyKfig() });
     expect(f.errno(), "empty section admitted").toBe(0);
     // Provenance for owner 1, which the empty section does not declare.
-    (f.x.fm_set_import_provenance as (
-      s: number, a: number, o: number, k: number, group: number, bits: bigint,
-    ) => void)(0 /* globals */, 0, 1, 4 /* ACTIVATION_GLOBAL */, 0 /* in no catalog */, 0n);
+    publishInto(f.x, f.memory, 0, [
+      importRow(0 /* globals */, 1, 4 /* ACTIVATION_GLOBAL */, 0 /* in no catalog */, 0n),
+    ]);
     expect(f.errno(), "provenance published").toBe(0);
 
     (f.x.fm_capture_begin as () => void)();
@@ -763,9 +764,13 @@ describe("the binding records the module assembles at capture", () => {
       bits: bigint,
     ) => void;
   } {
+    // One row per call through `fm_publish_bindings`, so each assertion below
+    // still reads the errno of the one fact it published.
     return {
-      identity: f.x.fm_set_identity_group as never,
-      provenance: f.x.fm_set_import_provenance as never,
+      identity: (space, activation, owner, group) =>
+        void publishInto(f.x, f.memory, activation, [exportRow(space, owner, group)]),
+      provenance: (space, activation, ordinal, kind, group, bits) =>
+        void publishInto(f.x, f.memory, activation, [importRow(space, ordinal, kind, group, bits)]),
     };
   }
 

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  FORK_BINDING_EXPORT_CATALOG,
   FORK_IMPORT_SPACE_GLOBAL,
   FORK_IMPORT_SPACE_TABLE,
   ForkImportIdentity,
@@ -34,18 +35,25 @@ interface Seed {
   readonly bytes?: Uint8Array;
 }
 
-function recordingSink(): { seeds: Seed[]; sink: ForkImportSeedSink } {
+function recordingSink(): { seeds: Seed[]; calls: number[]; sink: ForkImportSeedSink } {
   const seeds: Seed[] = [];
+  const calls: number[] = [];
   return {
     seeds,
+    calls,
     sink: {
-      setIdentityGroup: (space, activation, owner, group) =>
-        void seeds.push({ call: "identity", args: [space, activation, owner, group] }),
-      setImportProvenance: (space, consumer, ordinal, kind, group, bits) =>
-        void seeds.push({
-          call: "provenance",
-          args: [space, consumer, ordinal, kind, group, bits],
-        }),
+      // One `fm_publish_bindings` per activation; flattened here into the
+      // per-row facts the assertions below read.
+      publishBindings: (activation, rows) => {
+        calls.push(activation);
+        for (const r of rows) {
+          seeds.push(
+            r.role === FORK_BINDING_EXPORT_CATALOG
+              ? { call: "identity", args: [r.space, activation, r.ordinalOrOwner, r.group] }
+              : { call: "provenance", args: [r.space, activation, r.ordinalOrOwner, r.kind, r.group, r.bits] },
+          );
+        }
+      },
     },
   };
 }
@@ -273,6 +281,23 @@ describe("what only JavaScript can see about an activation's imports", () => {
     f64.setFloat64(0, 12.5, true);
     expect(bitsFor(ORDINAL_NUM)).toBe(f64.getBigUint64(0, true));
     expect(bitsFor(ORDINAL_BIG)).toBe(9n);
+  });
+
+  it("publishes an activation in one call and tells the table journal each table's group", () => {
+    // One module call per activation, whatever its size. And the table group
+    // the catalog row carries is the one `ForkTables` marks a host mutation
+    // by, so the two can never name different objects.
+    const { seeds, calls, sink } = recordingSink();
+    const tracked: [WebAssembly.Table, number][] = [];
+    const identity = new ForkImportIdentity(sink, "test", {
+      track: (table, group) => void tracked.push([table, group]),
+    });
+    const imports = importsFor(mutableI32(1), mutableI32(2));
+    const { preparation, instance } = prepared(identity, 0, compile(WAT), imports);
+    preparation.complete(instance);
+    expect(calls).toEqual([0]);
+    const row = seeds.find((s) => s.call === "identity" && s.args[0] === FORK_IMPORT_SPACE_TABLE);
+    expect(tracked).toEqual([[(imports.env as Record<string, unknown>).tbl, row?.args[3]]]);
   });
 
   it("publishes nothing for the channel base the instrumenter excludes", () => {

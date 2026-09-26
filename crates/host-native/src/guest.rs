@@ -6016,6 +6016,9 @@ pub struct ForkModule {
     /// `fm_bind_activation(id, func_catalog_len, static_root_len) -> row`, `0`
     /// + `fm_last_errno` on failure. See [`bind_activation`].
     pub fm_bind_activation: wasmtime::TypedFunc<(u32, u32, u32), u32>,
+    /// `fm_publish_bindings(activation, rows_ptr, count) -> errno`: which
+    /// identity group each catalog entry is. See [`publish_table_bindings`].
+    pub fm_publish_bindings: wasmtime::TypedFunc<(u32, u32, u32), i32>,
     pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
     pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
     /// Proof-of-use statistics: the single folded counter accessor
@@ -6530,6 +6533,7 @@ pub(crate) fn instantiate_fork_module(
         fm_admit_activation: fm_func!("fm_admit_activation": (u32, u32) => i32),
         fm_admission_buffer: fm_func!("fm_admission_buffer": u32 => u32),
         fm_bind_activation: fm_func!("fm_bind_activation": (u32, u32, u32) => u32),
+        fm_publish_bindings: fm_func!("fm_publish_bindings": (u32, u32, u32) => i32),
         fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
@@ -6702,7 +6706,54 @@ fn bind_activation(
             None => {}
         }
     }
+    publish_table_bindings(store, fm, instance, guest_mem)?;
     Ok(ActivationRow { func_catalog_base, static_root_base })
+}
+
+/// Tell the module which identity group each of the guest's private tables
+/// is, one `__wpk_fork_table_<owner>` export per group, so the module elects
+/// each table's sparse-state writer (`fm_publish_bindings`, the table-space
+/// rows `ForkImportIdentity` publishes on the JS hosts).
+///
+/// A group per export is the whole identity question on this host: it runs
+/// one activation, which exports each of its tables once, so no two catalog
+/// entries name one table. Without a publication the module answers "not
+/// owned" for every table, and a capture writes no table state at all -- the
+/// missing election behind `smoke_fork_externref_table`.
+fn publish_table_bindings(
+    store: &mut Store<()>,
+    fm: &ForkModule,
+    instance: &Instance,
+    guest_mem: &SharedMemory,
+) -> anyhow::Result<()> {
+    use fork_codec::bindings::{encode_binding_rows, BindingRow, IMPORT_SPACE_TABLE};
+
+    let prefix = wasm_posix_shared::abi::WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX;
+    let mut rows = Vec::new();
+    for export in instance.exports(&mut *store) {
+        let Some(suffix) = export.name().strip_prefix(prefix) else { continue };
+        let owner: u32 = suffix
+            .parse()
+            .ok()
+            .filter(|&owner| owner != 0 && !suffix.starts_with('0'))
+            .ok_or_else(|| anyhow::anyhow!("malformed table catalog export {}", export.name()))?;
+        anyhow::ensure!(export.into_table().is_some(), "table catalog {prefix}{suffix} is not a table");
+        rows.push(BindingRow::export(IMPORT_SPACE_TABLE, owner, owner));
+    }
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let bytes = encode_binding_rows(&rows);
+    anyhow::ensure!(
+        bytes.len() <= FORK_MODULE_STAGING_SLAB_BYTES && fm.staging_base + bytes.len() <= guest_mem.data().len(),
+        "{} table bindings do not fit the staging slab",
+        rows.len()
+    );
+    // SAFETY: in bounds (checked above); the slab belongs to this worker alone.
+    unsafe { write_bytes(guest_mem, fm.staging_base, &bytes) };
+    let errno = fm.fm_publish_bindings.call(&mut *store, (0, fm.staging_base as u32, rows.len() as u32))?;
+    anyhow::ensure!(errno == 0, "fm_publish_bindings refused activation 0's tables: errno {errno}");
+    Ok(())
 }
 
 /// Have one freshly instantiated guest place its OWN resume thunks, at the

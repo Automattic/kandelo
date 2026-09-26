@@ -3465,13 +3465,16 @@ mod tests {
     /// the child's table was not 100 slots, 93 = the parent's was not).
     ///
     /// IGNORED, and the reason is a native gap this change did not open: this
-    /// host carries no guest TABLE state across fork. It never seeds the
-    /// module's table-state elections (`fm_set_activation_table_state_owner`,
-    /// which the JS hosts drive from `ForkTableStateOwners`), so every table
-    /// reads as "not owned" at capture; seeding them alone was tried and the
-    /// child still exits nonzero, in the same module-state reconstruction path
-    /// the pre-existing `smoke_fork_reconstructs_references` and
-    /// `smoke_fork_gc_*` failures sit in. Un-ignore when that path works.
+    /// host carries no guest TABLE state across fork. Half of it is closed:
+    /// `bind_activation` now publishes one identity group per private
+    /// `__wpk_fork_table_N` export (`fm_publish_bindings`, lane F stage 1H),
+    /// so the module elects each table's writer as it does on the JS hosts.
+    /// The child still exits 92 (its table is not 100 slots), because a
+    /// native child is not installed through `fm_child_install` yet (stage
+    /// 1f-native) and so never drives the module-state restore that would
+    /// rebuild the table -- the same reconstruction path the pre-existing
+    /// `smoke_fork_reconstructs_references` and `smoke_fork_gc_*` failures
+    /// sit in. Un-ignore when that path works.
     #[test]
     #[ignore = "host-native carries no guest table state across fork (see doc comment)"]
     fn smoke_fork_externref_table() -> anyhow::Result<()> {

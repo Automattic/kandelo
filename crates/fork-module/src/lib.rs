@@ -158,7 +158,7 @@ pub extern "C" fn __abi_version() -> u32 {
 mod wasm {
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::UnsafeCell;
-    use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
     use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
@@ -1536,26 +1536,11 @@ mod wasm {
         count
     }
 
-    /// Publish that `(space, activation, owner)`'s catalog entry is object
-    /// `group_id`.
-    ///
-    /// Entries sharing a group id within a space are the same
-    /// `WebAssembly.Global` or `WebAssembly.Table`. Assigning the ids is the
-    /// host's job because wasm cannot compare object identity; deciding which
-    /// member PROVIDES the object is this module's, because that needs the KFIG
-    /// or KFIT section it is seeded with.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_identity_group(
-        space: u32,
-        activation_id: u32,
-        owner_id: u32,
-        group_id: u32,
-    ) {
-        match set_identity_group_impl(space, activation_id, owner_id, group_id) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
+    // WHAT USED TO BE HERE: `fm_set_identity_group`, one catalog entry's group
+    // per call. `fm_publish_bindings` carries every row of an activation in one
+    // call now (lane F stage 1H); a GLOBAL-space export row lands in
+    // `set_identity_group_impl` above, a TABLE-space one in the table-state
+    // list, which is where its election is made.
 
     // -- The shared record arena and its directory -------------------------
     //
@@ -2328,7 +2313,7 @@ mod wasm {
     // the recipe id from the snapshot the guest wrote into the arena.
     //
     // Re-seeding a coordinate UPDATES it rather than being refused, matching
-    // `fm_set_activation_table_state_owner` and for the same kind of reason: a
+    // a table coordinate's group and for the same kind of reason: a
     // `dlopen` can add an activation that exports a global an earlier one
     // imported, and the host must be able to correct the provenance it
     // published before that activation existed.
@@ -2413,37 +2398,13 @@ mod wasm {
         group_id: u32,
         raw_bits: u64,
     ) -> Result<(), Errno> {
-        let k = u8::try_from(kind).map_err(|_| Errno::EINVAL)?;
-        let known = if space == IMPORT_SPACE_GLOBAL {
-            matches!(
-                k,
-                abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER
-                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT
-                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
-                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
-            )
-        } else if space == IMPORT_SPACE_TABLE {
-            // A table import is always a `WebAssembly.Table`, so identity is the
-            // only thing the host can say about one. `BASE_IMPORT` is excluded
-            // here for the same reason as in the global space.
-            k == abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE
-        } else {
-            false
-        };
-        if !known {
-            // `BASE_IMPORT` is excluded on purpose, and it is the interesting
-            // case: it is a DEFINED kind the host may not publish. Saying it
-            // would be saying no activation provides the object, which needs
-            // the KFIG sections only this module reads. The host says "this is
-            // a Global, in identity group G"; the election in
-            // `build_imported_global_bindings` reaches `BASE_IMPORT` on its own
-            // when the group has no non-importing member.
-            //
-            // Refused HERE, where the host's answer enters, rather than at the
-            // capture: the same reason the malformed-section refusal sits at
-            // the seed.
-            return Err(Errno::EINVAL);
-        }
+        // The space and kind were checked where the host's answer entered:
+        // `fork_codec::bindings::decode_binding_row`, which refuses the whole
+        // publication before anything is stored. That is also where
+        // `BASE_IMPORT` is refused -- a DEFINED kind the host may not publish,
+        // because saying it would be saying no activation provides the object,
+        // which needs the KFIG sections only this module reads. The election in
+        // `build_imported_global_bindings` reaches it on its own.
         let entry = ProvenanceEntry {
             space,
             consumer_activation,
@@ -2467,39 +2428,13 @@ mod wasm {
         Ok(())
     }
 
-    /// Publish what only the host can resolve about one imported global.
-    ///
-    /// The consumer is named by its IMPORT-SECTION ORDINAL, not by owner id, so
-    /// the host never has to decode the guest's KFIG section to publish this:
-    /// `WebAssembly.Module.imports()` enumerates imports in section order, which
-    /// is the same order `fork_instrument` assigned ordinals in. The module maps
-    /// ordinal to owner from the section it was seeded.
-    ///
-    /// `kind` is a `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` value. `source_*` matter
-    /// for `ACTIVATION_GLOBAL`; `raw_bits` for `RAW_NUMBER` / `RAW_BIGINT`.
-    /// Re-publishing a coordinate updates it. `EINVAL` for an undefined kind;
-    /// the truthful mapping errno if the consumer's list cannot grow.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_import_provenance(
-        space: u32,
-        consumer_activation: u32,
-        import_ordinal: u32,
-        kind: u32,
-        group_id: u32,
-        raw_bits: u64,
-    ) {
-        match set_import_provenance_impl(
-            space,
-            consumer_activation,
-            import_ordinal,
-            kind,
-            group_id,
-            raw_bits,
-        ) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
+    // WHAT USED TO BE HERE: `fm_set_import_provenance`, one import per call.
+    // An IMPORT row of `fm_publish_bindings` lands in
+    // `set_import_provenance_impl` above (lane F stage 1H). The consumer is
+    // still named by its IMPORT-SECTION ORDINAL, not by owner id, so the host
+    // never decodes the guest's KFIG section: `WebAssembly.Module.imports()`
+    // enumerates imports in section order, which is the order
+    // `fork_instrument` assigned ordinals in.
 
     // -- Per-activation import declarations (KFIG globals, KFIT tables) -----
     //
@@ -2705,79 +2640,172 @@ mod wasm {
     // -- Table sparse-state ownership ---------------------------------------
     //
     // Which `(activation, owner)` coordinate writes a physical table's sparse
-    // state. The host ELECTS: imported aliases name one `WebAssembly.Table`, and
-    // deciding which coordinate is canonical means comparing Table OBJECT
-    // IDENTITY, which wasm cannot observe -- there is no `table.eq` and this
-    // module does not import the activations' tables at all.
+    // state. Imported aliases name one `WebAssembly.Table`, and only one of
+    // them may write it; the others still journal mutation marks.
     //
-    // But the host does not have to keep ANSWERING. It seeds the election result
-    // once per coordinate through `fm_set_activation_table_state_owner`, and the
-    // guest's `__wpk_fork_module_state_table_state_owned` import is then served
-    // from here instead of by a host callback. That moves one function off the
-    // host floor while leaving the part that genuinely needs JavaScript -- the
-    // identity comparison -- where it has to be.
+    // THE MODULE ELECTS (lane F stage 1H). Deciding which coordinates are ONE
+    // table needs `WebAssembly.Table` object identity, which wasm cannot
+    // observe -- there is no `table.eq` and this module does not import the
+    // activations' tables. But that is all it needs from the host: the host
+    // says which identity group each `__wpk_fork_table_<owner>` export is in
+    // (`fm_publish_bindings`, an EXPORT_CATALOG row in the table space), and
+    // the rest is policy over data the module holds -- the lowest coordinate
+    // of each group, re-elected when a coordinate is published and when an
+    // activation is released. The host used to run that election
+    // (`ForkTableStateOwners`) and push each result through
+    // `fm_set_activation_table_state_owner`; both are gone.
+    //
+    // The guest's `__wpk_fork_module_state_table_state_owned` import is served
+    // from here, and a host mutation mark names a group this resolves
+    // (`table_group_owner`).
     //
     // Storage is one arena entry list per activation
-    // (`REC_KIND_TABLE_STATE_OWNER`), each entry `[owner_id, owns]`: an
-    // activation usually has exactly ONE table coordinate, and the list's
-    // first allocation holds four, so the common case never grows. Lookup is
-    // a linear scan over the activation's live entries.
+    // (`REC_KIND_TABLE_STATE_OWNER`), each entry `[owner_id, group | OWNS]`:
+    // an activation usually has exactly ONE table coordinate, and the list's
+    // first allocation holds four, so the common case never grows. The
+    // election result shares the group word because a group never has its top
+    // bit set -- the row decoder refuses one that does, for the dirty mark's
+    // sake (`TABLE_DIRTY_GROUP_FLAG`) -- and keeping the entry at eight bytes
+    // keeps the list's growth what `fork-arena-small-stores.test.ts` derives.
     const TABLE_STATE_OWNER_ENTRY_BYTES: usize = 8;
+    /// The election result's bit in an entry's group word.
+    const TABLE_STATE_OWNS: u32 = fork_codec::bindings::TABLE_DIRTY_GROUP_FLAG;
 
-    /// Seed one coordinate's election result.
+    /// One table coordinate as the list holds it.
+    #[derive(Clone, Copy)]
+    struct TableStateEntry {
+        activation: u32,
+        owner: u32,
+        group: u32,
+        owns: bool,
+    }
+
+    /// Visit every table coordinate of every activation, with its entry's
+    /// address: directory order, then publication order within an activation.
+    /// A walk rather than a list, so an election allocates nothing -- the
+    /// bump heap is reclaimed only at a fork, and a worker that `dlopen`s in a
+    /// loop publishes (and re-elects) many times between forks.
+    fn for_each_table_entry(mut visit: impl FnMut(TableStateEntry, u64)) {
+        arena_for_each_record(REC_KIND_TABLE_STATE_OWNER, |activation, at, _| {
+            for index in 0..arena_u32(at) as usize {
+                let slot = entry_list_at(at, TABLE_STATE_OWNER_ENTRY_BYTES, index);
+                let word = arena_u32(slot + 4);
+                let entry = TableStateEntry {
+                    activation,
+                    owner: arena_u32(slot),
+                    group: word & !TABLE_STATE_OWNS,
+                    owns: word & TABLE_STATE_OWNS != 0,
+                };
+                visit(entry, slot);
+            }
+        });
+    }
+
+    /// Every table coordinate, collected (the capture's KFBT election reads it).
+    fn table_coordinates() -> Vec<TableStateEntry> {
+        let mut out = Vec::new();
+        for_each_table_entry(|entry, _| out.push(entry));
+        out
+    }
+
+    /// The entry address of `(activation_id, owner_id)`, if published.
+    fn table_state_slot(activation_id: u32, owner_id: u32) -> Option<u64> {
+        let (at, count) = entry_list_find(activation_id, REC_KIND_TABLE_STATE_OWNER)?;
+        (0..count)
+            .map(|index| entry_list_at(at, TABLE_STATE_OWNER_ENTRY_BYTES, index))
+            .find(|&slot| arena_u32(slot) == owner_id)
+    }
+
+    /// Record that `(activation_id, owner_id)` is a coordinate of table group
+    /// `group`, and push every group whose membership that changed onto
+    /// `touched` for re-election.
     ///
-    /// Re-seeding an existing coordinate UPDATES it rather than being refused,
-    /// which is the opposite of the once-per-worker catalogs above and is
-    /// deliberate: the host re-elects whenever a lower coordinate registers for
-    /// the same physical table, so the incumbent must be demotable. Refusing the
-    /// second seed would freeze the first election and leave two writers.
-    fn set_activation_table_state_owner_impl(
+    /// Re-publishing a coordinate UPDATES its group rather than being refused:
+    /// a `dlopen` can change which physical table an activation's import turns
+    /// out to be shared with, and the host must be able to say so. A
+    /// coordinate that moves groups leaves its old one unowned-by-it at once
+    /// (the demotion) and both groups are re-elected.
+    fn publish_table_coordinate(
         activation_id: u32,
         owner_id: u32,
-        owns: u32,
+        group: u32,
+        touched: &mut Vec<u32>,
     ) -> Result<(), Errno> {
-        // Owner 0 is not a coordinate; the host rejects it too.
-        if owner_id == 0 {
-            return Err(Errno::EINVAL);
-        }
-        let owns = u32::from(owns != 0);
-        // A coordinate already seeded UPDATES in place -- the demotion the
-        // comment above exists for.
-        if let Some((at, count)) = entry_list_find(activation_id, REC_KIND_TABLE_STATE_OWNER) {
-            for index in 0..count {
-                let slot = entry_list_at(at, TABLE_STATE_OWNER_ENTRY_BYTES, index);
-                if arena_u32(slot) == owner_id {
-                    arena_set_u32(slot + 4, owns);
-                    return Ok(());
-                }
+        if let Some(slot) = table_state_slot(activation_id, owner_id) {
+            let previous = arena_u32(slot + 4) & !TABLE_STATE_OWNS;
+            if previous != group {
+                arena_set_u32(slot + 4, group);
+                touched.push(previous);
             }
+        } else {
+            let slot = entry_list_push(
+                activation_id,
+                REC_KIND_TABLE_STATE_OWNER,
+                TABLE_STATE_OWNER_ENTRY_BYTES,
+            )?;
+            arena_set_u32(slot, owner_id);
+            arena_set_u32(slot + 4, group);
         }
-        let slot = entry_list_push(
-            activation_id,
-            REC_KIND_TABLE_STATE_OWNER,
-            TABLE_STATE_OWNER_ENTRY_BYTES,
-        )?;
-        arena_set_u32(slot, owner_id);
-        arena_set_u32(slot + 4, owns);
+        touched.push(group);
         Ok(())
+    }
+
+    /// Re-run one group's election and write what changed: the winner is
+    /// `fork_codec::table_state_winner`, and the writes go in
+    /// `fork_codec::TABLE_STATE_PASSES` order -- every demotion before the
+    /// promotion. Allocates nothing and cannot fail part way, so an error can
+    /// never leave a group with two writers.
+    fn elect_table_group(group: u32) {
+        // Folded one member at a time, so the walk needs no list of them.
+        let mut winner: Option<(u32, u32)> = None;
+        for_each_table_entry(|c, _| {
+            if c.group == group {
+                winner = fork_codec::table_state_winner(winner.into_iter().chain([(c.activation, c.owner)]));
+            }
+        });
+        for pass in fork_codec::TABLE_STATE_PASSES {
+            for_each_table_entry(|c, slot| {
+                if c.group != group {
+                    return;
+                }
+                if let Some(owns) = fork_codec::table_state_change(pass, (c.activation, c.owner), c.owns, winner) {
+                    arena_set_u32(slot + 4, if owns { group | TABLE_STATE_OWNS } else { group });
+                }
+            });
+        }
+    }
+
+    /// The groups `activation_id` has table coordinates in, each once.
+    fn table_groups_of(activation_id: u32) -> Vec<u32> {
+        let mut groups: Vec<u32> = Vec::new();
+        for_each_table_entry(|c, _| {
+            if c.activation == activation_id && !groups.contains(&c.group) {
+                groups.push(c.group);
+            }
+        });
+        groups
+    }
+
+    /// The owner ordinal of `group`'s elected coordinate, or `None` when no
+    /// coordinate of it is published.
+    fn table_group_owner(group: u32) -> Option<u32> {
+        let mut owner = None;
+        for_each_table_entry(|c, _| {
+            if owner.is_none() && c.group == group && c.owns {
+                owner = Some(c.owner);
+            }
+        });
+        owner
     }
 
     /// Answer the guest's `table_state_owned` import for one coordinate.
     ///
-    /// An UNSEEDED coordinate answers 0, never 1. Answering 1 by default would
+    /// An UNPUBLISHED coordinate answers 0, never 1. Answering 1 by default would
     /// make two aliases both write sparse state for one physical table, and that
     /// duplicate does not trap -- it surfaces as a child rebuilt wrong.
     fn table_state_owned_impl(activation_id: u32, owner_id: u32) -> u32 {
-        let Some((at, count)) = entry_list_find(activation_id, REC_KIND_TABLE_STATE_OWNER) else {
-            return 0;
-        };
-        for index in 0..count {
-            let slot = entry_list_at(at, TABLE_STATE_OWNER_ENTRY_BYTES, index);
-            if arena_u32(slot) == owner_id {
-                return arena_u32(slot + 4);
-            }
-        }
-        0
+        table_state_slot(activation_id, owner_id)
+            .map_or(0, |slot| u32::from(arena_u32(slot + 4) & TABLE_STATE_OWNS != 0))
     }
 
     /// Place `activation_id`'s catalog of `len` entries in one merged table and
@@ -3643,6 +3671,21 @@ mod wasm {
     /// guest without imports produced before.
     /// One space's identity groups, in the shape the election takes them.
     fn identity_groups(space: u32) -> Vec<fork_codec::GlobalIdentityGroup> {
+        // A TABLE's group is kept with its coordinate's election, in the
+        // table-state list, rather than a second time here: one store per
+        // fact. That list also survives in a borrowed vfork child, which this
+        // one is not written in (see `fm_publish_bindings`), though a borrowed
+        // child never captures, so nothing reads either there.
+        if space == IMPORT_SPACE_TABLE {
+            return table_coordinates()
+                .into_iter()
+                .map(|c| fork_codec::GlobalIdentityGroup {
+                    activation: c.activation,
+                    owner: c.owner,
+                    group_id: c.group,
+                })
+                .collect();
+        }
         // Walks the on-demand chunk list in publish order: chunks are appended
         // at the tail and entries are a dense prefix within each, so this yields
         // exactly the order the fixed array did.
@@ -4389,6 +4432,7 @@ mod wasm {
         BORROWED_PREFIX_BASE.store(0, Ordering::Relaxed);
         BORROWED_PREFIX_BYTES.store(0, Ordering::Relaxed);
         BORROWED_PREFIX_CURSOR.store(0, Ordering::Relaxed);
+        BORROWED_ADMISSION.store(false, Ordering::Relaxed);
         FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
         FMT_FIXED_PREFIX.store(fixed_prefix_size, Ordering::Relaxed);
         Ok(())
@@ -7867,30 +7911,10 @@ mod wasm {
         }
     }
 
-    /// Seed one table coordinate's sparse-state election result.
-    ///
-    /// The HOST elects -- it compares `WebAssembly.Table` object identity, which
-    /// wasm cannot do -- and tells the module the answer here, once per
-    /// coordinate. The guest's `__wpk_fork_module_state_table_state_owned`
-    /// import is then served by `fm_module_state_table_state_owned` below instead of by a
-    /// host callback, which takes one function off every JS host's floor.
-    ///
-    /// Re-seeding a known coordinate UPDATES it. The host re-elects when a lower
-    /// coordinate registers for the same physical table, so an incumbent must be
-    /// demotable; refusing the second seed would freeze the first election and
-    /// leave the table with two writers. `owner_id` 0 is rejected (`EINVAL`) and
-    /// a 257th distinct coordinate is `E2BIG`. Check `fm_last_errno`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_table_state_owner(
-        activation_id: u32,
-        owner_id: u32,
-        owns: u32,
-    ) {
-        match set_activation_table_state_owner_impl(activation_id, owner_id, owns) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
+    // WHAT USED TO BE HERE: `fm_set_activation_table_state_owner`, through
+    // which the HOST told the module each coordinate's election result. The
+    // module elects itself now, from the table groups `fm_publish_bindings`
+    // publishes (lane F stage 1H); see `elect_table_group`.
 
     /// Guest-facing `env.__wpk_fork_module_state_table_state_owned(owner) -> i32`,
     /// reached through the per-activation trampoline that folds the activation in.
@@ -8082,6 +8106,9 @@ mod wasm {
         if id == 0 {
             FMT_FIXED_PREFIX.store(admitted.linked_format.fixed_prefix_size, Ordering::Relaxed);
         }
+        if admitted.descriptor.flags & fork_codec::activation_admission::ADMISSION_FLAG_BORROWED_CHILD != 0 {
+            BORROWED_ADMISSION.store(true, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -8110,6 +8137,95 @@ mod wasm {
             || differs(REC_KIND_KFIG, Some(K::ImportedGlobals))?
             || differs(REC_KIND_KFIT, Some(K::ImportedTables))?;
         if conflict { Err(Errno::EINVAL) } else { Ok(()) }
+    }
+
+    /// Set when this worker admitted an activation as a vfork BORROWED child
+    /// (`ADMISSION_FLAG_BORROWED_CHILD`). Per worker; `fm_set_format` clears it.
+    static BORROWED_ADMISSION: AtomicBool = AtomicBool::new(false);
+
+    /// Publish what one activation's catalog exports and imports resolved to:
+    /// `count` packed rows at `rows_ptr`, each `fork_codec::bindings::BindingRow`
+    /// -- one observation "slot X of activation A is object-group G". Returns 0
+    /// or the errno (also left in `fm_last_errno`).
+    ///
+    /// ONE ABSTRACTION, the only one wasm cannot supply: which object a catalog
+    /// entry or an import IS. The host groups by JavaScript reference equality
+    /// (there is no `global.eq` or `table.eq`) and reads each import's value
+    /// off its import object; everything decided from that is this module's --
+    /// who PROVIDES a shared object to a child (`build_imported_*_bindings`, at
+    /// capture) and which coordinate WRITES a shared table's sparse state
+    /// (`elect_table_group`, here and at release). It replaced
+    /// `fm_set_identity_group`, `fm_set_import_provenance` and
+    /// `fm_set_activation_table_state_owner` (lane F stage 1H), the last of
+    /// which carried an election the host used to make.
+    ///
+    /// Every row is decoded and checked before any is stored, so a malformed
+    /// publication changes nothing (`EINVAL`). Re-publishing a coordinate
+    /// updates it.
+    ///
+    /// A vfork BORROWED child stores no GLOBAL identity: those live in on-demand
+    /// chunks in the parked parent's memory, and writing one breaks the exact
+    /// teardown fence the parent's return is checked against. Nothing is lost,
+    /// because identities are read only at capture and a borrowed child never
+    /// captures. Its TABLE rows are stored -- its restore asks who owns each
+    /// table -- as the election results were before.
+    ///
+    /// A buffer `fm_admission_buffer` mapped (a host stages a large
+    /// publication there, as it does an admission) is released as this
+    /// returns, accepted or refused.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_publish_bindings(activation_id: u32, rows_ptr: usize, count: u32) -> i32 {
+        let published = publish_bindings_impl(activation_id, rows_ptr as u64, count);
+        match published.and(release_admission_buffer()) {
+            Ok(()) => {
+                set_ok();
+                0
+            }
+            Err(errno) => {
+                set_err(errno);
+                errno as i32
+            }
+        }
+    }
+
+    fn publish_bindings_impl(activation_id: u32, rows_ptr: u64, count: u32) -> Result<(), Errno> {
+        use fork_codec::bindings as b;
+        // Decoding allocates on the bump heap, which maps through the channel;
+        // with none, answer the arena's own `EINVAL` rather than trapping.
+        channel_base()?;
+        let len = (count as usize).checked_mul(b::BINDING_ROW_BYTES).ok_or(Errno::EINVAL)?;
+        let rows = b::decode_binding_rows(guest_bytes(rows_ptr, len)?)?;
+        let borrowed = BORROWED_ADMISSION.load(Ordering::Relaxed);
+        let mut touched: Vec<u32> = Vec::new();
+        let stored = rows.iter().try_for_each(|row| {
+            let space = u32::from(row.space);
+            match (row.role, row.space) {
+                (b::BINDING_ROLE_EXPORT_CATALOG, b::IMPORT_SPACE_TABLE) => {
+                    publish_table_coordinate(activation_id, row.ordinal_or_owner, row.group, &mut touched)
+                }
+                (b::BINDING_ROLE_EXPORT_CATALOG, _) if borrowed => Ok(()),
+                (b::BINDING_ROLE_EXPORT_CATALOG, _) => {
+                    set_identity_group_impl(space, activation_id, row.ordinal_or_owner, row.group)
+                }
+                _ => set_import_provenance_impl(
+                    space,
+                    activation_id,
+                    row.ordinal_or_owner,
+                    u32::from(row.kind),
+                    row.group,
+                    row.bits,
+                ),
+            }
+        });
+        // RE-ELECT EVEN WHEN A STORE FAILED PART WAY (a list that could not
+        // grow): the coordinates already stored are real, and a group left
+        // un-elected would answer "not owned" for all of them.
+        touched.sort_unstable();
+        touched.dedup();
+        for group in touched {
+            elect_table_group(group);
+        }
+        stored
     }
 
     /// The row `fm_bind_activation` returns: `drive_base`, `func_catalog_base`,
@@ -9008,12 +9124,35 @@ mod wasm {
     /// happens, the sparse overlay it serialises is correct. So there is no
     /// fork-state requirement here, and a mark with no fork in flight is the
     /// normal case rather than an error.
+    ///
+    /// **The host marks by GROUP.** The dynamic loader mutates the shared
+    /// indirect function table from JavaScript, and it cannot know which
+    /// coordinate's owner that table's pages are journaled under -- that is
+    /// this module's election (`elect_table_group`). So it passes the table's
+    /// identity group with `fork_codec::bindings::TABLE_DIRTY_GROUP_FLAG` set,
+    /// and the mark lands under the group's elected owner. A guest owner
+    /// ordinal never has that bit. A group with no elected owner cannot be
+    /// attributed, so every page of every table is taken as dirty -- the one
+    /// safe direction, as for any other mark this set cannot record exactly --
+    /// and `EINVAL` says why.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_dirty_mark(
         owner: u32,
         first_page: u64,
         page_count: u64,
     ) {
+        let owner = if owner & fork_codec::bindings::TABLE_DIRTY_GROUP_FLAG == 0 {
+            owner
+        } else {
+            match table_group_owner(owner & !fork_codec::bindings::TABLE_DIRTY_GROUP_FLAG) {
+                Some(elected) => elected,
+                None => {
+                    dirty().saturated = true;
+                    set_err(Errno::EINVAL);
+                    return;
+                }
+            }
+        };
         dirty().mark(owner, first_page, page_count);
         set_ok();
     }
@@ -11847,6 +11986,9 @@ mod wasm {
                     // moment, no second `fm_*` entry to say the same thing.
                     // Chunks that lose their last entry are munmap'd here.
                     release_identity_activation(activation);
+                    // The table groups it had coordinates in, read BEFORE its
+                    // records go: those records are what say which they are.
+                    let orphaned = table_groups_of(activation);
                     // And its arena records, for the same reason and at the
                     // same moment: one signal, one moment, no second `fm_*`
                     // entry to say the same thing. This drops the activation's
@@ -11854,6 +11996,13 @@ mod wasm {
                     // id is a fresh allocation rather than the `EINVAL` an
                     // orphaned entry would make it.
                     arena_release_activation(activation);
+                    // Then RE-ELECT each of those groups. A released canonical
+                    // coordinate otherwise leaves its table with no writer at
+                    // all: every surviving alias answers "not owned" and the
+                    // table's sparse state stops reaching a child.
+                    for group in orphaned {
+                        elect_table_group(group);
+                    }
                     set_ok();
                     freed as i32
                 }

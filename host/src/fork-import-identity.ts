@@ -17,7 +17,10 @@
  * reference, the ordering and the encoding. See census sections 152 and 154.
  *
  * So this file publishes identity and values, and nothing else. It does not
- * decide, and it does not keep a copy of anything the module now owns.
+ * decide, and it does not keep a copy of anything the module now owns -- not
+ * even which coordinate of a shared table writes its sparse state, which the
+ * module elects from the same table groups (lane F stage 1H). An activation's
+ * whole publication is one `fm_publish_bindings` call.
  */
 import {
   WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
@@ -30,30 +33,37 @@ import {
 } from "./generated/abi";
 import { wasmModuleImports } from "./wasm-module-reflection";
 
-/** `fm_set_identity_group` / `fm_set_import_provenance` spaces. */
+/** A binding row's space (`fork_codec::bindings`, `IMPORT_SPACE_*`). */
 export const FORK_IMPORT_SPACE_GLOBAL = 0;
 export const FORK_IMPORT_SPACE_TABLE = 1;
+/** A binding row's role: a catalog export, or an import. */
+export const FORK_BINDING_EXPORT_CATALOG = 0;
+export const FORK_BINDING_IMPORT = 1;
 
 export type ForkWasmImports = Readonly<
   Record<string, Readonly<Record<string, unknown>>>
 >;
 
-/** The two module entries this publishes through. */
+/**
+ * One observation "slot X of this activation is object-group G": catalog
+ * export `ordinalOrOwner`, or import number `ordinalOrOwner`. The layout the
+ * module decodes is `fork_codec::bindings::BindingRow`.
+ */
+export interface ForkBindingRow {
+  readonly space: number;
+  readonly role: number;
+  /** An import's `WPK_FORK_IMPORTED_*_BINDING_*` kind; 0 for an export. */
+  readonly kind: number;
+  readonly ordinalOrOwner: number;
+  /** The object's identity group; 0 for an import in no catalog. */
+  readonly group: number;
+  /** A raw scalar import's bits. */
+  readonly bits: bigint;
+}
+
+/** The module entry this publishes through (`fm_publish_bindings`). */
 export interface ForkImportSeedSink {
-  setIdentityGroup(
-    space: number,
-    activationId: number,
-    ownerId: number,
-    groupId: number,
-  ): void;
-  setImportProvenance(
-    space: number,
-    consumerActivation: number,
-    importOrdinal: number,
-    kind: number,
-    groupId: number,
-    rawBits: bigint,
-  ): void;
+  publishBindings(activationId: number, rows: readonly ForkBindingRow[]): void;
 }
 
 export interface PreparedForkParentActivation {
@@ -127,33 +137,19 @@ export class ForkImportIdentity {
   private readonly preparing = new Set<number>();
 
   /**
-   * `tables` is the OTHER election over the same objects, and it is deliberately
-   * not this one: which coordinate WRITES a shared table's sparse state, rather
-   * than which one provides the object to a child. That one is made here because
-   * it needs no KFIT -- lowest coordinate wins outright -- and it is fed from
-   * this walk so the catalog exports are read once rather than twice.
+   * `tables` learns each catalog table's group, which is how a host mutation
+   * of that table is journaled (`ForkTables`): the group is the only name the
+   * host has for "the table whose writer the module elected".
+   *
+   * A vfork BORROWED child publishes the same rows as anyone. What it must not
+   * do -- write an identity chunk into its parked parent's memory, which
+   * breaks the exact teardown fence -- is the module's to avoid, and it does:
+   * the activation was admitted as a borrowed child (`fm_publish_bindings`).
    */
   constructor(
     private readonly sink: ForkImportSeedSink,
     private readonly label: string,
-    private readonly tables?: {
-      register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
-    /**
-     * Publish catalog identities at all. FALSE for a vfork BORROWED child.
-     *
-     * A borrowed child runs in the PARKED PARENT's linear memory and must leave
-     * it exactly as it found it -- `process-lifecycle.ts` refuses the teardown
-     * otherwise ("exited without exact ownership fences"). Identity storage is
-     * on-demand `SYS_MMAP` chunks in that shared memory, and WRITING one dirties
-     * a page the parent owns. Measured: allocating a chunk and writing nothing
-     * leaves P-08 green; writing to it exits the child 139.
-     *
-     * Nothing is lost by skipping. Identities exist for CAPTURE -- the module
-     * reads them only in `write_imported_global_bindings` and the KFBT table
-     * record -- and a borrowed child never captures; it drives one replay and
-     * exits. Publishing into it was always work with no reader.
-     */
-    }, private readonly publishIdentities = true,
+    private readonly tables?: { track(table: WebAssembly.Table, group: number): void },
   ) {}
 
   /**
@@ -201,8 +197,10 @@ export class ForkImportIdentity {
       imports: this.recording(imports, byKey, values),
       complete: (instance) => {
         finish();
-        this.publishCatalogs(activationId, instance);
-        this.publishProvenance(activationId, byKey, values);
+        this.sink.publishBindings(activationId, [
+          ...this.catalogRows(instance),
+          ...this.importRows(activationId, byKey, values),
+        ]);
       },
       abort: finish,
     };
@@ -244,25 +242,23 @@ export class ForkImportIdentity {
     return wrapped;
   }
 
-  /** Publish this activation's catalog entries into their identity groups. */
-  private publishCatalogs(activationId: number, instance: WebAssembly.Instance): void {
-    // Table registration still runs below: it is host-side bookkeeping in this
-    // realm, not a write into the parent's memory. Only the module publish is
-    // skipped.
+  /** This activation's catalog entries, each in its identity group. */
+  private catalogRows(instance: WebAssembly.Instance): ForkBindingRow[] {
+    const rows: ForkBindingRow[] = [];
     for (const [name, value] of Object.entries(instance.exports)) {
       for (const [space, prefix] of CATALOGS) {
         const owner = catalogOwner(name, prefix, this.label);
         if (owner === null) continue;
-        if (this.publishIdentities) this.sink.setIdentityGroup(space, activationId, owner, this.group(value as object));
-        if (space === FORK_IMPORT_SPACE_TABLE && value instanceof WebAssembly.Table) {
-          this.tables?.register(activationId, owner, value);
-        }
+        const group = this.group(value as object);
+        if (value instanceof WebAssembly.Table) this.tables?.track(value, group);
+        rows.push({ space, role: FORK_BINDING_EXPORT_CATALOG, kind: 0, ordinalOrOwner: owner, group, bits: 0n });
       }
     }
+    return rows;
   }
 
   /**
-   * Publish what each imported global or table turned out to be.
+   * What each imported global or table turned out to be.
    *
    * The kinds here are only the ones the host can KNOW. `BASE_IMPORT` is absent
    * on purpose: saying it would claim that no activation provides the object,
@@ -270,11 +266,14 @@ export class ForkImportIdentity {
    * a scalar is published as `RAW_REFERENCE`; the module honours that only for a
    * reference type code and refuses it otherwise, rather than guessing.
    */
-  private publishProvenance(
+  private importRows(
     activationId: number,
     byKey: ReadonlyMap<string, Declaration[]>,
     values: ReadonlyMap<number, unknown>,
-  ): void {
+  ): ForkBindingRow[] {
+    const rows: ForkBindingRow[] = [];
+    const row = (space: number, ordinal: number, kind: number, group: number, bits: bigint): void =>
+      void rows.push({ space, role: FORK_BINDING_IMPORT, kind, ordinalOrOwner: ordinal, group, bits });
     for (const [key, declarations] of byKey) {
       // The one import the instrumenter deliberately leaves OUT of KFIG, so
       // the module has no declaration to match provenance against.
@@ -306,14 +305,7 @@ export class ForkImportIdentity {
                 `${activationId} is not a WebAssembly.Table`,
             );
           }
-          this.sink.setImportProvenance(
-            space,
-            activationId,
-            ordinal,
-            WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
-            this.group(value),
-            0n,
-          );
+          row(space, ordinal, WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE, this.group(value), 0n);
           continue;
         }
         let kind: number = WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE;
@@ -329,9 +321,10 @@ export class ForkImportIdentity {
           kind = WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT;
           bits = BigInt.asUintN(64, value);
         }
-        this.sink.setImportProvenance(space, activationId, ordinal, kind, group, bits);
+        row(space, ordinal, kind, group, bits);
       }
     }
+    return rows;
   }
 
   /** The identity group of one object, assigned on first sight. */

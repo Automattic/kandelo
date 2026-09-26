@@ -18,6 +18,7 @@
  */
 
 import type { ForkActivationRow } from "./fork-activations";
+import type { ForkBindingRow } from "./fork-import-identity";
 import type { ForkModuleInstance } from "./fork-module-instance";
 import { ContinuationAllocationError } from "./fork-continuation";
 import {
@@ -80,6 +81,25 @@ export interface ForkBorrowedReplayWorkspace {
 }
 
 export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
+
+/**
+ * `fm_publish_bindings` rows, as `fork_codec::bindings` lays them out: 24
+ * bytes each -- space, role, kind, a reserved byte, `ordinalOrOwner`, group, a
+ * reserved word, then the raw bits. `host/test/fork-table-state-election.test.ts`
+ * pins this writer against that decoder through the real module.
+ */
+export function encodeForkBindings(rows: readonly ForkBindingRow[]): Uint8Array {
+  const out = new Uint8Array(rows.length * 24);
+  const view = new DataView(out.buffer);
+  rows.forEach((row, index) => {
+    const at = index * 24;
+    out.set([row.space, row.role, row.kind], at);
+    view.setUint32(at + 4, row.ordinalOrOwner, true);
+    view.setUint32(at + 8, row.group, true);
+    view.setBigUint64(at + 16, row.bits, true);
+  });
+  return out;
+}
 
 /** `ENOMEM`: the module could not get memory, which a fork survives. */
 const FORK_MODULE_ENOMEM = 12;
@@ -343,69 +363,18 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Publish which `(activation, owner)` coordinate WRITES a physical table's
-   * sparse state, which the module then serves to the guest's
-   * `__wpk_fork_module_state_table_state_owned` import.
+   * Publish what one activation's catalog exports and imports resolved to:
+   * which identity group each catalog entry is, and what each imported global
+   * or table was bound to -- one `fm_publish_bindings` call per activation.
    *
-   * Imported aliases name one `WebAssembly.Table`, and only the canonical
-   * coordinate writes its state; the others still contribute mutation marks.
-   * Deciding which is canonical is host floor -- it compares Table OBJECT
-   * IDENTITY, which wasm cannot observe -- and `ForkTableStateOwners` makes
-   * that decision. This is only the wire it leaves on.
+   * Groups are the host's because only JavaScript can compare object
+   * identity. Everything decided from them is the module's: which member
+   * PROVIDES a shared object to a child, and which coordinate of a shared
+   * table writes its sparse state. `BASE_IMPORT` is not a kind a host may
+   * publish: it is the provider election's conclusion.
    */
-  setActivationTableStateOwner(
-    activationId: number,
-    ownerId: number,
-    owns: boolean,
-  ): void {
-    this.call(
-      "fm_set_activation_table_state_owner",
-      activationId,
-      ownerId,
-      owns ? 1 : 0,
-    );
-  }
-
-  /**
-   * Tell the module that one catalog entry is the object `groupId` names.
-   *
-   * Entries sharing a group are one `WebAssembly.Global` or `WebAssembly.Table`.
-   * The host assigns the ids because only JavaScript can compare object
-   * identity; which member PROVIDES the object is the module's election, since
-   * that needs the KFIG/KFIT sections it is seeded with.
-   */
-  setIdentityGroup(
-    space: number,
-    activationId: number,
-    ownerId: number,
-    groupId: number,
-  ): void {
-    this.call("fm_set_identity_group", space, activationId, ownerId, groupId);
-  }
-
-  /**
-   * Tell the module what one imported global or table turned out to be.
-   *
-   * `BASE_IMPORT` is not a kind a host may publish: it asserts that no
-   * activation provides the object, which is the election's conclusion.
-   */
-  setImportProvenance(
-    space: number,
-    consumerActivation: number,
-    importOrdinal: number,
-    kind: number,
-    groupId: number,
-    rawBits: bigint,
-  ): void {
-    this.call(
-      "fm_set_import_provenance",
-      space,
-      consumerActivation,
-      importOrdinal,
-      kind,
-      groupId,
-      rawBits,
-    );
+  publishBindings(activationId: number, rows: readonly ForkBindingRow[]): void {
+    this.call("fm_publish_bindings", activationId, this.stage(encodeForkBindings(rows)), rows.length);
   }
 
   /**
@@ -740,6 +709,8 @@ export class ForkModuleContinuationBackend {
    * admits codecs and sections over the same staging page, and the module
    * still answers from its own copies of their bytes.
    */
+  // `stage` holds one admission descriptor or one activation's binding rows;
+  // both are released by the entry that reads them.
   private stage(bytes: Uint8Array): number {
     const limit = this.options.instance.stagingBytes;
     const at = bytes.length > limit ? this.call("fm_admission_buffer", bytes.length) >>> 0 : this.options.instance.stagingBase;

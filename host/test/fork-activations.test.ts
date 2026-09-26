@@ -118,8 +118,6 @@ describe("the host's record of live activations", () => {
     const calls: string[] = [];
     const activations = new ForkActivations(recordingDrive().sink, "test", {
       registerCatalog: (base, table) => void calls.push(`functions ${base}+${table.length}`),
-      registerTable: () => {},
-      releaseTables: () => {},
     });
     activations.register(activation(2, { __wpk_fork_static_root_harvest: () => void calls.push("harvest") }));
     // No static-root publish at registration: the module grew its own
@@ -146,19 +144,16 @@ describe("the host's record of live activations", () => {
     expect(() => activations.forget(2)).not.toThrow();
   });
 
-  it("forgets through the module, then the table election, so the id can come back", () => {
-    // `dlopen` reuses a closed id. The module holds everything but the table
-    // identity election, so `forget` is one module release plus that; the
-    // tables it releases are read from the instance, not remembered.
+  it("forgets through the module alone, so the id can come back", () => {
+    // `dlopen` reuses a closed id. The module holds everything -- including
+    // the re-election of any shared table the activation had a coordinate of
+    // (lane F stage 1H) -- so `forget` is one module release and nothing else.
     const calls: string[] = [];
     const table = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
     const sink = recordingDrive().sink;
     sink.releaseResumeSlots = (id) => (calls.push(`module ${id}`), 0);
     const activations = new ForkActivations(sink, "test", {
       registerCatalog: () => {},
-      registerTable: (id, owner) => void calls.push(`register ${id}:${owner}`),
-      releaseTables: (id, tables) =>
-        void calls.push(`release ${id} ${tables.map((t) => (t === table ? "T" : "?")).join()}`),
     });
     const guest = activation(3, {
       __wpk_fork_static_root_harvest: () => {},
@@ -166,7 +161,7 @@ describe("the host's record of live activations", () => {
     });
     activations.register(guest);
     activations.forget(3);
-    expect(calls).toEqual(["register 3:2", "module 3", "release 3 T"]);
+    expect(calls).toEqual(["module 3"]);
     expect(activations.ordered()).toEqual([]);
     expect(() => activations.register(guest), "the id is free again").not.toThrow();
   });

@@ -108,7 +108,6 @@ import {
   type PreparedForkParentActivation,
 } from "./fork-import-identity";
 import { ForkActivations, forkActivationCatalogSink } from "./fork-activations";
-import { ForkTableStateOwners } from "./fork-table-state-owners";
 import { ForkTables } from "./fork-tables";
 import { ForkChildImports } from "./fork-child-imports";
 import {
@@ -3551,16 +3550,6 @@ export async function centralizedWorkerMain(
       // asked for them later.
       // The host's whole memory of this process's activations: four fields
       // each, and the drive bind that registration performs. See census 157.
-      // Which coordinate of an aliased table writes its sparse state. Hoisted
-      // out of the import-identity constructor because activation registration
-      // publishes into it too, and both must elect over ONE set of coordinates.
-      const processTableStateOwners = new ForkTableStateOwners(
-        (activationId, ownerId, owns) =>
-          requireForkModuleBackend(
-            forkModuleBackend,
-            pid,
-          ).setActivationTableStateOwner(activationId, ownerId, owns),
-      );
       // The module's own merged static-root table, which CAPTURE reads to
       // recognise a statically initialised reference and REPLAY reads to
       // reconstruct one. Filled per fork; a child nulls it after its drive, a
@@ -3573,16 +3562,14 @@ export async function centralizedWorkerMain(
         `pid=${pid}: fork activations`,
         forkActivationCatalogSink({
           functionCatalog: forkModuleInstance!.functionCatalog,
-          owners: processTableStateOwners,
         }),
       );
-      // The host's table facts: which physical table a coordinate names, and
-      // which coordinate a mutated table is. The module owns the dirty journal
-      // those mutations land in, reached through the same export it serves to
-      // the guest.
+      // The host's table fact: which identity group a mutated table is. The
+      // module elects the group's writer and owns the dirty journal the
+      // mutation lands in, reached through the export it serves the guest.
       const forkTables = new ForkTables(
         {
-          markTablePages: (ownerId, firstPage, pageCount) =>
+          markTablePages: (groupMark, firstPage, pageCount) =>
             (
               forkModuleInstance!.exports
                 .__wpk_fork_module_state_table_dirty_mark as (
@@ -3590,21 +3577,14 @@ export async function centralizedWorkerMain(
                   first: bigint,
                   count: bigint,
                 ) => void
-            )(ownerId, firstPage, pageCount),
+            )(groupMark, firstPage, pageCount),
         },
-        processTableStateOwners,
         `pid=${pid}: fork tables`,
       );
       const importedStateCapture = new ForkImportIdentity(
         requireForkModuleBackend(forkModuleBackend, pid),
         `pid=${pid}: imported activation state`,
-        // A borrowed vfork child must not publish: storing an identity mmaps and
-        // WRITES a chunk in the parked parent's memory, which breaks the exact
-        // teardown fence. It never reads them either -- identities are capture
-        // state and a borrowed child only replays. See the constructor note.
-        // Shares a line with the owners argument because this surface sits at
-        // its ceiling, and a diagnostic-free extra line is not worth a raise.
-        processTableStateOwners, !borrowedForkChild,
+        forkTables,
       );
       let importedStatePlanner: ForkChildImports | null = null;
       let childDylinkState: readonly LoaderArchivedModule[] | null = null;
@@ -4206,9 +4186,9 @@ export async function centralizedWorkerMain(
         // a tracker. It is not ported, because both halves of it have moved.
         // The dirty-page journal is the module's
         // (`__wpk_fork_module_state_table_dirty_*`), and deciding WHICH
-        // coordinate of an aliased table writes sparse state is exactly what
-        // `ForkTableStateOwners` does -- by comparing table object identity,
-        // the part of it that genuinely cannot leave the host. See census 157.
+        // coordinate of an aliased table writes sparse state is the module's
+        // election over the identity groups `ForkImportIdentity` publishes --
+        // object identity being the one part that cannot leave the host.
         // WHAT `adoptEarlyReferences` DID: hand the early view's materialized
         // roots to the replay transaction, so the two did not resolve the same
         // recipe to different objects. `fm_child_install` seeds the driver from
@@ -5628,19 +5608,10 @@ export async function centralizedThreadWorkerMain(
     // The host thread arena is gone for the reason the process one is: the
     // module maps the KFMS chunks and frees them, so nothing here allocates or
     // releases a chunk it never owned.
-    // One election per physical table for this replica, shared by the imported
-    // identity capture and by the activation record's table registration -- two
-    // separate owner sets would let two coordinates both believe they own one
-    // table's sparse state.
-    const threadTableStateOwners = new ForkTableStateOwners(
-      (activationId, ownerId, owns) =>
-        requireForkModuleBackend(threadForkModuleBackend, pid)
-          .setActivationTableStateOwner(activationId, ownerId, owns),
-    );
     let threadForkActivations: ForkActivations | null = null;
     const threadForkTables = new ForkTables(
       {
-        markTablePages: (ownerId, firstPage, pageCount) =>
+        markTablePages: (groupMark, firstPage, pageCount) =>
           (
             threadForkModuleInstance!.exports
               .__wpk_fork_module_state_table_dirty_mark as (
@@ -5648,9 +5619,8 @@ export async function centralizedThreadWorkerMain(
                 first: bigint,
                 count: bigint,
               ) => void
-          )(ownerId, firstPage, pageCount),
+          )(groupMark, firstPage, pageCount),
       },
-      threadTableStateOwners,
       `pid=${pid} tid=${tid}: fork tables`,
     );
     let threadImportedStateCapture: ForkImportIdentity | null = null;
@@ -5752,13 +5722,12 @@ export async function centralizedThreadWorkerMain(
           `pid=${pid} tid=${tid}: fork activations`,
           forkActivationCatalogSink({
             functionCatalog: threadForkModuleInstance.functionCatalog,
-            owners: threadTableStateOwners,
           }),
         );
         threadImportedStateCapture = new ForkImportIdentity(
           backend,
           `pid=${pid} tid=${tid}: imported activation state`,
-          threadTableStateOwners,
+          threadForkTables,
         );
       }
     }

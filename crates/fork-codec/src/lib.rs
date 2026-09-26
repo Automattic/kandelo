@@ -40,6 +40,7 @@ extern crate wasm_posix_shared;
 // `drive_plan`, `reference_replay`, etc.) depended on it.
 
 pub mod activation_admission;
+pub mod bindings;
 pub mod catalogs;
 pub mod child_import_plan;
 pub mod child_plan;
@@ -72,6 +73,10 @@ pub use activation_admission::{
     admit_activation, decode_activation_admission, encode_activation_admission,
     placeable_resume_ordinals, AdmissionDescriptor, AdmissionRejection, AdmissionSectionKind,
     AdmissionSpan, AdmittedActivation,
+};
+pub use bindings::{
+    table_state_change, table_state_election, table_state_winner, BindingRow, TableCoordinate,
+    TableStatePass, TABLE_STATE_PASSES,
 };
 pub use catalogs::{
     decode_resume_catalog, decode_static_root_catalog, ForkResumeCatalog, ForkResumeCatalogRecord,
