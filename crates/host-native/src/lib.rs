@@ -4356,6 +4356,53 @@ mod tests {
         Ok(())
     }
 
+    /// Constructor provenance: every Wasm-GC shape whose only construction
+    /// path is its constructor -- immutable `array.new_fixed`, `array.new`
+    /// and `array.new_default` arrays, `array.new_data` arrays (two with the
+    /// SAME operands, which must stay two objects), an `array.new_elem`
+    /// array, an immutable struct and an immutable array holding the other
+    /// arrays, and a mutable non-null reference array -- held across fork
+    /// AFTER the parent dropped every segment, rebuilt in the child, in a
+    /// grandchild the child forks, and in a second child of the same parent.
+    /// See `fixtures/native_fork_gc_provenance.wat` for the exit codes; the
+    /// Node and browser hosts run the same fixture
+    /// (`host/test/fork-gc-provenance.test.ts`,
+    /// `apps/browser-demos/test/fork-continuation.spec.ts`).
+    #[test]
+    fn smoke_fork_gc_provenance_reconstructs() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = crate::fixtures::fixture("native_fork_gc_provenance.instrumented.wasm");
+        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+        assert_eq!(
+            outcome.exit_code, 0,
+            "a rebuilt constructor-only object failed its check (see the \
+             fixture's exit codes) (stdout: {:?}, stderr: {:?}, trace: {:?}, \
+             proof: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+            outcome.fork_proof_of_use,
+        );
+        let forks = outcome
+            .syscall_trace
+            .iter()
+            .filter(|nr| **nr == wasm_posix_shared::abi::host_intercepted::SYS_FORK)
+            .count();
+        assert!(forks >= 2, "expected the parent's two forks: {:?}", outcome.syscall_trace);
+        assert!(
+            outcome.fork_proof_of_use.gc_nodes_reconstructed > 0,
+            "the module must have driven a real GC reconstruction: {:?}",
+            outcome.fork_proof_of_use
+        );
+        Ok(())
+    }
+
     /// N1 refcomplete (last gated native kind): a STATIC ROOT — an IMMUTABLE
     /// `(ref $node)` global whose init is `struct.new`, reached through a
     /// mutable HOLDER edge — held live across a native `kernel_fork` and

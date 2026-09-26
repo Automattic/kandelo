@@ -10,7 +10,11 @@
 //! immutable array cannot be populated after allocation, and
 //! `array.new_fixed` has a statically encoded arity. Planning therefore gives
 //! every non-generic constructor site a deterministic layout id so replay can
-//! execute the same typed constructor in the fresh instance.
+//! execute the same typed constructor in the fresh instance. The capture
+//! chooses the layout per object (`fork_codec::gc_constructor`); the only
+//! constructor facts it cannot read off the object -- a segment offset, a
+//! seed -- are reported where the instruction runs
+//! (`records_constructor_run`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -198,8 +202,11 @@ pub struct GcLayout {
     ///
     /// For immutable fields the final snapshot values are constructor inputs.
     /// Mutable non-null fields can have diverged from their constructor inputs,
-    /// so their original seed references are retained by a weak-keyed
-    /// provenance record and serialized only if the aggregate reaches fork.
+    /// so a type-correct seed is supplied from the fork module's witness for
+    /// the constructor layout. Which constructor an ARRAY is rebuilt with is
+    /// chosen at capture (`fork_codec::gc_constructor`); only the runs whose
+    /// facts cannot be recovered then are reported where they happen (see
+    /// `records_constructor_run`).
     pub requires_provenance: bool,
     /// Constructor-only scalar bytes prepended to the snapshot scalar payload.
     pub provenance_scalar_len: u32,
@@ -391,12 +398,7 @@ fn inject_provenance_wrappers(
     let mut struct_wrappers = HashMap::new();
     let mut array_wrappers = HashMap::new();
     for layout in plan.layouts() {
-        let needs_wrapper = match layout.constructor {
-            GcConstructorKind::Struct => layout.provenance_reference_count != 0,
-            GcConstructorKind::ArrayGeneric => false,
-            _ => true,
-        };
-        if !needs_wrapper {
+        if !records_constructor_run(layout) {
             continue;
         }
         let wrapper = add_provenance_wrapper(module, layout, transit, imports)?;
@@ -477,6 +479,35 @@ fn inject_provenance_wrappers(
         dfs_pre_order_mut(&mut rewrite, local, entry);
     }
     Ok(())
+}
+
+/// Whether a run of this layout's constructor must be reported to the fork
+/// module where it happens.
+///
+/// Only two facts cannot be recovered from the object at capture time, so only
+/// sites producing one of them pay for a hook on the allocation path:
+///
+/// * a SEED for a mutable non-null internal reference field or element (the
+///   module keeps the first one per `(layout, ordinal)` as a witness), and
+/// * the segment OFFSET an `array.new_data` / `array.new_elem` read, which the
+///   array's contents do not reveal and a later `data.drop`/`elem.drop` may
+///   make impossible to re-read in the parent.
+///
+/// Every other constructor is re-derived at capture from the object's own
+/// type, length and elements (`fork_codec::gc_constructor`): an immutable
+/// `array.new_fixed N` result is rebuilt by that instruction from its
+/// elements, a uniform one by `array.new`, an all-default one by
+/// `array.new_default`. Hooking those sites would record nothing the capture
+/// does not already have, at a cost on every allocation.
+fn records_constructor_run(layout: &GcLayout) -> bool {
+    match layout.constructor {
+        GcConstructorKind::ArrayGeneric => false,
+        GcConstructorKind::ArrayData { .. } | GcConstructorKind::ArrayElement { .. } => true,
+        GcConstructorKind::Struct
+        | GcConstructorKind::ArrayNew
+        | GcConstructorKind::ArrayDefault
+        | GcConstructorKind::ArrayFixed { .. } => layout.provenance_reference_count != 0,
+    }
 }
 
 fn add_provenance_wrapper(
@@ -2934,7 +2965,10 @@ fn emit_allocate_layout(
             }),
         );
     }
-    if layout.requires_provenance {
+    // A replayed object is itself a parent of any later fork, so the child
+    // reports the constructor run it just made exactly as the original site
+    // did -- and only where the original site did.
+    if records_constructor_run(layout) {
         emit_replay_provenance_registration(
             module,
             codec,

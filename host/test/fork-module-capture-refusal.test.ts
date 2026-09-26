@@ -29,6 +29,7 @@ import {
   PHASE_ABORT_REPLAY,
   PHASE_IDLE,
   PHASE_SEALED_PARENT,
+  admitActivation,
   driveBase,
   fixture,
   openCapture,
@@ -100,6 +101,103 @@ describe("the fork module refuses a raw host externref at capture", () => {
     openCapture(f);
     seal(f);
     expect(f.errno(), "a capture with no host object seals").toBe(0);
+    expect(phase(f)).toBe(PHASE_SEALED_PARENT);
+  });
+});
+
+// Constructor provenance, inside the fork module: an immutable array that no
+// constructor in the program can rebuild -- here, one only `array.new_data`
+// could have made, with no recorded run of it -- refuses the capture with
+// EOPNOTSUPP rather than defining a node the child's allocator would trap on.
+// The same array with contents a derivable constructor reproduces
+// (`array.new_default`) seals cleanly. See docs/fork-reference-support.md,
+// "Constructor provenance"; the success path end to end is
+// `fork-gc-provenance.test.ts`.
+describe("the fork module refuses an array no constructor can rebuild", () => {
+  /** Immutable `array i8`: its generic base (1), `array.new_data` of segment
+   *  0 (2) and `array.new_default` (3). */
+  function immutableBytesCodec(): Uint8Array {
+    const layouts = [
+      // [id, constructor, fieldStart, provenanceScalarLength]
+      [1, 1, 0, 0],
+      [2, 5, 1, 8],
+      [3, 3, 2, 0],
+    ] as const;
+    const bytes = new Uint8Array(16 + layouts.length * 44 + layouts.length * 12);
+    const view = new DataView(bytes.buffer);
+    bytes.set([75, 70, 71, 67]); // "KFGC"
+    view.setUint16(4, 1, true);
+    view.setUint16(6, 16, true);
+    view.setUint32(8, layouts.length, true);
+    view.setUint32(12, layouts.length, true);
+    layouts.forEach(([id, constructor, fieldStart, provenanceScalars], index) => {
+      const at = 16 + index * 44;
+      view.setUint32(at, id, true);
+      view.setUint32(at + 4, 0, true); // type ordinal
+      bytes[at + 8] = 2; // array
+      bytes[at + 9] = constructor;
+      view.setUint16(at + 10, 1, true); // REQUIRES_PROVENANCE: immutable
+      view.setUint32(at + 12, 1, true); // i8 stride
+      view.setUint32(at + 16, fieldStart, true);
+      view.setUint32(at + 20, 1, true);
+      view.setUint32(at + 24, 0xffffffff, true); // no supertype
+      view.setUint32(at + 28, 1, true); // base layout
+      view.setUint32(at + 32, 0, true); // segment ordinal
+      view.setUint32(at + 36, provenanceScalars, true);
+      view.setUint32(at + 40, 0, true);
+    });
+    for (let index = 0; index < layouts.length; index++) {
+      const at = 16 + layouts.length * 44 + index * 12;
+      bytes[at] = 1; // i8, immutable, not a reference
+      view.setUint32(at + 4, 0, true); // scalar offset
+      view.setUint32(at + 8, 0xffffffff, true); // no reference ordinal
+    }
+    return bytes;
+  }
+
+  const SIDE = 1;
+
+  /** Claim a GC recipe for a stand-in object and define it as a 3-element
+   *  `array i8` of `elements` under activation `SIDE`'s base layout. */
+  function defineArray(f: Fixture, elements: readonly number[]): void {
+    const transit = f.x.__wpk_fork_ref_gc_transit as WebAssembly.Table;
+    transit.set(0, {});
+    const recipe = (f.x.__wpk_fork_ref_gc_claim as (slot: number) => number)(0);
+    expect(recipe, `claim errno=${f.errno()}`).toBeGreaterThan(0);
+    const reserve = f.x.__wpk_fork_ref_scratch_reserve as (len: number) => number;
+    const release = f.x.__wpk_fork_ref_scratch_release as (ptr: number, len: number) => void;
+    const staging = reserve(4 + elements.length);
+    const view = new DataView(f.memory.buffer);
+    view.setUint32(staging, elements.length, true);
+    elements.forEach((value, index) => view.setUint8(staging + 4 + index, value));
+    (f.x.__wpk_fork_ref_gc_define as (...args: number[]) => void)(
+      recipe, SIDE, 0, 1, 2, staging, 4 + elements.length, 0,
+    );
+    expect(f.errno(), "define itself succeeds: the walk has no error path").toBe(0);
+    release(staging, 4 + elements.length);
+    transit.set(0, null);
+  }
+
+  it("latches EOPNOTSUPP for contents only an unrecorded segment read made", () => {
+    const f = fixture();
+    expect(admitActivation(f, SIDE, { gcCodec: immutableBytesCodec() })).toBe(0);
+    openCapture(f);
+    defineArray(f, [1, 2, 3]);
+    seal(f);
+    expect(f.errno(), "the seal reports the refusal").toBe(EOPNOTSUPP);
+    expect(phase(f), "a refused capture is still a sealed parent").toBe(
+      PHASE_SEALED_PARENT,
+    );
+  });
+
+  it("seals when a constructor the program has reproduces the contents", () => {
+    const f = fixture();
+    expect(admitActivation(f, SIDE, { gcCodec: immutableBytesCodec() })).toBe(0);
+    openCapture(f);
+    // All default: `array.new_default` rebuilds it, so nothing is refused.
+    defineArray(f, [0, 0, 0]);
+    seal(f);
+    expect(f.errno(), "an array the program's constructors rebuild seals").toBe(0);
     expect(phase(f)).toBe(PHASE_SEALED_PARENT);
   });
 });

@@ -258,6 +258,27 @@ const transitModule = new WebAssembly.Module(readFileSync(
   new URL("./transit.wasm", import.meta.url),
 ));
 const transit = new WebAssembly.Instance(transitModule).exports.transit;
+// The constructor layouts, read from the instrumenter's own descriptor, as the
+// fork module reads them: `{ id, constructor, flags, base, auxiliary }`.
+const layouts = (() => {
+  const [section] = WebAssembly.Module.customSections(
+    providerModule,
+    "kandelo.wpk_fork.gc_codec",
+  );
+  const view = new DataView(section);
+  const out = [];
+  for (let index = 0; index < view.getUint32(8, true); index++) {
+    const at = 16 + index * 44;
+    out.push({
+      id: view.getUint32(at, true),
+      constructor: view.getUint8(at + 9),
+      flags: view.getUint16(at + 10, true),
+      base: view.getUint32(at + 28, true),
+      auxiliary: view.getUint32(at + 32, true),
+    });
+  }
+  return out;
+})();
 const recipes = new Map();
 const identities = new WeakMap();
 const capturedValues = new Map();
@@ -334,12 +355,11 @@ function instantiate() {
       if (activation !== 7) throw new Error("wrong capture activation");
       const record = provenance.get(transit.get(slot));
       if (!record) {
-        // Layout 1 is the default-constructible mutable struct used by the
-        // cycle fixture. Its field snapshot is a complete reconstruction
-        // recipe, so only the immutable-array layouts require constructor
-        // provenance.
-        if (baseLayout === 1) return baseLayout;
-        throw new Error("GC constructor provenance was not registered");
+        // Only the runs whose facts the capture cannot read off the object
+        // are recorded (a segment offset, a seed). Everything else is the
+        // TYPE's answer here; `define` then picks the constructor from the
+        // object's contents, as the fork module's `select_array_constructor`.
+        return baseLayout;
       }
       if (record.activation !== activation) {
         throw new Error("GC constructor provenance has the wrong activation");
@@ -429,6 +449,18 @@ function instantiate() {
         Number(scalarPointer),
         scalarLength,
       ).slice();
+      // An unrecorded array that its type cannot rebuild: its `array.new_fixed`
+      // of the same length takes its elements as operands
+      // (`fork_codec::gc_constructor`, the rule this fixture exercises).
+      const base = layouts[layout - 1];
+      if (!constructor && kind === 2 && base && (base.flags & 2) === 0) {
+        const length = new DataView(snapshot.buffer).getUint32(0, true);
+        const fixed = layouts.find((candidate) =>
+          candidate.base === layout && candidate.id !== layout
+          && candidate.constructor === 4 && candidate.auxiliary === length);
+        if (!fixed) throw new Error("no constructor rebuilds this array");
+        layout = fixed.id;
+      }
       const constructorRecipes = constructor?.references.map((reference) => {
         if (reference === null) return 0;
         transit.set(0, reference);

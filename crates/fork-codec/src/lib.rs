@@ -50,6 +50,7 @@ pub mod dylink_archive;
 pub mod dylink_table_plan;
 pub mod exception_codec;
 pub mod gc_codec;
+pub mod gc_constructor;
 pub mod guest_memory;
 pub mod imported_globals;
 pub mod imported_tables;

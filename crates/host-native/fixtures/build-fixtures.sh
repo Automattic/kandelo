@@ -164,6 +164,7 @@ done
 # nobody reads.
 WAT_FIXTURES=(
     native_fork_gc_array_cycle
+    native_fork_gc_provenance
     native_fork_gc_static_root
     native_fork_gc_struct_cycle
     native_fork_externref_table
@@ -196,6 +197,7 @@ INSTRUMENTED_FIXTURES=(
     native_fork_externref_table
     native_fork_from_thread
     native_fork_gc_array_cycle
+    native_fork_gc_provenance
     native_fork_gc_static_root
     native_fork_gc_struct_cycle
     native_fork_gc_two_object_cycle
