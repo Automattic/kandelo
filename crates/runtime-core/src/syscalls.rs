@@ -3527,6 +3527,13 @@ pub fn drain_deferred_scm_rights_releases(
         if let Some(handle) = released.host_close {
             let _ = host.host_close(handle);
         }
+        // A batch discarded before recvmsg still owns the bo reference
+        // `retain_reference` took; give it back and destroy at zero.
+        if let Some(bo_id) = released.prime_bo_id {
+            if crate::dri::with_registry(|r| r.decref(bo_id)) == Some(0) {
+                host.gbm_bo_destroy(0, bo_id);
+            }
+        }
     }
 }
 
@@ -3764,8 +3771,10 @@ pub fn install_scm_rights_fds_with_flags(
         match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
             Ok(new_fd) => {
                 // Take a bo refcount for the receiver's new fd; its close
-                // drops it (dri_release_ofd_state). The sender's own
-                // reference keeps the bo alive across the hop.
+                // drops it (dri_release_ofd_state). The queued entry holds
+                // its own reference across the hop (see
+                // InFlightFd::retain_reference), so the sender may close
+                // its fd the instant sendmsg returns, as SCM_RIGHTS allows.
                 if let Some(pb) = entry.prime_bo.clone() {
                     crate::dri::with_registry(|r| r.incref(pb.bo_id));
                     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
@@ -13942,10 +13951,22 @@ fn poll_check_depth(
                                 }
                             })
                             .collect();
-                        if !tmp.is_empty()
-                            && poll_check_depth(proc, host, &mut tmp, depth + 1) > 0
-                        {
-                            revents |= POLLIN;
+                        if !tmp.is_empty() {
+                            poll_check_depth(proc, host, &mut tmp, depth + 1);
+                            // Count only conditions epoll_wait would actually
+                            // report. `poll_check_depth`'s return also counts
+                            // POLLNVAL, and nothing prunes `ep.interests` when
+                            // a monitored fd is closed without EPOLL_CTL_DEL
+                            // (Linux prunes automatically). Treating that as
+                            // readable makes the outer epoll report ready
+                            // forever while epoll_wait on the inner one yields
+                            // an events==0 entry — a 100% CPU spin.
+                            let ready = tmp.iter().any(|p| {
+                                p.revents & (POLLIN | POLLOUT | POLLERR | POLLHUP) != 0
+                            });
+                            if ready {
+                                revents |= POLLIN;
+                            }
                         }
                     }
                 }
@@ -37978,6 +37999,61 @@ mod tests {
         assert_eq!(ep.interests.len(), 0);
     }
 
+    /// A nested epoll whose interest list still names a CLOSED fd must not
+    /// report the outer epoll readable. `poll_check_depth` counts POLLNVAL
+    /// in its return, and nothing prunes `ep.interests` on close (Linux
+    /// prunes automatically, we only remove on EPOLL_CTL_DEL). Treating that
+    /// count as readiness made epoll_wait on the outer fd return immediately
+    /// forever while the inner one yielded an events==0 entry: a 100% CPU
+    /// spin in exactly the libinput-inside-wl_event_loop shape the recursion
+    /// exists to support.
+    #[test]
+    fn nested_epoll_with_a_stale_interest_is_not_readable() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Two pipes registered up front: closing one below must not make
+        // the outer epoll readable, and the other proves real readiness
+        // still propagates. Registering the second AFTER the close would
+        // reuse the freed fd number and hit EEXIST on the stale interest --
+        // itself a symptom of the same missing-prune behaviour.
+        let (stale_rfd, _stale_wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        let (live_rfd, live_wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        let inner = sys_epoll_create1(&mut proc, 0).unwrap();
+        let outer = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        const EPOLLIN: u32 = 0x001;
+        sys_epoll_ctl(&mut proc, inner, 1, stale_rfd, EPOLLIN, 7).unwrap();
+        sys_epoll_ctl(&mut proc, inner, 1, live_rfd, EPOLLIN, 11).unwrap();
+        sys_epoll_ctl(&mut proc, outer, 1, inner, EPOLLIN, 9).unwrap();
+
+        // Nothing written yet: no inner fd is ready, so neither is the outer.
+        let mut fds = [WasmPollFd { fd: outer, events: POLLIN, revents: 0 }];
+        assert_eq!(poll_check(&mut proc, &mut host, &mut fds), 0);
+        assert_eq!(fds[0].revents, 0);
+
+        // Close one monitored fd WITHOUT EPOLL_CTL_DEL. The stale interest
+        // now resolves to POLLNVAL, which is not a readiness condition.
+        sys_close(&mut proc, &mut host, stale_rfd).unwrap();
+        let mut fds = [WasmPollFd { fd: outer, events: POLLIN, revents: 0 }];
+        assert_eq!(
+            poll_check(&mut proc, &mut host, &mut fds),
+            0,
+            "a stale nested interest must not make the outer epoll readable",
+        );
+        assert_eq!(fds[0].revents & POLLIN, 0);
+
+        // Real readiness still propagates through the nesting.
+        sys_write(&mut proc, &mut host, live_wfd, b"x").unwrap();
+        let mut fds = [WasmPollFd { fd: outer, events: POLLIN, revents: 0 }];
+        assert_eq!(
+            poll_check(&mut proc, &mut host, &mut fds),
+            1,
+            "a genuinely ready nested interest must still be reported",
+        );
+        assert_ne!(fds[0].revents & POLLIN, 0);
+    }
+
     #[test]
     fn test_epoll_ctl_add_duplicate_eexist() {
         let mut proc = Process::new(1);
@@ -42721,6 +42797,76 @@ mod tests {
         assert!(bo_gone_after, "close should have released the bo");
         // Avoid "unused variable" warning.
         let _ = created;
+    }
+
+    /// SCM_RIGHTS explicitly lets a sender close its fd the instant
+    /// sendmsg() returns. The queued entry therefore cannot borrow the
+    /// sender's bo reference: it must take one of its own at retain time.
+    /// Before this, a client that exported a bo, sent the prime fd to the
+    /// compositor and immediately closed its own copy drove the refcount to
+    /// zero, destroying the buffer while the descriptor was still in flight
+    /// -- the receiver's PRIME_FD_TO_HANDLE then failed and the surface
+    /// never composited.
+    #[test]
+    fn queued_prime_fd_holds_its_own_bo_reference_across_sender_close() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe {
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let req = WpkDrmPrimeHandle { handle: created.handle, flags: 0, fd: -1 };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let exported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        let refcount = || crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount));
+        assert_eq!(refcount(), Some(2), "render fd + prime fd");
+
+        // sendmsg(): queue the prime fd. The entry takes its own reference.
+        let mut queued = snapshot_scm_rights_fd(&proc, exported.fd).unwrap();
+        queued.retain_reference().unwrap();
+        assert_eq!(refcount(), Some(3), "the queued entry must hold a reference");
+
+        // The sender now closes BOTH its fds, as SCM_RIGHTS permits.
+        sys_close(&mut proc, &mut host, exported.fd).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            refcount(),
+            Some(1),
+            "the in-flight descriptor must keep the bo alive after the sender closes",
+        );
+
+        // Never received: dropping the batch gives the reference back and
+        // the drain destroys the bo.
+        drop(queued);
+        drain_deferred_scm_rights_releases(&mut AdvisoryLockManager::new(), &mut host);
+        assert!(
+            crate::dri::with_registry(|r| r.get(bo_id).is_none()),
+            "a discarded batch must not leak the bo",
+        );
     }
 
     #[test]
