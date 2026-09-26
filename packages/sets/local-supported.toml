@@ -388,6 +388,10 @@ name = "zlib"
 class = "platform"
 
 [[packages]]
+name = "libzstd"
+class = "platform"
+
+[[packages]]
 name = "zstd"
 class = "user-software"
 
