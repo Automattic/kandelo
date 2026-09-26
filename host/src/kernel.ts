@@ -978,6 +978,13 @@ export class WasmPosixKernel {
    */
   releaseProcessViews(pid: number): void {
     this.gl_submit_queue.removePid(pid);
+    // Hand a GL-claimed CRTC back to the vblank pump BEFORE unbind, which
+    // deletes the binding that holds `claimedKmsCrtc`. Afterwards the claim
+    // is unreachable, `markKmsCanvasGlReleased` never fires, and both pump
+    // presenters skip the CRTC — the canvas freezes on the dead process's
+    // last GL frame. This backstop runs exactly when the guest-side release
+    // hooks did not: exec, traps, forced termination.
+    this.releaseClaimedKmsCanvas(pid);
     this.gl.unbind(pid);
     this.framebuffers.unbind(pid);
     this.bos.releaseProcess(pid);
