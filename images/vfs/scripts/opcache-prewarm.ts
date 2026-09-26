@@ -39,6 +39,7 @@ import { dirname, join } from "node:path";
 import { NodeKernelHost } from "../../../host/src/node-kernel-host";
 import { findRepoRoot, resolveBinary } from "../../../host/src/binary-resolver";
 import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
+import { sourceDateEpochMilliseconds } from "./vfs-image-helpers";
 
 export interface OpcachePrewarmOptions {
   /** Absolute VFS paths to walk for `.php` files. */
@@ -71,9 +72,10 @@ const PHP_INI_ARGS = [
   "-d", "opcache.file_cache_only=1",
   "-d", `opcache.file_cache=${CACHE_DIR}`,
   // file_update_protection defaults to 2s; opcache refuses to cache
-  // any file whose mtime is within that window. Every PHP file we
-  // walk was just written into the in-memory VFS by this build, so
-  // their mtimes are all "now" — we'd cache nothing without this.
+  // any file whose mtime is within that window of the request time.
+  // The booted tree carries the build's SOURCE_DATE_EPOCH, which a
+  // caller may set to "now"; disable the window so the prewarm never
+  // depends on how recent that instant is.
   "-d", "opcache.file_update_protection=0",
   "-d", "memory_limit=512M",
 ];
@@ -101,7 +103,17 @@ export async function prewarmOpcache(
 
   try {
     console.log(`[opcache-prewarm:${label}] booting kernel against in-memory VFS...`);
-    const imageBytes = await fs.saveImage();
+    // Boot the tree with the timestamps it will SHIP with. Opcache records
+    // each source file's mtime in its cache entry, and a runtime that keeps
+    // opcache.validate_timestamps=1 (nginx-php) discards and unlinks every
+    // entry whose recorded mtime differs from the file's. The final image
+    // save stamps every inode with SOURCE_DATE_EPOCH (the Nix dev shell sets
+    // it to 1980-01-01) while the live tree carries the reference instant,
+    // so booting the live tree prewarmed entries no runtime could use.
+    const imageBytes = await fs.saveImage({
+      normalizeTimestampsMs:
+        sourceDateEpochMilliseconds(process.env.SOURCE_DATE_EPOCH),
+    });
 
     // SpawnOptions has no per-call onStdout, so a single host-level
     // callback delegates to whichever phase is currently running.

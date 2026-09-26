@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -104,7 +105,121 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
       }
     }
   }, 60_000);
+
+  // The nginx-php image keeps opcache.validate_timestamps=1, so its runtime
+  // discards (and unlinks) any entry whose recorded source mtime differs
+  // from the shipped file's. The shipped mtime is SOURCE_DATE_EPOCH — set
+  // here to the Nix dev shell's value, which differs from the reference
+  // instant the live tree carries — so the prewarm must compile against the
+  // timestamps the image is exported with.
+  it("writes entries a timestamp-validating runtime accepts", async () => {
+    const previousSkip = process.env.KANDELO_NO_OPCACHE_PREWARM;
+    const previousEpoch = process.env.SOURCE_DATE_EPOCH;
+    delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+    process.env.SOURCE_DATE_EPOCH = "315532800";
+
+    try {
+      const fs = createPrewarmFs();
+      writeVfsFile(fs, "/var/www/hit.php", "<?php echo 'cached-ok';\n");
+
+      const written = await prewarmOpcache(fs, {
+        sourceRoots: ["/var/www"],
+        label: "validated-timestamps-test",
+      });
+      expect(written).toBeGreaterThanOrEqual(1);
+
+      // Replace the source. A runtime that accepts the prewarmed entry still
+      // prints the cached output; one that rejects it recompiles and fails.
+      // The export below stamps the same instant the shipped image carries.
+      writeVfsFile(fs, "/var/www/hit.php", "<?php this is invalid php ;\n");
+
+      const { exitCode, stdout, stderr } = await runPhpFromImage(
+        await fs.saveImage({ normalizeTimestampsMs: 315532800 * 1000 }),
+        "require '/var/www/hit.php';",
+        ["-d", "opcache.validate_timestamps=1", "-d", "opcache.revalidate_freq=0"],
+      );
+      expect(stderr).toBe("");
+      expect(stdout).toBe("cached-ok");
+      expect(exitCode).toBe(0);
+    } finally {
+      if (previousSkip === undefined) {
+        delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+      } else {
+        process.env.KANDELO_NO_OPCACHE_PREWARM = previousSkip;
+      }
+      if (previousEpoch === undefined) {
+        delete process.env.SOURCE_DATE_EPOCH;
+      } else {
+        process.env.SOURCE_DATE_EPOCH = previousEpoch;
+      }
+    }
+  }, 60_000);
+
+  // Image packages ship the prewarmed cache, so the prewarm must be a pure
+  // function of its inputs: two runs over the same tree, seconds apart, must
+  // write byte-identical .bin files. Timestamp validation stays at PHP's
+  // default (on), as in the nginx-php image, because that is the mode in
+  // which opcache records per-compile wall-clock state
+  // (`dynamic_members.revalidate`); packages/registry/php/build-php.sh keeps
+  // it out of the file cache.
+  it("writes byte-identical cache files when run again later", async () => {
+    const previousSkip = process.env.KANDELO_NO_OPCACHE_PREWARM;
+    delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+
+    try {
+      const runOnce = async (): Promise<Map<string, string>> => {
+        const fs = createPrewarmFs();
+        writeVfsFile(
+          fs,
+          "/var/www/index.php",
+          "<?php function greet($n) { return \"hi $n\"; }\necho greet('x');\n",
+        );
+        const written = await prewarmOpcache(fs, {
+          sourceRoots: ["/var/www"],
+          label: "reproducibility-test",
+        });
+        expect(written).toBeGreaterThanOrEqual(1);
+        return cacheFileDigests(fs);
+      };
+
+      const first = await runOnce();
+      // PHP's request time has one-second resolution; make sure the second
+      // run cannot share the first run's second.
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const second = await runOnce();
+
+      expect(first.size).toBeGreaterThanOrEqual(1);
+      expect([...second.entries()]).toEqual([...first.entries()]);
+    } finally {
+      if (previousSkip === undefined) {
+        delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+      } else {
+        process.env.KANDELO_NO_OPCACHE_PREWARM = previousSkip;
+      }
+    }
+  }, 120_000);
 });
+
+/** `path -> sha256` for every file the prewarm wrote under /var/cache/opcache. */
+function cacheFileDigests(fs: KandeloImageFs): Map<string, string> {
+  const digests = new Map<string, string>();
+  const walk = (dir: string): void => {
+    for (const name of fs.readDirNames(dir).sort()) {
+      if (name === "." || name === "..") continue;
+      const path = `${dir}/${name}`;
+      if ((fs.lstat(path).mode & 0o170000) === 0o040000) {
+        walk(path);
+      } else {
+        digests.set(
+          path,
+          createHash("sha256").update(fs.readFile(path)).digest("hex"),
+        );
+      }
+    }
+  };
+  walk("/var/cache/opcache");
+  return digests;
+}
 
 function createPrewarmFs(): KandeloImageFs {
   const fs = KandeloImageFs.create();
@@ -128,6 +243,7 @@ function createPrewarmFs(): KandeloImageFs {
 async function runPhpFromImage(
   imageBytes: Uint8Array,
   script: string,
+  extraIniArgs: string[] = [],
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const phpBytes = readFileSync(phpPath!);
   const programBytes = phpBytes.buffer.slice(
@@ -147,7 +263,7 @@ async function runPhpFromImage(
   try {
     const exitCode = await host.spawn(
       programBytes,
-      ["php", ...PHP_RUNTIME_INI_ARGS, "-r", script],
+      ["php", ...PHP_RUNTIME_INI_ARGS, ...extraIniArgs, "-r", script],
       { env: ["HOME=/tmp", "TMPDIR=/tmp"] },
     );
     return {
