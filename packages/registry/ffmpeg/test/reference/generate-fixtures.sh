@@ -6,7 +6,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../fixtures"
-BIN="${KANDELO_FFMPEG_NATIVE_PREFIX:-$HOME/.cache/kandelo/ffmpeg-native-9.0}/bin"
+BIN="${KANDELO_FFMPEG_NATIVE_PREFIX:-$HOME/.cache/kandelo/ffmpeg-native-9.0-c}/bin"
 FF="$BIN/ffmpeg"; FP="$BIN/ffprobe"
 BBB="${KANDELO_FFMPEG_MEDIA_CACHE:-$HOME/.cache/kandelo/ffmpeg-test-media}/BigBuckBunny_320x180.mp4"
 BX=(-flags +bitexact -fflags +bitexact)
