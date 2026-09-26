@@ -1676,11 +1676,9 @@ fn inject_activation_trampolines(module: &mut Module) -> Result<()> {
         ("fm_frame_next", true),
         ("fm_resume_peek", false),
         // The guest's `table_state_owned(owner)` takes its activation the same
-        // way the frame imports do: folded in here. The host elects which
-        // coordinate owns a physical table (a `WebAssembly.Table` identity
-        // comparison wasm cannot make) and seeds the answer through
-        // `fm_set_activation_table_state_owner`; the module then serves the
-        // import itself.
+        // way the frame imports do: folded in here. The module elects which
+        // coordinate owns a physical table, from the identity groups the host
+        // publishes (`fm_publish_bindings`), and serves the import itself.
         ("fm_module_state_table_state_owned", true),
     ];
     let mut resolved = Vec::with_capacity(targets.len());

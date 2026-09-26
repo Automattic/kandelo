@@ -106,15 +106,14 @@ describe("the five small per-activation stores", () => {
         x.admit(act, { ordinals: [1, 2], template: act & 0xff }),
         `admitting activation ${act}`,
       ).toBe(0);
-      x.seedTableStateOwner(act, 1, true);
-      expect(x.errno(), `table-state owner for activation ${act}`).toBe(0);
+      expect(x.publishTable(act, 1, act), `table coordinate for activation ${act}`).toBe(0);
       // Each placement takes the range the previous cycle's release gave back,
       // so 300 open/close cycles leave both merged tables one catalog long.
       const row = x.bind(act, 16, 4);
       expect(x.errno(), `binding activation ${act}`).toBe(0);
       expect(row?.func, `catalog for activation ${act}`).toBe(0);
       expect(row?.statics, `static roots for activation ${act}`).toBe(0);
-      x.seedImportProvenance(
+      x.publishImport(
         SPACE_GLOBAL,
         act,
         0,
@@ -168,7 +167,7 @@ describe("the five small per-activation stores", () => {
     const munmapsAtStart = x.munmaps();
 
     for (let owner = 1; owner < PUSH_THAT_CROSSES; owner += 1) {
-      x.seedTableStateOwner(ACTIVATION_LIST, owner, true);
+      x.publishTable(ACTIVATION_LIST, owner, owner);
       expect(x.errno(), `push ${owner}`).toBe(0);
     }
     expect(
@@ -176,19 +175,19 @@ describe("the five small per-activation stores", () => {
       "every size up to the seventh fits beside the filler",
     ).toBe(1);
 
-    x.seedTableStateOwner(ACTIVATION_LIST, PUSH_THAT_CROSSES, true);
+    x.publishTable(ACTIVATION_LIST, PUSH_THAT_CROSSES, PUSH_THAT_CROSSES);
     expect(x.errno(), `push ${PUSH_THAT_CROSSES}`).toBe(0);
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "the eighth size crosses").toBe(2);
     expect(x.munmaps() - munmapsAtStart, "chunk 1 still holds the filler").toBe(0);
 
     for (let owner = PUSH_THAT_CROSSES + 1; owner < PUSH_THAT_SWEEPS; owner += 1) {
-      x.seedTableStateOwner(ACTIVATION_LIST, owner, true);
+      x.publishTable(ACTIVATION_LIST, owner, owner);
       expect(x.errno(), `push ${owner}`).toBe(0);
     }
     expect(x.stats(ARENA_RECORD_CHUNK_COUNT_FIELD), "chunk 2 fills").toBe(2);
     expect(x.munmaps() - munmapsAtStart, "nothing returned yet").toBe(0);
 
-    x.seedTableStateOwner(ACTIVATION_LIST, PUSH_THAT_SWEEPS, true);
+    x.publishTable(ACTIVATION_LIST, PUSH_THAT_SWEEPS, PUSH_THAT_SWEEPS);
     expect(x.errno(), `push ${PUSH_THAT_SWEEPS}`).toBe(0);
     // THE SWEEP. The outgrown record was chunk 2's last live byte; the new one
     // is in an oversized chunk 3. Two chunks, not three -- and the tally says
@@ -229,29 +228,23 @@ describe("the five small per-activation stores", () => {
     expect(x.admit(A, { template: 0xa5 }), "same id again").toBe(0);
     expect(x.admit(A, { template: 0x5a }), "a different id under one activation").toBe(EINVAL);
 
-    // Table-state owner: a re-seed UPDATES, deliberately the opposite of the
-    // catalogs, because the host re-elects whenever a lower coordinate
-    // registers for the same physical table and the incumbent must be
+    // Table coordinate: a re-publication UPDATES, deliberately the opposite
+    // of the catalogs, because the module re-elects whenever a lower
+    // coordinate joins the same physical table and the incumbent must be
     // demotable. Owner 0 is not a coordinate.
-    x.seedTableStateOwner(A, 7, true);
-    expect(x.errno()).toBe(0);
+    expect(x.publishTable(A, 7, 50)).toBe(0);
     expect(x.tableStateOwned(A, 7)).toBe(1);
-    x.seedTableStateOwner(A, 7, false);
-    expect(x.errno(), "the demotion is accepted").toBe(0);
-    expect(x.tableStateOwned(A, 7), "and takes effect").toBe(0);
-    x.seedTableStateOwner(A, 0, true);
-    expect(x.errno(), "owner 0").toBe(EINVAL);
+    expect(x.publishTable(A - 1, 3, 50), "a lower coordinate of the same table").toBe(0);
+    expect(x.tableStateOwned(A, 7), "demotes the incumbent").toBe(0);
+    expect(x.tableStateOwned(A - 1, 3), "and owns it").toBe(1);
+    expect(x.publishTable(A, 0, 50), "owner 0").toBe(EINVAL);
 
     // Provenance: a re-seed of a coordinate UPDATES; an unknown kind is
     // refused, and BASE_IMPORT is a defined kind the host may not publish.
-    x.seedImportProvenance(SPACE_GLOBAL, A, 4, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 1n);
-    expect(x.errno()).toBe(0);
-    x.seedImportProvenance(SPACE_GLOBAL, A, 4, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 2n);
-    expect(x.errno(), "the same coordinate again").toBe(0);
-    x.seedImportProvenance(SPACE_GLOBAL, A, 5, WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT, 0, 0n);
-    expect(x.errno(), "BASE_IMPORT is the election's conclusion, not an input").toBe(EINVAL);
-    x.seedImportProvenance(SPACE_GLOBAL, A, 5, 200, 0, 0n);
-    expect(x.errno(), "an undefined kind").toBe(EINVAL);
+    expect(x.publishImport(SPACE_GLOBAL, A, 4, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 1n)).toBe(0);
+    expect(x.publishImport(SPACE_GLOBAL, A, 4, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 2n), "the same coordinate again").toBe(0);
+    expect(x.publishImport(SPACE_GLOBAL, A, 5, WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT, 0, 0n), "BASE_IMPORT is the election's conclusion, not an input").toBe(EINVAL);
+    expect(x.publishImport(SPACE_GLOBAL, A, 5, 200, 0, 0n), "an undefined kind").toBe(EINVAL);
 
     // The two catalog placements, both made by `fm_bind_activation`: once
     // per activation until its release. Bound again with the same lengths,
@@ -276,9 +269,9 @@ describe("the five small per-activation stores", () => {
     const x = arenaFixture("small stores: scrub");
     const A = 4;
     expect(x.admit(A, { template: 0x11 })).toBe(0);
-    x.seedTableStateOwner(A, 9, true);
+    x.publishTable(A, 9, 1);
     x.bind(A, 64, 8);
-    x.seedImportProvenance(SPACE_GLOBAL, A, 0, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 7n);
+    x.publishImport(SPACE_GLOBAL, A, 0, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, 0, 7n);
     expect(x.errno()).toBe(0);
     const before = x.munmaps();
 

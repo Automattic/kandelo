@@ -31,10 +31,12 @@ import {
   bindActivation,
   driveBase,
   fixture,
+  publishInto,
   saveSlotThunk,
   sideTemplate,
   type Fixture,
 } from "./fork-module-capture-fixture";
+import { exportRow, importRow } from "./support/fork-admission";
 
 const SPACE_GLOBAL = 0;
 const KIND_RAW_NUMBER = 1;
@@ -150,12 +152,11 @@ function captureAndPlan(activations: ReadonlyMap<number, ActivationFacts>): {
       }) as never,
     );
     f.instance.driveTable.set(driveBase(activation) + DRIVE_SLOT_UNWIND_BEGIN, saveSlotThunk(() => {}) as never);
-    for (const [owner, group] of facts.exports ?? []) {
-      x.fm_set_identity_group(SPACE_GLOBAL, activation, owner, group);
-    }
-    for (const { ordinal, kind, group = 0, bits = 0n } of facts.provenance) {
-      x.fm_set_import_provenance(SPACE_GLOBAL, activation, ordinal, kind, group, bits);
-    }
+    expect(publishInto(f.x, f.memory, activation, [
+      ...(facts.exports ?? []).map(([owner, group]) => exportRow(SPACE_GLOBAL, owner, group)),
+      ...facts.provenance.map(({ ordinal, kind, group = 0, bits = 0n }) =>
+        importRow(SPACE_GLOBAL, ordinal, kind, group, bits)),
+    ]), `publishing activation ${activation}`).toBe(0);
   }
   x.fm_capture_begin();
   x.fm_parent_begin_capture(CHANNEL_BASE, 0);

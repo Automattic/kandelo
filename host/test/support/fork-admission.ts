@@ -1,6 +1,13 @@
 import { expect } from "vitest";
 
 import {
+  FORK_BINDING_EXPORT_CATALOG,
+  FORK_BINDING_IMPORT,
+  type ForkBindingRow,
+} from "../../src/fork-import-identity";
+import { encodeForkBindings } from "../../src/fork-module-backend";
+
+import {
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
@@ -147,6 +154,43 @@ export function admissionDescriptor(activation: number, facts: AdmissionFacts = 
 }
 
 type Exports = Record<string, unknown>;
+
+/** A catalog-export binding row: catalog entry `owner` of `space` is object `group`. */
+export function exportRow(space: number, owner: number, group: number): ForkBindingRow {
+  return { space, role: FORK_BINDING_EXPORT_CATALOG, kind: 0, ordinalOrOwner: owner, group, bits: 0n };
+}
+
+/** An import binding row: import `ordinal` of `space` resolved to `kind`. */
+export function importRow(
+  space: number,
+  ordinal: number,
+  kind: number,
+  group: number,
+  bits: bigint,
+): ForkBindingRow {
+  return { space, role: FORK_BINDING_IMPORT, kind, ordinalOrOwner: ordinal, group, bits };
+}
+
+/**
+ * `fm_publish_bindings(activation, rows)`, the rows written by the production
+ * writer (`encodeForkBindings`) and staged at `stageAt`. Returns the errno the
+ * module answered (0 on success).
+ */
+export function publishBindings(
+  x: Exports,
+  memory: WebAssembly.Memory,
+  stageAt: number,
+  activation: number,
+  rows: readonly ForkBindingRow[],
+): number {
+  const bytes = encodeForkBindings(rows);
+  new Uint8Array(memory.buffer, stageAt, bytes.length).set(bytes);
+  return (x.fm_publish_bindings as (a: number, p: number, n: number) => number)(
+    activation,
+    stageAt,
+    rows.length,
+  );
+}
 
 /**
  * Admit one activation. The descriptor is staged at `stageAt` when it fits

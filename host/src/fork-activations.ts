@@ -26,7 +26,6 @@ import {
   WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
   WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
   WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
-  WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 } from "./generated/abi";
 import { type ForkResumeAssignment, placeForkResumeThunks } from "./fork-resume-table";
 
@@ -65,20 +64,19 @@ export interface ForkActivationDriveSink {
 }
 
 /**
- * Where an activation's catalogs and private tables go.
+ * Where an activation's catalogs go.
  *
- * Registration is the only moment these are all in hand at once, and each has a
- * different consumer -- the funcref catalog answers function identity, the
- * static-root catalog answers a static-root recipe, and the private tables are
- * what a host table mutation is attributed to. The 2,098-line registry did this
- * inside `registerActivation`; this is the part of it that survived.
+ * Registration is the only moment both are in hand, and each has a different
+ * consumer -- the funcref catalog answers function identity, the static-root
+ * catalog answers a static-root recipe. The 2,098-line registry did this
+ * inside `registerActivation`; this is the part of it that survived. Its
+ * private tables went too (lane F stage 1H): which coordinate of a shared
+ * table writes its sparse state is the module's election now, over the table
+ * groups `ForkImportIdentity` publishes.
  */
 export interface ForkActivationCatalogSink {
   registerCatalog(base: number, catalog: WebAssembly.Table): void;
   registerStaticRoots(base: number, catalog: WebAssembly.Table): void;
-  registerTable(activationId: number, ownerId: number, table: WebAssembly.Table): void;
-  /** The one release the host makes: its table-identity election. */
-  releaseTables(activationId: number, tables: readonly WebAssembly.Table[]): void;
 }
 
 /**
@@ -103,10 +101,6 @@ export interface ForkActivationCatalogSink {
 export function forkActivationCatalogSink(records: {
   functionCatalog: WebAssembly.Table;
   mergedStaticRoots: { take(base: number, catalog: WebAssembly.Table): void };
-  owners: {
-    register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
-    releaseActivation(activationId: number, tables: readonly WebAssembly.Table[]): void;
-  };
 }): ForkActivationCatalogSink {
   return {
     registerCatalog: (base, catalog) => {
@@ -117,40 +111,7 @@ export function forkActivationCatalogSink(records: {
     registerStaticRoots: (base, catalog) => {
       records.mergedStaticRoots.take(base, catalog);
     },
-    registerTable: (activationId, ownerId, table) => {
-      records.owners.register(activationId, ownerId, table);
-    },
-    releaseTables: (activationId, tables) => {
-      records.owners.releaseActivation(activationId, tables);
-    },
   };
-}
-
-/**
- * `__wpk_fork_table_N`: an activation's private tables, one export each.
- *
- * The suffix is the owner ordinal, and a malformed one is a build bug rather
- * than a table to skip -- skipping would silently drop a table from every
- * mutation journal it should appear in. Read from the instance each time it is
- * needed rather than recorded, so a released activation leaves no copy.
- */
-export function forkActivationTables(
-  activation: ForkActivation,
-  label: string,
-): Array<[ownerId: number, table: WebAssembly.Table]> {
-  const tables: Array<[number, WebAssembly.Table]> = [];
-  for (const [name, value] of Object.entries(activation.instance.exports)) {
-    if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
-    const suffix = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
-    if (!/^[1-9][0-9]*$/.test(suffix) || !Number.isSafeInteger(Number(suffix))) {
-      throw new Error(`${label}: malformed table catalog export ${name}`);
-    }
-    if (!(value instanceof WebAssembly.Table)) {
-      throw new Error(`${label}: table catalog ${name} is not a Table`);
-    }
-    tables.push([Number(suffix), value]);
-  }
-  return tables;
 }
 
 export class ForkActivations {
@@ -210,10 +171,11 @@ export class ForkActivations {
    * Release a closed activation, so nothing of it outlives `dlclose`.
    *
    * The MODULE releases everything it holds -- resume slots, records, identity
-   * entries, and its ranges of the merged catalogs and the drive table -- in
-   * one `fm_resume_slots` op 1. What is left for the host is what only it has:
-   * the table-identity election (wasm has no `table.eq`), and its references to
-   * the instance, dropped here so the library can be collected.
+   * entries, its ranges of the merged catalogs and the drive table -- and
+   * re-elects the writer of every shared table the activation had a
+   * coordinate of, in one `fm_resume_slots` op 1. What is left for the host is
+   * its references to the instance, dropped here so the library can be
+   * collected.
    *
    * The module goes first: if its release fails, the activation is still live
    * on both sides and the caller can retry.
@@ -224,18 +186,13 @@ export class ForkActivations {
       throw new Error(`${this.label}: activation ${activationId} is not registered`);
     }
     this.drive.releaseResumeSlots(activationId);
-    this.catalogs?.releaseTables(
-      activationId,
-      forkActivationTables(activation, this.label).map(([, table]) => table),
-    );
     this.live.delete(activationId);
     this.bootstrapped.delete(activationId);
   }
 
   /**
    * Release every activation from the module, highest id first, as a process
-   * tears its libraries down. The table election is not re-run: nothing
-   * mutates a table after this.
+   * tears its libraries down.
    */
   clear(): void {
     for (const { activationId } of [...this.ordered()].reverse()) {
@@ -271,9 +228,6 @@ export class ForkActivations {
     if (!this.catalogs) return;
     this.catalogs.registerCatalog(row.funcCatalogBase, functions);
     this.catalogs.registerStaticRoots(row.staticRootBase, staticRoots);
-    for (const [ownerId, table] of forkActivationTables(activation, this.label)) {
-      this.catalogs.registerTable(activation.activationId, ownerId, table);
-    }
   }
 
   /**

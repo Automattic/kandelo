@@ -1,6 +1,7 @@
 // The identity table must hold what the programs this repo builds actually need.
 //
-// `fm_set_identity_group` publishes one entry per `(space, activation, owner)`
+// An identity publication (`fm_publish_bindings`; `fm_set_identity_group`
+// when this was written) stores one entry per `(space, activation, owner)`
 // — that is, per `__wpk_fork_global_*` / `__wpk_fork_table_*` export, summed
 // over EVERY activation in the worker. The module stores them in one static
 // array, and overflow returns E2BIG, which surfaces as

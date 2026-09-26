@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { afterAll, expect } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
-import { instantiateForkModule } from "../src/fork-module-instance";
+import { instantiateForkModule, type ForkModuleInstance } from "../src/fork-module-instance";
+import type { ForkBindingRow } from "../src/fork-import-identity";
 import {
   ForkModuleContinuationBackend,
   FORK_ACTIVATION_DRIVE_BINDINGS,
@@ -16,6 +17,9 @@ import { readForkModuleStateRoot } from "../src/fork-guest-sections";
 import {
   admit,
   bind,
+  exportRow,
+  importRow,
+  publishBindings,
   type AdmissionFacts,
   type BindRow,
 } from "./support/fork-admission";
@@ -459,6 +463,19 @@ export function admitInto(
   facts: AdmissionFacts = {},
 ): number {
   return admit(x, memory, ARENA_STAGING_AT, activation, facts);
+}
+
+/**
+ * `fm_publish_bindings` into `x` -- this rig's module, or a child's -- staged
+ * where admissions are. Returns the errno.
+ */
+export function publishInto(
+  x: Record<string, unknown>,
+  memory: WebAssembly.Memory,
+  activation: number,
+  rows: readonly ForkBindingRow[],
+): number {
+  return publishBindings(x, memory, ARENA_STAGING_AT, activation, rows);
 }
 
 /**
@@ -1129,8 +1146,12 @@ export interface ArenaFixture {
    * with the refusal in `fm_last_errno`.
    */
   bind: (activation: number, funcLen: number, staticLen: number) => BindRow | null;
-  /** `fm_set_activation_table_state_owner(activation, owner, owns)`. */
-  seedTableStateOwner: (activation: number, owner: number, owns: boolean) => void;
+  /**
+   * `fm_publish_bindings` of one table-space catalog row: `activation`'s
+   * `__wpk_fork_table_<owner>` is object `group`. The module elects each
+   * group's writer. Returns the errno.
+   */
+  publishTable: (activation: number, owner: number, group: number) => number;
   /**
    * `fm_module_state_table_state_owned(activation, owner)`: the election
    * answer for one coordinate, 0 for an unseeded one. The two-argument
@@ -1138,15 +1159,17 @@ export interface ArenaFixture {
    * primary activation.
    */
   tableStateOwned: (activation: number, owner: number) => number;
-  /** `fm_set_import_provenance(space, consumer, ordinal, kind, group, rawBits)`. */
-  seedImportProvenance: (
+  /** `fm_publish_bindings` of one import row. Returns the errno. */
+  publishImport: (
     space: number,
     consumer: number,
     ordinal: number,
     kind: number,
     group: number,
     rawBits: bigint,
-  ) => void;
+  ) => number;
+  /** The module instance, for a test that drives the production backend. */
+  instance: ForkModuleInstance;
   /**
    * Grow the module's resume table to cover `slots`, standing in for the guest.
    *
@@ -1274,30 +1297,16 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       if (row) bound.set(activation, [funcLen, staticLen]);
       return row;
     },
-    seedTableStateOwner: (activation, owner, owns) => {
-      (x.fm_set_activation_table_state_owner as (a: number, o: number, w: number) => void)(
-        activation,
-        owner,
-        owns ? 1 : 0,
-      );
-    },
+    publishTable: (activation, owner, group) =>
+      publishInto(x, memory, activation, [exportRow(1, owner, group)]),
     tableStateOwned: (activation, owner) =>
       (x.fm_module_state_table_state_owned as (a: number, o: number) => number)(
         activation,
         owner,
       ),
-    seedImportProvenance: (space, consumer, ordinal, kind, group, rawBits) => {
-      (
-        x.fm_set_import_provenance as (
-          s: number,
-          c: number,
-          o: number,
-          k: number,
-          g: number,
-          r: bigint,
-        ) => void
-      )(space, consumer, ordinal, kind, group, rawBits);
-    },
+    publishImport: (space, consumer, ordinal, kind, group, rawBits) =>
+      publishInto(x, memory, consumer, [importRow(space, ordinal, kind, group, rawBits)]),
+    instance: fm,
     growResumeTable: (slots) => {
       const table = x.__wpk_fork_resume_table as WebAssembly.Table | undefined;
       if (!table) {
