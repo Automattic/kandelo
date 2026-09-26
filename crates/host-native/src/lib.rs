@@ -374,7 +374,7 @@ pub struct KernelImportSurface {
 /// with "heap types not supported without the gc feature" otherwise). This
 /// is purely a validator permission — it does not change how the
 /// kernel/guest modules (which use none of these types) are compiled or run,
-/// so it is safe to enable on this shared engine.
+/// so it is safe to enable on both engines.
 ///
 /// Wasmtime 48 upgrade (native-fork unblock): the fork-instrumented guest a
 /// real `fork()`/`vfork()` call produces declares an `exnref`/`Exn` heap type
@@ -389,7 +389,95 @@ pub struct KernelImportSurface {
 /// but it is set explicitly, not left implicit, so a future Wasmtime upgrade
 /// that changes that default cannot silently regress this engine back to
 /// rejecting `exnref`/`Exn` without a loud local diff.
+///
+/// This engine runs the KERNEL only, and keeps Wasmtime's default
+/// `max_wasm_stack` (512 KiB). Guest programs, the co-resident fork module
+/// and guest memories live on [`guest_engine`], which differs from this one
+/// in that single knob; its doc comment says why they are two engines.
 pub fn kernel_engine() -> wasmtime::Result<Engine> {
+    Engine::new(&wasm_feature_config())
+}
+
+/// The Wasm stack a guest program gets on this host: 8 MiB.
+///
+/// Wasmtime's default `Config::max_wasm_stack` is 512 KiB, so a guest here
+/// overflowed ("call stack exhausted") far shallower than the same program
+/// under Node or a browser Worker. The frame-size stage measured a Kandelo
+/// process on Node reaching ~868,544 frames of a P-10-shaped recursion; Node
+/// runs its workers with a 32 MiB stack. At 512 KiB this host could not run
+/// P-11's mid-unwind ENOMEM case at all: 2,750 fork-instrumented activations
+/// exhausted the stack before one 64 KiB fork frame chunk filled, so the
+/// native copy of P-11 had to run shallower and failed at the seal instead.
+///
+/// 8 MiB is the maintainer's ruling: it matches the scale of the SDK's 8 MiB
+/// guest shadow stack (the main-thread `-z stack-size` default in
+/// `sdk/src/lib/flags.ts`) and Linux's default thread stack (`ulimit -s` =
+/// 8192 KiB). It is not Node's 32 MiB, so the hosts still differ in how deep
+/// a guest can recurse before its stack-overflow `SIGSEGV`; that is an engine
+/// resource limit, documented in `docs/architecture.md`, not a POSIX
+/// behavior.
+pub const GUEST_MAX_WASM_STACK_BYTES: usize = 8 << 20;
+
+/// Native stack a guest thread keeps BEYOND the Wasm limit, for the host code
+/// that runs below the deepest Wasm frame: 2 MiB.
+///
+/// Wasmtime runs Wasm on the calling thread's native stack and bounds only
+/// the Wasm part: its limit is `sp at the first Wasm entry -
+/// max_wasm_stack`. A host import called from the deepest Wasm frame (the
+/// syscall-channel imports, `kernel_fork`'s capture and replay drive, the
+/// entry/exit trampolines, Wasmtime's trap and backtrace machinery) runs
+/// further down the same stack with no limit of its own, and the frames
+/// above the first entry (thread start, `Store` and `Linker` setup) sit on it
+/// too. Running out there is not a Wasm trap: it hits the native guard page
+/// and aborts the whole process (the caveat on `Config::max_wasm_stack`).
+///
+/// Why 2 MiB: it is Rust's default spawned-thread stack, which is what every
+/// guest thread on this host ran on until now, with at most 512 KiB of it
+/// taken by Wasm above those same host imports. Keeping a full 2 MiB below
+/// the Wasm limit gives the imports strictly more room than they have ever
+/// had, instead of a newly guessed number. The cost is address space, not
+/// memory: a thread stack's pages are committed only when touched.
+pub const GUEST_HOST_STACK_HEADROOM_BYTES: usize = 2 << 20;
+
+/// The native stack every OS thread that runs guest-engine Wasm is spawned
+/// with: [`GUEST_MAX_WASM_STACK_BYTES`] + [`GUEST_HOST_STACK_HEADROOM_BYTES`]
+/// = 10 MiB. A thread with less must not run Wasm on [`guest_engine`]: a
+/// guest that recursed to the Wasm limit would overflow the native stack and
+/// crash the process instead of trapping.
+pub const GUEST_THREAD_NATIVE_STACK_BYTES: usize =
+    GUEST_MAX_WASM_STACK_BYTES + GUEST_HOST_STACK_HEADROOM_BYTES;
+
+/// The engine every GUEST object lives on: the program `Module`s (the boot
+/// program, `posix_spawn` and `execve` images, fork children, pthreads), the
+/// co-resident fork module, and guest `SharedMemory`s. Same feature set as
+/// [`kernel_engine`], plus a [`GUEST_MAX_WASM_STACK_BYTES`] Wasm stack.
+///
+/// A separate engine because `max_wasm_stack` is engine-wide and is only
+/// safe on a thread whose native stack is larger than it. Guest Wasm runs
+/// only on threads this crate spawns with [`GUEST_THREAD_NATIVE_STACK_BYTES`]
+/// (`spawn_guest_thread` and `spawn_worker_thread` in `guest.rs`). The
+/// kernel runs on whatever thread calls [`run_guest`] (a cargo-test thread
+/// has 2 MiB), so it keeps the default limit on its own engine. The two
+/// never meet inside one `Store`: the kernel reaches guest memory only
+/// through the host's raw `SharedMemory::data()` pointers and
+/// `SharedMemory::atomic_notify`, neither of which links a guest object into
+/// the kernel's store, and Wasmtime refuses a cross-engine link loudly, so a
+/// mistake here is an error rather than a silent mix.
+///
+/// `async_stack_size` is raised alongside only because `Engine::new` refuses
+/// a `max_wasm_stack` larger than it. This host runs no async stores and no
+/// fibers, so the value sizes nothing; it is set to the guest thread's
+/// native stack so the pair still reads truthfully.
+pub fn guest_engine() -> wasmtime::Result<Engine> {
+    let mut config = wasm_feature_config();
+    config.max_wasm_stack(GUEST_MAX_WASM_STACK_BYTES);
+    config.async_stack_size(GUEST_THREAD_NATIVE_STACK_BYTES);
+    Engine::new(&config)
+}
+
+/// The Wasm feature set both engines share. One function, so the kernel and
+/// guest engines cannot drift apart in what they will parse.
+fn wasm_feature_config() -> Config {
     let mut config = Config::new();
     config.wasm_threads(true);
     config.wasm_gc(true);
@@ -410,7 +498,7 @@ pub fn kernel_engine() -> wasmtime::Result<Engine> {
     // whose data model is LP64, which is what the wasm64 arm of the
     // caller-native record coverage runs.
     config.wasm_memory64(true);
-    Engine::new(&config)
+    config
 }
 
 /// Enumerate the import surface of a compiled kernel `Module` without
@@ -1824,6 +1912,89 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(10),
             "the fault must end the process promptly, not after the pump's cap: {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// Run `native_stack_depth.wasm` recursing `depth` calls deep, on the
+    /// main thread or (`on_pthread`) on a pthread.
+    fn run_stack_depth(path: &Path, depth: u32, on_pthread: bool) -> anyhow::Result<RunOutcome> {
+        let mut argv = vec!["native_stack_depth".to_string(), depth.to_string()];
+        if on_pthread {
+            argv.push("thread".to_string());
+        }
+        let options = guest::GuestOptions { argv, ..Default::default() };
+        guest::run_guest(&path, crate::fixtures::fixture("native_stack_depth.wasm"), &options)
+    }
+
+    /// Recursion that needs more than Wasmtime's default 512 KiB Wasm stack,
+    /// and well under the guest engine's 8 MiB, completes -- on the main
+    /// thread (`spawn_guest_thread`) and on a pthread (`spawn_worker_thread`).
+    ///
+    /// 100,000 activations. This function's frame is 16 bytes on wasmtime 48
+    /// (aarch64): measured on 2026-09-26, the main thread reached about
+    /// 524,200 activations at 8 MiB and about 32,700 at 512 KiB. So this
+    /// depth overflowed the old limit three times over, and fits 8 MiB for
+    /// any frame up to 83 bytes. Before the guest engine existed, the main
+    /// thread arm ended as the stack-overflow SIGSEGV (139).
+    #[test]
+    fn smoke_guest_recursion_deeper_than_512k_completes() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        for on_pthread in [false, true] {
+            let outcome = run_stack_depth(&path, 100_000, on_pthread)?;
+            let stdout = String::from_utf8_lossy(&outcome.stdout);
+            assert!(
+                stdout.contains("DEPTH_REACHED 100000"),
+                "a 100,000-deep recursion must fit the guest's 8 MiB Wasm stack \
+                 (pthread: {on_pthread}, exit: {}, stdout: {stdout:?}, stderr: {:?})",
+                outcome.exit_code,
+                String::from_utf8_lossy(&outcome.stderr),
+            );
+            assert_eq!(outcome.exit_code, 0, "pthread: {on_pthread}, stdout: {stdout:?}");
+        }
+        Ok(())
+    }
+
+    /// Recursion past the guest's 8 MiB Wasm stack still ends as the
+    /// stack-overflow fault every Kandelo host reports -- `SIGSEGV`, status
+    /// 139 -- and never crashes the host process. The native thread under
+    /// the Wasm has `GUEST_HOST_STACK_HEADROOM_BYTES` more stack than the
+    /// Wasm limit, so the engine's own check trips first; if it did not, this
+    /// test binary would abort on the native guard page instead of returning.
+    ///
+    /// 10,000,000 activations are about twenty times what 8 MiB holds of
+    /// this 16-byte frame.
+    ///
+    /// Main thread only. On a pthread the overflow also traps cleanly (the
+    /// worker reports "call stack exhausted" and the host process lives),
+    /// but this host does not yet turn ANY pthread fault into the process's
+    /// signal exit: `run_worker_thread` prints the trap and ends the thread,
+    /// and the pump waits out its 30 s cap. That gap predates the stack
+    /// change and is recorded in `docs/future-improvements.md`.
+    #[test]
+    fn smoke_guest_recursion_past_the_wasm_stack_is_sigsegv() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let sigsegv_status =
+            wasm_posix_shared::trap_signal::signal_exit_status(wasm_posix_shared::signal::SIGSEGV);
+        let started = std::time::Instant::now();
+        let outcome = run_stack_depth(&path, 10_000_000, false)?;
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            !stdout.contains("DEPTH_REACHED"),
+            "a 10,000,000-deep recursion cannot fit 8 MiB (stdout: {stdout:?})"
+        );
+        assert_eq!(
+            outcome.exit_code, sigsegv_status,
+            "stack exhaustion must end the process as SIGSEGV (stdout: {stdout:?}, stderr: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the fault must end the process promptly, not after the pump's cap"
         );
         Ok(())
     }
@@ -3890,14 +4061,18 @@ mod tests {
     /// `host/test/fork-instrument-coverage.test.ts`, on the same source
     /// (`programs/p_11_fork_continuation_enomem.c`).
     ///
-    /// NOT the mid-unwind failure the Node copy reaches, and the fixture's own
-    /// comment says why: wasmtime's default wasm stack runs out at about the
-    /// same depth that fills one continuation chunk, so here the deep fork's
-    /// ENOMEM lands at the seal. Both are aborts the fork module now begins
-    /// itself (lane F stage 1I) and this host finishes by asking the module's
-    /// phase; the mid-unwind one is the same module code, reached on Node,
-    /// Chromium and WebKit, and on this host it waits on the native stack
-    /// depth rather than on the fork module.
+    /// The deep fork runs at P-11's full 4,096-deep call chain and fails
+    /// MID-UNWIND, as on Node, Chromium and WebKit: its second continuation
+    /// chunk cannot be reserved after frames have committed. That is asserted
+    /// by the cause the fork module recorded for the abort
+    /// (`ABORT_CAUSE_FRAME_RESERVE`, 1), not by the exit code alone, because
+    /// a seal-time abort (cause 2) returns the same ENOMEM. Until the guest
+    /// engine's 8 MiB Wasm stack this host ran P-11 at 2,048 deep, because
+    /// Wasmtime's default 512 KiB stack exhausted before one 64 KiB chunk
+    /// filled, and the deep fork's ENOMEM landed at the seal instead.
+    ///
+    /// The root-allocation fork is not an abort at all: its capture cannot
+    /// open, so nothing unwinds and the module records no abort for it.
     #[test]
     fn smoke_fork_continuation_enomem_preserves_parent() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -3930,6 +4105,13 @@ mod tests {
             );
         }
         assert_eq!(outcome.exit_code, 0, "stdout: {stdout:?}");
+        let proof = outcome.fork_proof_of_use;
+        assert_eq!(
+            (proof.aborts_frame_reserve, proof.aborts_seal, proof.aborts_launch, proof.aborts_unknown_cause),
+            (1, 0, 0, 0),
+            "the deep fork must abort MID-UNWIND (cause 1, a frame reserve), and nothing else \
+             may abort (stderr: {stderr:?})",
+        );
         Ok(())
     }
 

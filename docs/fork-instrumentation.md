@@ -1578,6 +1578,19 @@ of the same recursion (warmed up, then deepened 8,192 frames at a time)
 reached 344,064 frames before and 868,544 after; the no-fork build of the
 same shape reached 1,371,712.
 
+The native host (`crates/host-native`) gave guests wasmtime's default
+512 KiB Wasm stack until 2026-09-26, far less than a 32 MiB Node worker, and
+with wasmtime's large instrumented frames (above) that was too shallow to run P-11's
+mid-unwind ENOMEM case: 2,750 activations of P-11's `fork_at_depth`
+exhausted the stack before one 64 KiB continuation chunk filled, so the
+native copy of P-11 ran at depth 2,048 and its deep fork failed at the seal
+instead. The native host now gives guest Wasm 8 MiB (maintainer ruling:
+the scale of the SDK's 8 MiB shadow stack and of Linux's default thread
+stack) on threads with 10 MiB of native stack, and runs P-11 at the shared
+depth of 4,096, where the fork module records the mid-unwind frame-reserve
+abort, as on Node. [architecture.md](architecture.md#guest-wasm-stack-depth-per-host)
+has the per-host limits and why the native kernel keeps the default.
+
 The helpers also shrink whole artifacts, because every instrumented body
 loses its inline frame moves. Rebuilt through the normal path, `php.wasm`
 went from 42,926,222 to 36,314,213 bytes, `bash.wasm` from 3,025,665 to

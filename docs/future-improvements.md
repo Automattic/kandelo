@@ -617,10 +617,21 @@ over in the host.
   thread exit, because musl's detached-thread teardown ends in exactly that
   trap after posting `SYS_exit`. Separating the two there needs the same
   signal for worker-thread exits.
-
-Every other trap kind — memory, table/array bounds, stack overflow, integer
-division and conversion faults, null and mistyped indirect calls — is
-classified and reported.
+- **A worker thread's other faults do not end the process either.** On the
+  main thread every other trap kind — memory, table/array bounds, stack
+  overflow, integer division and conversion faults, null and mistyped
+  indirect calls — is classified and reported. On a pthread,
+  `run_worker_thread` returns the trap to `spawn_worker_thread`, which
+  prints it and lets the OS thread end; the kernel never learns the process
+  faulted, and a `pthread_join` on it parks until the pump's 30 s cap.
+  Observed 2026-09-26 with a pthread recursing past the 8 MiB guest Wasm
+  stack (`native_stack_depth.c` with `thread`): the worker reported "call
+  stack exhausted" and the run ended in "pump timed out after 30s". Simply
+  reporting the fault from the worker (posting `exit_group` with the signal
+  status on the worker's own channel, as the main thread does) is not
+  enough: tried the same day, the kernel's `kernel_handle_channel` then
+  trapped on `unreachable` (a kernel panic) while servicing that
+  `exit_group`, so worker-originated process exit needs its own look.
 
 ### The `__heap_base` truthful-failure guard holds on the TypeScript host only
 

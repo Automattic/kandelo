@@ -207,6 +207,45 @@ pointer, and capacity that created it; replacing the wrapper generation while
 retaining an audio or public-API region would make the old allocation appear
 valid under unrelated new state.
 
+### Guest Wasm stack depth per host
+
+Every engine runs a guest's Wasm call stack on the native stack of the thread
+that runs it, and a guest that recurses past it ends with the stack-overflow
+fault every host reports as `SIGSEGV` (exit status 139). How deep that is
+depends on the host, and is an engine resource limit rather than POSIX
+behavior. It is separate from the guest's shadow stack in linear memory,
+which the SDK sizes at 8 MiB for the main thread.
+
+| Host | Wasm stack | Set by |
+|---|---|---|
+| Node.js | the worker's native stack, 32 MiB by default | `stackSizeMb` in `host/src/worker-adapter.ts` (`KANDELO_NODE_WORKER_STACK_SIZE_MB`) |
+| Browser | whatever the engine gives a Worker; no Web API sizes it | the browser ([browser-support.md](browser-support.md), WebKit Worker recursion depth) |
+| Native (`crates/host-native`, wasmtime) | 8 MiB | `GUEST_MAX_WASM_STACK_BYTES` in `crates/host-native/src/lib.rs` |
+
+The native host used wasmtime's default 512 KiB until 2026-09-26, so its
+guests overflowed far shallower than the same program on Node: a Kandelo
+process on Node reached about 868,544 frames of P-10's recursion shape, and
+at 512 KiB the native host could not run P-11's mid-unwind ENOMEM case,
+because 2,750 fork-instrumented activations exhausted the stack before one
+64 KiB fork frame chunk filled. The maintainer set 8 MiB, the scale of the
+SDK's shadow stack and of Linux's default thread stack. Measured on
+2026-09-26 with `crates/host-native/fixtures/native_stack_depth.c` (a 16-byte
+wasmtime frame), a native guest's main thread reached about 32,650 frames at
+512 KiB and about 524,200 at 8 MiB.
+
+wasmtime bounds only the Wasm part of a thread's stack
+(`Config::max_wasm_stack`). Host functions called from the deepest Wasm frame
+run below that bound with no limit of their own, and overflowing the native
+stack there aborts the whole host process instead of trapping. So the limit
+is safe only on threads whose native stack exceeds it, and the native host
+keeps two engines: guest programs, the co-resident fork module and guest
+memories are on `guest_engine()` with the 8 MiB limit, and run only on
+threads spawned with 10 MiB of native stack (8 MiB plus 2 MiB of headroom,
+Rust's default thread stack, for the host imports below the deepest frame);
+the kernel is on `kernel_engine()` with wasmtime's default, because it runs
+on whatever thread calls `run_guest`. The kernel reaches guest memory only
+through host pointers, so no object crosses between the two engines.
+
 ### Kernel-owned scratch transfers
 
 The host moves syscall payloads through allocations owned by the Rust kernel.

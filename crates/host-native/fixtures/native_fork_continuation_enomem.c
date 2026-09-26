@@ -8,18 +8,15 @@
  * test.ts`, P-11), so it is shared by inclusion rather than copied; see
  * `native_thread_churn.c`.
  *
- * SHALLOWER THAN THE NODE COPY, AND SO IT FAILS AT THE SEAL, NOT MID-UNWIND.
- * wasmtime's default wasm stack (512 KiB) does not hold 4,096 instrumented
- * activations: the recursion traps with "call stack exhausted" before it
- * reaches fork(). And no depth both fits that stack and commits more frames
- * than one 64 KiB continuation chunk holds -- measured on 2026-09-26, 2,560
- * still fit one chunk (the failure landed at the seal's journal image) and
- * 2,750 exhausted the stack; widening each frame with more live values
- * widens the native frame in the same proportion (2,048 wide frames
- * exhausted it too). So on this host the deep fork's ENOMEM is the seal-time
- * one, which the fork module abort-replays exactly as it does the mid-unwind
- * one on Node, and the mid-unwind path waits on the native stack depth (lane
- * F step 4/5), not on the fork module.
+ * AT THE SHARED DEPTH (4,096), AND SO IT FAILS MID-UNWIND, AS ON NODE. Until
+ * 2026-09-26 this copy defined P11_DEEP_FORK_DEPTH 2048: wasmtime's default
+ * 512 KiB Wasm stack did not hold 4,096 instrumented activations, and no
+ * depth both fit that stack and committed more frames than one 64 KiB
+ * continuation chunk holds (2,560 still fit one chunk; 2,750 exhausted the
+ * stack), so the deep fork's ENOMEM landed at the seal instead. The native
+ * host now gives guests an 8 MiB Wasm stack (`GUEST_MAX_WASM_STACK_BYTES` in
+ * ../src/lib.rs), and `smoke_fork_continuation_enomem_preserves_parent`
+ * asserts the abort cause the fork module recorded is the mid-unwind frame
+ * reserve, not the seal.
  */
-#define P11_DEEP_FORK_DEPTH 2048
 #include "../../../programs/p_11_fork_continuation_enomem.c"

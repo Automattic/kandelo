@@ -34,8 +34,9 @@
 // 4,096 it holds more committed frames than one continuation chunk, so the
 // NEXT chunk's allocation fails after frames have committed (mid-unwind). The
 // native host's copy (crates/host-native/fixtures/native_fork_continuation_
-// enomem.c) builds this shallower, because wasmtime's default wasm stack does
-// not hold 4,096 instrumented activations; see that file for what it reaches.
+// enomem.c) runs the same depth; it built this shallower while that host gave
+// guests wasmtime's default 512 KiB wasm stack, which did not hold 4,096
+// instrumented activations.
 #ifndef P11_DEEP_FORK_DEPTH
 #define P11_DEEP_FORK_DEPTH 4096
 #endif

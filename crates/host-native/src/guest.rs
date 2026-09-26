@@ -1071,6 +1071,18 @@ pub struct ForkProofOfUse {
     /// (ALLOC/FILL/EXN/STATIC_ROOT). Stays `0` for a funcref-only fork,
     /// which builds a zero-step plan.
     pub drive_steps_executed: i64,
+    /// Aborted forks whose recorded cause was `ABORT_CAUSE_FRAME_RESERVE`
+    /// (1): a continuation frame could not be reserved MID-UNWIND, after
+    /// frames had already committed.
+    pub aborts_frame_reserve: i64,
+    /// Aborted forks whose recorded cause was `ABORT_CAUSE_SEAL` (2): the
+    /// capture unwound completely but could not seal.
+    pub aborts_seal: i64,
+    /// Aborted forks whose recorded cause was `ABORT_CAUSE_LAUNCH` (3): the
+    /// kernel refused to create the child.
+    pub aborts_launch: i64,
+    /// Aborted forks reporting a cause this host does not recognise.
+    pub aborts_unknown_cause: i64,
 }
 
 /// Best-effort, additive fold of one fork-module instance's proof-of-use
@@ -1100,6 +1112,11 @@ fn fold_fork_proof_of_use(fm: &ForkModule, store: &mut Store<()>, acc: &mut Fork
     if let Ok(v) = fm.fm_stats.call(&mut *store, FM_STAT_DRIVE_STEPS_EXECUTED) {
         acc.drive_steps_executed += v;
     }
+    let aborts = *fm.aborts_by_cause.lock().unwrap();
+    acc.aborts_unknown_cause += aborts[0];
+    acc.aborts_frame_reserve += aborts[1];
+    acc.aborts_seal += aborts[2];
+    acc.aborts_launch += aborts[3];
 }
 
 // --- Raw shared-memory access helpers ---------------------------------------
@@ -1751,7 +1768,17 @@ fn run_guest_inner(
     guest_wasm: &[u8],
     options: &GuestOptions,
 ) -> anyhow::Result<RunOutcome> {
-    let engine = crate::kernel_engine()?;
+    // Two engines, one per side of the channel. `engine` is the GUEST engine
+    // and is what every guest-side step below receives (`launch_process`,
+    // `run_pump`, and through it spawn, exec, fork and pthread launches), so
+    // every guest `Module`, guest `SharedMemory` and fork-module instance is
+    // created on it. Its 8 MiB Wasm stack is safe only because guest Wasm
+    // runs solely on threads spawned with `GUEST_THREAD_NATIVE_STACK_BYTES`.
+    // The kernel runs on THIS thread, whose native stack this host does not
+    // choose, so it keeps Wasmtime's default limit on `kernel_engine`. See
+    // `crate::guest_engine`.
+    let engine = crate::guest_engine()?;
+    let kernel_engine = crate::kernel_engine()?;
 
     // --- Guest module, layout, and memory (created first so kernel host imports
     // that touch process memory — e.g. host_futex_wake — can reference it) -----
@@ -1759,10 +1786,10 @@ fn run_guest_inner(
     let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 
     // --- Kernel instance (this thread owns it and the pump) -----------------
-    let kernel_module = Module::from_file(&engine, kernel_wasm)?;
+    let kernel_module = Module::from_file(&kernel_engine, kernel_wasm)?;
     // The kernel is a wasm32 module on every host, so its own imported
     // memory is always 32-bit regardless of the guest's data model.
-    let kernel_mem = new_shared(&engine, KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES, 4)?;
+    let kernel_mem = new_shared(&kernel_engine, KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES, 4)?;
     let captured = Arc::new(Mutex::new(CapturedIo::default()));
 
     // fd 0 (stdin) always; real host-directory access only for the mounts
@@ -1799,8 +1826,8 @@ fn run_guest_inner(
     // `run_pump`'s exit-commit branch.
     let wait_table: Arc<Mutex<WaitTable>> = Arc::new(Mutex::new(WaitTable::default()));
 
-    let mut kernel_store = Store::new(&engine, ());
-    let mut klinker: Linker<()> = Linker::new(&engine);
+    let mut kernel_store = Store::new(&kernel_engine, ());
+    let mut klinker: Linker<()> = Linker::new(&kernel_engine);
     klinker.define(&mut kernel_store, "env", "memory", kernel_mem.clone())?;
     define_kernel_host_imports(
         &mut klinker,
@@ -5016,6 +5043,13 @@ pub struct ForkModule {
     /// [`Self::static_root_catalog_table`], or `u32::MAX` while this worker has
     /// harvested none. See [`fill_static_root_catalog`].
     static_root_base: Arc<AtomicU32>,
+    /// Aborted forks this instance finished, counted by the cause the MODULE
+    /// recorded in its abort report (`ABORT_CAUSE_*` in
+    /// `crates/fork-module/src/lib.rs`; index 0 counts a cause this host does
+    /// not recognise). Filled by [`fork_module_kernel_fork`] and folded into
+    /// [`ForkProofOfUse`], so a test can assert WHICH abort a fork took
+    /// rather than only that `fork()` failed.
+    aborts_by_cause: Arc<Mutex<[i64; 4]>>,
 
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
@@ -5419,6 +5453,7 @@ pub(crate) fn instantiate_fork_module(
         staging_base,
         ref_identities,
         static_root_base: Arc::new(AtomicU32::new(u32::MAX)),
+        aborts_by_cause: Arc::default(),
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
         fm_admit_activation: fm_func!("fm_admit_activation": (u32, u32) => i32),
         fm_admission_buffer: fm_func!("fm_admission_buffer": u32 => u32),
@@ -5825,9 +5860,14 @@ fn fork_module_kernel_fork(
         return Ok(coord.fork_result());
     }
     let errno = report & 0xffff;
+    let cause = report >> 16;
+    {
+        let mut aborts = fm.aborts_by_cause.lock().unwrap();
+        aborts[if (1..=3).contains(&cause) { cause as usize } else { 0 }] += 1;
+    }
     // Visible, as the JavaScript hosts' `fork_aborted` report is. The cause
     // numbers are the module's `ABORT_CAUSE_*`.
-    let reason = match report >> 16 {
+    let reason = match cause {
         1 => "a continuation frame could not be reserved mid-unwind",
         2 => "the capture could not seal (see docs/fork-reference-support.md)",
         3 => "the kernel refused to create the child process",
@@ -6158,6 +6198,32 @@ fn launch_vfork_borrowed_child(
     })
 }
 
+/// Spawn an OS thread that will run guest-engine Wasm, with the native stack
+/// that engine's Wasm limit requires ([`crate::GUEST_THREAD_NATIVE_STACK_BYTES`]).
+///
+/// The ONLY way this host starts a thread that runs guest Wasm: Wasmtime
+/// runs Wasm on the calling thread's native stack, and a plain
+/// `thread::spawn` thread (2 MiB) could not hold the guest engine's 8 MiB
+/// Wasm stack, so a deep guest would overflow the native guard page and
+/// abort the host process instead of trapping as `SIGSEGV`. See
+/// [`crate::guest_engine`] and [`crate::GUEST_HOST_STACK_HEADROOM_BYTES`].
+///
+/// A thread that cannot be created panics, exactly as `thread::spawn` does.
+fn spawn_guest_os_thread<F>(body: F) -> thread::JoinHandle<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    thread::Builder::new()
+        .stack_size(crate::GUEST_THREAD_NATIVE_STACK_BYTES)
+        .spawn(body)
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn a guest thread with a {}-byte native stack: {e}",
+                crate::GUEST_THREAD_NATIVE_STACK_BYTES
+            )
+        })
+}
+
 /// Instantiate the guest on a fresh OS thread and run it to `_start`. The
 /// thread blocks inside `_start` on each syscall's `wait32`; the pump on the
 /// kernel thread services them. The ordinary caller must not join it: the
@@ -6181,7 +6247,7 @@ fn spawn_guest_thread(
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
 ) -> thread::JoinHandle<()> {
     let engine = engine.clone();
-    thread::spawn(move || {
+    spawn_guest_os_thread(move || {
         let mut store = Store::new(&engine, ());
         let mut linker: Linker<()> = Linker::new(&engine);
         linker.define(&mut store, "env", "memory", guest_mem.clone()).unwrap();
@@ -7301,7 +7367,7 @@ fn spawn_worker_thread(
 ) -> thread::JoinHandle<()> {
     let engine = engine.clone();
     let module = module.clone();
-    thread::spawn(move || {
+    spawn_guest_os_thread(move || {
         if let Err(e) = run_worker_thread(
             &engine, &module, &guest_mem, channel_offset, tls_offset, stack_ptr, tls_ptr, fn_ptr, arg,
             layout, use_fork_module, fork_format, fork_proof_of_use,
@@ -10835,7 +10901,14 @@ mod fork_module_tests {
             return Ok(());
         };
 
-        let engine = crate::kernel_engine()?;
+        // The engine production puts the fork module on, and so a thread with
+        // the native stack that engine's Wasm limit needs (the module's start
+        // function and `fm_set_format` run below).
+        spawn_guest_os_thread_for_test(smoke_instantiates_fork_module_body)
+    }
+
+    fn smoke_instantiates_fork_module_body() -> anyhow::Result<()> {
+        let engine = crate::guest_engine()?;
         let guest_wasm = crate::fixtures::fixture("native_hello.wasm");
         let guest_module = Module::new(&engine, guest_wasm)?;
         let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
@@ -10863,6 +10936,22 @@ mod fork_module_tests {
         assert_eq!(errno, 0, "fm_set_format(4, 0, 0, 0) must succeed on a wasm32 guest");
 
         Ok(())
+    }
+
+    /// Run `body` on a guest OS thread ([`spawn_guest_os_thread`]) and hand
+    /// back its result, for a test that executes guest-engine Wasm itself
+    /// instead of through [`run_guest`]. A cargo-test thread's 2 MiB stack is
+    /// below what the guest engine's Wasm limit assumes.
+    fn spawn_guest_os_thread_for_test(
+        body: fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_guest_os_thread(move || {
+            let _ = tx.send(body());
+        })
+        .join()
+        .map_err(|_| anyhow::anyhow!("the guest test thread panicked"))?;
+        rx.recv()?
     }
 
     /// An exec has a point of no return before its new image's worker admits,
