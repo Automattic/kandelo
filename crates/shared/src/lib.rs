@@ -5513,21 +5513,6 @@ pub mod input {
     /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
     pub const EVIOCGRAB: u32 = 0x4004_4590;
 
-    /// `EVIOCGKEY(len)` — `_IOC(_IOC_READ, 'E', 0x18, len)`. Returns the
-    /// bitmap of currently-pressed `EV_KEY` codes for the device (this is
-    /// device-global state, not per-fd). Userspace re-reads it after a
-    /// `SYN_DROPPED` to resynchronise, which is the only Linux-sanctioned
-    /// recovery from a dropped event.
-    pub const EVIOCGKEY_NR: u32 = 0x18;
-
-    /// `EVIOCGLED(len)` — `_IOC(_IOC_READ, 'E', 0x19, len)`. Bitmap of lit
-    /// LEDs. Kandelo's virtual devices have none, so the reply is zeroed.
-    pub const EVIOCGLED_NR: u32 = 0x19;
-
-    /// `EVIOCGSW(len)` — `_IOC(_IOC_READ, 'E', 0x1b, len)`. Bitmap of
-    /// active switches. Kandelo has none, so the reply is zeroed.
-    pub const EVIOCGSW_NR: u32 = 0x1b;
-
     /// `KEY_MAX` / `KEY_CNT` — the largest `EV_KEY` code and the bit count
     /// of an `EVIOCGKEY` bitmap (`KEY_CNT / 8 = 96` bytes), matching Linux
     /// UAPI. The keystate bitmap is sized to `KEY_CNT` so it can hold every
