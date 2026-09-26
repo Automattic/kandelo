@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { readFileSync } from "node:fs";
 
-const devFdStatBinary = buildProgramsFixture("dev-fd-stat.wasm");
+const devFdStatBinary = buildProgramsFixture("programs/wasm32/dev-fd-stat.wasm");
 
 test.beforeAll(() => requireBuiltFixtures([devFdStatBinary]));
 

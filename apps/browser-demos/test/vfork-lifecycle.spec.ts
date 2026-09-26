@@ -28,14 +28,12 @@ const memoryFsModulePath = resolve(
   __dirname,
   "../../../host/src/vfs/memory-fs.ts",
 );
-const lifecycleProgramPath = buildProgramsFixture("vfork-lifecycle.wasm");
-const threadProgramPath = buildProgramsFixture("vfork-from-thread.wasm");
-const fatalProgramPath = buildProgramsFixture("vfork-fatal-lifecycle.wasm");
-const externalSignalProgramPath = buildProgramsFixture(
-  "vfork-external-signal.wasm",
-);
-const stateProgramPath = buildProgramsFixture("vfork-posix-state.wasm");
-const execChildPath = buildProgramsFixture("exec-child.wasm");
+const lifecycleProgramPath = buildProgramsFixture("programs/wasm32/vfork-lifecycle.wasm");
+const threadProgramPath = buildProgramsFixture("programs/wasm32/vfork-from-thread.wasm");
+const fatalProgramPath = buildProgramsFixture("programs/wasm32/vfork-fatal-lifecycle.wasm");
+const externalSignalProgramPath = buildProgramsFixture("programs/wasm32/vfork-external-signal.wasm");
+const stateProgramPath = buildProgramsFixture("programs/wasm32/vfork-posix-state.wasm");
+const execChildPath = buildProgramsFixture("programs/wasm32/exec-child.wasm");
 const ordinaryForkProgramPath = resolve(
   __dirname,
   "../../../host/test/fixtures/fork-memory-clone.wasm",

@@ -20,7 +20,7 @@ const fixturePaths = {
     repoRoot,
     "local-binaries/test-fixtures/wasm64/sjlj_noexcept_boundary.raw.wasm",
   ),
-  sigchld: buildProgramsFixture("sigchld_sjlj.wasm"),
+  sigchld: buildProgramsFixture("programs/wasm32/sigchld_sjlj.wasm"),
 };
 
 test.beforeAll(() => requireBuiltFixtures(Object.values(fixturePaths)));

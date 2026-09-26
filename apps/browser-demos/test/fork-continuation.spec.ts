@@ -123,8 +123,8 @@ async function runBrowserFixture(
   );
 }
 
-const p10Path = buildProgramsFixture("p_10_deep_linked_continuation.wasm");
-const p11Path = buildProgramsFixture("p_11_fork_continuation_enomem.wasm");
+const p10Path = buildProgramsFixture("programs/wasm32/p_10_deep_linked_continuation.wasm");
+const p11Path = buildProgramsFixture("programs/wasm32/p_11_fork_continuation_enomem.wasm");
 
 test.beforeAll(() => requireBuiltFixtures([p10Path, p11Path]));
 

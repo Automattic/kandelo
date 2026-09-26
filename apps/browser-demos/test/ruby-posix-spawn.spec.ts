@@ -25,7 +25,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
 const rubyBinaryPath = tryResolveBinary("programs/ruby/ruby.wasm");
-const execChildBinaryPath = buildProgramsFixture("exec-child.wasm");
+const execChildBinaryPath = buildProgramsFixture("programs/wasm32/exec-child.wasm");
 const artifactsAvailable = rubyBinaryPath !== null;
 const browserKernelModulePath = resolve(
   repoRoot,
