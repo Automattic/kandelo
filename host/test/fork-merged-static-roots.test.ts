@@ -15,7 +15,7 @@ import { bind } from "./support/fork-admission";
  * ONE static-root base map, and it is the module's.
  *
  * Activation `a`'s roots occupy `[base(a), base(a) + len_a)` in the merged
- * anyref catalog the module imports, and the module turns a static-root recipe
+ * anyref catalog the module owns, and the module turns a static-root recipe
  * into `base(module_activation) + ordinal`. Two things therefore have to agree:
  * WHERE the host writes a root, and WHAT base the module reads.
  *
@@ -65,13 +65,12 @@ describe("the merged static-root catalog", () => {
     const f = fixture();
     const place = placer(f);
     const merged = f.instance.staticRootCatalog;
+    expect(merged, "the module's own table, not one the host minted")
+      .toBe(f.instance.exports.__wpk_fork_static_root_catalog);
     const roots = new ForkMergedStaticRoots(merged);
     const live = [activation(0, place(0, 3), table(3, "a0")), activation(1, place(1, 2), table(2, "a1"))];
-    for (const { staticRootBase, instance } of live) {
-      roots.take(staticRootBase, instance.exports[WPK_FORK_STATIC_ROOT_CATALOG_EXPORT] as WebAssembly.Table);
-    }
     expect(f.errno()).toBe(0);
-    expect(merged.length, "grown to both slices").toBe(5);
+    expect(merged.length, "the MODULE grew it to both slices as it placed them").toBe(5);
 
     roots.fill(live);
     for (const [id, base, length] of [[0, 0, 3], [1, 3, 2]] as const) {

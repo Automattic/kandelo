@@ -31,7 +31,6 @@ const MODULE_BASE = 32 * 1024 * 1024;
 const STACK_TOP = MODULE_BASE + 16 * 1024 * 1024 + 1024 * 1024;
 const INITIAL_PAGES = Math.ceil((STACK_TOP + PAGE) / PAGE);
 
-/** The three reference-typed tables `fork-module-instance` owns. */
 /**
  * The indirect-function-table size the artifact's `dylink.0` declares.
  *
@@ -102,6 +101,10 @@ function indirectTableSize(bytes: Uint8Array): number {
   throw new Error("the fork-module artifact declares no dylink.0 memory info");
 }
 
+/**
+ * The two funcref tables `fork-module-instance` mints. No anyref table: the
+ * module owns and exports both of its own, since WebKit cannot mint one.
+ */
 function moduleTables() {
   return {
     __wpk_fork_function_catalog: new WebAssembly.Table({
@@ -110,13 +113,6 @@ function moduleTables() {
     }),
     __wpk_fork_drive_table: new WebAssembly.Table({
       element: "anyfunc",
-      initial: 0,
-    }),
-    // `anyref`, NOT `externref`: the static-root binder holds GC-hierarchy
-    // values, and `any` and `extern` are disjoint roots, so the wrong one is
-    // rejected at instantiation.
-    __wpk_fork_static_root_catalog: new WebAssembly.Table({
-      element: "anyref",
       initial: 0,
     }),
   };

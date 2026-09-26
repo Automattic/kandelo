@@ -61,10 +61,10 @@ describe("instantiateForkModule", () => {
     );
 
     for (const name of FORK_MODULE_REQUIRED_EXPORTS) {
-      // `__wpk_fork_ref_gc_transit` (M1 task 2) is a module-owned
-      // `WebAssembly.Table` export, not a function; every other required
-      // export is a function.
-      if (name === "__wpk_fork_ref_gc_transit") {
+      // `__wpk_fork_ref_gc_transit` (M1 task 2) and
+      // `__wpk_fork_static_root_catalog` are module-owned `WebAssembly.Table`
+      // exports, not functions; every other required export is a function.
+      if (name === "__wpk_fork_ref_gc_transit" || name === "__wpk_fork_static_root_catalog") {
         expect(fm.exports[name]).toBeInstanceOf(WebAssembly.Table);
       } else {
         expect(typeof fm.exports[name]).toBe("function");

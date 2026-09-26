@@ -244,7 +244,7 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// these as host surface would overstate the obligation and, worse, would make
 /// the number move for reasons that have nothing to do with fork.
 ///
-/// All SIX are the real obligation, and each is a Wasm capability floor
+/// All FIVE are the real obligation, and each is a Wasm capability floor
 /// rather than a design choice:
 ///
 /// * `env.__wpk_fork_host_ref_identity` (function) -- decides whether two
@@ -260,10 +260,13 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 ///   keeps the sequencing (when, which generation, never under the archive
 ///   writer). WENT 5 -> 6 for it on 2026-09-23, maintainer-approved. This host
 ///   has no dlopen and answers ENOSYS.
-/// * `env.__wpk_fork_function_catalog`, `env.__wpk_fork_drive_table`,
-///   `env.__wpk_fork_static_root_catalog` (tables) -- reference-typed tables.
-///   Rust cannot declare or hold one; the module reaches their contents only
-///   through injected `table.get`/`table.set`.
+/// * `env.__wpk_fork_function_catalog`, `env.__wpk_fork_drive_table`
+///   (tables) -- funcref tables. Rust cannot declare or hold one; the module
+///   reaches their contents only through injected `table.get`/`table.set`.
+///   The anyref static-root catalog was a third until 2026-09-25 (6 -> 5): it
+///   is now module-owned and exported, because a JavaScript host cannot mint
+///   an anyref table on WebKit (`new WebAssembly.Table` accepts only funcref
+///   and externref there), so every fork-capable worker failed to start.
 ///
 /// WENT 6 -> 7 when the externref-handle import arrived, and 7 -> 5 in
 /// externref stage E2 (2026-09-23), which removed it and
@@ -273,10 +276,10 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// host reads, so it tracks the module whether or not this host implements
 /// each entry.
 ///
-/// If any of the six is ever shown NOT to be a floor, this number and the
+/// If any of the five is ever shown NOT to be a floor, this number and the
 /// matching budget target should both fall. Until then they are equal, which
 /// is why this surface's target is not below its ceiling.
-pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 6;
+pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 5;
 
 /// The number of PIC linking imports excluded from the count above. Pinned so
 /// that a change in linking shape is visible instead of silently rebalancing
@@ -365,8 +368,8 @@ pub struct KernelImportSurface {
 /// (`guest::instantiate_fork_module`) — despite that module having no
 /// `struct`/`array`/`i31ref` use on the frames-only path this crate
 /// exercises, its `dylink.0`/import surface still declares an `externref`
-/// return type and an anyref table (`env.__wpk_fork_static_root_catalog`,
-/// the I5 static-root binder), and Wasmtime represents even those under the
+/// return type and anyref tables (the module-owned GC transit and the
+/// static-root catalog), and Wasmtime represents even those under the
 /// same "heap types" machinery the GC proposal gates (`Module::new` fails
 /// with "heap types not supported without the gc feature" otherwise). This
 /// is purely a validator permission — it does not change how the
@@ -1524,7 +1527,9 @@ mod tests {
             [
                 "__wpk_fork_drive_table",
                 "__wpk_fork_function_catalog",
-                "__wpk_fork_static_root_catalog",
+                // No `__wpk_fork_static_root_catalog`: an anyref table the
+                // module owns and exports, because WebKit's
+                // `new WebAssembly.Table` cannot mint one.
             ],
             "the fork-module host TABLES changed",
         );

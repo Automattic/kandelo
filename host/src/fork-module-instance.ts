@@ -6,8 +6,13 @@
  * `fork-module-host-capabilities.ts`. That file owns the two host FUNCTIONS a
  * host must implement (the reference and function identity oracles); this one owns everything that is about PLACEMENT —
  * reserving a region in guest memory, deriving the position-independent-code
- * globals from the module's own `dylink.0` sizing, and creating the three
- * reference-typed tables the module imports.
+ * globals from the module's own `dylink.0` sizing, and creating the two
+ * funcref tables the module imports.
+ *
+ * The module's anyref tables (the GC transit and the static-root catalog) are
+ * module-OWNED exports, never host-minted: `new WebAssembly.Table` with a GC
+ * element type is a V8 extension that WebKit rejects, so a host that minted one
+ * could not start a fork-capable worker there.
  *
  * Placement cannot move into the module: a side module cannot choose where it
  * is placed, and `__memory_base` / `__table_base` are imports by construction.
@@ -24,9 +29,9 @@ import {
  * A FLOOR, not an inventory: the module exports far more, and a host binds
  * whichever it drives. These are the ones whose absence means the artifact is
  * not a fork-module at all — the errno channel, the format seed and the
- * activation admission a host must make before any fork, and the module-owned GC transit table the
- * injector adds (`__wpk_fork_ref_gc_transit`, which is a Table, not a
- * function).
+ * activation admission a host must make before any fork, and the two
+ * module-owned anyref tables the injector adds (`__wpk_fork_ref_gc_transit`
+ * and `__wpk_fork_static_root_catalog`, which are Tables, not functions).
  */
 export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_last_errno",
@@ -34,6 +39,7 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_admit_activation",
   "fm_stats",
   "__wpk_fork_ref_gc_transit",
+  "__wpk_fork_static_root_catalog",
 ] as const;
 
 export type ForkModuleExports = Record<string, unknown>;
@@ -50,6 +56,10 @@ export interface ForkModuleInstance {
   /** Host-supplied tables, exposed so a host can publish catalogs into them. */
   readonly functionCatalog: WebAssembly.Table;
   readonly driveTable: WebAssembly.Table;
+  /**
+   * The module's own merged static-root catalog (an `anyref` table it defines,
+   * exports and grows as it places each activation). A host only fills slots.
+   */
   readonly staticRootCatalog: WebAssembly.Table;
   /**
    * A fixed staging slab INSIDE the reserved region, the per-call scratch
@@ -206,19 +216,8 @@ export function instantiateForkModule(
     );
   }
 
-  // `anyref`, NOT `externref`, for the static-root catalog: the binder holds
-  // GC-hierarchy values, and `any` and `extern` are disjoint roots, so the
-  // wrong element type is rejected at instantiation.
-  const emptyTable = (element: "anyfunc" | "anyref"): WebAssembly.Table =>
-    // The cast is at a TYPING boundary, not a capability one: every engine
-    // Kandelo runs on accepts an `anyref` table, but lib.dom still declares
-    // `TableKind` as `"anyfunc" | "externref"` -- it predates the GC proposal.
-    // Widening it here rather than in a global augmentation keeps the stale
-    // declaration visible at the one place that has to work around it.
-    new WebAssembly.Table({ element: element as "anyfunc", initial: 0 });
-  const functionCatalog = emptyTable("anyfunc");
-  const driveTable = emptyTable("anyfunc");
-  const staticRootCatalog = emptyTable("anyref");
+  const functionCatalog = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
+  const driveTable = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
 
   const capabilities = createForkModuleHostCapabilities();
   const resolved: ForkModuleHostImports = {
@@ -244,25 +243,21 @@ export function instantiateForkModule(
       __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
       __wpk_fork_function_catalog: functionCatalog,
       __wpk_fork_drive_table: driveTable,
-      __wpk_fork_static_root_catalog: staticRootCatalog,
       ...resolved,
   };
-  // BEFORE instantiating, because after it a missing binding has already
-  // surfaced as a `LinkError` naming an import INDEX. The guest side of this
-  // contract is complete by construction (`buildForkGuestImports`); this side
-  // was not, which is how an import added to the module reached this file's own
-  // tests as an unreadable link failure.
-  const unbound = WebAssembly.Module.imports(module)
-    .filter((i) => i.module === "env" && i.kind === "function")
-    .map((i) => i.name)
-    .filter((name) => !(name in (env as Record<string, unknown>)));
-  if (unbound.length > 0) {
-    throw new Error(
-      `${label}: the fork-module imports ${unbound.length} host function(s) ` +
-        `this host does not bind: ${unbound.join(", ")}`,
-    );
+  // No `WebAssembly.Module.imports` pre-check of the bindings: WebKit throws
+  // instead of describing a module whose imports mention a GC type (this one's
+  // `__wpk_fork_host_ref_identity(anyref)`), so the check itself stopped every
+  // fork there. It is not needed for a readable failure either: V8 and WebKit
+  // both name the missing import in the `LinkError` (measured 2026-09-25), and
+  // `fork-module-host-obligation.test.ts` pins the bindings against the built
+  // artifact. The label says which process failed.
+  let instance: WebAssembly.Instance;
+  try {
+    instance = new WebAssembly.Instance(module, { env });
+  } catch (error) {
+    throw new Error(`${label}: fork-module instantiation failed: ${String(error)}`, { cause: error });
   }
-  const instance = new WebAssembly.Instance(module, { env });
 
   const exports = instance.exports as ForkModuleExports;
   for (const name of FORK_MODULE_REQUIRED_EXPORTS) {
@@ -280,7 +275,7 @@ export function instantiateForkModule(
     regionBytes,
     functionCatalog,
     driveTable,
-    staticRootCatalog,
+    staticRootCatalog: exports.__wpk_fork_static_root_catalog as WebAssembly.Table,
     stagingBase: memoryBase + stagingOffset,
     stagingBytes: STAGING_SLAB_BYTES,
   };

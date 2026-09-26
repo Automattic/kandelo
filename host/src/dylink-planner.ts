@@ -74,6 +74,7 @@ import {
   type ValType,
   type WasmValue,
 } from "./dylink-planner-wire";
+import { registerWasmModuleReflection } from "./wasm-module-reflection";
 
 /** `DL_OK` / `DL_ERROR` from `crates/dylink-module`. */
 const DL_OK = 0;
@@ -919,6 +920,10 @@ export class DylinkActExecutor {
           throw new Error(`dylink: no module image for ${act.library}`);
         }
         const compiled = new WebAssembly.Module(asModuleSource(bytes));
+        // A fork-instrumented library's imports name GC types, which WebKit's
+        // `WebAssembly.Module.imports` refuses to describe; the fork import
+        // builders read these exact-bytes descriptors instead.
+        registerWasmModuleReflection(compiled, bytes);
         this.#modules.set(act.module, compiled);
         // The activation coordinator reads this object's custom sections when
         // it prepares an activation, and it knows the object only by name.

@@ -69,7 +69,6 @@ const importObject = {
     }),
     __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
     __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
-    __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),

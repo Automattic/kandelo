@@ -118,12 +118,13 @@ describe("the host's record of live activations", () => {
     const calls: string[] = [];
     const activations = new ForkActivations(recordingDrive().sink, "test", {
       registerCatalog: (base, table) => void calls.push(`functions ${base}+${table.length}`),
-      registerStaticRoots: (base, table) => void calls.push(`roots ${base}+${table.length}`),
       registerTable: () => {},
       releaseTables: () => {},
     });
     activations.register(activation(2, { __wpk_fork_static_root_harvest: () => void calls.push("harvest") }));
-    expect(calls).toEqual(["harvest", "functions 20+2", "roots 200+3"]);
+    // No static-root publish at registration: the module grew its own
+    // catalog at the bind, and the roots are copied per fork.
+    expect(calls).toEqual(["harvest", "functions 20+2"]);
   });
 
   it("refuses to register one activation twice", () => {
@@ -155,7 +156,6 @@ describe("the host's record of live activations", () => {
     sink.releaseResumeSlots = (id) => (calls.push(`module ${id}`), 0);
     const activations = new ForkActivations(sink, "test", {
       registerCatalog: () => {},
-      registerStaticRoots: () => {},
       registerTable: (id, owner) => void calls.push(`register ${id}:${owner}`),
       releaseTables: (id, tables) =>
         void calls.push(`release ${id} ${tables.map((t) => (t === table ? "T" : "?")).join()}`),

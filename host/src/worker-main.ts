@@ -3561,7 +3561,7 @@ export async function centralizedWorkerMain(
             pid,
           ).setActivationTableStateOwner(activationId, ownerId, owns),
       );
-      // The module's imported merged static-root table, which CAPTURE reads to
+      // The module's own merged static-root table, which CAPTURE reads to
       // recognise a statically initialised reference and REPLAY reads to
       // reconstruct one. Filled per fork; a child nulls it after its drive, a
       // parent does not yet (see the class).
@@ -3573,7 +3573,6 @@ export async function centralizedWorkerMain(
         `pid=${pid}: fork activations`,
         forkActivationCatalogSink({
           functionCatalog: forkModuleInstance!.functionCatalog,
-          mergedStaticRoots: forkMergedStaticRoots,
           owners: processTableStateOwners,
         }),
       );
@@ -5753,11 +5752,6 @@ export async function centralizedThreadWorkerMain(
           `pid=${pid} tid=${tid}: fork activations`,
           forkActivationCatalogSink({
             functionCatalog: threadForkModuleInstance.functionCatalog,
-            // A pthread replica runs its OWN module instance, so its merged
-            // static-root table is its own too.
-            mergedStaticRoots: new ForkMergedStaticRoots(
-              threadForkModuleInstance.staticRootCatalog,
-            ),
             owners: threadTableStateOwners,
           }),
         );

@@ -75,7 +75,6 @@ export interface ForkActivationDriveSink {
  */
 export interface ForkActivationCatalogSink {
   registerCatalog(base: number, catalog: WebAssembly.Table): void;
-  registerStaticRoots(base: number, catalog: WebAssembly.Table): void;
   registerTable(activationId: number, ownerId: number, table: WebAssembly.Table): void;
   /** The one release the host makes: its table-identity election. */
   releaseTables(activationId: number, tables: readonly WebAssembly.Table[]): void;
@@ -102,7 +101,6 @@ export interface ForkActivationCatalogSink {
  */
 export function forkActivationCatalogSink(records: {
   functionCatalog: WebAssembly.Table;
-  mergedStaticRoots: { take(base: number, catalog: WebAssembly.Table): void };
   owners: {
     register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
     releaseActivation(activationId: number, tables: readonly WebAssembly.Table[]): void;
@@ -113,9 +111,6 @@ export function forkActivationCatalogSink(records: {
       const mirror = records.functionCatalog;
       if (mirror.length < base + catalog.length) mirror.grow(base + catalog.length - mirror.length);
       for (let slot = 0; slot < catalog.length; slot += 1) mirror.set(base + slot, catalog.get(slot));
-    },
-    registerStaticRoots: (base, catalog) => {
-      records.mergedStaticRoots.take(base, catalog);
     },
     registerTable: (activationId, ownerId, table) => {
       records.owners.register(activationId, ownerId, table);
@@ -170,8 +165,9 @@ export class ForkActivations {
    * instantiation). `fm_bind_activation` then places it and answers one row;
    * what the host does with it is the reference-typed work only it can do:
    * `Table.set` of the drive bindings at the drive base, the guest's own
-   * resume-thunk placement, and the funcref and static-root catalog copies at
-   * their bases.
+   * resume-thunk placement, and the funcref catalog copy at its base. The
+   * static-root roots are copied per fork (`ForkMergedStaticRoots.fill`) into
+   * the module's own table, which the bind already grew.
    *
    * The bind happens HERE rather than at capture because it is a property of
    * the instance, not of a fork: an unbound slot is a `call_indirect` on null
@@ -194,7 +190,7 @@ export class ForkActivations {
     const row = this.drive.bindActivation(activationId, functions.length, staticRoots.length);
     this.drive.bindActivationDrive(activationId, row.driveBase, exports);
     placeForkResumeThunks(this.label, activationId, instance, row.resume);
-    this.publishCatalogs(activation, row, functions, staticRoots);
+    this.publishCatalogs(activation, row, functions);
     this.live.set(activationId, { activationId, instance, staticRootBase: row.staticRootBase });
   }
 
@@ -266,11 +262,9 @@ export class ForkActivations {
     activation: ForkActivation,
     row: ForkActivationRow,
     functions: WebAssembly.Table,
-    staticRoots: WebAssembly.Table,
   ): void {
     if (!this.catalogs) return;
     this.catalogs.registerCatalog(row.funcCatalogBase, functions);
-    this.catalogs.registerStaticRoots(row.staticRootBase, staticRoots);
     for (const [ownerId, table] of forkActivationTables(activation, this.label)) {
       this.catalogs.registerTable(activation.activationId, ownerId, table);
     }

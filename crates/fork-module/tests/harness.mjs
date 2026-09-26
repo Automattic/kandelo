@@ -94,10 +94,6 @@ const importObject = {
     // reconstructs references, so an empty funcref table is inert here.
     __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
     __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
-    // M2: the merged, host-owned static-root catalog (anyref) the injected drive
-    // shim reads on a DRIVE_OP_STATIC_ROOT step. This reference-free harness
-    // never drives a reference replay, so an empty table is inert here.
-    __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),

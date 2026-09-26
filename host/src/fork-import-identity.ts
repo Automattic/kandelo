@@ -28,6 +28,7 @@ import {
   WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
   WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 } from "./generated/abi";
+import { wasmModuleImports } from "./wasm-module-reflection";
 
 /** `fm_set_identity_group` / `fm_set_import_provenance` spaces. */
 export const FORK_IMPORT_SPACE_GLOBAL = 0;
@@ -177,7 +178,7 @@ export class ForkImportIdentity {
     // the module can match a provenance record to its KFIG/KFIT declaration
     // without the host reading either section.
     const byKey = new Map<string, Declaration[]>();
-    WebAssembly.Module.imports(module).forEach((declaration, ordinal) => {
+    wasmModuleImports(module).forEach((declaration, ordinal) => {
       const key = `${declaration.module}\u0000${declaration.name}`;
       const space = declaration.kind === "global"
         ? FORK_IMPORT_SPACE_GLOBAL
