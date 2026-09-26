@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { zipSync } from "fflate";
 import { MemoryFileSystem, type LazyDownloadEvent } from "../src/vfs/memory-fs";
+import { parseZipCentralDirectory } from "../src/vfs/zip";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -16,6 +19,27 @@ describe("Lazy VFS files", () => {
     const mfs = createMemfs();
     const ino = mfs.registerLazyFile("/bin/test", "http://example.com/test.wasm", 1024, 0o755);
     expect(ino).toBeGreaterThan(0);
+  });
+
+  it("lazyAssetUrls reports file and archive URLs deduplicated, without rewriting", () => {
+    const mfs = createMemfs();
+    mfs.registerLazyFile("/bin/foo", "binaries/programs/wasm32/foo.wasm", 4, 0o755);
+    mfs.registerLazyFile("/bin/bar", "binaries/programs/wasm32/foo.wasm", 4, 0o755);
+    const zip = zipSync({ "etc/baz": new TextEncoder().encode("baz") });
+    mfs.registerLazyArchiveFromEntries(
+      "archives/qux.zip",
+      parseZipCentralDirectory(zip),
+      "/",
+      undefined,
+      {
+        sha256: createHash("sha256").update(zip).digest("hex"),
+        bytes: zip.byteLength,
+      },
+    );
+    expect(mfs.lazyAssetUrls().sort()).toEqual([
+      "archives/qux.zip",
+      "binaries/programs/wasm32/foo.wasm",
+    ]);
   });
 
   it("stat returns declared size for unmaterialized lazy file", () => {

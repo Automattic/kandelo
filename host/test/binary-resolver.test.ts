@@ -22,12 +22,15 @@ import {
   binariesDir,
   binaryProgramCacheRoot,
   findRepoRoot,
+  LAZY_BINARIES_URL_PREFIX,
   localBinariesDir,
   programOutputClosureRelPaths,
   programWasmArtifactPolicy,
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
   resolveDirectProgramPackageArtifact,
+  resolveLazyAssetPath,
+  resolveLazyAssetPaths,
   setBundledProgramPackageIndexPathForTests,
   setProgramIndexContextCheckerForTests,
   sourceOnlyBinaryRoot,
@@ -1186,6 +1189,141 @@ describe("binary resolver unified tier", () => {
     process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
     expect(resolveBinary("kernel.wasm")).toContain(
       "local-binaries/source-only-v1",
+    );
+  });
+});
+
+describe("image-relative lazy asset paths", () => {
+  it("serves a binaries/ lazy URL from the resolver tiers, not only the literal tree", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/qux.dat")).toBe(
+      local,
+    );
+  });
+
+  it("keeps the literal repo path for a binaries/ URL the resolver does not carry", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/waldo.dat")).toBe(
+      join(repo, "binaries/programs/wasm32/waldo.dat"),
+    );
+  });
+
+  it("keeps the literal repo path for a relative URL outside binaries/", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("assets/garply.dat")).toBe(
+      join(repo, "assets/garply.dat"),
+    );
+  });
+
+  it("strips leading slashes before the prefix check and the literal join", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("/binaries/programs/wasm32/qux.dat")).toBe(
+      local,
+    );
+    expect(resolveLazyAssetPath("//assets/garply.dat")).toBe(
+      join(repo, "assets/garply.dat"),
+    );
+  });
+
+  it("decodes the percent-encoded segments the image builder produces", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux+qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/qux%2Bqux.dat")).toBe(
+      local,
+    );
+  });
+
+  it("keeps the literal repo path for malformed percent-encoding", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/%zz.dat")).toBe(
+      join(repo, "binaries/programs/wasm32/%zz.dat"),
+    );
+  });
+
+  it("rejects a lazy URL that escapes the repository root", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(() => resolveLazyAssetPath("binaries/../secrets.dat")).toThrow(
+      /inside the repository root/,
+    );
+    expect(() => resolveLazyAssetPath("assets/../../garply.dat")).toThrow(
+      /inside the repository root/,
+    );
+    expect(() => resolveLazyAssetPath("assets/gar\0ply.dat")).toThrow(
+      /inside the repository root/,
+    );
+  });
+
+  it("surfaces a resolver rejection instead of serving the literal bytes", () => {
+    const repo = makeTempRepo();
+    writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/corge.wasm",
+      new TextEncoder().encode("not a Wasm module"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(() =>
+      resolveLazyAssetPath("binaries/programs/wasm32/corge.wasm")
+    ).toThrow(/failed to resolve.*rejected by artifact policy/s);
+  });
+
+  it("resolves a URL batch with per-URL outcomes instead of one thrown failure", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/corge.wasm",
+      new TextEncoder().encode("not a Wasm module"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    const resolutions = resolveLazyAssetPaths([
+      "binaries/programs/wasm32/qux.dat",
+      "binaries/programs/wasm32/corge.wasm",
+      "assets/garply.dat",
+    ]);
+    expect(resolutions.get("binaries/programs/wasm32/qux.dat")).toEqual({
+      path: local,
+    });
+    const rejected = resolutions.get("binaries/programs/wasm32/corge.wasm");
+    expect(rejected && "error" in rejected ? rejected.error.message : "").toMatch(
+      /rejected by artifact policy/,
+    );
+    expect(resolutions.get("assets/garply.dat")).toEqual({
+      path: join(repo, "assets/garply.dat"),
+    });
+  });
+
+  it("matches the image builder's lazy_url_prefix", () => {
+    const packagesToml = readFileSync(
+      new URL("../../images/rootfs/PACKAGES.toml", import.meta.url),
+      "utf8",
+    );
+    expect(packagesToml).toMatch(
+      new RegExp(`^lazy_url_prefix = "${LAZY_BINARIES_URL_PREFIX}"$`, "m"),
     );
   });
 });
