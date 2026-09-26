@@ -140,12 +140,29 @@ printf '%s\\n' \
     ensureDirRecursive(rootfs, "/root");
     registerShellProfileScripts(rootfs);
 
+    // WHY compare before/after instead of asserting PS1 is unset: the shell
+    // sets its own default prompt ("# " for uid 0, "$ " otherwise) whether or
+    // not any profile runs, so an unset PS1 is not something a root shell
+    // ever shows. What this profile must not do for a non-maker HOME is change
+    // any of the variables it sets for maker.
+    const snapshot = [
+      "PS1",
+      "HISTFILE",
+      "TMPDIR",
+      "LANG",
+      "TERM",
+      "SSL_CERT_FILE",
+      "SSL_CERT_DIR",
+    ].map((name) => `"${name}=${"$"}{${name}-<unset>}"`).join(" ");
     const result = await runCentralizedProgram({
       programPath: SHELL_WASM!,
       argv: [
         "sh",
         "-c",
-        `. "$1"; printf 'PS1=%s\\n' "${"$"}{PS1:-unset}"`,
+        `before=$(printf '%s|' ${snapshot})
+. "$1"
+after=$(printf '%s|' ${snapshot})
+printf 'before=%s\\nafter=%s\\n' "$before" "$after"`,
         "sh",
         PROFILE_SCRIPT_PATH,
       ],
@@ -161,7 +178,12 @@ printf '%s\\n' \
     });
 
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
-    expect(result.stdout).toContain("PS1=unset");
+    const [before, after] = ["before", "after"].map(
+      (label) => result.stdout.match(new RegExp(`^${label}=(.*)$`, "m"))?.[1],
+    );
+    expect(before, result.stdout).toBeDefined();
+    expect(after).toBe(before);
+    expect(after).not.toContain("kandelo$ ");
   });
 });
 

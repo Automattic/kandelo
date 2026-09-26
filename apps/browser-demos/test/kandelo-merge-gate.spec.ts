@@ -375,11 +375,14 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
 
   await gotoMachineOrSkip(page, "node");
   await waitForReady(page);
+  // The shell image ships one /etc/profile.d for every machine it carries
+  // (#1409), so the prompt is the shared `kandelo$` and no longer names the
+  // machine. The machine's identity is its image-declared title.
+  await expect(
+    page.getByRole("button", { name: /^Current computer: Node\.js,/ }),
+  ).toBeVisible({ timeout: 120_000 });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
-  await waitForTerminalContent(
-    page,
-    /spidermonkey-node\$ ?/,
-  );
+  await waitForTerminalContent(page, KANDELO_PROMPT);
   expect(await terminalText(page)).not.toContain("Segmentation fault");
 
   const nodeContractCommand = [
@@ -389,7 +392,6 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
     "[ \"$PWD\" = /home/maker ]",
     "[ \"$npm_config_cache\" = /tmp/.npm-cache ]",
     "[ \"$npm_config_registry\" = https://registry.npmjs.org/ ]",
-    "spidermonkey-node -e \"console.log('KANDELO_NODE_ALIAS_OK')\"",
     "printf 'KANDELO_NODE_CONTRACT_OK\\n'",
   ].join(" && ");
   const nodeContractResult = await runTerminalCommand(
@@ -399,19 +401,18 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
     180_000,
   );
   expect(nodeContractResult.output).toContain("KANDELO_NODE_OK:42");
-  expect(nodeContractResult.output).toContain("KANDELO_NODE_ALIAS_OK");
   expect(nodeContractResult.output).not.toContain("Segmentation fault");
-  // WHY: the package-backed Node image boots login eagerly, then resolves the
-  // maker account's /bin/sh and the `id` utility through the image's declared
-  // lazy Dash and Coreutils identities. Bash is not part of this login path.
-  // The suite runner sets this expectation only after validating the exact
-  // source-only composition.
+  // WHY: bash is the image's only shell, including /bin/sh (#1403), and ships
+  // eagerly, so login never fetches a shell runtime and dash is not in the
+  // image at all. The `id` utility still resolves through the image's lazy
+  // Coreutils identity. The suite runner sets this expectation only after
+  // validating the exact source-only composition.
   expect(
     standaloneShellRuntimeFetches.filter(({ name }) => name === "bash"),
   ).toEqual([]);
   expect(
     standaloneShellRuntimeFetches.filter(({ name }) => name === "dash"),
-  ).toHaveLength(expectSourceRootfsShell ? 1 : 0);
+  ).toEqual([]);
   expect(
     standaloneShellRuntimeFetches.filter(({ name }) => name === "coreutils"),
   ).toHaveLength(expectSourceRootfsShell ? 1 : 0);

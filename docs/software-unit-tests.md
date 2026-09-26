@@ -908,8 +908,6 @@ Build or fetch `kernel.wasm` before running any browser or Node suite:
 
 ```bash
 ./run.sh setup
-# or
-scripts/fetch-binaries.sh
 ```
 
 (`bash build.sh` still works as a deprecated delegator to `./run.sh setup`.)

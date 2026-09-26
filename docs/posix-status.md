@@ -607,7 +607,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 - `gettid()` — returns actual TID for threads, pid for main thread
 - `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on thread exit (CLONE_CHILD_CLEARTID)
 - `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP are implemented within one process; cross-process waits/wakes remain unsupported even over a coordinated shared mapping
-- `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Normal thread return, `pthread_exit`, and cancellation cleanup are per-thread; uncaught fatal Wasm traps in a pthread worker are process-fatal and visible to parent `waitpid()` as signal termination. Cancellation remains limited; see the Wasm-inherent gaps below.
+- `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Normal thread return, `pthread_exit`, and cancellation cleanup are per-thread; uncaught fatal Wasm traps in a pthread worker are process-fatal and visible to parent `waitpid()` as signal termination. Deferred cancellation works; asynchronous cancellation does not — see the Wasm-inherent gaps below.
 
 **File descriptors:**
 - `close_range()` — this Linux extension is not exposed by Kandelo's target libc/syscall surface (`sdk/config.site` reports it unavailable). It is implementable as future Rust-kernel work rather than a Wasm-inherent limitation. Lock-aware cleanup already covers `close`, dup replacement, close-on-exec, and process teardown; there is no hidden host-side bulk-close path.
@@ -822,7 +822,20 @@ All tests pass (0 unexpected failures). XFAIL (expected failures) and TIME (time
 These require features fundamentally unavailable in the Wasm architecture:
 
 - **Wasm FP exceptions (110 math tests):** WebAssembly has no floating-point exception flags (`fenv.h`). All `fe*` math tests fail. `long double` variants pass because they use software fp128.
-- **No pthread_cancel:** Wasm has no async cancellation mechanism or cancel-point assembly. `pthread_create` works; `pthread_cancel` does not.
+- **No asynchronous (preemptive) thread cancellation:** `pthread_create` and
+  deferred `pthread_cancel` both work. Cancellation is delivered at
+  cancellation points: the `wasm32posix` overlay's
+  `__syscall_cp_cancel_preflight` / `__syscall_cp_check` pair replaces stock
+  musl's `__syscall_cp_asm` + `SIGCANCEL` trampoline, and the host-intercepted
+  `SYS_THREAD_CANCEL` wakes a target already blocked in a cancellation point.
+  What Wasm cannot provide is preemption — a `PTHREAD_CANCEL_ASYNCHRONOUS`
+  target that never reaches a cancellation point cannot be interrupted
+  mid-computation. libc-test functional `pthread_cancel` therefore stays XFAIL:
+  its first subcase async-cancels a thread parked in `for (;;)`, so that thread
+  never exits, `pthread_join` never returns, and the per-test timeout kills the
+  run. A build of the same test carrying only its cleanup-handler subcases —
+  which block in `sleep(3)`, a real cancellation point — passes.
+  `pthread_cancel-points` passes on both Node and browser.
 - **No musl DTV expansion for arbitrary DSOs:** `tls_get_new-dtv_dso` requires
   native-style per-thread dynamic TLS-vector growth. Kandelo can replay the
   fixed TLS reservation of a Wasm side module across process `fork`, but that

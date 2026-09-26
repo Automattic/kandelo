@@ -162,6 +162,11 @@ function browserAudioGlobals() {
 
 describe("BrowserKernel", () => {
   beforeEach(() => {
+    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] browser-pcm-driver.ts holds one
+    // page-wide AudioContext in module scope and deliberately never closes it,
+    // so without this reset a later test's driver reuses an earlier test's
+    // mock context and its own suspend/close spies are never called.
+    vi.resetModules();
     MockWorker.instances = [];
     MockWorker.detachTransfers = false;
     vi.stubGlobal("Worker", MockWorker as any);
@@ -1619,7 +1624,7 @@ describe("BrowserKernel", () => {
     expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
   });
 
-  it("settles and closes browser PCM before terminating the kernel worker", async () => {
+  it("settles browser PCM before terminating the worker and leaves the shared context open", async () => {
     const audio = browserAudioGlobals();
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -1670,19 +1675,29 @@ describe("BrowserKernel", () => {
       requestId: destroy.requestId,
       result: { gracefulDetachComplete: true },
     });
+    // Wait on a monotone observable. settleOutputPipeline bounds its own wait
+    // at MAX_OUTPUT_PIPELINE_SETTLE_MS, so polling for exact array equality
+    // raced that bound: teardown could advance past the settle step between
+    // two polls and the array would never equal the single-element snapshot.
     await vi.waitFor(() => {
-      expect(teardownOrder).toEqual(["pcm-pipeline-settle"]);
+      expect(audio.context.suspend).toHaveBeenCalled();
     });
+    expect(teardownOrder[0]).toBe("pcm-pipeline-settle");
     expect(audio.context.close).not.toHaveBeenCalled();
-    expect(worker.terminated).toBe(false);
     finishPcmSettlement();
     await destroyPromise;
 
+    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] The AudioContext is page-wide (PR
+    // #1410): closing one per machine leaves a WebCore AudioWorklet rendering
+    // thread parked forever on WebKit. Teardown suspends the pipeline and
+    // unhooks this machine's worklet node, then leaves the context open and
+    // suspended for the next machine to reuse.
     expect(teardownOrder).toEqual([
       "pcm-pipeline-settle",
-      "pcm-context-close",
       "kernel-worker-terminate",
     ]);
+    expect(audio.context.close).not.toHaveBeenCalled();
+    expect(audio.context.state).toBe("suspended");
     expect(audio.node.disconnect).toHaveBeenCalledOnce();
     expect(audio.node.port.close).toHaveBeenCalledOnce();
     expect(kernel.getAudioState()).toBe("unavailable");

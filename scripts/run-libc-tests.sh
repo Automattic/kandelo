@@ -27,15 +27,36 @@ PROGRAM_INDEX_CHECKER=""
 MATH_EXPECTED_FAIL=(acosh asinh erfc j0 jn jnf lgamma lgammaf lgammaf_r sinh tgamma y0 y0f ynf)
 MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that bypass checkulp
 
-# Tests blocked by fundamental Wasm limitations (no cancellation-point asm).
+# Tests blocked by fundamental Wasm limitations.
 FUNCTIONAL_EXPECTED_FAIL=(
-    pthread_cancel              # no cancel-point asm (__syscall_cp_asm) for Wasm
+    # Asynchronous cancellation, not cancellation points. Deferred
+    # cancellation is implemented and pthread_cancel-points passes. This
+    # test's FIRST subcase is the async one: start_async() sets
+    # PTHREAD_CANCEL_ASYNCHRONOUS, posts a semaphore, then parks in
+    # `for (;;);` (src/functional/pthread_cancel.c). Wasm cannot preempt a
+    # running thread, so that target never reaches a cancellation point,
+    # never exits, and main's pthread_join() never returns — the per-test
+    # 30 s timeout kills the run with no output at all.
+    #
+    # Verified 2026-09-25 by splitting the test: a variant with only the two
+    # cleanup-handler subcases (which block in sleep(3), a real cancellation
+    # point) passes in under a second, and a variant with only the async
+    # subcase hangs exactly like the whole test. libc-test reports one result
+    # per test, so there is no partial PASS. See docs/wasm-limitations.md §2.
+    pthread_cancel
 )
 REGRESSION_EXPECTED_FAIL=(
-    malloc-brk-fail             # OOM behavior differs in Wasm linear memory
-    malloc-oom                  # OOM behavior differs in Wasm linear memory
-    pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
-    setenv-oom                  # OOM behavior differs in Wasm linear memory
+    # The test unmaps a fixed 64 KiB hole and expects malloc(10000) to fit.
+    # That is 16 pages on the 4 KiB-page systems it was written for, but one
+    # page here, where the page size is WebAssembly's 64 KiB page. With brk
+    # unavailable, musl's allocator needs three pages for a first small
+    # allocation: measured 2026-09-26, holes of 1-2 pages fail and 3 or more
+    # succeed, and a direct mmap reuses the hole correctly throughout. At the
+    # test's intended 16-page geometry it passes. malloc-oom, setenv-oom, and
+    # pthread_create-oom are not
+    # listed: they pass once t_memfill() is compiled correctly (see
+    # -fno-builtin-malloc below).
+    malloc-brk-fail
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
 )
 REGRESSION_FLAKY=(
@@ -80,6 +101,14 @@ CFLAGS_BASE=(
     --sysroot="$SYSROOT"
     -nostdlib
     -O2
+    # WHY: libc-test's common t_memfill() drains "libc reserves" with
+    # `while (malloc(1));`. With malloc treated as a builtin, clang elides the
+    # unused allocation, sees a side-effect-free infinite loop (undefined
+    # behavior), and compiles t_memfill() to return -1 unconditionally. Every
+    # test that calls it (malloc-oom, setenv-oom, pthread_create-oom) then
+    # failed in setup with "memfill failed" before testing anything. Keep
+    # malloc a real call so those tests exercise the allocator they target.
+    -fno-builtin-malloc
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj

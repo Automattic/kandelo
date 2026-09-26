@@ -349,6 +349,43 @@ export async function setup() {
     });
   }
 
+  // WHY: the package build engine stamps every wasm it installs with this
+  // checkout's kandelo.abi.contract digest. These fixtures are compiled here
+  // instead, so without this step the host reports a fixture built seconds ago
+  // as a "legacy binary [that] predates the ABI-contract-digest rollout"
+  // (host/src/constants.ts) and writes that to stderr — which breaks the tests
+  // asserting the host stays quiet on an ordinary guest exit. The stamp is
+  // additive and lives outside the freshness fingerprint above, so restamping
+  // an already-current fixture is a no-op rather than a rebuild trigger.
+  const abiContractStampTargets = [
+    ...C_TEST_FIXTURES.map(({ out }) => out),
+    ...RESOLVED_PROGRAM_FIXTURES.map(({ out }) => out),
+    ...TEST_PROGRAMS.map((cFile) =>
+      join(examplesDir, cFile).replace(/\.c$/, ".wasm")
+    ),
+    ...WASM64_TEST_PROGRAMS.map((cFile) =>
+      join(examplesDir, cFile).replace(/\.c$/, ".wasm64.wasm")
+    ),
+  ].filter((out) => existsSync(out));
+  if (abiContractStampTargets.length > 0) {
+    console.log("[global-setup] Stamping ABI contract digest on fixtures...");
+    execFileSync(
+      "cargo",
+      [
+        "run",
+        "-p",
+        "xtask",
+        "--target",
+        hostTarget,
+        "--quiet",
+        "--",
+        "stamp-abi-contract",
+        ...abiContractStampTargets,
+      ],
+      { cwd: repoRoot, stdio: "pipe" },
+    );
+  }
+
   // packages/registry/wordpress/test/wordpress-site-editor.test.ts calls
   // chromium.launch() directly (not via the `playwright test` runner),
   // so the browser binary must be present before vitest runs. `npm
