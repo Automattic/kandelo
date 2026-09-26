@@ -1,0 +1,53 @@
+#!/bin/sh
+# Start the Wayland desktop and stay in the foreground until it ends.
+#
+# The compositor must be up before any client connects: it takes DRM master
+# on /dev/dri/card0, creates the wl_shm/xdg-shell globals, and binds the
+# socket the clients dial. Waiting on the SOCKET rather than sleeping keeps
+# this correct on a slow first boot instead of merely usually correct.
+set -u
+
+: "${XDG_RUNTIME_DIR:=/run/user/0}"
+: "${WAYLAND_DISPLAY:=wayland-0}"
+export XDG_RUNTIME_DIR WAYLAND_DISPLAY
+mkdir -p "$XDG_RUNTIME_DIR"
+
+SOCKET="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+rm -f "$SOCKET"
+
+wlcompositor &
+compositor_pid=$!
+
+# Give the compositor up to ~10s to bind. Each iteration also re-checks that
+# it is still alive, so a compositor that dies during startup reports that
+# failure instead of hanging until the timeout.
+i=0
+while [ ! -e "$SOCKET" ]; do
+    if ! kill -0 "$compositor_pid" 2>/dev/null; then
+        echo "wldesktop: wlcompositor exited before binding $SOCKET" >&2
+        wait "$compositor_pid"
+        exit 1
+    fi
+    i=$((i + 1))
+    if [ "$i" -gt 100 ]; then
+        echo "wldesktop: timed out waiting for $SOCKET" >&2
+        kill "$compositor_pid" 2>/dev/null
+        exit 1
+    fi
+    sleep 0.1
+done
+
+# Two ambient clients, then the terminal. wlterm is the one the visitor
+# drives, so the desktop lives exactly as long as it does; when it exits,
+# tear the rest down rather than leaving an empty compositor on screen.
+wlclock &
+clock_pid=$!
+wlpaint &
+paint_pid=$!
+
+wlterm
+status=$?
+
+kill "$clock_pid" "$paint_pid" "$compositor_pid" 2>/dev/null
+wait "$compositor_pid" 2>/dev/null
+exit "$status"

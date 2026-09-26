@@ -1,0 +1,33 @@
+script_path = "packages/registry/wayland-demo/build-wayland-demo.sh"
+inputs = [
+  "packages/registry/wayland-demo/build-wayland-demo.sh",
+  "packages/registry/wayland-demo/wldesktop",
+  "programs/wlcompositor/wlcompositor.c",
+  "programs/wlterm/wlterm.c",
+  "programs/wlterm/vt100.c",
+  "programs/wlterm/vt100.h",
+  "programs/wlclock.c",
+  "programs/wlpaint.c",
+  "examples/libs/wpkdraw/build.sh",
+  "examples/libs/wpkdraw/src/wpkdraw.c",
+  "examples/libs/wpkdraw/src/wpkfont.c",
+  "examples/libs/wpkdraw/include/wpkdraw/wpkdraw.h",
+  "examples/libs/wpkdraw/include/wpkdraw/wpkfont.h",
+  "examples/libs/wpkdraw/third_party/stb_truetype.h",
+  "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
+  "examples/libs/libkwl/build.sh",
+  "examples/libs/libkwl/src/kwl.c",
+  "examples/libs/libkwl/include/kwl.h",
+  "packages/registry/wayland-protocols/xml/xdg-shell.xml",
+  "libc/glue/libgbm_stub.c",
+  "libc/glue/libegl_stub.c",
+  "libc/glue/libglesv2_stub.c",
+  "libc/glue/gl_abi.h",
+  "scripts/build-musl.sh",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = ""
+revision    = 1

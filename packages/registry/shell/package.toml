@@ -11,6 +11,7 @@ depends_on = [
   "fbdoom@0.1.0",
   "modeset@0.1.0",
   "sdl2-demo@0.1.0",
+  "wayland-demo@0.1.0",
   "evdev-demo@0.1.0",
   "espeak-ng@1.52.0",
   "ncurses@6.5",

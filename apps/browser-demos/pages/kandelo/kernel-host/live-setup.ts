@@ -762,16 +762,6 @@ export async function createLiveHost(
         offDestroyProgress();
       }
     }
-    // Wayland demo: present the Modeset pane's canvas through the vblank
-    // pump's WebGL2 scanout presenter (texture upload, shader-side
-    // swizzle, GPU scaling at display resolution). In the browser the
-    // compositor's GLES probe normally succeeds and its GL context then
-    // claims the canvas for GPU compositing as the steady state — the
-    // presenter covers boot (before the claim) and the permanent CPU
-    // fallback if the probe or a GL frame fails. GL demos (modeset.c,
-    // sdl2) keep the webgl2 default — the GL bridge claims their canvas on
-    // eglCreateContext, and the pump never touches it.
-    h.setKmsDisplayMode(profile.waylandDemo ? "webgl2-scanout" : null);
     const bootStartedAt = performance.now();
 
     try {
@@ -1372,6 +1362,20 @@ async function bootProfile(
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
   const machineShellCommand = shellCommandForMachine(machine.init);
+
+  // Present the KMS canvas through the vblank pump's WebGL2 scanout
+  // presenter (texture upload, shader-side swizzle, GPU scaling at display
+  // resolution) when the IMAGE declares it needs one. A Wayland compositor
+  // does: its GLES probe normally succeeds in the browser and its GL context
+  // then claims the canvas as the steady state, but the presenter has to
+  // cover boot before that claim and the permanent CPU fallback if the probe
+  // or a GL frame fails. Plain GL machines (modeset.c, sdl2) keep the webgl2
+  // default — the GL bridge claims their canvas on eglCreateContext and the
+  // pump never touches it. Set on every boot, including the null case, so a
+  // previous machine's mode cannot leak into this one.
+  host.setKmsDisplayMode(
+    machine.runtime.features.includes("kms-gl-scanout") ? "webgl2-scanout" : null,
+  );
   const initLaunch = machine.init === null
     ? null
     : profile.candidateEvidence === undefined

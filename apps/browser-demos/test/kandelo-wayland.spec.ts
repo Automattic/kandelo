@@ -197,12 +197,14 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
 
   await gotoOrSkip(page, "/?demo=wayland");
 
-  // The desktop boot is heavy (four wasm programs + a forkpty'd shell);
-  // wait for the live-setup tick that fires once wlterm is launched.
+  // The desktop boot is heavy (four wasm programs + a forkpty'd shell).
+  // The image declares one command, /usr/local/bin/wldesktop, which brings
+  // the compositor up and then starts the clients; wait for the tick that
+  // fires when the host runs it.
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running wlterm/);
+    .toMatch(/running \/usr\/local\/bin\/wldesktop/);
   expect(await syslogText(page), "wayland setup reported failure")
     .not.toMatch(SETUP_FAILURE);
 
