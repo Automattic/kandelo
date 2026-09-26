@@ -85,6 +85,7 @@ const TEST_PROGRAMS = [
   "select_signal_test.c",
   "dsp_signal_test.c",
   "lseek_invalid_test.c",
+  "int128_division_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
   "fstatat_empty_path_test.c",
@@ -128,7 +129,7 @@ const TEST_PROGRAMS = [
 ];
 
 /** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
-const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c"];
+const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "environment_lifecycle_test.c",
