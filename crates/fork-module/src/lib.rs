@@ -256,6 +256,12 @@ mod wasm {
         /// `fm_transit_grow`, because `table.grow` on an anyref table needs a
         /// `ref.null any` Rust has no type for.
         fn __wpk_fork_transit_grow(needed: u32) -> i32;
+        /// Grow the module-owned anyref static-root catalog to at least
+        /// `needed` slots, answering its size or -1. Injector-wired, for the
+        /// transit grow's reason. The module owns this table because a host
+        /// cannot mint an anyref table on every engine (WebKit's
+        /// `new WebAssembly.Table` accepts only funcref and externref).
+        fn __wpk_fork_static_root_grow(needed: u32) -> i32;
         /// Clear one process-owned resume-table slot:
         /// `table.set $resume (ref.null func)`. Injector-rewritten into a
         /// local thunk: Rust cannot emit `table.set`, but writing a NULL is
@@ -267,8 +273,8 @@ mod wasm {
         fn __wpk_fork_resume_null(slot: u32, lenient: u32);
 
         /// Null `len` slots from `base` of one of the three per-activation
-        /// ranges this module places in imported tables: `table` 0 is the
-        /// merged function catalog, 1 the merged static-root catalog, 2 the
+        /// ranges this module places in its three catalog tables: `table` 0 is the
+        /// merged function catalog, 1 the module-owned static-root catalog, 2 the
         /// drive table. A `table.fill` with a null, clamped to `table.size`:
         /// a range the host never grew the table to holds nothing. Injector-
         /// rewritten into a local thunk, for the reason `__wpk_fork_resume_null`
@@ -410,6 +416,13 @@ mod wasm {
         // `fm_transit_grow`, which is `table.size` + `table.grow` and nothing
         // else.
         unsafe { __wpk_fork_transit_grow(needed) }
+    }
+
+    /// Safe wrapper over the injector-wired static-root grow placeholder.
+    fn static_root_grow_via_injector(needed: u32) -> i32 {
+        // SAFETY: after injection this is a local `table.size` + `table.grow`
+        // on the module's own static-root catalog, and nothing else.
+        unsafe { __wpk_fork_static_root_grow(needed) }
     }
 
     /// Safe wrapper over the injector-wired probe placeholder.
@@ -2844,8 +2857,9 @@ mod wasm {
     //
     // Exactly the funcref merged-catalog mechanism, for static roots. The host
     // lays every activation's instantiation-time static-root catalog into ONE
-    // merged imported anyref table (`env.__wpk_fork_static_root_catalog`), each
-    // activation at a distinct BASE the module places when it binds the
+    // merged anyref table the module OWNS and exports
+    // (`__wpk_fork_static_root_catalog`), each activation at a distinct BASE
+    // the module places -- and grows the table to -- when it binds the
     // activation (`fm_bind_activation`).
     // `static_root_slot_impl` then returns the GLOBAL catalog index
     // `base(module_activation) + static_root_ordinal`, so a static root minted in
@@ -8115,8 +8129,9 @@ mod wasm {
     /// Place an ADMITTED activation after its instantiation, and return the
     /// module-owned row the host needs for the reference-typed work only it can
     /// do: `Table.set` of the drive bindings at `drive_base`, the funcref
-    /// catalog copy at `func_catalog_base`, sizing the static-root mirror from
-    /// `static_root_base`, and the guest's `__wpk_fork_place_resume_thunks(
+    /// catalog copy at `func_catalog_base`, the static-root copy at
+    /// `static_root_base` (into the module's own catalog, which this bind has
+    /// already grown to cover it), and the guest's `__wpk_fork_place_resume_thunks(
     /// resume_ptr, resume_count)`. It replaced `fm_place_activation_catalog`,
     /// `fm_place_activation_static_roots`, `fm_drive_table_base` and
     /// `fm_publish_resume_assignment` (deleted in lane F stage 1d), whose
@@ -8129,7 +8144,8 @@ mod wasm {
     ///
     /// Returns the row's address, or 0 with `fm_last_errno`: `EINVAL` for an
     /// activation never admitted or a length that differs from its placed one,
-    /// `E2BIG` past an `i32` table index, or the arena's mapping errno.
+    /// `E2BIG` past an `i32` table index, `ENOMEM` if the static-root catalog
+    /// cannot grow to the placed range, or the arena's mapping errno.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_bind_activation(activation_id: u32, func_catalog_len: u32, static_root_len: u32) -> usize {
         match bind_activation_impl(activation_id, func_catalog_len, static_root_len) {
@@ -8152,6 +8168,10 @@ mod wasm {
         }
         let func_catalog_base = place_catalog_impl(REC_KIND_FUNC_CATALOG_BASE, activation_id, func_catalog_len)?;
         let static_root_base = place_catalog_impl(REC_KIND_STATIC_ROOT_BASE, activation_id, static_root_len)?;
+        // `place_catalog_impl` bounds the end by `i32::MAX`, so this cannot wrap.
+        if static_root_grow_via_injector(static_root_base + static_root_len) < 0 {
+            return Err(Errno::ENOMEM);
+        }
         let (resume_ptr, resume_count) = publish_resume_assignment_impl(activation_id)?;
         let row = [
             drive_plan::drive_table_base(activation_id),
@@ -8204,7 +8224,7 @@ mod wasm {
     /// Resolve a static-root recipe id to a merged anyref-catalog index (the
     /// static-root binder). This is NOT a guest-facing import: it is the helper the
     /// injected `fm_drive_execute` shim calls on a DRIVE_OP_STATIC_ROOT step to get
-    /// the index it `table.get`s on the imported `env.__wpk_fork_static_root_catalog`
+    /// the index it `table.get`s on the module-owned `__wpk_fork_static_root_catalog`
     /// table (an anyref a Rust function cannot itself return) before publishing the
     /// value into the transit at slot `recipe + 1`. Returns a non-negative catalog
     /// index and TRAPS on any inconsistency. See `static_root_slot_impl`.
@@ -11654,7 +11674,7 @@ mod wasm {
         }
     }
 
-    /// Null what `activation` holds in the imported tables: its merged
+    /// Null what `activation` holds in the three catalog tables: its merged
     /// function-catalog and static-root ranges, and its drive-table stride.
     ///
     /// The module placed the two ranges and numbers the stride, so it is the
@@ -11665,7 +11685,7 @@ mod wasm {
         for (table, kind) in [(0, REC_KIND_FUNC_CATALOG_BASE), (1, REC_KIND_STATIC_ROOT_BASE)] {
             if let Some((at, _)) = arena_find(activation, kind) {
                 // SAFETY: after injection a local thunk doing one clamped
-                // `table.fill` of a null on a module-imported table.
+                // `table.fill` of a null on one of those tables.
                 unsafe { __wpk_fork_table_null(table, arena_u32(at), arena_u32(at + 4)) }
             }
         }
@@ -11705,7 +11725,7 @@ mod wasm {
         match op {
             1 | 2 => match resume_unregister_impl(activation, op == 2) {
                 Ok(freed) => {
-                    // Its slots in the three imported tables, while the
+                    // Its slots in the three catalog tables, while the
                     // records that say where they are still exist. A closed
                     // library's functions left there stay reachable -- pinned,
                     // found by the encode scan, driven through a drive slot --

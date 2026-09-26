@@ -37,7 +37,7 @@ use walrus::ir::{
 };
 use walrus::{
     ConstExpr, ElementItems, ElementKind, ExportItem, FunctionBuilder, FunctionId, ImportKind,
-    Module, RefType, ValType,
+    InstrSeqBuilder, LocalId, Module, RefType, ValType,
 };
 
 // -- GC drive-shim injection (Phase 6 item 3b) --------------------------------
@@ -197,15 +197,30 @@ const PROVENANCE_WITNESS_SLOTS: u64 = 256;
 /// The process-owned fork-unwind transport tag.
 const UNWIND_TAG_EXPORT: &str = "__wpk_fork_unwind";
 
-/// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
-/// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root binder).
-/// The guest's own `__wpk_fork_static_root_catalog` is a harvest EXPORT cleared
-/// after instantiation, so the host supplies a growable mirror populated from the
-/// child's live static roots (`decodeStaticRoot`) and bound to this import; the
-/// shim `table.get`s the slot `fm_static_root_slot` returns and publishes the
-/// value into the transit at `recipe + 1`. Imported (initial size 0; the host
-/// grows it to the fork's merged catalog).
-const STATIC_ROOT_CATALOG_IMPORT: &str = "__wpk_fork_static_root_catalog";
+/// The merged static-root catalog (`(ref null any)`) the injected drive shim
+/// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root
+/// binder), and the capture-side lookup scans. Activation `a`'s harvested roots
+/// occupy `[base(a), base(a) + len_a)`, at the base `fm_bind_activation` places.
+///
+/// MODULE-OWNED and exported under this name, exactly as the GC transit table
+/// is (M1), and for a reason the transit move did not have to state: a host can
+/// only MINT a `(ref null any)` table through the JavaScript API if the engine
+/// extends `new WebAssembly.Table` beyond the standard `"funcref"` /
+/// `"externref"` element strings. V8 does; WebKit does not (it throws a
+/// TypeError on `element: "anyref"`), so while the host minted this table no
+/// fork-capable worker could even instantiate the module on WebKit. A module
+/// can DEFINE an anyref table on every engine that runs Wasm GC, so the table
+/// lives here, the module grows it itself when it places a catalog
+/// (`STATIC_ROOT_GROW_THUNK_IMPORT`), and a host only writes harvested roots
+/// into the exported table's slots.
+///
+/// The name is the guest's harvest export's name too; they are different
+/// instances' exports and never meet (no guest imports this name).
+const STATIC_ROOT_CATALOG_EXPORT: &str = "__wpk_fork_static_root_catalog";
+/// The placeholder the module declares for growing the static-root catalog:
+/// `(needed) -> size-or-minus-one`, rewritten into a local `table.grow` on the
+/// module-owned catalog. See `inject_static_root_grow_thunk`.
+const STATIC_ROOT_GROW_THUNK_IMPORT: &str = "__wpk_fork_static_root_grow";
 /// The Rust helper the shim calls to map a DRIVE_OP_STATIC_ROOT recipe to its
 /// merged anyref-catalog index (per-activation base + ordinal). Exported by
 /// `crates/fork-module/src/lib.rs`; traps on any inconsistency.
@@ -811,17 +826,14 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
     module.tables.get_mut(resume_table).name = Some(RESUME_TABLE_EXPORT.to_string());
     module.exports.add(RESUME_TABLE_EXPORT, resume_table);
 
-    // The merged, host-owned static-root catalog (`anyref`) the shim reads with
-    // `table.get` on a DRIVE_OP_STATIC_ROOT step. Initial size 0; the host grows
-    // + populates it from the child's live static roots before the drive runs.
-    let (static_root_catalog, _static_root_import_id) = module.add_import_table(
-        IMPORT_MODULE,
-        STATIC_ROOT_CATALOG_IMPORT,
-        false,
-        0,
-        None,
-        RefType::ANYREF,
-    );
+    // The merged static-root catalog (`anyref`) the shim reads with `table.get`
+    // on a DRIVE_OP_STATIC_ROOT step. Module-OWNED and exported, for the reason
+    // `STATIC_ROOT_CATALOG_EXPORT` gives: a host cannot mint an anyref table on
+    // every engine. Initial size 0; `fm_bind_activation` grows it as it places
+    // each activation's catalog, and the host fills the slots before a drive.
+    let static_root_catalog = module.tables.add_local(false, 0, None, RefType::ANYREF);
+    module.tables.get_mut(static_root_catalog).name = Some(STATIC_ROOT_CATALOG_EXPORT.to_string());
+    module.exports.add(STATIC_ROOT_CATALOG_EXPORT, static_root_catalog);
 
     // The guest `_gc_allocate`/`_gc_fill` signature the shim `call_indirect`s:
     // `(i32) -> ()` (see `WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE` in abi.ts). Also
@@ -1192,6 +1204,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_exn_throw into a thunk")?;
     inject_transit_grow_thunk(&mut module)
         .context("rewriting __wpk_fork_transit_grow into a thunk")?;
+    inject_static_root_grow_thunk(&mut module)
+        .context("rewriting __wpk_fork_static_root_grow into a thunk")?;
     inject_guest_table_thunks(&mut module)
         .context("rewriting the guest table placeholders into thunks")?;
     inject_resume_null_thunk(&mut module)
@@ -1224,9 +1238,9 @@ fn main() -> Result<()> {
     std::fs::write(&output, &out_bytes).with_context(|| format!("writing {output}"))?;
     eprintln!(
         "fork-module-inject: {input} -> {output} ({} bytes, added {DECODE_FUNCREF_EXPORT} + \
-         {DRIVE_EXECUTE_EXPORT} + exported {TRANSIT_TABLE_IMPORT} \
-         (module-owned, M1) + imported {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, \
-         {DRIVE_TABLE_IMPORT}, {STATIC_ROOT_CATALOG_IMPORT}}})",
+         {DRIVE_EXECUTE_EXPORT} + exported {TRANSIT_TABLE_IMPORT}, \
+         {STATIC_ROOT_CATALOG_EXPORT} (module-owned) + imported \
+         {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, {DRIVE_TABLE_IMPORT}}})",
         out_bytes.len()
     );
     Ok(())
@@ -1293,35 +1307,58 @@ fn inject_transit_grow(module: &mut Module) -> Result<()> {
 
     let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
     let needed = module.locals.add(ValType::I32);
-    {
-        let mut body = builder.func_body();
-        body.local_get(needed)
-            .table_size(transit_table)
-            .binop(BinaryOp::I32GtS)
-            .if_else(
-                None,
-                |grow| {
-                    grow.ref_null(RefType::ANYREF)
-                        .local_get(needed)
-                        .table_size(transit_table)
-                        .binop(BinaryOp::I32Sub)
-                        .table_grow(transit_table)
-                        .i32_const(0)
-                        .binop(BinaryOp::I32LtS)
-                        .if_else(
-                            None,
-                            |failed| {
-                                failed.i32_const(-1).return_();
-                            },
-                            |_ok| {},
-                        );
-                },
-                |_already| {},
-            );
-        body.table_size(transit_table);
-    }
+    emit_anyref_grow(&mut builder.func_body(), transit_table, needed);
     let shim = builder.finish(vec![needed], &mut module.funcs);
     module.exports.add(TRANSIT_GROW_EXPORT, shim);
+    Ok(())
+}
+
+/// Emit "grow anyref `table` to at least `needed` slots, answer its size or
+/// -1": the body `fm_transit_grow` and the static-root grow thunk share. The
+/// `ref.null any` init is why neither can be Rust.
+fn emit_anyref_grow(body: &mut InstrSeqBuilder, table: walrus::TableId, needed: LocalId) {
+    body.local_get(needed)
+        .table_size(table)
+        .binop(BinaryOp::I32GtS)
+        .if_else(
+            None,
+            |grow| {
+                grow.ref_null(RefType::ANYREF)
+                    .local_get(needed)
+                    .table_size(table)
+                    .binop(BinaryOp::I32Sub)
+                    .table_grow(table)
+                    .i32_const(0)
+                    .binop(BinaryOp::I32LtS)
+                    .if_else(
+                        None,
+                        |failed| {
+                            failed.i32_const(-1).return_();
+                        },
+                        |_ok| {},
+                    );
+            },
+            |_already| {},
+        );
+    body.table_size(table);
+}
+
+/// Rewrite the module's `__wpk_fork_static_root_grow(needed) -> i32`
+/// placeholder into a local grow of the module-owned static-root catalog.
+///
+/// `fm_bind_activation` calls it as it places an activation's catalog, so the
+/// table is always as long as the placed ranges: the host never grows (or
+/// mints) it. Required, not optional: a module that places catalogs without
+/// growing the table would hand every host an out-of-bounds `table.set`.
+fn inject_static_root_grow_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = imported_func(module, STATIC_ROOT_GROW_THUNK_IMPORT)
+        .ok_or_else(|| anyhow!("module does not import {STATIC_ROOT_GROW_THUNK_IMPORT}"))?;
+    let catalog = exported_table(module, STATIC_ROOT_CATALOG_EXPORT)?;
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            emit_anyref_grow(body, catalog, args[0]);
+        })
+        .with_context(|| format!("rewriting {STATIC_ROOT_GROW_THUNK_IMPORT} import into a thunk"))?;
     Ok(())
 }
 
@@ -1963,7 +2000,7 @@ fn inject_table_null_thunk(module: &mut Module) -> Result<()> {
     };
     let tables = [
         (imported_table(module, FUNCTION_CATALOG_IMPORT)?, RefType::FUNCREF),
-        (imported_table(module, STATIC_ROOT_CATALOG_IMPORT)?, RefType::ANYREF),
+        (exported_table(module, STATIC_ROOT_CATALOG_EXPORT)?, RefType::ANYREF),
         (imported_table(module, DRIVE_TABLE_IMPORT)?, RefType::FUNCREF),
     ];
     for (table, _) in tables {
@@ -2076,7 +2113,7 @@ fn inject_gc_lookup(module: &mut Module) -> Result<()> {
     let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
     let find = exported_function(module, GC_IDENTITY_FIND_HELPER)?;
     let identity = import_host_ref_identity(module);
-    let catalog = imported_table(module, STATIC_ROOT_CATALOG_IMPORT)?;
+    let catalog = exported_table(module, STATIC_ROOT_CATALOG_EXPORT)?;
     let to_recipe = exported_function(module, STATIC_ROOT_RECIPE_HELPER_EXPORT)?;
 
     let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
@@ -2696,18 +2733,26 @@ mod tests {
                 }
             }
         }
-        let expected: Vec<_> = [FUNCTION_CATALOG_IMPORT, STATIC_ROOT_CATALOG_IMPORT, DRIVE_TABLE_IMPORT]
-            .into_iter()
-            .map(|name| imported_table(&module, name).expect("imported table"))
-            .collect();
+        let expected = vec![
+            imported_table(&module, FUNCTION_CATALOG_IMPORT).expect("imported catalog"),
+            exported_table(&module, STATIC_ROOT_CATALOG_EXPORT).expect("module-owned static roots"),
+            imported_table(&module, DRIVE_TABLE_IMPORT).expect("imported drive table"),
+        ];
         assert_eq!(filled, expected, "selector 0, 1 and 2 must fill the catalog, static roots and drive table");
         wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
             .validate_all(&module.emit_wasm())
             .expect("the injected release thunk validates");
     }
 
+    /// Every reference-typed table a host must SUPPLY has to be one a host can
+    /// construct on every engine. The JavaScript API's standard element
+    /// strings are `"funcref"`/`"anyfunc"` and `"externref"`; an imported
+    /// `anyref` table is constructible only where the engine extends the API
+    /// (V8 does, WebKit does not), which is how every fork failed to start on
+    /// WebKit while the static-root catalog was an import. GC-typed tables must
+    /// be module-owned exports instead, like the two this test names.
     #[test]
-    fn transit_table_is_module_owned_export_not_import() {
+    fn gc_typed_tables_are_module_owned_exports_not_imports() {
         let mut module = fixture_module();
         inject(&mut module).expect("inject __wpk_fork_ref_decode_funcref");
         inject_drive_execute(&mut module).expect("inject fm_drive_execute");
@@ -2718,37 +2763,62 @@ mod tests {
         let out_bytes = module.emit_wasm();
         let reparsed = Module::from_buffer(&out_bytes).expect("reparse injected module");
 
-        let still_imported = reparsed
-            .imports
-            .iter()
-            .any(|import| import.name == TRANSIT_TABLE_IMPORT);
-        assert!(
-            !still_imported,
-            "{TRANSIT_TABLE_IMPORT} must no longer be an import after injection (M1)"
-        );
-
-        let exported_as_table = reparsed.exports.iter().any(|export| {
-            export.name == TRANSIT_TABLE_IMPORT && matches!(export.item, ExportItem::Table(_))
-        });
-        assert!(
-            exported_as_table,
-            "{TRANSIT_TABLE_IMPORT} must be exported as a table after injection (M1)"
-        );
-
-        // The other imported tables (function catalog, drive table, static-root
-        // catalog) are unaffected by this change and must still be imports.
-        for still_import_name in [
-            FUNCTION_CATALOG_IMPORT,
-            DRIVE_TABLE_IMPORT,
-            STATIC_ROOT_CATALOG_IMPORT,
-        ] {
-            assert!(
-                reparsed
-                    .imports
-                    .iter()
-                    .any(|import| import.name == still_import_name),
-                "{still_import_name} should remain imported"
-            );
+        for import in reparsed.imports.iter() {
+            if let walrus::ImportKind::Table(id) = import.kind {
+                let element = reparsed.tables.get(id).element_ty;
+                assert!(
+                    element == RefType::FUNCREF || element == RefType::EXTERNREF,
+                    "the fork-module imports table {}.{} of {element:?}: a host cannot \
+                     mint a GC-typed table through the JavaScript API on every engine \
+                     (WebKit rejects element `anyref`), so it must be module-owned",
+                    import.module,
+                    import.name,
+                );
+            }
         }
+
+        for name in [TRANSIT_TABLE_IMPORT, STATIC_ROOT_CATALOG_EXPORT] {
+            assert!(
+                !reparsed.imports.iter().any(|import| import.name == name),
+                "{name} must not be an import after injection"
+            );
+            let table = exported_table(&reparsed, name).expect("exported as a table");
+            assert_eq!(reparsed.tables.get(table).element_ty, RefType::ANYREF, "{name} holds anyref");
+        }
+
+        // The funcref tables a host fills are still imports: funcref tables are
+        // constructible everywhere, and their ownership is another question.
+        for still_import_name in [FUNCTION_CATALOG_IMPORT, DRIVE_TABLE_IMPORT] {
+            imported_table(&reparsed, still_import_name).expect("still imported");
+        }
+    }
+
+    #[test]
+    fn the_static_root_grow_thunk_grows_the_module_owned_catalog() {
+        let mut module = fixture_module();
+        inject(&mut module).expect("inject __wpk_fork_ref_decode_funcref");
+        inject_drive_execute(&mut module).expect("inject fm_drive_execute");
+        let ty = module.types.add(&[ValType::I32], &[ValType::I32]);
+        let (func, _) = module.add_import_func(IMPORT_MODULE, STATIC_ROOT_GROW_THUNK_IMPORT, ty);
+        inject_static_root_grow_thunk(&mut module).expect("the grow thunk injects");
+
+        let walrus::FunctionKind::Local(local) = &module.funcs.get(func).kind else {
+            panic!("{STATIC_ROOT_GROW_THUNK_IMPORT} is still an import");
+        };
+        let catalog = exported_table(&module, STATIC_ROOT_CATALOG_EXPORT).expect("catalog");
+        let mut grown = Vec::new();
+        for (instr, _) in &local.block(local.entry_block()).instrs {
+            if let walrus::ir::Instr::IfElse(branch) = instr {
+                for (inner, _) in &local.block(branch.consequent).instrs {
+                    if let walrus::ir::Instr::TableGrow(grow) = inner {
+                        grown.push(grow.table);
+                    }
+                }
+            }
+        }
+        assert_eq!(grown, vec![catalog], "the thunk grows the static-root catalog and nothing else");
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&module.emit_wasm())
+            .expect("the injected grow thunk validates");
     }
 }

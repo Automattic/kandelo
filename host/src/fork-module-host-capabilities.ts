@@ -5,9 +5,11 @@
  * The co-resident fork-module declares nine imports. Five are
  * position-independent-code linking boilerplate any `--pie` side module has
  * (`env.memory`, `__indirect_function_table`, `__stack_pointer`,
- * `__memory_base`, `__table_base`). Three are reference-typed tables, which
+ * `__memory_base`, `__table_base`). Two are funcref tables, which
  * `fork-module-instance` owns because it also owns the region reservation and
- * exposes them as `functionCatalog` / `driveTable` / `staticRootCatalog`.
+ * exposes them as `functionCatalog` / `driveTable`. (The module's anyref
+ * tables are its own exports, never imports: a host cannot mint an anyref
+ * table on every engine.)
  *
  * The three that remain are this file, and each is a Wasm CAPABILITY FLOOR --
  * something the module cannot do for itself no matter how much logic moves
@@ -16,7 +18,7 @@
  *
  * The set is pinned against the built artifact by
  * `EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT` in `crates/host-native/src/lib.rs`,
- * whose test asserts these exact names alongside the three tables, and by the
+ * whose test asserts these exact names alongside the two tables, and by the
  * `forkModuleHostImports` surface budget.
  */
 

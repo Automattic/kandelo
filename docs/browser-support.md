@@ -71,7 +71,28 @@ Service Worker ──MessagePort──> Kernel Worker       │
   WebKit can compile ABI 43 exception-reference imports even when its
   `WebAssembly.Module.imports()` API cannot produce descriptors for them.
   Modules created by an external embedder without registered bytes retain the
-  native reflection fallback.
+  native reflection fallback. The same holds for fork: WebKit also refuses to
+  describe any module whose import or export signatures name a Wasm GC type,
+  which every fork-instrumented guest and dlopened library does, so the fork
+  import builders read the registered descriptors, and the dynamic loader
+  registers each library's bytes when it compiles one.
+- **Fork on WebKit**: the co-resident fork module owns and exports both of its
+  `anyref` tables (the GC transit and the merged static-root catalog), and
+  grows the catalog itself as it places each library's range. A host never
+  mints one, because `new WebAssembly.Table` accepts only
+  `funcref`/`externref` element types on WebKit (V8 also accepts `anyref`);
+  from 2026-09-12 to 2026-09-25 the host minted the static-root
+  catalog and no fork-capable worker could start on WebKit.
+  `host/test/wasm-js-api-portability.test.ts` keeps host code to the element
+  and value types every engine accepts. Validated on WebKit by the
+  `vfork-lifecycle` browser specs, which include an ordinary copying fork.
+  `fork-continuation.spec.ts` is gated to Chromium as the aggregate browser
+  gate. Run by hand on WebKit on 2026-09-25 with the gate lifted, its three
+  reference-reconstruction specs (CatchRef, reference-bearing catches, aliased
+  Wasm GC state) passed, and its two deep-continuation fixtures failed: P-10
+  (4,096 nested frames live across a fork) overflows WebKit's call stack
+  ("Maximum call stack size exceeded" inside the guest's own recursion), and
+  P-11 exits 139. Those two are an open WebKit boundary, not a verified pass.
 - **Signal-wait engine matrix**: the real BrowserKernel worker path runs the
   wasm32 ppoll/pselect interruption matrix and wait4 unknown-option rejection
   on Chromium, Firefox, and WebKit. Chromium and Firefox also run its wasm64

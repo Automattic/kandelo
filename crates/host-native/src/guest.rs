@@ -6136,9 +6136,11 @@ pub struct ForkModule {
     /// the injected `fm_drive_execute` `call_indirect`s; populated with a
     /// guest's `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports.
     pub drive_table: Table,
-    /// The module's OWN imported anyref table
-    /// (`env.__wpk_fork_static_root_catalog`) the static-root binder
-    /// `table.get`s; populated with a guest's harvested static-root values.
+    /// The module's own module-defined, module-EXPORTED anyref static-root
+    /// catalog (`__wpk_fork_static_root_catalog`) the static-root binder
+    /// `table.get`s. The module grows it as `fm_bind_activation` places each
+    /// catalog; this host only writes a guest's harvested static-root values
+    /// into the placed range.
     pub static_root_catalog_table: Table,
     /// The module's own module-defined, module-EXPORTED `funcref` resume
     /// table — the cross-activation dispatch table `wpk_fork_resume_start`
@@ -6391,23 +6393,21 @@ pub(crate) fn instantiate_fork_module(
     let mut linker: Linker<()> = Linker::new(engine);
     linker.define(&mut *store, "env", "memory", guest_mem.clone())?;
 
-    // The module's own reference-carrying tables: an empty, growable table
-    // exactly matching each import's declared type (frames-only never
-    // populates any of them — the three funcref tables are the funcref-
-    // reconstruction path, I5's job; `__wpk_fork_static_root_catalog` is the
-    // GC static-root binder, also I5). Reading the declared `TableType` back
-    // off the import — rather than assuming a shape — means a future module
-    // rebuild that changes these declarations fails loudly here instead of
-    // silently mismatching. `env.__wpk_fork_static_root_catalog` is a table of `(ref null any)` (anyref) — the module also
-    // declares this GC-proposal table even though this frames-only path
-    // never drives a step that reads it — so its null init is `Ref::Any`,
-    // not `Ref::Func`.
-    // N1-I5 Task 1: the three funcref/anyref tables below are kept as named
+    // The module's imported reference-carrying tables: an empty, growable
+    // table exactly matching each import's declared type (frames-only never
+    // populates any of them — they are the funcref-reconstruction path, I5's
+    // job). Reading the declared `TableType` back off the import — rather
+    // than assuming a shape — means a future module rebuild that changes
+    // these declarations fails loudly here instead of silently mismatching.
+    // Every imported table is funcref: the module's anyref tables (the GC
+    // transit and the static-root catalog) are its own exports, resolved
+    // after instantiation below, so no host mints a GC-typed table.
+    // N1-I5 Task 1: the two funcref tables below are kept as named
     // `Table` handles (not just defined into the linker and dropped) so
     // `spawn_guest_thread` can populate them, AFTER a guest instance exists,
-    // from that guest's own exported catalog/drive/static-root tables — see
-    // this function's returned [`ForkModule::function_catalog_table`]/
-    // [`ForkModule::drive_table`]/[`ForkModule::static_root_catalog_table`].
+    // from that guest's own exported catalog/drive tables — see this
+    // function's returned [`ForkModule::function_catalog_table`]/
+    // [`ForkModule::drive_table`].
     // `wasmtime::Table` is a cheap `Copy` handle into this `Store`, so
     // capturing it here and also handing a copy to `linker.define` are the
     // SAME underlying table — growing/populating the captured handle later
@@ -6428,8 +6428,6 @@ pub(crate) fn instantiate_fork_module(
     fork_module_table("__indirect_function_table", Ref::Func(None))?;
     let function_catalog_table = fork_module_table("__wpk_fork_function_catalog", Ref::Func(None))?;
     let drive_table = fork_module_table("__wpk_fork_drive_table", Ref::Func(None))?;
-    let static_root_catalog_table =
-        fork_module_table("__wpk_fork_static_root_catalog", Ref::Any(None))?;
 
     let memory_base_global = Global::new(
         &mut *store,
@@ -6508,6 +6506,18 @@ pub(crate) fn instantiate_fork_module(
             anyhow::anyhow!(
                 "fork-module missing export {}",
                 wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
+            )
+        })?;
+
+    // The module's own anyref static-root catalog, resolved like the two
+    // tables above and for the same reason: one object, which the module
+    // grows as it places catalogs. A missing export is an ABI mismatch.
+    let static_root_catalog_table = instance
+        .get_table(&mut *store, wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "fork-module missing export {}",
+                wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT
             )
         })?;
 
@@ -8810,12 +8820,9 @@ fn spawn_guest_thread(
                         );
                         return;
                     }
+                    // `fm_bind_activation` already grew the module's own
+                    // catalog to cover `[base, base + len)`.
                     let base = u64::from(row.static_root_base);
-                    let grow = (base + len).saturating_sub(fm.static_root_catalog_table.size(&store));
-                    if let Err(e) = fm.static_root_catalog_table.grow(&mut store, grow, Ref::Any(None)) {
-                        eprintln!("growing fork-module __wpk_fork_static_root_catalog failed: {e:#}");
-                        return;
-                    }
                     for i in 0..len {
                         match guest_roots.get(&mut store, i) {
                             Some(v @ Ref::Any(_)) => {
@@ -9124,9 +9131,10 @@ fn drive_reference_replay(store: &mut Store<()>, fm: &ForkModule, guest_mem: &Sh
     // (STORE #2, `fm.gc_transit_table`) to cover every `recipe + 1` slot this
     // plan's steps are about to `table.get`/`table.set` BEFORE driving it.
     // `fm_drive_execute`'s injected shim can only access an IN-BOUNDS table
-    // index — unlike `function_catalog_table`/`drive_table`/
-    // `static_root_catalog_table` (grown ONCE at guest instantiation, see the
-    // N1-I5 Task 1 block above), this table's required size is PER-FORK (it
+    // index — unlike `function_catalog_table`/`drive_table` (grown ONCE at
+    // guest instantiation, see the N1-I5 Task 1 block above) and
+    // `static_root_catalog_table` (grown by the module's own bind), this
+    // table's required size is PER-FORK (it
     // depends on THIS fork's own reference graph), so it must be (re-)grown
     // here, per replay, before every drive. The capture side DOES grow a
     // transit table (`gc_claim`/`gc_i31`/`gc_broker_encode` call

@@ -28,6 +28,7 @@ import {
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_REQUIRED_TABLE_IMPORTS,
 } from "./generated/abi";
+import { wasmModuleImports } from "./wasm-module-reflection";
 
 /**
  * The namespace this builder owns inside the guest's `env`.
@@ -171,7 +172,7 @@ export function buildForkGuestImports(
   // the 46 required functions and both required tables is `__wpk_fork_*`, so
   // the prefix loses no coverage: it is exactly this builder's contract.
   if (options.guestModule !== undefined) {
-    for (const required of WebAssembly.Module.imports(options.guestModule)) {
+    for (const required of wasmModuleImports(options.guestModule)) {
       if (required.module !== "env") continue;
       if (!required.name.startsWith(FORK_IMPORT_PREFIX)) continue;
       if (required.name in env) continue;

@@ -26,6 +26,7 @@ import {
   WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
   WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 } from "./generated/abi";
+import { wasmModuleImports } from "./wasm-module-reflection";
 
 /** `CHILD_PLAN_RESOLVE_*` in `crates/fork-codec/src/child_plan.rs`. */
 const RAW_F64 = 1;
@@ -72,7 +73,7 @@ export class ForkChildImports {
   ): number | bigint | undefined {
     const rows = this.require(activationId);
     let saved: number | bigint | undefined;
-    WebAssembly.Module.imports(this.requireModule(activationId)).forEach((declaration, ordinal) => {
+    wasmModuleImports(this.requireModule(activationId)).forEach((declaration, ordinal) => {
       if (declaration.module !== moduleName || declaration.name !== importName) return;
       const row = rows.find((candidate) => candidate.ordinal === ordinal);
       if (row?.resolve === KEEP_BASE && declaration.kind === "global") {
@@ -106,7 +107,7 @@ export class ForkChildImports {
     // `(module, name)` is several entries, and the Nth READ of that name binds
     // the Nth entry -- which is the only reason the Proxy below exists.
     const byModule = new Map<string, Map<string, (ForkChildPlanRow | undefined)[]>>();
-    WebAssembly.Module.imports(module).forEach((declaration, ordinal) => {
+    wasmModuleImports(module).forEach((declaration, ordinal) => {
       let names = byModule.get(declaration.module);
       if (!names) byModule.set(declaration.module, (names = new Map()));
       const accesses = names.get(declaration.name) ?? [];

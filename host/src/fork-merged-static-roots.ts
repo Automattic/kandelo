@@ -2,13 +2,14 @@ import type { RegisteredForkActivation } from "./fork-activations";
 import { WPK_FORK_STATIC_ROOT_CATALOG_EXPORT } from "./generated/abi";
 
 /**
- * The merged STATIC-ROOT catalog the co-resident fork-module imports.
+ * The merged STATIC-ROOT catalog the co-resident fork-module owns.
  *
  * Merged for the reason the function catalog is (`forkActivationCatalogSink`):
  * the module is instantiated before its guests, so it cannot import a guest's
  * `__wpk_fork_static_root_catalog` directly. Activation `a`'s roots occupy
- * `[base(a), base(a) + len_a)` in the one table the module imported, at the
- * base the module places them.
+ * `[base(a), base(a) + len_a)` in the module's own exported table, at the base
+ * the module places them; the module grows the table as it places each range,
+ * so the host never sizes it.
  *
  * Both directions read it, which is what makes it the PARENT's business too:
  * the child's replay turns a static-root recipe into `base + ordinal` and
@@ -33,14 +34,6 @@ export class ForkMergedStaticRoots {
    * module clears its range and drops its record.
    */
   constructor(private readonly mirror: WebAssembly.Table) {}
-
-  /** Give one activation its slice at registration. No reference is copied. */
-  take(base: number, catalog: WebAssembly.Table): void {
-    const needed = base + catalog.length;
-    if (this.mirror.length < needed) {
-      this.mirror.grow(needed - this.mirror.length, null);
-    }
-  }
 
   /** Copy every live activation's roots in, for one fork. */
   fill(activations: readonly RegisteredForkActivation[]): void {
