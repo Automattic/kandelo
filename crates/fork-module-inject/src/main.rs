@@ -191,8 +191,14 @@ const PROVENANCE_REF_EXPORT: &str = "__wpk_fork_ref_gc_provenance_ref";
 const PROVENANCE_WITNESS_SLOT_HELPER: &str = "fm_gc_provenance_witness_slot";
 const PROVENANCE_WITNESS_TABLE: &str = "__wpk_fork_ref_gc_provenance_witness";
 /// Must match `WITNESS_SLOTS` in `crates/fork-module/src/lib.rs`: Rust picks the
-/// slot index, this table holds the reference at it.
+/// slot index, this table holds the reference at it. The table's INITIAL size:
+/// the seed witnesses use exactly these slots, and the segment-run witnesses
+/// (one per distinct `array.new_data`/`array.new_elem` run) are stored above
+/// them, growing the table (`__wpk_fork_witness_store`).
 const PROVENANCE_WITNESS_SLOTS: u64 = 256;
+/// Placeholder Rust calls to retain a staged object as a witness; rewritten
+/// into `inject_witness_store_thunk`'s grow-and-set.
+const WITNESS_STORE_THUNK_IMPORT: &str = "__wpk_fork_witness_store";
 
 /// The process-owned fork-unwind transport tag.
 const UNWIND_TAG_EXPORT: &str = "__wpk_fork_unwind";
@@ -1196,6 +1202,8 @@ fn main() -> Result<()> {
         .context("injecting __wpk_fork_ref_gc_provenance_ref")?;
     inject_capture_witness_thunk(&mut module)
         .context("rewriting __wpk_fork_capture_witness into a thunk")?;
+    inject_witness_store_thunk(&mut module)
+        .context("rewriting __wpk_fork_witness_store into a thunk")?;
     inject_capture_probe_thunk(&mut module)
         .context("rewriting __wpk_fork_capture_probe into a thunk")?;
     inject_capture_encode_thunk(&mut module)
@@ -1620,6 +1628,96 @@ fn inject_capture_encode_thunk(module: &mut Module) -> Result<()> {
 /// decoded graph; see `__wpk_fork_ref_exn_broker_throw_recipe` in `lib.rs`.
 fn inject_exn_throw_thunk(module: &mut Module) -> Result<()> {
     inject_forwarding_drive_thunk(module, EXN_THROW_THUNK_IMPORT, DRIVE_SLOT_EXN_THROW_RECIPE, &[])
+}
+
+/// Rewrite `__wpk_fork_witness_store(transit_slot, witness_slot) -> i32` into a
+/// local thunk that retains the object staged in the transit table as a
+/// witness:
+///
+/// ```wat
+///   (if (i32.ge_u (local.get $witness_slot) (table.size $witness))
+///     (then
+///       ;; at least doubling, so a run of stores grows the table O(log n) times
+///       (if (i32.lt_s (table.grow $witness (ref.null any)
+///                       (max (i32.sub (i32.add $witness_slot 1) (table.size $witness))
+///                            (table.size $witness)))
+///                     (i32.const 0))
+///         (then (return (i32.const -1))))))
+///   (table.set $witness (local.get $witness_slot)
+///     (table.get $transit (local.get $transit_slot)))
+///   (i32.const 0)
+/// ```
+///
+/// Rust decides WHICH slot (it owns the run table that names it); only wasm can
+/// hold the reference. A `-1` leaves the run recorded without a witness.
+///
+/// MUST run after `inject_gc_provenance_ref`, which creates the witness table.
+fn inject_witness_store_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != WITNESS_STORE_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        return Ok(());
+    };
+    let witness_table = exported_table(module, PROVENANCE_WITNESS_TABLE)?;
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let delta = module.locals.add(ValType::I32);
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let transit_slot = args[0];
+            let witness_slot = args[1];
+            body.local_get(witness_slot)
+                .table_size(witness_table)
+                .binop(BinaryOp::I32GeU)
+                .if_else(
+                    None,
+                    |grow| {
+                        // delta = max(witness_slot + 1 - size, size)
+                        grow.local_get(witness_slot)
+                            .i32_const(1)
+                            .binop(BinaryOp::I32Add)
+                            .table_size(witness_table)
+                            .binop(BinaryOp::I32Sub)
+                            .local_set(delta);
+                        grow.local_get(delta)
+                            .table_size(witness_table)
+                            .binop(BinaryOp::I32LtU)
+                            .if_else(
+                                None,
+                                |small| {
+                                    small.table_size(witness_table).local_set(delta);
+                                },
+                                |_| {},
+                            );
+                        grow.ref_null(RefType::ANYREF)
+                            .local_get(delta)
+                            .table_grow(witness_table)
+                            .i32_const(0)
+                            .binop(BinaryOp::I32LtS)
+                            .if_else(
+                                None,
+                                |failed| {
+                                    failed.i32_const(-1).return_();
+                                },
+                                |_| {},
+                            );
+                    },
+                    |_| {},
+                );
+            body.local_get(witness_slot)
+                .local_get(transit_slot)
+                .table_get(transit_table)
+                .table_set(witness_table);
+            body.i32_const(0);
+        })
+        .with_context(|| format!("rewriting {WITNESS_STORE_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
 }
 
 fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
@@ -2059,7 +2157,7 @@ fn inject_gc_provenance_ref(module: &mut Module) -> Result<()> {
     let witness_table = module.tables.add_local(
         false,
         PROVENANCE_WITNESS_SLOTS,
-        Some(PROVENANCE_WITNESS_SLOTS),
+        None,
         RefType::ANYREF,
     );
     module.tables.get_mut(witness_table).name = Some(PROVENANCE_WITNESS_TABLE.to_string());

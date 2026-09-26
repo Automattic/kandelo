@@ -60,20 +60,87 @@ also reconstructed across fork:
   -- Node, browser and native -- straight from the module) build the
   real recipe node, restored in the child via the injected codec's
   allocate/fill drive.
-- **Known gap: per-object constructor provenance.** The module records
-  constructor provenance REFERENCES per layout (a witness pool), but not
-  per-object constructor facts: which constructor built an object, and
-  that constructor's scalars (an `array.new_data` segment offset and
-  length, an `array.new` fill value). A value whose type cannot be
-  rebuilt from its type alone -- an IMMUTABLE array, built by
-  `array.new_fixed` or `array.new_data` -- is captured with its type's
-  generic layout, whose generated allocator traps, so the child's
-  install traps. `crates/host-native`'s
-  `smoke_fork_gc_array_reconstructs` fails on exactly this.
+- **Constructor provenance.** An object whose type cannot rebuild it --
+  an IMMUTABLE array, or a mutable array of a non-nullable reference type --
+  is rebuilt by re-running one of the program's own allocation instructions.
+  See "Constructor provenance" below.
 
 See
 `docs/plans/2026-09-05-n1-nodebrowser-reference-parity-grounding.md`
 for the Node/browser parity work and its test coverage.
+
+## Constructor provenance
+
+**The problem.** A fork child is a fresh instance, so every GC object reachable
+from the parent's live state is rebuilt in it. A struct is `struct.new`'d from
+its field snapshot, and a mutable array of a defaultable element type is
+allocated and then filled. An IMMUTABLE array cannot be filled after
+allocation, and Wasm has no instruction that builds an immutable array of
+runtime length from arbitrary values; a mutable array of a non-nullable
+reference type has no default to allocate with. The only faithful rebuild is to
+re-run the same kind of allocation instruction -- `array.new_fixed`,
+`array.new`, `array.new_default`, `array.new_data`, `array.new_elem` -- with
+operands that reproduce the object. Re-running one is safe: these instructions
+are pure allocation and run no user code. Language-level constructors are
+ordinary functions around them and are NOT re-run.
+
+**What is derived and what is recorded.** An immutable array's observable state
+is its type, its length and its elements; its identity is carried by the
+recipe graph (`ref.eq` holds between the rebuilt object and every other
+rebuilt reference to it). For three instructions those facts ARE the operands,
+so the fork module derives them at capture and the allocation path pays
+nothing: `array.new_fixed N` rebuilds any array of length N from its elements,
+`array.new` a uniform one from its first element, `array.new_default` an
+all-default one. `array.new_data` and `array.new_elem` read a segment offset
+that the array does not reveal, and the parent may have run `data.drop` or
+`elem.drop` since, so their runs are RECORDED where they happen. The child's
+fresh instance has every segment intact, and replays the parent's drops only
+after it has rebuilt the objects that read them, so it can re-run the
+instruction. A structure's rebuild needs nothing new; an immutable struct is
+`struct.new`'d from its fields.
+
+**Keyed by the run, not by the object.** A record per object would have to die
+with its object, and nothing can observe that: Wasm has no weak reference, a
+JavaScript host's identity `WeakMap` frees an object without saying so, and
+Wasmtime roots are strong. A per-object table would therefore either pin every
+array it describes -- an unbounded leak in any program that allocates in a loop
+and never forks -- or keep records for objects long gone. Instead the fork
+module keeps one entry per distinct `(activation, layout, operands)` run, and
+the first array that run made as the entry's witness. Two runs with equal
+operands make interchangeable arrays, so at capture an immutable array is
+matched to the entry whose witness has its contents (it usually IS the
+witness), and the child re-runs that instruction with those operands. A mutable
+array is filled after allocation, so any entry of its length rebuilds it.
+
+**Bounds.** The table holds at most 65,536 distinct runs per worker, and the
+kept witnesses at most 16 MiB of elements between them; it grows by doubling a
+single mapping and is never pruned, because its size depends on the program's
+distinct segment reads, not on how often it allocates. Measured through a real
+Node process Worker, one million `array.new_data` allocations over 16 distinct
+offsets grew guest memory by one 64 KiB page, and over one million distinct
+offsets (the cap reached) by 97 pages (about 6 MiB, including the mappings the
+doublings freed); the same loops with recording disabled grew it by none. A run
+past either cap is not recorded, or recorded without a witness.
+
+**Truthful failure.** An object no constructor in the program can rebuild -- an
+array whose run was not recorded (a cap was reached, or the run happened in a
+borrowed `vfork` child, whose transient module keeps nothing) and that no
+derivation fits -- makes the capture refuse with `EOPNOTSUPP`: `fork()` returns
+`-EOPNOTSUPP` in the parent and no child is created, on every host, exactly as
+for a host externref. It never becomes a child trapping in an allocator.
+
+**Tests.** One fixture, `crates/host-native/fixtures/native_fork_gc_provenance.wat`,
+runs on all three hosts: `smoke_fork_gc_provenance_reconstructs`
+(`crates/host-native`), `host/test/fork-gc-provenance.test.ts` (Node, through a
+real process Worker) and "rebuilds constructor-only Wasm GC objects in fresh
+child workers" in `apps/browser-demos/test/fork-continuation.spec.ts`
+(Chromium and WebKit). It holds immutable `array.new_fixed`, `array.new`,
+`array.new_default`, `array.new_data` (two with the same operands, which must
+stay two objects) and `array.new_elem` arrays, an immutable struct and an
+immutable array referencing the other arrays, and a mutable non-null reference
+array; drops every segment; forks twice from the parent and once from the first
+child; and checks every object in every process. The selection rules are unit
+tested in `crates/fork-codec/src/gc_constructor.rs`.
 
 ## Host externrefs are not carried across fork
 

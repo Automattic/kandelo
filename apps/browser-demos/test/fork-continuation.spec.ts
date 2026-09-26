@@ -32,6 +32,11 @@ const referenceCatchPayloadFixtureSource = resolve(
   __dirname,
   "../../../host/test/fixtures/reference-catch-payload-fresh-worker.wat",
 );
+// One source for the native, Node and browser hosts; see its header.
+const gcProvenanceFixtureSource = resolve(
+  __dirname,
+  "../../../crates/host-native/fixtures/native_fork_gc_provenance.wat",
+);
 const forkInstrumenterPath = resolve(
   __dirname,
   "../../../tools/bin/wasm-fork-instrument",
@@ -422,6 +427,46 @@ test("reconstructs aliased Wasm GC state in a fresh child worker", async ({
       baseURL!,
       programPath,
       "gc-reference-state-fresh-worker",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.diagnostics).toEqual([]);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuilds constructor-only Wasm GC objects in fresh child workers", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+
+  const workDir = mkdtempSync(resolve(__dirname, ".gc-provenance-"));
+  try {
+    const rawPath = resolve(workDir, "gc-provenance.raw.wasm");
+    const programPath = resolve(workDir, "gc-provenance.wasm");
+    // wasm-tools, not wat2wasm: WABT cannot assemble Wasm-GC types.
+    execFileSync("wasm-tools", ["parse", gcProvenanceFixtureSource, "-o", rawPath]);
+    execFileSync(forkInstrumenterPath, [
+      "--stamp-abi-version",
+      rawPath,
+      "-o",
+      programPath,
+    ]);
+
+    // Immutable arrays made by array.new_fixed/new/new_default/new_data/
+    // new_elem, an immutable struct and nested references, all held across
+    // fork after every segment was dropped: each must be rebuilt by re-running
+    // its constructor. The parent forks twice and the first child forks a
+    // grandchild; every process checks every object and a failure is a
+    // nonzero exit (see the fixture's header).
+    const result = await runBrowserFixture(
+      page,
+      baseURL!,
+      programPath,
+      "gc-provenance",
     );
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");

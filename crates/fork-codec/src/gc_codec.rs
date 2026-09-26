@@ -67,16 +67,17 @@ const FIELD_RECORD_SIZE: u16 = abi::WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE;
 pub const KIND_STRUCT: u8 = 1;
 pub const KIND_ARRAY: u8 = 2;
 
-/// `ForkGcConstructorKind`. `CONSTRUCTOR_ARRAY_NEW` / `CONSTRUCTOR_ARRAY_FIXED`
-/// are public so the drive-plan hints adapter can reproduce the array-constructor
-/// dependency arms of the JS `gcAllocationDependencies`.
+/// `ForkGcConstructorKind`. Public so the drive-plan hints adapter can
+/// reproduce the array-constructor dependency arms of the JS
+/// `gcAllocationDependencies`, and so `gc_constructor` can choose which
+/// constructor rebuilds a captured array.
 pub const CONSTRUCTOR_STRUCT: u8 = 0;
-const CONSTRUCTOR_ARRAY_GENERIC: u8 = 1;
+pub const CONSTRUCTOR_ARRAY_GENERIC: u8 = 1;
 pub const CONSTRUCTOR_ARRAY_NEW: u8 = 2;
-const CONSTRUCTOR_ARRAY_DEFAULT: u8 = 3;
+pub const CONSTRUCTOR_ARRAY_DEFAULT: u8 = 3;
 pub const CONSTRUCTOR_ARRAY_FIXED: u8 = 4;
-const CONSTRUCTOR_ARRAY_DATA: u8 = 5;
-const CONSTRUCTOR_ARRAY_ELEMENT: u8 = 6;
+pub const CONSTRUCTOR_ARRAY_DATA: u8 = 5;
+pub const CONSTRUCTOR_ARRAY_ELEMENT: u8 = 6;
 
 pub(crate) const LAYOUT_FLAG_REQUIRES_PROVENANCE: u16 = 1 << 0;
 /// A defaultable-shell layout is pre-allocated before the identity walk. Public
@@ -85,7 +86,7 @@ pub(crate) const LAYOUT_FLAG_REQUIRES_PROVENANCE: u16 = 1 << 0;
 pub const LAYOUT_FLAG_DEFAULTABLE_SHELL: u16 = 1 << 1;
 const LAYOUT_KNOWN_FLAGS: u16 = LAYOUT_FLAG_REQUIRES_PROVENANCE | LAYOUT_FLAG_DEFAULTABLE_SHELL;
 
-const FIELD_FLAG_MUTABLE: u8 = 1 << 0;
+pub const FIELD_FLAG_MUTABLE: u8 = 1 << 0;
 const FIELD_FLAG_NULLABLE: u8 = 1 << 1;
 /// A reference field (storage == `STORAGE_REFERENCE`). Public so the drive-plan
 /// hints adapter mirrors the JS `FORK_GC_FIELD_REFERENCE` array-element check.

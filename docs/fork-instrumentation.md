@@ -1159,15 +1159,44 @@ and worker teardown clear transaction-local tables and leases so
 instrumentation does not retain stale GC roots.
 
 Constructor provenance is recreated as part of typed GC materialization.
-Immutable arrays and mutable aggregates with non-defaultable reference seeds
-cannot always be allocated from their final field snapshot alone, so the
-recipe records the exact constructor layout, up to sixteen scalar operand
-bytes, and typed seed edges. The generated allocate helper registers that same
-weak provenance for the fresh child object before releasing its staging
-record. Consequently a child can fork again and reconstruct an equivalent
-grandchild; it never needs a weak-map entry keyed by the parent's Store-local
-object. Nullable constructor seeds, including the unobservable seed of a
-zero-length array, remain canonical recipe zero.
+Immutable arrays and mutable arrays of a non-nullable reference type cannot be
+allocated from their final snapshot alone: Wasm has no instruction that builds
+an immutable array of runtime length from arbitrary values, and a non-nullable
+element has no default. Planning therefore gives every constructor site of such
+a type (`array.new_fixed N`, `array.new`, `array.new_default`,
+`array.new_data`, `array.new_elem`) its own constructor layout, whose generated
+allocator re-runs exactly that instruction in the child. The recipe carries the
+chosen constructor layout, its constructor-only scalar operands (up to sixteen
+bytes, ahead of the snapshot) and its seed edges (ahead of the snapshot edges).
+
+Which constructor rebuilds a given object is chosen at capture, by the fork
+module (`fork_codec::gc_constructor`), from what the capture already has:
+
+- an `array.new_fixed N` layout rebuilds any array of length N from its own
+  elements;
+- an `array.new` layout rebuilds a uniform immutable array (its first element
+  is the fill value) and any mutable non-nullable array (seeded, then filled);
+- an `array.new_default` layout rebuilds an all-default immutable array;
+- an `array.new_data` / `array.new_elem` layout rebuilds an array only from a
+  RECORDED run of that instruction, because the segment offset it read is not
+  visible in the array and the parent may have dropped the segment since.
+
+Only two facts are therefore reported where the instruction runs, and only
+those sites are rewritten to call a wrapper (`records_constructor_run`): the
+seed of a mutable non-null internal reference field or element (the module
+keeps the first per `(layout, ordinal)` as a witness), and the operands of a
+segment constructor. Every other constructor site stays a bare instruction. The
+module keeps one entry per DISTINCT `(activation, layout, operands)` run, with
+the first array that run made as its witness, and matches a captured immutable
+array to a run by comparing its captured contents with the witness's; see
+[fork-reference-support.md](fork-reference-support.md#constructor-provenance)
+for why the table is keyed by run rather than by object, and its bounds. The
+generated allocate helper reports the constructor run it makes in the child
+exactly as the original site did, so a child can fork again and reconstruct an
+equivalent grandchild. A child's fork module starts with no witnesses: its
+fresh instance holds none of the parent's. Nullable constructor seeds,
+including the unobservable seed of a zero-length array, remain canonical
+recipe zero.
 
 Mutable reference globals and tables are module-state, not activation-frame
 fields. Generated KFMS helpers save mutable globals, table length, sparse dirty
