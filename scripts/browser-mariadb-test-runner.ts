@@ -14,7 +14,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
-const VITE_PORT = 5198; // Different from test-runner's 5199
+// Different from test-runner's 5199. --strictPort makes a taken port fail
+// loudly instead of letting Vite move while page.goto keeps loading this
+// port. Override with KANDELO_BROWSER_MARIADB_TEST_RUNNER_PORT.
+const VITE_PORT = Number(
+  process.env.KANDELO_BROWSER_MARIADB_TEST_RUNNER_PORT ?? 5198,
+);
 const DEFAULT_TIMEOUT = 60_000;
 const BOOT_TIMEOUT = 180_000; // MariaDB boot can take a while in browser
 
@@ -32,7 +37,14 @@ async function startViteServer(): Promise<ChildProcess> {
   return new Promise((resolvePromise, reject) => {
     const proc = spawn(
       "npx",
-      ["vite", "--config", resolve(BROWSER_DIR, "vite.config.ts"), "--port", String(VITE_PORT)],
+      [
+        "vite",
+        "--config",
+        resolve(BROWSER_DIR, "vite.config.ts"),
+        "--port",
+        String(VITE_PORT),
+        "--strictPort",
+      ],
       {
         cwd: BROWSER_DIR,
         stdio: ["ignore", "pipe", "pipe"],
