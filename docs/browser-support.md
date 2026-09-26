@@ -372,7 +372,7 @@ Located in `apps/browser-demos/pages/`:
 | evdev | evdev_demo | dinit | Reads `/dev/input/event{0,1}` and prints each record. A `BrowserInputSource` translates DOM key and pointer events into `EV_KEY`/`EV_REL` and pushes them through `kernel_input_event`. The binary comes from the `evdev-demo` package and is baked into the image before boot; the input source is attached first, because the binary polls as soon as it runs. |
 | espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
-| wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -986,8 +986,13 @@ declare these blocks.
   computes `kandelo:shell@abi<N>` from the ABI it was built with, and real
   ABI compatibility is enforced by the `__abi_version` check on binaries.
 - `runtime` — what the machine needs: `features` (any of `framebuffer`,
-  `kms`, `evdev-input`) and `requests` (`memoryPages`, `maxWorkers`) which
-  the host clamps to its own policy. There is no `network` flag: it gated no
+  `kms`, `kms-gl-scanout`, `evdev-input`) and `requests` (`memoryPages`,
+  `maxWorkers`) which the host clamps to its own policy. `kms-gl-scanout`
+  additionally routes the KMS surface through the vblank pump's WebGL2
+  scanout presenter, which a Wayland compositor needs: its own GL context
+  claims the canvas as the steady state, but the presenter has to cover
+  boot before that claim and the permanent CPU fallback if the GLES probe
+  or a GL frame fails. There is no `network` flag: it gated no
   socket syscall, and a field that reads like a sandbox control without
   being one is a trap for third-party images.
 - `init` — what this machine runs. Exactly one of three mutually exclusive
