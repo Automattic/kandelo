@@ -28,6 +28,11 @@ struct vt100 {
     enum { GROUND, ESCAPE, CSI } state;
     char csi_buf[32];
     int csi_used;
+    /* A UTF-8 sequence split across two reads. wlterm feeds the PTY in
+     * fixed 4096-byte chunks, so without this a multi-byte character
+     * straddling a chunk boundary decoded as several U+FFFD. */
+    unsigned char u8_buf[4];
+    int u8_used;
 };
 
 /* ---- grid -------------------------------------------------------------- */
@@ -163,26 +168,45 @@ static void apply_csi(struct vt100 *t, char final) {
     if (t->cy > t->rows - 1) t->cy = t->rows - 1;
 }
 
+/* Length a UTF-8 lead byte announces, or 0 if it is not a valid lead. */
+static size_t utf8_seq_len(unsigned char b0) {
+    if (b0 < 0x80) return 1;
+    if ((b0 & 0xe0) == 0xc0) return 2;
+    if ((b0 & 0xf0) == 0xe0) return 3;
+    if ((b0 & 0xf8) == 0xf0) return 4;
+    return 0;
+}
+
+/* 1 if b is a UTF-8 continuation byte (10xxxxxx). */
+static int utf8_is_cont(unsigned char b) { return (b & 0xc0) == 0x80; }
+
 /* Decode one UTF-8 sequence (BMP + astral); malformed → U+FFFD, consume 1. */
 static int utf8_decode(const unsigned char *b, size_t len, uint32_t *cp,
                        size_t *consumed) {
     unsigned char b0 = b[0];
     if (b0 < 0x80) { *cp = b0; *consumed = 1; return 1; }
-    if ((b0 & 0xe0) == 0xc0 && len >= 2) {
-        *cp = ((uint32_t)(b0 & 0x1f) << 6) | (b[1] & 0x3f);
-        *consumed = 2;
-        return 1;
-    }
-    if ((b0 & 0xf0) == 0xe0 && len >= 3) {
-        *cp = ((uint32_t)(b0 & 0x0f) << 12) | ((uint32_t)(b[1] & 0x3f) << 6) |
-              (b[2] & 0x3f);
-        *consumed = 3;
-        return 1;
-    }
-    if ((b0 & 0xf8) == 0xf0 && len >= 4) {
-        *cp = ((uint32_t)(b0 & 0x07) << 18) | ((uint32_t)(b[1] & 0x3f) << 12) |
-              ((uint32_t)(b[2] & 0x3f) << 6) | (b[3] & 0x3f);
-        *consumed = 4;
+    size_t need = utf8_seq_len(b0);
+    if (need >= 2 && len >= need) {
+        /* A truncated sequence must not swallow the byte that follows it:
+         * "\xc3A" is U+FFFD then 'A', not U+00C1. */
+        for (size_t k = 1; k < need; k++) {
+            if (!utf8_is_cont(b[k])) {
+                *cp = 0xFFFD;
+                *consumed = 1;
+                return 0;
+            }
+        }
+        if (need == 2) {
+            *cp = ((uint32_t)(b0 & 0x1f) << 6) | (b[1] & 0x3f);
+        } else if (need == 3) {
+            *cp = ((uint32_t)(b0 & 0x0f) << 12) |
+                  ((uint32_t)(b[1] & 0x3f) << 6) | (b[2] & 0x3f);
+        } else {
+            *cp = ((uint32_t)(b0 & 0x07) << 18) |
+                  ((uint32_t)(b[1] & 0x3f) << 12) |
+                  ((uint32_t)(b[2] & 0x3f) << 6) | (b[3] & 0x3f);
+        }
+        *consumed = need;
         return 1;
     }
     *cp = 0xFFFD;
@@ -191,6 +215,32 @@ static int utf8_decode(const unsigned char *b, size_t len, uint32_t *cp,
 }
 
 void vt100_feed(struct vt100 *t, const char *bytes, size_t len) {
+    /* Complete a sequence split by the previous read's chunk boundary. */
+    if (t->u8_used > 0) {
+        size_t need = utf8_seq_len(t->u8_buf[0]);
+        size_t want = (need > (size_t)t->u8_used) ? need - (size_t)t->u8_used : 0;
+        if (want > len) {
+            /* Still short: absorb what arrived and wait for more. */
+            for (size_t k = 0; k < len && t->u8_used < (int)sizeof t->u8_buf; k++)
+                t->u8_buf[t->u8_used++] = (unsigned char)bytes[k];
+            return;
+        }
+        size_t stashed = (size_t)t->u8_used;
+        for (size_t k = 0; k < want && t->u8_used < (int)sizeof t->u8_buf; k++)
+            t->u8_buf[t->u8_used++] = (unsigned char)bytes[k];
+        uint32_t cp;
+        size_t used;
+        utf8_decode(t->u8_buf, (size_t)t->u8_used, &cp, &used);
+        put_char(t, cp);
+        t->u8_used = 0;
+        /* Consume from this read only what the decode took beyond the stash.
+         * A malformed stash consumes just its lead byte, so the bytes that
+         * followed it are re-scanned rather than swallowed: "\xc3" then "A"
+         * must render U+FFFD and 'A', not one character. */
+        size_t taken = (used > stashed) ? used - stashed : 0;
+        bytes += taken;
+        len -= taken;
+    }
     for (size_t i = 0; i < len;) {
         unsigned char b = (unsigned char)bytes[i];
         switch (t->state) {
@@ -209,7 +259,19 @@ void vt100_feed(struct vt100 *t, const char *bytes, size_t len) {
             else if (b >= 0x20) {
                 uint32_t cp;
                 size_t used;
-                utf8_decode((const unsigned char *)bytes + i, len - i, &cp, &used);
+                size_t avail = len - i;
+                size_t need = utf8_seq_len(b);
+                /* Lead byte announces more than this read holds: stash the
+                 * partial sequence and resume on the next feed, the way the
+                 * CSI parser already carries a split escape. */
+                if (need > 1 && need > avail) {
+                    t->u8_used = 0;
+                    for (size_t k = 0; k < avail; k++)
+                        t->u8_buf[t->u8_used++] = (unsigned char)bytes[i + k];
+                    i = len;
+                    break;
+                }
+                utf8_decode((const unsigned char *)bytes + i, avail, &cp, &used);
                 put_char(t, cp);
                 i += used;
             }

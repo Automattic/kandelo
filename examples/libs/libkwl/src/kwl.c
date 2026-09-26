@@ -570,9 +570,26 @@ int kwl_dispatch(struct kwl_window *win, struct kwl_event *out, int timeout_ms) 
         .events = POLLIN,
     };
     int pr = poll(&pfd, 1, timeout_ms);
-    if (pr > 0 && (pfd.revents & POLLIN)) {
-        /* Data is ready, so this read+dispatch won't block. */
-        wl_display_dispatch(win->display);
+    /* A dead compositor latches POLLHUP, so poll returns immediately no
+     * matter the timeout, and libwayland latches display->last_error, so
+     * every dispatch fails without blocking. Ignoring the result turns a
+     * `while (!done) kwl_dispatch(win, &ev, -1);` loop into a 100%-CPU spin
+     * that no caller can observe or leave. Surface it as KWL_CLOSE: callers
+     * already treat that as "tear this window down". */
+    if (pr < 0 && errno != EINTR) {
+        struct kwl_event e = { .type = KWL_CLOSE };
+        kwl_push(win, &e);
+    } else if (pr > 0) {
+        if (pfd.revents & (POLLHUP | POLLERR)) {
+            struct kwl_event e = { .type = KWL_CLOSE };
+            kwl_push(win, &e);
+        }
+        if ((pfd.revents & POLLIN)
+            && wl_display_dispatch(win->display) < 0) {
+            /* Data is ready, so this read+dispatch won't block. */
+            struct kwl_event e = { .type = KWL_CLOSE };
+            kwl_push(win, &e);
+        }
     }
     if (kwl_pop(win, out)) return 1;
     return 0;
