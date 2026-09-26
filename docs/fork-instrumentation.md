@@ -1564,6 +1564,18 @@ private tag), which the current design rejects on purpose; see the
 `FrameIo` and postamble comments in
 `crates/fork-instrument/src/instrument.rs`.
 
+**Accepted boundary (maintainer ruling, 2026-09-26).** The remaining
+cost is the exception-based unwind: a `try_table` catch around every
+fork-path call plus the inline `throw`. On V8 and JavaScriptCore it makes a
+non-inlined frame 1.25 to 1.5 times its uninstrumented size; on wasmtime it
+makes it 4 times (64 to 256 bytes), because any function holding a catch
+saves ten register pairs instead of three. It is accepted and not scheduled:
+unwinding by returning a default and testing state after every call would
+restore those frames, but it fabricates results on the unwind path and adds
+a check to every call in normal execution, and the exact-result unwind is
+kept on purpose. A guest whose recursion exceeds the resulting depth fails
+with the engine's stack overflow, reported as `SIGSEGV`.
+
 ## Maintainer notes
 
 ### Reasoning about which scheme a function uses

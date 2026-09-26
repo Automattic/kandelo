@@ -705,3 +705,12 @@ Getting to 5 needs either dilution, which the maintainer already rejected in §1
    adds per frame (spill locals, transport shims, state checks), reduce it,
    and re-measure depth on WebKit, Chromium and wasmtime, keeping P-10/P-11
    as the depth gate.
+8. **Frame size: the exception-based unwind cost is accepted** and
+   documented (docs/fork-instrumentation.md, Activation frame cost). The
+   inlining recovery (shared frame I/O helpers) landed; return-based unwind
+   is not scheduled.
+9. **Immutable GC constructors: record provenance** at the instruction
+   level (struct.new / array.new_* are pure allocations; no user code runs,
+   so re-running them in the child has no side effects). Anything still
+   unrebuildable refuses the fork with EOPNOTSUPP rather than trapping the
+   child.
