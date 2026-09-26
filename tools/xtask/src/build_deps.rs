@@ -7228,8 +7228,6 @@ struct CargoLockPackage {
     checksum: Option<String>,
 }
 
-const FORK_INSTRUMENT_CARGO_METADATA_ARGS: &[&str] = crate::cargo_closure::CARGO_METADATA_ARGS;
-
 fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
     // WHY: program cache paths have no build-host dimension. Filtering this
     // graph through the current macOS or Linux host made one source tree
@@ -23612,12 +23610,12 @@ version = "0.1.0"
     #[test]
     fn fork_instrument_dependency_metadata_is_not_build_host_filtered() {
         assert_eq!(
-            FORK_INSTRUMENT_CARGO_METADATA_ARGS,
+            crate::cargo_closure::CARGO_METADATA_ARGS,
             ["metadata", "--format-version=1", "--locked"],
             "shared package cache keys must hash Cargo's cross-host dependency union"
         );
         assert!(
-            !FORK_INSTRUMENT_CARGO_METADATA_ARGS.contains(&"--filter-platform"),
+            !crate::cargo_closure::CARGO_METADATA_ARGS.contains(&"--filter-platform"),
             "a host-filtered dependency graph gives macOS and Linux different package identities"
         );
     }
