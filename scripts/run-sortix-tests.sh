@@ -191,9 +191,12 @@ SO_LINK_FLAGS=(
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
 # The per-test budget. It is forwarded to examples/run-example.ts as TIMEOUT
@@ -1047,7 +1050,8 @@ run_suite() {
             "$CC" "${cflags[@]}" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
-            "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+            "$FORK_INSTRUMENT" "$wasm" -o "$wasm" || return 1
+            abi_contract_stamp "$wasm" || return 1
             # Build shared library (.so) if source has #ifdef SHARED
             if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
                 local so="$BUILD_DIR/$suite/${test_name}.so"
@@ -1139,6 +1143,7 @@ if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 PASS=0
 FAIL=0

@@ -103,10 +103,14 @@ LINK_FLAGS=(
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
     mv "$wasm.instr" "$wasm"
+    abi_contract_stamp "$wasm"
 }
 
 TEST_TIMEOUT=30000  # ms (for browser runner)
@@ -184,6 +188,7 @@ if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 PASS=0
 FAIL=0

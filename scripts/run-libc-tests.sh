@@ -154,9 +154,12 @@ LINK_FLAGS=(
 # transitively call kernel.kernel_fork.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
 # Timeout per test (seconds)
@@ -445,6 +448,7 @@ if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
     echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 if ! build_example_program echo; then
     err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
