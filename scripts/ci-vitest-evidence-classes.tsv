@@ -20,6 +20,7 @@ host/test/browser-mitm-ca-env.test.ts	source-only
 host/test/browser-pcm-driver.test.ts	source-only
 host/test/browser-wasm-fetch.test.ts	source-only
 host/test/browser-worker-adapter.test.ts	source-only
+host/test/byte-range-fetch.test.ts	source-only
 host/test/catch-ref-fresh-worker.test.ts	prepared-product
 host/test/centralized-spawn.test.ts	prepared-product
 host/test/channel-listener-reclamation.test.ts	source-only

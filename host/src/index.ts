@@ -32,10 +32,14 @@ export { TcpNetworkBackend, FetchNetworkBackend } from "./networking";
 export {
   BrowserCorsProxy,
   BrowserCorsProxyRequestError,
+  byteRangeHeaderValue,
+  fetchByteRange,
   validateBrowserCorsProxyConfig,
 } from "./networking";
 export type {
   BrowserCorsProxyConfig,
+  ByteRange,
+  ByteRangeFetchResult,
   FetchBackendOptions,
   HttpHeaderOccurrence,
   HttpRequest,

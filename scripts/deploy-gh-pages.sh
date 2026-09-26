@@ -38,7 +38,7 @@ if ! grep -Fq "\"url\":\"${CORS_PROXY}\"" dist/service-worker.js; then
   echo "ERROR: CORS proxy URL was not injected into dist/service-worker.js"
   exit 1
 fi
-if ! grep -Fq '"allowedRequestHeaderNames":["accept","content-type","git-protocol","wp_blog","wp_install"]' dist/service-worker.js; then
+if ! grep -Fq '"allowedRequestHeaderNames":["accept","content-type","git-protocol","if-range","range","wp_blog","wp_install"]' dist/service-worker.js; then
   echo "ERROR: CORS proxy request-header profile was not injected"
   exit 1
 fi

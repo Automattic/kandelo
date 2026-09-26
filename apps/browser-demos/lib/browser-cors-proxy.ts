@@ -5,10 +5,16 @@ import {
 
 const defaultConfig = validateBrowserCorsProxyConfig({
   url: "https://wordpress-playground-cors-proxy.net/?",
+  // WHY range/if-range: forwarding them is what makes a byte-range read
+  // possible at all. They are relayed opaquely; nothing here parses them. A
+  // proxy that still ignores them answers 200 with the whole entity, which
+  // fetchByteRange() reports as such instead of as the requested slice.
   allowedRequestHeaderNames: [
     "accept",
     "content-type",
     "git-protocol",
+    "if-range",
+    "range",
     "wp_blog",
     "wp_install",
   ],
