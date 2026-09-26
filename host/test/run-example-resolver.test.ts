@@ -20,6 +20,32 @@ const runExample = join(repoRoot, "examples", "run-example.ts");
 const spawnSmokeWasm = join(repoRoot, "examples", "spawn-smoke.wasm");
 
 describe("run-example exec resolver", () => {
+  it("runs an absolute program path that has no .wasm suffix", () => {
+    // Cross-built programs for a target without an executable suffix are
+    // still Wasm modules; FFmpeg's FATE launches `…/ffmpeg` this way via
+    // --target-exec.
+    const dir = mkdtempSync(join(tmpdir(), "run-example-nosuffix-"));
+    try {
+      const program = join(dir, "hello");
+      writeFileSync(program, readFileSync(join(repoRoot, "examples", "hello.wasm")));
+      const result = spawnSync(
+        process.execPath,
+        ["--experimental-wasm-exnref", "--import", "tsx/esm", runExample, program],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 60_000,
+          input: "",
+          env: { ...process.env, KANDELO_RUNNER_BUILTINS: "explicit" },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("Hello from musl on kandelo!");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("skips generic built-in package resolution for explicit-only consumers", () => {
     const resolved = resolveRunExampleBuiltinPrograms(
       { KANDELO_RUNNER_BUILTINS: "explicit" },
