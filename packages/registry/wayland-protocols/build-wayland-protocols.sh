@@ -32,7 +32,12 @@ if [ ! -f "$SRC_XML/wayland.xml" ] || [ ! -f "$SRC_XML/xdg-shell.xml" ]; then
     exit 1
 fi
 
-rm -rf "$INSTALL_DIR"
+# Empty the output prefix rather than replacing it: the resolver owns
+# WASM_POSIX_DEP_OUT_DIR and records its inode identity, so an rm -rf +
+# mkdir of the directory ITSELF makes the publish step reject the build
+# ("build stage changed identity and was preserved").
+mkdir -p "$INSTALL_DIR"
+find "$INSTALL_DIR" -mindepth 1 -delete
 mkdir -p "$INSTALL_DIR/xml"
 cp "$SRC_XML"/*.xml "$INSTALL_DIR/xml/"
 

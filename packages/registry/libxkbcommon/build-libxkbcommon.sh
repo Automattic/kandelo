@@ -51,7 +51,13 @@ fi
 # Fresh build + install each run — stale objects would shadow config
 # changes and the cache key varies per build.
 BUILD_DIR="$SCRIPT_DIR/xkbcommon-build"
-rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+rm -rf "$BUILD_DIR"
+# Empty the output prefix rather than replacing it: the resolver owns
+# WASM_POSIX_DEP_OUT_DIR and records its inode identity, so an rm -rf +
+# mkdir of the directory ITSELF makes the publish step reject the build
+# ("build stage changed identity and was preserved").
+mkdir -p "$INSTALL_DIR"
+find "$INSTALL_DIR" -mindepth 1 -delete
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include/xkbcommon"
 
 SRC="$SRC_DIR/src"

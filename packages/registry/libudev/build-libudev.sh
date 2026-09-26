@@ -39,7 +39,12 @@ if ! command -v wasm32posix-ar &>/dev/null; then
     exit 1
 fi
 
-rm -rf "$INSTALL_DIR"
+# Empty the output prefix rather than replacing it: the resolver owns
+# WASM_POSIX_DEP_OUT_DIR and records its inode identity, so an rm -rf +
+# mkdir of the directory ITSELF makes the publish step reject the build
+# ("build stage changed identity and was preserved").
+mkdir -p "$INSTALL_DIR"
+find "$INSTALL_DIR" -mindepth 1 -delete
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 
 OBJ="$(mktemp -d)/libudev_shim.o"
