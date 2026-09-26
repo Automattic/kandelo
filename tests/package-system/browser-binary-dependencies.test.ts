@@ -267,6 +267,47 @@ describe("browser binary dependencies", () => {
     );
   });
 
+  it("never imports a multi-member package output at its flat spelling", () => {
+    // `selectedFlatProgramPackage` in host/src/binary-resolver.ts throws for
+    // the legacy flat spelling of an output owned by a multi-member package.
+    // An import written that way therefore fails at resolve time rather than
+    // at build time, so check every `@binaries` import against the index.
+    const index = JSON.parse(
+      readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
+    );
+    const packages = index.packages as Record<string, {
+      members: Array<{ kind: string; mirrorPath: string }>;
+    }>;
+    const flatOnlyOwners = new Map<string, string>();
+    for (const [packageName, projection] of Object.entries(packages)) {
+      if (projection.members.length <= 1) continue;
+      for (const member of projection.members) {
+        if (member.kind !== "output") continue;
+        const flat = member.mirrorPath.split("/").at(-1)!;
+        flatOnlyOwners.set(flat, packageName);
+      }
+    }
+    // A true single-member package keeps the flat spelling valid even when a
+    // multi-member package also produces that output name.
+    for (const [packageName, projection] of Object.entries(packages)) {
+      if (projection.members.length > 1) continue;
+      for (const member of projection.members) {
+        if (member.kind !== "output") continue;
+        flatOnlyOwners.delete(member.mirrorPath.split("/").at(-1)!);
+      }
+    }
+
+    const offenders = browserBinariesImports(repoRoot).flatMap((relPath) => {
+      const components = relPath.split("/");
+      if (components.length !== 3 || components[0] !== "programs") return [];
+      const owner = flatOnlyOwners.get(components[2]!);
+      return owner === undefined
+        ? []
+        : [`${relPath} belongs to multi-member package ${owner}`];
+    });
+    expect(offenders).toEqual([]);
+  });
+
   it("discovers syntax-level imports without treating generated source strings as imports", () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-imports-"));
     try {
