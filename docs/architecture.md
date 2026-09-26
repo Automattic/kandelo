@@ -1257,11 +1257,13 @@ they do not redefine ordinary `fork()` semantics.
 
 If the root continuation mapping cannot be allocated, `kernel_fork` returns the
 negative mmap errno before unwind starts. If a later node allocation fails,
-the owning module enters `ABORT_UNWINDING`: the live failing activation
+the fork module begins the abort replay inside the failing reserve and the
+owning guest module enters `ABORT_UNWINDING`: the live failing activation
 restarts at its call site, committed inner nodes replay to the original fork
-import, and the host releases the partial chain before returning the negative
-errno. A negative `SYS_FORK` result after step 4 instead uses the complete
-parent rewind. These resource failures create no child and leave the parent in
+import, and the abort finish releases the partial chain and returns the
+negative errno the fork module recorded. A seal failure after the unwind, or
+a negative `SYS_FORK` result after step 4, abort-replays the complete capture
+the same way. These resource failures create no child and leave the parent in
 `NORMAL`, able to continue or retry `fork()`.
 
 ABI 43 reconstructs reference locals/parameters/carryovers, concrete and

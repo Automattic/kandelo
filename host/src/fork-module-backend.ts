@@ -103,6 +103,8 @@ export function encodeForkBindings(rows: readonly ForkBindingRow[]): Uint8Array 
 
 /** `ENOMEM`: the module could not get memory, which a fork survives. */
 const FORK_MODULE_ENOMEM = 12;
+/** `PHASE_ABORT_REPLAY` in `crates/fork-module/src/lib.rs`. */
+const FORK_MODULE_PHASE_ABORT_REPLAY = 5;
 
 /**
  * One activation's guest exports, bound into the module's drive table so the
@@ -331,38 +333,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Child-private workspace a vfork BORROWED child needs, sized by the module.
-   *
-   * Ported out of the JS coordinator, which reached into each activation's
-   * frame format for its fixed prefix and into the capture session for the
-   * scratch high-water -- per-activation module state and the module's own
-   * allocator, read through a JS mirror of both. The module walks its own
-   * activations now; this is the read.
-   *
-   * Legal only once the capture has sealed. The module answers `EBUSY` off
-   * phase rather than an undercount, because before the seal the activation set
-   * is still growing and the scratch high-water has not peaked -- and an
-   * undersized reservation means one activation's rewind writing into another's
-   * prefix, which is silent.
-   */
-  borrowedReplayWorkspace(): ForkBorrowedReplayWorkspace {
-    const read = (field: number): number => {
-      const value = Number(
-        (this.exports.fm_borrowed_replay_workspace as (f: number) => bigint)(
-          field,
-        ),
-      );
-      if (value < 0) {
-        throw new Error(
-          `${this.label}: fm_borrowed_replay_workspace rejected field ${field}`,
-        );
-      }
-      return value;
-    };
-    return { prefixBytes: read(0), scratchBytes: read(1) };
-  }
-
-  /**
    * Publish what one activation's catalog exports and imports resolved to:
    * which identity group each catalog entry is, and what each imported global
    * or table was bound to -- one `fm_publish_bindings` call per activation.
@@ -378,19 +348,8 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Open this fork's reference-capture builder (`fm_capture_begin`).
-   *
-   * The first module call of a capture fork, issued before the guest unwinds:
-   * it is the fork's single bump-heap reset point, and it seeds the capture
-   * graph (recipe 0 is the canonical null). It reports no errno, so there is
-   * nothing to check.
-   */
-  captureBegin(): void {
-    (this.exports.fm_capture_begin as () => void)();
-  }
-
-  /**
-   * Open this fork's capture: register the activations, publish each one's arena
+   * Open this fork's capture: open its reference-capture session (the fork's
+   * single bump-heap reset), register the activations, publish each one's arena
    * root, and drive every guest `wpk_fork_unwind_begin` — one module call. The
    * activations are the ones this worker registered, which the module knows as
    * the ones it BOUND (`bindActivation`), so nothing about them is passed in.
@@ -493,40 +452,29 @@ export class ForkModuleContinuationBackend {
 
 
   /**
-   * Seal a PARTIAL capture for abort, without the guest unwind-end drive or the
-   * journal serialization a normal seal does.
-   *
-   * The mid-unwind failure path: a frame reserve came back 0, so the capture
-   * cannot complete, but a failed reserve leaves no pending frame — the
-   * committed chain is whole and seal-able. Sealing it moves the module to
-   * sealed-parent so the abort replay can run over the frames that did commit,
-   * and the parent survives with `fork()` returning -errno.
-   *
-   * Distinct from `sealCaptureAndSerialize` precisely because it must NOT drive
-   * the guest's `wpk_fork_unwind_end`: the guest is still mid-unwind, and
-   * driving it there corrupts the unwind state machine.
-   */
-  parentAbortSeal(): void {
-    this.call("fm_parent_abort_seal");
-  }
-
-  /**
-   * Begin the parent's replay, or its abort replay when `abort` is set.
+   * Begin the parent's replay, or -- with a nonzero `abortErrno`, the errno the
+   * kernel refused the child with -- its abort replay.
    *
    * Drives each activation's `wpk_fork_rewind_begin` / `wpk_fork_abort_begin`
-   * from the module rather than a host loop.
+   * from the module rather than a host loop. The other two aborts (a frame
+   * reserve that failed mid-unwind, a seal that failed) the module begins
+   * itself, where they happen.
    */
-  parentReplay(abort: boolean): void {
-    this.call("fm_parent_replay", abort ? 1 : 0);
+  parentReplay(abortErrno = 0): void {
+    this.call("fm_parent_replay", abortErrno);
   }
 
   /**
    * End the parent's replay: drive each activation's `wpk_fork_rewind_end` (or
    * `wpk_fork_abort_end`), finish the journal, and release this fork's
    * channel-mapped chunks.
+   *
+   * An abort finish answers what the module recorded when the abort began: the
+   * errno `fork()` returns negated, and the module's `ABORT_CAUSE_*` that began it.
    */
-  parentFinish(abort: boolean): void {
-    this.call("fm_parent_finish", abort ? 1 : 0);
+  parentFinish(abort: boolean): { readonly errno: number; readonly cause: number } {
+    const report = this.call("fm_parent_finish", abort ? 1 : 0);
+    return { errno: report & 0xffff, cause: report >>> 16 };
   }
 
   /**
@@ -542,29 +490,23 @@ export class ForkModuleContinuationBackend {
   /**
    * Seal this fork's capture and serialize the child-inheritable journal image.
    *
-   * A failure here is a TYPED `ContinuationAllocationError`, not a generic
-   * throw: the coordinator distinguishes "the module could not allocate" from
-   * every other failure, and a generic error at this point traps the worker
-   * instead of aborting the fork truthfully.
+   * Answers what a vfork BORROWED child's workspace must hold, from the
+   * module's seal row (whose image fields the module records itself), or
+   * `null` when the seal failed and
+   * the MODULE turned the failure into an abort replay (a reference the
+   * platform will not carry, a seal-time allocation failure): the parent's
+   * frames replay and `fork()` returns `-errno` at the abort finish. Anything
+   * else is a failure no host can resume from, and throws.
    */
-  sealCaptureAndSerialize(): { readonly ptr: number; readonly len: number } {
+  sealCaptureAndSerialize(): ForkBorrowedReplayWorkspace | null {
     const seal = this.exports.fm_parent_seal_capture as (base: number) => number;
-    const ptr = Number(seal(this.options.channelBase ?? 0));
-    const errno = this.lastErrno();
-    if (errno !== 0) {
-      throw new ContinuationAllocationError(
-        errno,
-        0,
-        `${this.label}: fm_parent_seal_capture failed with errno=${errno}`,
-      );
+    const at = Number(seal(this.options.channelBase ?? 0));
+    if (at === 0) {
+      if ((this.exports.fm_phase as () => number)() === FORK_MODULE_PHASE_ABORT_REPLAY) return null;
+      throw new Error(`${this.label}: fm_parent_seal_capture failed with errno=${this.lastErrno()}`);
     }
-    const len = Number((this.exports.fm_journal_image_len as () => number)());
-    if (!Number.isSafeInteger(ptr) || ptr <= 0 || !Number.isSafeInteger(len) || len <= 0) {
-      throw new Error(
-        `${this.label}: seal returned an invalid journal image (ptr ${ptr}, len ${len})`,
-      );
-    }
-    return { ptr, len };
+    const [prefixBytes, scratchBytes] = new Uint32Array(this.options.memory.buffer.slice(at + 8, at + 16));
+    return { prefixBytes: prefixBytes!, scratchBytes: scratchBytes! };
   }
 
   /**

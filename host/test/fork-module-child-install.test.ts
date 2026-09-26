@@ -117,7 +117,6 @@ function capturedParent(fixedPrefix = 0): { f: Fixture; recipes: number[]; ancho
       table.set(base + slot, saveSlotThunk(() => {}) as never);
     }
     table.set(base + DRIVE_SLOT_UNWIND_END, voidSlotThunk(() => {}) as never);
-    x.fm_capture_begin();
     x.fm_parent_begin_capture(CHANNEL_BASE);
     expect(f.errno(), "the capture opens").toBe(0);
     // The production intern entry the injected static-root scan calls; with
@@ -400,7 +399,6 @@ describe("fm_child_install", () => {
       }
       table.set(base + DRIVE_SLOT_UNWIND_END, voidSlotThunk(() => {}) as never);
     }
-    x.fm_capture_begin();
     const anchor = x.fm_parent_begin_capture(CHANNEL_BASE, 0);
     expect(f.errno(), "a two-activation capture begins").toBe(0);
     x.fm_parent_seal_capture(CHANNEL_BASE);

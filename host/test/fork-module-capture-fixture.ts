@@ -90,10 +90,6 @@ export const PHASE_PARENT_REPLAY = 3;
 export const PHASE_CHILD_REPLAY = 4;
 export const PHASE_ABORT_REPLAY = 5;
 
-/** `fm_borrowed_replay_workspace` fields. */
-export const WORKSPACE_PREFIX = 0;
-export const WORKSPACE_SCRATCH = 1;
-
 export const EBUSY = 16;
 
 export const CHANNEL_BASE = 4 * PAGE;
@@ -729,7 +725,6 @@ export function openCapture(f: Fixture, sides: readonly number[] = []): number[]
     );
   }
 
-  (f.x.fm_capture_begin as () => void)();
   (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
   expect(f.errno(), "the capture opens").toBe(0);
   return saved;
@@ -1219,9 +1214,12 @@ export interface ArenaFixture {
   scratchReserve: (len: number) => number;
   scratchRelease: (ptr: number, len: number) => void;
   /**
-   * `fm_capture_begin`: the fork's designated bump-reset point, and the one
-   * of `reset_bump_heap`'s four production callers a bare module fixture can
-   * reach without a drive table. It reaches `reset_bump_heap` unconditionally.
+   * The capture begin, `fm_parent_begin_capture`, whose first step is the
+   * fork's designated bump reset (`open_capture_session`) -- the one of
+   * `reset_bump_heap`'s production callers a bare module fixture can reach
+   * without a drive table. This fixture admits no activation 0, so the begin
+   * refuses (EINVAL) only AFTER that reset, before it maps anything, and the
+   * module is back at idle.
    */
   driveBumpReset: () => void;
 }
@@ -1347,7 +1345,12 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       (x.__wpk_fork_ref_scratch_reserve as (n: number) => number)(len),
     scratchRelease: (ptr, len) =>
       (x.__wpk_fork_ref_scratch_release as (p: number, n: number) => void)(ptr, len),
-    driveBumpReset: () => (x.fm_capture_begin as () => void)(),
+    driveBumpReset: () => {
+      (x.fm_parent_begin_capture as (base: number) => number)(CHANNEL_BASE);
+      if (errno() !== 22) {
+        throw new Error(`driveBumpReset: the begin answered errno ${errno()}, not EINVAL`);
+      }
+    },
   };
   liveStatsReaders.push(f.stats);
   return f;

@@ -143,10 +143,14 @@ describe("fork module lifecycle phase", () => {
     );
   });
 
-  it("refuses an abort-seal outside capture", () => {
+  it("does not begin an abort for a frame reserve outside a capture", () => {
+    // The mid-unwind abort lives in the frame reserve now (it was the
+    // `fm_parent_abort_seal` entry). A reserve that fails with no capture open
+    // is only a failed call: it must not seal or replay anything, and the
+    // module must still be idle afterwards.
     const fm = freshModule();
-    fm.call("fm_parent_abort_seal");
-    expect(fm.errno()).toBe(EBUSY);
+    expect(fm.call("__wpk_fork_frame_reserve", 16)).toBe(0);
+    expect(fm.errno()).not.toBe(0);
     expect(idleIsStillReachable(fm)).toBe(true);
   });
 

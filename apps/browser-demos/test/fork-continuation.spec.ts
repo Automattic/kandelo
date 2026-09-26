@@ -274,7 +274,19 @@ test("preserves the parent across root and later continuation ENOMEM", async ({
   expect(result.stdout).toContain("RECOVERY_PARENT: child=");
   expect(result.stdout).toContain("PASS: P-11");
   expect(result.stderr).toBe("");
-  expect(result.diagnostics).toEqual([]);
+  // The deep fork aborts mid-unwind, and an aborted fork says why -- once,
+  // with its errno and cause, as a warning (host-diagnostic-routing.test.ts).
+  // The root failure happens before any capture opens, so it aborts nothing
+  // and reports nothing.
+  expect(result.diagnostics).toEqual([
+    {
+      source: "fork",
+      message:
+        "fork aborted with errno=12: a continuation frame could not be reserved "
+        + "mid-unwind (the parent's committed frames were replayed; no child was "
+        + "created)",
+    },
+  ]);
 });
 
 test("reconstructs CatchRef state in a fresh child worker", async ({

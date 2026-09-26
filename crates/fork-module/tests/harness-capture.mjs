@@ -115,7 +115,7 @@ const module = new WebAssembly.Module(bytes);
 
 const exportNames = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
 for (const name of [
-  "fm_capture_begin",
+  "fm_parent_begin_capture",
   "fm_last_errno",
   "__wpk_fork_ref_exn_claim",
   "__wpk_fork_ref_exn_define",
@@ -157,6 +157,14 @@ function writeBytes(offset, arr) {
 }
 function lastErrno() {
   return x.fm_last_errno();
+}
+// Open a capture session the way every host does: it is the first step of the
+// capture begin (this was the `fm_capture_begin` entry, folded into
+// `fm_parent_begin_capture` in lane F stage 1I). Like every capture begin, it
+// maps through the syscall channel, which nothing here services -- the reason
+// this harness is not runnable as it stands (see the header).
+function openCaptureSession() {
+  x.fm_parent_begin_capture(PAGE);
 }
 
 // Admit one activation through `fm_admit_activation`, the entry both hosts
@@ -225,7 +233,7 @@ function admit(activation, extra = []) {
 // the call site. The declared count is what turns that into a loud failure at
 // `finish` instead of a short vector the CHILD reconstructs with references
 // missing -- a fault that would otherwise surface in another worker, later.
-x.fm_capture_begin();
+openCaptureSession();
 {
   const h = x.__wpk_fork_ref_vector_begin(2);
   assert.ok(h >= 0, "vector_begin returns a handle");
@@ -592,7 +600,7 @@ function i31Minter() {
   const SCALARS = SCRATCH_BASE + 256;
   const REFS = SCRATCH_BASE + 320;
 
-  x.fm_capture_begin();
+  openCaptureSession();
   const payloadA = x.__wpk_fork_ref_gc_i31(11); // 1
   const payloadB = x.__wpk_fork_ref_gc_i31(55); // 2
   const exn = x.__wpk_fork_ref_exn_claim(0); // 3
@@ -604,23 +612,23 @@ function i31Minter() {
   assert.equal(lastErrno(), 0, "exn_define latched no error");
 
   // -- Perturbation: an edge naming a recipe that does not exist -------------
-  x.fm_capture_begin();
+  openCaptureSession();
   const orphan = x.__wpk_fork_ref_exn_claim(0);
   writeU32Array(REFS, [99]);
   x.__wpk_fork_ref_exn_define(orphan, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, REFS, 1);
   assert.equal(lastErrno(), EINVAL, "an edge naming a missing recipe is EINVAL");
 
   // -- Perturbation: defining a recipe that was never claimed ----------------
-  x.fm_capture_begin();
+  openCaptureSession();
   x.__wpk_fork_ref_exn_define(5, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 0, REFS, 0);
   assert.equal(lastErrno(), EINVAL, "defining an unclaimed recipe is EINVAL");
 
   // -- Perturbation: a staging span outside guest memory ---------------------
-  x.fm_capture_begin();
+  openCaptureSession();
   const oob = x.__wpk_fork_ref_exn_claim(0);
   x.__wpk_fork_ref_exn_define(oob, ACT, TYPE_ORDINAL, LAYOUT, 0xfffffff0, 4, REFS, 0);
   assert.equal(lastErrno(), EINVAL, "a scalar span outside guest memory is EINVAL");
-  x.fm_capture_begin();
+  openCaptureSession();
   const oob2 = x.__wpk_fork_ref_exn_claim(0);
   x.__wpk_fork_ref_exn_define(oob2, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, 0xfffffff0, 2);
   assert.equal(lastErrno(), EINVAL, "a reference span outside guest memory is EINVAL");
@@ -782,7 +790,7 @@ function i31Minter() {
   const SCALARS = SCRATCH_BASE + 512;
   const REFS = SCRATCH_BASE + 576;
 
-  x.fm_capture_begin();
+  openCaptureSession();
   const payload = x.__wpk_fork_ref_gc_i31(77); // 1
   assert.equal(payload, 1, "payload leaf interned");
 
@@ -826,7 +834,7 @@ function i31Minter() {
   const SCALARS = SCRATCH_BASE + 640;
   const REFS = SCRATCH_BASE + 704;
 
-  x.fm_capture_begin();
+  openCaptureSession();
   const poisoned = x.__wpk_fork_ref_exn_broker_encode(0);
   assert.equal(poisoned, -1, "an unknown tag is refused");
   assert.equal(lastErrno(), EOPNOTSUPP, "and the reason is EOPNOTSUPP, not a guess");
@@ -881,7 +889,7 @@ function i31Minter() {
   driveTable.grow(ACT * 13 + DRIVE_SLOT_GC_PROBE + 1 - driveTable.length);
   driveTable.set(ACT * 13 + DRIVE_SLOT_GC_ENCODE, stub.exports.encode);
 
-  x.fm_capture_begin();
+  openCaptureSession();
   // Recipe 1: what the stub codec will claim every witness encodes to, so the
   // provenance edge names a node that exists.
   assert.equal(x.__wpk_fork_ref_gc_i31(5), 1, "witness stand-in is recipe 1");
@@ -1032,7 +1040,7 @@ function i31Minter() {
   driveTable.set(4 * SLOTS + PRB, claim.exports.probe);
   driveTable.set(4 * SLOTS + ENC, enc4.exports.encode);
 
-  x.fm_capture_begin();
+  openCaptureSession();
   assert.equal(x.__wpk_fork_ref_gc_i31(9), 1, "routed value's recipe");
 
   // Admit two activation codecs so the broker has a registry to walk. The bytes
@@ -1407,13 +1415,12 @@ const bindTableShims = (activation, host) => {
   // shared catalog with it, so a scan would find it at a slot no base covers --
   // which is the refusal working, not a match.
   const alpha = x.fm_stats;
-  const beta = x.fm_journal_image_len;
+  const beta = x.fm_phase;
   const uncatalogued = x.fm_funcref_uncatalogued;
 
   x.fm_set_format(4, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format seeded");
-  x.fm_capture_begin();
-  assert.equal(lastErrno(), 0, "a capture session is open");
+  openCaptureSession();
 
   const base = catalog.length;
   catalog.grow(2, null);

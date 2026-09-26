@@ -67,23 +67,21 @@ describe("the fork module refuses a raw host externref at capture", () => {
       (f.x.__wpk_fork_ref_gc_transit as WebAssembly.Table).length,
     ).toBeGreaterThan(recipe + 1);
 
+    bindAbortSlots(f);
     seal(f);
     expect(f.errno(), "the seal reports the refusal, not a later EINVAL").toBe(
       EOPNOTSUPP,
     );
     // The journal sealed before the refusal was reported, so the parent's
-    // committed frames are replayable: this is what lets the worker's abort
-    // path make `fork()` return -EOPNOTSUPP instead of dying.
-    expect(phase(f), "a refused capture is still a sealed parent").toBe(
-      PHASE_SEALED_PARENT,
+    // committed frames are replayable, and the module abort-replays them
+    // itself: this is what makes `fork()` return -EOPNOTSUPP instead of the
+    // worker dying.
+    expect(phase(f), "a refused capture is abort-replaying").toBe(
+      PHASE_ABORT_REPLAY,
     );
-
-    bindAbortSlots(f);
-    (f.x.fm_parent_replay as (abort: number) => void)(1);
-    expect(f.errno(), "the parent's abort replay runs").toBe(0);
-    expect(phase(f)).toBe(PHASE_ABORT_REPLAY);
-    (f.x.fm_parent_finish as (abort: number) => void)(1);
+    const report = (f.x.fm_parent_finish as (abort: number) => number)(1);
     expect(f.errno(), "and finishes").toBe(0);
+    expect(report, "with the seal's cause (2) and EOPNOTSUPP").toBe((2 << 16) | EOPNOTSUPP);
     expect(phase(f)).toBe(PHASE_IDLE);
   });
 
@@ -91,11 +89,10 @@ describe("the fork module refuses a raw host externref at capture", () => {
     const f = fixture();
     openCapture(f);
     brokerEncode(f, 0);
+    bindAbortSlots(f);
     seal(f);
     expect(f.errno()).toBe(EOPNOTSUPP);
-    bindAbortSlots(f);
-    (f.x.fm_parent_replay as (abort: number) => void)(1);
-    (f.x.fm_parent_finish as (abort: number) => void)(1);
+    (f.x.fm_parent_finish as (abort: number) => number)(1);
     expect(phase(f)).toBe(PHASE_IDLE);
 
     // A refusal belongs to the capture that met the host object. Carried over,

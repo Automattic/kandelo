@@ -28,8 +28,6 @@ import {
   PHASE_IDLE,
   PHASE_PARENT_REPLAY,
   PHASE_SEALED_PARENT,
-  WORKSPACE_PREFIX,
-  WORKSPACE_SCRATCH,
   CHILD_CONTROL,
   DRIVE_SLOT_FINISH_RESTORE,
   DRIVE_SLOT_RESTORE,
@@ -52,13 +50,26 @@ import { bind, exportRow, importRow } from "./support/fork-admission";
 /** The per-activation drive stride: one slot per binding. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
 
+const EINVAL = 22;
+const EAGAIN = 11;
+
+/**
+ * A frame reserve that fails mid-capture, the way the guest's own reserve
+ * does when memory runs out -- through the per-activation entry, for an
+ * activation this capture never opened, which the module refuses with EINVAL
+ * before it touches any writer. The failure's CAUSE is not what these tests
+ * are about; what the module does with a failed reserve is.
+ */
+function failReserve(f: Fixture): number {
+  return (f.x.fm_frame_reserve as (activation: number, size: number) => number)(0xdead, 16);
+}
+
 describe("capture begin, driven through a serviced channel", () => {
   it("allocates its own arena and declares the activation set into it", () => {
     const f = fixture();
     admitActivation(f, 0);
     expect(f.errno()).toBe(0);
 
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0, // ask the module to allocate the arena
@@ -105,7 +116,6 @@ describe("capture begin, driven through a serviced channel", () => {
       );
     }
 
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
@@ -142,7 +152,6 @@ describe("capture begin, driven through a serviced channel", () => {
       base + DRIVE_SLOT_MODULE_STATE_SAVE,
       saveSlotThunk((id) => driven.push(id)) as never,
     );
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "the capture begins").toBe(0);
     expect(driven, "only activation 0 is walked").toEqual([0]);
@@ -179,7 +188,6 @@ describe("capture begin, driven through a serviced channel", () => {
         voidSlotThunk(() => {}) as never,
       );
     }
-    (f.x.fm_capture_begin as () => void)();
     const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
@@ -220,7 +228,6 @@ describe("capture begin, driven through a serviced channel", () => {
     // arena for nobody.
     const f = fixture();
     admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
@@ -247,11 +254,12 @@ describe("the module frees exactly what it mapped", () => {
     };
     const abortedFork = (): void => {
       openCapture(f);
-      (f.x.fm_parent_abort_seal as () => void)();
-      expect(f.errno(), "the abort seal").toBe(0);
-      (f.x.fm_parent_replay as (abort: number) => void)(1);
-      expect(f.errno(), "the abort replay").toBe(0);
-      (f.x.fm_parent_finish as (abort: number) => void)(1);
+      // A frame reserve that fails mid-capture: the module aborts on the spot.
+      expect(failReserve(f), "the reserve fails").toBe(0);
+      expect((f.x.fm_phase as () => number)(), "already abort-replaying").toBe(
+        PHASE_ABORT_REPLAY,
+      );
+      (f.x.fm_parent_finish as (abort: number) => number)(1);
       expect(f.errno(), "the abort finish").toBe(0);
       expect((f.x.fm_phase as () => number)(), "back to idle").toBe(PHASE_IDLE);
     };
@@ -314,7 +322,6 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     const phase = () => Number((f.x.fm_phase as () => number)());
     expect(phase()).toBe(PHASE_IDLE);
 
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno()).toBe(0);
     expect(phase(), "a capture is open").toBe(PHASE_CAPTURE);
@@ -332,33 +339,36 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     expect(phase(), "back to idle").toBe(PHASE_IDLE);
   });
 
-  it("sizes a borrowed child's workspace only once the capture has sealed", () => {
-    // These VALUES were untested when the entry landed, and said so: reaching
-    // sealed-parent needed a capture with a live guest. It needs a serviced
-    // channel, which is a smaller thing.
+  it("hands back the journal image and a borrowed child's workspace in the seal row", () => {
+    // The workspace a vfork BORROWED child needs is fixed once the capture
+    // seals -- the activation set has stopped growing and the scratch
+    // high-water has peaked -- so the seal answers it, and nothing can ask
+    // before then: there is no separate entry to ask too early. (It was
+    // `fm_borrowed_replay_workspace`, which refused off-phase with EBUSY.)
     const f = fixture();
     admitActivation(f, 0);
-    const workspace = f.x.fm_borrowed_replay_workspace as (field: number) => bigint;
-
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-    // Mid-capture the activation set is still growing and the scratch
-    // high-water has not peaked, so an answer would be an undercount.
-    expect(Number(workspace(WORKSPACE_PREFIX))).toBe(-1);
-    expect(f.errno()).toBe(EBUSY);
-
-    (f.x.fm_parent_seal_capture as (b: number) => number)(CHANNEL_BASE);
+    const scratch = f.x.__wpk_fork_ref_scratch_reserve as (n: number) => number;
+    const release = f.x.__wpk_fork_ref_scratch_release as (p: number, n: number) => void;
+    release(scratch(128), 128);
+    const row = (f.x.fm_parent_seal_capture as (b: number) => number)(CHANNEL_BASE);
     expect(f.errno()).toBe(0);
-
-    // One activation, whose fixed prefix this fixture seeded as 0 -- so the
-    // sum over the activation set is 0, and that is a real answer rather than
-    // the refusal above. The distinction is the whole point of the phase gate.
-    const prefix = Number(workspace(WORKSPACE_PREFIX));
-    expect(f.errno()).toBe(0);
-    expect(prefix).toBeGreaterThanOrEqual(0);
-    const scratch = Number(workspace(WORKSPACE_SCRATCH));
-    expect(f.errno()).toBe(0);
-    expect(scratch).toBeGreaterThanOrEqual(0);
+    expect(row, "the row's address").toBeGreaterThan(0);
+    const view = new DataView(f.memory.buffer);
+    const [image, imageLen, prefix, scratchBytes] = [0, 4, 8, 12].map((at) =>
+      view.getUint32(row + at, true),
+    );
+    // The row names the serialized replay-journal image (a `KFRE` header).
+    expect(imageLen, "a nonempty image").toBeGreaterThan(0);
+    expect(
+      String.fromCharCode(...new Uint8Array(f.memory.buffer, image, 4)),
+      "the image the row names",
+    ).toBe("KFRE");
+    // One activation, whose fixed prefix this fixture seeded as 0; the scratch
+    // high-water is the 128 bytes the capture opened (a multiple of the
+    // scratch alignment, so the reservation is not rounded up).
+    expect(prefix).toBe(0);
+    expect(scratchBytes).toBe(128);
   });
 });
 
@@ -395,7 +405,6 @@ describe("the backend's lifecycle methods, against a live module", () => {
     const { f, backend } = backendFixture();
     const phase = () => Number((f.x.fm_phase as () => number)());
 
-    (f.x.fm_capture_begin as () => void)();
     const anchor = backend.parentBeginCapture(CHANNEL_BASE);
     expect(anchor, "activation 0's module-buffer anchor").toBeGreaterThan(0);
     expect(phase()).toBe(PHASE_CAPTURE);
@@ -408,42 +417,69 @@ describe("the backend's lifecycle methods, against a live module", () => {
       "the module allocated its own arena",
     ).toBeGreaterThan(0);
 
-    backend.sealCaptureAndSerialize();
+    expect(backend.sealCaptureAndSerialize(), "the borrowed workspace").toEqual({
+      prefixBytes: 0,
+      scratchBytes: 0,
+    });
     expect(phase()).toBe(PHASE_SEALED_PARENT);
 
-    backend.parentReplay(false);
+    backend.parentReplay();
     expect(phase()).toBe(PHASE_PARENT_REPLAY);
 
-    backend.parentFinish(false);
+    expect(backend.parentFinish(false), "an ordinary finish reports no abort").toEqual({
+      errno: 0,
+      cause: 0,
+    });
     expect(phase()).toBe(PHASE_IDLE);
   });
 
-  it("seals a partial capture for abort without driving unwind-end", () => {
+  it("aborts a capture whose frame reserve fails, and without driving unwind-end", () => {
     // The mid-unwind failure path: a frame reserve came back 0, so the capture
-    // cannot complete. A failed reserve leaves no pending frame, so the
-    // committed chain is whole and seal-able -- and the seal must NOT drive the
-    // guest's unwind-end, because the guest is still mid-unwind and driving it
-    // there corrupts the unwind state machine. What is observable here is that
-    // it reaches sealed-parent, which is what lets the abort replay run over
-    // the frames that did commit.
+    // cannot complete. The guest's reserve==0 contract restarts its live
+    // activation in the abort loop, which assumes the abort replay is ALREADY
+    // established when the 0 arrives -- so the module begins it inside the
+    // reserve. It seals WITHOUT driving the guest's unwind-end (the guest is
+    // still mid-unwind; driving it there corrupts its state machine), then
+    // abort-replays the frames that did commit.
     const { f, backend } = backendFixture();
-    (f.x.fm_capture_begin as () => void)();
+    const drove: string[] = [];
+    const base = driveBase(0);
     backend.parentBeginCapture(CHANNEL_BASE);
+    f.instance.driveTable.set(base + DRIVE_SLOT_UNWIND_END, voidSlotThunk(() => drove.push("unwind_end")) as never);
+    f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_BEGIN, saveSlotThunk(() => drove.push("abort_begin")) as never);
     const phase = () => Number((f.x.fm_phase as () => number)());
     expect(phase()).toBe(PHASE_CAPTURE);
 
-    backend.parentAbortSeal();
-    expect(phase(), "sealed for abort").toBe(PHASE_SEALED_PARENT);
+    expect(failReserve(f), "the reserve reports failure to the guest").toBe(0);
+    expect(f.errno(), "with the reserve's own errno").toBe(EINVAL);
+    expect(phase(), "and the module is already abort-replaying").toBe(PHASE_ABORT_REPLAY);
+    expect(drove, "the abort began without the unwind-end flip").toEqual(["abort_begin"]);
 
-    // And the abort replay runs from there, which is the whole point of
-    // sealing a capture that cannot complete. It has its OWN phase rather than
-    // sharing the parent-replay one -- an abort finish drives the guest's
-    // `wpk_fork_abort_end` where a normal finish drives `wpk_fork_rewind_end`,
-    // so the two cannot be the same state.
-    backend.parentReplay(true);
-    expect(phase()).toBe(PHASE_ABORT_REPLAY);
-    backend.parentFinish(true);
+    // The finish hands back what the abort recorded: the errno `fork()`
+    // returns negated, and the cause (1, a failed frame reserve).
+    expect(backend.parentFinish(true)).toEqual({ errno: EINVAL, cause: 1 });
     expect(phase()).toBe(PHASE_IDLE);
+  });
+
+  it("records the kernel's errno when the kernel refuses the child", () => {
+    const { f, backend } = backendFixture();
+    const phase = () => Number((f.x.fm_phase as () => number)());
+    backend.parentBeginCapture(CHANNEL_BASE);
+    backend.sealCaptureAndSerialize();
+    backend.parentReplay(EAGAIN);
+    expect(phase()).toBe(PHASE_ABORT_REPLAY);
+    expect(backend.parentFinish(true)).toEqual({ errno: EAGAIN, cause: 3 });
+    expect(phase()).toBe(PHASE_IDLE);
+  });
+
+  it("does not abort on a frame reserve that fails outside a capture", () => {
+    // The abort is for a capture the guest is unwinding. Anywhere else a
+    // failed reserve is only a failed call, and beginning an abort there would
+    // replay a capture that does not exist.
+    const { f } = backendFixture();
+    expect(failReserve(f)).toBe(0);
+    expect(f.errno()).toBe(EINVAL);
+    expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_IDLE);
   });
 
   // WHAT USED TO BE HERE: "refuses a child install from an arena root that is
@@ -461,17 +497,11 @@ describe("the backend's lifecycle methods, against a live module", () => {
     expect(() => backend.driveRestoredPlan(0)).not.toThrow();
   });
 
-  it("refuses an abort seal from a phase with no capture open", () => {
-    const { backend } = backendFixture();
-    expect(() => backend.parentAbortSeal()).toThrow(/errno 16/);
-  });
-
   it("returns the module to idle on abort", () => {
     // The teardown path for a capture that failed part way. It must not leave
     // the module mid-phase, because every later entry refuses from the wrong one
     // and the worker would be wedged rather than broken.
     const { f, backend } = backendFixture();
-    (f.x.fm_capture_begin as () => void)();
     backend.parentBeginCapture(CHANNEL_BASE);
     expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_CAPTURE);
     backend.abort();
@@ -482,7 +512,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
     // `call` turns the module's EBUSY into a throw, so an out-of-order host is
     // stopped at the boundary instead of being told a plausible lie.
     const { backend } = backendFixture();
-    expect(() => backend.parentReplay(false)).toThrow(/errno 16/);
+    expect(() => backend.parentReplay()).toThrow(/errno 16/);
     expect(() => backend.parentFinish(false)).toThrow(/errno 16/);
   });
 });
@@ -504,7 +534,6 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     // then decodes for no reason.
     const f = fixture();
     admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture with no imported globals").toBe(0);
   });
@@ -524,7 +553,6 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     ]);
     expect(f.errno(), "provenance published").toBe(0);
 
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture must refuse rather than bind blind").not.toBe(0);
   });
@@ -776,7 +804,6 @@ describe("the binding records the module assembles at capture", () => {
     expect(f.errno(), "CONFLICTING KFIG bytes are refused").toBe(22);
 
     // And the phase: open a capture, then do what a fresh worker does.
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect((f.x.fm_phase as () => number)(), "mid-capture").toBe(PHASE_CAPTURE);
     (f.x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
@@ -807,7 +834,6 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 99, 0n);
     saveWrites(f, 0, 1);
 
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
 
@@ -859,7 +885,6 @@ describe("the binding records the module assembles at capture", () => {
       channelBase: CHANNEL_BASE,
       label: "sealed arena",
     });
-    (f.x.fm_capture_begin as () => void)();
     const anchor = backend.parentBeginCapture(CHANNEL_BASE);
     expect(f.errno(), "capture").toBe(0);
     backend.sealCaptureAndSerialize();
@@ -877,7 +902,7 @@ describe("the binding records the module assembles at capture", () => {
     expect(kinds).toContain(RECORD_KIND_IMPORTED_GLOBAL_BINDINGS);
     expect(kinds, "the seal's journal image").toContain(RECORD_KIND_JOURNAL_IMAGE);
 
-    backend.parentReplay(false);
+    backend.parentReplay();
     backend.parentFinish(false);
     expect(Number((f.x.fm_phase as () => number)()), "back to idle").toBe(
       PHASE_IDLE,
@@ -906,7 +931,6 @@ describe("the binding records the module assembles at capture", () => {
     identity(SPACE_GLOBAL, 9, 5, 7);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
@@ -1146,7 +1170,6 @@ describe("the binding records the module assembles at capture", () => {
       );
     }
 
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
@@ -1249,7 +1272,6 @@ describe("the binding records the module assembles at capture", () => {
     identity(SPACE_GLOBAL, 9, 5, 7);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     saveWrites(f, 0, 1);
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "seal").toBe(0);
@@ -1301,7 +1323,6 @@ describe("the binding records the module assembles at capture", () => {
         voidSlotThunk(() => {}) as never,
       );
     }
-    (f.x.fm_capture_begin as () => void)();
     const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
@@ -1418,7 +1439,6 @@ describe("the binding records the module assembles at capture", () => {
         voidSlotThunk(() => {}) as never,
       );
     }
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
@@ -1514,7 +1534,6 @@ describe("the binding records the module assembles at capture", () => {
     // this can surface.
     const f = fixture();
     admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "the capture opens").toBe(0);
     // A leaf through the guest-facing i31 capture entry, as the generated
@@ -1544,7 +1563,6 @@ describe("the binding records the module assembles at capture", () => {
     // pins the refusal from child replay, a second install.)
     const f = fixture();
     admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
     const anchor = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0,
@@ -1572,7 +1590,6 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     saveWrites(f, 0, 1);
 
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "capture").toBe(0);
 
@@ -1604,13 +1621,17 @@ describe("the binding records the module assembles at capture", () => {
     (f.x.__wpk_fork_ref_vector_begin as (n: number) => number)(1);
     expect(f.errno(), "the vector opens").toBe(0);
 
-    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    const row = (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(row, "no row for a seal that failed").toBe(0);
     expect(f.errno(), "and the seal refuses the incomplete graph").toBe(22);
 
-    // BEHAVIOURAL, like every other phase assertion here: the legal next call
-    // succeeds. It can only succeed from sealed-parent.
-    (f.x.fm_parent_replay as (abort: number) => void)(1);
-    expect(f.errno(), "the parent can still abort-replay its frames").toBe(0);
+    // The module began the abort replay itself, which it can only do from
+    // sealed-parent. BEHAVIOURAL, like every other phase assertion here: the
+    // legal next call succeeds, and hands back the seal's own errno.
+    expect((f.x.fm_phase as () => number)(), "abort-replaying").toBe(PHASE_ABORT_REPLAY);
+    const report = (f.x.fm_parent_finish as (abort: number) => number)(1);
+    expect(f.errno(), "the parent's abort replay finishes").toBe(0);
+    expect(report, "cause 2 (the seal), errno 22").toBe((2 << 16) | 22);
   });
 });
 

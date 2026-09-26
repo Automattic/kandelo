@@ -1,27 +1,26 @@
 // Coarse-path truthful-failure coverage for `ForkModuleContinuationBackend`.
 //
-// This file preserves the two truthful-failure contracts that were previously
-// asserted through the now-deleted FINE-GRAINED backend wrappers
-// (`fork-module-backend-abort.test.ts`), retargeted at the COARSE per-phase
-// API the host actually drives in production (control-flow inversion: item #1).
-// The fine-grained `beginUnwind`/`finishUnwindAndSerialize`/`beginAbort`/
-// `finishAbort`/... wrappers and their `fm_*` module exports were removed once
-// every fork phase routed through the coarse `fm_parent_*`/`fm_child_*` entries,
-// so the same failure contracts are re-proven on those coarse entries here.
+// SEAL-TIME TRUTHFUL FAILURE has two halves, and they must not be confused.
 //
-//  1. SEAL-TIME TRUTHFUL FAILURE: a capture SEAL the module cannot complete must
-//     surface a TYPED `ContinuationAllocationError` (the coordinator reroutes it
-//     to abort-replay: parent preserved, `fork()` returns `-errno`, no child),
-//     NOT the generic `requireOk` throw that would escape and trap the worker.
-//     With the JS continuation fallback gone, no module failure site may trap.
-//     Exercised on the coarse `sealCaptureAndSerialize()` (`fm_parent_seal_
-//     capture`), the production seal entry, which carries the identical typed-
-//     error contract the fine-grained `finishUnwindAndSerialize` did.
+//  1. A seal that fails AFTER the capture's frames sealed (a reference the
+//     platform will not carry, a seal-time allocation failure) is a fork that
+//     ABORTS: the module begins the abort replay itself, the parent survives
+//     and `fork()` returns `-errno`, and `sealCaptureAndSerialize()` answers
+//     `null`. That half is proven against a live capture in
+//     `fork-module-capture-drive.test.ts` ("a seal that fails after the frames
+//     sealed ...") and `fork-module-capture-refusal.test.ts`.
 //
-//  2. MODULE-OR-FATAL CAPACITY BOUNDARY: the co-resident module backs EVERY
-//     fork; there is no JS continuation fallback. A fork the module cannot back
-//     (here: a resume catalog larger than the module's static BSS cap) must FAIL
-//     LOUD at construction, never silently drop to a deleted JS route.
+//  2. A seal the module refuses OUTRIGHT -- here, one with no capture open --
+//     has no frames to replay and no abort to begin. It must throw loudly,
+//     and it must NOT begin an abort replay of a capture that never existed.
+//     This file pins that half.
+//
+// (Until 2026-09-26 every seal failure surfaced as a typed
+// `ContinuationAllocationError` that the worker turned into an abort replay
+// of its own; the module now decides, from whether its journal sealed.)
+//
+// WHAT USED TO BE HERE, second: a "module-or-fatal capacity boundary" test
+// (see the note at the end of this file).
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
@@ -30,7 +29,6 @@ import {
   instantiateForkModule,
 } from "../src/fork-module-instance";
 import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
-import { ContinuationAllocationError } from "../src/fork-continuation";
 import { startChannelResponder } from "./fork-module-capture-fixture";
 
 const PAGE = 65536;
@@ -59,15 +57,12 @@ function bumpAllocator(start: number): { reserve: (n: number) => number } {
 }
 
 describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
-  it("a coarse seal the module cannot complete throws a TYPED ContinuationAllocationError, not a worker-trapping generic throw", () => {
+  it("a seal refused outright throws, and begins no abort", () => {
     // A CHANNEL RESPONDER IS NEEDED, and the comment that said it was not is
-    // what made this file hang. The coarse seal itself still fails at
-    // `build_seal_plan_impl` (no capture open -> EINVAL) before it tries to
-    // channel-mmap the journal-image chunk -- that part is unchanged, and it is
-    // the `sealCaptureAndSerialize` branch under test. `fm_set_format` below
-    // releases the arena through `CHANNEL_BASE`, and with nobody behind that
-    // address a module call that maps would park in `memory_atomic_wait32`
-    // with no deadline and the file would hang rather than fail.
+    // what made this file hang. `fm_set_format` below releases the arena
+    // through `CHANNEL_BASE`, and with nobody behind that address a module
+    // call that maps would park in `memory_atomic_wait32` with no deadline and
+    // the file would hang rather than fail.
     const memory = new WebAssembly.Memory({
       initial: Math.ceil((16 * MiB) / PAGE),
       maximum: 16384,
@@ -92,18 +87,12 @@ describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
     });
     backend.setup();
 
-    // No capture is open, so the coarse seal cannot build its drive plan and the
-    // module returns a truthful errno. The backend MUST translate that into a
-    // typed `ContinuationAllocationError` (routed to abort-replay), never a bare
-    // `requireOk` Error that would escape `sealCapture` and trap the worker.
-    let caught: unknown;
-    try {
-      backend.sealCaptureAndSerialize();
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ContinuationAllocationError);
-    expect((caught as ContinuationAllocationError).errno).not.toBe(0);
+    // No capture is open, so the module refuses the seal for its phase
+    // (EBUSY) before it looks at anything else.
+    expect(() => backend.sealCaptureAndSerialize()).toThrow(/errno=16/);
+    // And the refusal began nothing: an abort replay here would replay a
+    // capture that does not exist, which `null` from the seal would then hide.
+    expect(Number((px.fm_phase as () => number)()), "still idle").toBe(0);
   });
 });
 

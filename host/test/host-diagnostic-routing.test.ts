@@ -211,17 +211,24 @@ describe("an aborted fork says why", () => {
   // probes compiled into the worker (census section 189).
   //
   // The invariant is EVERY abort path reports, not that some do. That is what
-  // a new abort site added without a report would break, and it is checkable
-  // from the source: the worker sets `forkAbortErrno` on exactly the paths
-  // that abort.
-  it("reports on every path that sets an abort errno", () => {
-    const assignments =
-      processWorkerSource.match(/forkAbortErrno = (?!0;)/g) ?? [];
+  // a new abort site added without a report would break. Every abort -- a
+  // frame reserve that failed mid-unwind, a seal that failed, a child the
+  // kernel refused -- is begun or recorded by the fork MODULE, which hands the
+  // errno and its cause back at the one abort finish. So the checkable form
+  // is: the process path finishes an abort in exactly one place, and reports
+  // there, from what that finish returned.
+  it("reports every abort at the one abort finish, from the module's record", () => {
+    const finishes =
+      processWorkerSource.match(/forkModule\(\)\.parentFinish\(true\)/g) ?? [];
+    expect(finishes.length, "abort finishes on the process path").toBe(1);
     // The helper's own declaration is `const reportForkAborted = (` , so this
     // counts CALLS only.
     const reports = processWorkerSource.match(/reportForkAborted\(/g) ?? [];
-    expect(assignments.length, "abort paths in worker-main").toBeGreaterThan(0);
-    expect(reports.length, "one report per abort path").toBe(assignments.length);
+    expect(reports.length, "one report, at that finish").toBe(1);
+    const finish = processWorkerSource.indexOf("forkModule().parentFinish(true)");
+    const report = processWorkerSource.indexOf("reportForkAborted(aborted.errno, aborted.cause)");
+    expect(report, "the report uses the finish's own errno and cause").toBeGreaterThan(finish);
+    expect(report - finish, "and follows it directly").toBeLessThan(200);
   });
 
   it("names the errno and a reason a reader can act on", () => {
@@ -234,6 +241,9 @@ describe("an aborted fork says why", () => {
     // as "the capture could not seal" with that errno (EOPNOTSUPP) instead of
     // a worker-side branch of its own.
     expect(processWorkerSource).toContain("the capture could not seal");
+    // And the third, which reported nothing until 2026-09-26: the host's frame
+    // reserve wrapper aborted the fork without a word.
+    expect(processWorkerSource).toContain("could not be reserved mid-unwind");
     expect(processWorkerSource).toContain(
       "the kernel refused to create the child process",
     );

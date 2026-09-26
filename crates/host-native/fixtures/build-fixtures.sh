@@ -192,6 +192,7 @@ done
 # what user programs get. The entry is uniform across all of them.
 INSTRUMENTED_FIXTURES=(
     native_fork
+    native_fork_continuation_enomem
     native_fork_externref_table
     native_fork_from_thread
     native_fork_gc_array_cycle

@@ -574,18 +574,24 @@ single node larger than a WebAssembly page receives a multi-page chunk.
 
 Allocation is transactional: a reserved node is not linked from the committed
 tail until all activation-owned bytes are written. If a later chunk allocation
-fails, the reserve import records the positive errno, enters
-`ABORT_UNWINDING`, and returns a zero pointer. The still-live activation stores
-only its call-site selector in the fixed-prefix scratch and restarts; already
-committed inner nodes replay back to the original fork import. The import ends
-abort replay, unmaps every owned chunk, restores `NORMAL`, and returns the
-negative errno. Invalid metadata, impossible transitions, and cleanup failures
-remain fatal integrity errors.
+fails, the reserve import -- served to the guest directly by the fork module
+on every host -- seals the committed frames without driving the guest's
+unwind end, begins the abort replay (the guest enters `ABORT_UNWINDING`),
+records the positive errno, and only then returns a zero pointer. The
+still-live activation stores only its call-site selector in the fixed-prefix
+scratch and restarts; already committed inner nodes replay back to the
+original fork import. The import ends abort replay, unmaps every owned chunk,
+restores `NORMAL`, and returns the negative errno the module recorded.
+Invalid metadata, impossible transitions, and cleanup failures remain fatal
+integrity errors.
 
 A root allocation failure occurs before `wpk_fork_unwind_begin` and therefore
-returns its negative errno without replay. A negative `SYS_FORK` result after a
-complete unwind uses the ordinary parent rewind and is likewise returned to
-the guest; neither case terminates the parent or creates a child.
+returns its negative errno without replay. A seal that fails after a complete
+unwind (a reference the platform will not carry, or a seal-time allocation
+failure) is abort-replayed by the module in the same way, and so is a
+negative `SYS_FORK` result, whose errno the host hands to the module when it
+starts the replay. The errno reaches the guest from the import's abort
+finish; no case terminates the parent or creates a child.
 
 The child receives the mappings through the normal process-memory copy and the
 kernel's inherited mmap metadata, at the same virtual addresses in version 1.

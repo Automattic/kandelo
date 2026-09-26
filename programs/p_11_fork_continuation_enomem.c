@@ -30,6 +30,16 @@
 // using more of the fixed 512-entry array than necessary.
 #define COARSE_START_PAGES 16384u
 
+// How deep the call chain is when the second fork runs out of memory. At
+// 4,096 it holds more committed frames than one continuation chunk, so the
+// NEXT chunk's allocation fails after frames have committed (mid-unwind). The
+// native host's copy (crates/host-native/fixtures/native_fork_continuation_
+// enomem.c) builds this shallower, because wasmtime's default wasm stack does
+// not hold 4,096 instrumented activations; see that file for what it reaches.
+#ifndef P11_DEEP_FORK_DEPTH
+#define P11_DEEP_FORK_DEPTH 4096
+#endif
+
 // Each filler entry tracks its own page count because the fill loop below
 // mixes coarse multi-page mappings (to cover a large address space in few
 // mmap calls) with single-page mappings at the tail (to land on an exact
@@ -281,7 +291,7 @@ int main(void) {
     }
 
     errno = 0;
-    const pid_t failed_child = fork_at_depth(4096);
+    const pid_t failed_child = fork_at_depth(P11_DEEP_FORK_DEPTH);
     const int fork_errno = errno;
     if (failed_child != -1 || fork_errno != ENOMEM) {
         printf(

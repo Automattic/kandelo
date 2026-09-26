@@ -2,7 +2,7 @@
 //
 // Nested command substitution `echo $(echo $(echo hi))` forks the outer
 // substitution's subshell, which is a COW child, and that child then forks
-// again for the inner substitution. Its second `fm_capture_begin` drops the
+// again for the inner substitution. Its second capture begin drops the
 // capture `ReferenceGraphBuilder` the child inherited (through the guest memory
 // clone) from the parent — a builder whose module bump-heap backing the child's
 // own reconstruction has since reset and overwritten. The pre-fix module walked

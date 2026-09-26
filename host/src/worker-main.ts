@@ -3231,7 +3231,7 @@ export async function centralizedWorkerMain(
     // layout, carved each activation's private prefix with an alignment walk,
     // and asserted afterwards that capture's measure and the carving agreed.
     // Every one of those jobs is the module's. It performs the SAME walk to
-    // answer `fm_borrowed_replay_workspace`, so the host was re-deriving the
+    // size the workspace in its seal row, so the host was re-deriving the
     // module's own arithmetic in order to hand the results back -- and since the
     // module started seeding borrowed children itself, nothing called the
     // carver at all, which is why the accounting assertion could only ever fail
@@ -3315,17 +3315,6 @@ export async function centralizedWorkerMain(
           ?? Number(requireForkModuleBackend(forkModuleBackend, pid).stat(name));
 
       /**
-       * The errno an abort replay will report, remembered from the host call
-       * that started it.
-       *
-       * This was `ForkProcessContinuationCoordinator.abortErrno()`, which stored
-       * the value the host passed to `beginAbortReplay` and handed it back at
-       * the finish. The module has no use for it -- an abort replay is an abort
-       * replay whatever number the host means to return -- so it stays here,
-       * as the one line it always was rather than a coordinator method.
-       */
-      let forkAbortErrno = 0;
-      /**
        * Say why a fork aborted, on the channel the host already reads.
        *
        * The parent survives and `fork()` returns `-errno`, which is correct --
@@ -3333,8 +3322,21 @@ export async function centralizedWorkerMain(
        * entirely and the reason is gone. It cost an afternoon three times over
        * (census 189), which is why the platform now speaks even though nothing
        * is broken in the parent.
+       *
+       * Every abort ends at the one abort finish below, whoever began it, and
+       * the errno and cause are the ones the MODULE recorded when it began --
+       * so no abort path can forget to report. Keyed by the module's
+       * `ABORT_CAUSE_*` numbers (`crates/fork-module/src/lib.rs`).
        */
-      const reportForkAborted = (errno: number, reason: string): void => {
+      const FORK_ABORT_REASONS: Readonly<Record<number, string>> = {
+        1: "a continuation frame could not be reserved mid-unwind (the parent's "
+          + "committed frames were replayed; no child was created)",
+        2: "the capture could not seal (the parent's frames are intact "
+          + "and were replayed; no child was created)",
+        3: "the kernel refused to create the child process",
+      };
+      const reportForkAborted = (errno: number, cause: number): void => {
+        const reason = FORK_ABORT_REASONS[cause] ?? `unknown abort cause ${cause}`;
         port.postMessage(
           { type: "fork_aborted", pid, errno, reason } satisfies WorkerToHostMessage,
         );
@@ -3753,13 +3755,14 @@ export async function centralizedWorkerMain(
               `pid=${pid}: fork abort mode ${mode} does not match captured mode ${forkMode}`,
             );
           }
-          const errno = forkAbortErrno;
+          let aborted: { readonly errno: number; readonly cause: number };
           try {
-            forkModule().parentFinish(true);
+            aborted = forkModule().parentFinish(true);
           } finally {
             releaseProcessForkArchiveReader();
           }
-          return -errno;
+          reportForkAborted(aborted.errno, aborted.cause);
+          return -aborted.errno;
         }
         if (phase !== "idle") {
           throw new Error(
@@ -3790,12 +3793,6 @@ export async function centralizedWorkerMain(
           // seeded template ids. And it ran each activation's `moduleState.save()`,
           // which is the `DRIVE_OP_MODULE_STATE_SAVE` step in the module's own
           // plan. Keeping it would have meant two save walks into two arenas.
-          // The first module call of a capture fork, before the guest
-          // unwinds: the fork's single bump-heap reset point, and the open of
-          // the module's capture graph. The backend is absent only once a
-          // borrowed child has handed its module region back, and then the
-          // `forkModule()` below fails loud before any capture.
-          forkModuleBackend?.captureBegin();
           // The capture is about to ask which slot holds a statically
           // initialised reference, so the merged table has to hold them now.
           forkMergedStaticRoots.fill(forkActivations.ordered());
@@ -4033,42 +4030,6 @@ export async function centralizedWorkerMain(
         // frame/resume exports directly (wasm->wasm over shared memory); the
         // module is the ONLY frame/journal implementation. Guest ABI names and
         // signatures are unchanged; no guest re-instrumentation.
-        ...(forkModuleInstance
-          ? {
-              // MODULE-MODE PARTIAL-CAPTURE ABORT: the module reserve returns 0
-              // (no throw, no JS callback) when a mid-unwind frame allocation
-              // fails. The guest's reserve==0 contract then branches into its
-              // abort restart loop EXPECTING the host to have already moved to
-              // abort replay (fork-instrument `__wpk_fork_select_unwind_frame`).
-              // Wrap the raw module export so that, exactly like the JS
-              // `onReservationAbort` above, a 0 result synchronously drives the
-              // module-mode partial-capture abort — reading the module errno
-              // FIRST (before any further module call overwrites it) so the
-              // guest's re-entry into `kernel_fork` finds the coordinator in
-              // `abort-replay` and `fork()` returns `-errno` with the parent
-              // intact. A successful reserve is byte-identical to the raw export.
-              __wpk_fork_frame_reserve: (size: number | bigint) => {
-                const payload = (
-                  forkModuleInstance.exports
-                    .__wpk_fork_frame_reserve as (s: number | bigint) => number | bigint
-                )(size);
-                if (payload === 0 || payload === 0n) {
-                  const moduleErrno = forkModuleBackend
-                    ? forkModuleBackend.lastErrno()
-                    : STARTUP_ENOMEM;
-                  // Mid-unwind reserve failure: seal the partial capture
-                  // WITHOUT driving the guest's unwind-end (it is still
-                  // mid-unwind), then replay the frames that did commit as an
-                  // abort so the parent survives and fork() returns -errno.
-                  forkAbortErrno =
-                    moduleErrno > 0 ? moduleErrno : STARTUP_ENOMEM;
-                  forkModule().parentAbortSeal();
-                  forkModule().parentReplay(true);
-                }
-                return payload;
-              },
-            }
-          : {}),
         // Phase 6 item 3a REFERENCE DATA-FEED FLIP: replace the seven JS RESTORE
         // data-feed imports (supplied by `buildForkGuestImports` above) with
         // the module exports for an
@@ -4383,68 +4344,32 @@ export async function centralizedWorkerMain(
             );
           }
           if (phase === "capture") {
-            try {
-              // The module seals its own capture now. What the coordinator did
-              // around this call has all moved or evaporated: it bound
-              // `wpk_fork_unwind_end` per activation, which `bindActivationDrive`
-              // does for the whole stride; it wrote the JournalImage record from
-              // the returned (ptr, len), which the module writes itself; and it
-              // called `arena.seal()`, which a module-built arena does not need
-              // -- `chunk_with_room` sets SEALED on every chunk and ROOT on the
-              // first, so the arena is born in the state a child's attach
-              // demands. The returned image location is no longer the host's to
-              // carry anywhere.
-              forkModule().sealCaptureAndSerialize();
-            } catch (sealError) {
-              // SEAL-TIME TRUTHFUL FAILURE (Phase 2 carry / Phase 4): the unwind
-              // completed but the module could not channel-mmap the
-              // child-inheritable journal image. The coordinator sealed to
-              // `sealed-parent` WITHOUT launching a child; replay the parent's
-              // already-committed frames and return `-errno` (parent intact, no
-              // child). This is the seal-time sibling of the mid-unwind
-              // `beginModuleCaptureAbort` reserve==0 path, so NO module failure
-              // site traps once the JS continuation fallback is gone.
-              if (sealError instanceof ContinuationAllocationError) {
-                const errno =
-                  sealError.errno > 0 ? sealError.errno : STARTUP_ENOMEM;
-                forkResult = -errno;
-                forkAbortErrno = errno;
-                reportForkAborted(
-                  errno,
-                  "the capture could not seal (the parent's frames are intact "
-                    + "and were replayed; no child was created)",
-                );
-                forkModule().parentReplay(true);
-                if (forkModuleBackend && !initData.isForkChild) {
-                  port.postMessage({
-                    type: "fork_module_frames",
-                    pid,
-                    frames: Number(forkModuleBackend.stat("framesCommitted")),
-                  } satisfies WorkerToHostMessage);
-                }
-                continue;
+            // The module seals its own capture, and writes the JournalImage
+            // record itself. A seal that fails after the frames sealed (a
+            // reference the platform will not carry, a seal-time allocation
+            // failure) comes back null with the MODULE already abort-replaying
+            // the parent's committed frames; `fork()` returns `-errno` at the
+            // abort finish, which reports it.
+            const sealed = forkModule().sealCaptureAndSerialize();
+            if (sealed === null) {
+              if (forkModuleBackend && !initData.isForkChild) {
+                port.postMessage({
+                  type: "fork_module_frames",
+                  pid,
+                  frames: Number(forkModuleBackend.stat("framesCommitted")),
+                } satisfies WorkerToHostMessage);
               }
-              throw sealError;
+              continue;
             }
-            const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-              ? forkModule().borrowedReplayWorkspace()
-              : undefined;
             const childPid = sendForkSyscall(
               memory,
               channelOffset,
               forkMode,
-              borrowedReplay,
+              Number(forkMode) === PROCESS_FORK_MODE_VFORK ? sealed : undefined,
             );
             forkResult = childPid;
-            if (childPid < 0) {
-              forkAbortErrno = -childPid;
-              reportForkAborted(
-                -childPid,
-                "the kernel refused to create the child process",
-              );
-              forkModule().parentReplay(true);
-            } else {
-              forkModule().parentReplay(false);
+            forkModule().parentReplay(childPid < 0 ? -childPid : 0);
+            if (childPid >= 0) {
               // Phase 6 D5/D7a.1a proof-of-use, emitted from the PARENT's active
               // run loop (not the worker tail). A fork parent stays alive and its
               // channel is drained normally, so this reaches the host reliably
@@ -5783,10 +5708,6 @@ export async function centralizedThreadWorkerMain(
       ),
     };
     let forkResult = 0;
-    // What a fork-from-thread abort will report. The coordinator used to hold
-    // this next to its phase mirror; the module holds a phase and nothing else,
-    // so the errno rides here, exactly as the process path carries it.
-    let threadForkAbortErrno = 0;
     // Resolved per call rather than captured: the backend is built later, in the
     // block that instantiates this thread's fork-module.
     const threadForkModule = () =>
@@ -5833,13 +5754,11 @@ export async function centralizedThreadWorkerMain(
                 `match captured mode ${forkMode}`,
             );
           }
-          const errno = threadForkAbortErrno;
           try {
-            threadForkModule().parentFinish(true);
+            return -threadForkModule().parentFinish(true).errno;
           } finally {
             releasePthreadForkLock();
           }
-          return -errno;
         }
         if (phase !== "idle") {
           throw new Error(
@@ -5871,7 +5790,6 @@ export async function centralizedThreadWorkerMain(
         }
 
         try {
-          threadForkModuleBackend?.captureBegin();
           publishThreadLaunchRoot(0);
           publishThreadLaunchRoot(
             threadForkModule().parentBeginCapture(channelOffset),
@@ -6045,32 +5963,6 @@ export async function centralizedThreadWorkerMain(
             // module, and it serializes the KFRE image the fork-from-thread child
             // reads. Everything else stays JS. Guest ABI names/signatures are
             // unchanged; no re-instrumentation. Flag-off skips this entirely.
-            ...(threadForkModuleInstance
-              ? {
-                  // MODULE-MODE PARTIAL-CAPTURE ABORT (mirrors the main worker
-                  // path): a 0 result from the module reserve synchronously drives
-                  // the module-mode partial-capture abort so the guest's reserve==0
-                  // contract finds the thread coordinator already in `abort-replay`.
-                  __wpk_fork_frame_reserve: (size: number | bigint) => {
-                    const payload = (
-                      threadForkModuleInstance!.exports
-                        .__wpk_fork_frame_reserve as (
-                        s: number | bigint,
-                      ) => number | bigint
-                    )(size);
-                    if (payload === 0 || payload === 0n) {
-                      const moduleErrno = threadForkModuleBackend
-                        ? threadForkModuleBackend.lastErrno()
-                        : STARTUP_ENOMEM;
-                      threadForkAbortErrno =
-                        moduleErrno > 0 ? moduleErrno : STARTUP_ENOMEM;
-                      threadForkModule().parentAbortSeal();
-                      threadForkModule().parentReplay(true);
-                    }
-                    return payload;
-                  },
-                }
-              : {}),
           }
         : undefined;
     const importObject = buildImportObject(
@@ -6238,44 +6130,19 @@ export async function centralizedThreadWorkerMain(
           );
         }
         if (phase === "capture") {
-          try {
-            // The module seals its own capture, as the process path does: it
-            // writes the JournalImage record from its own (ptr, len) and a
-            // module-built arena needs no separate seal, because every chunk is
-            // born SEALED and the first born ROOT.
-            threadForkModule().sealCaptureAndSerialize();
-          } catch (sealError) {
-            // SEAL-TIME TRUTHFUL FAILURE (fork-from-thread mirror of the main
-            // run loop): the unwind completed but the module could not
-            // channel-mmap the child-inheritable journal image. The coordinator
-            // sealed to `sealed-parent` without launching a child; replay the
-            // parent's committed frames and return `-errno` (parent intact).
-            if (sealError instanceof ContinuationAllocationError) {
-              const errno =
-                sealError.errno > 0 ? sealError.errno : STARTUP_ENOMEM;
-              forkResult = -errno;
-              threadForkAbortErrno = errno;
-              threadForkModule().parentReplay(true);
-              continue;
-            }
-            throw sealError;
-          }
-          const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-            ? threadForkModule().borrowedReplayWorkspace()
-            : undefined;
+          // The module seals its own capture, as the process path does; a
+          // null seal is one the module has already turned into an abort
+          // replay.
+          const sealed = threadForkModule().sealCaptureAndSerialize();
+          if (sealed === null) continue;
           const childPid = sendForkSyscall(
             memory,
             channelOffset,
             forkMode,
-            borrowedReplay,
+            Number(forkMode) === PROCESS_FORK_MODE_VFORK ? sealed : undefined,
           );
           forkResult = childPid;
-          if (childPid < 0) {
-            threadForkAbortErrno = -childPid;
-            threadForkModule().parentReplay(true);
-          } else {
-            threadForkModule().parentReplay(false);
-          }
+          threadForkModule().parentReplay(childPid < 0 ? -childPid : 0);
           continue;
         }
         if (phase !== "idle") {

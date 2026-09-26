@@ -250,20 +250,24 @@ describe("the resume assignment fm_bind_activation publishes", () => {
 
   it("survives the per-fork bump-heap reset", () => {
     const h = harness();
-    h.seed(0, [0, 1, 2]);
-    const before = h.publish(0);
+    // Activation 1, not 0: the capture begin below must refuse after its
+    // reset, and it refuses a worker whose activation 0 was never admitted.
+    h.seed(1, [0, 1, 2]);
+    const before = h.publish(1);
     const recordsBefore = readRecords(h.memory, before);
 
-    // THE RESET HAZARD, reached the cheapest honest way. `fm_capture_begin` is
-    // a fork's single bump-heap reset point ("Make it the fork's SINGLE
-    // bump-heap reset point", `crates/fork-module/src/lib.rs`), so calling it
-    // puts the module in the state a published buffer has to survive. A buffer
-    // allocated from the bump heap would be reclaimed here, and the pointer
-    // the host is still holding would address whatever the next allocation
-    // put there.
-    (h.exports.fm_capture_begin as () => void)();
+    // THE RESET HAZARD, reached the cheapest honest way. The capture begin
+    // opens with the fork's single bump-heap reset (`open_capture_session`,
+    // `crates/fork-module/src/lib.rs`), so calling it puts the module in the
+    // state a published buffer has to survive. A buffer allocated from the
+    // bump heap would be reclaimed here, and the pointer the host is still
+    // holding would address whatever the next allocation put there. With no
+    // activation 0 admitted, the begin refuses (EINVAL) only after that reset,
+    // before it maps anything, and the module is back at idle.
+    (h.exports.fm_parent_begin_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(h.errno(), "the begin refuses after its reset").toBe(22);
 
-    const after = h.publish(0);
+    const after = h.publish(1);
     expect(h.errno()).toBe(0);
     expect(after.ptr).toBe(before.ptr);
     expect(after.count).toBe(before.count);

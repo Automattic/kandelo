@@ -158,7 +158,6 @@ function captureAndPlan(activations: ReadonlyMap<number, ActivationFacts>): {
         importRow(SPACE_GLOBAL, ordinal, kind, group, bits)),
     ]), `publishing activation ${activation}`).toBe(0);
   }
-  x.fm_capture_begin();
   x.fm_parent_begin_capture(CHANNEL_BASE, 0);
   expect(f.errno(), "the parent captures").toBe(0);
   const backend = new ForkModuleContinuationBackend({

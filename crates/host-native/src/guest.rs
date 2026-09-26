@@ -4856,24 +4856,6 @@ enum ForkEntry {
     ChildBorrowedReplay { root: u32, private_prefix: u32, owner_control: u32 },
 }
 
-/// `kernel_fork`'s two reachable phases on a native guest thread (N1-I4 Task
-/// 3). `Idle` covers BOTH "no fork has happened yet" and "the process has
-/// returned to normal execution after a previous fork's replay finished" —
-/// the entry loop resets this back to `Idle` once `fm_finish_replay`
-/// succeeds (see `drive_fork_capture_seal_and_launch_child`'s tail and
-/// `kernel_fork`'s `Replaying` arm), so a SECOND, later `fork()` call is
-/// captured exactly like the first. `Replaying` covers both PARENT replay
-/// (after `fm_begin_replay`) and CHILD replay (after `fm_begin_child_
-/// replay`) — the closure's own behavior at this phase (`wpk_fork_rewind_
-/// end` + `fm_finish_replay` + return `fork_result`) is identical either
-/// way; only the entry loop's choice of which `fm_begin_*` call preceded it
-/// differs.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ForkCoordPhase {
-    Idle,
-    Replaying,
-}
-
 /// N1-I4 Task 3: mutable state shared, via `Arc`, between a guest OS thread's
 /// entry-driving loop ([`run_fork_capable_entry`]) and its `kernel_fork`
 /// import closure. Both run on the SAME OS thread in practice (a guest never
@@ -4886,59 +4868,32 @@ enum ForkCoordPhase {
 /// cross-thread-safe-by-construction shape `import_exit_status: Arc<Mutex<
 /// Option<i32>>>` already uses elsewhere in this file — rather than a
 /// simpler but non-`Send` `Rc<Cell<_>>`. `kernel_fork` is called TWICE per
-/// fork: once at `Idle` (starts capture, never blocks on the channel itself
-/// — see that branch), and once at `Replaying` (re-entered from within the
+/// fork: once from idle (starts capture, never blocks on the channel itself
+/// — see that branch), and once from a replay (re-entered from within the
 /// resumed frame chain the guest's OWN resume-table dispatch walks back to)
 /// to learn the ACTUAL `fork()` return value now that the child's pid (or
-/// `0`, for the child itself) is known.
+/// `0`, for the child itself) is known. WHICH of the two a call is, the fork
+/// module's own phase says ([`fork_module_kernel_fork`]); this holds only what
+/// the module does not.
 struct ForkCoordState {
-    phase: AtomicU32,
-    /// The value `kernel_fork` returns while `phase == Replaying`: the
-    /// child's pid (parent) or `0` (child), or a negative errno if capture
-    /// or child-creation failed. Stored as the bit pattern of an `i32`.
+    /// The value `kernel_fork` returns when an ordinary replay reaches the
+    /// fork site: the child's pid (parent) or `0` (child). An abort's
+    /// `-errno` comes from the module instead. Stored as the bit pattern of
+    /// an `i32`.
     fork_result: AtomicU32,
     /// The `mode` argument (`fork()` vs `vfork()`) `kernel_fork`'s `Idle`
     /// branch recorded, needed by the entry loop to choose `SYS_FORK` vs
     /// `SYS_VFORK` when it finally posts the real channel request (AFTER
     /// capture completes — see `drive_fork_capture_seal_and_launch_child`).
     mode: AtomicU32,
-    /// Whether the PARENT's pending replay is an ABORT-replay (`1`) rather than
-    /// a NORMAL rewind-replay (`0`). Set when the entry loop drives the parent
-    /// through `fm_parent_replay(abort=1)` — an unsupported-reference (gated) fork or a
-    /// failed child launch, mirroring TS `beginAbortReplay` — so the
-    /// `Replaying`-phase finish drives `fm_parent_finish(1)` (the guest's
-    /// `wpk_fork_abort_end` flip) instead of `fm_parent_finish(0)`
-    /// (`wpk_fork_rewind_end`). Reset to `0` at the start of every capture and
-    /// after each finish. Stored as a `u32` (0/1) to match the other fields.
-    abort_replay: AtomicU32,
 }
-
-const FORK_COORD_PHASE_IDLE: u32 = 0;
-const FORK_COORD_PHASE_REPLAYING: u32 = 1;
 
 impl ForkCoordState {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            phase: AtomicU32::new(FORK_COORD_PHASE_IDLE),
             fork_result: AtomicU32::new(0),
             mode: AtomicU32::new(0),
-            abort_replay: AtomicU32::new(0),
         })
-    }
-
-    fn phase(&self) -> ForkCoordPhase {
-        match self.phase.load(Ordering::SeqCst) {
-            FORK_COORD_PHASE_REPLAYING => ForkCoordPhase::Replaying,
-            _ => ForkCoordPhase::Idle,
-        }
-    }
-
-    fn set_phase(&self, phase: ForkCoordPhase) {
-        let raw = match phase {
-            ForkCoordPhase::Idle => FORK_COORD_PHASE_IDLE,
-            ForkCoordPhase::Replaying => FORK_COORD_PHASE_REPLAYING,
-        };
-        self.phase.store(raw, Ordering::SeqCst);
     }
 
     fn fork_result(&self) -> i32 {
@@ -4955,14 +4910,6 @@ impl ForkCoordState {
 
     fn set_mode(&self, value: u32) {
         self.mode.store(value, Ordering::SeqCst);
-    }
-
-    fn is_abort_replay(&self) -> bool {
-        self.abort_replay.load(Ordering::SeqCst) != 0
-    }
-
-    fn set_abort_replay(&self, value: bool) {
-        self.abort_replay.store(u32::from(value), Ordering::SeqCst);
     }
 }
 
@@ -5101,22 +5048,23 @@ pub struct ForkModule {
     /// (`fm_stats(field) -> i64`), replacing the former 11 individual `fm_*`
     /// counter exports. Field indices are the `FM_STAT_*` constants above.
     pub fm_stats: wasmtime::TypedFunc<u32, i64>,
-    /// `fm_capture_begin()` -- opens this fork's capture graph and resets the
-    /// module's bump heap; the first module call of a capture.
-    pub fm_capture_begin: wasmtime::TypedFunc<(), ()>,
     /// `fm_parent_begin_capture(channel_base) -> act0_root` -- the module
-    /// allocates its own arena and drives each guest `wpk_fork_unwind_begin`.
+    /// opens this fork's capture graph (resetting its bump heap), allocates its
+    /// own arena and drives each guest `wpk_fork_unwind_begin`.
     pub fm_parent_begin_capture: wasmtime::TypedFunc<u32, u32>,
-    /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` -- drives
-    /// each guest `wpk_fork_unwind_end()`, seals the capture into the module's
-    /// arena, and serializes the child image (0 + `fm_last_errno` on failure).
+    /// `fm_parent_seal_capture(channel_base) -> seal_row` -- drives each guest
+    /// `wpk_fork_unwind_end()`, seals the capture into the module's arena, and
+    /// serializes the child image. 0 on failure, and a failure after the
+    /// frames sealed is already an abort replay (`fm_phase` says so).
     pub fm_parent_seal_capture: wasmtime::TypedFunc<u32, u32>,
-    /// `fm_parent_replay(abort)` -- begins the parent rewind (or, with `abort`,
-    /// the abort replay) and drives each guest `wpk_fork_{rewind,abort}_begin`.
+    /// `fm_parent_replay(abort_errno)` -- begins the parent rewind, or with a
+    /// nonzero errno (the kernel refused the child) the abort replay, driving
+    /// each guest `wpk_fork_{rewind,abort}_begin`.
     pub fm_parent_replay: wasmtime::TypedFunc<u32, ()>,
-    /// `fm_parent_finish(abort)` -- drives each guest
-    /// `wpk_fork_{rewind,abort}_end()`, then finishes the replay.
-    pub fm_parent_finish: wasmtime::TypedFunc<u32, ()>,
+    /// `fm_parent_finish(abort) -> report` -- drives each guest
+    /// `wpk_fork_{rewind,abort}_end()`, then finishes the replay; an abort
+    /// finish answers `(cause << 16) | errno`, -1 on failure.
+    pub fm_parent_finish: wasmtime::TypedFunc<u32, i32>,
     /// `fm_child_install(pid, launch_root, borrowed_base, borrowed_bytes) ->
     /// errno` -- ONE call installs a COW or borrowed fork child. See
     /// [`run_fork_capable_entry`].
@@ -5419,7 +5367,7 @@ pub(crate) fn instantiate_fork_module(
     )?;
     // A GC object has no stable integer of its own, so it is kept (rooted) and
     // found again by `ref.eq`. Rooting pins it, where the JavaScript hosts'
-    // `WeakMap` does not, so the pool is cleared at every `fm_capture_begin`
+    // `WeakMap` does not, so the pool is cleared at every capture begin
     // (`kernel_fork`): the module's only map keyed by it, `fm_gc_identity_*`,
     // is reset there too (`reset_bump_heap`), and both callers, the injected
     // `gc_lookup` / `gc_claim` shims, run only inside a capture.
@@ -5479,11 +5427,10 @@ pub(crate) fn instantiate_fork_module(
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
         fm_phase: fm_func!("fm_phase": () => u32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
-        fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
         fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": u32 => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
         fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
-        fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
+        fm_parent_finish: fm_func!("fm_parent_finish": u32 => i32),
         fm_child_install: fm_func!("fm_child_install": (u32, u32, u32, u32) => i32),
         function_catalog_table,
         drive_table,
@@ -5834,12 +5781,70 @@ fn fill_static_root_catalog(
     Ok(())
 }
 
-/// `kernel_fork`'s capture begin, in `worker-main.ts`'s order: open the
-/// module's capture graph (`fm_capture_begin`, which also resets the module's
-/// identity map, so this host's identity pool is emptied with it), refill the
+/// `kernel_fork` for a fork-instrumented guest thread with a fork module,
+/// the same decision `worker-main.ts` makes: the MODULE's phase says which
+/// call this is. Idle begins a capture; a parent or child replay reaching the
+/// fork site again finishes it and returns the pid (or 0) the entry loop
+/// recorded; an abort replay finishes the abort and returns the `-errno` the
+/// module recorded when the abort began.
+///
+/// The abort can begin inside the module with no host involved -- a frame
+/// reserve that fails mid-unwind aborts on the spot, and the guest re-enters
+/// here -- which is why this asks the module rather than keeping a phase of
+/// its own. A host mirror said "idle" there, and began a second capture.
+fn fork_module_kernel_fork(
+    caller: &mut Caller<'_, ()>,
+    fm: &ForkModule,
+    coord: &ForkCoordState,
+    mem: &SharedMemory,
+    ch: usize,
+    mode: i32,
+) -> wasmtime::Result<i32> {
+    // `PHASE_*` in `crates/fork-module/src/lib.rs`.
+    const IDLE: u32 = 0;
+    const PARENT_REPLAY: u32 = 3;
+    const CHILD_REPLAY: u32 = 4;
+    const ABORT_REPLAY: u32 = 5;
+    let phase = fm.fm_phase.call(&mut *caller, ())?;
+    if phase == IDLE {
+        coord.set_mode(mode as u32);
+        return begin_fork_capture(caller, fm, mem, ch);
+    }
+    if !matches!(phase, PARENT_REPLAY | CHILD_REPLAY | ABORT_REPLAY) {
+        return Err(wasmtime::Error::msg(format!(
+            "kernel_fork reached while the fork module is in phase {phase}"
+        )));
+    }
+    let abort = phase == ABORT_REPLAY;
+    let report = fm.fm_parent_finish.call(&mut *caller, u32::from(abort))?;
+    if report < 0 {
+        let errno = fm.fm_last_errno.call(&mut *caller, ())?;
+        return Err(wasmtime::Error::msg(format!("fm_parent_finish failed: errno {errno}")));
+    }
+    if !abort {
+        return Ok(coord.fork_result());
+    }
+    let errno = report & 0xffff;
+    // Visible, as the JavaScript hosts' `fork_aborted` report is. The cause
+    // numbers are the module's `ABORT_CAUSE_*`.
+    let reason = match report >> 16 {
+        1 => "a continuation frame could not be reserved mid-unwind",
+        2 => "the capture could not seal (see docs/fork-reference-support.md)",
+        3 => "the kernel refused to create the child process",
+        _ => "an unknown cause",
+    };
+    eprintln!(
+        "[host-native] fork aborted with errno {errno}: {reason}; no child was created and \
+         the parent's frames were replayed."
+    );
+    Ok(-errno)
+}
+
+/// `kernel_fork`'s capture begin, in `worker-main.ts`'s order: refill the
 /// merged static-root catalog the capture reads, then open the capture -- the
-/// module allocates its own arena -- and have the module drive
-/// the guest's `wpk_fork_unwind_begin`. The returned launch root is published
+/// module opens its capture graph (resetting its identity map, so this host's
+/// identity pool is emptied with it) and allocates its own arena -- and have
+/// the module drive the guest's `wpk_fork_unwind_begin`. The returned launch root is published
 /// in the forking thread's fork control word, where `handle_fork` reads it.
 ///
 /// Returns what `kernel_fork` returns to the (now unwinding) guest: 0, or
@@ -5852,7 +5857,6 @@ fn begin_fork_capture(
     ch: usize,
 ) -> wasmtime::Result<i32> {
     fm.ref_identities.lock().unwrap().clear();
-    fm.fm_capture_begin.call(&mut *caller, ())?;
     if let Some(guest_roots) = caller
         .get_export(wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
         .and_then(|export| export.into_table())
@@ -6426,9 +6430,9 @@ fn spawn_guest_thread(
         //    `run_fork_capable_entry`'s loop catches that, drives the
         //    seal/serialize/channel-post/parent-replay-begin sequence, and
         //    only THEN re-enters this instance via `wpk_fork_resume_start`.
-        //  - `Replaying` (a SECOND call, reached by that resume-table
+        //  - a replay (a SECOND call, reached by that resume-table
         //    dispatch walking back down to this exact call site — see
-        //    `ForkCoordPhase`'s doc comment): the rewind of frame STATE is
+        //    `fork_module_kernel_fork`): the rewind of frame STATE is
         //    already done by this point, so this closes it out —
         //    `wpk_fork_rewind_end` (flips `_wpk_fork_state` back to NORMAL)
         //    then `fm_finish_replay` — and returns the REAL value (child pid
@@ -6486,33 +6490,7 @@ fn spawn_guest_thread(
                             return Ok(if ret < 0 { -(errno as i32) } else { ret as i32 });
                         };
 
-                        match coord.phase() {
-                            ForkCoordPhase::Idle => {
-                                coord.set_mode(mode as u32);
-                                coord.set_abort_replay(false);
-                                begin_fork_capture(&mut caller, fm, &mem, ch)
-                            }
-                            ForkCoordPhase::Replaying => {
-                                // Coarse replay-finish: ONE module call drives the
-                                // guest's `wpk_fork_rewind_end()` (normal replay) or
-                                // `wpk_fork_abort_end()` (abort replay — a gated or
-                                // failed-launch fork) then finishes the process replay,
-                                // folding the former `caller_export_typed(REWIND_END)` +
-                                // direct call + `fm_finish_replay`. The entry loop
-                                // recorded which via `coord.is_abort_replay()`.
-                                let abort = coord.is_abort_replay();
-                                fm.fm_parent_finish.call(&mut caller, u32::from(abort))?;
-                                let errno = fm.fm_last_errno.call(&mut caller, ())?;
-                                if errno != 0 {
-                                    return Err(wasmtime::Error::msg(format!(
-                                        "fm_parent_finish failed: errno {errno}"
-                                    )));
-                                }
-                                coord.set_abort_replay(false);
-                                coord.set_phase(ForkCoordPhase::Idle);
-                                Ok(coord.fork_result())
-                            }
-                        }
+                        fork_module_kernel_fork(&mut caller, fm, &coord, &mem, ch, mode)
                     },
                 )
                 .unwrap();
@@ -6889,8 +6867,8 @@ fn run_fork_capable_entry(
         return;
     };
     // A non-instrumented guest has no `wpk_fork_resume_start` export at all
-    // (its `kernel_fork` import, if it even has one, never reaches
-    // `ForkCoordPhase::Replaying` — see that closure's doc comment) — that
+    // (its `kernel_fork` import, if it even has one, never reaches a
+    // fork-module replay — see that closure's doc comment) — that
     // is fine as long as this loop never actually needs to call it (i.e.
     // `fork_entry` is `Normal` and the guest never captures a fork). Missing
     // is therefore NOT logged as an error here; a later attempt to actually
@@ -6987,7 +6965,6 @@ fn run_fork_capable_entry(
                 return;
             }
         }
-        coord.set_phase(ForkCoordPhase::Replaying);
         coord.set_fork_result(0);
         entry_is_lexical = false;
     }
@@ -7103,13 +7080,13 @@ fn run_fork_capable_entry(
 ///     the parent: the child's pid, or a negative errno.
 ///  3. `fm_parent_replay` -- begins the parent's own rewind, so the caller's
 ///     next `wpk_fork_resume_start` walks back down to the `fork()` call site
-///     and re-enters `kernel_fork` at `Replaying` for `coord.fork_result`.
+///     and re-enters `kernel_fork` in the replay for `coord.fork_result`.
 ///
 /// A seal that fails -- a reference the platform cannot carry (`EOPNOTSUPP`,
 /// externref stage E2) or an allocation failure -- creates no child: the
-/// parent's committed frames are abort-replayed and its `fork()` returns
-/// `-errno`, as `worker-main.ts` does on `ContinuationAllocationError`. So does
-/// a kernel refusal of the child.
+/// MODULE abort-replays the parent's committed frames and its `fork()`
+/// returns `-errno`, as on the JavaScript hosts. A kernel refusal of the child
+/// does the same through `fm_parent_replay(errno)`.
 ///
 /// Returns `false` (having already logged the truthful failure) when a module
 /// call fails outright; the caller then ends this OS thread without calling
@@ -7121,82 +7098,77 @@ fn drive_fork_capture_seal_and_launch_child(
     fm: &ForkModule,
     coord: &Arc<ForkCoordState>,
 ) -> bool {
-    let sealed = fm
-        .fm_parent_seal_capture
-        .call(&mut *store, ch as u32)
-        .and_then(|_image| fm.fm_last_errno.call(&mut *store, ()));
-    let fork_result = match sealed {
-        Ok(0) => {
-            let mode = coord.mode();
-            let syscall_nr = if mode == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
-            unsafe {
-                write_bytes(guest_mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-                write_bytes(guest_mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
-                for i in 1..6 {
-                    write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
-                }
-                write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
-                atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
-            }
-            let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
-            loop {
-                let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
-                if s == ChannelStatus::Teardown as u32 {
-                    // The kernel ended this process while it was parked in fork
-                    // (a fatal signal, or a vfork containment): end this thread
-                    // without resuming guest code.
-                    return false;
-                }
-                if s != STATUS_PENDING {
-                    break;
-                }
-                std::thread::sleep(Duration::from_micros(200));
-            }
-            let (ret, errno) =
-                unsafe { (read_i64(guest_mem, ch + RETURN_OFFSET), read_u32(guest_mem, ch + ERRNO_OFFSET)) };
-            unsafe {
-                atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
-            }
-            if ret < 0 { -(errno as i32) } else { ret as i32 }
-        }
-        Ok(errno) => {
-            // Visible, as the JavaScript hosts' `fork_aborted` report is.
-            eprintln!(
-                "[host-native] fork aborted: the capture could not seal (errno {errno}); no child \
-                 was created and the parent's frames are replayed. See docs/fork-reference-support.md."
-            );
-            -errno
-        }
+    let row = match fm.fm_parent_seal_capture.call(&mut *store, ch as u32) {
+        Ok(row) => row,
         Err(e) => {
             eprintln!("fm_parent_seal_capture failed: {e:#}");
             return false;
         }
     };
-    coord.set_fork_result(fork_result);
-
-    // A FAILED fork -- a refused seal or a refused child -- resumes the parent
-    // at `fork()` with the errno through the ABORT replay; a launched one
-    // through the ordinary rewind. `coord` records which, so the paired
-    // `Replaying`-phase finish drives the matching `fm_parent_finish(abort)`.
-    let abort = fork_result < 0;
-    coord.set_abort_replay(abort);
+    if row == 0 {
+        // A seal that failed after the frames sealed -- a reference the
+        // platform cannot carry, an allocation failure -- is already an abort
+        // replay inside the module; `kernel_fork` returns its `-errno` and
+        // reports it. Anything else cannot be resumed.
+        const FORK_MODULE_PHASE_ABORT_REPLAY: u32 = 5;
+        if fm.fm_phase.call(&mut *store, ()).ok() == Some(FORK_MODULE_PHASE_ABORT_REPLAY) {
+            return true;
+        }
+        let errno = fm.fm_last_errno.call(&mut *store, ()).unwrap_or(-1);
+        eprintln!("fm_parent_seal_capture failed: errno {errno}");
+        return false;
+    }
+    let mode = coord.mode();
+    let syscall_nr = if mode == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
+    unsafe {
+        write_bytes(guest_mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+        write_bytes(guest_mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
+        for i in 1..6 {
+            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+        }
+        write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+    }
+    let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+    loop {
+        let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+        if s == ChannelStatus::Teardown as u32 {
+            // The kernel ended this process while it was parked in fork
+            // (a fatal signal, or a vfork containment): end this thread
+            // without resuming guest code.
+            return false;
+        }
+        if s != STATUS_PENDING {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    let (ret, errno) =
+        unsafe { (read_i64(guest_mem, ch + RETURN_OFFSET), read_u32(guest_mem, ch + ERRNO_OFFSET)) };
+    unsafe {
+        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+    }
+    // A launched child resumes the parent at `fork()` through the ordinary
+    // rewind, returning the pid recorded here; a refused one through the
+    // ABORT replay, with the kernel's errno, which the module records for
+    // the finish to return.
+    let abort_errno = if ret < 0 { errno } else { 0 };
+    coord.set_fork_result(if ret < 0 { 0 } else { ret as i32 });
     let replayed = fm
         .fm_parent_replay
-        .call(&mut *store, u32::from(abort))
+        .call(&mut *store, abort_errno)
         .and_then(|()| fm.fm_last_errno.call(&mut *store, ()));
     match replayed {
-        Ok(0) => {}
+        Ok(0) => true,
         Ok(errno) => {
-            eprintln!("fm_parent_replay({abort}) failed: errno {errno}");
-            return false;
+            eprintln!("fm_parent_replay({abort_errno}) failed: errno {errno}");
+            false
         }
         Err(e) => {
-            eprintln!("fm_parent_replay({abort}) failed: {e:#}");
-            return false;
+            eprintln!("fm_parent_replay({abort_errno}) failed: {e:#}");
+            false
         }
     }
-    coord.set_phase(ForkCoordPhase::Replaying);
-    true
 }
 
 /// N1-I4 Task 2: post an already-successful `SYS_EXIT_GROUP(0)` on a fork
@@ -7479,31 +7451,7 @@ fn run_worker_thread(
                     return Ok(if ret < 0 { -(errno as i32) } else { ret as i32 });
                 };
 
-                match coord.phase() {
-                    ForkCoordPhase::Idle => {
-                        coord.set_mode(mode as u32);
-                        coord.set_abort_replay(false);
-                        begin_fork_capture(&mut caller, fm, &mem, ch)
-                    }
-                    ForkCoordPhase::Replaying => {
-                        // Coarse replay-finish (worker-thread mirror): drive the
-                        // guest's `wpk_fork_rewind_end()` (normal) or
-                        // `wpk_fork_abort_end()` (abort — gated/failed-launch) then
-                        // finish the replay in one module call, per
-                        // `coord.is_abort_replay()`.
-                        let abort = coord.is_abort_replay();
-                        fm.fm_parent_finish.call(&mut caller, u32::from(abort))?;
-                        let errno = fm.fm_last_errno.call(&mut caller, ())?;
-                        if errno != 0 {
-                            return Err(wasmtime::Error::msg(format!(
-                                "fm_parent_finish failed: errno {errno}"
-                            )));
-                        }
-                        coord.set_abort_replay(false);
-                        coord.set_phase(ForkCoordPhase::Idle);
-                        Ok(coord.fork_result())
-                    }
-                }
+                fork_module_kernel_fork(&mut caller, fm, &coord, &mem, ch, mode)
             },
         )?;
     }

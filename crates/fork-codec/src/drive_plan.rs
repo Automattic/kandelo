@@ -172,8 +172,9 @@ pub const DRIVE_OP_UNWIND_BEGIN: u32 = 10;
 /// activation before serializing the sealed journal. This drives the SAME guest
 /// state machine `wpk_fork_unwind_begin`/`wpk_fork_rewind_begin` do; it is
 /// emitted ONLY for a COMPLETE capture (every frame committed), never for a
-/// partial/aborted capture (that path stays on the host's `sealForAbort` +
-/// abort-replay, which must NOT drive unwind-end mid-unwind).
+/// partial/aborted capture (that path is the fork module's partial seal +
+/// abort-replay on a failed frame reserve, which must NOT drive unwind-end
+/// mid-unwind).
 pub const DRIVE_OP_UNWIND_END: u32 = 11;
 /// `op` value: run one activation's guest `wpk_fork_rewind_end()` — the
 /// parent/child REPLAY-FINISH state flip that returns the activation from

@@ -20,9 +20,10 @@ import {
  * boundary, and must still TRAP when it does not. That trap is the only
  * thing standing between a mis-nested release and silent capture corruption.
  *
- * WHAT DRIVES THE RESET: `driveBumpReset` is `fm_capture_begin`, the fork's
- * designated bump-reset point and one of `reset_bump_heap`'s production
- * callers (the others need a drive table this fixture has none of). The COW
+ * WHAT DRIVES THE RESET: `driveBumpReset` is the capture begin
+ * (`fm_parent_begin_capture`), whose first step is the fork's designated bump
+ * reset and one of `reset_bump_heap`'s production callers (the others need a
+ * drive table this fixture has none of). The COW
  * scrub is `fm_set_format` itself, which is NOT one of those callers -- that
  * is the whole reason the scrub test exists.
  *
@@ -128,21 +129,28 @@ describe("guest-facing scratch chain", () => {
 
   it("returns every chunk when a reset aborts open frames", () => {
     const x = arenaFixture("scratch chain reset");
+    // The first capture begin in a worker maps the bump heap's chunk, which a
+    // durable instance keeps for the next fork by design
+    // (`fork-bump-heap.test.ts`); take it here so the tally below is balanced.
+    x.driveBumpReset();
     // Reserve twice without releasing: two open frames across two chunks.
     x.scratchReserve(FRAME);
     x.scratchReserve(FRAME);
     const chunksHeld = x.stats(SCRATCH_CHUNK_COUNT_FIELD);
     expect(chunksHeld, "two open frames, two chunks").toBe(2);
     const before = x.munmaps();
+    const mappedBefore = x.mmaps();
 
-    x.driveBumpReset(); // `fm_capture_begin` reaches `reset_bump_heap`
+    x.driveBumpReset(); // the capture begin reaches `reset_bump_heap`
 
     // Every chunk must come back -- the defect the old `SCRATCH_TOP.store(0)`
     // comment records as already fixed, arriving by a new route. BOTH HALVES:
     // the count walks the list, so an unlinked-but-unmapped chunk reads as
-    // zero here and only the tally sees it.
+    // zero here and only the tally sees it. The begin maps chunks of its own
+    // before it refuses and returns them as it does, so what must come back
+    // BEYOND what it mapped is the scratch chain.
     expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD)).toBe(0);
-    expect(x.munmaps() - before).toBe(chunksHeld);
+    expect((x.munmaps() - before) - (x.mmaps() - mappedBefore)).toBe(chunksHeld);
   });
 
   it("does not hand a COW child the parent's scratch chunks", () => {
@@ -223,7 +231,7 @@ describe("guest-facing scratch chain", () => {
     // trapped parent.
     //
     // NODE/BROWSER ONLY. `crates/host-native` routes the scratch imports to
-    // a host-owned fixed page, never imports `fm_borrowed_replay_workspace`,
+    // a host-owned fixed page, never reads the seal row's scratch bytes,
     // and its `handle_fork` reads only the mode word, so there is neither a
     // producer nor a consumer of this number there -- a pre-existing
     // host-parity boundary in the capture-side scratch path, older than the
@@ -231,7 +239,6 @@ describe("guest-facing scratch chain", () => {
     // rather than by inventing a native gate.
     const f = fixture();
     admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
     expect(f.errno(), "the capture opens").toBe(0);
     const reserve = f.x.__wpk_fork_ref_scratch_reserve as (n: number) => number;
@@ -241,12 +248,10 @@ describe("guest-facing scratch chain", () => {
     expect(2 * FRAME, "two frames open at once exceed a wasm page").toBeGreaterThan(WASM_PAGE_SIZE);
     release(b, FRAME);
     release(a, FRAME);
-    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    const row = (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
     expect(f.errno(), "the parent seals rather than trapping").toBe(0);
-    const reported = Number(
-      (f.x.fm_borrowed_replay_workspace as (field: number) => bigint)(1),
-    );
-    expect(f.errno(), "field 1 is the scratch high-water").toBe(0);
+    // The seal row's fourth word is the scratch high-water.
+    const reported = new DataView(f.memory.buffer).getUint32(row + 12, true);
     expect(reported, "the reported scratch is what the capture opened").toBe(2 * FRAME);
     expect(reported, "and it is the number the kernel gate refuses").toBeGreaterThan(
       WASM_PAGE_SIZE,

@@ -3882,6 +3882,57 @@ mod tests {
         Ok(())
     }
 
+    /// P-11 on the native host: fork() when the address space runs out, first
+    /// before the capture begins and then after a deep unwind committed
+    /// frames. Each must return ENOMEM with no child and a usable parent, the
+    /// pages the failed fork took must come back, and a later fork must
+    /// succeed. The native mate of P-11 in
+    /// `host/test/fork-instrument-coverage.test.ts`, on the same source
+    /// (`programs/p_11_fork_continuation_enomem.c`).
+    ///
+    /// NOT the mid-unwind failure the Node copy reaches, and the fixture's own
+    /// comment says why: wasmtime's default wasm stack runs out at about the
+    /// same depth that fills one continuation chunk, so here the deep fork's
+    /// ENOMEM lands at the seal. Both are aborts the fork module now begins
+    /// itself (lane F stage 1I) and this host finishes by asking the module's
+    /// phase; the mid-unwind one is the same module code, reached on Node,
+    /// Chromium and WebKit, and on this host it waits on the native stack
+    /// depth rather than on the fork module.
+    #[test]
+    fn smoke_fork_continuation_enomem_preserves_parent() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = crate::fixtures::fixture("native_fork_continuation_enomem.instrumented.wasm");
+        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        let stderr = String::from_utf8_lossy(&outcome.stderr);
+        for marker in [
+            "ROOT_CONTINUATION_ENOMEM: ok",
+            "ROOT_NO_PHANTOM_CHILD: ok",
+            "ROOT_PARENT_USABLE: ok",
+            "CONTINUATION_ENOMEM: ok",
+            "NO_PHANTOM_CHILD: ok",
+            "CONTINUATION_PAGE_REUSED: ok",
+            "RECOVERY_CHILD: ok",
+            "RECOVERY_PARENT: child=",
+            "PASS: P-11",
+        ] {
+            assert!(
+                stdout.contains(marker),
+                "missing {marker:?} (stdout: {stdout:?}, stderr: {stderr:?}, exit: {})",
+                outcome.exit_code,
+            );
+        }
+        assert_eq!(outcome.exit_code, 0, "stdout: {stdout:?}");
+        Ok(())
+    }
+
     /// A fork child killed after this host registered it and before its
     /// replay reported `SYS_FORK_REPLAY_READY` is still the parent's child:
     /// POSIX gives the parent its pid from fork() and a zombie it reaps with

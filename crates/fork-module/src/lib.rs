@@ -3324,8 +3324,8 @@ mod wasm {
     /// every activation's frame writer + the process journal (`finish_unwind_impl`)
     /// and serialize the child-inheritable KFRE journal image into a freshly
     /// channel-mmap'd chunk (`serialize_journal_alloc_impl`). Returns the image
-    /// chunk's guest offset (the byte length is read back via
-    /// `fm_journal_image_len`).
+    /// chunk's guest offset (its byte length is in `journal_image_len`, which
+    /// `fm_parent_seal_capture` hands out in its row).
     ///
     /// This folds the host's former three-part seal — a per-activation
     /// `wpk_fork_unwind_end()` loop, then `fm_finish_unwind`, then
@@ -3336,8 +3336,8 @@ mod wasm {
     /// ONLY for a COMPLETE capture — every frame committed. A partial/aborted
     /// capture (a mid-unwind `frame_reserve` failure) must NOT reach here: driving
     /// `wpk_fork_unwind_end` while the guest is mid-unwind corrupts the guest
-    /// unwind state machine (the prior trap). That path stays on the host's
-    /// `fm_finish_unwind`-only `sealForAbort` + abort-replay.
+    /// unwind state machine (the prior trap). That path is `frame_reserved`'s
+    /// partial seal + abort replay.
     ///
     /// Truthful failure: a guest reconstruction/seal failure traps inside the shim
     /// exactly as it did under the host loop; a `finish_unwind` or serialize error
@@ -4156,12 +4156,12 @@ mod wasm {
         unsafe { &mut *CAPTURE_STATE.0.get() }
     }
 
-    // Whether a capture session is live for the current fork. `fm_capture_begin`
+    // Whether a capture session is live for the current fork. `open_capture_session`
     // sets this AND creates the builder EAGERLY (see there); `fm_begin_unwind`
     // consumes it (`swap(0)`) to decide whether it, rather than
-    // `fm_capture_begin`, owns the fork's single bump-heap reset. The builder
+    // `open_capture_session`, owns the fork's single bump-heap reset. The builder
     // must be allocated from a bump that is reset exactly once per fork, at the
-    // true fork start (`fm_capture_begin`), because the guest encodes references
+    // true fork start (`open_capture_session`), because the guest encodes references
     // BOTH before and after `fm_begin_unwind`; resetting again in
     // `fm_begin_unwind` would reclaim the live builder mid-fork. So the builder
     // survives capture, seal, and the parent's own `capture_vector_get` replay
@@ -4234,7 +4234,7 @@ mod wasm {
         VectorInFlight(UnsafeCell::new([[0u32; 3]; VECTOR_STACK_DEPTH]));
     static VECTOR_IN_FLIGHT_DEPTH: AtomicU32 = AtomicU32::new(0);
 
-    /// The resident capture builder for the current fork. `fm_capture_begin`
+    /// The resident capture builder for the current fork. `open_capture_session`
     /// creates it eagerly; this is the accessor the capture exports use. As a
     /// defensive fallback it also creates the builder if a session is armed but
     /// the builder is somehow absent. `Err(EINVAL)` if no capture session is
@@ -4775,7 +4775,7 @@ mod wasm {
     /// says nothing about how much room the encode actually needed. A vfork
     /// BORROWED child re-runs the decode side of that same graph in memory it
     /// must own privately, and the capture high-water is the bound the host
-    /// reserves from (`fm_borrowed_replay_workspace` field 1). Reset with the
+    /// reserves from (`fm_parent_seal_capture`'s row). Reset with the
     /// bump, because a high-water carried across forks would over-reserve every
     /// later child by the worst fork the worker ever ran.
     static SCRATCH_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
@@ -4886,7 +4886,7 @@ mod wasm {
     // The host knows ONE thing about it that this module cannot derive: where
     // the kernel put it. Everything else -- how much prefix each activation
     // needs, in what order, with what alignment -- this module already computes,
-    // and `fm_borrowed_replay_workspace` has been answering that question for
+    // and `borrowed_prefix_bytes` has been answering that question for
     // the host since it existed. Carving the prefixes here rather than in
     // JavaScript removes the only reason the host had to do that arithmetic
     // twice.
@@ -5405,7 +5405,7 @@ mod wasm {
         extra_chunks: Vec<(u64, u64)>,
         /// The guest offset + byte length of the KFRE journal image
         /// `fm_serialize_journal_alloc` channel-mmap'd (0 until it runs). The
-        /// host reads both back (`fm_journal_image_len`) to write the
+        /// seal hands both back (`fm_parent_seal_capture`'s row) to write the
         /// `JournalImage` KFMS record so the child can find the inherited image.
         journal_image_ptr: u64,
         journal_image_len: u64,
@@ -5599,12 +5599,12 @@ mod wasm {
         let fmt = format()?;
 
         // Reclaim the previous fork's state before this fork. The bump-HEAP reset
-        // is skipped when a capture session is armed: `fm_capture_begin` already
+        // is skipped when a capture session is armed: `open_capture_session` already
         // reset the bump at the true fork start (before the guest began encoding
         // references into the co-resident capture builder), and resetting again
         // here would reclaim that live builder mid-fork. `swap(0)` consumes the
         // arming so a later non-capture fork (or a flag-off fork that never calls
-        // `fm_capture_begin`) still reclaims the heap here as before.
+        // `open_capture_session`) still reclaims the heap here as before.
         if CAPTURE_ARMED.swap(0, Ordering::Relaxed) == 0 {
             // No live capture builder in the bump: reclaim the whole heap,
             // dropping every resident bump-allocated static (including any stale
@@ -5613,7 +5613,7 @@ mod wasm {
             release_previous_fork_arena();
             reset_bump_heap();
         } else {
-            // A capture is armed: `fm_capture_begin` already reset the bump and the
+            // A capture is armed: `open_capture_session` already reset the bump and the
             // live builder must survive across this unwind, so reclaim only the
             // previous fork's `ForkModule` and leave the bump (and builder) intact.
             *state() = None;
@@ -6151,7 +6151,7 @@ mod wasm {
         // A COW child INHERITS the parent's live `capture_state` builder through
         // the memory clone. It lives in this same bump heap, so it must be dropped
         // BEFORE the reset (via `reset_bump_heap`) — otherwise the child's next
-        // `fm_capture_begin` would drop the inherited builder AFTER this reset had
+        // `open_capture_session` would drop the inherited builder AFTER this reset had
         // clobbered its `BTreeMap` nodes, trapping. This was the real
         // command-substitution / pipeline fork failure: the subshell (a COW child)
         // trapped on its second fork because its inherited builder was corrupted
@@ -6683,7 +6683,7 @@ mod wasm {
         // the region the kernel admitted (`fm_set_borrowed_workspace`); the
         // walk that divides it among activations is this module's, and it was
         // already reporting the total for that walk through
-        // `fm_borrowed_replay_workspace`. Carving in the same order the total
+        // `borrowed_prefix_bytes`. Carving in the same order the total
         // was computed in is what makes the two agree.
         let act0_prefix_size = borrowed_fixed_prefix(module_state_root, 0)?;
         let act0_private_prefix = carve_borrowed_prefix(act0_prefix_size)?;
@@ -7555,18 +7555,12 @@ mod wasm {
 
     /// `__wpk_fork_frame_reserve(size) -> payload`. Reserve the next frame node
     /// and return its payload pointer (0 on failure; check `fm_last_errno`).
+    ///
+    /// A failure DURING A CAPTURE has already been turned into an abort replay
+    /// when this returns 0 -- see [`frame_reserved`].
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_frame_reserve(size: usize) -> usize {
-        match reserve_impl(primary_activation(), size as u64) {
-            Ok(payload) => {
-                set_ok();
-                payload as usize
-            }
-            Err(errno) => {
-                set_err(errno);
-                0
-            }
-        }
+        frame_reserved(reserve_impl(primary_activation(), size as u64))
     }
 
     /// `__wpk_fork_frame_commit(payload)`. Commit the pending reservation and
@@ -7637,15 +7631,58 @@ mod wasm {
     // facing exports above are these with `act == primary_activation`.
 
     /// `fm_frame_reserve(act, size) -> payload`. Reserve into activation `act`'s
-    /// own writer/arena (0 on failure; check `fm_last_errno`).
+    /// own writer/arena (0 on failure; check `fm_last_errno`). A failure during
+    /// a capture aborts it, exactly as the single-activation export does.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_frame_reserve(activation_id: u32, size: usize) -> usize {
-        match reserve_impl(activation_id, size as u64) {
+        frame_reserved(reserve_impl(activation_id, size as u64))
+    }
+
+    /// Answer a guest frame reserve, turning a failure mid-capture into the
+    /// abort replay the guest's reserve==0 contract expects to find.
+    ///
+    /// The instrumented guest, handed 0, does not return an error up its
+    /// stack: it restarts the live activation in its abort loop
+    /// (`__wpk_fork_select_unwind_frame`), and that loop assumes the abort
+    /// replay is ALREADY established, synchronously, before the 0 arrives
+    /// (`crates/fork-instrument/tests/abort_restart_node.rs` models exactly
+    /// that). So the moment of failure is the only moment the abort can begin.
+    ///
+    /// Both JavaScript hosts used to do this by wrapping the export in a
+    /// closure that called back into the module twice; host-native never
+    /// wrapped it, so a native capture that ran out of memory mid-unwind had
+    /// no abort to find. Doing it here serves every host and every activation
+    /// (the per-activation trampolines reach `fm_frame_reserve`, which the
+    /// JavaScript wrapper never covered).
+    ///
+    /// The seal is the partial one: every frame writer and the journal, but
+    /// NOT the guest's `wpk_fork_unwind_end` drive -- the guest is still
+    /// mid-unwind, and flipping it there corrupts its state machine. A failed
+    /// reserve leaves no pending frame (`LinkedFrameWriter::reserve_frame` sets
+    /// `pending` only after a chunk is in hand), so the committed chain is
+    /// whole. If the abort itself cannot begin, the guest has nothing it can
+    /// honestly resume into, and this traps: the loud answer the wrapper's
+    /// throw used to give.
+    ///
+    /// The errno is re-set last because the abort drives guest code that calls
+    /// back into this module, and the reserve's errno is the one its caller
+    /// reads.
+    fn frame_reserved(result: Result<u64, Errno>) -> usize {
+        match result {
             Ok(payload) => {
                 set_ok();
                 payload as usize
             }
             Err(errno) => {
+                if PHASE.load(Ordering::Relaxed) == PHASE_CAPTURE {
+                    let aborted = finish_unwind_impl().and_then(|()| {
+                        enter_phase(PHASE_SEALED_PARENT);
+                        begin_parent_abort(ABORT_CAUSE_FRAME_RESERVE, errno as u32)
+                    });
+                    if aborted.is_err() {
+                        wasm_intr::unreachable();
+                    }
+                }
                 set_err(errno);
                 0
             }
@@ -7753,17 +7790,6 @@ mod wasm {
         0
     }
 
-    /// The byte length of the KFRE image the last `fm_serialize_journal_alloc`
-    /// wrote (0 if none). The host reads this together with the returned pointer
-    /// to write the `JournalImage` KFMS record.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_journal_image_len() -> i64 {
-        match state().as_ref() {
-            Some(st) => st.journal_image_len as i64,
-            None => 0,
-        }
-    }
-
     /// Release every channel-mapped frame/image chunk WITHOUT requiring the
     /// replay to have finished — the host error/abort path (mirrors the JS
     /// backend's `abort()` releasing the frame arena). Idempotent.
@@ -7776,6 +7802,7 @@ mod wasm {
         // same reason.
         let result = abort_impl();
         enter_phase(PHASE_IDLE);
+        ABORT_REPORT.store(0, Ordering::Relaxed);
         match result {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
@@ -8273,56 +8300,80 @@ mod wasm {
     /// the injector-wired `fm_drive_execute` shim, which `call_indirect`s each
     /// activation's guest `wpk_fork_rewind_begin(root)` in ascending id order.
     ///
-    /// This replaces the host's former two-part sequence — `fm_begin_replay`
-    /// followed by a per-activation `wpk_fork_rewind_begin(root)` loop — with ONE
-    /// module call. The host must have bound each activation's
-    /// `wpk_fork_rewind_begin` into `__wpk_fork_drive_table` at
-    /// `drive_base(activation) + DRIVE_SLOT_REWIND_BEGIN` before calling
-    /// this (the ref-typed table bind is a host floor). Behaviourally identical
-    /// to the old host loop: same guest export, same roots, same order. A zero-
-    /// activation state or a plan-build failure is a truthful errno
-    /// (`fm_last_errno`); a guest reconstruction failure traps inside the shim
-    /// exactly as it did under the host loop.
+    /// The host must have bound each activation's `wpk_fork_rewind_begin` into
+    /// `__wpk_fork_drive_table` at `drive_base(activation) +
+    /// DRIVE_SLOT_REWIND_BEGIN` before calling this (the ref-typed table bind is
+    /// a host floor). A zero-activation state or a plan-build failure is a
+    /// truthful errno (`fm_last_errno`); a guest reconstruction failure traps
+    /// inside the shim.
     ///
-    /// `abort != 0` selects the ABORT-replay phase instead: `begin_abort_impl`
-    /// rather than `begin_replay_impl`, and `DRIVE_OP_ABORT_BEGIN` steps driving
-    /// the guest's `wpk_fork_abort_begin(root)` (bound at `DRIVE_SLOT_ABORT_BEGIN`)
-    /// rather than `wpk_fork_rewind_begin`. Both phases take the SAME continuation
-    /// root — the module's per-activation `module_buffer` — so the two plans are
-    /// byte-identical except for the op tag.
-    ///
-    /// This replaced a separate `fm_parent_abort()` export. The flag is safe to
-    /// carry at the boundary because `parent_replay_impl` already took it, both
-    /// values drive the guest (they differ only in which drive-table slot), and a
-    /// mismatched flag is caught LOUDLY: `fm_parent_finish` asserts the `in_abort`
-    /// pairing this call armed, so a replay begun here and finished as an abort is
-    /// `EINVAL`, not silent divergence. `fm_parent_finish(abort: u32)` is the
-    /// precedent — the same flag, at the same layer, for the paired finish.
-    ///
-    /// Contrast `fm_parent_abort_seal`, which is deliberately NOT folded into
-    /// `fm_parent_seal_capture`: there the two entries differ in whether they
-    /// drive the guest AT ALL, and a wrong flag would corrupt the guest's unwind
-    /// state machine silently. Two names are the guard there. Here they are not.
+    /// `abort_errno != 0` is the one abort a HOST decides: the kernel refused
+    /// to create the child, with that errno. It selects the ABORT replay
+    /// instead (`begin_abort_impl`, and `DRIVE_OP_ABORT_BEGIN` steps driving the
+    /// guest's `wpk_fork_abort_begin(root)`), and records the errno for
+    /// `fm_parent_finish` to hand back. The other two aborts -- a frame reserve
+    /// that failed mid-unwind, and a seal that failed after the journal sealed
+    /// -- are begun by the module where they happen, so no host passes their
+    /// errno anywhere. A stray abort finish still fails loudly: the finish
+    /// requires the abort-replay phase this armed.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_replay(abort: u32) {
-        match require_phase(PHASE_SEALED_PARENT)
-            .and_then(|()| parent_replay_impl(abort != 0))
-        {
-            Ok(()) => {
-                // The two replays END differently -- an abort replay finishes
-                // with `fm_parent_finish(abort=1)` and returns `-errno` to the
-                // guest's `kernel_fork`, an ordinary one with `abort=0` -- so
-                // they are separate phases rather than one "replaying".
-                enter_phase(if abort != 0 {
-                    PHASE_ABORT_REPLAY
-                } else {
-                    PHASE_PARENT_REPLAY
-                });
-                set_ok()
+    pub extern "C" fn fm_parent_replay(abort_errno: u32) {
+        let begun = require_phase(PHASE_SEALED_PARENT).and_then(|()| {
+            if abort_errno != 0 {
+                return begin_parent_abort(ABORT_CAUSE_LAUNCH, abort_errno);
             }
+            parent_replay_impl(false)?;
+            enter_phase(PHASE_PARENT_REPLAY);
+            Ok(())
+        });
+        match begun {
+            Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
     }
+
+    /// Why this fork's parent is abort-replaying, and with what errno:
+    /// `(cause << 16) | errno`, 0 when no abort is in flight.
+    ///
+    /// `fm_parent_finish(abort=1)` hands it back, which is how `fork()` learns
+    /// its `-errno` and the host learns what to say about it. Both used to be
+    /// host variables (`forkAbortErrno`, `threadForkAbortErrno`) set at each
+    /// place a host started an abort; the module starts two of the three now,
+    /// so the record lives where they happen.
+    static ABORT_REPORT: AtomicU32 = AtomicU32::new(0);
+    /// A frame reserve failed mid-unwind (`frame_reserved`).
+    const ABORT_CAUSE_FRAME_RESERVE: u32 = 1;
+    /// The capture could not seal after its journal sealed.
+    const ABORT_CAUSE_SEAL: u32 = 2;
+    /// The kernel refused to create the child (`fm_parent_replay(errno)`).
+    const ABORT_CAUSE_LAUNCH: u32 = 3;
+
+    /// Begin the parent's ABORT replay from a sealed parent and record why.
+    ///
+    /// Every abort ends here, whoever started it, so the phase and the report
+    /// cannot disagree. An errno that does not fit the report's 16 bits, or is
+    /// zero, is not an errno.
+    fn begin_parent_abort(cause: u32, errno: u32) -> Result<(), Errno> {
+        if errno == 0 || errno > 0xffff {
+            return Err(Errno::EINVAL);
+        }
+        parent_replay_impl(true)?;
+        enter_phase(PHASE_ABORT_REPLAY);
+        ABORT_REPORT.store((cause << 16) | errno, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// What a sealed capture hands the host, in one row:
+    /// `[journal_image_ptr, journal_image_len, borrowed_prefix_bytes,
+    /// borrowed_scratch_bytes]`, each a `u32`.
+    ///
+    /// The last two are what a vfork BORROWED child's workspace must hold
+    /// (every activation's fixed prefix, aligned in ascending id order, and the
+    /// capture's scratch high-water); the host passes them to the kernel with
+    /// the `SYS_VFORK`. They are fixed once the capture seals -- the activation
+    /// set has stopped growing and the scratch has peaked -- so the seal is
+    /// where they are read, rather than a second entry legal only after it.
+    static SEAL_ROW: [AtomicU32; 4] = [const { AtomicU32::new(0) }; 4];
 
     /// Sequence a whole capture SEAL in the module (control-flow inversion): drive
     /// each open activation's guest `wpk_fork_unwind_end()` through the injector-
@@ -8330,64 +8381,87 @@ mod wasm {
     /// activation, ascending id order — the argument-free `() -> ()` capture-seal
     /// flip), then seal every frame writer + the process journal
     /// (`finish_unwind_impl`) and serialize the child-inheritable KFRE image into a
-    /// freshly channel-mmap'd chunk (`serialize_journal_alloc_impl`). Returns that
-    /// chunk's guest offset (0 on failure; check `fm_last_errno`), and
-    /// `fm_journal_image_len` returns its byte length — identical to the return
-    /// contract of the fine-grained `fm_serialize_journal_alloc`.
+    /// freshly channel-mmap'd chunk (`serialize_journal_alloc_impl`). Returns the
+    /// address of [`SEAL_ROW`], or 0 (see below).
     ///
-    /// This replaces the host's former three-part seal — a per-activation
-    /// `wpk_fork_unwind_end()` loop, then `fm_finish_unwind`, then
-    /// `fm_serialize_journal_alloc` — with ONE module call. The host must have
-    /// bound each activation's `wpk_fork_unwind_end` into `__wpk_fork_drive_table`
-    /// at `drive_base(activation) + DRIVE_SLOT_UNWIND_END` before calling
-    /// this (the ref-typed table bind is a host floor). Behaviourally identical to
-    /// the old host sequence: same guest export, same order, seal FIRST then
-    /// serialize.
+    /// The host must have bound each activation's `wpk_fork_unwind_end` into
+    /// `__wpk_fork_drive_table` at `drive_base(activation) +
+    /// DRIVE_SLOT_UNWIND_END` before calling this (the ref-typed table bind is a
+    /// host floor).
     ///
-    /// ONLY for a COMPLETE capture (every frame committed). A partial/aborted
-    /// capture must NOT call this — driving `wpk_fork_unwind_end` mid-unwind
-    /// corrupts the guest state machine (the prior trap); that path stays on
-    /// `fm_finish_unwind` (`sealForAbort`) + abort-replay. A seal-time serialize
-    /// OOM returns 0 with `fm_last_errno` set so the host reroutes to abort-replay
-    /// rather than trapping.
+    /// ONLY for a COMPLETE capture (every frame committed). A capture whose
+    /// frame reserve failed mid-unwind never reaches here: `frame_reserved`
+    /// aborted it on the spot, and the phase is no longer capture.
+    ///
+    /// A seal that fails AFTER the journal sealed ABORTS here, in the module:
+    /// the parent's committed frames are whole and replayable, so this begins
+    /// the abort replay itself and returns 0 with `fm_last_errno` set and the
+    /// phase at abort-replay. That is how a capture holding a reference the
+    /// platform refuses to carry (`EOPNOTSUPP`, `CAPTURE_REFUSAL`) or a
+    /// seal-time allocation failure becomes `fork()` = `-errno` with the parent
+    /// intact. A seal that fails before the journal sealed, or an abort that
+    /// cannot begin, returns 0 with the phase anywhere else, which no host can
+    /// resume from.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_seal_capture(channel_base: usize) -> usize {
-        match require_phase(PHASE_CAPTURE)
-            .and_then(|()| seal_capture_impl(channel_base as u64))
-        {
-            Ok(ptr) => {
+        // Phase first and apart: a seal refused for being out of phase must
+        // not reach the abort below, which would begin an abort replay of a
+        // capture this call never touched.
+        if let Err(errno) = require_phase(PHASE_CAPTURE) {
+            set_err(errno);
+            return 0;
+        }
+        match seal_capture_impl(channel_base as u64).and_then(write_seal_row) {
+            Ok(row) => {
                 enter_phase(PHASE_SEALED_PARENT);
                 set_ok();
-                ptr as usize
+                row
             }
             Err(errno) => {
                 // A seal that failed AFTER the journal sealed is STILL a sealed
-                // parent, and the phase has to say so. `seal_capture_impl`
-                // drives the guest's unwind-end and seals every frame writer
-                // before it validates the reference graph or writes the journal
-                // image, so a failure in those later steps leaves the parent's
-                // committed frames whole and replayable -- which is exactly what
-                // the host's abort path then has to do, so that `fork()` returns
-                // `-errno` and the parent survives.
+                // parent. `seal_capture_impl` drives the guest's unwind-end and
+                // seals every frame writer before it validates the reference
+                // graph or writes the journal image, so a failure in those
+                // later steps leaves the parent's committed frames replayable.
                 //
-                // Leaving the phase at CAPTURE made that impossible:
-                // `fm_parent_replay` requires SEALED_PARENT, so the abort
-                // answered EBUSY and took the worker down with errno 16 -- a
-                // number about the cleanup, hiding the number about the fork.
-                // That is how the externref fork's real failure stayed hidden
-                // (census section 188).
+                // Leaving the phase at CAPTURE made the abort impossible: the
+                // replay requires SEALED_PARENT, so the abort answered EBUSY
+                // and took the worker down with errno 16 -- a number about the
+                // cleanup, hiding the number about the fork. That is how the
+                // externref fork's real failure stayed hidden (census section
+                // 188).
                 //
-                // `fm_parent_abort_seal` cannot be the host's answer here: it
+                // The mid-unwind abort's partial seal cannot be used here: it
                 // seals the journal too, and `ReplayEventJournal::seal_capture`
                 // refuses a second seal. The state is already what the abort
-                // needs; only the phase disagreed.
+                // needs.
                 if journal_sealed_now() {
                     enter_phase(PHASE_SEALED_PARENT);
+                    if let Err(abort) = begin_parent_abort(ABORT_CAUSE_SEAL, errno as u32) {
+                        set_err(abort);
+                        return 0;
+                    }
                 }
                 set_err(errno);
                 0
             }
         }
+    }
+
+    /// Fill [`SEAL_ROW`] for the image `seal_capture_impl` just wrote and
+    /// return its address.
+    fn write_seal_row(image: u64) -> Result<usize, Errno> {
+        let len = state().as_ref().ok_or(Errno::EINVAL)?.journal_image_len;
+        let row = [
+            image,
+            len,
+            borrowed_prefix_bytes()?,
+            SCRATCH_HIGH_WATER.load(Ordering::Relaxed) as u64,
+        ];
+        for (cell, value) in SEAL_ROW.iter().zip(row) {
+            cell.store(u32::try_from(value).map_err(|_| Errno::EINVAL)?, Ordering::Relaxed);
+        }
+        Ok(core::hint::black_box(SEAL_ROW.as_ptr() as usize))
     }
 
     /// Whether this fork's replay journal has sealed -- the point after which
@@ -8410,31 +8484,44 @@ mod wasm {
         )
     }
 
-    /// Sequence a whole capture BEGIN in the module (control-flow inversion): open
-    /// activation 0 (`begin_unwind_impl`, reclaiming the previous fork), add each
-    /// bound side activation (`bound_sides`, `add_activation_unwind_impl`),
-    /// allocate the fork's KFMS arena and publish its root into
-    /// its module-buffer prefix (the module-side `writeForkModuleStateRoot`), then
-    /// DRIVE each activation's guest `wpk_fork_unwind_begin(root)` through the
-    /// injector-wired `fm_drive_execute` shim in ascending id order.
+    /// Sequence a whole capture BEGIN in the module (control-flow inversion):
+    /// open this fork's reference-capture session (`open_capture_session`, the
+    /// fork's single bump-heap reset), open activation 0 (`begin_unwind_impl`),
+    /// add each bound side activation (`bound_sides`,
+    /// `add_activation_unwind_impl`), allocate the fork's KFMS arena and publish
+    /// its root into its module-buffer prefix, then DRIVE each activation's
+    /// guest `wpk_fork_unwind_begin(root)` through the injector-wired
+    /// `fm_drive_execute` shim in ascending id order.
     ///
-    /// This replaces the host's former per-activation `fm_begin_unwind` /
-    /// `fm_add_activation_unwind` + `writeForkModuleStateRoot` +
-    /// `wpk_fork_unwind_begin` loop with ONE module call. The host must have bound
-    /// each activation's `wpk_fork_unwind_begin` into `__wpk_fork_drive_table` at
-    /// `drive_base(activation) + DRIVE_SLOT_UNWIND_BEGIN` before calling
-    /// this (the ref-typed table bind is a host floor). Returns activation 0's
-    /// module-buffer anchor (0 on failure; check `fm_last_errno`); a side
-    /// activation's anchor stays in the module, which records every
-    /// activation's root in the continuation manifest it writes at seal
-    /// (`write_activation_continuations`). A guest reconstruction failure
-    /// traps inside the shim exactly as it did under the host loop; a create /
-    /// plan-build failure is a truthful errno.
+    /// The host must have bound each activation's `wpk_fork_unwind_begin` into
+    /// `__wpk_fork_drive_table` at `drive_base(activation) +
+    /// DRIVE_SLOT_UNWIND_BEGIN` before calling this (the ref-typed table bind is
+    /// a host floor). Returns activation 0's module-buffer anchor (0 on
+    /// failure; check `fm_last_errno`); a side activation's anchor stays in the
+    /// module, which records every activation's root in the continuation
+    /// manifest it writes at seal (`write_activation_continuations`). A guest
+    /// reconstruction failure traps inside the shim; a create / plan-build
+    /// failure is a truthful errno.
+    ///
+    /// The session open was a separate `fm_capture_begin` entry, and every host
+    /// called the two back to back; nothing either host did between them
+    /// touched the module's heap.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_begin_capture(channel_base: usize) -> usize {
-        match require_phase(PHASE_IDLE)
-            .and_then(|()| begin_capture_impl(channel_base as u64))
-        {
+        let begun = require_phase(PHASE_IDLE).and_then(|()| {
+            // Refuse a call that could never open a capture BEFORE the session
+            // reset: the reset maps the bump heap's first chunk through this
+            // very channel, so on a bad channel it would fault rather than
+            // answer, and a refused call should leave nothing reset.
+            // `begin_unwind_impl` checks both again; these are the same rules.
+            if channel_base == 0 || channel_base as u64 % PAGE != 0 {
+                return Err(Errno::EINVAL);
+            }
+            format()?;
+            open_capture_session();
+            begin_capture_impl(channel_base as u64)
+        });
+        match begun {
             Ok(root) => {
                 enter_phase(PHASE_CAPTURE);
                 set_ok();
@@ -8470,32 +8557,6 @@ mod wasm {
         }
     }
 
-    /// Coarse ABORT-SEAL entry (the mid-unwind sibling of [`fm_parent_seal_capture`]).
-    /// A partial/aborted capture — a mid-unwind `__wpk_fork_frame_reserve` failure —
-    /// must seal every activation's frame writer + the process journal WITHOUT
-    /// driving the guest `wpk_fork_unwind_end` (the guest is still mid-unwind; that
-    /// flip would corrupt its unwind state machine) and WITHOUT serializing a
-    /// child-inheritable journal image (no child is launched). This wraps
-    /// `finish_unwind_impl` — the SAME seal `fm_parent_seal_capture` performs after
-    /// its unwind-end drive — so the host abort path (`sealForAbort`) routes through
-    /// a coarse phase entry rather than calling the fine-grained `fm_finish_unwind`
-    /// directly. It has NO guest drive and NO serialize to fold, so unlike the other
-    /// coarse entries it is a single-step phase entry, parallel to
-    /// `fm_parent_seal_capture`. After this the host drives the ordinary module
-    /// abort-replay (`fm_parent_replay(abort=1)`). A failed reserve leaves no pending frame
-    /// (`LinkedFrameWriter::reserve_frame` sets `pending` only after a successful
-    /// chunk allocation), so the committed chain is complete and seal-able.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_abort_seal() {
-        match require_phase(PHASE_CAPTURE).and_then(|()| finish_unwind_impl()) {
-            Ok(()) => {
-                enter_phase(PHASE_SEALED_PARENT);
-                set_ok()
-            }
-            Err(errno) => set_err(errno),
-        }
-    }
-
     /// Sequence a whole REPLAY FINISH in the module (control-flow inversion): drive
     /// each open activation's guest `wpk_fork_rewind_end()` (`abort` == 0, moving it
     /// from `REWINDING` back to `NORMAL`) or `wpk_fork_abort_end()` (`abort` != 0,
@@ -8506,23 +8567,24 @@ mod wasm {
     /// `finish_abort_impl`): exhaust every activation's driver, finish the process
     /// journal, and release this fork's channel-mapped chunks.
     ///
-    /// This replaces the host's former two-part finish — a per-activation
-    /// `wpk_fork_rewind_end()` / `wpk_fork_abort_end()` loop, then `fm_finish_replay`
-    /// / `fm_finish_abort` — with ONE module call. The host must have bound each
-    /// activation's `wpk_fork_rewind_end` / `wpk_fork_abort_end` into
-    /// `__wpk_fork_drive_table` at `drive_base(activation) +
-    /// DRIVE_SLOT_{REWIND,ABORT}_END` before calling this (the ref-typed table bind
-    /// is a host floor). Behaviourally identical to the old host sequence: same
-    /// guest export, same ascending order, drive FIRST then finish. The abort finish
-    /// still asserts the `in_abort` pairing `fm_parent_replay(abort=1)` set, so a stray
+    /// The host must have bound each activation's `wpk_fork_rewind_end` /
+    /// `wpk_fork_abort_end` into `__wpk_fork_drive_table` at
+    /// `drive_base(activation) + DRIVE_SLOT_{REWIND,ABORT}_END` before calling
+    /// this (the ref-typed table bind is a host floor). The abort finish still
+    /// asserts the `in_abort` pairing the abort begin set, so a stray
     /// `fm_parent_finish(abort=1)` is a loud `EINVAL`.
+    ///
+    /// Returns 0 for an ordinary finish and, for an abort finish, the
+    /// [`ABORT_REPORT`] the abort recorded -- `(cause << 16) | errno`, where
+    /// `errno` is what `fork()` returns negated and `cause` is one of the
+    /// `ABORT_CAUSE_*` values. -1 on failure, with `fm_last_errno` set.
     ///
     /// A CHILD replay's finish is the point where the child reached the inherited
     /// fork site, so it then reports `SYS_FORK_REPLAY_READY` on the child's own
     /// channel (see `report_fork_replay_ready`). The kernel, not the host, decides
     /// from that whether the parent's fork() now returns the child pid.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_finish(abort: u32) {
+    pub extern "C" fn fm_parent_finish(abort: u32) -> i32 {
         let child_replay = abort == 0 && PHASE.load(Ordering::Relaxed) == PHASE_CHILD_REPLAY;
         // An ordinary finish ends EITHER a parent replay or a child replay --
         // the same call closes both, which is why this takes two phases rather
@@ -8542,9 +8604,17 @@ mod wasm {
         }) {
             Ok(()) => {
                 enter_phase(PHASE_IDLE);
-                set_ok()
+                set_ok();
+                if abort != 0 {
+                    ABORT_REPORT.swap(0, Ordering::Relaxed) as i32
+                } else {
+                    0
+                }
             }
-            Err(errno) => set_err(errno),
+            Err(errno) => {
+                set_err(errno);
+                -1
+            }
         }
     }
 
@@ -8672,45 +8742,33 @@ mod wasm {
 
     /// Begin (or restart) a reference-capture session: seed a fresh shared
     /// builder (recipe 0 = canonical null, vector 0 = empty sentinel) and drop
-    /// any previously serialized record stream. Mirrors the host's `beginCapture`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_begin() {
-        // `fm_capture_begin` is the FIRST module call of a capture fork (the host
-        // issues it in the fork syscall handler, before the guest unwinds). Make
-        // it the fork's SINGLE bump-heap reset point: reclaim the previous fork's
-        // state here, then ARM the session so `fm_begin_unwind` (which runs LATER,
-        // interleaved with the reference encode) does NOT reset again and wipe the
-        // capture builder. Empirically the guest encodes references BOTH before
-        // and after `fm_begin_unwind`, so the builder must be allocated from a
-        // bump that is reset exactly once, at the true fork start — here.
-        // Drop the PREVIOUS fork's capture builder and serialized record stream
-        // BEFORE resetting the bump. Both live in the bump heap `ALLOC.reset()`
-        // is about to reclaim. `ReferenceGraphBuilder` owns `BTreeMap`s whose
-        // `Drop` WALKS their tree nodes in place, so if we reset first and then
-        // allocate the fresh builder (which reuses the same low bump addresses),
-        // the old builder's nodes are overwritten and dropping it later walks
-        // clobbered pointers and traps (`unreachable`). Every fork after the
-        // first therefore trapped here: the resident builder from the prior fork
-        // was still `Some(..)` when the reassignment below dropped it, AFTER the
-        // reset+realloc had corrupted its backing store. Clearing the statics
-        // first drops those values while their bump memory is still valid (a
-        // no-op `dealloc`), so the subsequent reset is safe.
-        // Drop the PREVIOUS fork's capture builder + serialized record stream
-        // BEFORE `ALLOC.reset()` reclaims the bump they live in (see
-        // `reset_bump_heap`): a `ReferenceGraphBuilder` owns `BTreeMap`s whose
-        // `Drop` walks their nodes in place, so dropping one after the reset has
-        // reused its low bump addresses walks clobbered pointers and traps.
+    /// any previously serialized record stream. The first step of
+    /// `fm_parent_begin_capture`, before the guest unwinds.
+    ///
+    /// This is the fork's SINGLE bump-heap reset point: it reclaims the
+    /// previous fork's state, then ARMS the session so `begin_unwind_impl`
+    /// (which runs later, interleaved with the reference encode) does NOT reset
+    /// again and wipe the capture builder. The guest encodes references both
+    /// before and after the unwind begins, so the builder must be allocated
+    /// from a bump that is reset exactly once, at the true fork start -- here.
+    ///
+    /// Drop the PREVIOUS fork's capture builder and serialized record stream
+    /// BEFORE `ALLOC.reset()` reclaims the bump they live in (see
+    /// `reset_bump_heap`): a `ReferenceGraphBuilder` owns `BTreeMap`s whose
+    /// `Drop` walks their nodes in place, so dropping one after the reset has
+    /// reused its low bump addresses walks clobbered pointers and traps. Every
+    /// fork after the first once trapped exactly that way.
+    fn open_capture_session() {
         release_previous_fork_arena();
         reset_bump_heap();
         // Create the builder EAGERLY, now that the bump is fresh for this fork:
-        // the guest may issue its first reference encode BEFORE `fm_begin_unwind`,
-        // and `fm_begin_unwind` consumes the arming (so it won't reset the bump),
-        // so a deferred builder could be requested when neither the builder nor
-        // the arming is present. Eager creation makes the builder always available
-        // for the rest of the fork.
+        // the guest may issue its first reference encode BEFORE the unwind
+        // begins, and `begin_unwind_impl` consumes the arming (so it won't
+        // reset the bump), so a deferred builder could be requested when
+        // neither the builder nor the arming is present.
         *capture_state() = Some(ReferenceGraphBuilder::begin());
         CAPTURE_ARMED.store(1, Ordering::Relaxed);
-        set_ok();
+        ABORT_REPORT.store(0, Ordering::Relaxed);
     }
 
     /// Turn a MERGED function-catalog slot into a funcref recipe.
@@ -11049,7 +11107,7 @@ mod wasm {
             return Err(Errno::EINVAL); // nothing to check point
         }
 
-        // A fresh bump for the capture builder, exactly as `fm_capture_begin`
+        // A fresh bump for the capture builder, exactly as `open_capture_session`
         // does and for the same reason: the previous fork's builder lives in
         // memory the reset reclaims, so it is abandoned before rather than
         // dropped after. A previous fork's arena is unmapped first, as a new
@@ -11450,7 +11508,7 @@ mod wasm {
 
     /// Carve one activation's private prefix out of the admitted workspace.
     ///
-    /// The same alignment walk `fm_borrowed_replay_workspace` reports the total
+    /// The same alignment walk `borrowed_prefix_bytes` reports the total
     /// for, run for real: align the cursor, take `fixed_prefix` bytes, refuse to
     /// cross the admitted end. Ascending activation id, because that is the
     /// order the total was computed in and the two must agree or the last
@@ -11490,67 +11548,28 @@ mod wasm {
         Ok(aligned as u64)
     }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_borrowed_replay_workspace(field: u32) -> i64 {
-        // Field BEFORE phase, deliberately. Which fields exist is a static
-        // property of this entry, true in every phase, so a caller asking for
-        // one that does not exist is wrong now and would still be wrong after a
-        // seal. Checking the phase first would answer `EBUSY` to that caller and
-        // invite it to retry forever -- and would make the two refusals
-        // indistinguishable from idle, which is the only phase a test can reach
-        // this entry from without driving a whole capture.
-        if field > 1 {
-            set_err(Errno::EINVAL);
-            return -1;
+    /// The private prefix bytes a vfork BORROWED child's workspace must hold:
+    /// every activation's fixed prefix, each start aligned, in ascending
+    /// activation id -- the walk `carve_borrowed_prefix` then runs for real in
+    /// the child, so the two must agree or the last activation runs off the
+    /// end of a region sized for it. Read at seal, into [`SEAL_ROW`].
+    fn borrowed_prefix_bytes() -> Result<u64, Errno> {
+        let module = state().as_ref().ok_or(Errno::EINVAL)?;
+        let alignment = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as u64;
+        if alignment == 0 {
+            return Err(Errno::EINVAL);
         }
-        // Propagated, not re-minted: `require_phase` is the one place that names
-        // the wrong-phase errno, and a second literal here would break the pin
-        // keeping that errno to exactly one meaning.
-        if let Err(e) = require_phase(PHASE_SEALED_PARENT) {
-            set_err(e);
-            return -1;
+        let mut total: u64 = 0;
+        // The running total is aligned BEFORE each prefix is added, so the
+        // order is part of the answer.
+        for frames in module.activations.values() {
+            total = total
+                .checked_add(alignment - 1)
+                .map(|v| v / alignment * alignment)
+                .and_then(|v| v.checked_add(frames.format.fixed_prefix_size as u64))
+                .ok_or(Errno::EINVAL)?;
         }
-        let bytes = if field == 0 {
-            let Some(module) = state().as_ref() else {
-                set_err(Errno::EINVAL);
-                return -1;
-            };
-            let alignment = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as u64;
-            if alignment == 0 {
-                set_err(Errno::EINVAL);
-                return -1;
-            }
-            let mut total: u64 = 0;
-            // Ascending activation id, matching the host's `orderedActivations()`
-            // sort. The running total is aligned BEFORE each prefix is added, so
-            // the order is part of the answer and both sides must walk it alike.
-            for frames in module.activations.values() {
-                total = match total
-                    .checked_add(alignment - 1)
-                    .map(|v| v / alignment * alignment)
-                    .and_then(|v| v.checked_add(frames.format.fixed_prefix_size as u64))
-                {
-                    Some(next) => next,
-                    None => {
-                        set_err(Errno::EINVAL);
-                        return -1;
-                    }
-                };
-            }
-            total
-        } else {
-            SCRATCH_HIGH_WATER.load(Ordering::Relaxed) as u64
-        };
-        match i64::try_from(bytes) {
-            Ok(value) => {
-                set_ok();
-                value
-            }
-            Err(_) => {
-                set_err(Errno::EINVAL);
-                -1
-            }
-        }
+        Ok(total)
     }
 
     /// The `fm_stats` field reading `identity_chunk_count()`.
