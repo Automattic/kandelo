@@ -295,7 +295,7 @@ describe("shell VFS base composition", () => {
     expect(shellDerivedRevisions).toEqual({
       lamp: 18,
       "nginx-php-vfs": 9,
-      "nginx-python-vfs": 3,
+      "nginx-python-vfs": 4,
       "nginx-vfs": 8,
       wordpress: 19,
     });

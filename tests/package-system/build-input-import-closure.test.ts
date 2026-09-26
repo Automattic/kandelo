@@ -30,13 +30,16 @@ describe("package build input import closure", () => {
       "host/src/process.ts",
       "host/src/kernel-worker.ts",
     ]) {
-      // nginx-php-vfs prewarms opcache by booting NodeKernelHost, so changes
-      // anywhere in the host runtime are part of that image's cache identity.
-      // The nginx-only and Redis images use just the narrower VFS/resolver
-      // boundaries and therefore must not appear here.
+      // Images whose builders boot NodeKernelHost (opcache prewarm for the
+      // PHP family, Python bytecode prewarm for nginx-python, the staged
+      // product path for ruby-todo) carry the whole host runtime in their
+      // cache identity. The nginx-only and Redis images use just the
+      // narrower VFS/resolver boundaries and therefore must not appear here.
       expect(packagesAffectedBy(changedPath)).toEqual([
         "lamp",
         "nginx-php-vfs",
+        "nginx-python-vfs",
+        "ruby-todo-vfs",
         "wordpress",
       ]);
     }

@@ -17,8 +17,9 @@ inputs = [
   # whole tree so cache identity cannot outlive either contract.
   "host/src",
   "web-libs/kandelo-session/src/demo-config.ts",
+  "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 3
+revision = 4
