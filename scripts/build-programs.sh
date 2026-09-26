@@ -572,4 +572,25 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
     fi
 fi
 
+# WHY: the package build engine stamps every wasm member it installs with this
+# checkout's kandelo.abi.contract digest, but these programs and fixtures are
+# compiled here, outside that engine. Without the stamp the host reports a
+# binary built seconds ago as a "legacy binary [that] predates the
+# ABI-contract-digest rollout" (host/src/constants.ts) — a false claim that also
+# writes to stderr, which breaks tests asserting the host stays quiet. Stamp
+# them here so a locally built guest carries the same ABI identity a
+# package-built one does.
+echo "==> Stamping ABI contract digest on locally built programs..."
+STAMP_HOST_TARGET="${HOST_TARGET:-$(rustc -vV | awk '/^host/ {print $2}')}"
+stamp_targets=()
+while IFS= read -r wasm; do
+    stamp_targets+=("$wasm")
+done < <(
+    find "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR" -type f -name '*.wasm' 2>/dev/null | sort
+)
+if [ "${#stamp_targets[@]}" -gt 0 ]; then
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$STAMP_HOST_TARGET" --quiet -- \
+        stamp-abi-contract "${stamp_targets[@]}")
+fi
+
 echo "Programs built."

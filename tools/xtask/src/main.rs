@@ -66,6 +66,7 @@ mod remote_fetch;
 mod root_js_deps;
 mod source_archive_cache;
 mod source_extract;
+mod stamp_abi_contract;
 mod update_pkg_manifest;
 mod util;
 
@@ -101,6 +102,7 @@ fn main() -> ExitCode {
         "clean" => local_build::run_clean(rest),
         #[cfg(unix)]
         "cache-gc" => cache_gc::run(rest),
+        "stamp-abi-contract" => stamp_abi_contract::run(&rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
