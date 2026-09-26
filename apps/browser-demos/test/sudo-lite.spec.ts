@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { devServerAssetUrl } from "./support/dev-server-assets";
 import {
   DEMO_LOGIN_PASSWORD,
   DEMO_LOGIN_PASSWORD_HASH,
 } from "../../../images/vfs/lib/demo-login";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const browserKernelModulePath = resolve(
@@ -273,7 +273,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
       memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
-      kernelWasmUrl: asViteFsUrl(resolveBinary("kernel.wasm")),
+      kernelWasmUrl: await devServerAssetUrl(page, "@kernel-wasm"),
       shellWasmUrl: asViteFsUrl(shellWasm),
       loginWasmUrl: asViteFsUrl(loginWasm),
       sudoWasmUrl: asViteFsUrl(sudoWasm),

@@ -1,12 +1,12 @@
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
+import { devServerAssetUrl } from "./support/dev-server-assets";
 import {
   DEMO_AUTOLOGIN_MOTD,
   DEMO_LOGIN_PASSWORD,
   DEMO_LOGIN_PASSWORD_HASH,
   DEMO_SUDOERS,
 } from "../../../images/vfs/lib/demo-login";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const modulePaths = {
@@ -376,7 +376,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       experimentalTerminalSessionUrl: asViteFsUrl(
         modulePaths.experimentalTerminalSession,
       ),
-      kernelUrl: asViteFsUrl(resolveBinary("kernel.wasm")),
+      kernelUrl: await devServerAssetUrl(page, "@kernel-wasm"),
       loginUrl: asViteFsUrl(loginWasm),
       memoryFsUrl: asViteFsUrl(modulePaths.memoryFs),
       password: DEMO_LOGIN_PASSWORD,

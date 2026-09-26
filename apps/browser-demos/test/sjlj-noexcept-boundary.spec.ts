@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findRepoRoot, resolveBinary } from "../../../host/src/binary-resolver";
+import { findRepoRoot } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const browserKernelModulePath = resolve(
@@ -19,8 +20,10 @@ const fixturePaths = {
     repoRoot,
     "local-binaries/test-fixtures/wasm64/sjlj_noexcept_boundary.raw.wasm",
   ),
-  sigchld: resolveBinary("programs/sigchld_sjlj.wasm"),
+  sigchld: buildProgramsFixture("sigchld_sjlj.wasm"),
 };
+
+test.beforeAll(() => requireBuiltFixtures(Object.values(fixturePaths)));
 
 test("Chromium preserves the SjLj controls and positive SIGCHLD path", async ({
   page,
