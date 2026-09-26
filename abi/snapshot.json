@@ -1650,6 +1650,12 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
+    "3222299873": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
     "3222561958": {
       "argKind": "pointer",
       "direction": "inout",
@@ -4415,7 +4421,12 @@
         {
           "name": "_pad",
           "offset": 84,
-          "span": 12
+          "span": 4
+        },
+        {
+          "name": "st_rdev",
+          "offset": 88,
+          "span": 8
         }
       ],
       "size": 96
