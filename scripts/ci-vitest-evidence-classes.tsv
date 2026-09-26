@@ -398,6 +398,10 @@ packages/registry/dash/test/dash.test.ts	prepared-product
 packages/registry/dinit/test/dinit-scripted-service.test.ts	prepared-product
 packages/registry/dinit/test/dinitctl.test.ts	prepared-product
 packages/registry/erlang/test/erlang.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-devices.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-process-runtime.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-tier1.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-tier2-bbb.test.ts	prepared-product
 packages/registry/ffmpeg/test/fixtures-manifest.test.ts	source-only
 packages/registry/git/test/git.test.ts	prepared-product
 packages/registry/grep/test/grep.test.ts	prepared-product
