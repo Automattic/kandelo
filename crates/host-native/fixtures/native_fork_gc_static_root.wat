@@ -28,6 +28,10 @@
 ;;      RE-IDENTIFIED by coordinate (both generations' instantiation
 ;;      independently re-creates their own canonical `$static_root`), not
 ;;      reconstructed as a fresh, non-identical struct.
+;;   3b. The CHILD then forks AGAIN with the holder live, and the GRANDCHILD
+;;      verifies the same way: the child's install nulled the merged
+;;      static-root catalog after reading it, so a host must refill it before
+;;      every capture, as the JavaScript hosts do.
 ;;   4. In the PARENT (after fork returns): re-checks its own holder against
 ;;      its own (unaffected) `$static_root`, then reaps the child and
 ;;      propagates a nonzero child status.
@@ -38,6 +42,7 @@
 ;;        coordinate, parent unaffected)
 ;;   91 = CHILD: reconstructed holder failed verification (null field, wrong
 ;;        scalar, or not identity-equal to the child's own static root)
+;;   93 = GRANDCHILD (the child forks again): the same verification failed
 ;;   95 = PARENT: post-fork holder failed the same verification
 ;;   92 = wait4 did not reap the expected child, or the child's own exit
 ;;        status (as observed by the parent) was nonzero
@@ -338,6 +343,30 @@
         i32.const 91
         call $exit_group
       end
+      ;; The CHILD forks again with the holder still live: its own install
+      ;; nulled the merged static-root catalog after reading it, so this
+      ;; capture recognises the root only if the host refilled the catalog
+      ;; before it. The GRANDCHILD verifies against its own fresh root.
+      i32.const 0
+      call $kernel_fork
+      local.set $pid
+      local.get $pid
+      i32.eqz
+      if
+        local.get $holder
+        ref.as_non_null
+        call $verify_holder
+        i32.eqz
+        if
+          i32.const 93
+          call $exit_group
+        end
+        i32.const 0
+        call $exit_group
+        unreachable
+      end
+      local.get $pid
+      call $require_child_ok
       i32.const 0
       call $exit_group
       unreachable

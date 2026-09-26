@@ -3464,19 +3464,13 @@ mod tests {
     /// `native_fork_externref_table.instrumented.wasm` (exit 0 = success, 92 =
     /// the child's table was not 100 slots, 93 = the parent's was not).
     ///
-    /// IGNORED, and the reason is a native gap this change did not open: this
-    /// host carries no guest TABLE state across fork. Half of it is closed:
-    /// `bind_activation` now publishes one identity group per private
-    /// `__wpk_fork_table_N` export (`fm_publish_bindings`, lane F stage 1H),
-    /// so the module elects each table's writer as it does on the JS hosts.
-    /// The child still exits 92 (its table is not 100 slots), because a
-    /// native child is not installed through `fm_child_install` yet (stage
-    /// 1f-native) and so never drives the module-state restore that would
-    /// rebuild the table -- the same reconstruction path the pre-existing
-    /// `smoke_fork_reconstructs_references` and `smoke_fork_gc_*` failures
-    /// sit in. Un-ignore when that path works.
+    /// Ignored until lane F stage 4b. Two halves were missing: the module's
+    /// election of each table's writer, which needs `bind_activation` to
+    /// publish one identity group per private `__wpk_fork_table_N` export
+    /// (`fm_publish_bindings`, stage 1H), and the child's module-state
+    /// restore, which a native child reaches only by installing through
+    /// `fm_child_install` (stage 1f-native).
     #[test]
-    #[ignore = "host-native carries no guest table state across fork (see doc comment)"]
     fn smoke_fork_externref_table() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
@@ -3978,12 +3972,10 @@ mod tests {
     }
 
     /// N1-I5b Task 1: a REAL native `fork()` that carries a genuine WASM
-    /// `funcref` LIVE across the boundary, captured by native's OWN
-    /// `NativeReferenceCapture` host bodies (`guest.rs`'s
-    /// `__wpk_fork_ref_encode_funcref`/`_vector_begin`/`_append`/`_finish`)
-    /// and reconstructed through the co-resident fork-module's
-    /// reference-replay sub-sequence (`guest::drive_reference_replay`,
-    /// already wired by N1-I5) — the reference-path analogue of
+    /// `funcref` LIVE across the boundary, captured and reconstructed by the
+    /// co-resident fork module alone -- the guest's capture imports are the
+    /// module's own exports, and the child installs through
+    /// `fm_child_install` -- the reference-path analogue of
     /// `smoke_fork_parent_child` (which proves frames only).
     ///
     /// Fixture: `native_fork_refs.instrumented.wasm`
@@ -4014,46 +4006,25 @@ mod tests {
     /// references_reconstructed`, is `> 0`, so a silent fallback that merely
     /// happened to copy the right bytes cannot pass).
     ///
-    /// HISTORY: through N1-I5 Task 3 this was `#[ignore]`d (and this
-    /// fixture also carried a genuine `externref`) — capture-side imports
-    /// had no host body on ANY host (capture is never module-owned; see
-    /// `docs/plans/2026-09-05-n1-i5b-reference-capture-grounding.md` §1) and
-    /// every fork carrying a live reference TRAPPED on `unknown import:
-    /// env::__wpk_fork_ref_vector_begin has not been defined` before any
-    /// replay code ever ran. N1-I5b Task 1 closes that gap for funcref: a
-    /// native `NativeReferenceCapture` accumulator (`guest.rs`) now backs
-    /// real `encode_funcref`/`vector_begin`/`_append`/`_finish`/
-    /// `scratch_reserve`/`_release` host bodies, and a per-fork KFMS arena
-    /// (sealed at `drive_fork_capture_seal_and_launch_child`, replacing the
-    /// canonical-null floor `write_empty_module_state_arena` used to leave
-    /// there permanently) carries the real captured graph into the
-    /// already-working REPLAY side.
-    ///
-    /// SCOPE (not a gate): this fixture stays funcref-only to keep THIS
-    /// test a focused funcref/null reconstruction case. Typed Wasm-GC
-    /// (`struct`/`array`/`i31`) and static-root references are NOT gated —
-    /// they are captured on native (via `guest.rs`'s provenance registries)
-    /// and reconstructed through the SAME shared
-    /// module/`fork-codec` replay engine (`fm_begin_reference_replay` /
-    /// `fm_build_gc_plan` / `fm_drive_execute` over
-    /// `crates/fork-codec::drive_plan::build_drive_plan`) that funcref uses.
-    /// The sibling tests prove each kind end-to-end with a `fm_*` proof-of-
-    /// use counter: `smoke_fork_gc_struct_reconstructs`, `smoke_fork_gc_two_object_cycle`,
+    /// HISTORY: this host once captured references itself, into its own
+    /// graph and arena, while its parent replay and child install read the
+    /// module's -- which the capture never fed, so this test failed (lane F
+    /// stage 4b removed that shadow capture). Typed Wasm-GC and static-root
+    /// references go through the same module path; the sibling tests prove
+    /// each kind end to end with a `fm_*` proof-of-use counter:
+    /// `smoke_fork_gc_struct_reconstructs`, `smoke_fork_gc_two_object_cycle`,
     /// `smoke_fork_gc_array_reconstructs`, and
-    /// `smoke_fork_static_root_reconstructs`. Reconstruction is never
-    /// host-side on native — the host only supplies the Bucket-C floor
-    /// (the identity oracles, the reference-typed catalog/transit tables,
-    /// PIC/shared-memory, the unwind `Tag`); the drive-order and value
-    /// materialization live in the shared module engine.
+    /// `smoke_fork_static_root_reconstructs`. The host supplies only the
+    /// floor (the identity oracles, the funcref catalog and drive tables,
+    /// PIC/shared memory).
     ///
     /// The `EOPNOTSUPP` boundary is a raw HOST externref (externref stage
     /// E2), identical on every host (native, Node, browser): an
     /// `extern.convert_any` view of the program's own GC object is captured
     /// as that object, but a host object has nothing to rebuild it from in a
-    /// fresh child. On native it is enforced in `guest.rs` at the
-    /// `take_unsupported_kind()` gated-abort branch (search
-    /// `drive_fork_capture_seal_and_launch_child`): the fork aborts cleanly
-    /// with `-EOPNOTSUPP`, no child is spawned, and the parent survives. That
+    /// fresh child. The module refuses it at seal, and the host abort-replays
+    /// the parent (`drive_fork_capture_seal_and_launch_child`): the fork
+    /// returns `-EOPNOTSUPP`, no child is spawned, and the parent survives. That
     /// boundary is proven by `smoke_fork_host_externref_refused`, and
     /// documented in `docs/fork-reference-support.md`.
     #[test]
@@ -4273,13 +4244,24 @@ mod tests {
     /// re-verified unaffected in the PARENT afterward — see `fixtures/
     /// native_fork_gc_array_cycle.wat`'s own doc comment for the exact
     /// constructor-provenance branch each array exercises and the exit-code
-    /// contract. Proves the fix in this task: `GcProvenanceRegistry::begin`
-    /// now truncates a constructor's provenance scalar bytes to exactly
-    /// what the guest's own GC-codec descriptor declares
-    /// (`provenance_scalar_length`) instead of unconditionally gating every
-    /// array capture — `$scalars_new`'s `array.new` (nonzero 4-byte
-    /// provenance) is the case that would have been silently WRONG under a
-    /// naive "just stop gating" change without the descriptor decode.
+    /// contract.
+    ///
+    /// FAILS TODAY, on a fork-module gap every host shares: the module keeps
+    /// no PER-OBJECT constructor provenance. Its witness pool holds reference
+    /// seeds per layout; which constructor built an object (the specialized
+    /// layout) and that constructor's scalars (`array.new_data`'s segment
+    /// `(offset, length)`) are per-object facts it does not record --
+    /// `__wpk_fork_ref_gc_provenance_begin` ignores both, and
+    /// `__wpk_fork_ref_gc_capture_layout` answers from the guest's type test.
+    /// For the immutable `$scalars_fixed` that answer is the type's generic
+    /// layout, whose generated allocator is `unreachable` (an immutable array
+    /// cannot be built empty and filled), so the child's install traps in
+    /// `__wpk_fork_ref_gc_allocate` for recipe 1 (measured: the capture routes
+    /// it to layout 2). This host's own shadow capture recorded both facts per
+    /// object (`GcProvenanceRegistry`, removed in lane F stage 4b because the
+    /// replay never read what it captured); the module decided against
+    /// per-object storage, so closing this is a decision for the lane, not
+    /// this host.
     #[test]
     fn smoke_fork_gc_array_reconstructs() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -4330,13 +4312,14 @@ mod tests {
     /// coordinate in the child. See `fixtures/native_fork_gc_static_root.wat`'s
     /// own doc comment for the fixture shape and exit-code contract, and
     /// `docs/plans/2026-09-05-n1-static-root-capture-grounding.md` for the
-    /// design this test proves end-to-end: `StaticRootProvenance`'s
-    /// capture-side reverse index (`guest.rs`) feeding the already-built
-    /// replay-side `DRIVE_OP_STATIC_ROOT`/`fm_static_root_slot` machinery.
+    /// design this test proves end-to-end: the fork module recognises the
+    /// root at capture through the merged static-root catalog the host fills
+    /// before every capture (`guest::fill_static_root_catalog`), and
+    /// re-identifies it on replay (`DRIVE_OP_STATIC_ROOT`).
     ///
-    /// This is the genuinely RED-before-GREEN case: before
-    /// `StaticRootProvenance` existed, `gc_lookup`'s miss let the guest's own
-    /// dispatch fall through to `gc_claim`/`gc_define`, capturing the value
+    /// This is the genuinely RED-before-GREEN case: a capture that does not
+    /// recognise the root lets the guest's own dispatch fall through to
+    /// `gc_claim`/`gc_define`, capturing the value
     /// as an ORDINARY dynamic `Struct` recipe — which reconstructs the
     /// child's holder field as a FRESH, non-identical struct object, so the
     /// fixture's own `ref.eq`-against-the-child's-own-`$static_root`-global

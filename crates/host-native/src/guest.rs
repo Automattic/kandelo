@@ -1482,172 +1482,6 @@ fn zero_anonymous_mapping(mem: &SharedMemory, addr: usize, len: usize) {
     }
 }
 
-/// N1-I5 Task 3: write a genuinely-valid module-state (KFMS) arena at
-/// `scratch_addr` (which the caller has already reserved as a page-aligned,
-/// otherwise-unused slice of the co-resident fork-module's own region — see
-/// [`instantiate_fork_module`]'s `reference_scratch_base` computation) — the
-/// `module_state_root` [`drive_reference_replay`]'s `fm_begin_reference_
-/// replay` call needs.
-///
-/// Native has no module-state CAPTURE mechanism yet (the whole
-/// `__wpk_fork_module_state_*` guest-import family stays inert — see this
-/// file's N1-I4 doc comments on `define_unknown_imports_as_traps`), so no
-/// fork today produces a REAL arena. This is not a fabricated success: the
-/// arena this writes is a genuinely valid, SEALED KFMS chunk carrying exactly
-/// ONE reference-transaction record pair (a `NODES` segment + its `KFRV`
-/// manifest) encoding the CANONICAL NULL-ONLY graph
-/// (`fork_codec::ReferenceGraphBuilder::begin()`, never mutated) — the same
-/// minimal graph `reference_segments_writer`'s own
-/// `round_trips_minimal_null_only_graph` test proves round-trips through the
-/// module's decoder. A literally record-less chunk was tried first and
-/// rejected the manifest's own admissibility rule: `parse()`
-/// (`fork-codec/src/reference_segments.rs`) requires `node_count >= 1` (every
-/// real transaction — including a frames-only, no-live-reference fork on
-/// Node/browser — always carries at least the canonical Null sentinel node),
-/// so a zero-record chunk is not a valid empty transaction, it is simply
-/// malformed (`fm_last_errno` `EINVAL`, confirmed empirically). Encoding the
-/// canonical null-only graph is the true byte-for-byte floor of "this fork
-/// captured no reference": `fm_begin_reference_replay`'s own admissibility
-/// gate (`driver.all_nodes_module_admissible()`) trivially admits a
-/// null-only graph, and its bookkeeping counters stay at `0` (there is no
-/// externref/exnref/GC node to count) — proof-of-use is unaffected. Uses the
-/// module's OWN encoder (`fork_codec::ReferenceSegmentsWriter`, the exact
-/// inverse of the decoder `fm_begin_reference_replay` calls), not a
-/// hand-rolled wire format, so a future decoder/encoder wire change cannot
-/// silently drift this out of sync. `fm_begin_reference_replay` fails loudly
-/// (`EINVAL`) on any malformed header, so a mistake here would be a visible
-/// bug, not a silent illusion.
-///
-/// N1-I5b Task 1: this is now a THIN wrapper around [`write_module_state_
-/// arena`], passing a freshly-`begin()`'d, never-mutated builder — i.e. the
-/// exact canonical null-only graph this function always produced. It is
-/// still called once per guest OS thread, at `instantiate_fork_module` time,
-/// to leave a genuinely-valid floor value at the scratch address before any
-/// fork has happened; `drive_fork_capture_seal_and_launch_child` now
-/// overwrites that SAME address with THIS fork's real, capture-filled graph
-/// (via the same [`write_module_state_arena`]) once its unwind completes —
-/// see that function's doc comment.
-fn write_empty_module_state_arena(guest_mem: &SharedMemory, scratch_addr: u32) -> anyhow::Result<()> {
-    let builder = fork_codec::ReferenceGraphBuilder::begin();
-    write_module_state_arena(guest_mem, scratch_addr, &builder, None)
-}
-
-/// N1-I5b Task 1: write a genuinely-valid module-state (KFMS) arena at
-/// `scratch_addr` encoding `builder`'s reference graph, via the module's OWN
-/// encoder (`fork_codec::ReferenceSegmentsWriter`) — the general form
-/// [`write_empty_module_state_arena`] specializes to the canonical
-/// null-only floor, and [`drive_fork_capture_seal_and_launch_child`]
-/// specializes to a real, capture-filled [`NativeReferenceCapture::graph`].
-/// See `write_empty_module_state_arena`'s (pre-I5b) doc comment for why a
-/// literally record-less chunk is rejected as malformed by `fm_begin_
-/// reference_replay`'s decoder, not accepted as empty — a `builder` still at
-/// its `begin()` state (no live reference ever captured) already encodes
-/// the correct "empty" answer as one canonical-null node record, so this
-/// function needs no separate empty-case branch.
-fn write_module_state_arena(
-    guest_mem: &SharedMemory,
-    scratch_addr: u32,
-    builder: &fork_codec::ReferenceGraphBuilder,
-    journal_image: Option<(u64, u64)>,
-) -> anyhow::Result<()> {
-    use wasm_posix_shared::abi;
-
-    let header_size = abi::wpk_fork_module_state_chunk_header_size(4)
-        .ok_or_else(|| anyhow::anyhow!("no KFMS chunk header size for wasm32 pointer width"))?
-        as usize;
-
-    // Encode `builder`'s reference transaction via the module's own
-    // (de)serializer.
-    let writer = fork_codec::ReferenceSegmentsWriter::new(
-        abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER,
-        1 << 16, // one segment per section; a single fork's graph is tiny
-    )
-    .map_err(|e| anyhow::anyhow!("ReferenceSegmentsWriter::new failed: {e:?}"))?;
-    let mut kfms_records: Vec<(u16, u32, u32, Vec<u8>)> = Vec::new();
-    {
-        let mut sink = |kind: u16, activation_id: u32, owner_id: u32, payload: &[u8]| {
-            kfms_records.push((kind, activation_id, owner_id, payload.to_vec()));
-            Ok(())
-        };
-        writer
-            .write(&mut sink, builder)
-            .map_err(|e| anyhow::anyhow!("ReferenceSegmentsWriter::write failed: {e:?}"))?;
-    }
-
-    // Coarse child-seed support: append a `JournalImage` (kind 14) record so a
-    // COW/borrowed child's `fm_child_seed`/`fm_child_seed_borrowed` can decode
-    // the inherited KFRE journal-image (ptr, len) straight from THIS arena
-    // (`journal_image_from_arena`), exactly as the Node/browser host does via
-    // `appendJournalImage`. The 32-byte KFJI payload is a fixed format (magic,
-    // version=1, header_size=16, then `ptr` u64 @16 and `len` u64 @24); the
-    // reference decoder ignores this non-reference record kind, so both the
-    // reference reconstruction and the journal-image lookup read the same arena.
-    // `write_empty_module_state_arena`'s instantiation-time floor passes `None`.
-    if let Some((image_ptr, image_len)) = journal_image {
-        let mut payload = vec![0u8; abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize];
-        payload[0..4].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_MAGIC);
-        payload[4..6].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_VERSION.to_le_bytes());
-        payload[6..8].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE.to_le_bytes());
-        // flags @8 (2), reserved @10 (2), reserved @12 (4) all stay zero.
-        payload[16..24].copy_from_slice(&image_ptr.to_le_bytes());
-        payload[24..32].copy_from_slice(&image_len.to_le_bytes());
-        kfms_records.push((
-            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
-            0, // activation_id 0 (single-activation native)
-            abi::WPK_FORK_JOURNAL_IMAGE_OWNER,
-            payload,
-        ));
-    }
-
-    // Frame each KFMS record with its 24-byte KFMR TLV header, zero-padded to
-    // the arena's record alignment — mirrors `module_state::decode_records`'
-    // read side field-for-field.
-    let record_header_size = abi::WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE as usize;
-    let record_alignment = abi::WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT as usize;
-    let mut records_bytes: Vec<u8> = Vec::new();
-    for (kind, activation_id, owner_id, payload) in &kfms_records {
-        let unaligned = record_header_size + payload.len();
-        let aligned = unaligned.div_ceil(record_alignment) * record_alignment;
-        let mut record = vec![0u8; aligned];
-        record[0..4].copy_from_slice(b"KFMR");
-        record[4..6].copy_from_slice(&abi::WPK_FORK_MODULE_STATE_RECORD_VERSION.to_le_bytes());
-        record[6..8].copy_from_slice(&kind.to_le_bytes());
-        record[8..12].copy_from_slice(&(aligned as u32).to_le_bytes());
-        record[12..16].copy_from_slice(&(payload.len() as u32).to_le_bytes());
-        record[16..20].copy_from_slice(&activation_id.to_le_bytes());
-        record[20..24].copy_from_slice(&owner_id.to_le_bytes());
-        record[record_header_size..record_header_size + payload.len()].copy_from_slice(payload);
-        // record[record_header_size + payload.len()..aligned] stays zero
-        // padding (the vec's own zero-init) — the decoder requires it.
-        records_bytes.extend_from_slice(&record);
-    }
-
-    let used = header_size + records_bytes.len();
-    anyhow::ensure!(
-        used <= WASM_PAGE_SIZE,
-        "synthesized reference transaction ({used} bytes) does not fit the reserved scratch page"
-    );
-
-    let mut header = vec![0u8; header_size];
-    header[0..4].copy_from_slice(b"KFMC"); // chunk magic
-    header[4..6].copy_from_slice(&abi::WPK_FORK_MODULE_STATE_ARENA_VERSION.to_le_bytes());
-    let flags = abi::WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT | abi::WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED;
-    header[6..8].copy_from_slice(&flags.to_le_bytes());
-    header[8..12].copy_from_slice(&scratch_addr.to_le_bytes()); // root ptr (self)
-    header[12..16].copy_from_slice(&0u32.to_le_bytes()); // previous ptr
-    header[16..20].copy_from_slice(&0u32.to_le_bytes()); // next ptr
-    header[20..24].copy_from_slice(&(WASM_PAGE_SIZE as u32).to_le_bytes()); // capacity
-    header[24..28].copy_from_slice(&(used as u32).to_le_bytes()); // used
-    header[28..32].copy_from_slice(&(kfms_records.len() as u32).to_le_bytes()); // record_count
-    header[32..36].copy_from_slice(&0u32.to_le_bytes()); // reserved
-    // header[36..header_size] stays zero padding (the vec's own zero-init).
-
-    let mut arena = header;
-    arena.extend_from_slice(&records_bytes);
-    unsafe { write_bytes(guest_mem, scratch_addr as usize, &arena) };
-    Ok(())
-}
-
 /// The pointer-arg descriptors the native marshaller uses for `syscall_nr`.
 ///
 /// Most come from the authoritative `SYSCALL_ARG_DESCRIPTORS`. The epoll
@@ -4818,457 +4652,6 @@ const FORK_MODULE_SHADOW_STACK_BYTES: usize = 1 << 20;
 /// to its size (`fm_admission_buffer`); see [`admit_guest`].
 const FORK_MODULE_STAGING_SLAB_BYTES: usize = WASM_PAGE_SIZE;
 
-/// Review fix (increment-review.md HIGH-1 / "Finding 1"): a hard ceiling on
-/// how many mint-time provenance entries [`GcProvenanceRegistry`] will retain
-/// for one guest OS thread.
-///
-/// INVESTIGATED: wasmtime 48.0.1's GC rooting API
-/// (`wasmtime::runtime::gc::enabled::rooting`) offers exactly two
-/// cross-call-persistence primitives, `Rooted<T>` (scope-bound, unrooted the
-/// instant its `RootScope`/call returns — unusable here, since both
-/// registries must survive past the call that populated them) and
-/// `OwnedRooted<T>` (the ONLY primitive that survives past a single call,
-/// which is why both registries use it) — and `OwnedRooted<T>` is
-/// deliberately a STRONG root: it has no `Drop` impl of its own precisely
-/// because HOLDING one is what keeps its GC object alive (dropping the
-/// `OwnedRooted` value lets Wasmtime's own opportunistic `trim_gc_liveness_
-/// flags` reclaim the root slot, but that requires US to decide the value is
-/// no longer needed — there is nothing to query the other way). No `Weak`,
-/// finalizer, or "check if this GC value would still be alive" primitive
-/// exists anywhere in that module; a `WeakMap`-equivalent genuinely is not
-/// expressible against this Wasmtime version.
-///
-/// Given no sound weak reference exists, this does NOT attempt an unsound
-/// prune (e.g. guessing a value is "probably dead"). Instead it bounds
-/// growth to a known constant and degrades gracefully once reached: a mint
-/// beyond the cap is simply not registered, so a LATER fork carrying that
-/// SPECIFIC value falls through the existing SOUNDNESS GUARD ("no recorded
-/// provenance" → `mark_unsupported` + a clean `EOPNOTSUPP` gate, exactly
-/// like a `call_indirect`-minted externref today) instead of growing
-/// further — a truthful failure, not silent corruption, and not a
-/// regression versus today's unbounded behavior for any guest that stays
-/// under the cap. `4096` is chosen generously against every existing
-/// native fork fixture/test (each mints at most a handful of distinct
-/// externref/GC identities) while still turning an unbounded leak into a
-/// bounded one; native is the forcing-function host exercising this
-/// machinery, not a production target — see
-/// `increment-review.md`'s HIGH-1 disposition for the full ruling this
-/// mirrors.
-const PROVENANCE_REGISTRY_CAP: usize = 4096;
-
-/// N1 refcomplete (static root, last gated native kind): the CAPTURE-side
-/// reverse index for a static root — "is this exact harvested `anyref`
-/// identity one of my instance's own canonical static roots, and if so at
-/// what `(module_activation, static_root_ordinal)` coordinate" — see
-/// `docs/plans/2026-09-05-n1-static-root-capture-grounding.md` §3/§4/§5.
-///
-/// A static root is never "reconstructed": replay re-identifies the CHILD's
-/// own freshly re-harvested canonical root by coordinate
-/// (`DRIVE_OP_STATIC_ROOT`/`fm_static_root_slot`); this index is the exact
-/// capture-side inverse — recorded once, at the SAME one-shot
-/// post-instantiation harvest replay already performs (the "Static-root
-/// catalog mirror" block below), not reconstructed or inferred from a
-/// value's shape at capture time. `intern_static_root` in
-/// `fork-codec::ReferenceGraphBuilder` already dedupes by coordinate, so this
-/// index only needs to answer "value -> coordinate", never "coordinate ->
-/// value".
-///
-/// Populated ONCE per guest OS thread (activation 0 only, matching every
-/// other N1-I5 mirror block's current single-activation scope) — NOT reset
-/// per fork, unlike `NativeReferenceCapture::gc_claimed`: a static root's
-/// identity and coordinate are fixed for the whole instantiation's lifetime,
-/// harvested before any guest code — including a `kernel_fork` call — could
-/// run, so the SAME index is valid for every fork this OS thread's guest
-/// performs. `Rooted<AnyRef>`/`OwnedRooted<AnyRef>` has no `Hash`/`Eq`, so a
-/// flat `Vec` + `Rooted::ref_eq` linear scan is the correct pattern here
-/// (the number of static roots is bounded by the module's own catalog size,
-/// harvested once, so the linear scan is cheap for the whole guest OS
-/// thread's lifetime).
-struct StaticRootProvenance {
-    entries: Vec<(wasmtime::OwnedRooted<AnyRef>, u32 /* activation */, u32 /* ordinal */)>,
-}
-
-impl StaticRootProvenance {
-    fn new() -> Self {
-        Self { entries: Vec::new() }
-    }
-
-    /// Record `(value -> (activation, ordinal))` at harvest time. A repeat
-    /// registration of a value already present is a no-op rather than a
-    /// duplicate entry (defensive: the harvest mirror block registers each
-    /// catalog slot exactly once today, but a duplicate registration must
-    /// stay harmless rather than silently prefer whichever entry sorts
-    /// first).
-    fn register(
-        &mut self,
-        mut store: impl wasmtime::AsContextMut,
-        value: wasmtime::Rooted<AnyRef>,
-        activation: u32,
-        ordinal: u32,
-    ) -> wasmtime::Result<()> {
-        if self.lookup(&mut store, value)?.is_some() {
-            return Ok(());
-        }
-        let owned = value.to_owned_rooted(&mut store)?;
-        self.entries.push((owned, activation, ordinal));
-        Ok(())
-    }
-
-    /// Look up the harvest-time-recorded `(activation, ordinal)` coordinate
-    /// for `value`, or `None` when it is not a harvested static root — the
-    /// SOUNDNESS GUARD boundary: an ordinary dynamic Wasm-GC value (including
-    /// one that happens to have the exact same shape/fields as some static
-    /// root, per the grounding's mutability discriminant) correctly reports
-    /// "not a static root" here rather than a fabricated coordinate.
-    fn lookup(
-        &self,
-        mut store: impl wasmtime::AsContextMut,
-        value: wasmtime::Rooted<AnyRef>,
-    ) -> wasmtime::Result<Option<(u32, u32)>> {
-        for (candidate, activation, ordinal) in &self.entries {
-            if wasmtime::Rooted::ref_eq(&mut store, candidate, &value)? {
-                return Ok(Some((*activation, *ordinal)));
-            }
-        }
-        Ok(None)
-    }
-}
-
-/// N1-F6: grow the module-owned anyref transit table (`fm.gc_transit_table`)
-/// so that index `id + 1` is in bounds. Every host import that hands a FRESH
-/// recipe id back to the guest's `encode_anyref` (`gc_claim`, `gc_i31`,
-/// `gc_broker_encode` — including their GATED fallbacks, since the wasm
-/// call site's own `TableSet(transit, recipe+1, value)` runs unconditionally
-/// after the call, whatever the import returned) must call this BEFORE
-/// returning: `module_gc_codec.rs`'s own doc comment on the claim call site
-/// states the contract directly ("Claim grows the process-owned transit
-/// table through recipe+1 before returning") but, until this task, capture
-/// never actually did it because `gc_claim`/`gc_i31` stayed gated and
-/// `gc_lookup`'s OWN gate never reached a subsequent `TableSet` (a gate
-/// returned there is read by the wasm code as an "already known" HIT,
-/// which skips the `TableSet` entirely — see `gc_lookup`'s doc comment).
-/// `gc_lookup` itself never needs this call for the same reason. Mirrors
-/// the identical growth idiom already used, per-replay, in
-/// `drive_reference_replay`.
-fn ensure_gc_transit_capacity(
-    table: Table,
-    mut store: impl wasmtime::AsContextMut,
-    id: u32,
-) -> wasmtime::Result<()> {
-    let needed = u64::from(id) + 2;
-    let current = table.size(&mut store);
-    if needed > current {
-        table.grow(&mut store, needed - current, wasmtime::Ref::Any(None))?;
-    }
-    Ok(())
-}
-
-/// N1-F6 (refcomplete FLOOR-2): one finalized constructor-time provenance
-/// record for a Wasm-GC struct/array — "what value(s) this exact
-/// `struct.new $T`/`array.new*` call used as its mutable-non-null-internal-
-/// reference constructor argument(s)", NOT the value's CURRENT field
-/// contents (`gc_define`'s doc comment explains why the two are stitched
-/// together into one recipe rather than either alone being sufficient —
-/// see `docs/plans/2026-09-05-n1-f6-gc-provenance-grounding.md` §2.2).
-/// `layout_id` is the SPECIALIZED constructor-site layout recorded at
-/// `gc_provenance_begin` time (e.g. a particular `ArrayFixed{len}` shape),
-/// not necessarily the base layout id `gc_capture_layout` was asked about
-/// (that comparison is TS's `captureGcLayout` descriptor cross-validation,
-/// deliberately not ported here — see `gc_define`'s doc comment on the
-/// scope this native increment covers without a GC-codec-descriptor
-/// decode).
-#[derive(Clone)]
-struct GcConstructorRecord {
-    layout_id: u32,
-    /// Constructor-only scalar bytes, already truncated to exactly the
-    /// specialized layout's `provenance_scalar_length` (0..=16 bytes) by
-    /// [`GcProvenanceRegistry::begin`] — see that method's doc comment for
-    /// where the length comes from (the guest's own GC-codec descriptor,
-    /// decoded once per guest OS thread). Always empty for a STRUCT (`crates/
-    /// fork-codec/src/gc_codec.rs`'s `validate_layout_payload` rejects a
-    /// struct layout whose `provenance_scalar_length != 0` — a struct
-    /// constructor's only provenance-worthy arguments are its reference
-    /// fields). An ARRAY layout can carry up to 16 real provenance scalar
-    /// bytes (e.g. an `ArrayData`/`ArrayElement` segment offset+length seed,
-    /// or an `ArrayNew` scalar fill value up to `v128` width) — the
-    /// descriptor is what disambiguates each specialized layout's exact
-    /// count from the 0 bytes other constructor forms carry.
-    scalars: Vec<u8>,
-    /// Constructor-time reference-typed arguments, in canonical order.
-    /// `None` is a null seed (e.g. a zero-length nullable-array-of-refs
-    /// constructor operand).
-    references: Vec<Option<wasmtime::OwnedRooted<AnyRef>>>,
-}
-
-/// An in-flight `gc_provenance_begin` .. `gc_provenance_ref`* .. `gc_
-/// provenance_end` transaction. See [`GcProvenanceRegistry`]'s doc comment
-/// for why a HALF-FINISHED transaction (a trap between `begin` and `end`)
-/// must never leak into a later, unrelated construction.
-struct PendingGcProvenance {
-    token: i32,
-    object: wasmtime::OwnedRooted<AnyRef>,
-    layout_id: u32,
-    scalars: Vec<u8>,
-    expected_reference_count: u32,
-    references: Vec<Option<wasmtime::OwnedRooted<AnyRef>>>,
-}
-
-/// N1-F6: native's mint-time Wasm-GC constructor provenance. A flat `Vec` +
-/// `Rooted::ref_eq` scan, because `Rooted<AnyRef>`/`OwnedRooted<AnyRef>` have
-/// no `Hash`/`Eq` and an unstable raw `to_raw` id.
-///
-/// Populated at ORDINARY GUEST RUNTIME — whenever a provenance-wrapped
-/// `struct.new $T`/`array.new*` call site executes (`inject_provenance_
-/// wrappers`, `crates/fork-instrument/src/module_gc_codec.rs:397-619`), not
-/// only during a fork's capture walk — so it lives for the WHOLE guest OS thread (one `Store` == one fork generation
-/// of activity), not reset per capture. Read at fork-CAPTURE time by
-/// `gc_capture_layout`/`gc_define` to recover constructor-time evidence a
-/// live object's CURRENT state cannot answer for a mutable, non-nullable,
-/// internal-GC-typed field (see the grounding doc §2.2's "why this is
-/// needed at all").
-struct GcProvenanceRegistry {
-    finalized: Vec<(wasmtime::OwnedRooted<AnyRef>, GcConstructorRecord)>,
-    pending: Option<PendingGcProvenance>,
-    next_token: i32,
-    /// Review fix (increment-review.md HIGH-1 / "Finding 1"): [`Self::end`]
-    /// stops growing `finalized` once it reaches [`PROVENANCE_REGISTRY_CAP`]
-    /// — see that constant's doc comment for the full ruling. Set once the cap first fires, so the loud diagnostic prints
-    /// exactly once per guest OS thread.
-    capped_warned: bool,
-    /// N1-F6 Task 5 (array un-gate): per-SPECIALIZED-layout provenance
-    /// scalar byte length (`GcLayoutDescriptor::provenance_scalar_length`,
-    /// 0..=16), decoded once from the guest's own `kandelo.wpk_fork.gc_codec`
-    /// descriptor via `fork_codec::gc_codec::decode_gc_codec` — the SAME
-    /// section bytes the activation's admission carries
-    /// (`GuestForkFormat::section`), reused here rather than re-read. This is the ONLY thing that can tell [`Self::begin`] how
-    /// many of the fixed 16-byte `scalarLo`/`scalarHi` wire bytes a given
-    /// constructor's provenance record actually uses — see
-    /// `module_gc_codec.rs`'s `constructor_provenance`. Empty for a guest
-    /// with no GC codec at all.
-    provenance_scalar_lengths: HashMap<u32, u32>,
-}
-
-impl GcProvenanceRegistry {
-    /// `fork_format` is the SAME `Option<&GuestForkFormat>` computed once at
-    /// guest-module-load time for this guest OS thread (see `spawn_guest_
-    /// thread`'s `fork_format` parameter) — not re-parsed from raw wasm
-    /// bytes here. A guest that declares `gc_provenance_begin` at all always
-    /// has fork-instrument emit a well-formed descriptor alongside it (the
-    /// same tool, same pass, same module); a decode failure here would mean
-    /// the descriptor bytes are corrupt or the wrong shape, a genuine build
-    /// defect worth surfacing loudly rather than silently degrading to
-    /// zero-length provenance for every layout — so a decode failure leaves
-    /// this map EMPTY, and `begin()` then fails closed (see its own doc
-    /// comment) instead of guessing.
-    fn new(fork_format: Option<&GuestForkFormat>) -> Self {
-        let provenance_scalar_lengths = fork_format
-            .and_then(|format| format.section(fork_codec::AdmissionSectionKind::GcCodec))
-            .and_then(|bytes| fork_codec::gc_codec::decode_gc_codec(bytes).ok())
-            .map(|codec| {
-                codec
-                    .layouts
-                    .into_iter()
-                    .map(|layout| (layout.id, layout.provenance_scalar_length))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self {
-            finalized: Vec::new(),
-            pending: None,
-            next_token: 1,
-            capped_warned: false,
-            provenance_scalar_lengths,
-        }
-    }
-
-    /// `ForkGcProvenanceRegistry::begin` port (`host/src/fork-gc-codec.ts:
-    /// 693-772`). Starts a provenance transaction for a freshly constructed
-    /// `object`. Defensively aborts any stale pending transaction first —
-    /// mirrors the TS registry's own `abortPending()` guard — so a trap
-    /// between a PRIOR `begin` and its `end` can never poison this one.
-    ///
-    /// `scalars` arrives as the full 16-byte `scalarLo ++ scalarHi` wire pair
-    /// every provenance-wrapper call site packs (`emit_provenance_scalars`,
-    /// `module_gc_codec.rs:660-704`) — real bytes always land in the LEADING
-    /// bytes of that buffer (little-endian), with the rest zero-padding. This
-    /// truncates to exactly `layout_id`'s `provenance_scalar_length`
-    /// (looked up in [`Self::provenance_scalar_lengths`]) before storing, so
-    /// [`GcConstructorRecord::scalars`] is never longer than what the layout
-    /// actually declares — a MISSING layout id (would mean the descriptor
-    /// and the wrapper that called this disagree, a genuine build defect)
-    /// fails closed rather than guessing a length and risking silently
-    /// corrupt or oversized scalar bytes downstream.
-    fn begin(
-        &mut self,
-        mut store: impl wasmtime::AsContextMut,
-        object: wasmtime::Rooted<AnyRef>,
-        layout_id: u32,
-        scalars: Vec<u8>,
-        reference_count: u32,
-    ) -> wasmtime::Result<i32> {
-        self.abort_pending();
-        let expected_len = *self.provenance_scalar_lengths.get(&layout_id).ok_or_else(|| {
-            wasmtime::Error::msg(format!(
-                "gc_provenance_begin: layout {layout_id} is missing from the GC-codec descriptor"
-            ))
-        })? as usize;
-        if expected_len > scalars.len() {
-            return Err(wasmtime::Error::msg(format!(
-                "gc_provenance_begin: layout {layout_id} declares {expected_len} provenance \
-                 scalar bytes, exceeding the {} the wire buffer carries",
-                scalars.len()
-            )));
-        }
-        let mut scalars = scalars;
-        scalars.truncate(expected_len);
-        let owned = object.to_owned_rooted(&mut store)?;
-        let token = self.next_token;
-        self.next_token = self.next_token.checked_add(1).unwrap_or(1);
-        self.pending = Some(PendingGcProvenance {
-            token,
-            object: owned,
-            layout_id,
-            scalars,
-            expected_reference_count: reference_count,
-            references: Vec::with_capacity(reference_count as usize),
-        });
-        Ok(token)
-    }
-
-    /// `ForkGcProvenanceRegistry::appendReference` port. `index` must name
-    /// the next canonical slot (mirrors the TS's out-of-order rejection); a
-    /// violation aborts the pending transaction fail-closed rather than
-    /// leaving a half-built record around.
-    fn append_reference(
-        &mut self,
-        token: i32,
-        index: u32,
-        value: Option<wasmtime::OwnedRooted<AnyRef>>,
-    ) -> wasmtime::Result<()> {
-        let ok = self.pending.as_ref().is_some_and(|p| {
-            p.token == token
-                && index as usize == p.references.len()
-                && index < p.expected_reference_count
-        });
-        if !ok {
-            self.abort_pending();
-            return Err(wasmtime::Error::msg(format!(
-                "GC provenance reference {index} for token {token} is out of canonical order"
-            )));
-        }
-        self.pending.as_mut().unwrap().references.push(value);
-        Ok(())
-    }
-
-    /// `ForkGcProvenanceRegistry::end` port: finalize a fully-populated
-    /// pending transaction into [`Self::finalized`], keyed by the
-    /// constructed object's own identity.
-    fn end(&mut self, token: i32) -> wasmtime::Result<()> {
-        let matches = self.pending.as_ref().is_some_and(|p| p.token == token);
-        if !matches {
-            return Err(wasmtime::Error::msg(format!("GC provenance token {token} is not active")));
-        }
-        let pending = self.pending.take().unwrap();
-        if pending.references.len() as u32 != pending.expected_reference_count {
-            return Err(wasmtime::Error::msg(format!(
-                "GC provenance registration {token} has {} references; expected {}",
-                pending.references.len(),
-                pending.expected_reference_count,
-            )));
-        }
-        // Review fix (Finding 1): once `finalized` reaches
-        // `PROVENANCE_REGISTRY_CAP`, a genuinely NEW construction's evidence
-        // is discarded here rather than retained forever — see that
-        // constant's doc comment for why this is a sound bound (a later
-        // `gc_define` for this object correctly gates via
-        // `provenance_length_mismatches`/the ordinary provenance-miss path)
-        // rather than an unsound prune. The pending transaction was already
-        // consumed by `self.pending.take()` above either way.
-        if self.finalized.len() >= PROVENANCE_REGISTRY_CAP {
-            if !self.capped_warned {
-                self.capped_warned = true;
-                eprintln!(
-                    "[host-native] Wasm-GC constructor provenance registry reached its cap \
-                     ({PROVENANCE_REGISTRY_CAP} entries) for this guest OS thread; further \
-                     distinct GC constructions will not be tracked and will cleanly gate \
-                     (EOPNOTSUPP) any fork that later needs their constructor evidence — see \
-                     increment-review.md HIGH-1."
-                );
-            }
-            return Ok(());
-        }
-        let record = GcConstructorRecord {
-            layout_id: pending.layout_id,
-            scalars: pending.scalars,
-            references: pending.references,
-        };
-        self.finalized.push((pending.object, record));
-        Ok(())
-    }
-
-    /// Look up the finalized provenance for `object`, or `None` if it was
-    /// never constructed through a provenance-wrapped call site — the
-    /// SOUNDNESS GUARD boundary: never fabricate constructor evidence for a
-    /// value this registry never recorded.
-    fn find(
-        &self,
-        mut store: impl wasmtime::AsContextMut,
-        object: wasmtime::Rooted<AnyRef>,
-    ) -> wasmtime::Result<Option<GcConstructorRecord>> {
-        for (candidate, record) in &self.finalized {
-            if wasmtime::Rooted::ref_eq(&mut store, candidate, &object)? {
-                return Ok(Some(record.clone()));
-            }
-        }
-        Ok(None)
-    }
-
-    /// The declared `provenance_scalar_length` for `layout_id`, straight
-    /// from [`Self::provenance_scalar_lengths`], or `None` if `layout_id` is
-    /// missing from the GC-codec descriptor entirely — a build defect
-    /// distinct from an ordinary provenance MISS (`find` returning `None`
-    /// for a specific live object), which is what
-    /// [`Self::provenance_length_mismatches`] checks.
-    fn declared_provenance_scalar_length(&self, layout_id: u32) -> Option<u32> {
-        self.provenance_scalar_lengths.get(&layout_id).copied()
-    }
-
-    /// Review fix (increment-review.md MEDIUM-1 / "Finding 2"): `true` when
-    /// `record`'s scalar byte length does not match `layout_id`'s declared
-    /// `provenance_scalar_length` — the exact soundness gap `gc_define`'s
-    /// wiring must gate on rather than silently storing corrupt bytes.
-    /// `record: None` (an ordinary provenance MISS — the concrete failure
-    /// scenario the review describes: a `provenance_scalar_length > 0`
-    /// array constructed through a production site the instrumenter's
-    /// provenance-wrapper pass never wrapped) is always compared against
-    /// actual length `0`, so a nonzero declared length correctly reports a
-    /// mismatch. Returns `None` (no verdict possible) when `layout_id` is
-    /// missing from the descriptor entirely — that is a separate, louder
-    /// failure the caller already surfaces via
-    /// [`Self::declared_provenance_scalar_length`]'s own doc comment.
-    ///
-    /// Mirrors the TS `defineGc`'s `provenance.record.scalars.byteLength
-    /// !== layout.provenanceScalarLength` cross-check
-    /// (`host/src/fork-reference-transaction.ts:536-537`), which native had
-    /// never ported — this closes that gap.
-    fn provenance_length_mismatches(
-        &self,
-        layout_id: u32,
-        record: Option<&GcConstructorRecord>,
-    ) -> Option<bool> {
-        let declared = self.declared_provenance_scalar_length(layout_id)?;
-        let actual = record.map(|r| r.scalars.len()).unwrap_or(0) as u32;
-        Some(declared != actual)
-    }
-
-    /// Drop a half-finished transaction. Called defensively before every
-    /// `begin` and on any error mid-sequence (a trap between `begin` and
-    /// `end` must never leave a stale pending record around).
-    fn abort_pending(&mut self) {
-        self.pending = None;
-    }
-}
-
 /// Define `env.native_test_host_externref(handle: i32) -> externref` — a
 /// TEST-ONLY host import, never declared by a real program, that hands the
 /// guest a genuine HOST object: a fresh `ExternRef` wrapping `handle` as its
@@ -5368,27 +4751,6 @@ fn define_funcref_call_probe(linker: &mut Linker<()>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// N1-I5b Task 1: a small, fixed-size, host-owned scratch region for the
-/// capture-side `__wpk_fork_ref_scratch_reserve`/`_release` imports — see
-/// [`NativeReferenceCapture::scratch_reserve`]'s doc comment for why this is
-/// a SEPARATE page from [`ForkModule::empty_module_state_root`] rather than
-/// reusing it: the two would otherwise be spatially safe to share (scratch
-/// use is always transient, strictly before the KFMS seal write — see
-/// `drive_fork_capture_seal_and_launch_child`), but keeping them apart makes
-/// that non-overlap true BY CONSTRUCTION, not by an ordering argument a
-/// future change could quietly invalidate. Reserved immediately after the
-/// KFMS scratch page, still inside the module's own shadow-stack padding
-/// (which `instantiate_fork_module`'s `grow_to_cover` call already covers).
-/// A generic buffer the guest's reference codec may request during ANY
-/// capture, not kind-gated (see `docs/plans/2026-09-05-n1-i5b-reference-
-/// capture-grounding.md` §5's per-import table) — in practice unreached by a
-/// funcref-only capture (only the typed-GC/exception codec's generated code
-/// calls it, per `crates/fork-instrument/src/module_exception_codec.rs`),
-/// but every capture-side import needs SOME live body before a
-/// fork-instrumented guest's capture walk can run at all (see this file's
-/// "N1-I5b Task 1" section doc comment on `spawn_guest_thread`).
-const FORK_MODULE_CAPTURE_SCRATCH_BYTES: usize = WASM_PAGE_SIZE;
-
 /// The `kandelo.wpk_fork.*` custom sections an activation admission carries:
 /// section `i` is `fork_codec::AdmissionSectionKind` wire number `i + 1`. The
 /// same list the Node/browser writer keeps (`FORK_ADMISSION_SECTIONS` in
@@ -5476,29 +4838,22 @@ enum ForkEntry {
     /// assume every `use_fork_module` guest is instrumented, so this
     /// fallback stays.
     ChildPendingStub,
-    /// N1-I4 Task 3: a REAL fork child. `root` is the parent's continuation
-    /// anchor (`fm_parent_begin_capture`'s return value, inherited verbatim via
-    /// the private memory copy). The child drives the coarse `fm_child_seed`
-    /// (which decodes the inherited `JournalImage` KFMS record from the child's
-    /// own COW-copied arena at `fm.empty_module_state_root`) then
-    /// `fm_child_reconstruct` (drives `wpk_fork_rewind_begin(root)`) then
-    /// `wpk_fork_resume_start()` — see `run_fork_capable_entry`. The journal
-    /// image location is no longer smuggled here: the parent appended it to the
-    /// inherited arena, so the module reads it from there.
+    /// N1-I4 Task 3: a REAL fork child. `root` is its launch root: the
+    /// parent's activation-0 continuation anchor, which the parent published
+    /// in its fork control word and `handle_fork` read back (the Node/browser
+    /// `forkBufAddr`). The child installs through `fm_child_install(pid, root)`
+    /// and then enters `wpk_fork_resume_start()` -- see
+    /// `run_fork_capable_entry`.
     ChildReplay { root: u32 },
     /// Real vfork (N1 residual): a BORROWED child sharing the parked parent's
-    /// `SharedMemory` — the borrowed sibling of `ChildReplay`. `root` is the
-    /// parent's live continuation anchor (read read-only, never copied);
-    /// `private_prefix` is the child-private region `fm_child_seed_borrowed`
-    /// copies the parent's mutable fixed runtime prefix into (so the guest's
-    /// active-frame-pointer rewrites never touch the parked parent's prefix);
-    /// `arena_root` is the parent's KFMS arena address (smuggled, since the
-    /// borrowed child's OWN fork-module region is a distinct private address the
-    /// parent never wrote) from which `fm_child_seed_borrowed` decodes the
-    /// inherited `JournalImage` record. The child drives `fm_child_seed_borrowed`
-    /// then `fm_child_reconstruct` (drives `wpk_fork_rewind_begin(private_prefix)`,
-    /// NOT `root`) then `wpk_fork_resume_start()`.
-    ChildBorrowedReplay { root: u32, private_prefix: u32, arena_root: u32 },
+    /// `SharedMemory` -- the borrowed sibling of `ChildReplay`. `root` is the
+    /// parent's live launch root (read, never copied); `private_prefix` is the
+    /// child-private workspace `fm_child_install` carves its fixed runtime
+    /// prefix from, so the guest's active-frame-pointer rewrites never touch
+    /// the parked parent's; `owner_control` is the PARENT's fork control word,
+    /// which a borrowed child's module uses as its own (as `forkOwnerControlAddr`
+    /// does on the JavaScript hosts) and never writes.
+    ChildBorrowedReplay { root: u32, private_prefix: u32, owner_control: u32 },
 }
 
 /// `kernel_fork`'s two reachable phases on a native guest thread (N1-I4 Task
@@ -5542,11 +4897,6 @@ struct ForkCoordState {
     /// child's pid (parent) or `0` (child), or a negative errno if capture
     /// or child-creation failed. Stored as the bit pattern of an `i32`.
     fork_result: AtomicU32,
-    /// `fm_begin_unwind`'s return value (the continuation root) — needed by
-    /// the entry loop AFTER `_start` unwinds, to serialize the journal and
-    /// begin parent replay. Unused (left `0`) on a fresh `ChildReplay`
-    /// thread, which already knows its own `root` from `ForkEntry`.
-    root: AtomicU32,
     /// The `mode` argument (`fork()` vs `vfork()`) `kernel_fork`'s `Idle`
     /// branch recorded, needed by the entry loop to choose `SYS_FORK` vs
     /// `SYS_VFORK` when it finally posts the real channel request (AFTER
@@ -5571,7 +4921,6 @@ impl ForkCoordState {
         Arc::new(Self {
             phase: AtomicU32::new(FORK_COORD_PHASE_IDLE),
             fork_result: AtomicU32::new(0),
-            root: AtomicU32::new(0),
             mode: AtomicU32::new(0),
             abort_replay: AtomicU32::new(0),
         })
@@ -5600,14 +4949,6 @@ impl ForkCoordState {
         self.fork_result.store(value as u32, Ordering::SeqCst);
     }
 
-    fn root(&self) -> u32 {
-        self.root.load(Ordering::SeqCst)
-    }
-
-    fn set_root(&self, value: u32) {
-        self.root.store(value, Ordering::SeqCst);
-    }
-
     fn mode(&self) -> u32 {
         self.mode.load(Ordering::SeqCst)
     }
@@ -5622,292 +4963,6 @@ impl ForkCoordState {
 
     fn set_abort_replay(&self, value: bool) {
         self.abort_replay.store(u32::from(value), Ordering::SeqCst);
-    }
-}
-
-/// N1-I5b Task 1: per-guest-OS-thread native reference CAPTURE bookkeeping —
-/// the native analogue of `ForkReferenceTransaction`'s capture half
-/// (`host/src/fork-reference-transaction.ts`). Capture has never been
-/// module-owned on any host (`docs/plans/2026-09-05-n1-i5b-reference-
-/// capture-grounding.md` §1/§2): Node/browser bind the ~15 capture-side
-/// guest imports directly to per-fork host JS closures over a
-/// `ForkReferenceTransaction`, not to a co-resident module export, so native
-/// mirrors that shape in Rust instead of trying to "flip" an import to a
-/// module export that does not exist.
-///
-/// Lifecycle, mirroring `worker-main.ts:4154-4176`'s `beginCapture`/
-/// `sealCapture` pair: created ONCE per guest OS thread (`spawn_guest_thread`,
-/// alongside [`ForkCoordState`]), `reset()` at the START of every capture
-/// (`kernel_fork`'s `Idle` arm, mirroring `arena.begin()` + a fresh
-/// `ForkReferenceTransaction`), filled by the guest's own per-frame commits
-/// during the unwind that follows (via the `__wpk_fork_ref_encode_funcref`/
-/// `_vector_begin`/`_append`/`_finish` import bodies bound in
-/// `spawn_guest_thread`), and read (never mutated) at seal time —
-/// `drive_fork_capture_seal_and_launch_child`, right after the guest's own
-/// `wpk_fork_unwind_end` + `fm_finish_unwind` confirm the ENTIRE unwind (and
-/// therefore every possible capture call) has finished — to serialize the
-/// accumulated graph into the KFMS scratch arena via [`write_module_state_
-/// arena`], mirroring `sealCapture()`'s `references.sealInto(arena)` +
-/// `arena.seal()`.
-
-/// Review fix (increment-review.md MEDIUM-2 / "Finding 3"): the pre-fork live
-/// value a gated reference-typed local held, preserved so a gated fork's
-/// PARENT-side abort-replay can hand the SAME identity back instead of a
-/// fabricated `null` — mirrors TS `reserveGatedPlaceholder`'s `capturedValues`
-/// retention (`host/src/fork-reference-transaction.ts:301-331`: "keeping the
-/// LIVE captured value so the PARENT still resumes faithfully"). The one live
-/// gate that has a real value in hand is `gc_broker_encode`, which sees it as
-/// an anyref -- a raw host externref arrives there through the guest's own
-/// `any.convert_extern` (externref stage E2), and a foreign/cross-activation
-/// GC value arrives as itself.
-type GatedOriginal = wasmtime::OwnedRooted<AnyRef>;
-
-struct NativeReferenceCapture {
-    /// The native port of `ForkReferenceTransaction`'s node/vector tables —
-    /// see `fork_codec::ReferenceGraphBuilder`'s own doc comment for why
-    /// interning by resolved COORDINATE (funcref `(activation, ordinal)`)
-    /// rather than by live JS-style identity is the faithful mirror here:
-    /// native has no live value to key on other than the raw `Func` handle
-    /// itself, which the `__wpk_fork_ref_encode_funcref` host body
-    /// (`spawn_guest_thread`) resolves to a coordinate via a funcref-catalog
-    /// lookup table (`Func::to_raw` -> ordinal) before ever touching this
-    /// builder.
-    graph: fork_codec::ReferenceGraphBuilder,
-    /// Bump offset into [`FORK_MODULE_CAPTURE_SCRATCH_BYTES`]'s reserved
-    /// page, backing `scratch_reserve`/`_release`. Reset to `0` alongside
-    /// `graph` at the start of every capture.
-    scratch_cursor: u32,
-    /// N1-I5b Task 2: the first GATED reference kind (`externref`, `gc`,
-    /// `i31`, `struct/array`, ...) this capture observed, or `None` when the
-    /// fork carries only supported kinds. Mirrors `ForkActivationRegistry`'s
-    /// `unsupportedReferenceKind` field (`host/src/fork-activation-
-    /// registry.ts:702-714`): a raw error here cannot unwind through the
-    /// guest's own fork save walk (that walk is driven by the GUEST's wasm
-    /// bytecode calling back into these host imports — there is no host-side
-    /// call frame to unwind an `Err` through without trapping the whole
-    /// store), so the gate-stub bodies below RECORD the kind (first
-    /// observation wins) and return a benign placeholder instead. Read via
-    /// `take_unsupported_kind` (read-and-clear) once the guest's unwind
-    /// fully completes, by `drive_fork_capture_seal_and_launch_child` —
-    /// mirroring the JS run loop's post-`sealCapture` check
-    /// (`worker-main.ts:5109-5139`).
-    unsupported_kind: Option<&'static str>,
-    /// Review fix (Finding 3): `(recipe id -> preserved live value)` for
-    /// every [`Self::gated_placeholder`] call this capture made. `None`
-    /// stores for the two "should never happen" DEFENSIVE gate paths
-    /// (`gc_lookup`/`gc_claim`'s "missing transit slot" checks) where the
-    /// transit slot itself held no valid value to preserve in the first
-    /// place — a genuine invariant violation elsewhere, not a normal gated
-    /// kind, so there is no live identity to hand back regardless of this
-    /// fix. Republished into the transit by the PARENT's own gated-abort
-    /// path (`gated_originals_iter`). Reset alongside `graph`.
-    gated_originals: Vec<(u32, Option<GatedOriginal>)>,
-    /// Synthetic i31 payload counter backing [`Self::gated_placeholder`]'s
-    /// per-call dedup avoidance. Starts at i31's own minimum representable
-    /// value and counts UP (still deep in negative territory even after
-    /// thousands of calls) — see `gated_placeholder`'s doc comment for why a
-    /// fresh, non-deduped node per call is required for this fix and why a
-    /// counter anchored far from typical small guest-chosen i31 payloads
-    /// (array indices, small tags, ...) keeps the collision risk with a
-    /// REAL i31 value negligible without requiring a `fork-codec` API
-    /// change. Reset alongside `graph`.
-    next_gated_payload: i32,
-    /// N1-F6: per-CAPTURE identity dedup for a live Wasm-GC value already
-    /// assigned a recipe id THIS capture — the native analogue of the TS
-    /// `ForkReferenceTransaction`'s per-capture `objectIds`/`capturedValues`
-    /// (`host/src/fork-reference-transaction.ts:196-201`). `gc_claim`
-    /// publishes `(value, id)` here BEFORE recursing into the value's own
-    /// fields (mirrors `claimGcSlot`'s doc comment: "publishing the id first
-    /// lets a field edge close a cycle back onto this node"), and
-    /// `gc_lookup`/`gc_define` both read it back — `gc_lookup` to terminate
-    /// aliases/cycles, `gc_define` to recover "what live object claimed
-    /// THIS recipe id" (mirrors `capturedGcValue(recipeId)`) so constructor
-    /// provenance can be looked up by that object's identity. Reset every
-    /// capture alongside `graph` — UNLIKE `GcProvenanceRegistry`, whose
-    /// records persist for the whole guest OS thread, this answers "have I
-    /// already interned exactly this live value in THIS fork's graph", not
-    /// "what constructed it".
-    gc_claimed: Vec<(wasmtime::OwnedRooted<AnyRef>, u32)>,
-}
-
-/// Mirrors `fork_codec::reference_graph_builder`'s own private `MIN_I31`
-/// (`-0x4000_0000`, i31's minimum representable signed 31-bit payload) — see
-/// [`NativeReferenceCapture::next_gated_payload`]'s doc comment.
-const GATED_PLACEHOLDER_MIN_PAYLOAD: i32 = -0x4000_0000;
-
-impl NativeReferenceCapture {
-    fn new() -> Self {
-        Self {
-            graph: fork_codec::ReferenceGraphBuilder::begin(),
-            scratch_cursor: 0,
-            unsupported_kind: None,
-            gated_originals: Vec::new(),
-            next_gated_payload: GATED_PLACEHOLDER_MIN_PAYLOAD,
-            gc_claimed: Vec::new(),
-        }
-    }
-
-    /// Record that live value `value` was just claimed as recipe `id` THIS
-    /// capture. See [`Self::gc_claimed`]'s doc comment.
-    fn gc_claim_remember(
-        &mut self,
-        mut store: impl wasmtime::AsContextMut,
-        value: wasmtime::Rooted<AnyRef>,
-        id: u32,
-    ) -> wasmtime::Result<()> {
-        let owned = value.to_owned_rooted(&mut store)?;
-        self.gc_claimed.push((owned, id));
-        Ok(())
-    }
-
-    /// The recipe id `value` was already claimed as THIS capture, or `None`
-    /// if it has not been seen yet. See [`Self::gc_claimed`]'s doc comment.
-    fn gc_claim_lookup(
-        &self,
-        mut store: impl wasmtime::AsContextMut,
-        value: wasmtime::Rooted<AnyRef>,
-    ) -> wasmtime::Result<Option<u32>> {
-        for (candidate, id) in &self.gc_claimed {
-            if wasmtime::Rooted::ref_eq(&mut store, candidate, &value)? {
-                return Ok(Some(*id));
-            }
-        }
-        Ok(None)
-    }
-
-    /// The live value that was claimed as recipe `id` THIS capture, or
-    /// `None` if `id` does not name a claimed Wasm-GC identity. Mirrors
-    /// `capturedGcValue(recipeId)`.
-    fn gc_claimed_value(
-        &self,
-        mut store: impl wasmtime::AsContextMut,
-        id: u32,
-    ) -> wasmtime::Result<Option<wasmtime::Rooted<AnyRef>>> {
-        for (candidate, candidate_id) in &self.gc_claimed {
-            if *candidate_id == id {
-                return Ok(Some(candidate.to_rooted(&mut store)));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Begin a fresh capture, discarding whatever the PREVIOUS fork's
-    /// capture (if any) left behind — mirrors `arena.begin()` + a fresh
-    /// `ForkReferenceTransaction` at the top of `beginCapture`. Called from
-    /// `kernel_fork`'s `Idle` arm, before `fm_begin_unwind`.
-    fn reset(&mut self) {
-        self.graph = fork_codec::ReferenceGraphBuilder::begin();
-        self.scratch_cursor = 0;
-        self.gc_claimed.clear();
-        // A partially-consumed marker from an aborted prior capture must
-        // never gate THIS fork — mirrors `beginCapture`'s own defensive
-        // `this.unsupportedReferenceKind = null` (`fork-activation-
-        // registry.ts:1199`). `take_unsupported_kind`'s read-and-clear is the
-        // primary owner; this is the same defense-in-depth belt-and-braces.
-        self.unsupported_kind = None;
-        self.gated_originals.clear();
-        self.next_gated_payload = GATED_PLACEHOLDER_MIN_PAYLOAD;
-    }
-
-    /// `markUnsupportedReferenceKind` port: record that the active capture
-    /// reached a gated reference kind. First observation wins, so the parent
-    /// run loop reports the first kind the guest's save walk actually
-    /// reached. Never fails — see [`Self::unsupported_kind`]'s doc comment
-    /// for why a gate-stub body cannot throw instead.
-    fn mark_unsupported(&mut self, kind: &'static str) {
-        self.unsupported_kind.get_or_insert(kind);
-    }
-
-    /// `takeUnsupportedReferenceKind` port: read and clear the gated kind
-    /// observed during the just-finished capture. Read-and-clear so a gated
-    /// kind can never leak into a subsequent, supported fork.
-    fn take_unsupported_kind(&mut self) -> Option<&'static str> {
-        self.unsupported_kind.take()
-    }
-
-    /// `reserveGatedPlaceholder` port: reserve a self-contained, non-null
-    /// leaf node — a canonical `i31` value — for a GATED capture kind, and
-    /// (review fix, Finding 3) preserve `original`'s live value so the
-    /// PARENT's own abort-replay can hand back the SAME identity instead of
-    /// a fabricated `null`.
-    ///
-    /// UPDATED from the prior "shared placeholder" design: this now mirrors
-    /// `reserveGatedPlaceholder`'s JS implementation exactly — a FRESH node
-    /// per call, via a synthetic i31 payload ([`Self::next_gated_payload`])
-    /// rather than `intern_i31`'s always-`0`, value-keyed dedup cache. A
-    /// shared id was sound only so long as the sealed graph's content was
-    /// truly "discarded unread" (still true for a CHILD, since a gated fork
-    /// never spawns one) — but the PARENT's own frame rewind DOES read
-    /// through these ids, one per originally-gated local, and two different
-    /// locals sharing one id could only ever restore ONE of their original
-    /// values correctly. A distinct id per call is required for the PARENT
-    /// restore to be correct for every gated local in the same fork, not
-    /// just the first.
-    fn gated_placeholder(&mut self, original: Option<GatedOriginal>) -> wasmtime::Result<u32> {
-        let payload = self.next_gated_payload;
-        // Stay deep in i31's negative range — see `next_gated_payload`'s doc
-        // comment. Exhausting this (billions of gated calls in one capture)
-        // is not a realistic scenario; fail closed rather than wrap back
-        // into a range a real guest payload could plausibly use.
-        if payload >= 0 {
-            return Err(wasmtime::Error::msg(
-                "gated placeholder payload counter exhausted its reserved negative range",
-            ));
-        }
-        self.next_gated_payload = payload + 1;
-        let id = self
-            .graph
-            .intern_i31(payload)
-            .map_err(|e| wasmtime::Error::msg(format!("gated placeholder intern failed: {e:?}")))?;
-        self.gated_originals.push((id, original));
-        Ok(id)
-    }
-
-    /// Every `(recipe id, live value)` this capture actually preserved —
-    /// i.e. every [`Self::gated_originals`] entry that is `Some`, skipping
-    /// the "should never happen" defensive gates that had none. Used by the
-    /// gated-abort anyref transit restore in
-    /// `drive_fork_capture_seal_and_launch_child`.
-    fn gated_originals_iter(&self) -> impl Iterator<Item = (u32, &GatedOriginal)> {
-        self.gated_originals
-            .iter()
-            .filter_map(|(id, original)| original.as_ref().map(|value| (*id, value)))
-    }
-
-    /// `__wpk_fork_ref_scratch_reserve(size) -> ptr|0`: a bump allocator over
-    /// a fixed-size page (`scratch_len`, always [`FORK_MODULE_CAPTURE_
-    /// SCRATCH_BYTES`] in practice) reserved once per guest OS thread. This
-    /// is deliberately a THIN allocator, not a general-purpose one: capture
-    /// is single-threaded, bounded to one fork's unwind, and reset to empty
-    /// at the start of every capture, so a bump pointer that only reclaims
-    /// the MOST RECENT reservation (see `scratch_release`) is sufficient —
-    /// matching grounding §5's "a bump/free-list allocator ... no
-    /// engine-floor issue" sizing. Returns `None` (mapped to a host-import
-    /// error, not a silent wraparound) if `size` would overrun the page.
-    fn scratch_reserve(&mut self, scratch_base: u32, scratch_len: u32, size: u32) -> Option<u32> {
-        let end = self.scratch_cursor.checked_add(size)?;
-        if end > scratch_len {
-            return None;
-        }
-        let ptr = scratch_base.checked_add(self.scratch_cursor)?;
-        self.scratch_cursor = end;
-        Some(ptr)
-    }
-
-    /// `__wpk_fork_ref_scratch_release(ptr, size) -> ()`: reclaims `[ptr,
-    /// ptr+size)` if and only if it is the single most-recent reservation
-    /// (a LIFO fast path — the common case for a codec that reserves,
-    /// fills, and immediately consumes one scratch buffer per node). A
-    /// non-LIFO release is a safe, silent no-op leak: the whole page resets
-    /// to empty at the start of the NEXT capture (`reset`), so nothing is
-    /// ever leaked across forks, only (at most) within one already-bounded
-    /// capture pass.
-    fn scratch_release(&mut self, scratch_base: u32, ptr: u32, size: u32) {
-        if let Some(top) = scratch_base.checked_add(self.scratch_cursor) {
-            if ptr.checked_add(size) == Some(top) {
-                self.scratch_cursor = self.scratch_cursor.saturating_sub(size);
-            }
-        }
     }
 }
 
@@ -5980,12 +5035,14 @@ pub const FM_STAT_DRIVE_STEPS_EXECUTED: u32 = 7;
 ///
 /// `Clone` (N1-I4 Task 3): every field is a cheap handle (`wasmtime::Instance`
 /// is `Copy`; `wasmtime::TypedFunc` is `Clone`) into the SAME `Store` this was
-/// instantiated in — cloning does not create a second module instance. This
-/// lets `spawn_guest_thread` hand one copy to its `kernel_fork` import
-/// closure (which needs to drive `fm_begin_unwind`/`fm_begin_replay`/
-/// `fm_finish_replay` reentrantly from inside that closure) while keeping the
-/// original for the outer entry-loop's own coordinator calls
-/// (`fm_finish_unwind`/`fm_serialize_journal_alloc`/...).
+/// instantiated in -- cloning does not create a second module instance. This
+/// lets `spawn_guest_thread` hand one copy to its `kernel_fork` import closure
+/// while keeping the original for the entry loop's own coordinator calls.
+///
+/// The `fm_*` entries bound here are exactly the ones the Node/browser host
+/// calls for the same step, in the same order. Everything a fork CAPTURES goes
+/// through the module's own exports, bound into the guest by name
+/// ([`bind_guest_fork_imports`]); this host keeps no capture state of its own.
 #[derive(Clone)]
 pub struct ForkModule {
     /// The instantiated fork-module, in the `Store` passed to
@@ -6005,38 +5062,24 @@ pub struct ForkModule {
     /// copies what it is given during the entry that takes it, so the slab
     /// holds one request at a time -- in practice activation 0's admission.
     pub staging_base: usize,
-    /// The page-aligned guest address of the KFMS module-state (reference
-    /// transaction) arena [`drive_reference_replay`]'s `fm_begin_reference_
-    /// replay` call reads. `instantiate_fork_module` writes the canonical
-    /// null-only floor here once, via [`write_empty_module_state_arena`]
-    /// (see that function's doc comment for why that floor is correct, not
-    /// fabricated, for a guest that never captures a reference); N1-I5b Task
-    /// 1's `drive_fork_capture_seal_and_launch_child` overwrites this SAME
-    /// address with THIS fork's real, capture-filled graph (via
-    /// [`write_module_state_arena`]) once its unwind completes, before
-    /// either the child's or the parent's own `drive_reference_replay` call
-    /// reads it — see that function's doc comment for why the same address,
-    /// reused per-fork, is sufficient (native never has two forks' capture
-    /// passes live at once on one guest OS thread).
-    pub empty_module_state_root: u32,
-    /// N1-I5b Task 1: the page-aligned guest address of the
-    /// [`FORK_MODULE_CAPTURE_SCRATCH_BYTES`] scratch page backing
-    /// `__wpk_fork_ref_scratch_reserve`/`_release` — see
-    /// [`NativeReferenceCapture::scratch_reserve`]'s doc comment.
-    pub capture_scratch_base: u32,
+    /// The objects `__wpk_fork_host_ref_identity` has numbered, by identity
+    /// (index + 1). See [`instantiate_fork_module`].
+    ref_identities: Arc<Mutex<Vec<wasmtime::OwnedRooted<AnyRef>>>>,
+    /// Where `fm_bind_activation` placed activation 0's static roots in
+    /// [`Self::static_root_catalog_table`], or `u32::MAX` while this worker has
+    /// harvested none. See [`fill_static_root_catalog`].
+    static_root_base: Arc<AtomicU32>,
 
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
     // not at instantiation) -----------------------------------------------
     /// `(pointer_width, fixed_prefix_size, archive_control_addr, channel_base)`.
     ///
-    /// `archive_control_addr` is the worker's dlopen control block. This host
-    /// does not implement dlopen -- it runs single-activation guests -- so it
-    /// passes 0, which the module reads as "no archive", not as an error: no
-    /// peer ever publishes a table patch here, so there is nothing to
-    /// reconcile. A host that grows dlopen support must pass its real control
-    /// address (a borrowed vfork child: its OWNER's), as the JS hosts do, or
-    /// its replicated tables will never reconcile.
+    /// `archive_control_addr` is the worker's fork control word: the one
+    /// below its main channel (`channel - FORK_SAVE_BUFFER_SIZE`), or for a
+    /// borrowed vfork child its OWNER's, as the JavaScript hosts pass. The
+    /// module publishes a COW child's launch root there; this host has no
+    /// dlopen, so no peer ever publishes an archive behind it.
     pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
     /// `fm_admit_activation(desc_ptr, len) -> errno`: one activation's `KFAA`
     /// admission descriptor ([`GuestForkFormat::admission`]).
@@ -6051,137 +5094,48 @@ pub struct ForkModule {
     /// `fm_publish_bindings(activation, rows_ptr, count) -> errno`: which
     /// identity group each catalog entry is. See [`publish_table_bindings`].
     pub fm_publish_bindings: wasmtime::TypedFunc<(u32, u32, u32), i32>,
-    pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
     pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
+    /// `fm_phase()` -- the module's fork phase. See [`in_fork_capture`].
+    pub fm_phase: wasmtime::TypedFunc<(), u32>,
     /// Proof-of-use statistics: the single folded counter accessor
     /// (`fm_stats(field) -> i64`), replacing the former 11 individual `fm_*`
     /// counter exports. Field indices are the `FM_STAT_*` constants above.
     pub fm_stats: wasmtime::TypedFunc<u32, i64>,
-
-    // -- N1-I5 Task 1: the module's reference-replay `fm_*` exports, bound
-    // here for the same reason as the frame-coordinator exports above (one
-    // lookup, checked eagerly). NOTHING calls these yet — Task 1 is wiring
-    // only; Task 3 drives the actual reference-replay sequence
-    // (`fork-process-continuation.ts:1081-1100`'s order). See this struct's
-    // doc comment and `instantiate_fork_module`'s "N1-I5 Task 1" comments.
-    /// Seed the whole-arena reference graph for this fork
-    /// (`module_state_root`, `pid`); `fm_last_errno` reports failure.
-    pub fm_begin_reference_replay: wasmtime::TypedFunc<(u32, u32), ()>,
-    /// Build the real topological GC drive plan for the fork's whole
-    /// reference graph; returns a guest address for `fm_drive_execute`, or
-    /// `0` + `fm_last_errno` on failure.
-    pub fm_build_gc_plan: wasmtime::TypedFunc<u32, u32>,
-    /// Step count of the last `fm_build_gc_plan` build (the `count` argument
-    /// for `fm_drive_execute`).
-    pub fm_gc_plan_count: wasmtime::TypedFunc<(), i32>,
-    /// The walrus-injected drive loop: `call_indirect`s
-    /// `env.__wpk_fork_drive_table` once per serialized plan step.
-    pub fm_drive_execute: wasmtime::TypedFunc<(u32, u32), ()>,
-    /// `__wpk_fork_ref_vector_get(ordinal, index) -> recipe_id`.
-    pub fm_ref_vector_get: wasmtime::TypedFunc<(u32, u32), i32>,
-    /// `__wpk_fork_ref_gc_route(recipe_id, expected_activation) -> layout|0|-1`.
-    pub fm_ref_gc_route: wasmtime::TypedFunc<(u32, u32), i32>,
-    /// `__wpk_fork_ref_gc_payload_len(recipe_id, activation, layout) -> len`.
-    pub fm_ref_gc_payload_len: wasmtime::TypedFunc<(u32, u32, u32), i32>,
-    /// `__wpk_fork_ref_gc_load(recipe_id, activation, type, layout, kind,
-    /// dst, len) -> vector_ordinal|0`; `dst` is an absolute guest byte offset.
-    pub fm_ref_gc_load: wasmtime::TypedFunc<(u32, u32, u32, u32, u32, u32, u32), i32>,
-    /// `__wpk_fork_ref_exn_route(recipe_id, expected_activation) -> layout|-1`.
-    pub fm_ref_exn_route: wasmtime::TypedFunc<(u32, u32), i32>,
-    /// `__wpk_fork_ref_exn_load(recipe_id, activation, tag, layout,
-    /// scalar_dst, scalar_len, ref_ids_dst, ref_count) -> 1`. Both `dst`
-    /// args are absolute guest byte offsets.
-    pub fm_ref_exn_load: wasmtime::TypedFunc<(u32, u32, u32, u32, u32, u32, u32, u32), i32>,
-    /// `__wpk_fork_ref_exn_cache_index(recipe_id) -> index`.
-    pub fm_ref_exn_cache_index: wasmtime::TypedFunc<u32, i32>,
-
-    // -- Coarse per-phase entries (the ONE module API every host drives) ----
-    //
-    // These fold the fine-grained `fm_*` sequences above into one call per
-    // fork phase, driving each activation's guest phase-flip export
-    // (`wpk_fork_{unwind,rewind,abort}_{begin,end}`) internally via the
-    // injector-wired `fm_drive_execute` shim through `__wpk_fork_drive_table`.
-    // The host binds those funcrefs into the drive table (see the drive-table
-    // phase-flip bind in `spawn_guest_thread`/`run_worker_thread`) and then
-    // issues these coarse calls, mirroring `host/src/fork-process-
-    // continuation.ts`'s coarse-only orchestration. Native is single-activation
-    // (base 0): it admits and binds only activation 0, so the module has no
-    // side activation to walk.
-    /// `fm_parent_begin_capture(channel_base, arena_root) -> act0_root` —
-    /// opens the capture and drives each guest `wpk_fork_unwind_begin(root)`.
-    /// Arms the module's reference-graph builder for this fork and resets its
-    /// bump heap. Separate from `fm_parent_begin_capture`, which begins the
-    /// UNWIND: `begin_capture_impl` does not arm the builder, so a host that
-    /// calls only the latter seals with no builder at all.
+    /// `fm_capture_begin()` -- opens this fork's capture graph and resets the
+    /// module's bump heap; the first module call of a capture.
     pub fm_capture_begin: wasmtime::TypedFunc<(), ()>,
+    /// `fm_parent_begin_capture(channel_base, 0) -> act0_root` -- the module
+    /// allocates its own arena and drives each guest `wpk_fork_unwind_begin`.
     pub fm_parent_begin_capture: wasmtime::TypedFunc<(u32, u32), u32>,
-    /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` — drives each
-    /// guest `wpk_fork_unwind_end()`, seals, and serializes the child image
-    /// (`fm_journal_image_len` reports its length; 0 return == failure).
+    /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` -- drives
+    /// each guest `wpk_fork_unwind_end()`, seals the capture into the module's
+    /// arena, and serializes the child image (0 + `fm_last_errno` on failure).
     pub fm_parent_seal_capture: wasmtime::TypedFunc<u32, u32>,
-    /// `fm_parent_abort_seal()` — the mid-unwind seal (no guest drive, no
-    /// serialize) for a partial/aborted capture.
-    pub fm_parent_abort_seal: wasmtime::TypedFunc<(), ()>,
-    /// `fm_parent_replay(abort)` — begins the parent rewind and drives each
-    /// guest `wpk_fork_rewind_begin(root)`, or with `abort != 0` the abort-tagged
-    /// phase driving `wpk_fork_abort_begin(root)`. ONE entry for both: the module
-    /// used to export a separate `fm_parent_abort` that was the same impl with the
-    /// flag flipped, and `fm_parent_finish(abort)` below was already the precedent
-    /// for carrying the phase as an argument.
+    /// `fm_parent_replay(abort)` -- begins the parent rewind (or, with `abort`,
+    /// the abort replay) and drives each guest `wpk_fork_{rewind,abort}_begin`.
     pub fm_parent_replay: wasmtime::TypedFunc<u32, ()>,
-    /// `fm_parent_finish(abort)` — drives each guest `wpk_fork_rewind_end()`
-    /// (abort==0) or `wpk_fork_abort_end()` (abort!=0), then finishes the
-    /// replay/abort.
+    /// `fm_parent_finish(abort)` -- drives each guest
+    /// `wpk_fork_{rewind,abort}_end()`, then finishes the replay.
     pub fm_parent_finish: wasmtime::TypedFunc<u32, ()>,
-    /// `fm_child_seed(module_state_root, act0_root)` — seeds a COW child's
-    /// replay from the inherited journal image.
-    pub fm_child_seed: wasmtime::TypedFunc<(u32, u32), ()>,
-    /// `fm_child_seed_borrowed(module_state_root, act0_root)` — the vfork
-    /// borrowed sibling of `fm_child_seed`.
-    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32), ()>,
-    /// Seed the vfork BORROWED child's admitted replay workspace.
-    ///
-    /// The host knows where the kernel put the region; the module knows how much
-    /// prefix each activation needs and in what order -- it has been reporting
-    /// exactly that total through `fm_borrowed_replay_workspace`. Seeding the
-    /// region lets the module carve the prefixes itself, so neither host has to
-    /// run that walk a second time.
-    pub fm_set_borrowed_workspace: wasmtime::TypedFunc<(u32, u32), ()>,
-    /// `fm_child_reconstruct()` — drives each guest `wpk_fork_rewind_begin(root)`
-    /// from the child's seeded per-activation `child_rewind_root`.
-    pub fm_child_reconstruct: wasmtime::TypedFunc<(), ()>,
+    /// `fm_child_install(pid, launch_root, borrowed_base, borrowed_bytes) ->
+    /// errno` -- ONE call installs a COW or borrowed fork child. See
+    /// [`run_fork_capable_entry`].
+    pub fm_child_install: wasmtime::TypedFunc<(u32, u32, u32, u32), i32>,
 
-    /// The module's own module-defined, module-EXPORTED `(ref null any)`
-    /// transit table (STORE #2) a guest's `_gc_allocate` publishes into and
-    /// `_gc_fill` consumes. Bound into a fork-instrumented guest's own
-    /// `env.__wpk_fork_ref_gc_transit` import (N1-I5 Task 1 step 3).
-    pub gc_transit_table: Table,
     /// The module's OWN imported funcref table (`env.__wpk_fork_function_catalog`)
-    /// — created empty by [`instantiate_fork_module`]; N1-I5 Task 1 populates
-    /// it, after a guest instance exists, with that guest's own exported
-    /// catalog entries (real `Func` values, identity preserved).
+    /// -- created empty by [`instantiate_fork_module`] and filled, after a guest
+    /// instance exists, with that guest's own exported catalog entries.
     pub function_catalog_table: Table,
     /// The module's OWN imported funcref table (`env.__wpk_fork_drive_table`)
-    /// the injected `fm_drive_execute` `call_indirect`s; populated with a
-    /// guest's `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports.
+    /// the injected `fm_drive_execute` `call_indirect`s; filled by
+    /// [`bind_activation`].
     pub drive_table: Table,
     /// The module's own module-defined, module-EXPORTED anyref static-root
     /// catalog (`__wpk_fork_static_root_catalog`) the static-root binder
     /// `table.get`s. The module grows it as `fm_bind_activation` places each
     /// catalog; this host only writes a guest's harvested static-root values
-    /// into the placed range.
+    /// into the placed range ([`fill_static_root_catalog`]).
     pub static_root_catalog_table: Table,
-    /// The module's own module-defined, module-EXPORTED `funcref` resume
-    /// table — the cross-activation dispatch table `wpk_fork_resume_start`
-    /// `call_indirect`s during every replay.
-    ///
-    /// Bound into a fork-instrumented guest's `env.__wpk_fork_resume_table`
-    /// import and FILLED by that guest's own emitted
-    /// `__wpk_fork_place_resume_thunks`, from the assignment
-    /// `fm_bind_activation` publishes. This host chooses no slot and
-    /// writes no thunk; see [`place_resume_thunks`] for why it used to do both
-    /// and what that cost.
-    pub resume_table: Table,
 }
 
 /// Instantiate the co-resident fork-module (`crate::fork_module_path()`)
@@ -6359,7 +5313,6 @@ pub(crate) fn instantiate_fork_module(
     store: &mut Store<()>,
     guest_mem: &SharedMemory,
     layout: &ProcessLayout,
-    seed_empty_module_state_arena: bool,
 ) -> anyhow::Result<ForkModule> {
     let fork_module_wasm_path = crate::fork_module_path();
     let wasm_bytes = std::fs::read(&fork_module_wasm_path)
@@ -6371,53 +5324,7 @@ pub(crate) fn instantiate_fork_module(
     let staging_base = memory_base + region_bytes - FORK_MODULE_STAGING_SLAB_BYTES;
     let stack_top = staging_base;
 
-    // Two host-owned pages at the BOTTOM of the module's shadow-stack padding,
-    // page-aligned above its static footprint (the `dylink.0` mem_info
-    // `compute_fork_module_region` already read). Growing the guest's WASM
-    // MEMORY past the region is not an option: its end is `ProcessLayout::
-    // max_addr`, the SAME value `new_shared` used as this memory's hard
-    // `maximum`, so `SharedMemory::grow` past it fails outright.
-    //
-    // First, the KFMS module-state (reference transaction) arena page
-    // `write_empty_module_state_arena` writes its `module_state_root` header
-    // into; see that function's doc comment for why an empty arena is a
-    // truthful value for a fork that captured no reference.
-    let (fm_mem_size, fm_mem_align) = read_fork_module_mem_info(&wasm_bytes)?;
-    let fm_static_bytes = fm_mem_size.div_ceil(fm_mem_align) * fm_mem_align;
-    let reference_scratch_base = (memory_base + fm_static_bytes).div_ceil(WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
-    // Second, the capture-side `scratch_reserve`/`_release` page -- see
-    // [`FORK_MODULE_CAPTURE_SCRATCH_BYTES`]'s doc comment for why it is not
-    // shared with the KFMS page.
-    let capture_scratch_base = reference_scratch_base + WASM_PAGE_SIZE;
-    anyhow::ensure!(
-        capture_scratch_base + FORK_MODULE_CAPTURE_SCRATCH_BYTES <= stack_top,
-        "fork-module scratch pages do not fit in the module's shadow-stack padding"
-    );
-    let reference_scratch_base = u32::try_from(reference_scratch_base)
-        .map_err(|_| anyhow::anyhow!("reference-replay scratch address {reference_scratch_base:#x} does not fit in wasm32"))?;
-    let capture_scratch_base = u32::try_from(capture_scratch_base)
-        .map_err(|_| anyhow::anyhow!("capture-scratch address {capture_scratch_base:#x} does not fit in wasm32"))?;
-
     grow_to_cover(guest_mem, memory_base + region_bytes)?;
-    // N1-I5b Task 1: this call MUST be skipped for a fork child's own
-    // relaunch (`seed_empty_module_state_arena == false`) — `handle_fork`
-    // hands the child a byte-for-byte `clone_guest_memory` of the PARENT's
-    // memory, taken AFTER `drive_fork_capture_seal_and_launch_child` already
-    // sealed THIS fork's real, capture-filled graph at this exact
-    // `reference_scratch_base` address (see that function's doc comment).
-    // Writing the canonical-null floor here unconditionally, as this
-    // function did before N1-I5b, silently CLOBBERED that real graph back
-    // to empty on every fork child before its own `drive_reference_replay`
-    // call ever ran — the child's rewind would then decode nothing (or
-    // trap/misdecode), a genuine bug this task's own smoke test caught
-    // empirically (a fork of a funcref-carrying guest hung: the child never
-    // reached a valid resume path). A genuinely FRESH, non-fork launch
-    // (`ForkEntry::Normal`, `seed_empty_module_state_arena == true`) still
-    // needs this floor written once: nothing else initializes this address
-    // before that launch's own first possible fork.
-    if seed_empty_module_state_arena {
-        write_empty_module_state_arena(guest_mem, reference_scratch_base)?;
-    }
 
     let mut linker: Linker<()> = Linker::new(engine);
     linker.define(&mut *store, "env", "memory", guest_mem.clone())?;
@@ -6479,20 +5386,10 @@ pub(crate) fn instantiate_fork_module(
     )?;
     linker.define(&mut *store, "env", "__stack_pointer", stack_pointer_global)?;
 
-    // H3 (host-surface minimization, 2026-09-06): the `wpk_fork_host.*`
-    // exception-path seam this comment used to describe
-    // (`host_last_errno`/`host_mint_exception_tag`/
-    // `host_recognize_unwind_transport`/`host_provide_unwind_transport_tag`/
-    // `host_spawn_thread`/`host_instantiate_child`) is deleted; the
-    // fork-module artifact no longer declares those imports. Any future
-    // import this frames-only path does not know about still needs a
-    // truthful stub rather than a silent wrong-typed default, so the
-    // catch-all trap pass stays.
-    //
     // `__wpk_fork_host_materialize_dlopen_archive(generation) -> errno`: the
     // module asks a host to instantiate libraries a PEER dlopened. This host
-    // has no dlopen, passes no archive control block to `fm_set_format`, and so
-    // is never asked -- the module only asks after reading a published
+    // has no dlopen, so no archive is ever published behind its control word
+    // and it is never asked -- the module only asks after reading a published
     // archive. Answered ENOSYS (38), the truthful "this host cannot load
     // libraries", rather than left to the trap pass, so a future host path that
     // did publish an archive would see an errno it can report.
@@ -6500,6 +5397,48 @@ pub(crate) fn instantiate_fork_module(
         "env",
         "__wpk_fork_host_materialize_dlopen_archive",
         |_generation: i64| -> i32 { 38 },
+    )?;
+    // The module's two identity floors (`host/src/fork-module-host-
+    // capabilities.ts` states each one's reason): wasm cannot compare two
+    // references, so the host answers with a stable non-zero integer per
+    // distinct value and the module keys its own maps on it. Identity 0 is
+    // never issued; the module reads 0 as "no recipe bound".
+    //
+    // A function's `Func::to_raw` pointer is stable for this `Store`'s life
+    // (`a_native_host_can_identify_funcrefs`), so functions are numbered by it.
+    let func_ids: Mutex<HashMap<usize, i32>> = Mutex::new(HashMap::new());
+    linker.func_wrap(
+        "env",
+        "__wpk_fork_host_func_identity",
+        move |mut caller: Caller<'_, ()>, f: Option<wasmtime::Func>| -> wasmtime::Result<i32> {
+            let f = f.ok_or_else(|| wasmtime::Error::msg("__wpk_fork_host_func_identity(null)"))?;
+            let mut ids = func_ids.lock().unwrap();
+            let next = ids.len() as i32 + 1;
+            Ok(*ids.entry(f.to_raw(&mut caller) as usize).or_insert(next))
+        },
+    )?;
+    // A GC object has no stable integer of its own, so it is kept (rooted) and
+    // found again by `ref.eq`. Rooting pins it, where the JavaScript hosts'
+    // `WeakMap` does not, so the pool is cleared at every `fm_capture_begin`
+    // (`kernel_fork`): the module's only map keyed by it, `fm_gc_identity_*`,
+    // is reset there too (`reset_bump_heap`), and both callers, the injected
+    // `gc_lookup` / `gc_claim` shims, run only inside a capture.
+    let ref_identities: Arc<Mutex<Vec<wasmtime::OwnedRooted<AnyRef>>>> = Arc::default();
+    let pool = Arc::clone(&ref_identities);
+    linker.func_wrap(
+        "env",
+        "__wpk_fork_host_ref_identity",
+        move |mut caller: Caller<'_, ()>, v: Option<wasmtime::Rooted<AnyRef>>| -> wasmtime::Result<i32> {
+            let v = v.ok_or_else(|| wasmtime::Error::msg("__wpk_fork_host_ref_identity(null)"))?;
+            let mut pool = pool.lock().unwrap();
+            for (i, known) in pool.iter().enumerate() {
+                if wasmtime::Rooted::ref_eq(&mut caller, known, &v)? {
+                    return Ok(i as i32 + 1);
+                }
+            }
+            pool.push(v.to_owned_rooted(&mut caller)?);
+            Ok(pool.len() as i32)
+        },
     )?;
     linker.define_unknown_imports_as_traps(&module)?;
 
@@ -6513,34 +5452,9 @@ pub(crate) fn instantiate_fork_module(
         };
     }
 
-    // N1-I5 Task 1: the module's own module-defined, module-EXPORTED anyref
-    // transit table (STORE #2 — see `fork-module-inject/src/main.rs`'s
-    // `TRANSIT_TABLE_IMPORT` doc comment for why the module, not the host,
-    // owns this table). Every co-resident fork-module build exports it
-    // unconditionally, so a missing export here is a real module/host ABI
-    // mismatch, not a "guest doesn't use references" case — hence a hard
-    // error, like every other `fm_func!` lookup below.
-    let gc_transit_table = instance
-        .get_table(&mut *store, "__wpk_fork_ref_gc_transit")
-        .ok_or_else(|| anyhow::anyhow!("fork-module missing export __wpk_fork_ref_gc_transit"))?;
-
-    // The module's own funcref resume table, exported for the same reason the
-    // transit table above is and resolved the same way: one object, so the
-    // guest's import, the module's slot numbering and whatever places the
-    // thunks cannot be three different tables. A missing export is an ABI
-    // mismatch, not a "this guest does not fork" case.
-    let resume_table = instance
-        .get_table(&mut *store, wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "fork-module missing export {}",
-                wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
-            )
-        })?;
-
-    // The module's own anyref static-root catalog, resolved like the two
-    // tables above and for the same reason: one object, which the module
-    // grows as it places catalogs. A missing export is an ABI mismatch.
+    // The module's own anyref static-root catalog: module-defined and
+    // module-EXPORTED, grown by the module as it places catalogs. A missing
+    // export is an ABI mismatch.
     let static_root_catalog_table = instance
         .get_table(&mut *store, wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
         .ok_or_else(|| {
@@ -6550,57 +5464,49 @@ pub(crate) fn instantiate_fork_module(
             )
         })?;
 
-    let fm = ForkModule {
+    Ok(ForkModule {
         instance,
         memory_base,
         region_bytes,
         staging_base,
+        ref_identities,
+        static_root_base: Arc::new(AtomicU32::new(u32::MAX)),
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
         fm_admit_activation: fm_func!("fm_admit_activation": (u32, u32) => i32),
         fm_admission_buffer: fm_func!("fm_admission_buffer": u32 => u32),
         fm_bind_activation: fm_func!("fm_bind_activation": (u32, u32, u32) => u32),
         fm_publish_bindings: fm_func!("fm_publish_bindings": (u32, u32, u32) => i32),
-        fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
+        fm_phase: fm_func!("fm_phase": () => u32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
-        fm_begin_reference_replay: fm_func!("fm_begin_reference_replay": (u32, u32) => ()),
-        fm_build_gc_plan: fm_func!("fm_build_gc_plan": u32 => u32),
-        fm_gc_plan_count: fm_func!("fm_gc_plan_count": () => i32),
-        fm_drive_execute: fm_func!("fm_drive_execute": (u32, u32) => ()),
-        fm_ref_vector_get: fm_func!("__wpk_fork_ref_vector_get": (u32, u32) => i32),
-        fm_ref_gc_route: fm_func!("__wpk_fork_ref_gc_route": (u32, u32) => i32),
-        fm_ref_gc_payload_len: fm_func!("__wpk_fork_ref_gc_payload_len": (u32, u32, u32) => i32),
-        fm_ref_gc_load: fm_func!("__wpk_fork_ref_gc_load": (u32, u32, u32, u32, u32, u32, u32) => i32),
-        fm_ref_exn_route: fm_func!("__wpk_fork_ref_exn_route": (u32, u32) => i32),
-        fm_ref_exn_load: fm_func!("__wpk_fork_ref_exn_load": (u32, u32, u32, u32, u32, u32, u32, u32) => i32),
-        fm_ref_exn_cache_index: fm_func!("__wpk_fork_ref_exn_cache_index": u32 => i32),
         fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
         fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32) => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
-        fm_parent_abort_seal: fm_func!("fm_parent_abort_seal": () => ()),
         fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
         fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
-        fm_child_seed: fm_func!("fm_child_seed": (u32, u32) => ()),
-        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32) => ()),
-        fm_set_borrowed_workspace: fm_func!("fm_set_borrowed_workspace": (u32, u32) => ()),
-        fm_child_reconstruct: fm_func!("fm_child_reconstruct": () => ()),
-        gc_transit_table,
+        fm_child_install: fm_func!("fm_child_install": (u32, u32, u32, u32) => i32),
         function_catalog_table,
         drive_table,
         static_root_catalog_table,
-        resume_table,
-        empty_module_state_root: reference_scratch_base,
-        capture_scratch_base,
-    };
+    })
+}
 
-    Ok(fm)
+/// The fork control word of the thread whose channel is at `channel_offset`:
+/// the first word above the control prefix of the fork-save page directly
+/// below that channel (`channelOffset - FORK_BUF_SIZE` on the JavaScript
+/// hosts). A forking parent publishes its launch root there before it posts
+/// `SYS_FORK`, [`handle_fork`] reads it back, and `fm_child_install` publishes
+/// a COW child's own launch root in the child's copy.
+fn fork_control_word(channel_offset: usize) -> usize {
+    channel_offset - wasm_posix_shared::process_memory::FORK_SAVE_BUFFER_SIZE as usize
 }
 
 /// Seed this worker's format and admit activation 0: the two calls
 /// `ForkModuleContinuationBackend.setup()` and `admitActivation` make
 /// (`host/src/fork-module-backend.ts`), in the same order.
 ///
-/// `fm_set_format` is given the channel base and a fixed prefix of 0 --
+/// `fm_set_format` is given the channel base, the worker's fork control word
+/// (`control`, see [`fork_control_word`]) and a fixed prefix of 0 --
 /// activation 0's admission supplies the prefix. It RESETS every
 /// per-activation record, so it runs first, once per worker.
 ///
@@ -6616,9 +5522,10 @@ fn admit_guest(
     guest_mem: &SharedMemory,
     format: &GuestForkFormat,
     channel_offset: usize,
+    control: u32,
     flags: u32,
 ) -> anyhow::Result<()> {
-    fm.fm_set_format.call(&mut *store, (4, 0, 0, channel_offset as u32))?;
+    fm.fm_set_format.call(&mut *store, (4, 0, control, channel_offset as u32))?;
     let errno = fm.fm_last_errno.call(&mut *store, ())?;
     anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
     let desc = format.admission(0, flags);
@@ -6870,6 +5777,99 @@ fn place_resume_thunks(
     Ok(())
 }
 
+/// Bind every `env.__wpk_fork_*` import the guest declares to the fork
+/// module's export of the same name -- functions, the unwind tag, the resume
+/// and GC-transit tables alike -- as `buildForkGuestImports` does on the
+/// JavaScript hosts. Driven off the guest artifact's own import list, so an
+/// import the module starts serving needs no edit here.
+///
+/// The module is the authority on everything it exports: this host adds no
+/// fork import of its own, and in particular keeps no capture state -- every
+/// frame, reference and module-state record a fork carries goes into the
+/// module's arena, which is what its parent replay and `fm_child_install` read.
+/// An import the module does not export (the two per-activation globals) is
+/// left to the default-value pass.
+fn bind_guest_fork_imports(
+    linker: &mut Linker<()>,
+    store: &mut Store<()>,
+    module: &Module,
+    fm: &ForkModule,
+) -> anyhow::Result<()> {
+    for import in module.imports() {
+        if import.module() != "env" || !import.name().starts_with("__wpk_fork_") {
+            continue;
+        }
+        if let Some(export) = fm.instance.get_export(&mut *store, import.name()) {
+            linker
+                .define(&mut *store, "env", import.name(), export)
+                .map_err(|e| anyhow::anyhow!("binding the fork module's {} into the guest: {e:#}", import.name()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy activation 0's harvested static roots (the guest's
+/// `__wpk_fork_static_root_catalog`) into the module's merged catalog at the
+/// base `fm_bind_activation` placed them -- `ForkMergedStaticRoots.fill` on the
+/// JavaScript hosts. A capture and a child install both read the merged
+/// catalog, and `fm_child_install` nulls it once its drive has run, so it is
+/// filled before each. A no-op for a worker that harvested no static roots.
+fn fill_static_root_catalog(
+    mut store: impl wasmtime::AsContextMut,
+    fm: &ForkModule,
+    guest_roots: Table,
+) -> anyhow::Result<()> {
+    let base = fm.static_root_base.load(Ordering::SeqCst);
+    if base == u32::MAX {
+        return Ok(());
+    }
+    for i in 0..guest_roots.size(&mut store) {
+        let root = guest_roots
+            .get(&mut store, i)
+            .ok_or_else(|| anyhow::anyhow!("guest static-root catalog[{i}] is out of bounds"))?;
+        fm.static_root_catalog_table
+            .set(&mut store, u64::from(base) + i, root)
+            .map_err(|e| anyhow::anyhow!("populating fork-module static-root catalog[{i}] failed: {e:#}"))?;
+    }
+    Ok(())
+}
+
+/// `kernel_fork`'s capture begin, in `worker-main.ts`'s order: open the
+/// module's capture graph (`fm_capture_begin`, which also resets the module's
+/// identity map, so this host's identity pool is emptied with it), refill the
+/// merged static-root catalog the capture reads, then open the capture with
+/// a 0 arena root -- the module allocates its own -- and have the module drive
+/// the guest's `wpk_fork_unwind_begin`. The returned launch root is published
+/// in the forking thread's fork control word, where `handle_fork` reads it.
+///
+/// Returns what `kernel_fork` returns to the (now unwinding) guest: 0, or
+/// `-errno` when the capture could not open, in which case nothing unwinds and
+/// no `SYS_FORK` is posted.
+fn begin_fork_capture(
+    caller: &mut Caller<'_, ()>,
+    fm: &ForkModule,
+    mem: &SharedMemory,
+    ch: usize,
+) -> wasmtime::Result<i32> {
+    fm.ref_identities.lock().unwrap().clear();
+    fm.fm_capture_begin.call(&mut *caller, ())?;
+    if let Some(guest_roots) = caller
+        .get_export(wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
+        .and_then(|export| export.into_table())
+    {
+        fill_static_root_catalog(&mut *caller, fm, guest_roots).map_err(wasmtime::Error::msg)?;
+    }
+    let root = fm.fm_parent_begin_capture.call(&mut *caller, (ch as u32, 0))?;
+    let errno = fm.fm_last_errno.call(&mut *caller, ())?;
+    if errno != 0 {
+        return Ok(-errno);
+    }
+    // SAFETY: the control word is inside the forking thread's own fork-save
+    // page, which the process layout reserves below its channel.
+    unsafe { write_bytes(mem, fork_control_word(ch), &root.to_le_bytes()) };
+    Ok(0)
+}
+
 /// Launch one guest process instance and return the [`GuestProcess`] the pump
 /// then services: push its brk/mmap/max-addr into the kernel, spawn its guest
 /// OS thread over `memory`, and register its main channel.
@@ -7008,6 +6008,7 @@ fn launch_process(
         guest_module.clone(),
         memory.clone(),
         layout,
+        pid,
         import_exit_status,
         launch_argv,
         launch_env,
@@ -7128,6 +6129,7 @@ fn launch_vfork_borrowed_child(
         guest_module.clone(),
         guest_mem.clone(),
         child_layout,
+        pid,
         Arc::new(Mutex::new(None)),
         Arc::new(Vec::new()),
         Arc::new(Vec::new()),
@@ -7165,6 +6167,7 @@ fn spawn_guest_thread(
     module: Module,
     guest_mem: SharedMemory,
     layout: ProcessLayout,
+    pid: u32,
     import_exit_status: Arc<Mutex<Option<i32>>>,
     launch_argv: Arc<Vec<Vec<u8>>>,
     launch_env: Arc<Vec<Vec<u8>>>,
@@ -7190,176 +6193,56 @@ fn spawn_guest_thread(
         .unwrap();
         linker.define(&mut store, "env", "__channel_base", channel_base).unwrap();
 
-        // N1-I4 Task 2: instantiate the co-resident fork-module (Task 1's
-        // `instantiate_fork_module`) in this SAME `Store` as the guest
-        // instance about to be created below, then flip the guest's
-        // `__wpk_fork_frame_reserve/commit/peek/next` +
-        // `__wpk_fork_resume_peek` imports to resolve to the module's
-        // exported `Func`s — a synchronous wasm->wasm call over shared
-        // memory, mirroring `host/src/worker-main.ts:4545-4557`. Both
-        // instances must share one `Store`: a `Func` can only be handed to
-        // `Linker::define`/`instantiate` for a Store it was created in. This
-        // runs for EVERY process launched with `use_fork_module` (the boot
-        // process, a spawned child, or a fork child — see `launch_process`),
-        // so the parent side of a later fork already has this wiring from
-        // its OWN launch; `handle_fork` never needs to retrofit it. If the
-        // guest module does not actually import these five names (e.g. this
-        // increment's un-instrumented fixtures), `linker.define` is simply
-        // unused — Wasmtime does not require a defined name to be consumed.
-        // N1-I4 Task 3: kept alive past this block (unlike Task 2, which
-        // dropped it once the frame imports were wired) — the `kernel_fork`
-        // import closure below and the entry loop at the end of this
-        // function both need to drive its `fm_*` coordinator exports.
+        // N1-I4 Task 2: instantiate the co-resident fork-module in this SAME
+        // `Store` as the guest instance about to be created below (a `Func`
+        // can only be handed to `Linker::define` for the `Store` it was
+        // created in), then bind every guest fork import from its exports
+        // ([`bind_guest_fork_imports`]). This runs for EVERY process launched
+        // with `use_fork_module` (the boot process, a spawned child, or a fork
+        // child), so the parent side of a later fork already has this wiring
+        // from its own launch. Kept alive past this block: the `kernel_fork`
+        // import closure and the entry loop both drive its `fm_*` entries.
         let mut fork_module: Option<ForkModule> = None;
         // N1-I4 Task 3: shared coordinator state between `kernel_fork` and
         // the entry loop at the end of this function — see
         // `ForkCoordState`'s doc comment.
         let coord = ForkCoordState::new();
-        // N1-I5b Task 1: ONE reference-CAPTURE accumulator per guest OS
-        // thread — see `NativeReferenceCapture`'s doc comment. Reset at the
-        // start of every capture (`kernel_fork`'s `Idle` arm below), filled
-        // by the guest's own per-frame commits, sealed at
-        // `drive_fork_capture_seal_and_launch_child`.
-        let capture = Arc::new(Mutex::new(NativeReferenceCapture::new()));
-        // N1 refcomplete (static root): mint-time (harvest-time) static-root
-        // PROVENANCE reverse index — see `StaticRootProvenance`'s doc
-        // comment. Populated once, inside the existing "Static-root catalog
-        // mirror" block below, right alongside the existing forward-
-        // direction `fm.static_root_catalog_table` copy; consulted by
-        // `gc_lookup`'s real capture body. ONE instance per guest OS thread
-        // (harvested once per instantiation, never reset per fork).
-        let static_root_provenance = Arc::new(Mutex::new(StaticRootProvenance::new()));
-        // N1-F6 (refcomplete FLOOR-2): mint-time Wasm-GC constructor
-        // provenance — see `GcProvenanceRegistry`'s doc comment. Populated
-        // by `gc_provenance_begin`/`_ref`/`_end` (wired below, guarded by
-        // `guest_declares`) at the exact moment `inject_provenance_
-        // wrappers`'s constructor-call-site rewrite runs; consulted by
-        // `gc_capture_layout`/`gc_define`'s real capture bodies. ONE
-        // instance per guest OS thread (one `Store` == one fork generation).
-        let gc_provenance =
-            Arc::new(Mutex::new(GcProvenanceRegistry::new(fork_format.as_deref())));
-        // N1-I5b Task 1: raw `Func::to_raw` pointer -> this guest's own
-        // funcref-catalog ordinal (activation 0 — single-activation only,
-        // matching the REPLAY-side funcref-catalog mirror below), populated
-        // once, right after this guest's `Instance` exists (see that mirror
-        // block), and read by the `__wpk_fork_ref_encode_funcref` host body
-        // to resolve a captured `funcref` VALUE back to the `(activation,
-        // ordinal)` coordinate `fork_codec::ReferenceGraphBuilder::
-        // intern_funcref` needs. Wasmtime's `Func` has no `PartialEq` impl
-        // (confirmed: `wasmtime::Func` derives only `Copy, Clone, Debug`),
-        // so identity is compared via `Func::to_raw`'s raw `VMFuncRef`
-        // pointer instead — valid for the lifetime of this one `Store`
-        // (one guest OS thread == one fork generation).
-        let funcref_catalog_lookup: Arc<Mutex<BTreeMap<usize, u32>>> = Arc::new(Mutex::new(BTreeMap::new()));
         if use_fork_module {
-            match instantiate_fork_module(
-                &engine,
-                &mut store,
-                &guest_mem,
-                &layout,
-                // A borrowed vfork child's own fork-module instance lands in
-                // a brand-new, never-before-touched region of the SHARED
-                // memory (see `compute_vfork_borrowed_region`'s doc
-                // comment) — exactly like a genuinely fresh (`Normal`)
-                // launch, unlike `ChildReplay`'s byte-for-byte COW copy
-                // (which already carries the parent's real seeded arena at
-                // the SAME address and must not be re-seeded).
-                matches!(fork_entry, ForkEntry::Normal | ForkEntry::ChildBorrowedReplay { .. }),
-            ) {
-                Ok(fm) => {
-                    // The five frame imports, bound by name because each is
-                    // the module's own entry point for a guest frame call. The
-                    // GENERAL fill-in for every other `__wpk_fork_*` function
-                    // the module serves runs at the END of this wiring block,
-                    // after the conditional bindings that have a reason for the
-                    // exact function they choose.
-                    const FRAME_IMPORT_NAMES: [&str; 5] = [
-                        "__wpk_fork_frame_reserve",
-                        "__wpk_fork_frame_commit",
-                        "__wpk_fork_frame_peek",
-                        "__wpk_fork_frame_next",
-                        "__wpk_fork_resume_peek",
-                    ];
-                    for name in FRAME_IMPORT_NAMES {
-                        let Some(f) = fm.instance.get_func(&mut store, name) else {
-                            eprintln!("fork-module missing expected export {name}");
-                            return;
-                        };
-                        if let Err(e) = linker.define(&mut store, "env", name, f) {
-                            eprintln!("wiring fork-module export {name} into env failed: {e}");
-                            return;
-                        }
-                    }
-                    // N1-I4 Task 3: the guest's own PRIVATE unwind-transport
-                    // tag (`env.__wpk_fork_unwind`) — the exception
-                    // `wasm-fork-instrument`'s generated transport helpers
-                    // throw to escape a synchronous nested call chain during
-                    // capture (see `crates/fork-instrument/src/instrument.
-                    // rs`'s `populate_lexical_call` doc comment). Only a
-                    // fork-instrumented guest module actually imports this
-                    // (a plain, non-instrumented fixture does not), so this
-                    // reads the declared `TagType` back off the GUEST
-                    // module's own import list — exactly like the fork-
-                    // module's reference tables above — rather than
-                    // assuming a shape, and simply skips wiring it when
-                    // absent.
-                    if let Some(import) = module.imports().find(|i| {
-                        i.module() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE
-                            && i.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
-                    }) {
-                        let tag_ty = match import.ty() {
-                            ExternType::Tag(t) => t,
-                            other => {
-                                eprintln!(
-                                    "guest env.{} is a {other:?}, not a tag",
-                                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
-                                );
-                                return;
-                            }
-                        };
-                        let tag = match wasmtime::Tag::new(&mut store, &tag_ty) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                eprintln!("creating the guest's unwind tag failed: {e:#}");
-                                return;
-                            }
-                        };
-                        if let Err(e) = linker.define(
-                            &mut store,
-                            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
-                            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
-                            tag,
-                        ) {
-                            eprintln!("wiring the guest's unwind tag failed: {e:#}");
-                            return;
-                        }
-                    }
-                    // Seed this FRESH module instance's format and admit
-                    // activation 0, once, before any `fork()`. `fork_format`
-                    // is `None` for a non-instrumented guest: nothing to
-                    // admit, and its `kernel_fork` import never reaches the
-                    // module (the direct-passthrough branch below).
-                    if let Some(fmt) = fork_format.as_ref() {
-                        use fork_codec::activation_admission::{
-                            ADMISSION_FLAG_BORROWED_CHILD as BORROWED, ADMISSION_FLAG_FORK_CHILD as CHILD,
-                        };
-                        let flags = match fork_entry {
-                            ForkEntry::ChildReplay { .. } => CHILD,
-                            ForkEntry::ChildBorrowedReplay { .. } => CHILD | BORROWED,
-                            ForkEntry::Normal | ForkEntry::ChildPendingStub => 0,
-                        };
-                        if let Err(e) = admit_guest(&mut store, &fm, &guest_mem, fmt, layout.channel_offset, flags) {
-                            eprintln!("{e:#}");
-                            return;
-                        }
-                    }
-                    fork_module = Some(fm);
-                }
+            let fm = match instantiate_fork_module(&engine, &mut store, &guest_mem, &layout) {
+                Ok(fm) => fm,
                 Err(e) => {
                     eprintln!("instantiate_fork_module failed: {e:#}");
                     return;
                 }
+            };
+            if let Err(e) = bind_guest_fork_imports(&mut linker, &mut store, &module, &fm) {
+                eprintln!("{e:#}");
+                return;
             }
+            // Seed this FRESH module instance's format and admit activation
+            // 0, once, before any `fork()`. `fork_format` is `None` for a
+            // non-instrumented guest: nothing to admit, and its `kernel_fork`
+            // import never reaches the module (the direct-passthrough branch
+            // below). A borrowed vfork child's control word is its parked
+            // owner's, as `forkOwnerControlAddr` is on the JavaScript hosts.
+            if let Some(fmt) = fork_format.as_ref() {
+                use fork_codec::activation_admission::{
+                    ADMISSION_FLAG_BORROWED_CHILD as BORROWED, ADMISSION_FLAG_FORK_CHILD as CHILD,
+                };
+                let own_control = fork_control_word(layout.channel_offset) as u32;
+                let (flags, control) = match fork_entry {
+                    ForkEntry::ChildReplay { .. } => (CHILD, own_control),
+                    ForkEntry::ChildBorrowedReplay { owner_control, .. } => (CHILD | BORROWED, owner_control),
+                    ForkEntry::Normal | ForkEntry::ChildPendingStub => (0, own_control),
+                };
+                if let Err(e) =
+                    admit_guest(&mut store, &fm, &guest_mem, fmt, layout.channel_offset, control, flags)
+                {
+                    eprintln!("{e:#}");
+                    return;
+                }
+            }
+            fork_module = Some(fm);
         }
 
         // Host-provided launch metadata: real argv/env from the caller's
@@ -7527,10 +6410,9 @@ fn spawn_guest_thread(
         // (`ForkCoordState::phase`):
         //
         //  - `Idle` (the first call, straight from the guest's own `fork()`
-        //    wrapper, still mid-stack): starts capture — `fm_begin_unwind`
-        //    (allocates the module's continuation buffer) then the guest's
-        //    OWN `wpk_fork_unwind_begin(root)` export (flips its internal
-        //    `_wpk_fork_state` global to UNWINDING and records `root`) — and
+        //    wrapper, still mid-stack): starts capture ([`begin_fork_capture`],
+        //    which has the module drive the guest's OWN
+        //    `wpk_fork_unwind_begin(root)`, flipping it to UNWINDING) — and
         //    returns `0` immediately WITHOUT posting anything on the
         //    channel. Per `wasm-fork-instrument`'s contract (see this file's
         //    "N1-I4 Task 1" section doc comment and `crates/fork-instrument/
@@ -7565,7 +6447,6 @@ fn spawn_guest_thread(
             let fm_for_import = fork_module.clone();
             let has_format = fork_format.is_some();
             let coord = Arc::clone(&coord);
-            let capture_for_fork = Arc::clone(&capture);
             linker
                 .func_wrap(
                     "kernel",
@@ -7607,44 +6488,9 @@ fn spawn_guest_thread(
 
                         match coord.phase() {
                             ForkCoordPhase::Idle => {
-                                // N1-I5b Task 1: start a FRESH capture,
-                                // discarding whatever the previous fork (if
-                                // any) left behind — mirrors `arena.begin()`
-                                // + a fresh `ForkReferenceTransaction` at the
-                                // top of `worker-main.ts`'s `beginCapture`,
-                                // BEFORE the unwind that follows this call
-                                // ever commits a frame.
-                                capture_for_fork.lock().unwrap().reset();
                                 coord.set_mode(mode as u32);
                                 coord.set_abort_replay(false);
-                                // Coarse capture-begin: ONE module call opens the
-                                // capture (reclaiming any prior fork), publishes the
-                                // KFMS arena root into the module buffer, and drives
-                                // the guest's `wpk_fork_unwind_begin(root)` through the
-                                // injector shim (slot bound at instantiation) — folding
-                                // the former `fm_begin_unwind` + `caller_export_typed(
-                                // UNWIND_BEGIN)` + direct call. Native is single-
-                                // activation, so the module has no bound side
-                                // activation to add.
-                                // ARM the module's reference-graph builder first.
-                                // `fm_parent_begin_capture` begins the UNWIND; it does not create
-                                // the builder, and `capture_builder()` refuses to make one lazily
-                                // unless the capture was armed. Without this the fork runs to
-                                // completion and `fm_parent_seal_capture` answers EINVAL with its
-                                // frames already committed. The JavaScript hosts call the same entry
-                                // here (`processCaptureModule.begin()` right before
-                                // `parentBeginCapture`).
-                                fm.fm_capture_begin.call(&mut caller, ())?;
-                                let root = fm.fm_parent_begin_capture.call(
-                                    &mut caller,
-                                    (ch as u32, fm.empty_module_state_root),
-                                )?;
-                                let errno = fm.fm_last_errno.call(&mut caller, ())?;
-                                if errno != 0 {
-                                    return Ok(-(errno));
-                                }
-                                coord.set_root(root);
-                                Ok(0) // ignored by the caller while unwinding
+                                begin_fork_capture(&mut caller, fm, &mem, ch)
                             }
                             ForkCoordPhase::Replaying => {
                                 // Coarse replay-finish: ONE module call drives the
@@ -7766,995 +6612,21 @@ fn spawn_guest_thread(
                 )
                 .unwrap();
         }
-        // `env.__wpk_fork_resume_table` is the REAL cross-activation dispatch
-        // table `wpk_fork_resume_start`'s `call_indirect`s target during
-        // replay, and it must hold ACTUAL funcrefs to the guest's own resume
-        // targets. A table left at its bare declared minimum (as
-        // `define_unknown_imports_as_default_values` below would otherwise
-        // give it) traps `undefined element: out of bounds table access` the
-        // first time replay dispatches to any slot beyond that minimum.
-        //
-        // THE MODULE'S OWN TABLE, not one this host mints. It is module-
-        // defined and module-EXPORTED (`crates/fork-module-inject/src/
-        // main.rs`), declared `initial = 1` with no maximum — exactly the
-        // guest's own declared import type — and the guest's placement shim
-        // grows it as it writes. The host used to create a `wasmtime::Table`
-        // here, size it to `catalog_ordinals.len() + 1`, and fill it with its
-        // OWN `i + 1` numbering after instantiation; see
-        // [`place_resume_thunks`] for what that second numbering cost.
-        //
-        // Gated on the fork MODULE, not just the fork format: without a module
-        // there is no allocator, nothing to publish an assignment, and no fork
-        // to replay — so a guest that declares the import in that case gets the
-        // blanket default-value table below, which is honest about there being
-        // no placement authority rather than a filled table nothing will drive.
-        if let Some(fm) = fork_module.as_ref() {
-            if module.imports().any(|i| {
-                i.module() == "env" && i.name() == wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
-            }) {
-                if let Err(e) = linker.define(
-                    &mut store,
-                    "env",
-                    wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
-                    fm.resume_table,
-                ) {
-                    eprintln!("wiring env.__wpk_fork_resume_table failed: {e:#}");
-                    return;
-                }
-            }
-        }
-
-        // N1-I5 Task 1: bind the co-resident module's reference-replay
-        // surface into the GUEST's own reference imports, when the guest is
-        // fork-instrumented (mirrors `host/src/worker-main.ts:4593-4607`'s
-        // guest import-flip block + `:3730-3750`'s `moduleReferenceFeedFlip`
-        // — see `docs/plans/2026-09-05-n1-i5-references-grounding.md` §4).
-        // This is WIRING ONLY: nothing in this task calls `fm_begin_
-        // reference_replay`/`fm_build_gc_plan`/`fm_drive_execute` (Task 3's
-        // job), so a guest that never captures a funcref/externref/GC value
-        // across a fork never actually reaches any of these — the bind is
-        // dormant until Task 3 drives it. Must run BEFORE `linker.instantiate`
-        // (a `Linker` entry has to exist before instantiation resolves
-        // imports against it) and BEFORE the blanket `define_unknown_
-        // imports_as_traps`/`define_unknown_imports_as_default_values` calls
-        // below (those two only fill in imports NOT already resolvable via
-        // `Linker::_get_by_import`, so defining these specific names first
-        // makes the blanket calls skip them — same ordering the unwind-tag
-        // and resume-table wiring above already rely on).
-        //
-        // Every name is looked up against the GUEST's OWN declared imports
-        // first (`module.imports()`), not assumed: a guest module that omits
-        // one (e.g. no exception codec, so no `__wpk_fork_ref_exn_*`
-        // imports) is simply left alone, exactly like the unwind-tag/
-        // resume-table blocks above.
-        if let (Some(_fmt), Some(fm)) = (fork_format.as_ref(), fork_module.as_ref()) {
-            let guest_declares = |name: &str| {
-                module.imports().any(|i| i.module() == "env" && i.name() == name)
-            };
-
-            // Bind env.__wpk_fork_ref_gc_transit -> the module's own
-            // module-owned, module-EXPORTED anyref transit table (STORE #2)
-            // — net-new: no prior native wiring bound this import at all.
-            if guest_declares(wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT) {
-                if let Err(e) = linker.define(
-                    &mut store,
-                    "env",
-                    wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
-                    fm.gc_transit_table,
-                ) {
-                    eprintln!(
-                        "wiring env.{} failed: {e:#}",
-                        wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT
-                    );
-                    return;
-                }
-            }
-
-            // The reference-returning decode shim: a raw `Func` lookup
-            // (like the FRAME_IMPORT_NAMES flip above), not `TypedFunc`,
-            // since a funcref-returning export cannot round-trip
-            // through a `TypedFunc<Params, Results>` binding the way plain
-            // i32/i64 exports do.
-            let decode_funcref = match fm.instance.get_func(&mut store, "__wpk_fork_ref_decode_funcref") {
-                Some(f) => f,
-                None => {
-                    eprintln!("fork-module missing expected export __wpk_fork_ref_decode_funcref");
-                    return;
-                }
-            };
-
-            // The decode + seven RESTORE data-feed imports, flipped to the
-            // module's matching exports. `TypedFunc::func()` hands back the
-            // same `Func` handle already bound into `ForkModule` above (no
-            // second lookup for the seven `fm_ref_*` exports).
-            //
-            // The seven reference-feed imports are now exported by the
-            // fork-module under the GUEST'S OWN NAMES, so there is nothing to
-            // map: look each up by the name the guest asked for and define it
-            // under that same name. `decode_funcref` is looked up above.
-            let mut flips: Vec<(&str, wasmtime::Func)> = vec![(
-                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
-                decode_funcref,
-            )];
-            for name in [
-                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_ROUTE,
-                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
-                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOAD,
-                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ROUTE,
-                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_LOAD,
-                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX,
-            ] {
-                let Some(f) = fm.instance.get_func(&mut store, name) else {
-                    eprintln!("fork-module missing expected export {name}");
-                    return;
-                };
-                flips.push((name, f));
-            }
-            for (name, f) in flips {
-                if guest_declares(name) {
-                    if let Err(e) = linker.define(&mut store, "env", name, f) {
-                        eprintln!("wiring env.{name} failed: {e:#}");
-                        return;
-                    }
-                }
-            }
-
-            // The test-only host-object source and payload probe the externref
-            // fork fixtures declare (see `define_host_externref_source`).
-            // Neither is declared by a real program, so this is a no-op for
-            // every other guest.
-            if guest_declares("native_test_host_externref") {
-                if let Err(e) = define_host_externref_source(&mut linker) {
-                    eprintln!("wiring env.native_test_host_externref failed: {e:#}");
-                    return;
-                }
-            }
-            if guest_declares("native_test_externref_payload") {
-                if let Err(e) = define_externref_payload_probe(&mut linker) {
-                    eprintln!("wiring env.native_test_externref_payload failed: {e:#}");
-                    return;
-                }
-            }
-            if guest_declares("native_test_funcref_call") {
-                if let Err(e) = define_funcref_call_probe(&mut linker) {
-                    eprintln!("wiring env.native_test_funcref_call failed: {e:#}");
-                    return;
-                }
-            }
-
-            // N1-I5b Task 1: the 6 funcref-CAPTURE imports — REAL native
-            // `Func`s over `NativeReferenceCapture`, not a flip to a
-            // fork-module export (capture has no module-owned counterpart
-            // on ANY host — see `NativeReferenceCapture`'s doc comment and
-            // `docs/plans/2026-09-05-n1-i5b-reference-capture-grounding.md`
-            // §1/§2/§4). Must run BEFORE the blanket `define_unknown_
-            // imports_as_traps` call below, exactly like every other
-            // conditional wire in this block. N1-I5b Task 2 (below) adds the
-            // remaining 10 capture-side imports (`encode_externref` + the 9
-            // typed-GC family) as GATE stubs — real capture for those kinds
-            // stays out of scope (`docs/fork-reference-support.md`).
-            let encode_funcref_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_ENCODE_FUNCREF;
-            if guest_declares(encode_funcref_name) {
-                let capture_for_encode = Arc::clone(&capture);
-                let lookup_for_encode = Arc::clone(&funcref_catalog_lookup);
-                let result = linker.func_wrap(
-                    "env",
-                    encode_funcref_name,
-                    move |mut caller: Caller<'_, ()>,
-                          f: Option<wasmtime::Func>|
-                          -> wasmtime::Result<i32> {
-                        // Mirrors `encodeFuncref`: a null value is always
-                        // recipe 0, the canonical null node every graph
-                        // seeds at `begin()` — see `fork-reference-
-                        // transaction.ts:255`.
-                        let Some(f) = f else {
-                            return Ok(0);
-                        };
-                        let raw = f.to_raw(&mut caller) as usize;
-                        let ordinal = *lookup_for_encode.lock().unwrap().get(&raw).ok_or_else(|| {
-                            wasmtime::Error::msg(
-                                "encode_funcref: value is not present in this activation's own \
-                                 __wpk_fork_function_catalog export (single-activation only — \
-                                 see spawn_guest_thread's funcref_catalog_lookup doc comment)",
-                            )
-                        })?;
-                        let id = capture_for_encode
-                            .lock()
-                            .unwrap()
-                            .graph
-                            .intern_funcref(0, ordinal)
-                            .map_err(|e| wasmtime::Error::msg(format!("intern_funcref failed: {e:?}")))?;
-                        Ok(id as i32)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{encode_funcref_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // `__wpk_fork_ref_vector_get(ordinal, index)` reads a reference
-            // vector back during a REWIND. A CHILD reads the graph it inherited,
-            // which the module decoded; a PARENT resuming after its own fork --
-            // including the abort replay of a refused one -- reads back a vector
-            // it interned moments ago. The module draws that line on its phase
-            // (`answering_from_capture`), but on this host the parent's vectors
-            // are not in the module's capture builder: `vector_begin`/`_append`/
-            // `_finish` below intern them into `NativeReferenceCapture::graph`.
-            // So the PARENT's reads are answered from that graph, and a child's
-            // go to the module's feed, split on the same phase the module uses.
-            // A read this worker's own capture never interned also goes to the
-            // module: a fork CHILD's `NativeReferenceCapture` is fresh, and a
-            // child can reach its reference drive before the module enters
-            // `PHASE_CHILD_REPLAY` (the typed-GC child drive does).
-            //
-            // Without this every parent rewind over a frame that held a
-            // reference asked the module's (empty) capture builder, which traps
-            // -- which is how a refused fork (EOPNOTSUPP) used to kill the parent
-            // it was supposed to spare, silently, until the pump's 30s cap.
-            let vector_get_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET;
-            if guest_declares(vector_get_name) {
-                let capture_for_get = Arc::clone(&capture);
-                let module_vector_get = fm.fm_ref_vector_get.clone();
-                let Some(fm_phase) = fm.instance.get_func(&mut store, "fm_phase") else {
-                    eprintln!("fork-module missing expected export fm_phase");
-                    return;
-                };
-                let fm_phase = match fm_phase.typed::<(), i32>(&store) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("fork-module export fm_phase has an unexpected signature: {e:#}");
-                        return;
-                    }
-                };
-                let result = linker.func_wrap(
-                    "env",
-                    vector_get_name,
-                    move |mut caller: Caller<'_, ()>, ordinal: i32, index: i32| -> wasmtime::Result<i32> {
-                        // `PHASE_CHILD_REPLAY` in `crates/fork-module/src/lib.rs`.
-                        const FORK_MODULE_PHASE_CHILD_REPLAY: i32 = 4;
-                        if fm_phase.call(&mut caller, ())? != FORK_MODULE_PHASE_CHILD_REPLAY {
-                            let recipe = capture_for_get
-                                .lock()
-                                .unwrap()
-                                .graph
-                                .vectors()
-                                .get(ordinal as u32 as usize)
-                                .and_then(|vector| vector.get(index as u32 as usize))
-                                .copied();
-                            if let Some(recipe) = recipe {
-                                // The guest ABI has no failure value here; a
-                                // recipe id past i32 is a fault, not a recipe.
-                                return i32::try_from(recipe).map_err(|_| {
-                                    wasmtime::Error::msg(format!(
-                                        "reference vector {ordinal}[{index}] names recipe {recipe}, \
-                                         which does not fit the guest's i32"
-                                    ))
-                                });
-                            }
-                        }
-                        module_vector_get.call(&mut caller, (ordinal as u32, index as u32))
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{vector_get_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            let vector_begin_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN;
-            if guest_declares(vector_begin_name) {
-                let capture_for_begin = Arc::clone(&capture);
-                let result = linker.func_wrap(
-                    "env",
-                    vector_begin_name,
-                    move |_caller: Caller<'_, ()>, _expected_length: i32| -> wasmtime::Result<i32> {
-                        // `expected_length` is validated guest-side (the
-                        // instrumenter never emits `vector_begin` for an
-                        // empty slot run — see `crates/fork-instrument/src/
-                        // instrument.rs`'s `build_reference_save_dispatch`)
-                        // and unused by `ReferenceGraphBuilder::begin_vector`
-                        // itself, exactly like the Rust builder's own API.
-                        capture_for_begin
-                            .lock()
-                            .unwrap()
-                            .graph
-                            .begin_vector()
-                            .map(|h| h as i32)
-                            .map_err(|e| wasmtime::Error::msg(format!("begin_vector failed: {e:?}")))
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{vector_begin_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            let vector_append_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_APPEND;
-            if guest_declares(vector_append_name) {
-                let capture_for_append = Arc::clone(&capture);
-                let result = linker.func_wrap(
-                    "env",
-                    vector_append_name,
-                    move |_caller: Caller<'_, ()>, handle: i32, recipe_id: i32| -> wasmtime::Result<()> {
-                        capture_for_append
-                            .lock()
-                            .unwrap()
-                            .graph
-                            .append_vector(handle as u32, recipe_id as u32)
-                            .map_err(|e| wasmtime::Error::msg(format!("append_vector failed: {e:?}")))
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{vector_append_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            let vector_finish_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_FINISH;
-            if guest_declares(vector_finish_name) {
-                let capture_for_finish = Arc::clone(&capture);
-                let result = linker.func_wrap(
-                    "env",
-                    vector_finish_name,
-                    move |_caller: Caller<'_, ()>, handle: i32| -> wasmtime::Result<i32> {
-                        capture_for_finish
-                            .lock()
-                            .unwrap()
-                            .graph
-                            .finish_vector(handle as u32)
-                            .map(|ordinal| ordinal as i32)
-                            .map_err(|e| wasmtime::Error::msg(format!("finish_vector failed: {e:?}")))
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{vector_finish_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            let scratch_reserve_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_SCRATCH_RESERVE;
-            if guest_declares(scratch_reserve_name) {
-                let capture_for_reserve = Arc::clone(&capture);
-                let scratch_base = fm.capture_scratch_base;
-                let result = linker.func_wrap(
-                    "env",
-                    scratch_reserve_name,
-                    move |_caller: Caller<'_, ()>, size: i32| -> wasmtime::Result<i32> {
-                        let size = u32::try_from(size)
-                            .map_err(|_| wasmtime::Error::msg("scratch_reserve: negative size"))?;
-                        capture_for_reserve
-                            .lock()
-                            .unwrap()
-                            .scratch_reserve(scratch_base, FORK_MODULE_CAPTURE_SCRATCH_BYTES as u32, size)
-                            .map(|p| p as i32)
-                            .ok_or_else(|| {
-                                wasmtime::Error::msg("scratch_reserve: capture scratch page exhausted")
-                            })
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{scratch_reserve_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            let scratch_release_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_SCRATCH_RELEASE;
-            if guest_declares(scratch_release_name) {
-                let capture_for_release = Arc::clone(&capture);
-                let scratch_base = fm.capture_scratch_base;
-                let result = linker.func_wrap(
-                    "env",
-                    scratch_release_name,
-                    move |_caller: Caller<'_, ()>, ptr: i32, size: i32| -> wasmtime::Result<()> {
-                        let size = u32::try_from(size)
-                            .map_err(|_| wasmtime::Error::msg("scratch_release: negative size"))?;
-                        capture_for_release.lock().unwrap().scratch_release(scratch_base, ptr as u32, size);
-                        Ok(())
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{scratch_release_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // `gc_lookup` is the anyref-transit dedup entry reached for EVERY
-            // non-null anyref-lineage value the guest encodes: a typed Wasm-GC
-            // struct/array, a static root, or a raw host externref the guest's
-            // own `__wpk_fork_ref_encode_externref` handed over through
-            // `any.convert_extern` (`emit_externref_bridge` makes those LOCAL
-            // functions, so the host never sees an encode_externref import).
-            // `emit_encode_anyref` publishes the value into `codec.transit` (the
-            // SAME `fm.gc_transit_table` bound above) at slot 0 and then calls
-            // this with that slot.
-            //
-            // It answers exactly one question: "is this EXACT live value
-            // already assigned a recipe id?" -- checking (1) THIS capture's own
-            // struct/array dedup (`gc_claim_lookup`, a cycle/alias back onto an
-            // already-claimed node) and (2) the harvest-time static-root
-            // reverse index (`StaticRootProvenance`). A miss returns `0` (real
-            // "unknown"; node 0 is the canonical null and this import is only
-            // reached for a non-null value), so the guest's own dispatch goes
-            // on to try i31/struct/array construction, and a value no layout
-            // claims -- a raw host externref -- reaches `broker_encode`, which
-            // gates the fork (`EOPNOTSUPP`). A host externref never has a
-            // recipe: fork does not carry one (externref stage E2).
-            let gc_lookup_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP;
-            if guest_declares(gc_lookup_name) {
-                let capture_for_gc = Arc::clone(&capture);
-                let static_root_provenance_for_gc = Arc::clone(&static_root_provenance);
-                let gc_transit_table_for_lookup = fm.gc_transit_table;
-                let result = linker.func_wrap(
-                    "env",
-                    gc_lookup_name,
-                    move |mut caller: Caller<'_, ()>, slot: i32| -> wasmtime::Result<i32> {
-                        let slot_index = i64::from(slot).max(0) as u64;
-                        if let Some(wasmtime::Ref::Any(Some(anyref))) =
-                            gc_transit_table_for_lookup.get(&mut caller, slot_index)
-                        {
-                            if let Some(id) =
-                                capture_for_gc.lock().unwrap().gc_claim_lookup(&mut caller, anyref)?
-                            {
-                                return Ok(id as i32);
-                            }
-                            // N1 refcomplete (static root): the harvest-time
-                            // reverse index. A static root is always an
-                            // `AnyRef` participating in `ref.eq` (the
-                            // instrumenter's static-root catalog builder
-                            // excludes externref/funcref, see
-                            // `can_participate_in_ref_eq`).
-                            if let Some((activation, ordinal)) = static_root_provenance_for_gc
-                                .lock()
-                                .unwrap()
-                                .lookup(&mut caller, anyref)?
-                            {
-                                return capture_for_gc
-                                    .lock()
-                                    .unwrap()
-                                    .graph
-                                    .intern_static_root(activation, ordinal)
-                                    .map(|id| id as i32)
-                                    .map_err(|e| {
-                                        wasmtime::Error::msg(format!("intern_static_root failed: {e:?}"))
-                                    });
-                            }
-                            // A genuine miss (not yet claimed, not a known
-                            // static root): report
-                            // "unknown" and let the guest's own dispatch
-                            // proceed (try i31/struct/array construction
-                            // next).
-                            return Ok(0);
-                        }
-                        // The transit slot held something other than a
-                        // non-null anyref — should not happen given the
-                        // codec's own publish-before-call contract, but stay
-                        // fail-closed rather than fabricate an identity. No
-                        // live value to preserve here: the slot itself was
-                        // never valid, a genuine invariant violation
-                        // elsewhere, not a normal gated kind.
-                        let mut capture = capture_for_gc.lock().unwrap();
-                        capture.mark_unsupported("externref or Wasm-GC (anyref): missing transit slot");
-                        capture.gated_placeholder(None).map(|id| id as i32)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_lookup_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // `gc_claim` is reached only after a `gc_lookup` MISS, right
-            // when the guest's own `ref.test` dispatch has already confirmed
-            // the value matches one of its locally declared struct/array
-            // layouts (`emit_encode_anyref`'s `dispatch_layouts` loop) —
-            // publish a fresh placeholder recipe id BEFORE the guest recurses
-            // into the value's fields, exactly mirroring `claimGcSlot`'s "publish
-            // the id first" contract (`fork-reference-transaction.ts:342-369`)
-            // that already terminates funcref/externref cycles elsewhere in
-            // this codec.
-            let gc_claim_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_CLAIM;
-            if guest_declares(gc_claim_name) {
-                let capture_for_gc = Arc::clone(&capture);
-                let gc_transit_table_for_claim = fm.gc_transit_table;
-                let result = linker.func_wrap(
-                    "env",
-                    gc_claim_name,
-                    move |mut caller: Caller<'_, ()>, slot: i32| -> wasmtime::Result<i32> {
-                        let slot_index = i64::from(slot).max(0) as u64;
-                        let Some(wasmtime::Ref::Any(Some(anyref))) =
-                            gc_transit_table_for_claim.get(&mut caller, slot_index)
-                        else {
-                            // No live value to preserve here either — see
-                            // the identical defensive gate in `gc_lookup`
-                            // above.
-                            let mut capture = capture_for_gc.lock().unwrap();
-                            capture.mark_unsupported("gc: missing transit slot at claim");
-                            let id = capture.gated_placeholder(None)?;
-                            drop(capture);
-                            ensure_gc_transit_capacity(gc_transit_table_for_claim, &mut caller, id)?;
-                            return Ok(id as i32);
-                        };
-                        let id = capture_for_gc
-                            .lock()
-                            .unwrap()
-                            .graph
-                            .claim_gc()
-                            .map_err(|e| wasmtime::Error::msg(format!("claim_gc failed: {e:?}")))?;
-                        capture_for_gc.lock().unwrap().gc_claim_remember(&mut caller, anyref, id)?;
-                        // The wasm call site publishes `value` into `transit[id
-                        // + 1]` unconditionally right after this import returns
-                        // (`emit_encode_layout`'s "Claim grows ... through
-                        // recipe+1 before returning" contract) — grow now.
-                        ensure_gc_transit_capacity(gc_transit_table_for_claim, &mut caller, id)?;
-                        Ok(id as i32)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_claim_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // i31 identity is its own 31-bit payload; `intern_i31` dedupes by
-            // raw value, so no transit-slot identity lookup is needed here at
-            // all (the value never occupied a live GC heap slot to begin
-            // with).
-            let gc_i31_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_I31;
-            if guest_declares(gc_i31_name) {
-                let capture_for_gc = Arc::clone(&capture);
-                let gc_transit_table_for_i31 = fm.gc_transit_table;
-                let result = linker.func_wrap(
-                    "env",
-                    gc_i31_name,
-                    move |mut caller: Caller<'_, ()>, value: i32| -> wasmtime::Result<i32> {
-                        let id = capture_for_gc
-                            .lock()
-                            .unwrap()
-                            .graph
-                            .intern_i31(value)
-                            .map_err(|e| wasmtime::Error::msg(format!("intern_i31 failed: {e:?}")))?;
-                        // The wasm i31 branch publishes the value into
-                        // `transit[id + 1]` unconditionally right after this
-                        // import returns (`emit_encode_anyref`'s i31 branch) —
-                        // grow now.
-                        ensure_gc_transit_capacity(gc_transit_table_for_i31, &mut caller, id)?;
-                        Ok(id as i32)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_i31_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // `broker_encode` is the LAST-resort fallback `encode_anyref`
-            // reaches once a value matched neither i31 nor any locally
-            // declared struct/array layout: a raw HOST externref (handed over
-            // by the guest's own `any.convert_extern`), or a cross-activation
-            // GC value (the multi-activation case is out of scope for native's
-            // current single-activation model). A fork does not carry a raw
-            // host externref on any host (externref stage E2), so this GATES
-            // the fork: `EOPNOTSUPP`, no child, and the parent's abort replay
-            // gets back the exact live value preserved here.
-            let gc_broker_encode_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE;
-            if guest_declares(gc_broker_encode_name) {
-                let capture_for_gc = Arc::clone(&capture);
-                let gc_transit_table_for_broker = fm.gc_transit_table;
-                let result = linker.func_wrap(
-                    "env",
-                    gc_broker_encode_name,
-                    move |mut caller: Caller<'_, ()>, slot: i32| -> wasmtime::Result<i32> {
-                        // Review fix (Finding 3): peek the SAME staging slot
-                        // `gc_lookup` reads (mirrors that binding's own
-                        // `slot_index` convention) to preserve the real
-                        // foreign/cross-activation anyref so the PARENT's own
-                        // abort-replay can hand this exact identity back
-                        // rather than `null`.
-                        let slot_index = i64::from(slot).max(0) as u64;
-                        let original = match gc_transit_table_for_broker.get(&mut caller, slot_index) {
-                            Some(wasmtime::Ref::Any(Some(anyref))) => {
-                                Some(anyref.to_owned_rooted(&mut caller)?)
-                            }
-                            _ => None,
-                        };
-                        let mut capture = capture_for_gc.lock().unwrap();
-                        capture.mark_unsupported(
-                            "host externref (or foreign/cross-activation anyref)",
-                        );
-                        let id = capture.gated_placeholder(original)?;
-                        drop(capture);
-                        // `emit_encode_anyref`'s tail unconditionally publishes
-                        // into `transit[id + 1]` right after this import
-                        // returns — grow now.
-                        ensure_gc_transit_capacity(gc_transit_table_for_broker, &mut caller, id)?;
-                        Ok(id as i32)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_broker_encode_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // `gc_capture_layout` selects, among a base type's possibly
-            // several concrete constructor layouts (relevant for ARRAY —
-            // `ArrayFixed{len}` vs `ArrayData{seg}` vs generic mutable
-            // `ArrayNew`; a STRUCT has exactly one constructor form, so
-            // `base_layout_id` is already its only answer), which SPECIFIC
-            // layout built this exact live object. `gc_provenance_begin`
-            // already recorded that exact specialized layout id at
-            // CONSTRUCTOR time (`specialized_layout_id`, a compile-time
-            // constant baked into that call site's wrapper) — so recovering
-            // it here is a pure identity lookup, needing no GC-codec-
-            // descriptor decode: mirrors `captureGcLayout`'s `if (provenance)
-            // return provenance.layoutId` happy path (`fork-activation-
-            // registry.ts:1181-1203`) without the TS's additional descriptor
-            // cross-validation.
-            let gc_capture_layout_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT;
-            if guest_declares(gc_capture_layout_name) {
-                let capture_for_layout = Arc::clone(&capture);
-                let provenance_for_layout = Arc::clone(&gc_provenance);
-                let gc_transit_table_for_layout = fm.gc_transit_table;
-                let result = linker.func_wrap(
-                    "env",
-                    gc_capture_layout_name,
-                    move |mut caller: Caller<'_, ()>,
-                          slot: i32,
-                          _record_activation_id: i32,
-                          base_layout_id: i32|
-                          -> wasmtime::Result<i32> {
-                        let slot_index = i64::from(slot).max(0) as u64;
-                        if let Some(wasmtime::Ref::Any(Some(anyref))) =
-                            gc_transit_table_for_layout.get(&mut caller, slot_index)
-                        {
-                            if let Some(record) =
-                                provenance_for_layout.lock().unwrap().find(&mut caller, anyref)?
-                            {
-                                return Ok(record.layout_id as i32);
-                            }
-                        }
-                        let _ = &capture_for_layout;
-                        Ok(base_layout_id)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_capture_layout_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // `gc_define` completes a claimed struct/array placeholder into
-            // its final aggregate recipe — the capture-side inverse of
-            // `DRIVE_OP_FILL`'s replay (see the grounding doc's "Capture ↔
-            // Replay symmetry" table). Two byte spans are concatenated into
-            // one scalar buffer, in order: (1) constructor-time provenance
-            // scalars (`GcConstructorRecord::scalars` — the "seed" a
-            // mutable, non-nullable internal-reference field needed at
-            // `struct.new`/`array.new*` time; always empty for a STRUCT, see
-            // that field's doc comment) then (2) the live field snapshot
-            // (`scalar_pointer`/`scalar_byte_length`, read straight out of
-            // guest linear memory — `emit_encode_struct_payload`/`_array_
-            // payload` write every field's CURRENT value there via `struct.
-            // get`/`array.get` on the original, unmodified type — see the
-            // grounding §2.1). The edge vector is built the same way:
-            // provenance reference ids first, then the plain field/element
-            // vector (`reference_vector_ordinal`, already interned by
-            // `graph.begin_vector`/`append_vector`/`finish_vector`).
-            //
-            // Each provenance reference is a RAW live value recorded at
-            // constructor time, not yet a recipe id (`gc_provenance_ref`'s
-            // own doc comment) — resolving it here checks THIS capture's
-            // dedup (`gc_claim_lookup`) first, and only if that misses
-            // (the seed was never independently reached by the ordinary
-            // frame-reference walk) reenters the guest's OWN exported
-            // `__wpk_fork_ref_gc_encode_slot` dispatch (publishing the value
-            // into transit slot 0 first, the codec's own staging-slot
-            // convention) to run the real struct/array/i31 dispatch that only
-            // WASM instructions (`ref.test`/`struct.get`) can perform. No
-            // lock is held across that reentrant call — it recursively
-            // invokes these SAME host imports (`gc_lookup`/`gc_claim`/
-            // `gc_define`, ...) for the seed's own definition, and a
-            // `std::sync::Mutex` held on this thread across a call that
-            // re-locks it would deadlock.
-            //
-            // ARRAY is no longer gated here (N1-F6 Task 5): `GcConstructor
-            // Record::scalars` is already truncated to exactly the
-            // specialized layout's `provenance_scalar_length` by
-            // `GcProvenanceRegistry::begin` (using the SAME GC-codec
-            // section activation 0's admission carries), so copying it
-            // verbatim is correct for both KIND_STRUCT (always 0 bytes) and
-            // KIND_ARRAY (0..=16 real bytes per its constructor form) — no
-            // per-kind special-casing is needed.
-            let gc_define_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_DEFINE;
-            if guest_declares(gc_define_name) {
-                const KIND_STRUCT: i32 = 1;
-                const KIND_ARRAY: i32 = 2;
-                let capture_for_gc = Arc::clone(&capture);
-                let provenance_for_gc = Arc::clone(&gc_provenance);
-                let gc_transit_table_for_define = fm.gc_transit_table;
-                let guest_mem_for_gc = guest_mem.clone();
-                let result = linker.func_wrap(
-                    "env",
-                    gc_define_name,
-                    move |mut caller: Caller<'_, ()>,
-                          recipe_id: i32,
-                          record_activation_id: i32,
-                          type_ordinal: i32,
-                          layout_id: i32,
-                          kind: i32,
-                          scalar_pointer: i32,
-                          scalar_byte_length: i32,
-                          reference_vector_ordinal: i32|
-                          -> wasmtime::Result<()> {
-                        let recipe_id = recipe_id as u32;
-                        let claimed_value =
-                            capture_for_gc.lock().unwrap().gc_claimed_value(&mut caller, recipe_id)?;
-                        let record = match claimed_value {
-                            Some(value) => provenance_for_gc.lock().unwrap().find(&mut caller, value)?,
-                            None => None,
-                        };
-
-                        // Review fix (increment-review.md MEDIUM-1 /
-                        // "Finding 2"): a provenance MISS (or a
-                        // stale/mismatched HIT) for a layout that declares a
-                        // nonzero `provenance_scalar_length` must never
-                        // silently store fewer (or more) provenance bytes
-                        // than the layout expects -- the DECODER splits the
-                        // assembled `scalars` buffer back apart by the
-                        // LAYOUT's declared length, not by what was actually
-                        // supplied here, so a mismatch would silently
-                        // misread real field bytes as a fake provenance seed
-                        // (or vice versa) without ever trapping. Gate
-                        // cleanly instead of proceeding as if nothing were
-                        // wrong; the assembly below still runs afterward
-                        // (mirroring every other gate stub in this file) so
-                        // the pending GC claim is completed either way -- a
-                        // gated fork's sealed graph content is discarded
-                        // unread regardless of what it holds.
-                        match provenance_for_gc
-                            .lock()
-                            .unwrap()
-                            .provenance_length_mismatches(layout_id as u32, record.as_ref())
-                        {
-                            Some(true) => {
-                                capture_for_gc.lock().unwrap().mark_unsupported(
-                                    "gc: constructor provenance scalar length does not match \
-                                     its layout's declared length",
-                                );
-                            }
-                            Some(false) => {}
-                            None => {
-                                return Err(wasmtime::Error::msg(format!(
-                                    "gc_define: layout {layout_id} is missing from the GC-codec \
-                                     descriptor"
-                                )));
-                            }
-                        }
-
-                        let mut provenance_ids: Vec<u32> = Vec::new();
-                        let mut provenance_scalars: Vec<u8> = Vec::new();
-                        if let Some(record) = &record {
-                            // Already truncated to the specialized layout's
-                            // exact `provenance_scalar_length` by
-                            // `GcProvenanceRegistry::begin` — always 0 bytes
-                            // for KIND_STRUCT, 0..=16 real bytes for
-                            // KIND_ARRAY. No per-kind branch needed.
-                            provenance_scalars.clone_from(&record.scalars);
-                            for reference in &record.references {
-                                let id = match reference {
-                                    None => 0,
-                                    Some(owned) => {
-                                        let rooted = owned.to_rooted(&mut caller);
-                                        let existing = capture_for_gc
-                                            .lock()
-                                            .unwrap()
-                                            .gc_claim_lookup(&mut caller, rooted)?;
-                                        match existing {
-                                            Some(id) => id,
-                                            None => {
-                                                gc_transit_table_for_define.set(
-                                                    &mut caller,
-                                                    0,
-                                                    wasmtime::Ref::Any(Some(rooted)),
-                                                )?;
-                                                let encode_slot: wasmtime::TypedFunc<i32, i32> =
-                                                    caller_export_typed(
-                                                        &mut caller,
-                                                        wasm_posix_shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT,
-                                                    )?;
-                                                encode_slot.call(&mut caller, 0)? as u32
-                                            }
-                                        }
-                                    }
-                                };
-                                provenance_ids.push(id);
-                            }
-                        }
-
-                        let snapshot = if scalar_byte_length > 0 {
-                            unsafe {
-                                read_bytes(&guest_mem_for_gc, scalar_pointer as usize, scalar_byte_length as usize)
-                            }
-                        } else {
-                            Vec::new()
-                        };
-                        let mut scalars = provenance_scalars;
-                        scalars.extend_from_slice(&snapshot);
-
-                        let field_vector: Vec<u32> = {
-                            let capture = capture_for_gc.lock().unwrap();
-                            capture
-                                .graph
-                                .vectors()
-                                .get(reference_vector_ordinal as usize)
-                                .cloned()
-                                .ok_or_else(|| {
-                                    wasmtime::Error::msg("gc_define: unknown reference vector ordinal")
-                                })?
-                        };
-                        let provenance_param = record
-                            .as_ref()
-                            .map(|_| fork_codec::GcProvenance { reference_ids: provenance_ids.clone() });
-                        let mut edges = provenance_ids;
-                        edges.extend_from_slice(&field_vector);
-
-                        let kind_enum = match kind {
-                            KIND_STRUCT => fork_codec::AggregateKind::Struct,
-                            KIND_ARRAY => fork_codec::AggregateKind::Array,
-                            other => {
-                                return Err(wasmtime::Error::msg(format!("gc_define: unknown kind {other}")))
-                            }
-                        };
-                        capture_for_gc
-                            .lock()
-                            .unwrap()
-                            .graph
-                            .define_gc(
-                                recipe_id,
-                                record_activation_id as u32,
-                                type_ordinal as u32,
-                                layout_id as u32,
-                                kind_enum,
-                                &scalars,
-                                &edges,
-                                provenance_param,
-                            )
-                            .map_err(|e| wasmtime::Error::msg(format!("define_gc failed: {e:?}")))
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_define_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // The `gc_provenance_begin`/`_ref`/`_end` transaction records
-            // constructor-time evidence for a mutable, non-nullable,
-            // internal-GC-typed field — see `GcProvenanceRegistry`'s doc
-            // comment. This runs at ORDINARY GUEST RUNTIME (whenever a
-            // provenance-wrapped `struct.new`/`array.new*` executes), not
-            // only during a fork's capture walk.
-            let gc_provenance_begin_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN;
-            if guest_declares(gc_provenance_begin_name) {
-                let provenance_for_gc = Arc::clone(&gc_provenance);
-                let gc_transit_table_for_begin = fm.gc_transit_table;
-                let result = linker.func_wrap(
-                    "env",
-                    gc_provenance_begin_name,
-                    move |mut caller: Caller<'_, ()>,
-                          slot: i32,
-                          _record_activation_id: i32,
-                          _base_layout_id: i32,
-                          specialized_layout_id: i32,
-                          scalar_lo: i64,
-                          scalar_hi: i64,
-                          reference_count: i32|
-                          -> wasmtime::Result<i32> {
-                        let slot_index = i64::from(slot).max(0) as u64;
-                        let Some(wasmtime::Ref::Any(Some(anyref))) =
-                            gc_transit_table_for_begin.get(&mut caller, slot_index)
-                        else {
-                            return Err(wasmtime::Error::msg(
-                                "gc_provenance_begin: missing transit slot",
-                            ));
-                        };
-                        let mut scalars = Vec::with_capacity(16);
-                        scalars.extend_from_slice(&scalar_lo.to_le_bytes());
-                        scalars.extend_from_slice(&scalar_hi.to_le_bytes());
-                        let reference_count = u32::try_from(reference_count).unwrap_or(0);
-                        provenance_for_gc.lock().unwrap().begin(
-                            &mut caller,
-                            anyref,
-                            specialized_layout_id as u32,
-                            scalars,
-                            reference_count,
-                        )
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_provenance_begin_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            let gc_provenance_ref_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF;
-            if guest_declares(gc_provenance_ref_name) {
-                let provenance_for_gc = Arc::clone(&gc_provenance);
-                let gc_transit_table_for_ref = fm.gc_transit_table;
-                let result = linker.func_wrap(
-                    "env",
-                    gc_provenance_ref_name,
-                    move |mut caller: Caller<'_, ()>, token: i32, index: i32, slot: i32| -> wasmtime::Result<()> {
-                        let slot_index = i64::from(slot).max(0) as u64;
-                        let value = match gc_transit_table_for_ref.get(&mut caller, slot_index) {
-                            Some(wasmtime::Ref::Any(Some(anyref))) => Some(anyref.to_owned_rooted(&mut caller)?),
-                            _ => None,
-                        };
-                        let index = u32::try_from(index).unwrap_or(u32::MAX);
-                        provenance_for_gc.lock().unwrap().append_reference(token, index, value)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_provenance_ref_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            let gc_provenance_end_name = wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END;
-            if guest_declares(gc_provenance_end_name) {
-                let provenance_for_gc = Arc::clone(&gc_provenance);
-                let result = linker.func_wrap(
-                    "env",
-                    gc_provenance_end_name,
-                    move |_caller: Caller<'_, ()>, token: i32| -> wasmtime::Result<()> {
-                        provenance_for_gc.lock().unwrap().end(token)
-                    },
-                );
-                if let Err(e) = result {
-                    eprintln!("wiring env.{gc_provenance_end_name} failed: {e:#}");
-                    return;
-                }
-            }
-
-            // THE GENERAL FILL-IN, last, after every conditional wire above.
-            //
-            // Each binding before this point chooses a specific function for a
-            // specific reason -- a wrapped decode, a capture-scratch closure, a
-            // provenance recorder. This loop takes what is LEFT: any
-            // `__wpk_fork_*` function the guest imports that the module exports
-            // under the same name and nobody has bound yet.
-            //
-            // It replaces a hand-written list of five frame imports, which was
-            // right while the module served only those. The module now serves
-            // all 46 of the guest's fork imports -- the JavaScript hosts bind
-            // them exactly this way in `buildForkGuestImports` -- and the rest
-            // fell to `define_unknown_imports_as_traps`. The first one the
-            // module actually drove was
-            // `__wpk_fork_module_state_record_reserve`, reached from
-            // `wpk_fork_module_state_save`: "unknown import ... has not been
-            // defined", inside a fork that had already committed its frames.
-            //
-            // Driven off the ARTIFACT's own import list rather than a copy of
-            // the contract, so an import the module starts serving needs no
-            // edit here -- the defect a hand-kept list has by construction.
-            for import in module.imports() {
-                if import.module() != "env" || !import.name().starts_with("__wpk_fork_") {
-                    continue;
-                }
-                let name = import.name();
-                // Already bound above, with a reason: leave it alone.
-                if linker.get(&mut store, "env", name).is_ok() {
-                    continue;
-                }
-                // Functions only. The guest's non-function fork imports (the
-                // transit table, the unwind tag, the resume table, the
-                // per-process globals) are bound where each is created.
-                let Some(func) = fm.instance.get_func(&mut store, name) else {
-                    continue;
-                };
-                if let Err(e) = linker.define(&mut store, "env", name, func) {
-                    eprintln!("wiring fork-module export {name} into env failed: {e:#}");
+        // The test-only host-object source and probes the reference fork
+        // fixtures declare (see `define_host_externref_source`). No real
+        // program declares any of them, so this is a no-op for every other
+        // guest. Every `__wpk_fork_*` import was bound from the fork module
+        // above ([`bind_guest_fork_imports`]).
+        let guest_declares = |name: &str| module.imports().any(|i| i.module() == "env" && i.name() == name);
+        let probes: [(&str, fn(&mut Linker<()>) -> anyhow::Result<()>); 3] = [
+            ("native_test_host_externref", define_host_externref_source),
+            ("native_test_externref_payload", define_externref_payload_probe),
+            ("native_test_funcref_call", define_funcref_call_probe),
+        ];
+        for (name, define) in probes {
+            if guest_declares(name) {
+                if let Err(e) = define(&mut linker) {
+                    eprintln!("wiring env.{name} failed: {e:#}");
                     return;
                 }
             }
@@ -8835,16 +6707,6 @@ fn spawn_guest_thread(
                     for i in 0..len {
                         match guest_catalog.get(&mut store, i) {
                             Some(v @ Ref::Func(_)) => {
-                                // N1-I5b Task 1: also index this SAME guest
-                                // catalog entry (activation 0 — single-
-                                // activation only, matching this whole
-                                // mirror block's scope) by raw `Func`
-                                // pointer, for the capture-side `encode_
-                                // funcref` host body's reverse lookup — see
-                                // `funcref_catalog_lookup`'s doc comment.
-                                if let Ref::Func(Some(f)) = v {
-                                    funcref_catalog_lookup.lock().unwrap().insert(f.to_raw(&mut store) as usize, i as u32);
-                                }
                                 if let Err(e) = fm.function_catalog_table.set(&mut store, base + i, v) {
                                     eprintln!(
                                         "populating fork-module __wpk_fork_function_catalog[{i}] failed: {e:#}"
@@ -8867,19 +6729,18 @@ fn spawn_guest_thread(
                 }
             }
 
-            // -- Static-root catalog mirror (activation 0 only) --------------
+            // -- Static-root catalog (activation 0 only) ----------------------
             // The guest's OWN `__wpk_fork_static_root_catalog` export is a
-            // harvest BUFFER, not permanent storage (see
-            // `crates/fork-instrument/src/static_reference_catalog.rs`'s
-            // module doc comment): the host must call the guest's
-            // `__wpk_fork_static_root_harvest` export exactly once, right
-            // after instantiation and before any other guest code runs, to
-            // fill it — which is exactly where this block sits.
+            // harvest BUFFER, filled by the guest's
+            // `__wpk_fork_static_root_harvest` export exactly once, right after
+            // instantiation and before any other guest code runs -- which is
+            // where this block sits. The module's merged catalog is then filled
+            // from it here, for a fork child's install, and again before every
+            // capture ([`begin_fork_capture`]).
             if let Some(guest_roots) =
                 instance.get_table(&mut store, wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
             {
-                let len = guest_roots.size(&mut store);
-                if len > 0 {
+                if guest_roots.size(&mut store) > 0 {
                     let Ok(harvest) = instance.get_typed_func::<(), ()>(
                         &mut store,
                         wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
@@ -8898,50 +6759,10 @@ fn spawn_guest_thread(
                         );
                         return;
                     }
-                    // `fm_bind_activation` already grew the module's own
-                    // catalog to cover `[base, base + len)`.
-                    let base = u64::from(row.static_root_base);
-                    for i in 0..len {
-                        match guest_roots.get(&mut store, i) {
-                            Some(v @ Ref::Any(_)) => {
-                                // N1 refcomplete (static root): also index
-                                // this SAME harvested entry (activation 0 —
-                                // single-activation only, matching this
-                                // whole mirror block's existing scope) into
-                                // the capture-side reverse index, for
-                                // `gc_lookup`'s `StaticRootProvenance`
-                                // lookup — see its doc comment. A `Ref::
-                                // Any(None)` (null) entry is not a live
-                                // identity and has nothing to register.
-                                if let Ref::Any(Some(root)) = v {
-                                    if let Err(e) = static_root_provenance.lock().unwrap().register(
-                                        &mut store,
-                                        root,
-                                        0,
-                                        i as u32,
-                                    ) {
-                                        eprintln!(
-                                            "registering static-root provenance[{i}] failed: {e:#}"
-                                        );
-                                        return;
-                                    }
-                                }
-                                if let Err(e) = fm.static_root_catalog_table.set(&mut store, base + i, v) {
-                                    eprintln!(
-                                        "populating fork-module static-root catalog[{i}] failed: {e:#}"
-                                    );
-                                    return;
-                                }
-                            }
-                            Some(other) => {
-                                eprintln!("guest static-root catalog[{i}] is {other:?}, not anyref");
-                                return;
-                            }
-                            None => {
-                                eprintln!("guest static-root catalog[{i}] is out of bounds");
-                                return;
-                            }
-                        }
+                    fm.static_root_base.store(row.static_root_base, Ordering::SeqCst);
+                    if let Err(e) = fill_static_root_catalog(&mut store, fm, guest_roots) {
+                        eprintln!("{e:#}");
+                        return;
                     }
                 }
             }
@@ -8954,7 +6775,7 @@ fn spawn_guest_thread(
             layout.channel_offset,
             fork_module.as_ref(),
             &coord,
-            &capture,
+            pid,
             fork_entry,
         );
 
@@ -8976,9 +6797,7 @@ fn spawn_guest_thread(
 /// Read a guest export by name and check it against `Params`/`Results` via
 /// [`wasmtime::Instance::get_typed_func`], logging and returning `None` on
 /// any failure (missing export, wrong signature) instead of panicking. Used
-/// by [`run_fork_capable_entry`], which has direct `Instance`/`Store` access
-/// (unlike `kernel_fork`'s import closure, which must instead reach the
-/// SAME exports reentrantly through [`caller_export_typed`]).
+/// by [`run_fork_capable_entry`], which has direct `Instance`/`Store` access.
 fn get_guest_export_typed<Params, Results>(
     store: &mut Store<()>,
     instance: &wasmtime::Instance,
@@ -8995,30 +6814,6 @@ where
             None
         }
     }
-}
-
-/// Read a guest export by name FROM WITHIN a host import closure — i.e. from
-/// the calling instance's OWN exports, reached via [`Caller::get_export`]
-/// (the only way to reach a guest's exports before that guest's `Instance`
-/// even exists, since the import closures that need this are themselves
-/// bound into the `Linker` BEFORE `Linker::instantiate` runs). Used by
-/// `kernel_fork`'s import closure to call the guest's OWN
-/// `wpk_fork_unwind_begin`/`wpk_fork_rewind_end` exports reentrantly.
-fn caller_export_typed<Params, Results>(
-    caller: &mut Caller<'_, ()>,
-    name: &str,
-) -> wasmtime::Result<wasmtime::TypedFunc<Params, Results>>
-where
-    Params: wasmtime::WasmParams,
-    Results: wasmtime::WasmResults,
-{
-    let ext = caller
-        .get_export(name)
-        .ok_or_else(|| wasmtime::Error::msg(format!("guest missing export {name}")))?;
-    let func = ext
-        .into_func()
-        .ok_or_else(|| wasmtime::Error::msg(format!("guest export {name} is not a function")))?;
-    func.typed::<Params, Results>(&mut *caller)
 }
 
 /// Whether a Wasmtime error represents an uncaught Wasm exception escaping a
@@ -9043,8 +6838,16 @@ fn is_thrown_exception_escape(e: &wasmtime::Error) -> bool {
     e.downcast_ref::<wasmtime::ThrownException>().is_some()
 }
 
+/// Whether this worker's fork module has a capture open -- `PHASE_CAPTURE` in
+/// `crates/fork-module/src/lib.rs`, the phase `fm_parent_begin_capture`
+/// enters and the seal leaves.
+fn in_fork_capture(store: &mut Store<()>, fork_module: Option<&ForkModule>) -> bool {
+    const FORK_MODULE_PHASE_CAPTURE: u32 = 1;
+    fork_module.is_some_and(|fm| fm.fm_phase.call(&mut *store, ()).ok() == Some(FORK_MODULE_PHASE_CAPTURE))
+}
+
 /// N1-I4 Task 3: drive one guest OS thread (either a fresh, `_start`-from-the-
-/// top launch, or a fork child's `fm_begin_child_replay`-seeded resume) to
+/// top launch, or a fork child's `fm_child_install`-seeded resume) to
 /// completion, transparently handling however many `fork()`s it makes along
 /// the way. Replaces Task 2's unconditional `let _ = start.call(...)` (and
 /// its `fork_child_pending_replay` stub, still used for a NON-instrumented
@@ -9054,9 +6857,9 @@ fn is_thrown_exception_escape(e: &wasmtime::Error) -> bool {
 /// exactly once, only for [`ForkEntry::Normal`]) and its instrumented
 /// `wpk_fork_resume_start` export (called every time execution must
 /// re-enter after a fork: once per capture the lexical entry made, seeded by
-/// [`drive_fork_capture_seal_and_launch_child`]'s `fm_begin_replay` for a
-/// PARENT, or once up front, seeded by this function's own `fm_begin_child_
-/// replay` call, for a fresh [`ForkEntry::ChildReplay`] thread). Either call
+/// [`drive_fork_capture_seal_and_launch_child`]'s `fm_parent_replay` for a
+/// PARENT, or once up front, seeded by this function's own `fm_child_install`
+/// call, for a fresh fork child). Either call
 /// blocks until the guest parks after `exit_group` (normal — the loop
 /// returns), traps via the `kernel_exit` SIGKILL fast path or a normal
 /// `unreachable` halt (also normal — the loop returns), or escapes with an
@@ -9064,216 +6867,6 @@ fn is_thrown_exception_escape(e: &wasmtime::Error) -> bool {
 /// the ONLY case the loop continues on, by driving the seal/serialize/
 /// channel-post/parent-replay-begin sequence before looping back to call
 /// `wpk_fork_resume_start`.
-/// N1-I5 Task 3: drive the co-resident module's reference-replay
-/// sub-sequence, in the exact order `host/src/fork-process-continuation.ts:
-/// 1081-1100`'s Node/browser `attachModuleChild` uses (grounding doc §1 "How
-/// the guest feeds references"/§4), for ONE replay (either the child's
-/// `fm_begin_child_replay`-seeded rewind, or the parent's own `fm_begin_
-/// replay`-seeded rewind — both callers below drive this identically):
-///
-///  1. (Nothing to seed per replay: activation 0's admission, at launch,
-///     gave the module its GC and exception codecs and let it derive the
-///     host-exception owner -- see [`admit_guest`].)
-///  2. `fm_begin_reference_replay(module_state_root, pid)` — seeds the
-///     whole-arena reference graph, BEFORE any module-state restore or rewind
-///     touches a reference. `module_state_root` here is NOT the continuation
-///     root `fm_begin_child_replay`/`fm_begin_replay` use — an earlier
-///     version of this function tried reusing that root and empirically
-///     failed (`fm_last_errno` `EINVAL`: `decode_module_state` rejects it,
-///     since the continuation root points at the KFRE frame journal, a
-///     different wire format). `fm.empty_module_state_root` names the SAME
-///     scratch address for every fork on this guest OS thread, but N1-I5b
-///     Task 1 makes its CONTENT per-fork: `drive_fork_capture_seal_and_
-///     launch_child` overwrites it with THIS fork's real, capture-filled
-///     graph (via [`write_module_state_arena`]) right before either replay
-///     call below ever runs; a guest that never captures a live reference
-///     leaves it at the canonical-null floor [`write_empty_module_state_
-///     arena`] wrote at instantiation — see that function's doc comment for
-///     why that (not a literally record-less chunk) is the true floor of
-///     "this fork captured no reference," and not a fabricated success.
-///     `pid` is retained in both this export's and `fm_build_gc_plan`'s
-///     signatures for the host call site but unused since M2 (see `fm_begin_
-///     reference_replay`'s own Rust doc comment); any constant value is
-///     correct.
-///  3. `fm_build_gc_plan(pid)` + `fm_gc_plan_count()` — builds (and sizes) the
-///     topological GC drive plan for whatever the fork's graph contains
-///     (possibly zero steps: a funcref/externref-only fork has no typed-GC
-///     node to drive).
-///  4. `fm_drive_execute(plan_ptr, count)` — drives ALLOC/FILL/EXN via the
-///     `env.__wpk_fork_drive_table` funcref table (T1-populated) and
-///     STATIC_ROOT/EXTERNREF_TRANSIT via `fm_static_root_slot`/`fm_externref_
-///     handle` + `resolve_externref` (T2), for however many steps step 3
-///     found.
-///
-/// `fm_last_errno` is checked after every `fm_*` call in this sequence; any
-/// nonzero errno is a truthful failure — this returns `false` (having
-/// already logged which stage failed) rather than silently continuing into a
-/// rewind whose reference state was never actually seeded.
-// Retained in `fm_begin_reference_replay`/`fm_build_gc_plan`'s signatures for
-// the host call site but unused since M2 — see `drive_reference_replay`'s doc
-// comment.
-const REFERENCE_REPLAY_PID: u32 = 0;
-
-/// Seed the module's resident reference driver (`reference_state()`) from the
-/// sealed KFMS arena — step 2 of [`drive_reference_replay`]'s own doc comment,
-/// factored out so the gated-abort branch of
-/// [`drive_fork_capture_seal_and_launch_child`] can run JUST this step and
-/// skip the GC-plan build/execute that follows it in the full sequence.
-///
-/// This step is NOT gated on the fork's supported/gated-abort status: it only
-/// DECODES the sealed graph (cheap, infallible for any module-admissible
-/// graph — `gated_placeholder`'s synthetic `i31` is module-admissible, see
-/// `ReferenceReplayDriver::all_nodes_module_admissible`) into
-/// `reference_state()`. Frame restore's OTHER per-local decode helpers that DO
-/// consult the module's Rust state (e.g. `fm_funcref_ordinal` for a funcref-
-/// typed local elsewhere in the SAME frame) need `reference_state()` non-`None`
-/// regardless of whether THIS fork's own captured value was gated — skipping
-/// this step entirely (as an earlier version of the gated-abort fix did)
-/// leaves `reference_state()` `None` and traps ANY such helper, not just a
-/// gated one, via a DIFFERENT `unreachable` than the guest's own normal-exit
-/// trap — indistinguishable from it at the `wasmtime::Trap::
-/// UnreachableCodeReached` level, so `run_fork_capable_entry`'s trap
-/// classifier silently treats the guest OS thread as having exited normally
-/// when it actually died mid-resume, before ever posting `SYS_EXIT_GROUP` —
-/// reproducing the exact same "truthful 30s hard-cap" symptom this whole fix
-/// targets, from a different cause. `fm_build_gc_plan`/`fm_drive_execute`
-/// (unlike this step) DO need a real, drivable typed-GC plan and are what
-/// actually fail `EINVAL` on native for a gated fork's placeholder graph (see
-/// this file's substrate-grounding doc §3) — those, not this seed step, are
-/// what the gated-abort branch skips.
-fn begin_reference_replay_only(store: &mut Store<()>, fm: &ForkModule) -> bool {
-    // `instantiate_fork_module` already wrote a genuinely-valid KFMS arena
-    // (the canonical null-only reference transaction) at this address once,
-    // at instantiation time (see `write_empty_module_state_arena` and
-    // `ForkModule::empty_module_state_root`'s doc comments) — reuse it
-    // rather than re-synthesizing it here.
-    let module_state_root = fm.empty_module_state_root;
-
-    if let Err(e) =
-        fm.fm_begin_reference_replay.call(&mut *store, (module_state_root, REFERENCE_REPLAY_PID))
-    {
-        eprintln!("fm_begin_reference_replay failed: {e:#}");
-        return false;
-    }
-    match fm.fm_last_errno.call(&mut *store, ()) {
-        Ok(0) => {}
-        Ok(errno) => {
-            eprintln!("fm_begin_reference_replay failed: errno {errno}");
-            return false;
-        }
-        Err(e) => {
-            eprintln!("fm_last_errno after fm_begin_reference_replay failed: {e:#}");
-            return false;
-        }
-    }
-    true
-}
-
-fn drive_reference_replay(store: &mut Store<()>, fm: &ForkModule, guest_mem: &SharedMemory) -> bool {
-    if !begin_reference_replay_only(store, fm) {
-        return false;
-    }
-
-    let plan_ptr = match fm.fm_build_gc_plan.call(&mut *store, REFERENCE_REPLAY_PID) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("fm_build_gc_plan failed: {e:#}");
-            return false;
-        }
-    };
-    match fm.fm_last_errno.call(&mut *store, ()) {
-        Ok(0) => {}
-        Ok(errno) => {
-            eprintln!("fm_build_gc_plan failed: errno {errno}");
-            return false;
-        }
-        Err(e) => {
-            eprintln!("fm_last_errno after fm_build_gc_plan failed: {e:#}");
-            return false;
-        }
-    }
-
-    let count = match fm.fm_gc_plan_count.call(&mut *store, ()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("fm_gc_plan_count failed: {e:#}");
-            return false;
-        }
-    };
-    let Ok(count) = u32::try_from(count) else {
-        eprintln!("fm_gc_plan_count returned a negative count {count}");
-        return false;
-    };
-
-    // N1 refcomplete substrate: size the module-owned anyref transit table
-    // (STORE #2, `fm.gc_transit_table`) to cover every `recipe + 1` slot this
-    // plan's steps are about to `table.get`/`table.set` BEFORE driving it.
-    // `fm_drive_execute`'s injected shim can only access an IN-BOUNDS table
-    // index — unlike `function_catalog_table`/`drive_table` (grown ONCE at
-    // guest instantiation, see the N1-I5 Task 1 block above) and
-    // `static_root_catalog_table` (grown by the module's own bind), this
-    // table's required size is PER-FORK (it
-    // depends on THIS fork's own reference graph), so it must be (re-)grown
-    // here, per replay, before every drive. The capture side DOES grow a
-    // transit table (`gc_claim`/`gc_i31`/`gc_broker_encode` call
-    // `ensure_gc_transit_capacity` per `module_gc_codec.rs`'s "Claim grows
-    // ... through recipe+1 before returning" contract), but that grows the
-    // PARENT's live transit table during capture; a replayed CHILD (or the
-    // parent's own post-fork rewind) drives a freshly deserialized plan
-    // against a transit table that starts empty, so it must be sized here
-    // from the decoded plan before driving. Reads the plan bytes back out of the SAME
-    // guest memory `fm_build_gc_plan` just serialized them into
-    // (`fork_codec::drive_plan::read_step` is documented as usable by "tests
-    // and the host" for exactly this).
-    if count > 0 {
-        let Some(plan_len) = (count as usize).checked_mul(fork_codec::drive_plan::DRIVE_STEP_SIZE) else {
-            eprintln!("drive plan byte length overflowed (count={count})");
-            return false;
-        };
-        let plan_bytes = unsafe { read_bytes(guest_mem, plan_ptr as usize, plan_len) };
-        let mut max_recipe: u32 = 0;
-        for i in 0..count as usize {
-            match fork_codec::drive_plan::read_step(&plan_bytes, i) {
-                Ok(step) => max_recipe = max_recipe.max(step.recipe),
-                Err(e) => {
-                    eprintln!("read_step({i}) on the just-built drive plan failed: {e:?}");
-                    return false;
-                }
-            }
-        }
-        // `recipe + 1` must be a valid index, so the table needs at least
-        // `max_recipe + 2` elements.
-        let needed = u64::from(max_recipe) + 2;
-        let current = fm.gc_transit_table.size(&mut *store);
-        if needed > current {
-            if let Err(e) =
-                fm.gc_transit_table.grow(&mut *store, needed - current, wasmtime::Ref::Any(None))
-            {
-                eprintln!("growing fork-module __wpk_fork_ref_gc_transit failed: {e:#}");
-                return false;
-            }
-        }
-    }
-
-    if let Err(e) = fm.fm_drive_execute.call(&mut *store, (plan_ptr, count)) {
-        eprintln!("fm_drive_execute failed: {e:#}");
-        return false;
-    }
-    match fm.fm_last_errno.call(&mut *store, ()) {
-        Ok(0) => {}
-        Ok(errno) => {
-            eprintln!("fm_drive_execute failed: errno {errno}");
-            return false;
-        }
-        Err(e) => {
-            eprintln!("fm_last_errno after fm_drive_execute failed: {e:#}");
-            return false;
-        }
-    }
-
-    true
-}
-
 fn run_fork_capable_entry(
     store: &mut Store<()>,
     instance: &wasmtime::Instance,
@@ -9281,7 +6874,7 @@ fn run_fork_capable_entry(
     channel_offset: usize,
     fork_module: Option<&ForkModule>,
     coord: &Arc<ForkCoordState>,
-    capture: &Arc<Mutex<NativeReferenceCapture>>,
+    pid: u32,
     fork_entry: ForkEntry,
 ) {
     if matches!(fork_entry, ForkEntry::ChildPendingStub) {
@@ -9354,145 +6947,43 @@ fn run_fork_capable_entry(
     }
 
     let mut entry_is_lexical = true;
-    if let ForkEntry::ChildReplay { root } = fork_entry {
+    // A fork child installs with ONE module call, as on the Node/browser host
+    // (`installChild` in `host/src/fork-module-backend.ts`): the module reads
+    // the arena root out of the launch root's prefix, publishes a COW child's
+    // launch root in its own control word, carves a borrowed child's
+    // workspace, seeds, attaches (module-state restore and finish included),
+    // drives the install plan -- growing its own transit table first -- and
+    // nulls the merged static-root catalog the drive read. What stays this
+    // host's is done before: binding the drive slots and filling that catalog.
+    let (launch_root, borrowed_base, borrowed_bytes) = match fork_entry {
+        ForkEntry::ChildReplay { root } => (Some(root), 0, 0),
+        // `compute_vfork_borrowed_region` reserves exactly one page below the
+        // child's private channel for the workspace: where it is and how big
+        // are the only facts about it the module cannot derive.
+        ForkEntry::ChildBorrowedReplay { root, private_prefix, .. } => {
+            (Some(root), private_prefix, WASM_PAGE_SIZE as u32)
+        }
+        ForkEntry::Normal | ForkEntry::ChildPendingStub => (None, 0, 0),
+    };
+    if let Some(root) = launch_root {
         let Some(fm) = fork_module else {
             eprintln!("fork child replay requested with no fork-module");
             return;
         };
-        // Coarse child SEED: decode the inherited `JournalImage` record from
-        // THIS child's own (COW-copied) KFMS arena at `fm.empty_module_state_
-        // root` and seed activation 0's replay from it — folding the former
-        // `fm_begin_child_replay(root, image_ptr, image_len)`. The child's
-        // `fm.empty_module_state_root` is the SAME address the parent sealed
-        // into (identical layout + byte-for-byte memory copy), and the parent
-        // appended the journal-image record there, so the module reads
-        // (image_ptr, image_len) from the arena rather than from the now-
-        // redundant smuggled channel words. `root` is activation 0's inherited
-        // continuation anchor. Single-activation: no bound side activation.
-        if let Err(e) =
-            fm.fm_child_seed.call(&mut *store, (fm.empty_module_state_root, root))
-        {
-            eprintln!("fm_child_seed failed: {e:#}");
-            return;
-        }
-        match fm.fm_last_errno.call(&mut *store, ()) {
+        match fm.fm_child_install.call(&mut *store, (pid, root, borrowed_base, borrowed_bytes)) {
             Ok(0) => {}
             Ok(errno) => {
-                eprintln!("fm_child_seed failed: errno {errno}");
+                eprintln!("fm_child_install failed: errno {errno}");
                 return;
             }
+            // A trap inside the install is the guest's own restore or rewind
+            // faulting: report it like any other guest fault, so the parent's
+            // wait(2) learns the child is gone instead of hanging.
             Err(e) => {
-                eprintln!("fm_last_errno after fm_child_seed failed: {e:#}");
-                return;
-            }
-        }
-        // N1-I5 Task 3: reconstruct the child's reference graph BEFORE the
-        // rewind touches any reference — the native reference floor (kept
-        // granular; see `drive_reference_replay`'s doc comment). Ordered
-        // exactly as before: seed, THEN reconstruct references, THEN drive.
-        if !drive_reference_replay(&mut *store, fm, guest_mem) {
-            return;
-        }
-        // Coarse child RECONSTRUCT: drive the guest's `wpk_fork_rewind_begin(
-        // root)` from the seeded `child_rewind_root` (== `root` for a COW
-        // child) through the injector shim — folding the former direct
-        // `wpk_fork_rewind_begin(root)` call.
-        if let Err(e) = fm.fm_child_reconstruct.call(&mut *store, ()) {
-            eprintln!("fm_child_reconstruct failed: {e:#}");
-            return;
-        }
-        match fm.fm_last_errno.call(&mut *store, ()) {
-            Ok(0) => {}
-            Ok(errno) => {
-                eprintln!("fm_child_reconstruct failed: errno {errno}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("fm_last_errno after fm_child_reconstruct failed: {e:#}");
-                return;
-            }
-        }
-        coord.set_phase(ForkCoordPhase::Replaying);
-        coord.set_fork_result(0);
-        entry_is_lexical = false;
-    } else if let ForkEntry::ChildBorrowedReplay { root, private_prefix, arena_root } =
-        fork_entry
-    {
-        // Real vfork (N1 residual): the borrowed sibling of the `ChildReplay`
-        // arm above. `root` is the parent's live, still-parked continuation
-        // anchor (read-only); the guest's OWN mutable prefix state lands in
-        // `private_prefix` instead, so it never touches the parent's copy.
-        let Some(fm) = fork_module else {
-            eprintln!("vfork borrowed child replay requested with no fork-module");
-            return;
-        };
-        // Coarse borrowed child SEED: decode the inherited `JournalImage`
-        // record from the PARENT's shared-memory arena (`arena_root`, smuggled
-        // — the borrowed child's OWN fork-module region is a distinct private
-        // address the parent never wrote) and seed activation 0's borrowed
-        // replay, copying the parent's fixed prefix into `private_prefix`.
-        // Folds the former `fm_begin_borrowed_child_replay(root, image_ptr,
-        // image_len, private_prefix)`. Single-activation vfork: no bound side
-        // activation.
-        // Seed the admitted workspace FIRST: the module carves each
-        // activation's private prefix out of it rather than being handed one.
-        // `compute_vfork_borrowed_region` reserves exactly one page below the
-        // child's private channel for this, which is the region -- and the only
-        // fact about it this host knows that the module cannot derive.
-        if let Err(e) = fm.fm_set_borrowed_workspace.call(
-            &mut *store,
-            (private_prefix, WASM_PAGE_SIZE as u32),
-        ) {
-            eprintln!("fm_set_borrowed_workspace failed: {e:#}");
-            return;
-        }
-        match fm.fm_last_errno.call(&mut *store, ()) {
-            Ok(0) => {}
-            Ok(errno) => {
-                eprintln!("fm_set_borrowed_workspace failed: errno {errno}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("fm_last_errno after fm_set_borrowed_workspace failed: {e:#}");
-                return;
-            }
-        }
-        if let Err(e) = fm.fm_child_seed_borrowed.call(&mut *store, (arena_root, root)) {
-            eprintln!("fm_child_seed_borrowed failed: {e:#}");
-            return;
-        }
-        match fm.fm_last_errno.call(&mut *store, ()) {
-            Ok(0) => {}
-            Ok(errno) => {
-                eprintln!("fm_child_seed_borrowed failed: errno {errno}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("fm_last_errno after fm_child_seed_borrowed failed: {e:#}");
-                return;
-            }
-        }
-        // N1 vfork residual scope: frames-only — reference reconstruction for a
-        // BORROWED child is out of scope, so `drive_reference_replay` is
-        // deliberately NOT called here (unchanged from the fine-grained path).
-        // Coarse child RECONSTRUCT: drive the guest's `wpk_fork_rewind_begin`
-        // from the seeded `child_rewind_root` (== `private_prefix` for a
-        // borrowed child, set by `fm_child_seed_borrowed`), so the active-frame-
-        // pointer write lands in the child-private prefix, never the parked
-        // parent's — folding the former direct `wpk_fork_rewind_begin(
-        // private_prefix)` call.
-        if let Err(e) = fm.fm_child_reconstruct.call(&mut *store, ()) {
-            eprintln!("fm_child_reconstruct (borrowed) failed: {e:#}");
-            return;
-        }
-        match fm.fm_last_errno.call(&mut *store, ()) {
-            Ok(0) => {}
-            Ok(errno) => {
-                eprintln!("fm_child_reconstruct (borrowed) failed: errno {errno}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("fm_last_errno after fm_child_reconstruct (borrowed) failed: {e:#}");
+                match wasmtime_trap_kind(&e) {
+                    Some(kind) => report_guest_fault(guest_mem, channel_offset, kind, &e),
+                    None => eprintln!("fm_child_install failed: {e:#}"),
+                }
                 return;
             }
         }
@@ -9550,12 +7041,14 @@ fn run_fork_capable_entry(
                 return;
             }
             Err(e) if is_thrown_exception_escape(&e) => {
-                // Only valid straight after the LEXICAL entry captured a
-                // fresh fork (`Idle` phase); an exception escaping during a
-                // replay/resume call is a genuine bug or a foreign (non-fork)
-                // exception this loop does not understand.
-                if !entry_is_lexical {
-                    eprintln!("unexpected exception escape during fork replay: {e:#}");
+                // Only a fork's capture unwind may escape, and the MODULE says
+                // whether one is open -- `worker-main.ts` asks the same
+                // question (`forkPhase`). Asking which entry was running
+                // instead refused a fork child that forks again: its capture
+                // unwinds out of its replay entry. Anything else escaping is
+                // a genuine bug or a foreign (non-fork) exception.
+                if !in_fork_capture(store, fork_module) {
+                    eprintln!("unexpected exception escape outside a fork capture: {e:#}");
                     return;
                 }
                 // Consume the pending exception the `Store` is holding
@@ -9576,14 +7069,7 @@ fn run_fork_capable_entry(
                     eprintln!("fork-unwind exception escaped with no fork-module");
                     return;
                 };
-                if !drive_fork_capture_seal_and_launch_child(
-                    store,
-                    guest_mem,
-                    channel_offset,
-                    fm,
-                    coord,
-                    capture,
-                ) {
+                if !drive_fork_capture_seal_and_launch_child(store, guest_mem, channel_offset, fm, coord) {
                     return;
                 }
                 entry_is_lexical = false;
@@ -9599,399 +7085,113 @@ fn run_fork_capable_entry(
     }
 }
 
-/// N1-I4 Task 3: runs once, from [`run_fork_capable_entry`]'s loop, right
-/// after the guest's lexical `_start` call escapes with an uncaught
-/// `env.__wpk_fork_unwind` exception — i.e. right after `kernel_fork`'s
-/// `Idle` branch already began capture (`fm_begin_unwind` + the guest's OWN
-/// `wpk_fork_unwind_begin`) and the guest's OWN instrumented postambles
-/// already spilled every live frame into the fork-module (via the
-/// already-wired `__wpk_fork_frame_*` imports) while unwinding the REAL call
-/// stack back out to this point. Drives, in order (`fm_last_errno` after
-/// every `fm_*` call, per this task's brief):
+/// N1-I4 Task 3: runs once, from the entry loop, right after the guest's
+/// lexical call escapes with an uncaught `env.__wpk_fork_unwind` exception --
+/// i.e. right after `kernel_fork`'s `Idle` branch began the capture
+/// ([`begin_fork_capture`]) and the guest's own instrumented postambles spilled
+/// every live frame, and every reference it held, into the fork module while
+/// unwinding the real call stack back out to this point. The same sequence
+/// `worker-main.ts` runs at the same point:
 ///
-///  1. The guest's `wpk_fork_unwind_end` export (closes the capture,
-///     flipping `_wpk_fork_state` back to committed/NORMAL).
-///  2. `fm_finish_unwind` — seals the module's journal.
-///  3. N1-I5b Task 1: SEAL the accumulated reference capture — by this point
-///     EVERY possible capture call (the guest's own per-frame commits during
-///     the just-finished unwind) has already happened, so `capture`'s
-///     `ReferenceGraphBuilder` holds the fork's complete, final graph.
-///     Serialize it (via [`write_module_state_arena`], the SAME encoder
-///     [`write_empty_module_state_arena`] uses for the floor) into `fm.
-///     empty_module_state_root` — mirrors `sealCapture()`'s `references.
-///     sealInto(arena)` + `arena.seal()` (`worker-main.ts:5109-5119`).
-///     Crucially, this write lands in the STILL-parent-owned `guest_mem`
-///     BEFORE step 4's real `SYS_FORK`/`SYS_VFORK` channel post below — so
-///     the child's own private memory copy (taken when `handle_fork`
-///     services that post) inherits these exact bytes, and both the child's
-///     and the parent's own subsequent `drive_reference_replay` call (both
-///     reading the SAME `fm.empty_module_state_root` address) see this
-///     fork's real graph, not the canonical-null floor.
-///  4. `fm_serialize_journal_alloc(channel_base)` + `fm_journal_image_len` —
-///     serializes the sealed journal as a KFRE image INTO THE SAME (still
-///     parent-owned) guest memory; both values are recorded so the real
-///     `SYS_FORK`/`SYS_VFORK` request below can smuggle them to `handle_fork`.
-///  5. THE REAL channel post: `SYS_FORK`/`SYS_VFORK` + `mode` (from
-///     `coord.mode`, set at capture time) plus the coordinator's `root`/
-///     `image_ptr`/`image_len` written into this channel's DATA region
-///     (mirrors `kernel_clone`'s `fn_ptr`/`arg` smuggling) — `handle_fork`
-///     reads them back to launch a REAL `ForkEntry::ChildReplay` child whose
-///     private memory copy (taken AFTER this point) inherits both the
-///     spilled frames and the just-serialized journal image, byte-for-byte.
-///     Blocks (busy-polls the channel status word, exactly like `kernel_
-///     clone`/the legacy `kernel_fork` passthrough) for `handle_fork`'s
-///     reply: the child's pid, or a negative errno.
-///  6. `fm_begin_replay` — begins the PARENT's own rewind.
-///  7. The guest's `wpk_fork_rewind_begin(root)` export — flips
-///     `_wpk_fork_state` to REWINDING so the guest's OWN `wpk_fork_resume_
-///     start` (the caller's NEXT call, once this returns `true`) walks its
-///     resume-table dispatch back down to the exact `fork()` call site,
-///     re-entering `kernel_fork` at `ForkCoordPhase::Replaying` to learn the
-///     REAL return value this function recorded in `coord.fork_result`
-///     (step 5's child pid, or a negative errno).
+///  1. `fm_parent_seal_capture` -- drives the guest's `wpk_fork_unwind_end`,
+///     seals the capture into the module's own arena and serializes the
+///     child-inheritable journal image, all in the still parent-owned memory
+///     the child's copy is taken from.
+///  2. The real `SYS_FORK`/`SYS_VFORK` channel post (mode from `coord.mode`).
+///     `handle_fork` reads the launch root [`begin_fork_capture`] published in
+///     this thread's fork control word; this blocks until the kernel answers
+///     the parent: the child's pid, or a negative errno.
+///  3. `fm_parent_replay` -- begins the parent's own rewind, so the caller's
+///     next `wpk_fork_resume_start` walks back down to the `fork()` call site
+///     and re-enters `kernel_fork` at `Replaying` for `coord.fork_result`.
 ///
-/// Returns `false` (having already logged the truthful failure) on the
-/// first `fm_*`/guest-export failure; the caller then ends this OS thread
-/// without ever calling `wpk_fork_resume_start` — a genuine module/guest bug
-/// at this point has no honest way to resume, so a loud stop beats a wrong
-/// resume.
+/// A seal that fails -- a reference the platform cannot carry (`EOPNOTSUPP`,
+/// externref stage E2) or an allocation failure -- creates no child: the
+/// parent's committed frames are abort-replayed and its `fork()` returns
+/// `-errno`, as `worker-main.ts` does on `ContinuationAllocationError`. So does
+/// a kernel refusal of the child.
+///
+/// Returns `false` (having already logged the truthful failure) when a module
+/// call fails outright; the caller then ends this OS thread without calling
+/// `wpk_fork_resume_start` -- at that point there is no honest way to resume.
 fn drive_fork_capture_seal_and_launch_child(
     store: &mut Store<()>,
     guest_mem: &SharedMemory,
     ch: usize,
     fm: &ForkModule,
     coord: &Arc<ForkCoordState>,
-    capture: &Arc<Mutex<NativeReferenceCapture>>,
 ) -> bool {
-    // Coarse capture SEAL: ONE module call drives the guest's
-    // `wpk_fork_unwind_end()` (slot bound at instantiation), seals every frame
-    // writer + the process journal, and serializes the child-inheritable KFRE
-    // journal image into a freshly channel-mmap'd chunk — folding the former
-    // `get_guest_export_typed(UNWIND_END)` + direct call + `fm_finish_unwind` +
-    // `fm_serialize_journal_alloc`. Returns that chunk's guest offset (0 ==
-    // failure; `fm_journal_image_len` reports its byte length). A gated fork
-    // below never launches a child, so it ignores this image; serializing it
-    // unconditionally keeps the seal on ONE coarse phase entry and is harmless.
-    let image_ptr = match fm.fm_parent_seal_capture.call(&mut *store, ch as u32) {
-        Ok(p) => p,
+    let sealed = fm
+        .fm_parent_seal_capture
+        .call(&mut *store, ch as u32)
+        .and_then(|_image| fm.fm_last_errno.call(&mut *store, ()));
+    let fork_result = match sealed {
+        Ok(0) => {
+            let mode = coord.mode();
+            let syscall_nr = if mode == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
+            unsafe {
+                write_bytes(guest_mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+                write_bytes(guest_mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
+                for i in 1..6 {
+                    write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+                }
+                write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+                atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+            }
+            let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+            loop {
+                let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                if s == ChannelStatus::Teardown as u32 {
+                    // The kernel ended this process while it was parked in fork
+                    // (a fatal signal, or a vfork containment): end this thread
+                    // without resuming guest code.
+                    return false;
+                }
+                if s != STATUS_PENDING {
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            let (ret, errno) =
+                unsafe { (read_i64(guest_mem, ch + RETURN_OFFSET), read_u32(guest_mem, ch + ERRNO_OFFSET)) };
+            unsafe {
+                atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+            }
+            if ret < 0 { -(errno as i32) } else { ret as i32 }
+        }
+        Ok(errno) => {
+            // Visible, as the JavaScript hosts' `fork_aborted` report is.
+            eprintln!(
+                "[host-native] fork aborted: the capture could not seal (errno {errno}); no child \
+                 was created and the parent's frames are replayed. See docs/fork-reference-support.md."
+            );
+            -errno
+        }
         Err(e) => {
             eprintln!("fm_parent_seal_capture failed: {e:#}");
             return false;
         }
     };
-    match fm.fm_last_errno.call(&mut *store, ()) {
-        Ok(0) => {}
-        Ok(errno) => {
-            eprintln!("fm_parent_seal_capture failed: errno {errno}");
-            return false;
-        }
-        Err(e) => {
-            eprintln!("fm_last_errno after fm_parent_seal_capture failed: {e:#}");
-            return false;
-        }
-    }
-    let image_len = match fm.fm_journal_image_len.call(&mut *store, ()) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("fm_journal_image_len failed: {e:#}");
-            return false;
-        }
-    };
-    // N1-I5b Task 1: seal the just-completed capture into the KFMS scratch
-    // arena, BEFORE the real SYS_FORK/SYS_VFORK channel post below — see
-    // this function's doc comment, step 3.
-    {
-        let accumulated = capture.lock().unwrap();
-        // Append the coarse-seal journal image (ptr, len) as a KFMS record so
-        // the child's `fm_child_seed`/`fm_child_seed_borrowed` can decode it
-        // straight from this inherited arena (see `write_module_state_arena`).
-        if let Err(e) = write_module_state_arena(
-            guest_mem,
-            fm.empty_module_state_root,
-            &accumulated.graph,
-            Some((image_ptr as u64, image_len as u64)),
-        ) {
-            eprintln!("sealing the captured reference graph into the KFMS scratch arena failed: {e:#}");
-            return false;
-        }
-    }
-
-    // N1-I5b Task 2: read-and-clear the first GATED reference kind this
-    // capture observed, right after seal — mirrors `worker-main.ts:5109-
-    // 5139`'s post-`sealCapture` check. A supported-only fork (funcref, the
-    // common case) never sets this, so this adds nothing to that path.
-    let unsupported_kind = capture.lock().unwrap().take_unsupported_kind();
-    if let Some(kind) = unsupported_kind {
-        // Make the platform boundary VISIBLE to a developer (Platform
-        // Values: truthful failure over silent illusion) — mirrors the JS
-        // run loop's own `console.warn` at the same call site.
-        eprintln!(
-            "[host-native] fork aborted with EOPNOTSUPP — carried a live '{kind}' \
-             reference across the fork boundary, which the platform cannot \
-             reconstruct in a fresh child yet. No child was spawned; the \
-             parent continues. See docs/fork-reference-support.md."
-        );
-        coord.set_fork_result(-(wasm_posix_shared::Errno::EOPNOTSUPP as i32));
-        // Skip the real SYS_FORK/SYS_VFORK channel post entirely — NO child
-        // is ever spawned for a gated fork (`fm_serialize_journal_alloc`'s
-        // KFRE image is purely for a prospective CHILD's benefit; the
-        // PARENT's own `fm_begin_replay` below needs none of it, since it
-        // rewinds the SAME module's still-live in-memory journal, not a
-        // deserialized copy). Still drives the PARENT's own frame rewind —
-        // its call stack was already unwound above, exactly like the
-        // supported/rejected-fork paths, so it must still be replayed to
-        // resume at the `fork()` call site, just with the FORCED errno
-        // instead of a channel reply.
-        // The PARENT's own frame rewind (begin_replay + the guest
-        // `wpk_fork_rewind_begin` drive) is folded into the coarse
-        // `fm_parent_replay` at the tail of this gated branch, AFTER the
-        // reference-state seeding below — the same ordering the child path
-        // uses (seed references, THEN reconstruct).
-        // N1 refcomplete substrate (2026-09-05 gate-hang fix): seed
-        // `reference_state()` (`begin_reference_replay_only`) but do NOT
-        // drive `fm_build_gc_plan`/`fm_drive_execute` against the sealed
-        // placeholder-only graph — go straight to `wpk_fork_rewind_begin`
-        // below once the driver is seeded. `gated_placeholder`'s own doc
-        // comment already establishes this graph's content past "validates
-        // cleanly and is admissible" is otherwise UNOBSERVED ("the sealed
-        // graph is discarded unread"): nothing downstream needs the
-        // placeholder's synthetic `i31` node to be a real, drivable GC
-        // recipe, only that SOME node exists in the sealed KFMS arena — but
-        // `reference_state()` itself DOES need to be non-`None`, because
-        // frame restore's OTHER per-local decode helpers (e.g.
-        // `fm_funcref_ordinal` for a funcref-typed local elsewhere in the
-        // SAME frame) consult it regardless of whether THIS fork's own
-        // captured value was gated. See `begin_reference_replay_only`'s doc
-        // comment for the EARLIER, broader version of this fix (skipping
-        // `fm_begin_reference_replay` too) that empirically reproduced this
-        // same hang from a DIFFERENT cause — both traps are
-        // `wasmtime::Trap::UnreachableCodeReached`. At the time that trap was
-        // swallowed as "the thread exited normally"; the main thread's entry
-        // loop (`run_fork_capable_entry`) now reports it as SIGILL unless the
-        // pump woke the thread with `CH_TEARDOWN`.
-        //
-        // Root cause this fixes (see the 2026-09-05 substrate grounding doc
-        // §3): `fm_build_gc_plan` -> `GcCodecHints::new` derives `i31_owner`
-        // from `decoded_gc_codecs()`, which is UNCONDITIONALLY EMPTY on
-        // native today (native has no GC-codec-byte capture or host-
-        // exception-owner tracking yet — see this function's OWN doc comment
-        // above, step 1). An empty codec map means `i31_owner() == None`
-        // unconditionally, so `build_drive_plan` fails EVERY graph
-        // containing an i31 node with `Errno::EINVAL` — and
-        // `gated_placeholder`'s synthetic i31 stand-in is exactly such a
-        // node. `drive_reference_replay` then returns `false` on that
-        // EINVAL, this function returned `false` right after it (BEFORE
-        // ever reaching `wpk_fork_rewind_begin` below), and the caller
-        // (`run_fork_capable_entry`'s trampoline loop) ends the guest OS
-        // thread outright on a `false` return — so `wpk_fork_resume_start`
-        // is never called again, the guest never posts `SYS_EXIT_GROUP`, and
-        // `run_pump`'s 30s `hard_cap` was the only thing that ever noticed:
-        // a truthful watchdog firing on a silently-dead thread, not a
-        // livelock. Skipping `fm_build_gc_plan`/`fm_drive_execute` (while
-        // still seeding `reference_state()`) removes the ONLY path that
-        // reached `fm_build_gc_plan` for a gated fork, so the EINVAL — and
-        // the thread death it caused — can no longer happen; the parent's
-        // own frame rewind (this function's `fm_begin_replay` just above)
-        // needs no reference DATA reconstructed for a value the platform
-        // contract already says is not preserved across a gated fork, only
-        // that decoding it never traps and hands back the live value -- the
-        // guest's own `decode_anyref`/`decode_externref` read
-        // `transit[recipe + 1]`, which the republish below guarantees.
-        //
-        // Size the transit table (STORE #2) for the SEALED graph before the
-        // resume below reaches the frame that held the gated value: its
-        // static WASM TYPE is still `externref`, so frame restore calls the
-        // guest's own `decode_externref`/`decode_anyref` regardless of the
-        // wire node's actual kind — `table.get(transit, recipe+1)` traps
-        // out-of-bounds on an ungrown table exactly like the drive-plan case
-        // `drive_reference_replay`'s own growth step guards (see there for
-        // the general rationale). There is no drive PLAN to read recipe ids
-        // out of here (that machinery is exactly what this branch skips), so
-        // size from the CAPTURE-side graph directly: every `gated_placeholder`
-        // call (review fix, Finding 3: now a FRESH node per call, not a
-        // shared dedup) is already reflected in the graph's own node count,
-        // so it remains the exact upper bound — no plan-shaped data needed.
-        {
-            let node_count = capture.lock().unwrap().graph.nodes().len();
-            let Ok(needed) = u64::try_from(node_count).map(|n| n + 1) else {
-                eprintln!("gated fork's sealed graph node count overflowed a u64");
-                return false;
-            };
-            let current = fm.gc_transit_table.size(&mut *store);
-            if needed > current {
-                if let Err(e) =
-                    fm.gc_transit_table.grow(&mut *store, needed - current, wasmtime::Ref::Any(None))
-                {
-                    eprintln!(
-                        "growing fork-module __wpk_fork_ref_gc_transit (gated fork abort) failed: {e:#}"
-                    );
-                    return false;
-                }
-            }
-            // Review fix (increment-review.md MEDIUM-2 / "Finding 3"): the
-            // struct/array/i31/broker-gated call sites already publish their
-            // ORIGINAL live anyref back into `transit[id + 1]` themselves,
-            // right after their own host import call returns (the guest's
-            // own generated code does this unconditionally — see e.g.
-            // `emit_encode_layout`/`emit_encode_anyref`'s tail — so the
-            // `grow` above, which only fills entirely NEW slots with `null`,
-            // does not disturb an already-populated one). But that guest-side
-            // publish is not the only way a slot for a gated id can end up
-            // here: re-set every preserved original explicitly so the
-            // PARENT's own `decode_anyref` (`table.get(transit, recipe+1)`)
-            // is correct regardless of which call path produced this gated
-            // id.
-            let capture_guard = capture.lock().unwrap();
-            for (id, original) in capture_guard.gated_originals_iter() {
-                let value = original.to_rooted(&mut *store);
-                let slot = u64::from(id) + 1;
-                if let Err(e) =
-                    fm.gc_transit_table.set(&mut *store, slot, wasmtime::Ref::Any(Some(value)))
-                {
-                    eprintln!(
-                        "restoring gated fork-module transit slot {slot} (gated fork abort) \
-                         failed: {e:#}"
-                    );
-                    return false;
-                }
-            }
-            drop(capture_guard);
-        }
-        if !begin_reference_replay_only(&mut *store, fm) {
-            return false;
-        }
-        // Coarse parent ABORT-replay: begin the abort + drive the guest's
-        // `wpk_fork_abort_begin(root)` (slot bound at instantiation) in ONE
-        // module call, mirroring TS `beginAbortReplay` for an unsupported-
-        // reference (gated) fork. The module drives from each activation's
-        // stored `module_buffer` (== `coord.root()` here); the paired
-        // `Replaying`-phase finish then drives `fm_parent_finish(1)` (the
-        // guest's `wpk_fork_abort_end` flip), so `coord` records the abort here.
-        coord.set_abort_replay(true);
-        if let Err(e) = fm.fm_parent_replay.call(&mut *store, 1) {
-            eprintln!("fm_parent_replay(abort) (gated fork abort) failed: {e:#}");
-            return false;
-        }
-        match fm.fm_last_errno.call(&mut *store, ()) {
-            Ok(0) => {}
-            Ok(errno) => {
-                eprintln!("fm_parent_replay(abort) (gated fork abort) failed: errno {errno}");
-                return false;
-            }
-            Err(e) => {
-                eprintln!(
-                    "fm_last_errno after fm_parent_replay(abort) (gated fork abort) failed: {e:#}"
-                );
-                return false;
-            }
-        }
-        coord.set_phase(ForkCoordPhase::Replaying);
-        return true;
-    }
-
-    // The journal image was serialized by the coarse `fm_parent_seal_capture`
-    // above; validate it now that this fork WILL launch a child (a gated fork
-    // returned earlier and never reaches here).
-    if image_ptr == 0 || image_len <= 0 {
-        eprintln!("fork-module produced an invalid journal image (ptr={image_ptr}, len={image_len})");
-        return false;
-    }
-
-    let root = coord.root();
-    let mode = coord.mode();
-    let syscall_nr = if mode == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
-    unsafe {
-        write_bytes(guest_mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-        write_bytes(guest_mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
-        for i in 1..6 {
-            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
-        }
-        // N1-I4 Task 3: smuggle the continuation root + journal image
-        // location to `handle_fork` through this channel's DATA region —
-        // mirrors `kernel_clone`'s `fn_ptr`/`arg` smuggling above. Neither
-        // `fork()`'s POSIX ABI nor any guest code ever reads these bytes
-        // back; they exist purely for this host's own pump to read.
-        write_bytes(guest_mem, ch + DATA_OFFSET, &root.to_le_bytes());
-        write_bytes(guest_mem, ch + DATA_OFFSET + 4, &(image_ptr as u32).to_le_bytes());
-        write_bytes(guest_mem, ch + DATA_OFFSET + 8, &image_len.to_le_bytes());
-        // Also smuggle THIS parent's KFMS arena root (where the journal-image
-        // record was just appended). A COW child reuses its own instance's
-        // identical `fm.empty_module_state_root` (same layout + memory copy),
-        // but a vfork BORROWED child's own fork-module region is a distinct
-        // private address the parent never wrote, so it must be told the
-        // parent's shared-memory arena address to feed `fm_child_seed_borrowed`.
-        write_bytes(guest_mem, ch + DATA_OFFSET + 16, &fm.empty_module_state_root.to_le_bytes());
-        write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
-        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
-    }
-    let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
-    loop {
-        let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
-        if s == ChannelStatus::Teardown as u32 {
-            // The kernel ended this process while it was parked in fork (a
-            // fatal signal, or a vfork containment): end this thread without
-            // resuming guest code.
-            return false;
-        }
-        if s != STATUS_PENDING {
-            break;
-        }
-        std::thread::sleep(Duration::from_micros(200));
-    }
-    let (ret, errno) =
-        unsafe { (read_i64(guest_mem, ch + RETURN_OFFSET), read_u32(guest_mem, ch + ERRNO_OFFSET)) };
-    unsafe {
-        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
-    }
-    let fork_result = if ret < 0 { -(errno as i32) } else { ret as i32 };
     coord.set_fork_result(fork_result);
 
-    // N1-I5 Task 3: reconstruct the PARENT's own reference graph (its captured
-    // frames may hold reference-typed locals) BEFORE the guest rewind drive —
-    // the native reference floor, kept granular because the coarse
-    // `fm_parent_replay` does NOT fold reference reconstruction (see
-    // `drive_reference_replay`'s doc comment). Ordered before the coarse replay
-    // for the same reason the child path seeds references before
-    // `fm_child_reconstruct`: the guest is still in NORMAL state here, exactly
-    // as it was before `fm_begin_replay` in the former host sequence, so the
-    // reconstruction drive sees identical guest state.
-    if !drive_reference_replay(&mut *store, fm, guest_mem) {
-        return false;
-    }
-    // Coarse parent replay: begin the parent rewind/abort + drive the guest's
-    // `wpk_fork_rewind_begin(root)` / `wpk_fork_abort_begin(root)` (slots bound
-    // at instantiation) in ONE module call, folding the former `fm_begin_replay`
-    // + direct guest-export call. `root` (== each activation's stored
-    // `module_buffer`, smuggled to the child above) is what the module's plan
-    // drives from internally. A FAILED child launch (`fork_result < 0`) resumes
-    // the parent at `fork()` with the errno via ABORT-replay
-    // (`fm_parent_replay(abort=1)`),
-    // mirroring TS `beginAbortReplay(-childPid)`; a successful launch resumes via
-    // NORMAL rewind-replay (`fm_parent_replay`). `coord` records which, so the
-    // paired `Replaying`-phase finish drives the matching `wpk_fork_{rewind,
-    // abort}_end` via `fm_parent_finish(abort)`.
+    // A FAILED fork -- a refused seal or a refused child -- resumes the parent
+    // at `fork()` with the errno through the ABORT replay; a launched one
+    // through the ordinary rewind. `coord` records which, so the paired
+    // `Replaying`-phase finish drives the matching `fm_parent_finish(abort)`.
     let abort = fork_result < 0;
     coord.set_abort_replay(abort);
-    // ONE module entry, phase as an argument. This used to select between two
-    // exports; the module folded them, because both bodies were the same impl
-    // with this same flag flipped.
-    let name = if abort {
-        "fm_parent_replay(abort)"
-    } else {
-        "fm_parent_replay"
-    };
-    if let Err(e) = fm.fm_parent_replay.call(&mut *store, u32::from(abort)) {
-        eprintln!("{name} failed: {e:#}");
-        return false;
-    }
-    match fm.fm_last_errno.call(&mut *store, ()) {
+    let replayed = fm
+        .fm_parent_replay
+        .call(&mut *store, u32::from(abort))
+        .and_then(|()| fm.fm_last_errno.call(&mut *store, ()));
+    match replayed {
         Ok(0) => {}
         Ok(errno) => {
-            eprintln!("{name} failed: errno {errno}");
+            eprintln!("fm_parent_replay({abort}) failed: errno {errno}");
             return false;
         }
         Err(e) => {
-            eprintln!("fm_last_errno after {name} failed: {e:#}");
+            eprintln!("fm_parent_replay({abort}) failed: {e:#}");
             return false;
         }
     }
@@ -10210,151 +7410,36 @@ fn run_worker_thread(
     )?;
     linker.define(&mut store, "env", "__channel_base", channel_base)?;
 
-    // N1 residual #4a: give THIS thread its own co-resident fork-module +
-    // frame-capture imports + `kernel_fork` wiring, closed over its own
-    // channel — mirrors `spawn_guest_thread`'s identically-shaped
-    // (main-channel) wiring; see this function's doc comment for what
-    // differs (channel identity, no `ForkEntry`, vfork rejected outright).
+    // N1 residual #4a: give THIS thread its own co-resident fork-module, its
+    // fork imports and `kernel_fork` wiring, closed over its own channel —
+    // mirrors `spawn_guest_thread`'s wiring; see this function's doc comment
+    // for what differs (channel identity, no `ForkEntry`, vfork rejected).
     let mut fork_module: Option<ForkModule> = None;
     let coord = ForkCoordState::new();
-    let capture = Arc::new(Mutex::new(NativeReferenceCapture::new()));
     if use_fork_module {
-        let fm = instantiate_fork_module(
-            engine,
-            &mut store,
-            guest_mem,
-            &layout,
-            // Never re-seed the process's persistent module-state (reference
-            // graph) arena from a worker thread's own launch: this thread is
-            // not a fresh process launch (the process's OWN main-thread
-            // launch already did that exactly once, via `ForkEntry::
-            // Normal`); re-seeding here on every `pthread_create` would
-            // silently clobber a graph a PRIOR fork on a different thread
-            // already populated — the exact bug class `instantiate_fork_
-            // module`'s `seed_empty_module_state_arena` doc comment
-            // describes for a fork child.
-            false,
-        )
-        .map_err(|e| anyhow::anyhow!("instantiate_fork_module failed: {e:#}"))?;
-
-        const FRAME_IMPORT_NAMES: [&str; 5] = [
-            "__wpk_fork_frame_reserve",
-            "__wpk_fork_frame_commit",
-            "__wpk_fork_frame_peek",
-            "__wpk_fork_frame_next",
-            "__wpk_fork_resume_peek",
-        ];
-        for name in FRAME_IMPORT_NAMES {
-            let f = fm
-                .instance
-                .get_func(&mut store, name)
-                .ok_or_else(|| anyhow::anyhow!("fork-module missing expected export {name}"))?;
-            linker.define(&mut store, "env", name, f)?;
-        }
-        if let Some(import) = module.imports().find(|i| {
-            i.module() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE
-                && i.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
-        }) {
-            let tag_ty = match import.ty() {
-                ExternType::Tag(t) => t,
-                other => anyhow::bail!(
-                    "guest env.{} is a {other:?}, not a tag",
-                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
-                ),
-            };
-            // The MODULE owns this tag. `fork-module-inject` defines and
-            // exports it precisely so a host does not have to mint one:
-            // "It was minted in JavaScript, which made every host responsible
-            // for creating one and handing it over. It does not have to be."
-            // Minting here instead left that export dead and the responsibility
-            // in place -- and, worse, meant the module and the guest would not
-            // agree on the tag the moment the module throws one itself.
-            let tag = fm
-                .instance
-                .get_tag(
-                    &mut store,
-                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
-                )
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "fork-module does not export {}; it cannot supply the \
-                         guest's unwind tag",
-                        wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
-                    )
-                })?;
-            // `TagType` is not comparable, so compare the signature it carries.
-            // The transport is `() -> ()`; a module whose tag took a payload
-            // would link and then mismatch at the first throw.
-            let module_sig = tag.ty(&store);
-            let module_sig = module_sig.ty();
-            let guest_sig = tag_ty.ty();
-            if module_sig.params().len() != guest_sig.params().len()
-                || module_sig.results().len() != guest_sig.results().len()
-            {
-                anyhow::bail!(
-                    "fork-module's {} tag does not match the type the guest imports",
-                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
-                );
-            }
-            linker.define(
-                &mut store,
-                wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
-                wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
-                tag,
-            )?;
-        }
+        let fm = instantiate_fork_module(engine, &mut store, guest_mem, &layout)
+            .map_err(|e| anyhow::anyhow!("instantiate_fork_module failed: {e:#}"))?;
+        bind_guest_fork_imports(&mut linker, &mut store, module, &fm)?;
         if let Some(fmt) = fork_format.as_ref() {
             // This thread's own channel, not the layout's: the module maps its
-            // storage through it. A pthread is never a fork child.
-            admit_guest(&mut store, &fm, guest_mem, fmt, channel_offset, 0)?;
+            // storage through it. The control word is the process's, as a
+            // JavaScript pthread worker passes. A pthread is never a fork child.
+            let control = fork_control_word(layout.channel_offset) as u32;
+            admit_guest(&mut store, &fm, guest_mem, fmt, channel_offset, control, 0)?;
         }
         fork_module = Some(fm);
     }
 
-    // N1 residual #4a: `env.__wpk_fork_resume_table` — mirrors
-    // `spawn_guest_thread`'s identical wiring (see its doc comment for the
-    // full rationale). This is NOT reference-specific: it is the real,
-    // cross-activation dispatch table `wpk_fork_resume_start` `call_indirect`
-    // s during EVERY replay (frames-only or not), so — unlike the large
-    // FUNCTION-only reference-capture import family below, which
-    // `define_unknown_imports_as_traps` safely stubs because a frames-only
-    // fork never calls any of them — this table must hold REAL guest funcrefs
-    // or the first replay traps `undefined element: out of bounds table
-    // access`. Populated further below, once this thread's own `Instance`
-    // exists (must run BEFORE `linker.instantiate`, same as the frame
-    // imports/unwind tag above — an import must be defined before
-    // instantiation resolves it).
-    //
-    // THE MODULE'S OWN TABLE, exactly as in `spawn_guest_thread`. This site
-    // minted a SECOND one: the same `catalog_ordinals.len() + 1` sizing and the
-    // same `i + 1` numbering, written out again in a function nobody reads
-    // beside the first. Two implementations of one numbering rule, which must
-    // agree and had no mechanism forcing them to — so the rule lives in the
-    // module and both sites now ask.
-    if let Some(fm) = fork_module.as_ref() {
-        if module.imports().any(|i| {
-            i.module() == "env" && i.name() == wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
-        }) {
-            linker.define(
-                &mut store,
-                "env",
-                wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
-                fm.resume_table,
-            )?;
-        }
-    }
-
     // `kernel_fork` (N1 residual #4a): mirrors `spawn_guest_thread`'s own
     // import byte-for-byte, except closed over THIS thread's `channel_offset`
-    // and its own, freshly-created `coord`/`capture` above — see this
-    // function's doc comment for the `vfork` restriction.
+    // and its own, freshly-created `coord` above — see this function's doc
+    // comment for the `vfork` restriction.
     {
         let mem = guest_mem.clone();
         let ch = channel_offset;
         let fm_for_import = fork_module.clone();
         let has_format = fork_format.is_some();
         let coord = Arc::clone(&coord);
-        let capture_for_fork = Arc::clone(&capture);
         linker.func_wrap(
             "kernel",
             "kernel_fork",
@@ -10396,31 +7481,9 @@ fn run_worker_thread(
 
                 match coord.phase() {
                     ForkCoordPhase::Idle => {
-                        capture_for_fork.lock().unwrap().reset();
                         coord.set_mode(mode as u32);
                         coord.set_abort_replay(false);
-                        // Coarse capture-begin (worker-thread mirror of the main
-                        // closure): open the capture + drive the guest's
-                        // `wpk_fork_unwind_begin(root)` in one module call.
-                        // ARM the module's reference-graph builder first.
-                        // `fm_parent_begin_capture` begins the UNWIND; it does not create
-                        // the builder, and `capture_builder()` refuses to make one lazily
-                        // unless the capture was armed. Without this the fork runs to
-                        // completion and `fm_parent_seal_capture` answers EINVAL with its
-                        // frames already committed. The JavaScript hosts call the same entry
-                        // here (`processCaptureModule.begin()` right before
-                        // `parentBeginCapture`).
-                        fm.fm_capture_begin.call(&mut caller, ())?;
-                        let root = fm.fm_parent_begin_capture.call(
-                            &mut caller,
-                            (ch as u32, fm.empty_module_state_root),
-                        )?;
-                        let errno = fm.fm_last_errno.call(&mut caller, ())?;
-                        if errno != 0 {
-                            return Ok(-(errno));
-                        }
-                        coord.set_root(root);
-                        Ok(0) // ignored by the caller while unwinding
+                        begin_fork_capture(&mut caller, fm, &mem, ch)
                     }
                     ForkCoordPhase::Replaying => {
                         // Coarse replay-finish (worker-thread mirror): drive the
@@ -10590,14 +7653,12 @@ fn run_worker_thread(
     };
 
     // N1 residual #4a: mirrors `run_fork_capable_entry`'s own loop shape — a
-    // call that may escape as a THROWN `__wpk_fork_unwind` exception exactly
-    // once (a fresh `fork()` call capturing this thread's own live call
-    // stack), after which this drives the SAME capture/seal/launch-child
+    // call that may escape as a THROWN `__wpk_fork_unwind` exception (a
+    // `fork()` call capturing this thread's own live call stack), after which this drives the SAME capture/seal/launch-child
     // sequence (`drive_fork_capture_seal_and_launch_child`, already generic
     // over "which channel") and re-enters via `resume_thread` — using the
     // IDENTICAL `(fn_ptr, arg)` pair every time (see above for why this is
     // correct on both the lexical and the replay call).
-    let mut entry_is_lexical = true;
     let result = loop {
         let step = match resume_thread.as_ref() {
             Some(f) => f.call(&mut store, (fn_ptr as i32, arg as i32)).map(|_| ()),
@@ -10620,14 +7681,11 @@ fn run_worker_thread(
             // not a failure.
             Err(e) if e.downcast_ref::<ThreadKernelExit>().is_some() => break Ok(()),
             Err(e) if is_thrown_exception_escape(&e) => {
-                // Only valid straight after the LEXICAL entry captured a
-                // fresh fork; an exception escaping during a replay/resume
-                // call is a genuine bug or a foreign (non-fork) exception
-                // this loop does not understand — mirrors `run_fork_
+                // Only a fork's capture unwind may escape -- `run_fork_
                 // capable_entry`'s identical guard.
-                if !entry_is_lexical {
+                if !in_fork_capture(&mut store, fork_module.as_ref()) {
                     break Err(anyhow::anyhow!(
-                        "unexpected exception escape during fork replay: {e:#}"
+                        "unexpected exception escape outside a fork capture: {e:#}"
                     ));
                 }
                 if store.take_pending_exception().is_none() {
@@ -10639,17 +7697,9 @@ fn run_worker_thread(
                 let Some(fm) = fork_module.as_ref() else {
                     break Err(anyhow::anyhow!("fork-unwind exception escaped with no fork-module"));
                 };
-                if !drive_fork_capture_seal_and_launch_child(
-                    &mut store,
-                    guest_mem,
-                    channel_offset,
-                    fm,
-                    &coord,
-                    &capture,
-                ) {
+                if !drive_fork_capture_seal_and_launch_child(&mut store, guest_mem, channel_offset, fm, &coord) {
                     break Err(anyhow::anyhow!("fork-capture seal/launch-child failed (see stderr)"));
                 }
-                entry_is_lexical = false;
             }
             Err(e) => break Err(e.into()),
             // A thread entry that returns without self-exiting is unusual
@@ -12489,32 +9539,23 @@ fn handle_fork(
     let mode = args[0] as u32;
     let fork_format = processes[pi].fork_format.clone();
 
-    // N1-I4 Task 3: for a fork-instrumented parent, `run_fork_capable_entry`
-    // (via `drive_fork_capture_seal_and_launch_child`) already drove the
-    // FULL capture — the parent's own frames are already spilled into the
-    // fork-module and its journal already serialized — before ever posting
-    // THIS request, and smuggled the continuation root + journal image
-    // location into this channel's DATA region (mirrors `kernel_clone`'s
-    // `fn_ptr`/`arg` smuggling). Read them back NOW, from the PARENT's still
-    //-intact `guest_mem` (the child's copy, taken below, inherits the SAME
-    // bytes byte-for-byte). A non-instrumented parent (`fork_format ==
-    // None`) never wrote anything meaningful here — its `kernel_fork`
-    // import took the OLD direct-passthrough branch — so the child launches
-    // via the legacy `ChildPendingStub` instead.
+    // N1-I4 Task 3: for a fork-instrumented parent, the entry loop (via
+    // `drive_fork_capture_seal_and_launch_child`) already drove the FULL
+    // capture -- the parent's frames and references are already in the fork
+    // module's arena and its journal serialized -- before posting THIS request,
+    // and `begin_fork_capture` published the launch root in the forking
+    // thread's fork control word. Read it back NOW, from the PARENT's still
+    // intact memory, as the JavaScript kernel worker reads `forkBufAddr`
+    // (`readForkContinuationAnchor`); the child's copy, taken below, inherits
+    // the same bytes. A non-instrumented parent (`fork_format == None`) never
+    // publishes one -- its `kernel_fork` took the direct-passthrough branch --
+    // so its child launches via the legacy `ChildPendingStub` instead.
     let fork_entry = match fork_format.as_ref() {
         Some(_) => {
-            let root = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET) };
-            let image_ptr = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET + 4) };
-            let image_len_i64 = unsafe { read_i64(&guest_mem, ch.offset + DATA_OFFSET + 8) };
-            // `image_ptr`/`image_len` are still validated as a seal-sanity check
-            // (a broken seal must fall back to the stub), but no longer stored in
-            // the `ForkEntry`: the parent appended the journal image to the KFMS
-            // arena, so the child's coarse `fm_child_seed`/`fm_child_seed_borrowed`
-            // reads it from there rather than from these smuggled words.
-            if root == 0 || image_ptr == 0 || image_len_i64 <= 0 || image_len_i64 > u32::MAX as i64 {
+            let root = unsafe { read_u32(&guest_mem, fork_control_word(ch.offset)) };
+            if root == 0 {
                 eprintln!(
-                    "[host-native] fork pid={parent_pid}: invalid smuggled continuation \
-                     (root={root:#x}, image_ptr={image_ptr:#x}, image_len={image_len_i64}); \
+                    "[host-native] fork pid={parent_pid}: no launch root was published; \
                      falling back to the legacy pending-replay stub for the child"
                 );
                 ForkEntry::ChildPendingStub
@@ -12578,14 +9619,10 @@ fn handle_fork(
             }
             let child_mem = guest_mem.clone();
             let child_module = processes[pi].module.clone();
-            // The parent smuggled its KFMS arena root at DATA_OFFSET+16 (see
-            // `drive_fork_capture_seal_and_launch_child`'s channel post) so the
-            // borrowed child can feed it to the coarse `fm_child_seed_borrowed`.
-            let arena_root = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET + 16) };
             let borrowed_entry = ForkEntry::ChildBorrowedReplay {
                 root,
                 private_prefix: vregion.private_prefix as u32,
-                arena_root,
+                owner_control: fork_control_word(layout.channel_offset) as u32,
             };
             wait_table.lock().unwrap().parent_of.insert(child_pid, parent_pid);
             let launched = launch_vfork_borrowed_child(
@@ -13856,7 +10893,7 @@ mod fork_module_tests {
         let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 
         let mut fm_store = Store::new(&engine, ());
-        let fork_module = instantiate_fork_module(&engine, &mut fm_store, &guest_mem, &layout, true)?;
+        let fork_module = instantiate_fork_module(&engine, &mut fm_store, &guest_mem, &layout)?;
 
         assert!(fork_module.region_bytes > 0, "expected a non-empty reserved region");
         assert!(
@@ -14055,68 +11092,5 @@ mod fork_module_tests {
         std::fs::write(&out_path, &wasm)
             .unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
         eprintln!("wrote {} ({} bytes)", out_path.display(), wasm.len());
-    }
-
-    /// Review fix (increment-review.md MEDIUM-1 / "Finding 2"): a provenance
-    /// MISS for an array layout that declares a nonzero `provenance_scalar_
-    /// length` must be flagged as a cross-check mismatch, not silently
-    /// treated as "0 provenance bytes is fine" — `gc_define`'s wiring gates
-    /// the whole fork on exactly this condition instead of storing corrupt
-    /// scalar bytes (see that call site's own doc comment).
-    ///
-    /// This is a UNIT-level test, not an end-to-end fixture: the concrete
-    /// failure scenario (a `provenance_scalar_length > 0` array constructed
-    /// through a production site the instrumenter's provenance-wrapper pass
-    /// never wrapped) requires a wrapper-COVERAGE gap the current
-    /// instrumenter does not have — see the review's own "Concrete failure
-    /// scenario" paragraph. Exercised instead against the REAL cross-
-    /// language GC-codec descriptor fixture (`crates/fork-codec/testdata/
-    /// gc-codec-wasm32.bin`, the SAME bytes `fork_codec::gc_codec`'s own
-    /// `decodes_real_encoder_fixture_field_for_field` test decodes
-    /// field-for-field), whose layout 6 is exactly the review's own cited
-    /// example: an `array.new_data` specialization declaring `provenance_
-    /// scalar_length == 8`.
-    #[test]
-    fn gc_provenance_registry_flags_a_declared_length_mismatch() {
-        const GC_CODEC_FIXTURE: &[u8] = include_bytes!("../../fork-codec/testdata/gc-codec-wasm32.bin");
-        let format = GuestForkFormat {
-            sections: vec![(fork_codec::AdmissionSectionKind::GcCodec as u32, GC_CODEC_FIXTURE.to_vec())],
-            // Not under test here; this unit exercises the GC-provenance
-            // registry, which never reads the template id.
-            template_id: [0u8; 32],
-        };
-        let registry = GcProvenanceRegistry::new(Some(&format));
-
-        // Layout 6 (the review's own cited example) declares 8 provenance
-        // scalar bytes.
-        assert_eq!(registry.declared_provenance_scalar_length(6), Some(8));
-
-        // A genuine provenance MISS (`find` never located a record for this
-        // object — the concrete failure scenario: an uninstrumented
-        // production site) must be reported as a mismatch against a
-        // nonzero declared length, not silently treated as "0 bytes is
-        // fine".
-        assert_eq!(registry.provenance_length_mismatches(6, None), Some(true));
-
-        // A record whose actual scalar length DOES match is not a mismatch.
-        let matching =
-            GcConstructorRecord { layout_id: 6, scalars: vec![0u8; 8], references: Vec::new() };
-        assert_eq!(registry.provenance_length_mismatches(6, Some(&matching)), Some(false));
-
-        // A record with a WRONG (but nonzero) length is also correctly
-        // flagged — not just the "collapsed to 0" miss case above.
-        let wrong_length =
-            GcConstructorRecord { layout_id: 6, scalars: vec![0u8; 3], references: Vec::new() };
-        assert_eq!(registry.provenance_length_mismatches(6, Some(&wrong_length)), Some(true));
-
-        // Layout 1 (the same fixture's plain struct) declares NO
-        // provenance scalar bytes — a miss there is correctly NOT a
-        // mismatch (0 declared, 0 actual).
-        assert_eq!(registry.declared_provenance_scalar_length(1), Some(0));
-        assert_eq!(registry.provenance_length_mismatches(1, None), Some(false));
-
-        // A layout id absent from the descriptor entirely is a build
-        // defect, not an ordinary miss — `None`, not `Some(false)`.
-        assert_eq!(registry.provenance_length_mismatches(999, None), None);
     }
 }
