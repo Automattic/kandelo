@@ -586,7 +586,9 @@ stamp_targets=()
 while IFS= read -r wasm; do
     stamp_targets+=("$wasm")
 done < <(
-    find "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR" -type f -name '*.wasm' 2>/dev/null | sort
+    find "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR" \
+        "$REPO_ROOT/examples" "$BENCH_OUT_DIR" \
+        -type f -name '*.wasm' 2>/dev/null | sort
 )
 if [ "${#stamp_targets[@]}" -gt 0 ]; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$STAMP_HOST_TARGET" --quiet -- \
