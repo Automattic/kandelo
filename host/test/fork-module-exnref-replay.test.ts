@@ -15,7 +15,7 @@
 //
 // Assertions:
 //   (a) PROOF OF USE — `fm_exnrefs_reconstructed` advanced by the exnref-node
-//       count (bookkeeping, from `fm_begin_reference_replay`) and the drive
+//       count (bookkeeping, from `fm_restore_from_arena`'s seed) and the drive
 //       plan's EXN step ran the guest's materialize.
 //   (b) MINT INERT — no exception tag is minted (the deleted `wpk_fork_host.*`
 //       `host_mint_exception_tag` seam, H3, is gone — the module no longer
@@ -97,11 +97,10 @@ function captureExnref(
 
 interface ForkModuleRefExports {
   fm_set_format: (pw: number, fixedPrefix: number) => void;
-  fm_begin_reference_replay: (root: number, pid: number) => void;
+  fm_restore_from_arena: (root: number, pid: number) => number;
   // The single folded proof-of-use counter accessor; read via `FmStatField`.
   fm_stats: (field: number) => bigint;
   fm_last_errno: () => number;
-  fm_build_gc_plan: (pid: number) => number;
   fm_gc_plan_count: () => number;
   fm_drive_execute: (ptr: number, count: number) => void;
   __wpk_fork_ref_exn_route: (recipeId: number, expectedActivation: number) => number;
@@ -163,18 +162,17 @@ describe("fork-module exnref reference reconstruction (Phase 6 D6.3a)", () => {
 
     const exnrefsBefore = Number(x.fm_stats(STAT.exnrefsReconstructed));
 
-    // Seed the reference graph (bookkeeping only).
-    x.fm_begin_reference_replay(root, PID);
+    // Seed the reference graph and build its drive plan (the production
+    // restore entry, `fm_restore_from_arena`).
+    const planPtr = x.fm_restore_from_arena(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
     // (a) PROOF OF USE (graph admission) — one exnref admitted, purely from
     // bookkeeping.
     expect(Number(x.fm_stats(STAT.exnrefsReconstructed)) - exnrefsBefore).toBe(1);
 
-    // Build + execute the real drive plan: the EXN step drives the guest's
+    // Execute the real drive plan: the EXN step drives the guest's
     // exception materialize. The funcref payload needs no step of its own.
-    const planPtr = x.fm_build_gc_plan(PID);
-    expect(x.fm_last_errno()).toBe(0);
     const count = x.fm_gc_plan_count();
 
     expect(count, "one EXN step, nothing for the funcref payload").toBe(1);
@@ -203,7 +201,7 @@ describe("fork-module exnref reference reconstruction (Phase 6 D6.3a)", () => {
     const memory = f.memory;
     const { root, exnId, payloadId } = captureExnref(f);
     const { x } = replayChild(f);
-    x.fm_begin_reference_replay(root, PID);
+    x.fm_restore_from_arena(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
     const readsBefore = Number(x.fm_stats(STAT.referenceFeedReads));

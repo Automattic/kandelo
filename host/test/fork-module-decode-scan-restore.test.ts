@@ -4,8 +4,8 @@
 //
 // These `fm_*` exports are additive surfaces over the shared `fork_codec`
 // engine (`reference_segments.rs` decode, `reference_replay.rs` driver/feed,
-// `drive_plan.rs` build_drive_plan) — the same engine that backs
-// `fm_begin_reference_replay`. They are what let the host retire its own
+// `drive_plan.rs` build_drive_plan) — the same engine a fork child's
+// `fm_child_install` runs. They are what let the host retire its own
 // wire-graph decode, and its replay ENTRY wrapper.
 //
 // THE ARENA IS CAPTURED, NOT CONSTRUCTED. This file used to build its sealed
@@ -45,8 +45,6 @@ const DRIVE_OP_STATIC_ROOT = 3;
 
 interface ForkModuleExports {
   fm_restore_from_arena: (root: number, pid: number) => number;
-  fm_begin_reference_replay: (root: number, pid: number) => void;
-  fm_build_gc_plan: (pid: number) => number;
   fm_gc_plan_count: () => number;
   fm_stats: (field: number) => bigint;
   fm_last_errno: () => number;
@@ -84,15 +82,11 @@ function readPlan(memory: WebAssembly.Memory, ptr: number, count: number): numbe
   return steps;
 }
 
-function readRawPlan(memory: WebAssembly.Memory, ptr: number, count: number): Uint8Array {
-  return new Uint8Array(memory.buffer).slice(ptr, ptr + count * DRIVE_STEP_SIZE);
-}
-
 describe("fork-module decode / restore (orchestration migration increment 1)", () => {
   // The two DECODE cases went with `fm_decode_reference_graph` and
   // `fm_decoded_node_field` (lane F stage 1G): the graph is made resident
   // only inside the module now, by `fm_child_plan` and the throw path.
-  it("fm_restore_from_arena seeds the driver and builds a plan identical to begin + build", () => {
+  it("fm_restore_from_arena seeds the driver and builds the plan", () => {
     const { root, x, memory } = captured();
 
     // (1) The single restore entry: seed + build in one call.
@@ -110,19 +104,6 @@ describe("fork-module decode / restore (orchestration migration increment 1)", (
       expect(op).toBe(DRIVE_OP_STATIC_ROOT);
       expect(recipe).toBe(index + 1);
     });
-    const restoreRaw = readRawPlan(memory, planPtr, count);
-
-    // (2) The two-step path restore collapses: begin_reference_replay + build.
-    x.fm_begin_reference_replay(root, PID);
-    expect(x.fm_last_errno()).toBe(0);
-    const planPtr2 = x.fm_build_gc_plan(PID);
-    expect(planPtr2).not.toBe(0);
-    const count2 = x.fm_gc_plan_count();
-    expect(count2).toBe(count);
-    const twoStepRaw = readRawPlan(memory, planPtr2, count2);
-
-    // Byte-for-byte identical: fm_restore_from_arena is the composition.
-    expect(Array.from(restoreRaw)).toEqual(Array.from(twoStepRaw));
   });
 
   it("fm_restore_from_arena fails cleanly on a malformed arena root", () => {

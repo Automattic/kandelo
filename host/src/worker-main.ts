@@ -3801,7 +3801,7 @@ export async function centralizedWorkerMain(
           forkMergedStaticRoots.fill(forkActivations.ordered());
           publishProcessLaunchRoot(0);
           publishProcessLaunchRoot(
-            forkModule().parentBeginCapture(channelOffset, 0),
+            forkModule().parentBeginCapture(channelOffset),
           );
         } catch (error) {
           // Both halves ask the MODULE now, which is what makes this safe. It
@@ -5874,7 +5874,7 @@ export async function centralizedThreadWorkerMain(
           threadForkModuleBackend?.captureBegin();
           publishThreadLaunchRoot(0);
           publishThreadLaunchRoot(
-            threadForkModule().parentBeginCapture(channelOffset, 0),
+            threadForkModule().parentBeginCapture(channelOffset),
           );
         } catch (error) {
           // The module owns this thread's arena too, and its abort releases it.

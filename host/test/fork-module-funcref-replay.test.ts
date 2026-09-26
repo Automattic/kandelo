@@ -67,7 +67,7 @@ function catalogTable(): WebAssembly.Table {
 }
 
 interface ForkModuleRefExports {
-  fm_begin_reference_replay: (root: number, pid: number) => void;
+  fm_restore_from_arena: (root: number, pid: number) => number;
   fm_stats: (field: number) => bigint;
   fm_last_errno: () => number;
   __wpk_fork_ref_decode_funcref: (recipeId: number) => unknown;
@@ -100,7 +100,7 @@ describe("fork-module funcref reference reconstruction (Phase 6 D6.1)", () => {
 
     const before = x.fm_stats(REFERENCES_RECONSTRUCTED);
 
-    x.fm_begin_reference_replay(root, PID);
+    x.fm_restore_from_arena(root, PID);
     expect(x.fm_last_errno(), "the child admits the sealed graph").toBe(0);
 
     // Each funcref recipe reconstructs the identity the real catalog holds, and

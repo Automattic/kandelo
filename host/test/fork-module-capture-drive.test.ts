@@ -20,7 +20,6 @@ import {
   DRIVE_SLOT_UNWIND_END,
   EBUSY,
   MMAP_COUNTER,
-  MMAP_FLOOR,
   MUNMAP_COUNTER,
   PAGE,
   PHASE_ABORT_REPLAY,
@@ -35,7 +34,6 @@ import {
   DRIVE_SLOT_FINISH_RESTORE,
   DRIVE_SLOT_RESTORE,
   childInstance,
-  childModule,
   installableChild,
   fixture,
   moduleStateRootAt,
@@ -53,17 +51,6 @@ import { bind, exportRow, importRow } from "./support/fork-admission";
 
 /** The per-activation drive stride: one slot per binding. */
 const FORK_ACTIVATION_DRIVE_SLOTS = FORK_ACTIVATION_DRIVE_BINDINGS.length;
-
-/**
- * Where the borrowed-workspace test admits a region: page 7, free in the
- * fixture's layout and below the responder's range. It was `MMAP_FLOOR + 8 *
- * PAGE`, harmless only while nothing was mapped there -- and since the bump
- * heap lost its static floor, a capture's FIRST allocation maps a 1 MiB chunk
- * from `MMAP_FLOOR`, which is sixteen pages over that address. The seed itself
- * writes nothing, so the collision was silent: bytes staged inside the
- * responder's range survive only until a mapping lands on them.
- */
-const BORROWED_WORKSPACE_SCRATCH = 7 * PAGE;
 
 describe("capture begin, driven through a serviced channel", () => {
   it("allocates its own arena and declares the activation set into it", () => {
@@ -243,24 +230,6 @@ describe("capture begin, driven through a serviced channel", () => {
       ),
     ).toBe(false);
   });
-
-  it("does not build an arena when the caller supplies one", () => {
-    // The section 142 bug, now reachable. Reserving into a rootless writer does
-    // not fail -- it starts a second arena on the same channel that nothing
-    // reads, while the caller's arena keeps only what the caller wrote.
-    const f = fixture();
-    admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
-      CHANNEL_BASE,
-      MMAP_FLOOR - PAGE, // the caller's own arena root
-    );
-    expect(
-      f.root(),
-      "the capture's prefix names the caller's arena, not a second one the " +
-        "module made",
-    ).toBe(MMAP_FLOOR - PAGE);
-  });
 });
 
 describe("the module frees exactly what it mapped", () => {
@@ -427,7 +396,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
     const phase = () => Number((f.x.fm_phase as () => number)());
 
     (f.x.fm_capture_begin as () => void)();
-    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0);
+    const anchor = backend.parentBeginCapture(CHANNEL_BASE);
     expect(anchor, "activation 0's module-buffer anchor").toBeGreaterThan(0);
     expect(phase()).toBe(PHASE_CAPTURE);
     // Passing 0 has to reach the module as 0. It is the difference between the
@@ -459,7 +428,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
     // the frames that did commit.
     const { f, backend } = backendFixture();
     (f.x.fm_capture_begin as () => void)();
-    backend.parentBeginCapture(CHANNEL_BASE, 0);
+    backend.parentBeginCapture(CHANNEL_BASE);
     const phase = () => Number((f.x.fm_phase as () => number)());
     expect(phase()).toBe(PHASE_CAPTURE);
 
@@ -503,7 +472,7 @@ describe("the backend's lifecycle methods, against a live module", () => {
     // and the worker would be wedged rather than broken.
     const { f, backend } = backendFixture();
     (f.x.fm_capture_begin as () => void)();
-    backend.parentBeginCapture(CHANNEL_BASE, 0);
+    backend.parentBeginCapture(CHANNEL_BASE);
     expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_CAPTURE);
     backend.abort();
     expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_IDLE);
@@ -868,26 +837,6 @@ describe("the binding records the module assembles at capture", () => {
     expect(t.getUint8(44), "kind").toBe(KIND_ACTIVATION_TABLE);
   });
 
-  it("refuses to drop the bindings when the caller brought its own arena", () => {
-    // The two halves of this port move together. A host that supplies its own
-    // arena root leaves the module with no writer root, so a reserve here would
-    // start a second arena nothing reads -- and skipping the write quietly
-    // hands the child a binding record it never got, reconstructing its
-    // imported globals against whatever its base imports happen to hold.
-    const f = fixture();
-    admitActivation(f, 0);
-    seedSections(f);
-    const { identity, provenance } = publish(f);
-    identity(SPACE_GLOBAL, 0, 1, 7);
-    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
-    (f.x.fm_capture_begin as () => void)();
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
-      CHANNEL_BASE,
-      MMAP_FLOOR - PAGE, // the caller's own arena root
-    );
-    expect(f.errno(), "capture must refuse rather than drop the record").toBe(22);
-  });
-
   it("carries a whole capture through to a sealed arena the child can read", () => {
     // The cycle the production path takes, with records in it: begin, seal,
     // parent-replay, finish. Until the module owned the arena, the seal wrote
@@ -911,7 +860,7 @@ describe("the binding records the module assembles at capture", () => {
       label: "sealed arena",
     });
     (f.x.fm_capture_begin as () => void)();
-    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0);
+    const anchor = backend.parentBeginCapture(CHANNEL_BASE);
     expect(f.errno(), "capture").toBe(0);
     backend.sealCaptureAndSerialize();
     expect(Number((f.x.fm_phase as () => number)()), "sealed").toBe(
@@ -1582,48 +1531,12 @@ describe("the binding records the module assembles at capture", () => {
     expect(ordinal, "with no ordinal handed back").toBe(-1);
   });
 
-  it("refuses a borrowed child seed with no admitted workspace, and carves one when there is", () => {
-    // A vfork BORROWED child shares the PARKED parent's memory. Its own
-    // active-frame writes must land in a private prefix, or they scribble on
-    // storage the parent is still using -- a wrong value, not a trap. The host
-    // seeds the region the KERNEL admitted; the module carves it.
-    //
-    // With no region seeded there is nowhere private to write, so the seed is
-    // refused rather than defaulting to somewhere. Census D9 C4.
-    const f = fixture();
-    admitActivation(f, 0);
-    (f.x.fm_capture_begin as () => void)();
-    const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
-      CHANNEL_BASE,
-      0,
-    );
-    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-    expect(f.errno(), "the parent seals").toBe(0);
-    const root = f.root();
-
-    // WHAT THIS TEST DOES NOT REACH, said plainly rather than implied: a
-    // borrowed SEED refuses on its inherited journal image long before it
-    // carves, because this fixture's capture commits no frames. So the carve's
-    // own guards -- no workspace seeded, and a prefix that crosses the admitted
-    // end -- are NOT gated here. Both were perturbed and both survived this
-    // file, which is the honest reading: their gate is the vfork e2e, and
-    // census D9 records it as owed. What IS gated below is the entry's own
-    // validation of the region it is handed.
-    const noWorkspace = childModule(f);
-    const seed = noWorkspace.fm_set_borrowed_workspace as
-      (base: number, bytes: number) => void;
-    seed(0, PAGE);
-    expect((noWorkspace.fm_last_errno as () => number)(), "base 0").toBe(22);
-    seed(BORROWED_WORKSPACE_SCRATCH, 0);
-    expect((noWorkspace.fm_last_errno as () => number)(), "zero bytes").toBe(22);
-
-    // Admitted properly, the seed carves and succeeds.
-    seed(BORROWED_WORKSPACE_SCRATCH, PAGE);
-    expect(
-      (noWorkspace.fm_last_errno as () => number)(),
-      "a real region is accepted",
-    ).toBe(0);
-  });
+  // WHAT USED TO BE HERE: "refuses a borrowed child seed with no admitted
+  // workspace", through `fm_set_borrowed_workspace`, an entry that left the
+  // module with its last host caller (lane F stage 4b). The same refusals are
+  // proven through the production install in `fork-module-child-install.test.ts`
+  // ("refuses half a borrowed workspace"), against an install that otherwise
+  // succeeds ("installs a BORROWED child of a pthread").
 
   it("refuses a child install from a phase that is not an install", () => {
     // An install while THIS worker is capturing its own fork would seed a

@@ -395,16 +395,15 @@ export class ForkModuleContinuationBackend {
    * activations are the ones this worker registered, which the module knows as
    * the ones it BOUND (`bindActivation`), so nothing about them is passed in.
    *
-   * `0` for the arena root asks the module to allocate its own and declare the
-   * activation set into it. A caller that brings its own root keeps the older
-   * contract, which is what `crates/host-native` still does.
+   * The module allocates the fork's arena and declares the activation set
+   * into it; no host supplies an arena root.
    *
    * Returns activation 0's module-buffer anchor, which the host publishes as the
    * process launch root. A side activation's anchor never reaches the host: the
    * module records every activation's root in the continuation manifest it
    * writes into the arena at seal.
    */
-  parentBeginCapture(channelBase: number, arenaRoot: number): number {
+  parentBeginCapture(channelBase: number): number {
     // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
     // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
     // memory exhaustion that fails with ENOMEM -- which is the case
@@ -418,9 +417,8 @@ export class ForkModuleContinuationBackend {
     // thrown the typed error for the same reason since it was written. Nothing
     // has unwound yet at this point, so there are no frames to replay and no
     // capture to seal -- the errno is the whole of the abort.
-    const root = (this.exports.fm_parent_begin_capture as (...a: number[]) => number)(
+    const root = (this.exports.fm_parent_begin_capture as (base: number) => number)(
       channelBase,
-      arenaRoot,
     );
     const errno = this.lastErrno();
     if (errno === FORK_MODULE_ENOMEM) {

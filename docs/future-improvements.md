@@ -1000,14 +1000,12 @@ runtime because the callback's call chain was not instrumented.
 **Files:** `crates/fork-instrument/src/call_graph.rs` plus a possible
 `instrument::analyze_callback_registrations` pass.
 
-### Native (wasmtime) exnref fork CAPTURE wiring + empirical exnref fork
+### Native (wasmtime) empirical exnref fork
 
-Context: the coarse-fork-module migration brought `crates/host-native` in line
-with the Node/browser hosts — the native fork driver now drives every phase
-through the coarse `fm_parent_*`/`fm_child_*` entries, and (like the other
-hosts) binds the guest's reference/GC/exception decode imports to the module's
-`fm_ref_*`/`fm_funcref_ordinal` feed and host-drives the topological GC/exnref
-reconstruction via `fm_drive_execute`.
+Context: `crates/host-native` forks the way the Node/browser hosts do — every
+phase through the coarse `fm_parent_*` entries and `fm_child_install`, every
+guest fork import bound to the module's own export, and the topological
+GC/exnref reconstruction driven by the module inside the install.
 
 The exnref RECONSTRUCT side is fully wired on native and is NOT blocked by
 wasmtime: wasmtime 48 with `wasm_gc(true)` + `wasm_exceptions(true)` loads the
@@ -1018,40 +1016,23 @@ the module's `fm_ref_exn_*` exports, and the `_exception_materialize` drive-tabl
 slot is bound. So the maintainer's originally-flagged concern ("wasmtime cannot
 reconstruct exnref") is stale — reconstruction is not the blocker.
 
-The remaining gap is native's exnref CAPTURE side. The exception-codec CAPTURE
-imports the guest calls while spilling a live exnref across a fork —
-`__wpk_fork_ref_exn_claim`, `__wpk_fork_ref_exn_define`,
-`__wpk_fork_ref_exn_broker_encode`, `__wpk_fork_ref_exn_lookup`,
-`__wpk_fork_ref_exn_ingress_throw` (see `WPK_FORK_EXCEPTION_IMPORT_*` in
-`crates/shared/src/lib.rs`) — are NOT bound in `crates/host-native/src/guest.rs`
-(only the three reconstruct-side imports are). They fall through to
-`define_unknown_imports_as_traps`, so an exnref-carrying fork would TRAP during
-capture (fail loud — a wasm trap ending the guest OS thread — not silently
-wrong), rather than reconstruct or cleanly gate.
-
-This was not driven empirically because no exnref-carrying fork FIXTURE exists:
-the current fixtures cover frames-only, funcref, externref, and Wasm-GC
-struct/array/i31 forks, none of which hold a live exnref across `fork()`.
-Authoring one (a WAT with `try_table`/`throw` + an exnref local held across
-`fork()`, run through `scripts/run-wasm-fork-instrument.sh` so the tool emits the
-`kandelo.wpk_fork.exception_codec` section and the capture calls) is a
-substantial, separate effort.
+The exnref CAPTURE side is bound too since lane F stage 4b: host-native binds
+every `__wpk_fork_*` import the guest declares -- the exception-codec capture
+imports (`__wpk_fork_ref_exn_claim`, `_exn_define`, `_exn_broker_encode`,
+`_exn_lookup`, `_exn_ingress_throw`) included -- to the fork module's export of
+the same name, as the Node/browser hosts do. What remains is proof: no
+exnref-carrying fork FIXTURE exists (the current ones cover frames-only,
+funcref, externref and Wasm-GC struct/array/i31 forks), so no native test has
+driven an exnref through capture and reconstruct.
 
 Recommended follow-up:
-- Bind the exception-codec CAPTURE imports on native, either to a full Rust
-  capture body (the exnref analogue of the `gc_lookup`/`gc_claim`/`gc_define`
-  bodies in `spawn_guest_thread`) so an exnref reconstructs end-to-end, or — as a
-  smaller first step — to a clean `NativeReferenceCapture::mark_unsupported(
-  "exnref")` gate (mirroring the `encode_externref` gate) so an exnref fork's
-  parent survives with `EOPNOTSUPP` instead of a raw unbound-import trap.
-- Author an exnref-carrying fork fixture and a `smoke_fork_exnref_reconstructs`
-  test to drive capture + reconstruct end-to-end and assert
-  `exnrefs_reconstructed > 0`.
+- Author an exnref-carrying fork fixture (a WAT with `try_table`/`throw` and an
+  exnref local held across `fork()`, run through
+  `scripts/run-wasm-fork-instrument.sh`) and a `smoke_fork_exnref_reconstructs`
+  test asserting `exnrefs_reconstructed > 0`.
 
-**Files:** `crates/host-native/src/guest.rs` (the reference/exception import
-binding block in `spawn_guest_thread`, and `NativeReferenceCapture`);
-`crates/host-native/fixtures/` (a new exnref fixture); `crates/host-native/src/
-lib.rs` (a new test).
+**Files:** `crates/host-native/fixtures/` (a new exnref fixture);
+`crates/host-native/src/lib.rs` (a new test).
 
 ## Fork control-flow inversion and rust-first migration
 

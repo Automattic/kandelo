@@ -48,16 +48,28 @@ Typed Wasm-GC (`struct`/`array`/`i31`) and static-root references are
 also reconstructed across fork:
 
 - **Static roots.** An immutable Wasm-GC global/local/table entry
-  reachable from module-level `elem`/`global` initializers is recorded
-  by a harvest-time reverse index (`ForkStaticRootCatalog`/
-  `StaticRootProvenance`) and reconstructed via the same `gc_lookup`
-  seam.
+  reachable from module-level `elem`/`global` initializers is harvested
+  once per instance into the fork module's merged static-root catalog,
+  which the host refills before every capture and child install; the
+  module's `gc_lookup` recognises a root by its catalog slot, and the
+  child re-identifies it by coordinate.
 - **Typed Wasm-GC struct/array/i31.** A genuinely new (not dedup, not
   static-root) anyref-lineage value falls through to real construction: the guest's generated GC codec walks
-  its fields, and the host's `claimGcSlot`/`defineGc`/`encodeI31`
-  (Node/browser) or equivalent native methods build the real recipe
-  node, restored in the child via the injected codec's
+  its fields, and the fork module's own capture exports
+  (`__wpk_fork_ref_gc_claim`/`_gc_define`/`_gc_i31`, bound by every host
+  -- Node, browser and native -- straight from the module) build the
+  real recipe node, restored in the child via the injected codec's
   allocate/fill drive.
+- **Known gap: per-object constructor provenance.** The module records
+  constructor provenance REFERENCES per layout (a witness pool), but not
+  per-object constructor facts: which constructor built an object, and
+  that constructor's scalars (an `array.new_data` segment offset and
+  length, an `array.new` fill value). A value whose type cannot be
+  rebuilt from its type alone -- an IMMUTABLE array, built by
+  `array.new_fixed` or `array.new_data` -- is captured with its type's
+  generic layout, whose generated allocator traps, so the child's
+  install traps. `crates/host-native`'s
+  `smoke_fork_gc_array_reconstructs` fails on exactly this.
 
 See
 `docs/plans/2026-09-05-n1-nodebrowser-reference-parity-grounding.md`
@@ -95,11 +107,11 @@ object included. The same boundary holds on every host:
   seals (`fm_parent_seal_capture`), the latched refusal fails the seal
   after the journal is sealed; the worker's seal-failure path replays
   the parent and returns `-EOPNOTSUPP` without issuing the fork syscall.
-- **Native** (`crates/host-native`). The guest reaches the same
-  `__wpk_fork_ref_gc_broker_encode` import, which native serves itself:
-  it marks the capture unsupported and keeps the live value for the
-  parent, and `drive_fork_capture_seal_and_launch_child` returns
-  `-EOPNOTSUPP` without posting the fork syscall.
+- **Native** (`crates/host-native`). The same: the guest's
+  `__wpk_fork_ref_gc_broker_encode` import is the module's own export,
+  the seal fails, and `drive_fork_capture_seal_and_launch_child`
+  abort-replays the parent and returns `-EOPNOTSUPP` without posting the
+  fork syscall.
 
 No host import is consulted and nothing names a host object: the fork
 module no longer imports `resolve_externref` or
@@ -171,8 +183,8 @@ production-site provenance pass in `fork-instrument`.
   the exnref module proof-of-use is non-null. This path is still
   synthetic-only in terms of real packages (see the census below); no
   real package produces a reference-carrying exception across a fork.
-  Native was unaffected: its capture path (`crates/host-native/src/guest.rs`)
-  calls the shared builder directly and never carried the JS-nodes bound.
+  Native captures through the same module exports (lane F stage 4b) and
+  so shares that path.
 
 ## Package-level validation
 

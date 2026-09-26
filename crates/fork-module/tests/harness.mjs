@@ -169,7 +169,7 @@ for (const name of [
   "fm_last_errno",
   // Phase 6 D6.1 reference reconstruction (funcref + null) — retained marshalling.
   "__wpk_fork_ref_decode_funcref",
-  "fm_begin_reference_replay",
+  "fm_restore_from_arena",
   // The single folded proof-of-use counter accessor (fm_stats(field) -> i64).
   "fm_stats",
 ]) {
@@ -290,7 +290,7 @@ console.log("  ok: fm_set_format(4, 128, 0, 0) succeeded; SENTINEL SURVIVED a co
 // -- Phase 6 D6.3a/D6.4a: the reference proof-of-use counters are inert here --
 //
 // `fm_exnrefs_reconstructed` / `fm_gc_nodes_reconstructed` advance ONLY when
-// `fm_begin_reference_replay` admits an exnref- / typed-GC-bearing graph and
+// a reference replay (`fm_restore_from_arena`, `fm_child_install`) admits an exnref- / typed-GC-bearing graph and
 // drives it. This harness never drives a reference replay, so the counters must
 // still read 0 — proving the counter exports are real and not spuriously bumped.
 // The full drives are validated in `host/test/fork-module-exnref-replay.test.ts`
@@ -298,12 +298,12 @@ console.log("  ok: fm_set_format(4, 128, 0, 0) succeeded; SENTINEL SURVIVED a co
 assert.equal(
   x.fm_stats(FM_STAT.EXNREFS_RECONSTRUCTED),
   0n,
-  "exnref counter is inert until fm_begin_reference_replay admits an exnref graph",
+  "exnref counter is inert until a reference replay admits an exnref graph",
 );
 assert.equal(
   x.fm_stats(FM_STAT.GC_NODES_RECONSTRUCTED),
   0n,
-  "typed-GC counter is inert until fm_begin_reference_replay admits a GC graph",
+  "typed-GC counter is inert until a reference replay admits a GC graph",
 );
 console.log("  ok: fm_stats reference counters present and inert (0) outside a reference replay");
 

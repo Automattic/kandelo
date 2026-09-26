@@ -66,7 +66,7 @@ function workerCatalog(base: number): WebAssembly.Table {
 }
 
 interface ReplayExports {
-  fm_begin_reference_replay: (root: number, pid: number) => void;
+  fm_restore_from_arena: (root: number, pid: number) => number;
   fm_stats: (field: number) => bigint;
   fm_last_errno: () => number;
   __wpk_fork_ref_decode_funcref: (recipeId: number) => unknown;
@@ -93,7 +93,7 @@ function worker(
     child.functionCatalog.set(slot, catalog.get(slot));
   }
   const x = child.exports as unknown as ReplayExports;
-  x.fm_begin_reference_replay(root, pid);
+  x.fm_restore_from_arena(root, pid);
   expect(x.fm_last_errno(), `${label} admits the sealed graph`).toBe(0);
   return x;
 }

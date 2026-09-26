@@ -5104,9 +5104,9 @@ pub struct ForkModule {
     /// `fm_capture_begin()` -- opens this fork's capture graph and resets the
     /// module's bump heap; the first module call of a capture.
     pub fm_capture_begin: wasmtime::TypedFunc<(), ()>,
-    /// `fm_parent_begin_capture(channel_base, 0) -> act0_root` -- the module
+    /// `fm_parent_begin_capture(channel_base) -> act0_root` -- the module
     /// allocates its own arena and drives each guest `wpk_fork_unwind_begin`.
-    pub fm_parent_begin_capture: wasmtime::TypedFunc<(u32, u32), u32>,
+    pub fm_parent_begin_capture: wasmtime::TypedFunc<u32, u32>,
     /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` -- drives
     /// each guest `wpk_fork_unwind_end()`, seals the capture into the module's
     /// arena, and serializes the child image (0 + `fm_last_errno` on failure).
@@ -5480,7 +5480,7 @@ pub(crate) fn instantiate_fork_module(
         fm_phase: fm_func!("fm_phase": () => u32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
         fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
-        fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32) => u32),
+        fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": u32 => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
         fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
         fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
@@ -5837,8 +5837,8 @@ fn fill_static_root_catalog(
 /// `kernel_fork`'s capture begin, in `worker-main.ts`'s order: open the
 /// module's capture graph (`fm_capture_begin`, which also resets the module's
 /// identity map, so this host's identity pool is emptied with it), refill the
-/// merged static-root catalog the capture reads, then open the capture with
-/// a 0 arena root -- the module allocates its own -- and have the module drive
+/// merged static-root catalog the capture reads, then open the capture -- the
+/// module allocates its own arena -- and have the module drive
 /// the guest's `wpk_fork_unwind_begin`. The returned launch root is published
 /// in the forking thread's fork control word, where `handle_fork` reads it.
 ///
@@ -5859,7 +5859,7 @@ fn begin_fork_capture(
     {
         fill_static_root_catalog(&mut *caller, fm, guest_roots).map_err(wasmtime::Error::msg)?;
     }
-    let root = fm.fm_parent_begin_capture.call(&mut *caller, (ch as u32, 0))?;
+    let root = fm.fm_parent_begin_capture.call(&mut *caller, ch as u32)?;
     let errno = fm.fm_last_errno.call(&mut *caller, ())?;
     if errno != 0 {
         return Ok(-errno);

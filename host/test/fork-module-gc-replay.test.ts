@@ -44,6 +44,7 @@ import {
   CAPTURE_KIND_STRUCT,
   INTERN_KIND_FUNCREF,
   PAGE,
+  beginParentReplay,
   captureGraph,
   admitInto,
   childInstance,
@@ -126,12 +127,11 @@ function captureGcCycle(f: Fixture): {
 
 interface ForkModuleRefExports {
   fm_set_format: (pw: number, fixedPrefix: number) => void;
-  fm_begin_reference_replay: (root: number, pid: number) => void;
+  fm_restore_from_arena: (root: number, pid: number) => number;
   // The single folded proof-of-use counter accessor (replaced the former 11
   // individual counter exports); read via the `FmStatField` enum.
   fm_stats: (field: number) => bigint;
   fm_last_errno: () => number;
-  fm_build_gc_plan: (pid: number) => number;
   fm_gc_plan_count: () => number;
   fm_drive_execute: (ptr: number, count: number) => void;
   __wpk_fork_ref_gc_route: (recipeId: number, expectedActivation: number) => number;
@@ -200,8 +200,9 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     const gcNodesBefore = Number(x.fm_stats(STAT.gcNodesReconstructed));
     const exnrefsBefore = Number(x.fm_stats(STAT.exnrefsReconstructed));
 
-    // Seed the reference graph (bookkeeping only).
-    x.fm_begin_reference_replay(root, PID);
+    // Seed the reference graph and build its drive plan (the production
+    // restore entry, `fm_restore_from_arena`).
+    const planPtr = x.fm_restore_from_arena(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
     // (a) PROOF OF USE (graph admission) — two typed-GC nodes admitted (struct +
@@ -209,11 +210,9 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     expect(Number(x.fm_stats(STAT.gcNodesReconstructed)) - gcNodesBefore).toBe(2);
     expect(Number(x.fm_stats(STAT.exnrefsReconstructed)) - exnrefsBefore).toBe(0);
 
-    // Build + execute the real drive plan: the struct/array ALLOC/FILL steps
+    // Execute the real drive plan: the struct/array ALLOC/FILL steps
     // drive the guest's own exports (here, the faithful double) to completion.
     // The funcref leaf needs no step.
-    const planPtr = x.fm_build_gc_plan(PID);
-    expect(x.fm_last_errno()).toBe(0);
     const count = x.fm_gc_plan_count();
 
     const { published } = bindFaithfulGuest(
@@ -267,7 +266,7 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
         edges: ({ leaves }) => [leaves[0]!],
       },
     ]);
-    x.fm_begin_reference_replay(a.root, PID);
+    x.fm_restore_from_arena(a.root, PID);
     expect(f.errno(), "the first fork's replay begins").toBe(0);
     // Make A resident through the throw path's own lazy decode: a recipe
     // past the graph decodes A, then refuses (EINVAL) and traps.
@@ -293,7 +292,7 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
       b.aggregateRecipes[0],
       "both graphs must name the same recipe id",
     ).toBe(a.aggregateRecipes[0]);
-    x.fm_begin_reference_replay(b.root, PID);
+    beginParentReplay(f);
     expect(f.errno(), "the second fork's replay begins").toBe(0);
 
     const raise = x.__wpk_fork_ref_exn_broker_throw_recipe;
@@ -321,7 +320,7 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     const { root, structId } = captureGcCycle(f);
     const { fm, x } = replayChild(f);
     admitInto(fm.exports as Record<string, unknown>, f.memory, 0, { gcCodec: GC_CODEC });
-    x.fm_begin_reference_replay(root, PID);
+    x.fm_restore_from_arena(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
     const raise = (x as unknown as Record<string, (recipe: number) => void>)
@@ -343,7 +342,7 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     const { root, structId, arrayId, leafId } = captureGcCycle(f);
     const { fm, x } = replayChild(f);
     admitInto(fm.exports as Record<string, unknown>, f.memory, 0, { gcCodec: GC_CODEC });
-    x.fm_begin_reference_replay(root, PID);
+    x.fm_restore_from_arena(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
     const readsBefore = Number(x.fm_stats(STAT.referenceFeedReads));

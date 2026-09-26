@@ -3303,57 +3303,6 @@ mod wasm {
         Ok(())
     }
 
-    /// Build a CHILD REWIND-begin drive plan: one `DRIVE_OP_REWIND_BEGIN` step per
-    /// activation carrying that activation's `child_rewind_root` — the exact root
-    /// the host's former per-activation `wpk_fork_rewind_begin(replayRoot)` loop
-    /// used (`module_buffer` for a COW child, the child-private prefix for a
-    /// borrowed/vfork child). Ascending id order (a `BTreeMap` iterates sorted
-    /// keys), matching that loop. Reuses `DRIVE_OP_REWIND_BEGIN` — the same op and
-    /// drive-table slot parent replay uses — so no new codec op or injector branch
-    /// is needed; only the root differs (child rewind root vs the parent's
-    /// `module_buffer`). Serialized through the shared plan scratch; the count is
-    /// read back via `GC_PLAN_COUNT`.
-    fn build_child_rewind_plan_impl() -> Result<usize, Errno> {
-        let st = state().as_ref().ok_or(Errno::EINVAL)?;
-        let roots: alloc::vec::Vec<(u32, u64)> = st
-            .activations
-            .iter()
-            .map(|(id, act)| (*id, act.child_rewind_root))
-            .collect();
-        let mut steps = alloc::vec::Vec::new();
-        drive_plan::append_rewind_begin_steps(&mut steps, &roots);
-        serialize_and_store_plan(&steps)
-    }
-
-    /// Sequence a whole CHILD reconstruct rewind-begin phase in the module
-    /// (control-flow inversion): build the per-activation REWIND-begin drive plan
-    /// from each activation's stored `child_rewind_root`, then drive it through the
-    /// injector-wired shim, which `call_indirect`s each activation's guest
-    /// `wpk_fork_rewind_begin(root)` in ascending id order.
-    ///
-    /// Unlike `parent_replay_impl` there is NO begin step here: the child's replay
-    /// state was already seeded by `fm_begin_child_replay` /
-    /// `fm_add_activation_child_replay` (or the borrowed variants) BEFORE this
-    /// call — the coarse entry folds ONLY the host's former per-activation
-    /// `wpk_fork_rewind_begin` loop in `attachModuleChild` /
-    /// `attachBorrowedModuleChild`. A zero-activation state is a truthful `EINVAL`
-    /// (a child always has at least the primary activation); a guest reconstruction
-    /// failure traps inside the shim exactly as it did under the host loop.
-    fn child_reconstruct_impl() -> Result<(), Errno> {
-        {
-            let st = state().as_ref().ok_or(Errno::EINVAL)?;
-            if st.activations.is_empty() {
-                return Err(Errno::EINVAL);
-            }
-        }
-        let plan = build_child_rewind_plan_impl()?;
-        let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
-        if count > 0 {
-            drive_plan_via_injector(plan, count);
-        }
-        Ok(())
-    }
-
     /// Build a capture-SEAL drive plan: one `DRIVE_OP_UNWIND_END` step per open
     /// activation (ascending id order — a `BTreeMap` iterates sorted keys), so the
     /// injected shim `call_indirect`s each activation's guest
@@ -5777,7 +5726,7 @@ mod wasm {
     /// (`write_activation_continuations`). A guest reconstruction failure traps
     /// inside the shim exactly as it
     /// did under the host loop; a create/plan-build failure is a truthful errno.
-    fn begin_capture_impl(channel_base: u64, arena_root: u64) -> Result<u64, Errno> {
+    fn begin_capture_impl(channel_base: u64) -> Result<u64, Errno> {
         // Activation 0: open the fresh capture (reclaims prior fork state) and
         // publish its arena root.
         let root0 = begin_unwind_impl(0, channel_base)?;
@@ -5786,39 +5735,27 @@ mod wasm {
         // Without this a refusal from an earlier fork in this worker (or, on a
         // COW child, the parent's) would refuse this one.
         reset_capture_refusal();
-        // `arena_root == 0` asks the module to allocate the KFMS arena root
-        // itself, instead of the host allocating it and handing the address in.
+        // The module allocates the KFMS arena root itself, rather than a host
+        // allocating it and handing the address in.
         //
-        // That handoff is the ownership split census section 133 found: the host
-        // mapped chunk one, the module mapped every later chunk as the guest
-        // reserved records, and the host freed them ALL by walking the linked
-        // list back out of guest memory to rediscover addresses it never held.
-        // Allocating here is what lets the module free exactly what it mapped,
-        // from a list the guest cannot reach -- which retires the cycle check,
-        // the chain-length bound, the per-chunk validation and the
-        // publish-only-after-validation ordering the host needed to keep a
-        // malformed arena from steering a munmap.
+        // That handoff was the ownership split census section 133 found: the
+        // host mapped chunk one, the module mapped every later chunk as the
+        // guest reserved records, and the host freed them ALL by walking the
+        // linked list back out of guest memory to rediscover addresses it never
+        // held. Allocating here is what lets the module free exactly what it
+        // mapped, from a list the guest cannot reach. The last host that brought
+        // its own root (`crates/host-native`, lane F stage 4b) no longer does,
+        // so the entry no longer takes one.
         //
-        // A nonzero `arena_root` keeps the old contract, so `crates/host-native`
-        // is unaffected and the two hosts can differ while the JS side moves.
         // The host reads the allocated root back from activation 0's
-        // continuation prefix (`write_module_state_root` below;
-        // `readForkModuleStateRoot` on the host) rather than it being returned
-        // here, because this entry's return value is already that anchor.
-        // Whether the MODULE owns this arena. It decides who declares the
-        // activation set below: a host that supplies its own root also writes
-        // its own `Module` records, and the module writing a second set would
-        // not overwrite them -- the writer's root is still 0, so `reserve` would
-        // start a SEPARATE arena on the same channel, and the records would land
-        // somewhere nothing reads while the host's arena stayed empty.
-        let module_owns_arena = arena_root == 0;
-        let arena_root = if arena_root == 0 {
+        // continuation prefix (`write_module_state_root` below) rather than it
+        // being returned here, because this entry's return value is already
+        // that anchor.
+        let arena_root = {
             let st = state().as_mut().ok_or(Errno::EINVAL)?;
             let mem = unsafe { mem_mut() };
             let ForkModule { module_state, module_state_chunks, .. } = st;
             module_state.begin(module_state_chunks, mem)?
-        } else {
-            arena_root
         };
         write_module_state_root(root0, arena_root)?;
 
@@ -5848,14 +5785,10 @@ mod wasm {
         // `arena.appendModule({ activationId, templateId })` loop, which ran at
         // exactly this point and for the same reason.
         //
-        // ONLY when the module allocated the arena. A caller that passed its own
-        // root writes its own records into it, and this block cannot add to that
-        // arena anyway -- see `module_owns_arena` above.
-        //
         // A host that seeded no template id for an activation is a host bug, not
         // an activation without a module, so it is `EINVAL` rather than a record
         // with a zero id.
-        if module_owns_arena {
+        {
             let ids: Vec<u32> = {
                 let st = state().as_ref().ok_or(Errno::EINVAL)?;
                 st.activations.keys().copied().collect()
@@ -7269,9 +7202,8 @@ mod wasm {
         // resuming after `fork()`. That is not a trap and not an errno -- the
         // child simply runs the whole program a second time, which is how it
         // surfaced (a `dlsym` in a re-run `main` failing in the child, census
-        // 185). `crates/host-native` drives this through `fm_child_reconstruct`
-        // as a separate call; putting the steps in the install plan instead
-        // means a JS host needs no third entry and cannot order the two wrong.
+        // 185). Putting the steps in the install plan means no host needs a
+        // separate rewind entry and none can order the two wrong.
         //
         // AFTER the restore/finish tail on purpose: a guest rewind reads the
         // globals and tables those steps installed (`append_rewind_begin_steps`
@@ -7850,71 +7782,6 @@ mod wasm {
         }
     }
 
-    /// Seed a forked CHILD instance's replay from copied guest memory and attach
-    /// its rewind driver. `module_buffer` is the continuation anchor the parent
-    /// published (inherited at the same guest offset); `[image_ptr, image_ptr +
-    /// image_len)` is the KFRE image the parent serialized with
-    /// `fm_serialize_journal` (also inherited via the memory copy). The child is
-    /// a FRESH instance placed at a DIFFERENT `__memory_base` with an empty
-    /// journal; this rebuilds the journal + resume-slot table from the COPIED
-    /// bytes only, then drives replay exactly as the parent's committed order
-    /// dictates. This is the module equivalent of JS `attachChild` ->
-    /// `replayEventsForChild(records)` -> `events.attachChild`. On success the
-    /// guest then drives `__wpk_fork_frame_peek/next` + `__wpk_fork_resume_peek`.
-    /// Sequence a whole CHILD SEED in the module (control-flow inversion): decode
-    /// the inherited `JournalImage` record from the COPIED KFMS arena rooted at
-    /// `module_state_root` and seed activation 0's replay from it, then seed each
-    /// side activation this child BOUND (`bound_sides`). Folds the host's
-    /// former `fm_begin_child_replay` + per-activation
-    /// `fm_add_activation_child_replay` loop in `attachModuleChild` into ONE
-    /// module call. `act0_root` is activation 0's inherited launch anchor. Check
-    /// `fm_last_errno`.
-    /// Both fine-grained exports this replaced -- `fm_begin_child_replay` and
-    /// `fm_add_activation_child_replay` -- have been deleted; the side-activation
-    /// seeding they performed is `add_activation_child_replay_impl` below, which
-    /// this entry calls directly.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_child_seed(module_state_root: usize, act0_root: usize) {
-        match require_phase(PHASE_IDLE)
-            .and_then(|()| child_seed_impl(module_state_root as u64, act0_root as u64))
-        {
-            Ok(()) => {
-                enter_phase(PHASE_CHILD_REPLAY);
-                set_ok()
-            }
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Sequence a whole BORROWED (vfork) CHILD SEED in the module (control-flow
-    /// inversion): decode the inherited `JournalImage` record from the KFMS arena
-    /// rooted at `module_state_root` and seed activation 0's borrowed replay from
-    /// it, then seed each side activation this child BOUND
-    /// (`bound_sides`). Folds the host's former
-    /// `fm_begin_borrowed_child_replay` + per-activation
-    /// `fm_add_activation_borrowed_child_replay` loop in
-    /// `attachBorrowedModuleChild` into ONE module call — the borrowed sibling
-    /// of `fm_child_seed`. `act0_root` is activation 0's borrowed launch anchor;
-    /// every activation's child-private prefix is carved from the workspace
-    /// `fm_set_borrowed_workspace` seeded. Check `fm_last_errno`. Both fine-grained exports this replaced --
-    /// `fm_begin_borrowed_child_replay` and
-    /// `fm_add_activation_borrowed_child_replay` -- have been deleted; the
-    /// side-activation seeding they performed is
-    /// `add_activation_borrowed_child_replay_impl` below, which this entry calls
-    /// directly.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_child_seed_borrowed(module_state_root: usize, act0_root: usize) {
-        match require_phase(PHASE_IDLE)
-            .and_then(|()| child_seed_borrowed_impl(module_state_root as u64, act0_root as u64))
-        {
-            Ok(()) => {
-                enter_phase(PHASE_CHILD_REPLAY);
-                set_ok()
-            }
-            Err(errno) => set_err(errno),
-        }
-    }
-
     // WHAT USED TO BE HERE: `fm_set_activation_table_state_owner`, through
     // which the HOST told the module each coordinate's election result. The
     // module elects itself now, from the table groups `fm_publish_bindings`
@@ -7929,34 +7796,6 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_module_state_table_state_owned(activation_id: u32, owner_id: u32) -> u32 {
         table_state_owned_impl(activation_id, owner_id)
-    }
-
-    /// Seed the vfork BORROWED child's admitted replay workspace.
-    ///
-    /// `base` is where the kernel put the region and `bytes` is how much it
-    /// admitted. That is the whole of what a host knows about it and this module
-    /// cannot derive -- the address comes from the child's launch message, and a
-    /// borrowed child does not use its own channel's control block. Everything
-    /// else about the workspace is already this module's: how much prefix each
-    /// activation needs, in what order, with what alignment. It has been
-    /// answering exactly that through `fm_borrowed_replay_workspace` since that
-    /// entry existed, so the host was performing the same walk a second time to
-    /// hand the answers back.
-    ///
-    /// With this seeded, `fm_child_seed_borrowed` carves each activation's
-    /// private prefix itself and its side records shrink to the `(id,
-    /// fixed_prefix)` pair the COW path and the capture path already use.
-    ///
-    /// Seeded ONCE per borrowed child, before its seed. `base == 0` or
-    /// `bytes == 0` is `EINVAL`: a borrowed child with no admitted prefix cannot
-    /// isolate its own active-frame writes and would scribble on the parked
-    /// parent's storage, which is a wrong value rather than a trap.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_borrowed_workspace(base: usize, bytes: usize) {
-        match set_borrowed_workspace_impl(base, bytes) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
     }
 
     // -- Activation admission (lane F stage 1a) ------------------------------
@@ -8299,28 +8138,6 @@ mod wasm {
     }
 
 
-    /// Seed the reference graph for this fork from the KFMS module-state arena
-    /// rooted at `module_state_root` and run its bookkeeping reconstruction pass
-    /// (Phase 6 D6.2, widened from D6.1). The host calls this once on a qualifying
-    /// fork after `fm_begin_child_replay`, before the guest rewind reconstructs
-    /// references. `pid` names the child process image; retained in this export's
-    /// signature for the host call site, but unused since M2 — the reconstruction
-    /// no longer opens a host root generation.
-    ///
-    /// On success the guest's `__wpk_fork_ref_decode_funcref` is served by this
-    /// module, and `fm_drive_execute` reconstructs the typed and static-root
-    /// references from the plan `fm_build_gc_plan` built. Failure (check
-    /// `fm_last_errno`: `EOPNOTSUPP` for an unadmitted kind, `EINVAL` for a
-    /// malformed arena) means the host must keep the byte-identical JS reference
-    /// path for this fork.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_begin_reference_replay(module_state_root: usize, pid: u32) {
-        match begin_reference_replay_impl(module_state_root as u64, pid) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
     /// Resolve a funcref recipe id to a function-catalog ordinal (Phase 6 D6.1).
     /// This is NOT a guest-facing import: it is the helper the injected
     /// `__wpk_fork_ref_decode_funcref` wasm shim calls to get the ordinal, then
@@ -8441,28 +8258,6 @@ mod wasm {
 
     // -- GC drive-shim exports (Phase 6 item 3b) -----------------------------
 
-    /// Build the REAL topological GC drive plan (Phase 6 item 3c) for the fork's
-    /// whole reference graph, reproducing the JS `materializeTypedGraph` order, and
-    /// return its guest address for `fm_drive_execute`. Requires
-    /// `fm_begin_reference_replay` to have seeded the driver and each participating
-    /// activation to have been admitted with its GC codec (its layout catalog).
-    /// Returns 0 on failure (check `fm_last_errno`): a missing driver, an un-seeded
-    /// GC activation, a mismatched recipe/layout coordinate, or an unallocatable
-    /// constructor/exception cycle is a truthful failure, never a wrong plan.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_build_gc_plan(pid: u32) -> usize {
-        match build_gc_plan_impl(pid) {
-            Ok(ptr) => {
-                set_ok();
-                ptr
-            }
-            Err(errno) => {
-                set_err(errno);
-                0
-            }
-        }
-    }
-
     /// The step count of the plan `fm_build_gc_plan` last serialized (the `count`
     /// argument for `fm_drive_execute`). 0 before the first successful build.
     #[unsafe(no_mangle)]
@@ -8525,37 +8320,6 @@ mod wasm {
                 });
                 set_ok()
             }
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Sequence a whole CHILD reconstruct rewind-begin phase in the module
-    /// (control-flow inversion, the child-worker mirror of [`fm_parent_replay`]):
-    /// build the per-activation REWIND-begin drive plan from each activation's
-    /// stored `child_rewind_root`, then DRIVE it through the injector-wired
-    /// `fm_drive_execute` shim, which `call_indirect`s each activation's guest
-    /// `wpk_fork_rewind_begin(root)` in ascending id order.
-    ///
-    /// This replaces the host's former per-activation `wpk_fork_rewind_begin`
-    /// loop in `attachModuleChild` / `attachBorrowedModuleChild` with ONE module
-    /// call. The child's replay state (journal, resume-slot table, per-activation
-    /// frame drivers, and the `child_rewind_root` each step carries) was ALREADY
-    /// seeded by `fm_begin_child_replay` / `fm_add_activation_child_replay` (COW)
-    /// or `fm_begin_borrowed_child_replay` / `fm_add_activation_borrowed_child_replay`
-    /// (vfork borrowed) before this entry — so, unlike `fm_parent_replay`, there is
-    /// NO begin step; this folds only the guest rewind DRIVE. The host must have
-    /// bound each activation's `wpk_fork_rewind_begin` into `__wpk_fork_drive_table`
-    /// at `drive_base(activation) + DRIVE_SLOT_REWIND_BEGIN` before calling
-    /// this (the ref-typed table bind is a host floor). Behaviourally identical to
-    /// the old host loop: same guest export, same roots (COW: `module_buffer`;
-    /// borrowed: child-private prefix), same ascending order. A guest reconstruction
-    /// failure traps inside the shim exactly as it did under the host loop; a
-    /// zero-activation state or plan-build failure is a truthful errno
-    /// (`fm_last_errno`).
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_child_reconstruct() {
-        match child_reconstruct_impl() {
-            Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
     }
@@ -8649,7 +8413,7 @@ mod wasm {
     /// Sequence a whole capture BEGIN in the module (control-flow inversion): open
     /// activation 0 (`begin_unwind_impl`, reclaiming the previous fork), add each
     /// bound side activation (`bound_sides`, `add_activation_unwind_impl`),
-    /// publish each activation's `arena_root` into
+    /// allocate the fork's KFMS arena and publish its root into
     /// its module-buffer prefix (the module-side `writeForkModuleStateRoot`), then
     /// DRIVE each activation's guest `wpk_fork_unwind_begin(root)` through the
     /// injector-wired `fm_drive_execute` shim in ascending id order.
@@ -8667,9 +8431,9 @@ mod wasm {
     /// traps inside the shim exactly as it did under the host loop; a create /
     /// plan-build failure is a truthful errno.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_begin_capture(channel_base: usize, arena_root: usize) -> usize {
+    pub extern "C" fn fm_parent_begin_capture(channel_base: usize) -> usize {
         match require_phase(PHASE_IDLE)
-            .and_then(|()| begin_capture_impl(channel_base as u64, arena_root as u64))
+            .and_then(|()| begin_capture_impl(channel_base as u64))
         {
             Ok(root) => {
                 enter_phase(PHASE_CAPTURE);
@@ -10099,8 +9863,9 @@ mod wasm {
         first.checked_add(count).ok_or(Errno::EINVAL)?;
 
         // No archive means nowhere to publish: refuse BEFORE asking the guest
-        // to read anything. A host with no dlopen (host-native) passes no
-        // control block, and its threads need not have bound the table shims.
+        // to read anything. A host with no dlopen (host-native) publishes no
+        // archive behind its control word, and its threads need not have bound
+        // the table shims.
         let head = archive_head()?;
         if head == 0 {
             return Err(Errno::EINVAL); // nothing published to append to
@@ -11582,9 +11347,9 @@ mod wasm {
     /// It replaced the host sequence anchor write -> `fm_set_borrowed_workspace`
     /// -> `fm_child_seed[_borrowed]` -> `fm_attach_child` -> `fm_gc_plan_count`
     /// + `fm_drive_execute` -> catalog null. The Node/browser host calls only
-    /// this (lane F stage 1f), and `fm_attach_child` is deleted; host-native
-    /// still runs its own sequence over `fm_set_borrowed_workspace` and
-    /// `fm_child_seed[_borrowed]` until stage 1f-native.
+    /// this since lane F stage 1f and host-native since stage 1f-native; every
+    /// entry of that sequence but `fm_gc_plan_count` (the peer-table restore's)
+    /// is deleted.
     ///
     /// The host still owns what only it can do before this call: binding each
     /// activation's drive slots and filling the merged static-root catalog

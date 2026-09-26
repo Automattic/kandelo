@@ -4,6 +4,7 @@ import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
 import {
   CAPTURE_KIND_EXNREF,
   INTERN_KIND_I31,
+  beginParentReplay,
   captureGraph,
   driveBase,
   fixture,
@@ -36,7 +37,6 @@ import {
  * module's frame instead of being swallowed.
  */
 
-const PID = 8181;
 const OWNER = 1;
 const PAYLOAD_I31 = 44;
 
@@ -95,7 +95,7 @@ describe("the module raises an exception inside the activation that owns it", ()
     const wrongActivation = bindThrower(f, 0, true);
     const owningActivation = bindThrower(f, OWNER, true);
 
-    x.fm_begin_reference_replay(root, PID);
+    beginParentReplay(f, [0, OWNER]);
     expect(f.errno(), "the replay begins").toBe(0);
 
     // THE RAISE PROPAGATES. A module that swallowed it would let the guest
@@ -139,7 +139,7 @@ describe("the module raises an exception inside the activation that owns it", ()
     const recipe = aggregateRecipes[0]!;
     const calls = bindThrower(f, OWNER, false); // returns instead of raising
 
-    x.fm_begin_reference_replay(root, PID);
+    beginParentReplay(f, [0, OWNER]);
     expect(f.errno()).toBe(0);
 
     expect(() => x.__wpk_fork_ref_exn_broker_throw_recipe(recipe)).toThrow(

@@ -510,6 +510,23 @@ export function saveSlotThunk(body: (activation: number) => void): CallableFunct
   }
 }
 
+/**
+ * Begin a sealed parent's own replay (`fm_parent_replay(0)`), the production
+ * entry that makes the arena it just sealed the module's current replay: a
+ * parent resuming runs the same guest code a child does and asks the same
+ * reference questions, so it decodes its own graph. The guest's rewind begin
+ * is a no-op thunk here, bound for each of `activations`.
+ */
+export function beginParentReplay(f: Fixture, activations: readonly number[] = [0]): void {
+  const table = f.instance.driveTable;
+  for (const activation of activations) {
+    const slot = driveBase(activation) + DRIVE_SLOT_REWIND_BEGIN;
+    if (table.length <= slot) table.grow(slot + 1 - table.length);
+    table.set(slot, saveSlotThunk(() => {}) as never);
+  }
+  (f.x.fm_parent_replay as (abort: number) => void)(0);
+}
+
 /** A `() -> ()` wasm function, for drive slots called with no argument. */
 export function voidSlotThunk(body: () => void): CallableFunction {
   const directory = mkdtempSync(join(tmpdir(), "fork-void-slot-"));

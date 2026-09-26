@@ -2,10 +2,10 @@
 //
 // It folds the host sequence a child worker used to run -- publish the launch
 // root in a COW child's control word, read the arena root out of that root's
-// prefix, seed the borrowed workspace, `fm_child_seed[_borrowed]`,
-// `fm_attach_child`, `fm_gc_plan_count` + `fm_drive_execute`, then null the
-// merged static-root catalog -- into the module. The Node/browser host calls it
-// since stage 1f (`worker-main.ts`); this file drives the whole install the way
+// prefix, seed the borrowed workspace, seed each activation, attach, drive the
+// install plan, then null the merged static-root catalog -- into the module.
+// The Node/browser host calls it since stage 1f (`worker-main.ts`) and
+// host-native since stage 1f-native; this file drives the whole install the way
 // a child worker does: a PARENT module captures and seals, and a second module
 // instance over the same memory -- the child's -- installs from the launch
 // root the kernel handed the host (`forkBufAddr`).
@@ -26,6 +26,7 @@ import {
   DRIVE_SLOT_UNWIND_END,
   EBUSY,
   INTERN_KIND_STATIC_ROOT,
+  MUNMAP_COUNTER,
   PAGE,
   PHASE_CHILD_REPLAY,
   PHASE_IDLE,
@@ -117,7 +118,7 @@ function capturedParent(fixedPrefix = 0): { f: Fixture; recipes: number[]; ancho
     }
     table.set(base + DRIVE_SLOT_UNWIND_END, voidSlotThunk(() => {}) as never);
     x.fm_capture_begin();
-    x.fm_parent_begin_capture(CHANNEL_BASE, 0);
+    x.fm_parent_begin_capture(CHANNEL_BASE);
     expect(f.errno(), "the capture opens").toBe(0);
     // The production intern entry the injected static-root scan calls; with
     // one activation the merged slot is the ordinal.
@@ -351,6 +352,33 @@ describe("fm_child_install", () => {
     const size = childOf(f, { controlWord: anchor, roots: roots(), fixedPrefix: BORROWED_PREFIX });
     expect(size.install(anchor, 0, PAGE), "a size with no base").toBe(EINVAL);
     expect(size.driven).toEqual([]);
+  });
+
+  it("returns a borrowed child's bump heap on abort, which a COW child keeps", () => {
+    // Moved here from `fork-bump-heap.test.ts` when the module stopped
+    // exporting a way to seed a borrowed workspace outside an install. A
+    // BORROWED instance's module region goes back to the kernel with its
+    // parked owner's memory, so its mapped heap chunks must be returned at
+    // `fm_abort` -- its last releasing call. A COW child is durable and keeps
+    // them. The two installs do the same work apart from the workspace, so
+    // the borrowed abort returning MORE than the COW abort is the heap.
+    const unmapsOnAbort = (fixedPrefix: number, borrowed: boolean): number => {
+      const { f, anchor } = capturedParent(fixedPrefix);
+      const child = childOf(f, { controlWord: anchor, roots: roots(), fixedPrefix });
+      expect(
+        borrowed ? child.install(anchor, WORKSPACE, PAGE) : child.install(anchor),
+        "the install",
+      ).toBe(0);
+      const unmaps = (): number => new DataView(f.memory.buffer).getUint32(MUNMAP_COUNTER, true);
+      const before = unmaps();
+      child.x.fm_abort();
+      expect(child.x.fm_last_errno(), "abort is legal from child replay").toBe(0);
+      expect(child.x.fm_phase(), "and returns to idle").toBe(PHASE_IDLE);
+      return unmaps() - before;
+    };
+    const cow = unmapsOnAbort(BORROWED_PREFIX, false);
+    const borrowed = unmapsOnAbort(BORROWED_PREFIX, true);
+    expect(borrowed, "the borrowed child also returns its heap").toBeGreaterThan(cow);
   });
 
   /**

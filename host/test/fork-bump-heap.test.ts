@@ -36,19 +36,14 @@ import {
  * kernel (`worker-main.ts`, "borrowed fork-module region"). The static floor
  * used to go with that region; a mapped chunk does not, so the module returns
  * it there -- and ONLY there. A durable worker keeps its chunks across an
- * abort, because retaining them is what makes growth a one-time cost.
+ * abort, because retaining them is what makes growth a one-time cost. The
+ * borrowed half is proven through a real borrowed install, in
+ * `fork-module-child-install.test.ts` ("returns a borrowed child's bump heap
+ * on abort"): the module no longer exports a way to make an instance
+ * borrowed outside one.
  */
 
 const ACTIVATION = 3;
-
-/**
- * A borrowed workspace for the release test: page 7, free in the fixture's
- * layout (counters on page 5, catalog staging on page 6, `MODULE_BASE` at
- * 8 MiB) and below the responder's range. `set_borrowed_workspace_impl`
- * checks only that the region is non-empty and inside memory; what matters
- * here is that seeding it marks this instance as a BORROWED one.
- */
-const BORROWED_WORKSPACE = 7 * PAGE;
 
 function arenaChunks(x: ArenaFixture): number {
   return (
@@ -103,37 +98,5 @@ describe("bump heap floor", () => {
     expect(x.errno(), "abort is legal from idle").toBe(0);
 
     expect(x.munmaps() - before, "a durable worker returns nothing").toBe(0);
-  });
-
-  it("returns a borrowed instance's chunks on abort", () => {
-    const x = arenaFixture("bump heap abort, borrowed");
-    (x.x.fm_set_borrowed_workspace as (base: number, bytes: number) => void)(
-      BORROWED_WORKSPACE,
-      PAGE,
-    );
-    expect(x.errno(), "seeding the borrowed workspace").toBe(0);
-    x.admit(ACTIVATION, { ordinals: [1, 2, 3] });
-    expect(x.errno()).toBe(0);
-    const heapChunks = x.mmaps() - arenaChunks(x);
-    expect(heapChunks, "the seed grew the heap").toBeGreaterThan(0);
-    const unmapsBefore = x.munmaps();
-    const mapsBefore = x.mmaps();
-
-    (x.x.fm_abort as () => void)();
-    expect(x.errno()).toBe(0);
-
-    // Exactly the heap's chunks, and only those: the arena's records belong
-    // to `fm_resume_slots` op 1 and the COW scrub, not to abort.
-    expect(x.munmaps() - unmapsBefore, "one unmap per heap chunk").toBe(
-      heapChunks,
-    );
-    expect(arenaChunks(x), "the arena is untouched").toBeGreaterThan(0);
-    // The list was FORGOTTEN, not merely unmapped: the next allocation maps
-    // afresh rather than reusing an address the kernel took back.
-    x.admit(ACTIVATION + 1, { ordinals: [4, 5, 6] });
-    expect(x.errno()).toBe(0);
-    expect(x.mmaps() - mapsBefore, "a fresh chunk after the release").toBe(
-      heapChunks,
-    );
   });
 });
