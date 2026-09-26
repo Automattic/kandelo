@@ -1138,12 +1138,19 @@ if (typeof window !== "undefined") {
         );
       }
     }
+    // The proxy URL differs from the page's, so this has to be a new Request.
+    // Carry the page's abort signal across so a cancelled page fetch cancels
+    // the proxied one before response headers, in browsers that signal it.
+    // (Chromium and WebKit did not when measured 2026-09-26; after headers,
+    // cancelling the response stream reaches the proxy regardless.)
+    // Range/If-Range survive through the allow-list above like any other field.
     var init = {
       method: request.method,
       headers: headers,
       credentials: "omit",
       mode: "cors",
       redirect: request.redirect,
+      signal: request.signal,
     };
     if (request.method === "GET" || request.method === "HEAD") {
       return Promise.resolve(new Request(outgoingUrl, init));

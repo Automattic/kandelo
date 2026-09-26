@@ -1,13 +1,9 @@
+import { fetchByteRange } from "../../../../host/src/networking/byte-range-fetch";
+
 function parsePositiveInteger(value: string | null): number {
   if (!value) return 0;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
-function parseContentRangeTotal(value: string | null): number {
-  if (!value) return 0;
-  const match = value.match(/\/(\d+)$/);
-  return match ? parsePositiveInteger(match[1]) : 0;
 }
 
 async function cancelBody(response: Response): Promise<void> {
@@ -30,11 +26,14 @@ export async function fetchSize(url: string): Promise<number> {
   }
 
   try {
-    const ranged = await fetch(url, { headers: { Range: "bytes=0-0" } });
-    const size = parseContentRangeTotal(ranged.headers.get("content-range"))
-      || parsePositiveInteger(ranged.headers.get("content-length"));
-    await cancelBody(ranged);
-    return ranged.ok ? size : 0;
+    const probe = await fetchByteRange(url, { start: 0, end: 0 });
+    if (probe.kind === "failed") return 0;
+    await cancelBody(probe.response);
+    // A 200 means the range was not applied, so Content-Length is the whole
+    // entity's; a 206's Content-Length is only the one-byte slice.
+    return probe.kind === "partial"
+      ? probe.completeLength ?? 0
+      : parsePositiveInteger(probe.response.headers.get("content-length"));
   } catch {
     return 0;
   }

@@ -54,7 +54,9 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 ```
 
 That proxy must preflight the application's current request-header profile:
-`Accept`, `Content-Type`, `git-protocol`, `wp_blog`, and `wp_install`. Kandelo
+`Accept`, `Content-Type`, `git-protocol`, `If-Range`, `Range`, `wp_blog`, and
+`wp_install`. A proxy that ignores `Range` answers ranged reads with the whole
+entity; Kandelo reports that as unsupported rather than as the slice. Kandelo
 may omit another field only from an anonymous bodyless GET and reports the
 omission. Credentialed, body-bearing, and non-GET requests fail before proxy
 dispatch when they contain unsupported fields. These failures describe a
