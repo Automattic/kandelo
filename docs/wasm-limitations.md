@@ -16,7 +16,7 @@ Repository programs call `pthread_create` directly (`programs/fork-from-thread.c
 
 **What the limitation costs in practice:** thread creation is a host round trip that must start a worker and reserve a per-thread control slot, so it is far more expensive than a native `clone`, and the number of live threads per process is bounded by the slot budget the executable declares through `__wasm_posix_thread_slots` (see [sdk-guide.md](sdk-guide.md)) rather than by memory alone.
 
-**Affected libc-tests:** none fail for lack of guest thread creation. `pthread_create-oom` is still XFAIL, but for an unrelated reason — the test's `t_memfill` preamble never terminates in a 1 GiB wasm arena, and `pthread_create` itself correctly returns `EAGAIN` (see [compromising-xfails.md](compromising-xfails.md) "Not compromising").
+**Affected libc-tests:** none. `pthread_create-oom`, which checks that `pthread_create` fails with `EAGAIN` once memory is exhausted, passes.
 
 ## 2. No Preemption — Asynchronous Thread Cancellation
 
@@ -43,9 +43,9 @@ Wasm floating-point is non-trapping IEEE 754 with a fixed round-to-nearest mode.
 
 ## 4. OOM / Resource Exhaustion
 
-Tests that deliberately exhaust resources behave differently in Wasm's linear memory model. Memory limits are enforced (RLIMIT_AS), and most OOM tests pass.
+Memory limits are enforced (`RLIMIT_AS`), and the libc-test out-of-memory checks for `malloc`, `setenv`, and `pthread_create` (`malloc-oom`, `setenv-oom`, `pthread_create-oom`) pass. Until 2026-09-25 all three were listed here as Wasm limits; they had been XFAIL because the libc-test harness compiled `t_memfill()` to return -1 unconditionally, so they failed in setup with "memfill failed" before testing anything (fixed 2026-09-25 with `-fno-builtin-malloc`).
 
-**Affected libc-tests:** `malloc-brk-fail`, `malloc-oom`, `setenv-oom`
+**Affected libc-tests:** `malloc-brk-fail`. After filling memory and unmapping a hole, `malloc(10000)` returns `ENOMEM`, while a direct `mmap` of the same size succeeds and reuses that hole — so the kernel's address-space bookkeeping is not the cause. Why the allocator cannot use the hole has not been established, and this is not yet shown to be a Wasm limitation rather than a fixable gap.
 
 ## 5. No dlopen for TLS
 
@@ -130,11 +130,10 @@ changes made by an external host writer do not invalidate Kandelo's page cache.
 | Deferred `pthread_cancel` | Cancellation at cancellation points, cleanup handlers, `pthread_setcancelstate`, and the `pthread_cond_wait` handoff — see §2 |
 | OPFS filesystem | Browser persistence includes exact `u64` stat identity, session-scoped inode tokens, simultaneous-open unification, and live-handle identity across supported rename/unlink operations; browsers missing the required identity or move primitives fail at that explicit boundary |
 
-## Current libc-test Results (2026-04-05)
+## Current libc-test Results (2026-09-25, Node)
 
-0 unexpected failures, 20 expected failures (XFAIL):
+306 pass, 0 unexpected failures, 17 expected failures (XFAIL), out of 324:
 - 14 math precision (musl ULP issues)
-- 3 OOM behavior (malloc-brk-fail, malloc-oom, setenv-oom)
-- 1 threading (pthread_create-oom)
+- 1 allocator after memory exhaustion (malloc-brk-fail — reason not established; see §4)
 - 1 asynchronous cancellation (pthread_cancel — deferred cancellation passes; see §2)
 - 1 dynamic TLS (tls_get_new-dtv)

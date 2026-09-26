@@ -32,10 +32,7 @@ FUNCTIONAL_EXPECTED_FAIL=(
 )
 REGRESSION_EXPECTED_FAIL=(
     malloc-brk-fail
-    malloc-oom
-    pthread_create-oom
     raise-race
-    setenv-oom
     tls_get_new-dtv
     fflush-exit
     daemon-failure
@@ -94,6 +91,9 @@ CFLAGS_BASE=(
     --target=wasm32-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib -O2
+    # Same reason as scripts/run-libc-tests.sh: without it clang compiles
+    # libc-test's t_memfill() to return -1 unconditionally.
+    -fno-builtin-malloc
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj

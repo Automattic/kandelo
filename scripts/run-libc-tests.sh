@@ -46,10 +46,13 @@ FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
 )
 REGRESSION_EXPECTED_FAIL=(
-    malloc-brk-fail             # OOM behavior differs in Wasm linear memory
-    malloc-oom                  # OOM behavior differs in Wasm linear memory
-    pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
-    setenv-oom                  # OOM behavior differs in Wasm linear memory
+    # malloc(10000) returns ENOMEM after the test fills memory and unmaps a
+    # hole, although mmap itself reuses that hole (checked 2026-09-25 with a
+    # direct mmap after the same fill). The allocator-side reason is not
+    # established. malloc-oom, setenv-oom, and pthread_create-oom are not
+    # listed: they pass once t_memfill() is compiled correctly (see
+    # -fno-builtin-malloc below).
+    malloc-brk-fail
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
 )
 REGRESSION_FLAKY=(
@@ -94,6 +97,14 @@ CFLAGS_BASE=(
     --sysroot="$SYSROOT"
     -nostdlib
     -O2
+    # WHY: libc-test's common t_memfill() drains "libc reserves" with
+    # `while (malloc(1));`. With malloc treated as a builtin, clang elides the
+    # unused allocation, sees a side-effect-free infinite loop (undefined
+    # behavior), and compiles t_memfill() to return -1 unconditionally. Every
+    # test that calls it (malloc-oom, setenv-oom, pthread_create-oom) then
+    # failed in setup with "memfill failed" before testing anything. Keep
+    # malloc a real call so those tests exercise the allocator they target.
+    -fno-builtin-malloc
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
