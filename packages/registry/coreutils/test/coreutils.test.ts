@@ -189,6 +189,21 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
     expect(result.stdout.trim()).toBe("7");
   });
 
+  // `expr STRING : REGEX` uses GNU's regex API (re_compile_pattern,
+  // re_search), which musl lacks; gnulib must build its own. Before honest
+  // links a false configure seed skipped it and this trapped on
+  // "Unimplemented import: env.re_compile_pattern".
+  it("expr matches a regular expression", async () => {
+    const result = await runCentralizedProgram({
+      programPath: coreutilsBinary!,
+      argv: ["expr", "abcdef", ":", "a.*d"],
+      timeout: 10_000,
+    });
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("4");
+  });
+
   it("cut extracts fields", async () => {
     const result = await runCentralizedProgram({
       programPath: coreutilsBinary!,
