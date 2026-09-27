@@ -9637,9 +9637,19 @@ export class CentralizedKernelWorker {
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
     this.cleanupPendingPollRetries(pid);
     this.cleanupPendingSelectRetries(pid);
-    // No kernel entry here: exec preparation is called from the worker entry
-    // point, outside one, so the unbound export path is the correct one.
-    this.cleanupPendingSignalWaits(pid);
+    // Exec preparation runs from the worker entry point, outside any kernel
+    // entry, so the kernel half of the signal-wait cleanup needs one of its
+    // own. It used to call the exports unbound, which the entry gate refuses
+    // whenever other ingress is queued -- routinely, when several processes of
+    // a pipeline exec at once -- and the refusal failed the exec with SIGSEGV
+    // ("[exec] post-commit transition failed: kernel export
+    // kernel_wait_retire_process cannot run while queued kernel ingress is
+    // active"). Queued ingress drains in order, so the retirement still runs
+    // before anything the new image does.
+    this.#runOrDeferKernelEntry("exec signal-wait retirement", (entry) => {
+      this.cleanupPendingSignalWaits(pid, entry);
+      return undefined;
+    });
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
     for (const [channel, entry] of this.pendingAdvisoryLockRetries ?? []) {
