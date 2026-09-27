@@ -333,6 +333,10 @@ export const WPK_FORK_REQUIRED_TABLE_IMPORTS = [
   { module: "env", name: "__wpk_fork_ref_gc_transit", table64: false, element: "anyref", minimum: 1, maximum: null },
   { module: "env", name: "__wpk_fork_resume_table", table64: false, element: "funcref", minimum: 1, maximum: null },
 ] as const;
+export const WPK_FORK_GLOBAL_IMPORTS = [
+  { module: "env", name: "__wpk_fork_module_activation", value: "i32" },
+  { module: "env", name: "__wpk_fork_module_state_table_generation_addr", value: "i64" },
+] as const;
 export const WPK_FORK_REQUIRED_EXPORTS = [
   { name: "__wpk_fork_exception_materialize", params: ["i32"], results: [] },
   { name: "__wpk_fork_ref_decode_exnref", params: ["i32"], results: ["exnref"] },
