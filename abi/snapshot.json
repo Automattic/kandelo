@@ -1095,6 +1095,25 @@
       "__abi_"
     ]
   },
+  "fork_diagnostic_wire": {
+    "fields": {
+      "kind": 4,
+      "pid": 0,
+      "text": 32,
+      "textLen": 28,
+      "values": 8
+    },
+    "kinds": {
+      "aborted": 1,
+      "childFrames": 4,
+      "childReferences": 3,
+      "parentFrames": 2,
+      "runFailed": 5
+    },
+    "record_size": 256,
+    "text_capacity": 224,
+    "value_count": 5
+  },
   "fork_lifecycle_event_wire": {
     "fields": [
       {
@@ -2098,6 +2117,11 @@
       "kind": "func",
       "name": "kernel_drain_audio",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_drain_fork_diagnostics",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -9981,6 +10005,10 @@
     {
       "name": "ForkReplayReady",
       "number": 416
+    },
+    {
+      "name": "ForkDiagnostic",
+      "number": 417
     }
   ],
   "vfs_metadata": {

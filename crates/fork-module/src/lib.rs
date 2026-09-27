@@ -8396,11 +8396,81 @@ mod wasm {
     /// so the record lives where they happen.
     static ABORT_REPORT: AtomicU32 = AtomicU32::new(0);
     /// A frame reserve failed mid-unwind (`frame_reserved`).
-    const ABORT_CAUSE_FRAME_RESERVE: u32 = 1;
+    const ABORT_CAUSE_FRAME_RESERVE: u32 = diagnostic_wire::ABORT_CAUSE_FRAME_RESERVE;
     /// The capture could not seal after its journal sealed.
-    const ABORT_CAUSE_SEAL: u32 = 2;
+    const ABORT_CAUSE_SEAL: u32 = diagnostic_wire::ABORT_CAUSE_SEAL;
     /// The kernel refused to create the child (`fm_parent_replay(errno)`).
-    const ABORT_CAUSE_LAUNCH: u32 = 3;
+    const ABORT_CAUSE_LAUNCH: u32 = diagnostic_wire::ABORT_CAUSE_LAUNCH;
+
+    use wasm_posix_shared::fork_diagnostic_wire as diagnostic_wire;
+
+    /// Report what happened to a fork through the kernel
+    /// (`SYS_FORK_DIAGNOSTIC`), which formats the line every host logs.
+    ///
+    /// WHY THE MODULE AND WHY THE KERNEL (lane F step 3c, ruling 5). The
+    /// module is where every abort is begun or recorded and where every
+    /// fork's work is counted, so it is the one place that can say what
+    /// happened without a host keeping a second record; and the kernel turns
+    /// the numbers into words once, so Node, the browser and host-native no
+    /// longer each format (and drift on) their own sentence. Best effort: a
+    /// report that cannot be made changes nothing about the fork, which has
+    /// already decided its outcome.
+    fn report_fork_diagnostic(kind: u32, values: [u32; diagnostic_wire::VALUE_COUNT]) {
+        let Ok(base) = channel_base() else {
+            return;
+        };
+        let mut args = [0i64; 6];
+        args[0] = i64::from(kind);
+        for (slot, value) in values.iter().enumerate() {
+            args[slot + 1] = i64::from(*value);
+        }
+        let _ = channel_syscall(
+            base,
+            wasm_posix_shared::abi::extended_syscalls::SYS_FORK_DIAGNOSTIC,
+            args,
+        );
+    }
+
+    /// Clamp a proof-of-use counter into the diagnostic's `u32` value.
+    fn stat_value(counter: &AtomicU64) -> u32 {
+        u32::try_from(counter.load(Ordering::Relaxed)).unwrap_or(u32::MAX)
+    }
+
+    /// The finished fork's report: an abort and why, or the proof that the
+    /// module did the fork's work -- the committed frames for a parent, the
+    /// references and replayed frames for a child. Proof is silent when its
+    /// counters are zero, so a reference-free child adds nothing a consumer
+    /// waiting for the parent's frame count could mistake.
+    fn report_finish(abort_report: Option<u32>, child_replay: bool) {
+        if let Some(report) = abort_report {
+            report_fork_diagnostic(
+                diagnostic_wire::KIND_ABORTED,
+                [report & 0xffff, report >> 16, 0, 0, 0],
+            );
+            return;
+        }
+        if !child_replay {
+            let frames = stat_value(&FRAMES_COMMITTED);
+            if frames > 0 {
+                report_fork_diagnostic(diagnostic_wire::KIND_PARENT_FRAMES, [frames, 0, 0, 0, 0]);
+            }
+            return;
+        }
+        let references = [
+            stat_value(&REFERENCES_RECONSTRUCTED),
+            stat_value(&EXNREFS_RECONSTRUCTED),
+            stat_value(&GC_NODES_RECONSTRUCTED),
+            stat_value(&DRIVE_STEPS_EXECUTED),
+            stat_value(&STATIC_ROOTS_PUBLISHED),
+        ];
+        if references.iter().any(|count| *count > 0) {
+            report_fork_diagnostic(diagnostic_wire::KIND_CHILD_REFERENCES, references);
+        }
+        let frames = stat_value(&FRAMES_REPLAYED);
+        if frames > 0 {
+            report_fork_diagnostic(diagnostic_wire::KIND_CHILD_FRAMES, [frames, 0, 0, 0, 0]);
+        }
+    }
 
     /// Begin the parent's ABORT replay from a sealed parent and record why.
     ///
@@ -8663,9 +8733,14 @@ mod wasm {
             Ok(()) => {
                 enter_phase(PHASE_IDLE);
                 set_ok();
+                // Every finish reports, from here, so no abort path can forget
+                // to say why (the host-diagnostic-routing test pins this).
                 if abort != 0 {
-                    ABORT_REPORT.swap(0, Ordering::Relaxed) as i32
+                    let report = ABORT_REPORT.swap(0, Ordering::Relaxed);
+                    report_finish(Some(report), false);
+                    report as i32
                 } else {
+                    report_finish(None, child_replay);
                     0
                 }
             }

@@ -238,5 +238,6 @@ export const SESSION_SYSCALL_NAMES: Readonly<Record<number, string>> = {
   387: "exit_group",
   415: "thread_cancel",
   416: "fork_replay_ready",
+  417: "fork_diagnostic",
   500: "spawn",
 };

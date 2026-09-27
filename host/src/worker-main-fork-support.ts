@@ -34,7 +34,6 @@
  * pthread Worker is never a fork child), which guest entry pair to run, and
  * how the Worker reports its exit.
  */
-import type { WorkerToHostMessage } from "./worker-protocol";
 import {
   CHANNEL_STATUS_IDLE,
   CHANNEL_STATUS_PENDING,
@@ -66,7 +65,6 @@ import {
 } from "./fork-module-instance";
 import {
   type ForkBorrowedReplayWorkspace,
-  type ForkModuleStat,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
 import { computeForkModuleTemplateId } from "./fork-guest-sections";
@@ -78,7 +76,6 @@ import { ForkTables } from "./fork-tables";
 import type {
   DlopenSupport,
   ForkActivationTableReplication,
-  MessagePort,
   ProcessTableReplicationOwner,
 } from "./worker-main";
 
@@ -164,7 +161,6 @@ export function sendForkSyscall(
 
 /** Everything that differs between a process Worker and a pthread Worker. */
 export interface ForkWorkerOptions {
-  readonly port: MessagePort;
   readonly memory: WebAssembly.Memory;
   readonly ptrWidth: 4 | 8;
   /** This Worker's own syscall channel. */
@@ -194,18 +190,6 @@ export interface ForkWorkerOptions {
 export type ForkWorkerOutcome =
   | { readonly returned: unknown }
   | { readonly exited: number };
-
-/**
- * The fork module's reasons for an abort, keyed by its `ABORT_CAUSE_*`
- * numbers (`crates/fork-module/src/lib.rs`).
- */
-const FORK_ABORT_REASONS: Readonly<Record<number, string>> = {
-  1: "a continuation frame could not be reserved mid-unwind (the parent's "
-    + "committed frames were replayed; no child was created)",
-  2: "the capture could not seal (the parent's frames are intact "
-    + "and were replayed; no child was created)",
-  3: "the kernel refused to create the child process",
-};
 
 /**
  * One Worker's fork machinery: its co-resident fork module and everything
@@ -427,24 +411,17 @@ export class ForkWorker {
           `${label}: fork ${phase} mode ${mode} does not match captured mode ${this.forkMode}`,
         );
       }
-      // ONE finish for every replay, and for an abort the errno and cause are
-      // the ones the MODULE recorded when it began the abort, whoever began
-      // it -- so no abort path can forget to say why. The parent survives and
-      // `fork()` returns `-errno`, but a guest that does not check the return
-      // fails somewhere else entirely, and the reason would be gone.
+      // ONE finish for every replay. The MODULE reports what happened
+      // through the kernel (`SYS_FORK_DIAGNOSTIC`): an abort and why, or the
+      // frames and references it drove. So no abort path can forget to say
+      // why, and every host says it in the kernel's words.
       let finished: { readonly errno: number; readonly cause: number };
       try {
         finished = this.module().parentFinish(phase === "abort-replay");
       } finally {
         this.releaseArchiveReader();
       }
-      if (phase === "abort-replay") {
-        const { errno, cause } = finished;
-        const { pid } = this.options;
-        const reason = FORK_ABORT_REASONS[cause] ?? `unknown abort cause ${cause}`;
-        this.post({ type: "fork_aborted", pid, errno, reason });
-        return -errno;
-      }
+      if (phase === "abort-replay") return -finished.errno;
       // A child's finish has already reported SYS_FORK_REPLAY_READY from
       // inside the module. A borrowed (vfork) child keeps its fork-module
       // region until its image ends: the KERNEL reclaims it then, before the
@@ -477,29 +454,6 @@ export class ForkWorker {
     return 0; // ignored: the guest is unwinding
   }
 
-  /** A live counter from the module. */
-  private stat(name: ForkModuleStat): number {
-    return Number(this.module().stat(name));
-  }
-
-  private post(message: WorkerToHostMessage): void {
-    this.options.port.postMessage(message);
-  }
-
-  /**
-   * Proof that the MODULE drove this parent's unwind: its committed-frame
-   * count. Posted from the run loop as well as the tail, because on a
-   * main-thread host a fork parent's tail can be torn down before it runs.
-   */
-  private postParentFrames(): void {
-    if (this.options.forkChild) return;
-    this.post({
-      type: "fork_module_frames",
-      pid: this.options.pid,
-      frames: Number(this.backend.stat("framesCommitted")),
-    });
-  }
-
   /**
    * Seal the capture the guest just unwound into, create the child, and
    * start the parent's replay.
@@ -515,9 +469,7 @@ export class ForkWorker {
       const childPid = sendForkSyscall(memory, channelOffset, this.forkMode, sealed);
       this.forkResult = childPid;
       this.module().parentReplay(childPid < 0 ? -childPid : 0);
-      if (childPid < 0) return;
     }
-    this.postParentFrames();
   }
 
 
@@ -576,7 +528,7 @@ export class ForkWorker {
   }
 
   /**
-   * Report proof of use and release what the Worker still holds.
+   * Release what the Worker still holds.
    *
    * `teardown` also aborts the module's transaction and releases every
    * activation. A pthread Worker must NOT: after its `kernel_exit` its channel
@@ -586,43 +538,10 @@ export class ForkWorker {
    * every mapping it made on its parent's image when that image ends.
    */
   finish(teardown: boolean): void {
-    this.postParentFrames();
-    if (this.options.forkChild) this.postChildProof();
     if (teardown && !this.options.borrowedChild) {
       this.module().abort();
       this.activations.clear();
     }
     this.releaseArchiveReader();
-  }
-
-  /**
-   * A fork child's proof that the module rebuilt its references and rewound
-   * its frames. Silent when every counter is zero, so a reference-free child
-   * does not add a diagnostic that could race a consumer waiting for the
-   * parent's frame count.
-   */
-  private postChildProof(): void {
-    const pid = this.options.pid;
-    const references = this.stat("referencesReconstructed");
-    const exnrefs = this.stat("exnrefsReconstructed");
-    const gcNodes = this.stat("gcNodesReconstructed");
-    const driveSteps = this.stat("driveStepsExecuted");
-    const staticRoots = this.stat("staticRootsPublished");
-    if (references + exnrefs + gcNodes + driveSteps + staticRoots > 0) {
-      this.post({
-        type: "fork_module_references",
-        pid,
-        references,
-        exnrefs,
-        gcNodes,
-        driveSteps,
-        staticRoots,
-      });
-    }
-    // A child never commits a frame, so its replayed count is the proof it
-    // rewound through the module (a fork-from-thread child carries no
-    // references and says nothing above).
-    const frames = this.stat("framesReplayed");
-    if (frames > 0) this.post({ type: "fork_module_child_frames", pid, frames });
   }
 }

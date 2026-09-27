@@ -1112,11 +1112,6 @@ fn fold_fork_proof_of_use(fm: &ForkModule, store: &mut Store<()>, acc: &mut Fork
     if let Ok(v) = fm.fm_stats.call(&mut *store, FM_STAT_DRIVE_STEPS_EXECUTED) {
         acc.drive_steps_executed += v;
     }
-    let aborts = *fm.aborts_by_cause.lock().unwrap();
-    acc.aborts_unknown_cause += aborts[0];
-    acc.aborts_frame_reserve += aborts[1];
-    acc.aborts_seal += aborts[2];
-    acc.aborts_launch += aborts[3];
 }
 
 // --- Raw shared-memory access helpers ---------------------------------------
@@ -1950,6 +1945,8 @@ fn run_guest_inner(
         .get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_vfork_address_space_released")?;
     let drain_fork_lifecycle_events = kernel
         .get_typed_func::<(i32, u32, u32), u32>(&mut kernel_store, "kernel_drain_fork_lifecycle_events")?;
+    let drain_fork_diagnostics = kernel
+        .get_typed_func::<(i32, u32, u32), u32>(&mut kernel_store, "kernel_drain_fork_diagnostics")?;
     let generate_host_signal =
         kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_generate_host_signal")?;
     // N1-I3b Task 1: the exec-target authority `handle_spawn` uses to source
@@ -2236,6 +2233,14 @@ fn run_guest_inner(
             (64 * wasm_posix_shared::fork_lifecycle_event_wire::RECORD_BYTES) as u32,
             "the fork-lifecycle event drain",
         )?,
+        drain_diagnostics: drain_fork_diagnostics,
+        diagnostics_scratch: KernelScratch::allocate(
+            &alloc_scratch,
+            &mut kernel_store,
+            (16 * wasm_posix_shared::fork_diagnostic_wire::RECORD_BYTES) as u32,
+            "the fork diagnostic drain",
+        )?,
+        proof: Arc::clone(&fork_proof_of_use),
         generate_host_signal,
     };
 
@@ -5045,13 +5050,6 @@ pub struct ForkModule {
     /// The objects `__wpk_fork_host_ref_identity` has numbered, by identity
     /// (index + 1). See [`instantiate_fork_module`].
     ref_identities: Arc<Mutex<Vec<wasmtime::OwnedRooted<AnyRef>>>>,
-    /// Aborted forks this instance finished, counted by the cause the MODULE
-    /// recorded in its abort report (`ABORT_CAUSE_*` in
-    /// `crates/fork-module/src/lib.rs`; index 0 counts a cause this host does
-    /// not recognise). Filled by [`fork_module_kernel_fork`] and folded into
-    /// [`ForkProofOfUse`], so a test can assert WHICH abort a fork took
-    /// rather than only that `fork()` failed.
-    aborts_by_cause: Arc<Mutex<[i64; 4]>>,
 
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
@@ -5436,7 +5434,6 @@ pub(crate) fn instantiate_fork_module(
         region_bytes,
         staging_base,
         ref_identities,
-        aborts_by_cause: Arc::default(),
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
         fm_admit_activation: fm_func!("fm_admit_activation": (u32, u32) => i32),
         fm_admission_buffer: fm_func!("fm_admission_buffer": u32 => u32),
@@ -5819,25 +5816,10 @@ fn fork_module_kernel_fork(
     if !abort {
         return Ok(coord.fork_result());
     }
-    let errno = report & 0xffff;
-    let cause = report >> 16;
-    {
-        let mut aborts = fm.aborts_by_cause.lock().unwrap();
-        aborts[if (1..=3).contains(&cause) { cause as usize } else { 0 }] += 1;
-    }
-    // Visible, as the JavaScript hosts' `fork_aborted` report is. The cause
-    // numbers are the module's `ABORT_CAUSE_*`.
-    let reason = match cause {
-        1 => "a continuation frame could not be reserved mid-unwind",
-        2 => "the capture could not seal (see docs/fork-reference-support.md)",
-        3 => "the kernel refused to create the child process",
-        _ => "an unknown cause",
-    };
-    eprintln!(
-        "[host-native] fork aborted with errno {errno}: {reason}; no child was created and \
-         the parent's frames were replayed."
-    );
-    Ok(-errno)
+    // The MODULE reported the abort and why through the kernel
+    // (`SYS_FORK_DIAGNOSTIC`); the pump prints and counts it
+    // (`report_fork_diagnostics`).
+    Ok(-(report & 0xffff))
 }
 
 /// `kernel_fork`'s capture begin, in `worker-main.ts`'s order: refill the
@@ -8117,6 +8099,12 @@ struct ForkLaunchKernel {
     drain: wasmtime::TypedFunc<(i32, u32, u32), u32>,
     /// Kernel scratch the fork-lifecycle records are drained into.
     drain_scratch: KernelScratch,
+    /// `kernel_drain_fork_diagnostics` and its scratch: what the fork module
+    /// reported through `SYS_FORK_DIAGNOSTIC`, formatted by the kernel.
+    drain_diagnostics: wasmtime::TypedFunc<(i32, u32, u32), u32>,
+    diagnostics_scratch: KernelScratch,
+    /// Where an aborted fork is counted by its cause, for `RunOutcome`.
+    proof: Arc<Mutex<ForkProofOfUse>>,
     /// `kernel_generate_host_signal`, used only by the test hook that kills
     /// a fork child inside its launch window
     /// (`GuestOptions::fork_child_launch_signal`).
@@ -8187,6 +8175,49 @@ fn release_vfork_address_space(
         "kernel_vfork_address_space_released({pid}, {disposition}) refused: {rc}"
     );
     Ok(())
+}
+
+/// Print what the fork modules reported through `SYS_FORK_DIAGNOSTIC`, in the
+/// kernel's words, and count every abort by its cause.
+///
+/// The kernel formats the line (`runtime_core::fork_diagnostic`), so this host
+/// says exactly what Node and the browser say; it used to print its own
+/// sentence from its own table of causes (lane F step 3c, ruling 5). The
+/// counts feed [`ForkProofOfUse`], so a test can assert WHICH abort a fork
+/// took rather than only that `fork()` failed.
+fn report_fork_diagnostics(
+    kernel_store: &mut Store<()>,
+    kernel_mem: &SharedMemory,
+    launch: &ForkLaunchKernel,
+) -> anyhow::Result<()> {
+    use wasm_posix_shared::fork_diagnostic_wire as wire;
+    let (ptr, capacity) = (launch.diagnostics_scratch.ptr(), launch.diagnostics_scratch.capacity());
+    let max = capacity / wire::RECORD_BYTES as u32;
+    loop {
+        let count = launch.drain_diagnostics.call(&mut *kernel_store, (ptr, capacity, max))?;
+        anyhow::ensure!(count <= max, "fork diagnostic drain returned {count} of at most {max}");
+        let bytes = unsafe { read_bytes(kernel_mem, ptr as u32 as usize, count as usize * wire::RECORD_BYTES) };
+        for record in bytes.chunks_exact(wire::RECORD_BYTES) {
+            let word = |offset: usize| {
+                u32::from_le_bytes(record[offset..offset + 4].try_into().expect("4-byte field"))
+            };
+            let len = (word(wire::TEXT_LEN_OFFSET) as usize).min(wire::TEXT_CAPACITY);
+            let text = String::from_utf8_lossy(&record[wire::TEXT_OFFSET..wire::TEXT_OFFSET + len]);
+            eprintln!("[host-native] pid {}: {text}", word(wire::PID_OFFSET));
+            if word(wire::KIND_OFFSET) == wire::KIND_ABORTED {
+                let mut proof = launch.proof.lock().unwrap();
+                match word(wire::VALUES_OFFSET + 4) {
+                    wire::ABORT_CAUSE_FRAME_RESERVE => proof.aborts_frame_reserve += 1,
+                    wire::ABORT_CAUSE_SEAL => proof.aborts_seal += 1,
+                    wire::ABORT_CAUSE_LAUNCH => proof.aborts_launch += 1,
+                    _ => proof.aborts_unknown_cause += 1,
+                }
+            }
+        }
+        if count < max {
+            return Ok(());
+        }
+    }
 }
 
 /// Complete parked fork parents from the kernel's fork-lifecycle records:
@@ -9191,6 +9222,7 @@ fn run_pump(
         // decided during this pass (a child's replay-ready report, its death,
         // a launch failure, or a vfork release).
         let parked_before = parked_forks.len();
+        report_fork_diagnostics(kernel_store, kernel_mem, launch)?;
         complete_parked_fork_parents(kernel_store, kernel_mem, launch, processes, &mut parked_forks)?;
         progressed |= parked_forks.len() != parked_before;
 

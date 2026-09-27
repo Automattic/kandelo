@@ -3004,6 +3004,7 @@ fn render_ts_module() -> String {
     }
     out.push_str("} as const;\n\n");
     out.push_str(&render_ts_fork_lifecycle_event_wire());
+    out.push_str(&render_ts_fork_diagnostic_wire());
     out.push_str("export const POLL_EVENTS = {\n");
     for (name, value) in poll_events() {
         out.push_str(&format!("  {}: {},\n", name, value));
@@ -4621,6 +4622,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "fork_lifecycle_event_wire".into(),
         fork_lifecycle_event_wire(),
     );
+    root.insert("fork_diagnostic_wire".into(), fork_diagnostic_wire());
     root.insert("io_multiplexing".into(), io_multiplexing());
     root.insert("vfs_metadata".into(), vfs_metadata());
     root.insert("spawn_contract".into(), spawn_contract());
@@ -4877,6 +4879,74 @@ fn fork_lifecycle_event_wire() -> Value {
         root.insert(group.into(), Value::Object(values.into_iter().collect()));
     }
     Value::Object(root.into_iter().collect())
+}
+
+/// `(name, offset)` of each field of one fork diagnostic record. `values` is
+/// `fork_diagnostic_wire::VALUE_COUNT` consecutive `u32`s and `text` runs to
+/// the end of the record; see `shared::fork_diagnostic_wire`.
+fn fork_diagnostic_fields() -> [(&'static str, usize); 5] {
+    use shared::fork_diagnostic_wire as wire;
+    [
+        ("pid", wire::PID_OFFSET),
+        ("kind", wire::KIND_OFFSET),
+        ("values", wire::VALUES_OFFSET),
+        ("textLen", wire::TEXT_LEN_OFFSET),
+        ("text", wire::TEXT_OFFSET),
+    ]
+}
+
+fn fork_diagnostic_kinds() -> [(&'static str, u32); 5] {
+    use shared::fork_diagnostic_wire as wire;
+    [
+        ("aborted", wire::KIND_ABORTED),
+        ("parentFrames", wire::KIND_PARENT_FRAMES),
+        ("childReferences", wire::KIND_CHILD_REFERENCES),
+        ("childFrames", wire::KIND_CHILD_FRAMES),
+        ("runFailed", wire::KIND_RUN_FAILED),
+    ]
+}
+
+fn fork_diagnostic_wire() -> Value {
+    use shared::fork_diagnostic_wire as wire;
+    let fields: JsonMap = fork_diagnostic_fields()
+        .iter()
+        .map(|(name, offset)| ((*name).to_string(), json!(offset)))
+        .collect();
+    let kinds: JsonMap = fork_diagnostic_kinds()
+        .iter()
+        .map(|(name, value)| ((*name).to_string(), json!(value)))
+        .collect();
+    json!({
+        "record_size": wire::RECORD_BYTES,
+        "value_count": wire::VALUE_COUNT,
+        "text_capacity": wire::TEXT_CAPACITY,
+        "fields": Value::Object(fields.into_iter().collect()),
+        "kinds": Value::Object(kinds.into_iter().collect()),
+    })
+}
+
+fn render_ts_fork_diagnostic_wire() -> String {
+    use shared::fork_diagnostic_wire as wire;
+    let mut out = String::new();
+    out.push_str(&format!(
+        "export const FORK_DIAGNOSTIC_RECORD_BYTES = {} as const;\n",
+        wire::RECORD_BYTES
+    ));
+    out.push_str(&format!(
+        "export const FORK_DIAGNOSTIC_VALUE_COUNT = {} as const;\n",
+        wire::VALUE_COUNT
+    ));
+    out.push_str("export const FORK_DIAGNOSTIC_FIELDS = {\n");
+    for (name, offset) in fork_diagnostic_fields() {
+        out.push_str(&format!("  {name}: {offset},\n"));
+    }
+    out.push_str("} as const;\n");
+    out.push_str("export const FORK_DIAGNOSTIC_KINDS = {\n");
+    for (name, value) in fork_diagnostic_kinds() {
+        out.push_str(&format!("  {name}: {value},\n"));
+    }
+    out.push_str("} as const;\n\n");
+    out
 }
 
 fn render_ts_fork_lifecycle_event_wire() -> String {

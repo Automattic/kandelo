@@ -217,6 +217,8 @@ import {
   FORK_LIFECYCLE_EVENT_FIELDS,
   FORK_LIFECYCLE_EVENT_KINDS,
   FORK_LIFECYCLE_EVENT_RECORD_BYTES,
+  FORK_DIAGNOSTIC_FIELDS,
+  FORK_DIAGNOSTIC_RECORD_BYTES,
   VFORK_RELEASE_DISPOSITIONS,
   type SyscallArgDesc,
 } from "./generated/abi";
@@ -2214,6 +2216,9 @@ function isSpawnResolveError(
 }
 
 /** Callbacks for fork/exec/exit handling. */
+/** One drained `SYS_FORK_DIAGNOSTIC` record; see `onForkDiagnostic`. */
+export type ForkDiagnostic = { readonly pid: number; readonly kind: number; readonly text: string };
+
 export interface CentralizedKernelCallbacks {
   /**
    * Observe an object in the persistent kernel realm that can retain one
@@ -2329,6 +2334,14 @@ export interface CentralizedKernelCallbacks {
    * Called when a process exits.
    */
   onExit?: (pid: number, exitStatus: number) => void;
+
+  /**
+   * A fork diagnostic the kernel formatted (`SYS_FORK_DIAGNOSTIC`): a fork
+   * that aborted and why, or a fork module's proof that it did a fork's
+   * work. `text` is the kernel's line, identical on every host; `kind` is a
+   * `FORK_DIAGNOSTIC_KINDS` value for routing.
+   */
+  onForkDiagnostic?: (diagnostic: ForkDiagnostic) => void;
 
   /**
    * Called when a process calls exit_group (terminate all threads).
@@ -20724,30 +20737,42 @@ export class CentralizedKernelWorker {
   #drainForkLifecycleEventsWithinKernelEntry(
     entry: KernelWorkerEntryContext,
   ): void {
-    const MAX_EVENTS = 64;
-    const bufSize = MAX_EVENTS * FORK_LIFECYCLE_EVENT_RECORD_BYTES;
-    const records: DataView[] = [];
-    for (;;) {
-      const bytes = this.#requireMainScratchRegion().withLease((lease) => {
-        const count = this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_drain_fork_lifecycle_events",
-          [lease.exportPointer(0, bufSize), bufSize, MAX_EVENTS],
-        );
-        if (!Number.isSafeInteger(count) || count < 0 || count > MAX_EVENTS) {
-          throw new KernelScratchError(
-            `fork lifecycle drain returned invalid event count ${count}`,
-            EIO,
+    // One drain loop for the two kernel queues this wake covers: fork
+    // diagnostics (`SYS_FORK_DIAGNOSTIC`, lane F step 3c) and lifecycle events.
+    const drained: DataView[][] = [];
+    for (const [name, size, max] of [
+      ["kernel_drain_fork_diagnostics", FORK_DIAGNOSTIC_RECORD_BYTES, 16],
+      ["kernel_drain_fork_lifecycle_events", FORK_LIFECYCLE_EVENT_RECORD_BYTES, 64],
+    ] as const) {
+      const out: DataView[] = [];
+      drained.push(out);
+      for (;;) {
+        const bytes = this.#requireMainScratchRegion().withLease((lease) => {
+          const count = this.#invokeEntryScratchExport(
+            entry, lease, name, [lease.exportPointer(0, max * size), max * size, max],
           );
-        }
-        return lease.copyOut(0, count * FORK_LIFECYCLE_EVENT_RECORD_BYTES);
-      });
-      for (let off = 0; off < bytes.byteLength; off += FORK_LIFECYCLE_EVENT_RECORD_BYTES) {
-        records.push(new DataView(bytes.buffer, bytes.byteOffset + off));
+          if (!Number.isSafeInteger(count) || count < 0 || count > max) {
+            throw new KernelScratchError(`${name} returned invalid record count ${count}`, EIO);
+          }
+          return lease.copyOut(0, count * size);
+        });
+        for (let off = 0; off < bytes.byteLength; off += size) out.push(new DataView(bytes.buffer, bytes.byteOffset + off, size));
+        if (bytes.byteLength < max * size) break;
       }
-      if (bytes.byteLength < bufSize) break;
     }
+    const [diagnosticRecords = [], records = []] = drained;
+    // The kernel formatted each diagnostic line (ruling 5), so every host says
+    // the same thing about a fork; handed on after the entry, as every other
+    // observer effect is.
+    const diagnostics = diagnosticRecords.map((d) => {
+      const word = (offset: number): number => d.getUint32(offset, true);
+      const text = new Uint8Array(d.buffer, d.byteOffset + FORK_DIAGNOSTIC_FIELDS.text, word(FORK_DIAGNOSTIC_FIELDS.textLen));
+      return { pid: word(FORK_DIAGNOSTIC_FIELDS.pid), kind: word(FORK_DIAGNOSTIC_FIELDS.kind), text: new TextDecoder().decode(text) };
+    });
+    entry.deferObserverEffect(() => {
+      for (const d of diagnostics) this.callbacks.onForkDiagnostic?.(d);
+      return undefined;
+    });
     const field = (
       record: DataView,
       name: keyof typeof FORK_LIFECYCLE_EVENT_FIELDS,

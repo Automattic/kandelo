@@ -513,6 +513,23 @@ export const FORK_LAUNCH_FAILED_RESULTS = {
   alreadyResolved: 1,
 } as const;
 
+export const FORK_DIAGNOSTIC_RECORD_BYTES = 256 as const;
+export const FORK_DIAGNOSTIC_VALUE_COUNT = 5 as const;
+export const FORK_DIAGNOSTIC_FIELDS = {
+  pid: 0,
+  kind: 4,
+  values: 8,
+  textLen: 28,
+  text: 32,
+} as const;
+export const FORK_DIAGNOSTIC_KINDS = {
+  aborted: 1,
+  parentFrames: 2,
+  childReferences: 3,
+  childFrames: 4,
+  runFailed: 5,
+} as const;
+
 export const POLL_EVENTS = {
   POLLIN: 1,
   POLLPRI: 2,
@@ -1316,6 +1333,7 @@ export const ABI_SYSCALLS = {
   ExitGroup: 387,
   ThreadCancel: 415,
   ForkReplayReady: 416,
+  ForkDiagnostic: 417,
 } as const;
 
 export type ChannelScalarSlotKind =
@@ -1766,6 +1784,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   387: "exit_group",
   415: "thread_cancel",
   416: "fork_replay_ready",
+  417: "fork_diagnostic",
   500: "spawn",
 } as const;
 

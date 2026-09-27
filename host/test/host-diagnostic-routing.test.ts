@@ -25,10 +25,28 @@ const processWorkerSource = readFileSync(
 );
 /**
  * The fork half of every process and pthread Worker, written once
- * (`ForkWorker`, lane F step 3). The abort report lives here now.
+ * (`ForkWorker`, lane F step 3). It reports nothing about a fork any more.
  */
 const forkWorkerSource = readFileSync(
   join(repoRoot, "host/src/worker-main-fork-support.ts"),
+  "utf8",
+);
+/** The fork module, which reports every fork's outcome (lane F step 3c). */
+const forkModuleSource = readFileSync(
+  join(repoRoot, "crates/fork-module/src/lib.rs"),
+  "utf8",
+);
+/** The kernel's formatting of those reports, the one copy of the words. */
+const kernelDiagnosticSource = readFileSync(
+  join(repoRoot, "crates/runtime-core/src/fork_diagnostic.rs"),
+  "utf8",
+);
+const kernelWorkerSource = readFileSync(
+  join(repoRoot, "host/src/kernel-worker.ts"),
+  "utf8",
+);
+const nativeGuestSource = readFileSync(
+  join(repoRoot, "crates/host-native/src/guest.rs"),
   "utf8",
 );
 /** The single implementation both entries call for shared lifecycle logic. */
@@ -218,74 +236,58 @@ describe("an aborted fork says why", () => {
   // defects wore that disguise in a single day, each costing an afternoon of
   // probes compiled into the worker (census section 189).
   //
-  // The invariant is EVERY abort path reports, not that some do. That is what
-  // a new abort site added without a report would break. Every abort -- a
-  // frame reserve that failed mid-unwind, a seal that failed, a child the
-  // kernel refused -- is begun or recorded by the fork MODULE, which hands the
-  // errno and its cause back at the one abort finish. So the checkable form
-  // is: a Worker finishes every replay, abort or not, in exactly one place
-  // (`ForkWorker.kernelFork`, shared by process and pthread Workers), and
-  // reports there, from what that finish returned.
-  it("reports every abort at the one abort finish, from the module's record", () => {
-    const finishes = forkWorkerSource.match(/\.parentFinish\(/g) ?? [];
-    expect(finishes.length, "replay finishes in the shared fork path").toBe(1);
-    // And none in either Worker main: a pthread fork that finished its own
-    // abort is how the pthread path stayed silent until lane F step 3b.
-    expect(
-      processWorkerSource.match(/\.parentFinish\(/g) ?? [],
-      "no second finish in the process or pthread main",
-    ).toEqual([]);
-    const reports = forkWorkerSource.match(/type: "fork_aborted"/g) ?? [];
-    expect(reports.length, "one report, at that finish").toBe(1);
-    expect(processWorkerSource).not.toContain('type: "fork_aborted"');
-    const finish = forkWorkerSource.indexOf('.parentFinish(phase === "abort-replay")');
-    const report = forkWorkerSource.indexOf("const { errno, cause } = finished;");
-    expect(finish, "the finish is the abort-aware one").toBeGreaterThan(0);
-    expect(report, "the report uses the finish's own errno and cause").toBeGreaterThan(finish);
-    expect(report - finish, "and follows it directly").toBeLessThan(300);
+  // The invariant is EVERY abort path reports, not that some do. Every abort
+  // -- a frame reserve that failed mid-unwind, a seal that failed, a child the
+  // kernel refused -- is begun or recorded by the fork MODULE, and since lane
+  // F step 3c (ruling 5) the module also REPORTS it, at the one abort finish,
+  // through the kernel (`SYS_FORK_DIAGNOSTIC`). The kernel formats the words
+  // once and every host logs them as they are; no Worker posts a report of
+  // its own, so none can forget to, or say it differently.
+  it("is reported by the module at the one abort finish, from its own record", () => {
+    const finish = forkModuleSource.slice(
+      forkModuleSource.indexOf('pub extern "C" fn fm_parent_finish('),
+    );
+    const body = finish.slice(0, finish.indexOf("\n    }\n"));
+    expect(body, "the finish reports its abort record").toContain(
+      "report_finish(Some(report), false)",
+    );
+    expect(forkModuleSource).toContain("diagnostic_wire::KIND_ABORTED");
+    // No Worker reports on its own any more.
+    for (const source of [forkWorkerSource, processWorkerSource, sharedLifecycleSource]) {
+      expect(source).not.toContain("fork_aborted");
+      expect(source).not.toContain("fork_module_frames\"");
+    }
   });
 
-  it("names the errno and a reason a reader can act on", () => {
-    expect(forkWorkerSource).toMatch(
-      /type: "fork_aborted", pid, errno, reason/,
-    );
-    // The two causes, each in words rather than a code. There were three
-    // until 2026-09-22: a capture that meets a reference it cannot carry (a
-    // raw host externref) is refused inside the fork module now, so it arrives
-    // as "the capture could not seal" with that errno (EOPNOTSUPP) instead of
-    // a worker-side branch of its own.
-    expect(forkWorkerSource).toContain("the capture could not seal");
-    // And the third, which reported nothing until 2026-09-26: the host's frame
-    // reserve wrapper aborted the fork without a word.
-    expect(forkWorkerSource).toContain("could not be reserved mid-unwind");
-    expect(forkWorkerSource).toContain(
+  it("names the errno and a reason a reader can act on, in the kernel's words", () => {
+    expect(kernelDiagnosticSource).toContain('"fork aborted with errno={}: {}"');
+    // Each cause in words rather than a code. A capture that meets a
+    // reference it cannot carry (a raw host externref) is refused inside the
+    // fork module and arrives as "the capture could not seal" (EOPNOTSUPP).
+    expect(kernelDiagnosticSource).toContain("the capture could not seal");
+    expect(kernelDiagnosticSource).toContain("could not be reserved mid-unwind");
+    expect(kernelDiagnosticSource).toContain(
       "the kernel refused to create the child process",
     );
   });
 
-  it("reaches the host as a WARNING, because an abort can be correct", () => {
+  it("reaches every host as a WARNING, because an abort can be correct", () => {
     // An abort is the right outcome for a reference kind the platform refuses
     // to reconstruct, so this must not read as a fault on the error channel.
-    const forward = sharedLifecycleSource.slice(
-      sharedLifecycleSource.indexOf('message.type === "fork_aborted"'),
+    const route = sharedLifecycleSource.slice(
+      sharedLifecycleSource.indexOf("onForkDiagnostic:"),
+    ).slice(0, 700);
+    expect(route).toContain("kind === FORK_DIAGNOSTIC_KINDS.aborted");
+    expect(route).toContain(
+      'reportHostDiagnostic({ pid, source: "fork", message: text }, "warn")',
     );
-    const head = forward.slice(0, 800);
-    expect(head).toContain("reportHostDiagnostic(");
-    expect(head).toContain(
-      "`fork aborted with errno=${message.errno}: ${message.reason}`",
-    );
-    expect(head).toContain('"warn",');
-  });
-
-  it("is forwarded from a pthread Worker too, which runs the same fork path", () => {
-    const forward = sharedLifecycleSource.slice(
-      sharedLifecycleSource.indexOf('m.type === "fork_aborted"'),
-    );
-    const head = forward.slice(0, 800);
-    expect(head).toContain("reportHostDiagnostic(");
-    expect(head).toContain(
-      "`fork aborted with errno=${m.errno}: ${m.reason}`",
-    );
-    expect(head).toContain('"warn",');
+    // The kernel worker drains the kernel's queue on the fork-lifecycle wake,
+    // for a process Worker and a pthread Worker alike (the channel names the
+    // process; there is no per-Worker forwarding left to forget).
+    expect(kernelWorkerSource).toContain('"kernel_drain_fork_diagnostics"');
+    expect(kernelWorkerSource).toContain("this.callbacks.onForkDiagnostic?.(");
+    // host-native prints the same line and counts the cause.
+    expect(nativeGuestSource).toContain('"kernel_drain_fork_diagnostics"');
+    expect(nativeGuestSource).toContain("fn report_fork_diagnostics(");
   });
 });

@@ -7468,6 +7468,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
+        syscall_numbers::SYS_FORK_DIAGNOSTIC => {
+            // SYS_FORK_DIAGNOSTIC: (kind, v0..v4). The channel names the
+            // process; the kernel formats the line every host logs
+            // (`runtime_core::fork_diagnostic`).
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let values = [a2, a3, a4, a5, a6].map(|value| value as u32);
+            match runtime_core::fork_diagnostic::report(pid, a1 as u32, values) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
         syscall_numbers::SYS_THREAD_CANCEL => {
             // SYS_THREAD_CANCEL: (target_tid). Host-owned wait state is woken
             // in kernel-worker.ts; release FIFO reservations and restore a
@@ -15559,6 +15570,24 @@ pub extern "C" fn kernel_drain_fork_lifecycle_events(
     }
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::fork_lifecycle::drain(out, max_events)
+}
+
+/// Drain queued fork diagnostics (see `runtime_core::fork_diagnostic`).
+///
+/// Writes whole `fork_diagnostic_wire::RECORD_BYTES` records, at most
+/// `max_records` and as many as fit in `out_len`, and returns how many were
+/// written. Records that do not fit stay queued in order.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_drain_fork_diagnostics(
+    out_ptr: *mut u8,
+    out_len: u32,
+    max_records: u32,
+) -> u32 {
+    if out_ptr.is_null() {
+        return 0;
+    }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    runtime_core::fork_diagnostic::drain(out, max_records)
 }
 
 // ---------------------------------------------------------------------------

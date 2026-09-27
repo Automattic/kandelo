@@ -3258,7 +3258,6 @@ export async function centralizedWorkerMain(
         ? initData.forkModuleInheritedBase
         : undefined;
       const fork = new ForkWorker({
-        port,
         memory,
         ptrWidth,
         channelOffset,
@@ -4451,7 +4450,6 @@ export async function centralizedThreadWorkerMain(
     const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
     const fork = hasForkInstrumentation
       ? new ForkWorker({
-          port,
           memory,
           ptrWidth,
           channelOffset,

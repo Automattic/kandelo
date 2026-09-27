@@ -619,6 +619,18 @@ negative `SYS_FORK` result, whose errno the host hands to the module when it
 starts the replay. The errno reaches the guest from the import's abort
 finish; no case terminates the parent or creates a child.
 
+Every finish also says what happened. At the abort finish the module issues
+`SYS_FORK_DIAGNOSTIC` (417) on its own channel with the errno and the cause it
+recorded; at an ordinary finish it reports its proof of use (a parent's
+committed frames; a child's reconstructed references and replayed frames).
+The kernel formats the one line every host logs
+(`runtime_core::fork_diagnostic`) and queues it; the Node/browser kernel
+worker and the native pump drain the queue on the fork-lifecycle wake. An
+abort reaches the host as a warning, `fork aborted with errno=N: <reason>`,
+and proof of use on the `fork_module_proof` channel. No Worker posts a report
+of its own: the module is where every abort is begun or recorded, so it is
+the one place that cannot forget to say why (lane F step 3c, ruling 5).
+
 The child receives the mappings through the normal process-memory copy and the
 kernel's inherited mmap metadata, at the same virtual addresses in version 1.
 Parent and child independently walk and unmap their copies after rewind. The

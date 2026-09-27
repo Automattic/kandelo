@@ -1148,6 +1148,16 @@ snapshot diff.
     `DRIVE_SLOTS_PER_ACTIVATION` 19 -> 20), an internal host-module
     contract rebuilt in lockstep. Every fork-instrumented artifact is
     rebuilt; an older guest with roots has no shim for the module to call.
+  - *Fork diagnostics are kernel-formatted.* New syscall
+    `SYS_FORK_DIAGNOSTIC` = 417 (`ForkDiagnostic` in `ABI_SYSCALLS`), issued
+    by the fork module on its own channel with `(kind, v0..v4)`; new kernel
+    export `kernel_drain_fork_diagnostics(out_ptr, out_len, max_records)`;
+    new 256-byte `fork_diagnostic_wire` record (snapshot section
+    `fork_diagnostic_wire`; `FORK_DIAGNOSTIC_*` in
+    `host/src/generated/abi.ts`). The queue raises the existing
+    `TYPE_FORK_LIFECYCLE` wake. The Worker messages `fork_aborted`,
+    `fork_module_frames`, `fork_module_child_frames` and
+    `fork_module_references` are removed from the worker protocol.
 
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
