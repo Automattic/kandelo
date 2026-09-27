@@ -4,7 +4,7 @@
  *
  *   - kwl_window_create() maps a CSD toplevel against wlcompositor and
  *     gives us a wpk_surface back buffer to draw into.
- *   - forkpty() spawns a child on a PTY and execs a shell (default "dash",
+ *   - forkpty() spawns a child on a PTY and execs a shell (default `sh`,
  *     or argv[1..] if given); the parent holds the master fd.
  *   - the main loop poll()s { kwl_display_fd(win), pty_master }:
  *       * Wayland key events → vt100_input_key() → write(master) → shell;
