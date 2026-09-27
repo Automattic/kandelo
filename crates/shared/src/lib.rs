@@ -2048,8 +2048,8 @@ pub mod abi {
 
     /// The `env` imports the host really provides to user programs, besides
     /// the fork runtime's imports (declared by `WPK_FORK_REQUIRED_IMPORTS`,
-    /// `WPK_FORK_REQUIRED_TABLE_IMPORTS`, and the unwind tag, which fork
-    /// instrumentation adds after linking).
+    /// `WPK_FORK_REQUIRED_TABLE_IMPORTS`, `WPK_FORK_GLOBAL_IMPORTS`, and the
+    /// unwind tag, which fork instrumentation adds after linking).
     ///
     /// WHY one declaration: the SDK's link-time allowance
     /// (`libc/glue/kandelo-host-imports.txt`) and the host's load-time check
@@ -2107,6 +2107,15 @@ pub mod abi {
         pub element: ProgramArtifactValueType,
         pub minimum: u64,
         pub maximum: Option<u64>,
+    }
+
+    /// One immutable global import that fork instrumentation adds to a
+    /// program artifact.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ProgramArtifactGlobalImport {
+        pub module: &'static str,
+        pub name: &'static str,
+        pub value: ProgramArtifactValueType,
     }
 
     /// One required function export in an instrumented program artifact.
@@ -2849,6 +2858,25 @@ pub mod abi {
             element: FuncRef,
             minimum: 1,
             maximum: None,
+        },
+    ];
+
+    /// Immutable globals fork instrumentation imports, which the host's fork
+    /// runtime supplies per Worker: the activation index the exception and GC
+    /// codecs read, and the address of the shared table-generation fence
+    /// (always i64, whatever the pointer width). Like the lists above, these
+    /// are `env` imports a program may carry although no link left them
+    /// undefined, so import checks read them from here.
+    pub const WPK_FORK_GLOBAL_IMPORTS: &[ProgramArtifactGlobalImport] = &[
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+            value: I32,
+        },
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_GENERATION_ADDR,
+            value: I64,
         },
     ];
 
