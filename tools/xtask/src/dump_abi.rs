@@ -101,6 +101,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let spawn_header = render_spawn_contract_header();
     let soundcard_header = render_soundcard_header();
     let ts_module = render_ts_module();
+    let host_imports = render_host_imports_file();
 
     let out = out_path.unwrap_or_else(|| repo_root().join("abi/snapshot.json"));
     let header_out = repo_root().join("libc/glue/abi_constants.h");
@@ -116,6 +117,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         repo_root().join("libc/musl-overlay/src/process/wasm32posix/spawn_contract.h");
     let soundcard_header_out = repo_root().join("libc/musl-overlay/include/sys/soundcard.h");
     let ts_out = repo_root().join("host/src/generated/abi.ts");
+    let host_imports_out = repo_root().join("libc/glue/kandelo-host-imports.txt");
 
     if check {
         check_file(&out, &rendered, "ABI snapshot")?;
@@ -147,6 +149,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "libc/musl-overlay/include/sys/soundcard.h",
         )?;
         check_file(&ts_out, &ts_module, "host/src/generated/abi.ts")?;
+        check_file(&host_imports_out, &host_imports, "libc/glue/kandelo-host-imports.txt")?;
         println!("abi snapshot up-to-date: {}", out.display());
         println!("abi header up-to-date:  {}", header_out.display());
         println!(
@@ -195,6 +198,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", soundcard_header_out.display());
     write_file(&ts_out, &ts_module)?;
     println!("wrote {}", ts_out.display());
+    write_file(&host_imports_out, &host_imports)?;
+    println!("wrote {}", host_imports_out.display());
     Ok(())
 }
 
@@ -2107,6 +2112,24 @@ fn render_ts_module() -> String {
         render_ts_program_artifact_types(process_fork_import.params),
         render_ts_program_artifact_types(process_fork_import.results),
     ));
+    out.push_str(
+        "/** The `env` imports the host supplies to user programs (besides the fork runtime's). */\n",
+    );
+    out.push_str("export const HOST_ENV_IMPORTS = [\n");
+    {
+        let mut list: Vec<&shared::abi::HostEnvImport> =
+            shared::abi::HOST_ENV_IMPORTS.iter().collect();
+        list.sort_by_key(|i| i.name);
+        for i in list {
+            out.push_str(&format!(
+                "  {{ name: \"{}\", kind: \"{}\", linkTime: {} }},\n",
+                i.name,
+                i.kind.as_str(),
+                i.link_time
+            ));
+        }
+    }
+    out.push_str("] as const;\n\n");
     out.push_str("export const WPK_FORK_REQUIRED_IMPORTS = [\n");
     for requirement in shared::abi::WPK_FORK_REQUIRED_IMPORTS {
         out.push_str(&format!(
@@ -3855,6 +3878,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "process_expected_globals".into(),
         process_expected_globals(),
     );
+    root.insert("host_env_imports".into(), host_env_imports());
     root.insert("program_artifact".into(), program_artifact());
 
     root.insert("export_deny".into(), export_deny());
@@ -5767,6 +5791,38 @@ fn custom_sections() -> Value {
     Value::Array(sections.into_iter().map(Value::from).collect())
 }
 
+fn host_env_imports() -> Value {
+    let mut list: Vec<&shared::abi::HostEnvImport> = shared::abi::HOST_ENV_IMPORTS.iter().collect();
+    list.sort_by_key(|i| i.name);
+    Value::Array(
+        list.into_iter()
+            .map(|i| {
+                let mut m = serde_json::Map::new();
+                m.insert("kind".into(), Value::from(i.kind.as_str()));
+                m.insert("link_time".into(), Value::from(i.link_time));
+                m.insert("name".into(), Value::from(i.name));
+                Value::Object(m)
+            })
+            .collect(),
+    )
+}
+
+/// The link-time allowance: one symbol per line, sorted. Every executable link
+/// passes it to wasm-ld with `--allow-undefined-file`, so a program can leave a
+/// symbol undefined only if the host supplies it (see
+/// `shared::abi::HOST_ENV_IMPORTS`).
+fn render_host_imports_file() -> String {
+    let mut names: Vec<&str> = shared::abi::HOST_ENV_IMPORTS
+        .iter()
+        .filter(|i| i.link_time)
+        .map(|i| i.name)
+        .collect();
+    names.sort();
+    let mut out = names.join("\n");
+    out.push('\n');
+    out
+}
+
 fn process_expected_globals() -> Value {
     let mut list: Vec<&str> = shared::abi::PROCESS_EXPECTED_GLOBALS.to_vec();
     list.sort();
@@ -7270,6 +7326,41 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn host_env_imports_generate_one_link_allowance() {
+        let mut declared: Vec<&str> = shared::abi::HOST_ENV_IMPORTS
+            .iter()
+            .filter(|i| i.link_time)
+            .map(|i| i.name)
+            .collect();
+        declared.sort();
+        let rendered = super::render_host_imports_file();
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(
+            lines, declared,
+            "allowance file must list exactly the link-time imports, sorted"
+        );
+        for fake in ["_Znwm", "__cxa_thread_atexit", "__dynamic_cast", "re_search"] {
+            assert!(
+                !lines.contains(&fake),
+                "{fake} is a library function, not a host service"
+            );
+        }
+        for real in [
+            "__channel_base",
+            "__wasm_dlopen_main",
+            "__wasm_dlsym",
+            "__wasm_posix_vm_interrupt_after",
+        ] {
+            assert!(lines.contains(&real), "{real} must be allowed at link time");
+        }
+        assert!(
+            !lines.iter().any(|l| l.starts_with("__wpk_fork_")),
+            "fork imports are added by instrumentation after linking"
+        );
+        assert!(super::render_ts_module().contains("export const HOST_ENV_IMPORTS"));
+    }
     use super::*;
     use serde_json::json;
 

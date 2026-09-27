@@ -148,7 +148,7 @@ pub mod process_layout;
 ///     gains three ops and a query, /dev/input/event1 is an absolute
 ///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
 ///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
-pub const ABI_VERSION: u32 = 45;
+pub const ABI_VERSION: u32 = 46;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1996,6 +1996,69 @@ pub mod abi {
     /// Globals that each user process instance is expected to expose so
     /// the host can thread channel / TLS state through fork and exec.
     pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &["__channel_base", "__tls_base"];
+
+    /// Kind of an import the host supplies to a user program from `env`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HostEnvImportKind {
+        Function,
+        Global,
+        Memory,
+        Table,
+        Tag,
+    }
+
+    impl HostEnvImportKind {
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::Function => "function",
+                Self::Global => "global",
+                Self::Memory => "memory",
+                Self::Table => "table",
+                Self::Tag => "tag",
+            }
+        }
+    }
+
+    /// One import the host supplies to a user program from the `env` module.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HostEnvImport {
+        pub name: &'static str,
+        pub kind: HostEnvImportKind,
+        /// Allowed to stay undefined when an executable is linked. False only
+        /// for imports a later build step adds (none today outside the fork
+        /// runtime, which is declared by `WPK_FORK_REQUIRED_*`).
+        pub link_time: bool,
+        pub reason: &'static str,
+    }
+
+    /// The `env` imports the host really provides to user programs, besides
+    /// the fork runtime's imports (declared by `WPK_FORK_REQUIRED_IMPORTS`,
+    /// `WPK_FORK_REQUIRED_TABLE_IMPORTS`, and the unwind tag, which fork
+    /// instrumentation adds after linking).
+    ///
+    /// WHY one declaration: the SDK's link-time allowance
+    /// (`libc/glue/kandelo-host-imports.txt`) and the host's load-time check
+    /// are both generated from this list, so a program can leave a symbol
+    /// undefined only if the host will supply it. C and C++ library functions
+    /// never belong here; they come from libc, libc++abi, or libc++. Before
+    /// ABI 46 the SDK linked with `--allow-undefined` and the host stubbed any
+    /// unknown import with a throwing function, so configure checks accepted
+    /// functions Kandelo lacks and programs trapped when they first called one.
+    pub const HOST_ENV_IMPORTS: &[HostEnvImport] = &[
+        HostEnvImport { name: "memory", kind: HostEnvImportKind::Memory, link_time: true, reason: "process linear memory" },
+        HostEnvImport { name: "__channel_base", kind: HostEnvImportKind::Global, link_time: true, reason: "syscall channel base address" },
+        HostEnvImport { name: "__c_longjmp", kind: HostEnvImportKind::Tag, link_time: true, reason: "setjmp/longjmp exception tag shared with the host" },
+        HostEnvImport { name: "__cpp_exception", kind: HostEnvImportKind::Tag, link_time: true, reason: "C++ exception tag shared with the host" },
+        HostEnvImport { name: "__wasm_dlopen_main", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: main-program handle" },
+        HostEnvImport { name: "__wasm_dlopen_prepare", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: stage a side module" },
+        HostEnvImport { name: "__wasm_dlopen_next", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: advance a staged load" },
+        HostEnvImport { name: "__wasm_dlopen_commit", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: commit a staged load" },
+        HostEnvImport { name: "__wasm_dlopen", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: single-step load" },
+        HostEnvImport { name: "__wasm_dlsym", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: symbol lookup" },
+        HostEnvImport { name: "__wasm_dlclose", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: unload" },
+        HostEnvImport { name: "__wasm_dlerror", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: last error text" },
+        HostEnvImport { name: "__wasm_posix_vm_interrupt_after", kind: HostEnvImportKind::Function, link_time: true, reason: "host timer that sets a VM interrupt flag (PHP max_execution_time)" },
+    ];
 
     /// Pointer-sensitive value types used by program-artifact function
     /// requirements. `Pointer` resolves to i32 for wasm32 artifacts and i64
