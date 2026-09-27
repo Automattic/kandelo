@@ -2182,6 +2182,16 @@ fn render_ts_module() -> String {
         ));
     }
     out.push_str("] as const;\n");
+    out.push_str("export const WPK_FORK_GLOBAL_IMPORTS = [\n");
+    for import in shared::abi::WPK_FORK_GLOBAL_IMPORTS {
+        out.push_str(&format!(
+            "  {{ module: {:?}, name: {:?}, value: {:?} }},\n",
+            import.module,
+            import.name,
+            program_artifact_type_name(import.value),
+        ));
+    }
+    out.push_str("] as const;\n");
     out.push_str("export const WPK_FORK_REQUIRED_EXPORTS = [\n");
     for requirement in shared::abi::WPK_FORK_REQUIRED_EXPORTS {
         out.push_str(&format!(
