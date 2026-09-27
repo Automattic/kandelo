@@ -21,6 +21,7 @@ FBDOOM_DIR="${WASM_POSIX_DEP_FBDOOM_DIR:-}"
 MODESET_DIR="${WASM_POSIX_DEP_MODESET_DIR:-}"
 SDL2_DEMO_DIR="${WASM_POSIX_DEP_SDL2_DEMO_DIR:-}"
 EVDEV_DEMO_DIR="${WASM_POSIX_DEP_EVDEV_DEMO_DIR:-}"
+WAYLAND_DEMO_DIR="${WASM_POSIX_DEP_WAYLAND_DEMO_DIR:-}"
 ESPEAK_NG_DIR="${WASM_POSIX_DEP_ESPEAK_NG_DIR:-}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
 DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-}"
@@ -65,6 +66,7 @@ require_regular_file() {
 [ -n "$MODESET_DIR" ] || fail "WASM_POSIX_DEP_MODESET_DIR is required"
 [ -n "$SDL2_DEMO_DIR" ] || fail "WASM_POSIX_DEP_SDL2_DEMO_DIR is required"
 [ -n "$EVDEV_DEMO_DIR" ] || fail "WASM_POSIX_DEP_EVDEV_DEMO_DIR is required"
+[ -n "$WAYLAND_DEMO_DIR" ] || fail "WASM_POSIX_DEP_WAYLAND_DEMO_DIR is required"
 [ -n "$ESPEAK_NG_DIR" ] || fail "WASM_POSIX_DEP_ESPEAK_NG_DIR is required"
 [ "$TARGET_ARCH" = "wasm32" ] ||
     fail "source-rootfs shell composition supports only wasm32"
@@ -122,6 +124,16 @@ FBDOOM="$FBDOOM_DIR/fbdoom.wasm"
 MODESET="$MODESET_DIR/modeset.wasm"
 SDL2="$SDL2_DEMO_DIR/sdl2.wasm"
 EVDEV_DEMO="$EVDEV_DEMO_DIR/evdev_demo.wasm"
+# The Wayland desktop's four programs. wldesktop (the launcher that starts
+# them in order) rides in as a package runtime_file; these are the binaries
+# it execs, so they have to be installed here like every other eager program.
+WLCOMPOSITOR="$WAYLAND_DEMO_DIR/wlcompositor.wasm"
+WLTERM="$WAYLAND_DEMO_DIR/wlterm.wasm"
+WLCLOCK="$WAYLAND_DEMO_DIR/wlclock.wasm"
+WLPAINT="$WAYLAND_DEMO_DIR/wlpaint.wasm"
+# The launcher itself. A package runtime_file is NOT installed into the shell
+# image by the composer, so it has to be threaded like the binaries.
+WLDESKTOP="$WAYLAND_DEMO_DIR/wldesktop"
 ESPEAK_NG="$ESPEAK_NG_DIR/espeak-ng.wasm"
 ESPEAK_NG_DATA="$ESPEAK_NG_DIR/espeak-ng-data.zip"
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
@@ -163,6 +175,11 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --modeset "$MODESET" \
     --sdl2 "$SDL2" \
     --evdev-demo "$EVDEV_DEMO" \
+    --wlcompositor "$WLCOMPOSITOR" \
+    --wlterm "$WLTERM" \
+    --wlclock "$WLCLOCK" \
+    --wlpaint "$WLPAINT" \
+    --wldesktop "$WLDESKTOP" \
     --espeak-ng "$ESPEAK_NG" \
     --espeak-ng-data "$ESPEAK_NG_DATA" \
     --demo-config "$DEMO_CONFIG" \

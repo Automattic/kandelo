@@ -70,6 +70,11 @@ export interface SourceRootfsShellInputs {
   fbdoomPath: string;
   modesetPath: string;
   sdl2Path: string;
+  wlcompositorPath: string;
+  wltermPath: string;
+  wlclockPath: string;
+  wlpaintPath: string;
+  wldesktopPath: string;
   evdevDemoPath: string;
   espeakNgPath: string;
   espeakNgDataPath: string;
@@ -787,6 +792,17 @@ export async function buildSourceRootfsShellImage(
   const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
   const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
   const sdl2 = readRegularInput(inputs.sdl2Path, "sdl2 dependency");
+  const wlcompositor = readRegularInput(
+    inputs.wlcompositorPath,
+    "wlcompositor dependency",
+  );
+  const wlterm = readRegularInput(inputs.wltermPath, "wlterm dependency");
+  const wlclock = readRegularInput(inputs.wlclockPath, "wlclock dependency");
+  const wlpaint = readRegularInput(inputs.wlpaintPath, "wlpaint dependency");
+  const wldesktop = readRegularInput(
+    inputs.wldesktopPath,
+    "wldesktop launcher dependency",
+  );
   const evdevDemo = readRegularInput(
     inputs.evdevDemoPath,
     "evdev_demo dependency",
@@ -819,6 +835,15 @@ export async function buildSourceRootfsShellImage(
   writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/sdl2", sdl2, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/evdev_demo", evdevDemo, 0o755);
+  // The Wayland desktop. /usr/local/bin/wldesktop arrives as a wayland-demo
+  // runtime_file and execs these four by name, so they must be on PATH as
+  // regular eager programs — a launcher whose programs are missing exits
+  // immediately and the machine shows an empty KMS surface.
+  writeVfsBinary(fs, "/usr/local/bin/wlcompositor", wlcompositor, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wlterm", wlterm, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wlclock", wlclock, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wlpaint", wlpaint, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
   // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
   // small extraction+launch wrapper is written eagerly.
   writeVfsBinary(
@@ -901,6 +926,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--fbdoom",
     "--modeset",
     "--sdl2",
+    "--wlcompositor",
+    "--wlterm",
+    "--wlclock",
+    "--wlpaint",
+    "--wldesktop",
     "--evdev-demo",
     "--espeak-ng",
     "--espeak-ng-data",
@@ -923,6 +953,8 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
         "usage: build-source-rootfs-shell-image.ts " +
           "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
           "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
+          "--wlcompositor <wlcompositor.wasm> --wlterm <wlterm.wasm> " +
+          "--wlclock <wlclock.wasm> --wlpaint <wlpaint.wasm> " +
           "--evdev-demo <evdev_demo.wasm> --espeak-ng <espeak-ng.wasm> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
@@ -941,6 +973,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     fbdoomPath: values.get("--fbdoom")!,
     modesetPath: values.get("--modeset")!,
     sdl2Path: values.get("--sdl2")!,
+    wlcompositorPath: values.get("--wlcompositor")!,
+    wltermPath: values.get("--wlterm")!,
+    wlclockPath: values.get("--wlclock")!,
+    wlpaintPath: values.get("--wlpaint")!,
+    wldesktopPath: values.get("--wldesktop")!,
     evdevDemoPath: values.get("--evdev-demo")!,
     espeakNgPath: values.get("--espeak-ng")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,
