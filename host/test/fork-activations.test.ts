@@ -101,7 +101,9 @@ describe("the host's record of live activations", () => {
     expect(asked).toEqual([[0, 2, 3], [3, 2, 3]]);
     expect(bound).toEqual([[0, 0], [3, 57]]);
     expect(placed).toEqual([[4096, 0], [4099, 0]]);
-    expect(activations.ordered().map((a) => a.staticRootBase)).toEqual([0, 300]);
+    // The host keeps no static-root base: the module drives the guest's own
+    // fill at the base it placed.
+    expect(activations.ordered().map((a) => a.activationId)).toEqual([0, 3]);
   });
 
   it("refuses a guest whose resume catalog disagrees with the module's count", () => {

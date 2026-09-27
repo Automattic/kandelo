@@ -74,7 +74,8 @@ describe("releasing an activation through the fork module", () => {
     const m = module(f);
     expect(m.place(1, 3, 2)).toEqual({ func: 0, statics: 0 });
     expect(m.place(2, 2, 2)).toEqual({ func: 3, statics: 2 });
-    const { functionCatalog, staticRootCatalog, driveTable } = f.instance;
+    const { functionCatalog, driveTable } = f.instance;
+    const staticRootCatalog = (f.instance.exports.__wpk_fork_static_root_catalog as WebAssembly.Table);
     fillAll(functionCatalog, 5, FUNCTION);
     fillAll(staticRootCatalog, 4, { root: true });
     fillAll(driveTable, 3 * FORK_ACTIVATION_DRIVE_SLOTS, FUNCTION);

@@ -267,6 +267,7 @@ export const WPK_FORK_UNWIND_TRANSPORT_SECTION = "kandelo.wpk_fork.unwind_transp
 export const WPK_FORK_STATIC_ROOT_CATALOG_EXPORT = "__wpk_fork_static_root_catalog" as const;
 export const WPK_FORK_STATIC_ROOT_CATALOG_SECTION = "kandelo.wpk_fork.static_root_catalog" as const;
 export const WPK_FORK_STATIC_ROOT_HARVEST_EXPORT = "__wpk_fork_static_root_harvest" as const;
+export const WPK_FORK_STATIC_ROOT_FILL_EXPORT = "__wpk_fork_static_root_fill" as const;
 export const WPK_FORK_UNWIND_TRANSPORT_VERSION = 1 as const;
 export const WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY = 0 as const;
 export const WPK_FORK_STATIC_ROOT_CATALOG_VERSION = 1 as const;
@@ -326,6 +327,7 @@ export const WPK_FORK_EXPORT_MODULE_STATE_SAVE = "wpk_fork_module_state_save" as
 export const WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP = "wpk_fork_module_thread_bootstrap" as const;
 export const WPK_FORK_EXPORT_RESUME_START = "wpk_fork_resume_start" as const;
 export const WPK_FORK_EXPORT_RESUME_THREAD = "wpk_fork_resume_thread" as const;
+export const WPK_FORK_EXPORT_THREAD_ENTRY = "wpk_fork_thread_entry" as const;
 export const WPK_FORK_REFERENCE_IMPORT_DECODE_ANYREF = "__wpk_fork_ref_decode_anyref" as const;
 export const WPK_FORK_REFERENCE_IMPORT_DECODE_EXNREF = "__wpk_fork_ref_decode_exnref" as const;
 export const WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF = "__wpk_fork_ref_decode_externref" as const;
@@ -418,6 +420,7 @@ export const WPK_FORK_REQUIRED_IMPORTS = [
 export const WPK_FORK_REQUIRED_TABLE_IMPORTS = [
   { module: "env", name: "__wpk_fork_ref_gc_transit", table64: false, element: "anyref", minimum: 1, maximum: null },
   { module: "env", name: "__wpk_fork_resume_table", table64: false, element: "funcref", minimum: 1, maximum: null },
+  { module: "env", name: "__wpk_fork_static_root_catalog", table64: false, element: "anyref", minimum: 0, maximum: null },
 ] as const;
 export const WPK_FORK_REQUIRED_EXPORTS = [
   { name: "__wpk_fork_exception_materialize", params: ["i32"], results: [] },

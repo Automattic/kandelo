@@ -5045,10 +5045,6 @@ pub struct ForkModule {
     /// The objects `__wpk_fork_host_ref_identity` has numbered, by identity
     /// (index + 1). See [`instantiate_fork_module`].
     ref_identities: Arc<Mutex<Vec<wasmtime::OwnedRooted<AnyRef>>>>,
-    /// Where `fm_bind_activation` placed activation 0's static roots in
-    /// [`Self::static_root_catalog_table`], or `u32::MAX` while this worker has
-    /// harvested none. See [`fill_static_root_catalog`].
-    static_root_base: Arc<AtomicU32>,
     /// Aborted forks this instance finished, counted by the cause the MODULE
     /// recorded in its abort report (`ABORT_CAUSE_*` in
     /// `crates/fork-module/src/lib.rs`; index 0 counts a cause this host does
@@ -5118,12 +5114,6 @@ pub struct ForkModule {
     /// the injected `fm_drive_execute` `call_indirect`s; filled by
     /// [`bind_activation`].
     pub drive_table: Table,
-    /// The module's own module-defined, module-EXPORTED anyref static-root
-    /// catalog (`__wpk_fork_static_root_catalog`) the static-root binder
-    /// `table.get`s. The module grows it as `fm_bind_activation` places each
-    /// catalog; this host only writes a guest's harvested static-root values
-    /// into the placed range ([`fill_static_root_catalog`]).
-    pub static_root_catalog_table: Table,
 }
 
 /// Instantiate the co-resident fork-module (`crate::fork_module_path()`)
@@ -5440,25 +5430,12 @@ pub(crate) fn instantiate_fork_module(
         };
     }
 
-    // The module's own anyref static-root catalog: module-defined and
-    // module-EXPORTED, grown by the module as it places catalogs. A missing
-    // export is an ABI mismatch.
-    let static_root_catalog_table = instance
-        .get_table(&mut *store, wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "fork-module missing export {}",
-                wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT
-            )
-        })?;
-
     Ok(ForkModule {
         instance,
         memory_base,
         region_bytes,
         staging_base,
         ref_identities,
-        static_root_base: Arc::new(AtomicU32::new(u32::MAX)),
         aborts_by_cause: Arc::default(),
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
         fm_admit_activation: fm_func!("fm_admit_activation": (u32, u32) => i32),
@@ -5475,7 +5452,6 @@ pub(crate) fn instantiate_fork_module(
         fm_child_install: fm_func!("fm_child_install": (u32, u32, u32, u32) => i32),
         function_catalog_table,
         drive_table,
-        static_root_catalog_table,
     })
 }
 
@@ -5580,7 +5556,7 @@ fn bind_activation(
 
     place_resume_thunks(store, instance, 0, resume_ptr, resume_count)?;
 
-    let bindings: [(u32, &str, bool); 19] = [
+    let bindings: [(u32, &str, bool); 20] = [
         (slots::DRIVE_OP_ALLOC, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE, false),
         (slots::DRIVE_OP_FILL, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL, false),
         (slots::DRIVE_OP_EXN, fork_abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE, false),
@@ -5603,6 +5579,10 @@ fn bind_activation(
         (slots::DRIVE_SLOT_TABLE_READ, fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_READ, true),
         (slots::DRIVE_SLOT_TABLE_LENGTH, fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_LENGTH, true),
         (slots::DRIVE_SLOT_TABLE_APPLY, fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_APPLY, true),
+        // The guest's own static-root copy into the module's merged catalog
+        // (lane F step 3c, ruling 3). Only a guest with static roots has it,
+        // and only such an activation is ever driven through it.
+        (slots::DRIVE_SLOT_STATIC_ROOT_FILL, fork_abi::WPK_FORK_STATIC_ROOT_FILL_EXPORT, false),
     ];
     // Sized to the WHOLE stride, so every slot the module derives from the
     // drive base is addressable even when this host binds nothing into it.
@@ -5796,32 +5776,6 @@ fn bind_guest_fork_imports(
     Ok(())
 }
 
-/// Copy activation 0's harvested static roots (the guest's
-/// `__wpk_fork_static_root_catalog`) into the module's merged catalog at the
-/// base `fm_bind_activation` placed them -- `ForkMergedStaticRoots.fill` on the
-/// JavaScript hosts. A capture and a child install both read the merged
-/// catalog, and `fm_child_install` nulls it once its drive has run, so it is
-/// filled before each. A no-op for a worker that harvested no static roots.
-fn fill_static_root_catalog(
-    mut store: impl wasmtime::AsContextMut,
-    fm: &ForkModule,
-    guest_roots: Table,
-) -> anyhow::Result<()> {
-    let base = fm.static_root_base.load(Ordering::SeqCst);
-    if base == u32::MAX {
-        return Ok(());
-    }
-    for i in 0..guest_roots.size(&mut store) {
-        let root = guest_roots
-            .get(&mut store, i)
-            .ok_or_else(|| anyhow::anyhow!("guest static-root catalog[{i}] is out of bounds"))?;
-        fm.static_root_catalog_table
-            .set(&mut store, u64::from(base) + i, root)
-            .map_err(|e| anyhow::anyhow!("populating fork-module static-root catalog[{i}] failed: {e:#}"))?;
-    }
-    Ok(())
-}
-
 /// `kernel_fork` for a fork-instrumented guest thread with a fork module,
 /// the same decision `worker-main.ts` makes: the MODULE's phase says which
 /// call this is. Idle begins a capture; a parent or child replay reaching the
@@ -5903,12 +5857,9 @@ fn begin_fork_capture(
     ch: usize,
 ) -> wasmtime::Result<i32> {
     fm.ref_identities.lock().unwrap().clear();
-    if let Some(guest_roots) = caller
-        .get_export(wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
-        .and_then(|export| export.into_table())
-    {
-        fill_static_root_catalog(&mut *caller, fm, guest_roots).map_err(wasmtime::Error::msg)?;
-    }
+    // The module fills its merged static-root catalog itself before it opens
+    // the capture: each activation copies its own roots in with one
+    // `table.copy` (`__wpk_fork_static_root_fill`, lane F step 3c).
     let root = fm.fm_parent_begin_capture.call(&mut *caller, ch as u32)?;
     let errno = fm.fm_last_errno.call(&mut *caller, ())?;
     if errno != 0 {
@@ -6786,9 +6737,9 @@ fn spawn_guest_thread(
             // harvest BUFFER, filled by the guest's
             // `__wpk_fork_static_root_harvest` export exactly once, right after
             // instantiation and before any other guest code runs -- which is
-            // where this block sits. The module's merged catalog is then filled
-            // from it here, for a fork child's install, and again before every
-            // capture ([`begin_fork_capture`]).
+            // where this block sits. The MODULE then fills its merged catalog
+            // from it, through the guest's own `__wpk_fork_static_root_fill`,
+            // before a child's install and before every capture.
             if let Some(guest_roots) =
                 instance.get_table(&mut store, wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT)
             {
@@ -6809,11 +6760,6 @@ fn spawn_guest_thread(
                             "{} failed: {e:#}",
                             wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_HARVEST_EXPORT
                         );
-                        return;
-                    }
-                    fm.static_root_base.store(row.static_root_base, Ordering::SeqCst);
-                    if let Err(e) = fill_static_root_catalog(&mut store, fm, guest_roots) {
-                        eprintln!("{e:#}");
                         return;
                     }
                 }

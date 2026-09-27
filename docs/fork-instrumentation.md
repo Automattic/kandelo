@@ -257,8 +257,23 @@ context as well as the buffer:
   host code cannot provide or substitute a PID/TID.
 - `centralizedThreadWorkerMain` binds `kernel_fork` to its `ForkWorker` for
   instrumented modules and runs the pthread function through that worker's
-  loop (`wpk_fork_resume_thread` re-enters it to rewind). The fork module
-  drives the guest's unwind and rewind entry points itself.
+  loop: `wpk_fork_thread_entry(table_index, arg)` calls it and
+  `wpk_fork_resume_thread(table_index, arg)` re-enters it to rewind. The fork
+  module drives the guest's unwind and rewind entry points itself.
+- Both thread entries are emitted by fork-instrument with ONE fixed signature,
+  `(i32 table_index, ptr arg) -> ptr`, in whatever calling convention the
+  guest's `__indirect_function_table` actually uses. A program post-processed
+  with binaryen's `--fpcast-emu` has every table entry rewritten to one
+  uniform `(i64 x N) -> i64` thunk; fork-instrument reads that type off the
+  linker's output (`detect_thread_entry_abi`: every table element shares one
+  all-`i64` type with at least two parameters and an `i64` result) and emits
+  the matching call: the pointer widened (unsigned) into parameter 0, N-1
+  zeros, the result narrowed back. The JavaScript host used to make that
+  adaptation per call from the wrapper's arity (`buildThreadEntryArgs`), which
+  neither the native host nor the fork module's run loop could do. It is a
+  property of the binary, so the tool that rewrites the binary owns it
+  (lane F step 3c, ruling 2); `buildThreadEntryArgs` now serves only
+  uninstrumented programs, which have no such export.
   `channelOffset - FORK_BUF_SIZE` stores only the active root address used by
   the kernel-worker fork handoff.
 - `handleFork` passes one `ForkLaunchRequest` through the host `onFork`
@@ -1154,7 +1169,16 @@ representation is selected by value class:
 
 - scalar locals, parameters, arguments, and carryovers use the linked frame;
 - `funcref` values use an activation-scoped immutable function catalog;
-- static references use the fresh instance's static-root catalog;
+- static references use the fresh instance's static-root catalog. At a
+  capture and at a child's install the fork module needs every activation's
+  roots in its own merged catalog; each activation copies its own there with
+  one `table.copy` in `__wpk_fork_static_root_fill(base) -> count` (emitted
+  only for a guest with roots; it imports the module's merged catalog as
+  `env.__wpk_fork_static_root_catalog` and answers -1 rather than trapping
+  when that catalog is shorter than its placed range). The module drives it
+  through drive slot `DRIVE_SLOT_STATIC_ROOT_FILL`, at the base it placed the
+  activation at, and refuses the fork with `EINVAL` if a copy disagrees with
+  the placement. No host copies a root;
 - concrete and abstract GC references use versioned typed struct/array/i31
   recipes with graph identity established before recursive fields, preserving
   cycles and aliases;

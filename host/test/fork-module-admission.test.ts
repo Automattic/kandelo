@@ -249,8 +249,8 @@ describe("fm_admit_activation / fm_bind_activation", () => {
     // Non-trivial placement: later activations land at distinct bases, the
     // lowest gap each catalog fits.
     expect(m.bind(0, 7, 3).row).toEqual({ drive: 0, func: 0, statics: 0 });
-    expect(m.bind(1, 5, 0).row).toEqual({ drive: 19, func: 7, statics: 0 });
-    expect(m.bind(4, 2, 9).row).toEqual({ drive: 4 * 19, func: 12, statics: 3 });
+    expect(m.bind(1, 5, 0).row).toEqual({ drive: 20, func: 7, statics: 0 });
+    expect(m.bind(4, 2, 9).row).toEqual({ drive: 4 * 20, func: 12, statics: 3 });
   });
 
   it("compares every stored fact on re-admission", () => {

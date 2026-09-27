@@ -6917,6 +6917,15 @@
           "module": "env",
           "name": "__wpk_fork_resume_table",
           "table64": false
+        },
+        {
+          "element": "anyref",
+          "kind": "table",
+          "maximum": null,
+          "minimum": 0,
+          "module": "env",
+          "name": "__wpk_fork_static_root_catalog",
+          "table64": false
         }
       ],
       "static_root_catalog": {

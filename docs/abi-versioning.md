@@ -1133,6 +1133,21 @@ snapshot diff.
     precedes the parent's resume. The Node/browser host no longer unmaps a
     borrowed child's fork-module region after its replay. No export or
     record changed shape; the change is who releases the memory, and when.
+  - *A fixed-signature pthread entry.* fork-instrument emits
+    `wpk_fork_thread_entry(i32 table_index, ptr arg) -> ptr`
+    (`WPK_FORK_EXPORT_THREAD_ENTRY`) for every guest exporting
+    `__indirect_function_table`, and `wpk_fork_resume_thread` now calls
+    through the same convention. Under binaryen `--fpcast-emu` that is the
+    uniform `(i64 x N) -> i64` table type read from the binary; otherwise the
+    plain `(ptr) -> ptr` it always was. Additive for plain guests.
+  - *The guest fills the merged static-root catalog.* A guest with static
+    roots imports the fork module's `env.__wpk_fork_static_root_catalog`
+    (anyref) and exports `__wpk_fork_static_root_fill(i32 base) -> i32`
+    (`WPK_FORK_STATIC_ROOT_FILL_EXPORT`). The fork-module drive table grows
+    one slot per activation (`DRIVE_SLOT_STATIC_ROOT_FILL` = 19,
+    `DRIVE_SLOTS_PER_ACTIVATION` 19 -> 20), an internal host-module
+    contract rebuilt in lockstep. Every fork-instrumented artifact is
+    rebuilt; an older guest with roots has no shim for the module to call.
 
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were

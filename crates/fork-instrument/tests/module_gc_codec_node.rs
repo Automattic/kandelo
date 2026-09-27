@@ -580,7 +580,7 @@ function instantiate() {
         : new WebAssembly.Global({ value: "i32", mutable: true }, 0);
     } else if (descriptor.kind === "table") {
       namespace[descriptor.name] =
-        descriptor.name === "__wpk_fork_ref_gc_transit"
+        (descriptor.name === "__wpk_fork_ref_gc_transit" || descriptor.name === "__wpk_fork_static_root_catalog")
           ? transit
           : new WebAssembly.Table({
               element: "anyfunc",

@@ -59,6 +59,7 @@ import {
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
+  WPK_FORK_EXPORT_THREAD_ENTRY,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
   ABI_VERSION,
@@ -3566,18 +3567,14 @@ export async function centralizedWorkerMain(
             `pid=${pid}: fork child lost its pre-instantiation reference plan`,
           );
         }
-        // The merged static-root catalog the drive reads on a
-        // DRIVE_OP_STATIC_ROOT step has to hold the child's live roots before
-        // the install drives, at the bases the module placed at registration
-        // (census 201: a second, host-derived base map once put them where
-        // nothing looked).
-        fork.fillStaticRoots();
         // ONE install call for a COW and a vfork BORROWED child, of the main
         // thread or a pthread (`fm_child_install`): the module publishes a COW
         // child's launch root in its own control word, carves a borrowed
         // child's workspace, seeds every activation this worker bound,
         // attaches, drives the install plan, and nulls the merged static-root
         // catalog once the drive has rooted every static root in the transit.
+        // It fills that catalog first, too: each activation copies its own
+        // roots in with one `table.copy` (`__wpk_fork_static_root_fill`).
         fork.module().installChild(pid, childLaunchRoot, borrowedWorkspace);
         importedStatePlanner.clear();
         importedStatePlanner = null;
@@ -4352,8 +4349,14 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
  * buffer.
  */
 /**
- * Build the JS argument list for calling a wasm pthread entry function through
- * the indirect function table.
+ * Build the JS argument list for calling an UNINSTRUMENTED wasm pthread entry
+ * function through the indirect function table.
+ *
+ * A fork-instrumented guest does not need this: fork-instrument reads the
+ * table's calling convention off the binary and emits
+ * `wpk_fork_thread_entry(table_index, arg)` in it, which the fork path calls
+ * (lane F step 3c, ruling 2). A guest that was never instrumented has no such
+ * export, so its thread entry is still adapted here.
  *
  * Kandelo user programs are post-processed with binaryen's `--fpcast-emu` (see
  * optimize_wasm in scripts/ports/*), which rewrites every indirectly-called
@@ -4681,22 +4684,27 @@ export async function centralizedThreadWorkerMain(
     }
 
     const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
-    const threadArgs = buildThreadEntryArgs(threadFn, argPtr, ptrWidth);
     let result = 0;
     if (fork) {
       // The fork run loop: the thread function, or -- once a fork from this
       // thread has captured -- `wpk_fork_resume_thread`, which rewinds the
-      // parent's frames back into it.
+      // parent's frames back into it. Both are the guest's own fixed
+      // `(table_index, arg) -> ptr` entries, emitted by fork-instrument in the
+      // calling convention the guest's table actually uses (plain C, or
+      // binaryen's `--fpcast-emu`), so nothing here adapts the arguments.
+      const threadEntry = instance.exports[WPK_FORK_EXPORT_THREAD_ENTRY];
       const resumeThread = instance.exports.wpk_fork_resume_thread;
-      if (typeof resumeThread !== "function") {
+      if (typeof threadEntry !== "function" || typeof resumeThread !== "function") {
         throw new Error(
           `pid=${pid} tid=${tid}: fork-capable program is missing ` +
-            "wpk_fork_resume_thread",
+            `${WPK_FORK_EXPORT_THREAD_ENTRY} or wpk_fork_resume_thread; ` +
+            "rebuild it through the current fork-instrument",
         );
       }
+      type ThreadEntry = (index: number, arg: number | bigint) => unknown;
       const outcome = fork.run(
-        () => threadFn(...threadArgs),
-        () => (resumeThread as (index: number, arg: number | bigint) => unknown)(fnPtr, threadArg),
+        () => (threadEntry as ThreadEntry)(fnPtr, threadArg),
+        () => (resumeThread as ThreadEntry)(fnPtr, threadArg),
         () => kernelThreadExitStatus,
       );
       result = "exited" in outcome ? outcome.exited : Number(outcome.returned);
@@ -4706,7 +4714,7 @@ export async function centralizedThreadWorkerMain(
       fork.finish(false);
     } else {
       try {
-        const raw = threadFn(...threadArgs);
+        const raw = threadFn(...buildThreadEntryArgs(threadFn, argPtr, ptrWidth));
         result = Number(raw);
       } catch (e) {
         if (isWasmUnreachableTrap(e) && kernelThreadExitStatus !== null) {

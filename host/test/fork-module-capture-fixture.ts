@@ -81,6 +81,8 @@ export const DRIVE_SLOT_REWIND_END = 8;
 export const DRIVE_SLOT_ABORT_END = 9;
 export const DRIVE_SLOT_UNWIND_BEGIN = 10;
 export const DRIVE_SLOT_MODULE_STATE_SAVE = 13;
+/** `DRIVE_SLOT_STATIC_ROOT_FILL` in `fork-codec`'s drive plan. */
+export const DRIVE_SLOT_STATIC_ROOT_FILL = 19;
 
 /** `fm_phase` values, from the PHASE_* constants in crates/fork-module. */
 export const PHASE_IDLE = 0;
@@ -538,6 +540,31 @@ export function beginParentReplay(f: Fixture, activations: readonly number[] = [
 }
 
 /** A `() -> ()` wasm function, for drive slots called with no argument. */
+/**
+ * A wasm `(i32) -> i32` whose body is `body(base)`: what the module's drive
+ * calls through an activation's static-root fill slot.
+ */
+export function fillSlotThunk(body: (base: number) => number): CallableFunction {
+  const directory = mkdtempSync(join(tmpdir(), "fork-fill-slot-"));
+  try {
+    const watPath = join(directory, "fill.wat");
+    const wasmPath = join(directory, "fill.wasm");
+    writeFileSync(
+      watPath,
+      '(module (import "env" "fill" (func $f (param i32) (result i32)))' +
+        ' (func (export "fill") (param i32) (result i32) (call $f (local.get 0))))',
+    );
+    execFileSync("wat2wasm", [watPath, "-o", wasmPath]);
+    const instance = new WebAssembly.Instance(
+      new WebAssembly.Module(readFileSync(wasmPath)),
+      { env: { fill: body } },
+    );
+    return instance.exports.fill as CallableFunction;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 export function voidSlotThunk(body: () => void): CallableFunction {
   const directory = mkdtempSync(join(tmpdir(), "fork-void-slot-"));
   try {
@@ -781,6 +808,14 @@ function bindCatalogBases(
     }
     const next = sorted[index + 1] ?? activation + 1;
     const length = (next - activation) * CATALOG_STRIDE;
+    // A guest with static roots exports `__wpk_fork_static_root_fill`, and
+    // the module drives it before the capture opens; this one copies nothing
+    // (the fixture interns roots by slot) and reports the placed count.
+    const table = f.instance.driveTable;
+    const base = driveBase(activation);
+    const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+    if (table.length < needed) table.grow(needed - table.length);
+    table.set(base + DRIVE_SLOT_STATIC_ROOT_FILL, fillSlotThunk(() => length) as never);
     const row = bindActivation(f.x, f.memory, activation, length, length);
     expect(f.errno(), `fm_bind_activation(${activation})`).toBe(0);
     expect(row?.func, `activation ${activation}'s function catalog`).toBe(activation * CATALOG_STRIDE);

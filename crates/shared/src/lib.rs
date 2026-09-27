@@ -2994,6 +2994,15 @@ pub mod abi {
     pub const WPK_FORK_STATIC_ROOT_CATALOG_VERSION: u16 = 1;
     pub const WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE: u16 = 12;
     pub const WPK_FORK_STATIC_ROOT_HARVEST_EXPORT: &str = "__wpk_fork_static_root_harvest";
+    /// `(base: i32) -> i32`: copy this activation's own static-root catalog
+    /// into the fork module's merged catalog (which the guest imports under
+    /// [`WPK_FORK_STATIC_ROOT_CATALOG_EXPORT`]) at `base`, with one
+    /// `table.copy`. Returns the root count, or -1 when the merged catalog is
+    /// too short. Emitted only for a guest with at least one static root. The
+    /// fork module drives it (drive slot `DRIVE_SLOT_STATIC_ROOT_FILL`) before
+    /// a capture and before a child's install, so no host copies references
+    /// one `Table.set` at a time.
+    pub const WPK_FORK_STATIC_ROOT_FILL_EXPORT: &str = "__wpk_fork_static_root_fill";
 
     /// Versioned instrumentation claims required by ABI 43.
     ///
@@ -3160,6 +3169,15 @@ pub mod abi {
         "wpk_fork_module_table_state_restore";
     pub const WPK_FORK_EXPORT_RESUME_START: &str = "wpk_fork_resume_start";
     pub const WPK_FORK_EXPORT_RESUME_THREAD: &str = "wpk_fork_resume_thread";
+    /// `(table_index: i32, arg: ptr) -> ptr`: call the pthread start routine
+    /// at `table_index` of `__indirect_function_table` with `arg`, in the
+    /// calling convention the guest's table actually uses. A guest
+    /// post-processed with binaryen's `--fpcast-emu` has every table entry
+    /// rewritten to one uniform `(i64 x N) -> i64` thunk; fork-instrument
+    /// reads that type from the binary and emits the matching call, so the
+    /// fork module's run loop can call every guest's thread entry through
+    /// one fixed signature, and no host adapts arguments per engine.
+    pub const WPK_FORK_EXPORT_THREAD_ENTRY: &str = "wpk_fork_thread_entry";
     pub const WPK_FORK_EXPORT_REWIND_BEGIN: &str = "wpk_fork_rewind_begin";
     pub const WPK_FORK_EXPORT_REWIND_END: &str = "wpk_fork_rewind_end";
     pub const WPK_FORK_EXPORT_STATE: &str = "wpk_fork_state";
@@ -3486,6 +3504,21 @@ pub mod abi {
             table64: false,
             element: FuncRef,
             minimum: 1,
+            maximum: None,
+        },
+        // The fork module's merged static-root catalog, which the guest's
+        // `__wpk_fork_static_root_fill` copies its own roots into (lane F
+        // step 3c). Imported by EVERY fork-instrumented guest, roots or not,
+        // for the reason the two tables above are: one uniform contract, and
+        // an owned table is not reconstructed state, so the imported-table
+        // recipe section must not name it. Minimum 0: the module grows it as
+        // it places catalogs and it starts empty.
+        ProgramArtifactTableImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
+            table64: false,
+            element: AnyRef,
+            minimum: 0,
             maximum: None,
         },
     ];
@@ -4621,7 +4654,7 @@ pub mod abi {
                 previous_import = current;
             }
 
-            assert_eq!(WPK_FORK_REQUIRED_TABLE_IMPORTS.len(), 2);
+            assert_eq!(WPK_FORK_REQUIRED_TABLE_IMPORTS.len(), 3);
             let mut previous_table_import = ("", "");
             for requirement in WPK_FORK_REQUIRED_TABLE_IMPORTS {
                 let current = (requirement.module, requirement.name);

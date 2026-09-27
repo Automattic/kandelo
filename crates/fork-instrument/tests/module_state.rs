@@ -1634,6 +1634,9 @@ fn node_fresh_instance_restores_no_seed_module_state_and_segment_lifetime() {
             element: "anyfunc", initial: 1,
           }),
           __wpk_fork_ref_gc_transit: gcTransit,
+          // The fork module's merged static-root catalog, which every
+          // instrumented guest imports for its fill shim.
+          __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
           __wpk_fork_module_state_record_reserve:
             mode === "capture" ? reserve : unreachableFrame,
           __wpk_fork_module_state_record_commit:

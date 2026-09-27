@@ -2476,6 +2476,10 @@ fn render_ts_module() -> String {
             "WPK_FORK_STATIC_ROOT_HARVEST_EXPORT",
             shared::abi::WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
         ),
+        (
+            "WPK_FORK_STATIC_ROOT_FILL_EXPORT",
+            shared::abi::WPK_FORK_STATIC_ROOT_FILL_EXPORT,
+        ),
     ] {
         out.push_str(&format!("export const {name} = {value:?} as const;\n"));
     }
@@ -2735,6 +2739,10 @@ fn render_ts_module() -> String {
         (
             "WPK_FORK_EXPORT_RESUME_THREAD",
             shared::abi::WPK_FORK_EXPORT_RESUME_THREAD,
+        ),
+        (
+            "WPK_FORK_EXPORT_THREAD_ENTRY",
+            shared::abi::WPK_FORK_EXPORT_THREAD_ENTRY,
         ),
         (
             "WPK_FORK_REFERENCE_IMPORT_DECODE_ANYREF",

@@ -144,8 +144,15 @@ fn fresh_instance_catalog_decodes_to_the_identity_observed_by_ref_eq() {
 import fs from "node:fs";
 
 const module = new WebAssembly.Module(fs.readFileSync(process.argv[2]));
-const parent = new WebAssembly.Instance(module);
-const child = new WebAssembly.Instance(module);
+// A guest with static roots imports the fork module's merged catalog for
+// its fill shim (`__wpk_fork_static_root_fill`); each instance gets its own.
+const merged = () => ({
+  env: {
+    __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
+  },
+});
+const parent = new WebAssembly.Instance(module, merged());
+const child = new WebAssembly.Instance(module, merged());
 const parentCatalog = parent.exports.__wpk_fork_static_root_catalog;
 const childCatalog = child.exports.__wpk_fork_static_root_catalog;
 

@@ -98,6 +98,13 @@ const CAPTURE_ENCODE_THUNK_IMPORT: &str = "__wpk_fork_capture_encode";
 /// See [`DRIVE_SLOT_GC_ENCODE`].
 const DRIVE_SLOT_EXN_THROW_RECIPE: i32 =
     fork_codec::drive_plan::DRIVE_SLOT_EXN_THROW_RECIPE as i32;
+/// Drive-table slot the host binds `__wpk_fork_static_root_fill` into. See
+/// [`DRIVE_SLOT_GC_ENCODE`] for why this is read rather than copied.
+const DRIVE_SLOT_STATIC_ROOT_FILL: i32 =
+    fork_codec::drive_plan::DRIVE_SLOT_STATIC_ROOT_FILL as i32;
+/// The placeholder the module declares for driving one activation's
+/// static-root fill shim; rewritten like the probe and encode ones.
+const STATIC_ROOT_FILL_THUNK_IMPORT: &str = "__wpk_fork_fill_static_roots";
 /// The cross-activation exception throw placeholder: the module asks the
 /// activation that OWNS a tag to raise the exception, because only that
 /// activation can raise it with the right tag.
@@ -1202,6 +1209,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_capture_encode into a thunk")?;
     inject_exn_throw_thunk(&mut module)
         .context("rewriting __wpk_fork_exn_throw into a thunk")?;
+    inject_static_root_fill_thunk(&mut module)
+        .context("rewriting __wpk_fork_fill_static_roots into a thunk")?;
     inject_transit_grow_thunk(&mut module)
         .context("rewriting __wpk_fork_transit_grow into a thunk")?;
     inject_static_root_grow_thunk(&mut module)
@@ -1620,6 +1629,23 @@ fn inject_capture_encode_thunk(module: &mut Module) -> Result<()> {
 /// decoded graph; see `__wpk_fork_ref_exn_broker_throw_recipe` in `lib.rs`.
 fn inject_exn_throw_thunk(module: &mut Module) -> Result<()> {
     inject_forwarding_drive_thunk(module, EXN_THROW_THUNK_IMPORT, DRIVE_SLOT_EXN_THROW_RECIPE, &[])
+}
+
+/// Rewrite `__wpk_fork_fill_static_roots(activation, base) -> copied` into a
+/// local thunk that `call_indirect`s that activation's
+/// `__wpk_fork_static_root_fill(base)`.
+///
+/// The copy is the guest's own `table.copy` from its catalog into the
+/// module's merged one (fork-instrument's `emit_fill_shim`); the module only
+/// decides when, and at which base. That is the whole of what the hosts' copy
+/// loops did, minus holding a reference (lane F step 3c, ruling 3).
+fn inject_static_root_fill_thunk(module: &mut Module) -> Result<()> {
+    inject_forwarding_drive_thunk(
+        module,
+        STATIC_ROOT_FILL_THUNK_IMPORT,
+        DRIVE_SLOT_STATIC_ROOT_FILL,
+        &[ValType::I32],
+    )
 }
 
 fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {

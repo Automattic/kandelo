@@ -168,7 +168,7 @@ function importsFor(module, call) {
     switch (descriptor.kind) {
       case "table":
         namespace[descriptor.name] = new WebAssembly.Table({
-          element: descriptor.name === "__wpk_fork_ref_gc_transit" ? "anyref" : "anyfunc",
+          element: (descriptor.name === "__wpk_fork_ref_gc_transit" || descriptor.name === "__wpk_fork_static_root_catalog") ? "anyref" : "anyfunc",
           initial: 16,
         });
         break;

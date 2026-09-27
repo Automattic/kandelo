@@ -187,6 +187,9 @@ describe("activation drive bindings", () => {
       ["wpk_fork_module_table_read", constant("DRIVE_SLOT_TABLE_READ")],
       ["wpk_fork_module_table_length", constant("DRIVE_SLOT_TABLE_LENGTH")],
       ["wpk_fork_module_table_apply", constant("DRIVE_SLOT_TABLE_APPLY")],
+      // The guest's own static-root copy into the merged catalog, which the
+      // module drives before a capture and a child's install.
+      ["__wpk_fork_static_root_fill", constant("DRIVE_SLOT_STATIC_ROOT_FILL")],
     ]);
     expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
     for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {

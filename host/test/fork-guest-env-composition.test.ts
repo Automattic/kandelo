@@ -85,6 +85,12 @@ function moduleExportsFor(guest: WebAssembly.Module): Record<string, unknown> {
     initial: 1,
   });
   exports.__wpk_fork_unwind = new WebAssembly.Tag({ parameters: [] });
+  // The merged static-root catalog every instrumented guest imports for its
+  // `__wpk_fork_static_root_fill` shim (lane F step 3c).
+  exports.__wpk_fork_static_root_catalog = new WebAssembly.Table({
+    element: "anyref" as "externref",
+    initial: 0,
+  });
   return exports;
 }
 

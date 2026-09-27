@@ -151,6 +151,11 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   { slot: 16, name: "wpk_fork_module_table_read", required: true },
   { slot: 17, name: "wpk_fork_module_table_length", required: true },
   { slot: 18, name: "wpk_fork_module_table_apply", required: true },
+  // The guest's own static-root copy into the module's merged catalog; the
+  // module drives it before a capture and before a child's install. Not
+  // required: a guest with no static roots emits no shim, and the module
+  // never drives an activation that placed none.
+  { slot: 19, name: "__wpk_fork_static_root_fill", required: false },
 ] as const;
 
 /** One row of `fm_child_plan`; `resolve` is a `CHILD_PLAN_RESOLVE_*`. */

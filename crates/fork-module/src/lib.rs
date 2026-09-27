@@ -231,6 +231,12 @@ mod wasm {
         /// through the drive table. NEVER RETURNS -- the callee throws.
         fn __wpk_fork_exn_throw(activation: u32, recipe: u32);
 
+        /// Have `activation` copy its static roots into the merged catalog at
+        /// `base`, returning how many it copied or -1 when the catalog is too
+        /// short. Injector-rewritten to a `call_indirect` of the guest's
+        /// `__wpk_fork_static_root_fill` through the drive table.
+        fn __wpk_fork_fill_static_roots(activation: u32, base: u32) -> i32;
+
         /// The guest table shims, reached through `activation`'s drive-table
         /// slice. Each is injector-rewritten into a thunk that `call_indirect`s
         /// the guest's `wpk_fork_module_table_{read,length,apply}` with the
@@ -423,6 +429,42 @@ mod wasm {
         // SAFETY: after injection this is a local `table.size` + `table.grow`
         // on the module's own static-root catalog, and nothing else.
         unsafe { __wpk_fork_static_root_grow(needed) }
+    }
+
+    /// Fill the merged static-root catalog from every bound activation's own.
+    ///
+    /// A capture recognises a statically initialised reference by finding it
+    /// in the merged catalog, and a child's install rebuilds one by reading it
+    /// back from there, so both must see the live roots. Each activation
+    /// copies its own with one `table.copy` (fork-instrument's
+    /// `__wpk_fork_static_root_fill`); the module decides when, and hands each
+    /// activation the base it placed at bind. The hosts used to copy the roots
+    /// one `Table.set` at a time before every capture and install
+    /// (lane F step 3c, ruling 3).
+    ///
+    /// Only activations with at least one root are asked -- a guest with none
+    /// exports no fill shim, so its drive slot is unbound. A shim that copied
+    /// a different count than the module placed means the two disagree about
+    /// the layout, which is refused (`EINVAL`) rather than trusted.
+    fn fill_static_roots() -> Result<(), Errno> {
+        let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
+        for_each_catalog_range(REC_KIND_STATIC_ROOT_BASE, |activation, base, len| {
+            if len != 0 {
+                ranges.push((activation, base, len));
+            }
+        });
+        for (activation, base, len) in ranges {
+            // SAFETY: after injection this is a local thunk that
+            // `call_indirect`s the guest's `__wpk_fork_static_root_fill`
+            // through `drive_table[base(activation) +
+            // DRIVE_SLOT_STATIC_ROOT_FILL]`, which the host bound when it
+            // registered the activation (it has roots, so it has the shim).
+            let copied = unsafe { __wpk_fork_fill_static_roots(activation, base) };
+            if copied < 0 || copied as u32 != len {
+                return Err(Errno::EINVAL);
+            }
+        }
+        Ok(())
     }
 
     /// Safe wrapper over the injector-wired probe placeholder.
@@ -8530,6 +8572,10 @@ mod wasm {
                 return Err(Errno::EINVAL);
             }
             format()?;
+            // The capture is about to ask which merged slot holds a
+            // statically initialised reference, so the catalog must hold them
+            // now. Before the session opens, so a refused fill resets nothing.
+            fill_static_roots()?;
             open_capture_session();
             begin_capture_impl(channel_base as u64)
         });
@@ -12036,6 +12082,10 @@ mod wasm {
         borrowed_bytes: usize,
     ) -> Result<(), Errno> {
         require_phase(PHASE_IDLE)?;
+        // The install's drive reads the merged static-root catalog on every
+        // DRIVE_OP_STATIC_ROOT step, so it must hold this child's live roots
+        // first; the install nulls it again once the drive has run.
+        fill_static_roots()?;
         // Either word non-zero makes this a borrowed (vfork) child, and
         // `set_borrowed_workspace_impl` refuses a region with the other one
         // zero: a base with no size, or a size with no base, is not a

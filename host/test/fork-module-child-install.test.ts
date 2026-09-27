@@ -42,6 +42,10 @@ import {
   voidSlotThunk,
   type Fixture,
 } from "./fork-module-capture-fixture";
+import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
+
+/** One activation's drive-table slice, as the host binds it. */
+const DRIVE_STRIDE = FORK_ACTIVATION_DRIVE_BINDINGS.length;
 
 const EINVAL = 22;
 const PID = 7171;
@@ -112,7 +116,7 @@ function capturedParent(fixedPrefix = 0): { f: Fixture; recipes: number[]; ancho
     expect(admitActivation(f, 0, { fixedPrefix }), "admitting activation 0").toBe(0);
     const base = driveBase(0);
     const table = f.instance.driveTable;
-    if (table.length < base + 19) table.grow(base + 19 - table.length);
+    if (table.length < base + DRIVE_STRIDE) table.grow(base + DRIVE_STRIDE - table.length);
     for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
       table.set(base + slot, saveSlotThunk(() => {}) as never);
     }
@@ -170,7 +174,7 @@ function childOf(
   const table = instance.driveTable;
   for (const activation of [0, ...sides]) {
     const base = driveBase(activation);
-    if (table.length < base + 19) table.grow(base + 19 - table.length);
+    if (table.length < base + DRIVE_STRIDE) table.grow(base + DRIVE_STRIDE - table.length);
     for (const slot of [
       DRIVE_SLOT_RESTORE,
       DRIVE_SLOT_FINISH_RESTORE,
@@ -184,7 +188,7 @@ function childOf(
   }
 
   const roots = options.roots ?? [];
-  const catalog = instance.staticRootCatalog;
+  const catalog = (instance.exports.__wpk_fork_static_root_catalog as WebAssembly.Table);
   if (catalog.length < roots.length) catalog.grow(roots.length - catalog.length);
   roots.forEach((root, slot) => catalog.set(slot, root));
 
@@ -230,8 +234,8 @@ describe("fm_child_install", () => {
       expect(child.transit.get(recipe + 1), `recipe ${recipe}`).toBe(identities[ordinal]);
     });
     // ...and the merged catalog that fed the drive holds none of them now.
-    for (let slot = 0; slot < child.instance.staticRootCatalog.length; slot += 1) {
-      expect(child.instance.staticRootCatalog.get(slot), `catalog slot ${slot}`).toBe(
+    for (let slot = 0; slot < (child.instance.exports.__wpk_fork_static_root_catalog as WebAssembly.Table).length; slot += 1) {
+      expect((child.instance.exports.__wpk_fork_static_root_catalog as WebAssembly.Table).get(slot), `catalog slot ${slot}`).toBe(
         null,
       );
     }
@@ -393,7 +397,7 @@ describe("fm_child_install", () => {
     for (const activation of [0, 1]) {
       const base = driveBase(activation);
       const table = f.instance.driveTable;
-      if (table.length < base + 19) table.grow(base + 19 - table.length);
+      if (table.length < base + DRIVE_STRIDE) table.grow(base + DRIVE_STRIDE - table.length);
       for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
         table.set(base + slot, saveSlotThunk(() => {}) as never);
       }

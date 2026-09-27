@@ -18,11 +18,17 @@ use std::collections::HashMap;
 use walrus::{
     AbstractHeapType, ConstExpr, ConstOp, ElementId, ElementItems, FunctionBuilder, GlobalId, GlobalKind,
     HeapType, Module, RawCustomSection, RefType, TableId, ValType,
-    ir::{RefNull, TableFill, TableGet, TableInit, TableSet},
+    ir::{BinaryOp, RefNull, TableCopy, TableFill, TableGet, TableInit, TableSet, TableSize},
 };
 
 pub const EXPORT: &str = "__wpk_fork_static_root_catalog";
 pub const HARVEST_EXPORT: &str = "__wpk_fork_static_root_harvest";
+pub const FILL_EXPORT: &str = wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_FILL_EXPORT;
+/// The fork module's merged catalog, which the fill shim copies into. The
+/// module exports it under the same name the guest exports its own catalog
+/// by; imports and exports are separate namespaces, so the guest imports the
+/// module's `env.__wpk_fork_static_root_catalog` and still exports its own.
+pub const MERGED_IMPORT: &str = wasm_posix_shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT;
 pub const FORMAT_SECTION: &str = "kandelo.wpk_fork.static_root_catalog";
 pub const FORMAT_MAGIC: [u8; 4] = *b"KFSR";
 pub const FORMAT_VERSION: u16 = 1;
@@ -295,6 +301,13 @@ pub fn inject(module: &mut Module, plan: StaticReferenceCatalogPlan) {
     }
     let harvest = builder.finish(Vec::new(), &mut module.funcs);
     module.exports.add(HARVEST_EXPORT, harvest);
+    // Every guest imports the merged catalog (a required table import, see
+    // `WPK_FORK_REQUIRED_TABLE_IMPORTS`); only a guest with roots has
+    // anything to copy into it.
+    let (merged, _) = module.add_import_table("env", MERGED_IMPORT, false, 0, None, RefType::ANYREF);
+    if count != 0 {
+        emit_fill_shim(module, table, merged, count as u32);
+    }
 
     let mut descriptor = Vec::with_capacity(usize::from(FORMAT_HEADER_SIZE));
     descriptor.extend_from_slice(&FORMAT_MAGIC);
@@ -309,6 +322,78 @@ pub fn inject(module: &mut Module, plan: StaticReferenceCatalogPlan) {
         name: FORMAT_SECTION.into(),
         data: descriptor,
     });
+}
+
+/// Emit `__wpk_fork_static_root_fill(base: i32) -> i32`: copy this
+/// activation's harvested roots into the fork module's merged catalog at
+/// `base`.
+///
+/// # Why the guest does the copy
+///
+/// A fork capture recognises a statically initialised reference by finding it
+/// in the module's MERGED catalog (activation `a`'s roots at
+/// `[base(a), base(a) + len_a)`), and a child's install rebuilds one by
+/// reading it back from there. Both need the merged catalog to hold the live
+/// roots at that moment, and each activation's roots sit in its own exported
+/// table. The hosts used to copy them one `Table.get` / `Table.set` at a time
+/// before every capture and every child install (`ForkMergedStaticRoots` on
+/// Node and the browser, `fill_static_root_catalog` on host-native): per-slot
+/// reference traffic through the host, written twice. A Wasm module can copy
+/// between two tables it can name with one `table.copy`, and the guest can
+/// name both -- its own catalog and, imported, the module's merged one -- so
+/// the copy is the guest's, the decision WHEN to copy is the fork module's (it
+/// drives this through its drive table), and no host handles a root. The same
+/// shape as `__wpk_fork_place_resume_thunks`.
+///
+/// # The growth check
+///
+/// The module grows its merged catalog to cover every range it places, when
+/// it places it (`fm_bind_activation`), so a short table means the module's
+/// placement and this guest disagree. `table.copy` would trap on it; this
+/// answers -1 instead so the module can refuse the fork with an errno that
+/// names the disagreement rather than a trap that names nothing.
+///
+/// Only emitted for a guest with at least one root: a guest without any has
+/// nothing to copy, and the module never drives an activation that placed no
+/// roots.
+fn emit_fill_shim(module: &mut Module, own: TableId, merged: TableId, count: u32) {
+    let base = module.locals.add(ValType::I32);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    builder.name(FILL_EXPORT.into());
+    {
+        let mut body = builder.func_body();
+        // Refuse unless `base <= size(merged) - count`, written so neither
+        // side can wrap: `count <= size` first, then the difference.
+        body.i32_const(count as i32)
+            .instr(TableSize { table: merged })
+            .binop(BinaryOp::I32GtU)
+            .if_else(
+                None,
+                |then| {
+                    then.i32_const(-1).return_();
+                },
+                |_| {},
+            );
+        body.local_get(base)
+            .instr(TableSize { table: merged })
+            .i32_const(count as i32)
+            .binop(BinaryOp::I32Sub)
+            .binop(BinaryOp::I32GtU)
+            .if_else(
+                None,
+                |then| {
+                    then.i32_const(-1).return_();
+                },
+                |_| {},
+            );
+        body.local_get(base)
+            .i32_const(0)
+            .i32_const(count as i32)
+            .instr(TableCopy { src: own, dst: merged })
+            .i32_const(count as i32);
+    }
+    let fill = builder.finish(vec![base], &mut module.funcs);
+    module.exports.add(FILL_EXPORT, fill);
 }
 
 fn can_participate_in_ref_eq(module: &Module, reference: RefType) -> bool {

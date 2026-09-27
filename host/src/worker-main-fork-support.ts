@@ -52,7 +52,6 @@ import {
   type ProcessForkMode,
 } from "./generated/abi";
 import { ContinuationAllocationError } from "./fork-continuation";
-import { ForkMergedStaticRoots } from "./fork-merged-static-roots";
 import {
   buildForkGuestImports,
   FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
@@ -222,7 +221,6 @@ export class ForkWorker {
   readonly identity: ForkImportIdentity;
   /** The generation fence as the guest imports it. */
   readonly tableReplication: ForkActivationTableReplication;
-  private readonly staticRoots: ForkMergedStaticRoots;
   /** Set once this Worker's dynamic loader exists; see `bindArchive`. */
   private archive: {
     readonly dlopen: DlopenSupport;
@@ -280,9 +278,6 @@ export class ForkWorker {
     // The module DEFINES the unwind tag; a host that minted its own would
     // disagree with the module the moment the module threw one.
     this.unwindTag = forkUnwindTagFrom(this.instance.exports, `${label} unwind`);
-    // Read at capture, to recognise a statically initialised reference, and
-    // at a child's install, to rebuild one.
-    this.staticRoots = new ForkMergedStaticRoots(this.instance.staticRootCatalog);
     this.activations = new ForkActivations(
       this.backend,
       `${label}: fork activations`,
@@ -369,11 +364,6 @@ export class ForkWorker {
   registerMain(instance: WebAssembly.Instance): void {
     this.activations.register({ activationId: 0, instance });
     this.mainRegistered = true;
-  }
-
-  /** Copy every live activation's static roots into the module's catalog. */
-  fillStaticRoots(): void {
-    this.staticRoots.fill(this.activations.ordered());
   }
 
   /**
@@ -474,9 +464,8 @@ export class ForkWorker {
       throw error;
     }
     try {
-      // The capture is about to ask which slot holds a statically initialised
-      // reference, so the merged catalog has to hold them now.
-      this.fillStaticRoots();
+      // The module fills its merged static-root catalog itself, from each
+      // activation's own, before it opens the capture.
       this.options.publishLaunchRoot(0);
       this.options.publishLaunchRoot(this.module().parentBeginCapture(this.options.channelOffset));
     } catch (error) {
