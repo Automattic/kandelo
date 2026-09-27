@@ -6838,45 +6838,6 @@ export class CentralizedKernelWorker {
     };
   }
 
-  private readProcessUsize(
-    view: DataView,
-    offset: number,
-    pointerWidth: 4 | 8,
-    field: string,
-  ): number {
-    const raw = pointerWidth === 8
-      ? view.getBigUint64(offset, true)
-      : view.getUint32(offset, true);
-    try {
-      return checkedWasmPointer(raw, pointerWidth, field);
-    } catch (error) {
-      throw new KernelScratchError(
-        error instanceof Error ? error.message : `${field} is invalid`,
-        EINVAL,
-      );
-    }
-  }
-
-  private writeProcessUsize(
-    view: DataView,
-    offset: number,
-    value: number,
-    pointerWidth: 4 | 8,
-    field: string,
-  ): void {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new KernelScratchError(`${field} is invalid`, EIO);
-    }
-    if (pointerWidth === 8) {
-      view.setBigUint64(offset, BigInt(value), true);
-    } else {
-      if (value > 0xffff_ffff) {
-        throw new KernelScratchError(`${field} exceeds wasm32 size_t`, EIO);
-      }
-      view.setUint32(offset, value, true);
-    }
-  }
-
   private checkedAlignUp(
     value: number,
     alignment: number,
@@ -6905,20 +6866,6 @@ export class CentralizedKernelWorker {
   ): void {
     const errno = error instanceof KernelScratchError ? error.errno : EFAULT;
     this.completeChannelRawAndRelisten(channel, -1, errno, entry);
-  }
-
-  private checkedKernelWirePointer(pointer: number): number {
-    if (
-      !Number.isSafeInteger(pointer) ||
-      pointer < 0 ||
-      pointer > 0xffff_ffff
-    ) {
-      throw new KernelScratchError(
-        "kernel wire pointer does not fit its u32 field",
-        EIO,
-      );
-    }
-    return pointer;
   }
 
   /**
@@ -22307,29 +22254,8 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Read a null-terminated string from process memory at the given pointer.
-   * The caller supplies the protocol-specific bound; not every C string is a
-   * path.
-   */
-  private readCStringFromProcess(
-    mem: Uint8Array,
-    ptr: number,
-    maxLen: number,
-  ): string {
-    if (ptr === 0) return "";
-    let len = 0;
-    while (ptr + len < mem.length && mem[ptr + len] !== 0 && len < maxLen) {
-      len++;
-    }
-    // .slice() copies from SharedArrayBuffer into a regular ArrayBuffer
-    // because TextDecoder.decode() doesn't accept SharedArrayBuffer views.
-    return new TextDecoder().decode(mem.slice(ptr, ptr + len));
-  }
-
-  /**
-   * Read an exec pathname without allowing the generic C-string helper's
-   * bounded scan to turn an overlong or inaccessible pathname into a
-   * different, truncated path.
+   * Read an exec pathname without allowing a bounded C-string scan to turn
+   * an overlong or inaccessible pathname into a different, truncated path.
    */
   private readExecPathFromProcess(
     mem: Uint8Array,
