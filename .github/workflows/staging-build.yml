@@ -1333,6 +1333,9 @@ jobs:
             cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
+            # Every built program imports from env only what the host
+            # provides (HOST_ENV_IMPORTS + the fork runtime's imports).
+            bash scripts/check-program-env-imports.sh
             bash scripts/build-rootfs.sh
           '
 
