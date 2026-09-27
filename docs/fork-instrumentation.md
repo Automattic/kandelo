@@ -232,10 +232,20 @@ The continuation belongs to the channel that issued `SYS_FORK`. For a
 main-thread fork this is the process worker's channel, and the child enters `_start` before
 `wpk_fork_rewind_begin` replays to the saved call site.
 
-Each process worker or pthread worker owns a separate host-side continuation
-object. This is load-bearing for pthreads: thread instances share linear
-memory, but separately allocated mappings and per-worker replay cursors prevent
-their unwinds from sharing frame storage.
+Each process worker or pthread worker owns a separate co-resident fork module
+instance, mapped into its own region. This is load-bearing for pthreads:
+thread instances share linear memory, but separately allocated mappings and
+per-worker replay cursors prevent their unwinds from sharing frame storage.
+
+Both kinds of worker run the same host code for it: one `ForkWorker`
+(`host/src/worker-main-fork-support.ts`) instantiates the module, serves the
+guest's `kernel_fork` import and runs the guest entry in the loop that seals
+a capture, issues SYS_FORK and replays. The process and pthread mains used to
+carry a copy each, and the copies drifted (the pthread one never filled the
+static-root catalog before a capture and never reported why a fork aborted);
+what legitimately differs is passed in, not branched on: where the module's
+region comes from, where the launch root is published, and which entry pair
+runs.
 
 For `fork()` from a pthread worker, the host must preserve the pthread entry
 context as well as the buffer:
@@ -245,11 +255,12 @@ context as well as the buffer:
   `attachThreadChannel(attachment, offset)` records that kernel-assigned
   identity, pthread entry table index, and userdata for the thread channel;
   host code cannot provide or substitute a PID/TID.
-- `centralizedThreadWorkerMain` overrides `kernel_fork` for instrumented modules
-  and drives `wpk_fork_unwind_begin` / `wpk_fork_state` /
-  `wpk_fork_rewind_begin` around the pthread function, using
-  a dynamically mapped root chunk. `channelOffset - FORK_BUF_SIZE` now stores
-  only the active root address used by the kernel-worker fork handoff.
+- `centralizedThreadWorkerMain` binds `kernel_fork` to its `ForkWorker` for
+  instrumented modules and runs the pthread function through that worker's
+  loop (`wpk_fork_resume_thread` re-enters it to rewind). The fork module
+  drives the guest's unwind and rewind entry points itself.
+  `channelOffset - FORK_BUF_SIZE` stores only the active root address used by
+  the kernel-worker fork handoff.
 - `handleFork` passes one `ForkLaunchRequest` through the host `onFork`
   callback. Its discriminated continuation context always carries the exact
   linked-frame anchor. For pthread forks it additionally carries `fnPtr`,

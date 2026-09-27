@@ -1220,11 +1220,16 @@ const auditAllowances: AuditAllowance[] = [
     why: "This replay-capable main activation receives reconstructed process imports and caller-owned process memory, never kernel memory.",
   },
   {
-    key: "host/src/worker-main.ts::centralizedWorkerMain::wasm-instance-authority::WebAssembly.instantiate(module, importObject)",
+    key: "host/src/worker-main.ts::runWasiProcess::wasm-instance-authority::WebAssembly.instantiate(module, importObject)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    count: 2,
-    why: "These two non-replay process launch paths instantiate user modules against caller-owned process memory, never kernel memory.",
+    why: "This non-replay WASI process launch instantiates a user module against caller-owned process memory, never kernel memory.",
+  },
+  {
+    key: "host/src/worker-main.ts::runUninstrumentedProcess::wasm-instance-authority::WebAssembly.instantiate(module, importObject)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This non-replay, uninstrumented process launch instantiates a user module against caller-owned process memory, never kernel memory.",
   },
   {
     key: "host/src/kernel-scratch.ts::intrinsicWasmMemoryBuffer::kernel-memory-escape::intrinsicApply( intrinsicMemoryBuffer, memory, [], )",

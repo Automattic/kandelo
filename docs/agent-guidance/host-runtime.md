@@ -158,7 +158,11 @@ New capture/replay/orchestration logic belongs in the Rust fork-module
 (`crates/fork-module`) and `crates/fork-codec`, driven through the `fm_*`
 host↔module contract — not in new TypeScript sequencing in
 `host/src/fork-module-backend.ts`, `host/src/fork-process-continuation.ts`, or
-the fork paths of `host/src/worker-main.ts`. The `fm_*` surface is the internal
+the fork paths of `host/src/worker-main.ts`. A Worker's fork machinery (its
+fork module, the `kernel_fork` import and the run loop) is written once, in
+`ForkWorker` (`host/src/worker-main-fork-support.ts`), and is counted in
+worker-main's surface measures, so moving code there is never a reduction.
+The `fm_*` surface is the internal
 host↔module contract (rebuilt in lockstep with the module), NOT the guest ABI;
 the frozen guest contract is the `__wpk_fork_*` exports and `kandelo.wpk_fork.*`
 custom sections. Prefer a coarse module entry that sequences guest-export drive

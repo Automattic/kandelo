@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CHANNEL_STATUS_COMPLETE,
+  CH_ARG_SIZE,
+  CH_ARGS,
   CH_ERRNO,
   CH_RETURN,
   CH_STATUS,
@@ -14,6 +16,10 @@ import {
   PROCESS_STARTUP_MAX_ENVP_COUNT,
 } from "../src/generated/abi";
 import { buildKernelImportsForTest } from "../src/worker-main";
+import {
+  processForkMode,
+  sendForkSyscall,
+} from "../src/worker-main-fork-support";
 
 const E2BIG = 7;
 const EFAULT = 14;
@@ -311,13 +317,14 @@ describe("process startup metadata capacity contract", () => {
 
 describe("process fork-mode import contract", () => {
   it("routes ordinary fork and vfork to distinct syscalls", () => {
+    // The routing lives in the shared fork path (`ForkWorker`,
+    // host/src/worker-main-fork-support.ts) since lane F step 3b; the default
+    // `kernel_fork` below no longer issues any syscall.
     const memory = new WebAssembly.Memory({
       initial: 1,
       maximum: 1,
       shared: true,
     });
-    const imports = buildKernelImportsForTest(memory, 0, 4);
-    const kernelFork = imports.kernel_fork as (mode: number) => number;
     const view = new DataView(memory.buffer);
     view.setBigInt64(CH_RETURN, 73n, true);
     view.setUint32(CH_ERRNO, 0, true);
@@ -328,23 +335,39 @@ describe("process fork-mode import contract", () => {
         return "ok";
       },
     );
+    const sealed = { prefixBytes: 32, scratchBytes: 4096 };
 
     try {
-      expect(kernelFork(PROCESS_FORK_MODE_FORK)).toBe(73);
+      expect(sendForkSyscall(memory, 0, PROCESS_FORK_MODE_FORK, sealed)).toBe(73);
       expect(view.getUint32(CH_SYSCALL, true)).toBe(
         HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
       );
-      expect(kernelFork(PROCESS_FORK_MODE_VFORK)).toBe(73);
+      expect(view.getBigInt64(CH_ARGS, true)).toBe(0n);
+      expect(sendForkSyscall(memory, 0, PROCESS_FORK_MODE_VFORK, sealed)).toBe(73);
       expect(view.getUint32(CH_SYSCALL, true)).toBe(
         HOST_INTERCEPTED_SYSCALLS.SYS_VFORK,
       );
-
-      const waitsBeforeInvalidMode = wait.mock.calls.length;
-      expect(kernelFork(2)).toBe(-EINVAL);
-      expect(wait).toHaveBeenCalledTimes(waitsBeforeInvalidMode);
-      expect(new Int32Array(memory.buffer)[CH_STATUS / 4]).toBe(0);
+      // The borrowed child's workspace rides the vfork request.
+      expect(view.getBigInt64(CH_ARGS, true)).toBe(32n);
+      expect(view.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(4096n);
+      expect(processForkMode(2)).toBeNull();
     } finally {
       wait.mockRestore();
     }
+  });
+
+  it("fails loud, touching no channel, when nothing fork-capable replaced it", () => {
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    const imports = buildKernelImportsForTest(memory, 0, 4);
+    const kernelFork = imports.kernel_fork as (mode: number) => number;
+    expect(() => kernelFork(PROCESS_FORK_MODE_FORK)).toThrow(
+      /kernel_fork reached without complete wasm-fork-instrument exports/,
+    );
+    expect(new Int32Array(memory.buffer)[CH_STATUS / 4]).toBe(0);
+    expect(new DataView(memory.buffer).getUint32(CH_SYSCALL, true)).toBe(0);
   });
 });

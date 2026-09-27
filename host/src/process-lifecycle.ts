@@ -2856,6 +2856,19 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           source: "fork-module",
           message: `fork_module_frames=${m.frames}`,
         });
+      } else if (m.type === "fork_aborted" && m.pid === pid) {
+        // A fork FROM a pthread aborts the way a process fork does -- both
+        // Workers run the one `ForkWorker` -- so it says why the same way. The
+        // pthread path used to stay silent; a guest that ignored `fork()`'s
+        // -errno then failed somewhere else with the reason gone.
+        reportHostDiagnostic(
+          {
+            pid,
+            source: "fork",
+            message: `fork aborted with errno=${m.errno}: ${m.reason}`,
+          },
+          "warn",
+        );
       }
     });
     threadWorker.on("error", (err: Error) => {
