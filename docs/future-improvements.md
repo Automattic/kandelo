@@ -318,22 +318,6 @@ variation. The options, which need a maintainer decision:
 **Files:** `images/vfs/scripts/wordpress-preinstall.ts`,
 `crates/runtime-core/src/image_build_determinism.rs`
 
-### WordPress demo admin password is a published credential
-
-Every WordPress and LAMP machine starts with `admin` / `password`, which the
-demo guide's "Log in as admin" action types for the user, and the bcrypt
-hash of it (salt included) is the same in every image. The first-boot
-service rotates the keys and salts that sign cookies but not this: the hash
-of a public password protects nothing. A per-machine admin password would
-need the first-boot service to compute a WordPress password hash (the images
-ship `php-fpm` but no PHP CLI; running PHP at boot means adding one or a
-FastCGI client) and the guide to read the machine's password from its
-filesystem instead of a fixed payload. Worth doing before machines become
-reachable by anyone but their owner.
-
-**Files:** `images/vfs/scripts/wordpress-first-boot.ts`,
-`web-libs/kandelo-session/src/demo-guides.ts`
-
 ### `check-determinism run` cannot fetch sources under its fake clock
 
 `xtask check-determinism run` gives each of its two builds a fresh source

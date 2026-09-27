@@ -21,6 +21,12 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  *   login cookies and nonces. They are written to `WORDPRESS_SECRETS_PATH`,
  *   which `wp-config.php` requires; the image carries only a placeholder
  *   there that stops WordPress with an explanation.
+ * - The admin password's hash salt. The password itself is the demo's
+ *   published credential (`admin` / `password`; the demo guide's "Log in as
+ *   admin" action types it) and stays the same by design. But the build
+ *   hashed it with seeded entropy, so every image carried the identical
+ *   hash; a machine re-hashes it with its own salt (see
+ *   `wordpressAdminRehashMuPlugin`).
  *
  * The service is idempotent: when the file holds eight well-formed keys it
  * leaves it alone and says so. A later boot of the same machine (the same persisted filesystem) keeps
@@ -47,11 +53,9 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  *
  * # Residual risks
  *
- * - The admin account's password is the demo's published credential
- *   (`admin` / `password`, shown by the demo guide), and its bcrypt hash --
- *   salt included -- is the same in every image. The hash of a public
- *   password protects nothing, so it is not rotated here; see
- *   `docs/package-management.md` for why and what would.
+ * - The admin password stays the published demo credential; only its salt
+ *   is per machine. Anyone who can reach a machine can log in until its
+ *   owner changes the password -- the demo's intended behaviour.
  * - LAMP's MariaDB runs with `--skip-grant-tables --skip-networking`: it has
  *   no credentials to rotate, and is reachable only through its socket inside
  *   the machine.
@@ -62,11 +66,19 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
 import { writeVfsFile, ensureDirRecursive } from "./vfs-image-helpers";
 import type { DinitService } from "./dinit-image-helpers";
 import {
+  WORDPRESS_DEFAULT_ADMIN_PASSWORD,
+  WORDPRESS_DEFAULT_ADMIN_USER,
+} from "./wordpress-preinstall";
+import {
   WORDPRESS_SECRETS_PATH,
   WORDPRESS_SECRET_NAMES,
 } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
 
 export const WORDPRESS_SECRETS_SERVICE = "wordpress-secrets";
+export const WORDPRESS_ADMIN_REHASH_MU_PLUGIN_PATH =
+  "/var/www/html/wp-content/mu-plugins/kandelo-admin-rehash.php";
+/** The option recording that this machine re-salted the admin hash. */
+export const WORDPRESS_ADMIN_REHASH_MARKER = "kandelo_admin_hash_resalted";
 export const WORDPRESS_SECRETS_SCRIPT = "/usr/sbin/kandelo-wordpress-secrets";
 
 /** PHP-FPM's workers run as `nobody`; they read the file, root writes it. */
@@ -151,11 +163,63 @@ throw new RuntimeException('wordpress-secrets: this machine has not generated it
 `;
 
 /**
+ * An mu-plugin that re-salts the admin password hash once per machine.
+ *
+ * Why an mu-plugin on the first request rather than the first-boot service:
+ * WordPress's hash (`$wp$2y$...`, bcrypt of an HMAC of the password) needs
+ * PHP, and the images ship `php-fpm` but no PHP CLI; a service would need a
+ * second 36 MB PHP binary or a FastCGI client in the image. Running inside
+ * WordPress uses WordPress's own `wp_set_password` and nothing new. The
+ * cost is one bcrypt verify and one bcrypt hash on the machine's first
+ * request.
+ *
+ * It re-salts only while the hash still verifies against the published demo
+ * password, so a machine whose owner changed the password is left alone,
+ * and records `WORDPRESS_ADMIN_REHASH_MARKER` so later requests (and later
+ * boots of the same machine) skip it. It does nothing inside the build's
+ * installer (`WP_INSTALLING`), whose rows must stay deterministic. Two
+ * concurrent first requests may both re-salt; the last write wins and both
+ * results verify.
+ */
+export function wordpressAdminRehashMuPlugin(
+  adminUser: string,
+  demoPassword: string,
+): string {
+  const php = (value: string) => `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+  return `<?php
+// Kandelo: give this machine its own salt for the published demo admin
+// password. See images/vfs/scripts/wordpress-first-boot.ts.
+if ( defined( 'WP_INSTALLING' ) && WP_INSTALLING ) {
+    return;
+}
+add_action( 'init', static function () {
+    if ( get_option( '${WORDPRESS_ADMIN_REHASH_MARKER}' ) ) {
+        return;
+    }
+    $user = get_user_by( 'login', ${php(adminUser)} );
+    if ( $user && wp_check_password( ${php(demoPassword)}, $user->user_pass, $user->ID ) ) {
+        wp_set_password( ${php(demoPassword)}, $user->ID );
+    }
+    update_option( '${WORDPRESS_ADMIN_REHASH_MARKER}', gmdate( 'c' ), false );
+}, 0 );
+`;
+}
+
+/**
  * Install the service's script and the placeholder it replaces. The
  * placeholder carries the owner and mode the secrets need: root writes it,
  * PHP-FPM's nobody workers read it, no one else can.
  */
 export function populateWordPressFirstBootSecrets(fs: VfsImageFilesystem): void {
+  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  writeVfsFile(
+    fs,
+    WORDPRESS_ADMIN_REHASH_MU_PLUGIN_PATH,
+    wordpressAdminRehashMuPlugin(
+      WORDPRESS_DEFAULT_ADMIN_USER,
+      WORDPRESS_DEFAULT_ADMIN_PASSWORD,
+    ),
+  );
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsFile(fs, WORDPRESS_SECRETS_SCRIPT, wordpressSecretsScript(), 0o755);

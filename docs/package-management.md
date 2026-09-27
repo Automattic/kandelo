@@ -352,21 +352,29 @@ What each producer step does to keep its bytes a function of its inputs:
   - *Rewriting rows or files after the installer ran* would hide where the
     bytes come from instead of controlling them.
 
+  The admin account keeps the demo's published credential (`admin` /
+  `password`, which the demo guide's "Log in as admin" action types for the
+  user) by design, but the build hashed it with seeded entropy, so every
+  image carried the identical hash. An mu-plugin
+  (`wordpressAdminRehashMuPlugin` in the same file) re-hashes it with the
+  machine's own salt on the machine's first request, through WordPress's
+  own `wp_set_password`, and records an option so it runs once per machine.
+  It is an mu-plugin rather than part of the boot service because the hash
+  needs PHP and the images ship `php-fpm` but no PHP CLI. It leaves a
+  password the owner already changed alone.
+
   Residual risks, recorded rather than hidden:
-  - The admin account's password is the demo's published credential
-    (`admin` / `password`, which the demo guide's "Log in as admin" action
-    types for the user), and its bcrypt hash, salt included, is the same in
-    every image. The hash of a public password protects nothing, so it is
-    not rotated; a per-machine password would need the first-boot service to
-    compute a WordPress hash (the images ship no PHP CLI) and the guide to
-    read the machine's password. See `docs/future-improvements.md`.
+  - The admin password is public until the machine's owner changes it:
+    anyone who can reach a machine's WordPress can log in. That is the
+    demo's intended behaviour; only the shared hash was removed.
   - LAMP's MariaDB runs with `--skip-grant-tables --skip-networking`: it has
     no credentials to rotate and is reachable only through its socket inside
     the machine.
 
   `host/test/image-build-determinism.test.ts` pins the mode (two boots with
   one seed agree, a different seed differs, a normal boot stays real);
-  `host/test/wordpress-first-boot-secrets.test.ts` pins the rotation.
+  `host/test/wordpress-first-boot-secrets.test.ts` pins the key rotation
+  and `host/test/wordpress-admin-rehash.test.ts` the admin hash re-salting.
 
 **`wordpress` is byte-reproducible.** Two builds under one key produce the
 same image, database and prewarmed opcache included.
