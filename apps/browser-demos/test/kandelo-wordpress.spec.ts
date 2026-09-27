@@ -149,9 +149,16 @@ test("@slow Kandelo WordPress/MariaDB mysqli transport benchmark returns", async
     "unix_persistent",
   ]);
   expect(data.variants.unix.error).toBeUndefined();
-  expect(data.variants.tcp.error).toBeUndefined();
   expect(data.variants.unix_persistent.error).toBeUndefined();
-  expect(data.variants.tcp_persistent.error).toBeUndefined();
+  // TODO(revisit): the TCP variants are deliberately not asserted. Since
+  // PR #686 this image starts MariaDB with --skip-networking, so `tcp` and
+  // `tcp_persistent` report "Connection refused"; WordPress itself uses the
+  // Unix socket. Re-enabling TCP was deferred because on the Node.js host a
+  // guest listen() becomes a real host socket on 0.0.0.0, and this MariaDB
+  // runs --skip-grant-tables, so booting the image under Node.js would expose
+  // a password-less database. Revisit once the Node.js host's networking
+  // model is settled (sandboxed like the browser's, or honoring the guest's
+  // bind address), then restore both assertions.
 });
 
 test("@slow Kandelo WordPress/MariaDB preinstalled site logs into wp-admin", async ({
