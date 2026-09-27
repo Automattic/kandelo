@@ -256,6 +256,81 @@ This is currently a checked-in authority and local validation foundation. It
 does not yet issue remote requests, publish candidates, or verify hosted
 artifacts.
 
+### Reproducible VFS image packages
+
+A VFS image package (`nginx-php-vfs`, `wordpress`, `lamp`, …) is cached by
+its cache key like any other package, so two builds under the same key must
+produce the same bytes. When they do not, the resolver keeps whichever build
+published first ("concurrent cache winner differs from staged build; winner
+preserved and receipts recorded") and writes a
+`.<key>.kandelo-rebuild-mismatch.<a>.<b>.json` receipt beside the cache
+entry. Two worktrees building the same key then disagree about the artifact,
+and the second build's bytes are thrown away.
+
+What each producer step does to keep its bytes a function of its inputs:
+
+- **File metadata.** The image writer stamps every inode with
+  `SOURCE_DATE_EPOCH`, or `KANDELO_REFERENCE_EPOCH_SECONDS` when unset
+  (`images/vfs/scripts/vfs-image-helpers.ts`). The Nix dev shell sets
+  `SOURCE_DATE_EPOCH=315532800` (1980-01-01), so that is the instant package
+  builds ship. The image module's live tree carries the reference instant
+  instead, so any build step that boots Kandelo and records timestamps must
+  boot an export stamped the same way as the final image; the opcache
+  prewarm does.
+- **Prewarmed PHP opcache** (`images/vfs/scripts/opcache-prewarm.ts`). The
+  build boots Kandelo, compiles every `.php` with PHP's file cache, and ships
+  the `.bin` files under `/var/cache/opcache`. Upstream opcache writes its
+  shared-memory bookkeeping into each file; with
+  `opcache.validate_timestamps=1` that includes the compile's wall-clock
+  second (`dynamic_members.revalidate`), which the file-cache loader never
+  reads. The PHP recipe (`packages/registry/php/build-php.sh`, "Upstream
+  reproducibility defect") clears those fields and the header's padding in
+  the serialized copy, so the prewarm is reproducible in both validation
+  modes. `host/test/opcache-prewarm.test.ts` ("writes byte-identical cache
+  files when run again later") runs the prewarm twice, more than a second
+  apart, and requires identical `.bin` files; it fails against the unpatched
+  `opcache.so`. Opcache also records each source file's mtime, and a runtime
+  with `opcache.validate_timestamps=1` (`nginx-php-vfs`) unlinks any entry
+  whose recorded mtime differs from the shipped file's; "writes entries a
+  timestamp-validating runtime accepts" in the same file covers that.
+
+**Known exceptions: `wordpress` and `lamp` are not yet byte-reproducible.**
+Both run the WordPress installer during the build (and `lamp` bootstraps
+MariaDB), under the real guest clock and entropy source:
+
+- `wordpress` ships a SQLite database whose install timestamps
+  (`wp_users.user_registered`, post and comment dates,
+  `admin_email_lifespan`) are the build's wall clock, and whose admin
+  password hash has a random bcrypt salt. Its prewarmed opcache files are
+  already identical between builds.
+- `lamp` ships a MariaDB data directory in which 85 to 93 files differ
+  between two builds (the count itself varies), all under `/data`: table
+  `.frm` and Aria `.MAI` headers carry freshly generated UUIDs,
+  `aria_log_control` a random UUID, and the InnoDB system tablespace and
+  redo log timing-dependent LSNs, on top of the same WordPress rows. Its
+  prewarmed opcache files are identical between builds.
+
+No MariaDB or WordPress setting removes these, and rewriting the rows or
+files after the installer ran would only hide where the bytes come from. The
+choices (a deterministic guest clock and entropy source for build-time
+boots, installing on first boot instead of at build time, or accepting and
+recording the boundary) are open in `docs/future-improvements.md`
+("Build-time installers make the WordPress and LAMP images
+non-reproducible").
+
+To find which files inside two builds of an image differ, run
+`cargo run -p xtask --target <host-target> -- vfs-image diff <a> <b>`. The
+determinism check
+(`xtask check-determinism`) compares build output trees file by file; when
+a `.vfs` or `.vfs.zst` differs it decodes both images and names the
+differing files inside them. `check-determinism diff <dir-a> <dir-b>` does
+this for two already-built trees, and `run` accepts `--product` more than
+once (for example `--product browser-main-shell --product
+browser-nginx-php`) to build and compare several products together. From a
+cold source cache `run` does not currently complete when `faketime` is on
+`PATH`, as it is in the dev shell; see `docs/future-improvements.md`
+("`check-determinism run` cannot fetch sources under its fake clock").
+
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
 Every package ships TWO TOML files in `packages/registry/<name>/`:

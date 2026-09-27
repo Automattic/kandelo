@@ -37,11 +37,18 @@
 //!   check-determinism diff <dir-a> <dir-b>
 //!       Diff two already-produced trees. Pure, build-free — used by tests
 //!       and to re-report a prior run.
-//!   check-determinism run --set <set> --product <id> --scratch <dir>
-//!                         [--jobs N] [--report <file>]
+//!   check-determinism run --set <set> --product <id> [--product <id> ...]
+//!                         --scratch <dir> [--jobs N] [--report <file>]
 //!       Build twice into <dir>/a and <dir>/b with the environment varied,
 //!       then diff their `programs/` subtrees. Exits non-zero if the build
 //!       is not reproducible, so a scheduled run flags the gap.
+//!
+//! VFS image packages (`*.vfs.zst`, e.g. `nginx-php-vfs`) are programs-tree
+//! outputs like any other and are compared byte-for-byte. When one differs,
+//! both modes also decode the two images and name the files inside that
+//! differ (`vfs_image_describe::explain_image_difference`), because the
+//! package name alone does not say which producer step — an opcache prewarm
+//! entry, a build-time installer's database — is at fault.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -223,6 +230,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             if report.is_reproducible() {
                 Ok(())
             } else {
+                emit_diffoscope_hints(Path::new(a), Path::new(b), &report);
                 Err("build outputs differ (see report above)".to_string())
             }
         }
@@ -231,15 +239,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "check-determinism: expected `diff` or `run`, got {other:?}\n\
              usage:\n  \
              check-determinism diff <dir-a> <dir-b>\n  \
-             check-determinism run --set <set> --product <id> --scratch <dir> \
-             [--jobs N] [--report <file>]"
+             check-determinism run --set <set> --product <id> [--product <id> ...] \
+             --scratch <dir> [--jobs N] [--report <file>]"
         )),
     }
 }
 
 struct RunFlags {
     set: String,
-    product: String,
+    /// Built together in each variation (repeat `--product`), so one pair of
+    /// builds covers the shell and the VFS image products derived from it.
+    products: Vec<String>,
     scratch: PathBuf,
     jobs: String,
     report: Option<PathBuf>,
@@ -247,7 +257,7 @@ struct RunFlags {
 
 fn parse_run_flags(args: &[String]) -> Result<RunFlags, String> {
     let mut set = None;
-    let mut product = None;
+    let mut products = Vec::new();
     let mut scratch = None;
     let mut jobs = "8".to_string();
     let mut report = None;
@@ -262,7 +272,7 @@ fn parse_run_flags(args: &[String]) -> Result<RunFlags, String> {
         };
         match flag.as_str() {
             "--set" => set = Some(take()?),
-            "--product" => product = Some(take()?),
+            "--product" => products.push(take()?),
             "--scratch" => scratch = Some(PathBuf::from(take()?)),
             "--jobs" => jobs = take()?,
             "--report" => report = Some(PathBuf::from(take()?)),
@@ -270,9 +280,12 @@ fn parse_run_flags(args: &[String]) -> Result<RunFlags, String> {
         }
         i += 2;
     }
+    if products.is_empty() {
+        return Err("check-determinism run: --product is required".to_string());
+    }
     Ok(RunFlags {
         set: set.ok_or("check-determinism run: --set is required")?,
-        product: product.ok_or("check-determinism run: --product is required")?,
+        products,
         scratch: scratch.ok_or("check-determinism run: --scratch is required")?,
         jobs,
         report,
@@ -345,9 +358,11 @@ fn run_build_twice(args: Vec<String>) -> Result<(), String> {
             .arg("local-build")
             .arg("run")
             .arg("--set")
-            .arg(&flags.set)
-            .arg("--product")
-            .arg(&flags.product)
+            .arg(&flags.set);
+        for product in &flags.products {
+            command.arg("--product").arg(product);
+        }
+        command
             .arg("--output-root")
             .arg(&out_root)
             .arg("--source-cache-root")
@@ -407,6 +422,11 @@ fn run_build_twice(args: Vec<String>) -> Result<(), String> {
     }
 }
 
+/// Build outputs that are Kandelo VFS images (`<name>.vfs` / `<name>.vfs.zst`).
+fn is_vfs_image(rel: &str) -> bool {
+    rel.ends_with(".vfs.zst") || rel.ends_with(".vfs")
+}
+
 /// For each differing file, point at the exact `diffoscope` invocation (and
 /// run it when available) so the root cause — an `ar` member mtime, an
 /// embedded build path — is immediately visible.
@@ -415,6 +435,18 @@ fn emit_diffoscope_hints(a: &Path, b: &Path, report: &DiffReport) {
     for rel in report.differing.iter().take(20) {
         let file_a = a.join(rel);
         let file_b = b.join(rel);
+        // A VFS image package is one opaque file to the tree diff, so name the
+        // files INSIDE it that differ: that is what identifies the producer
+        // step at fault (an opcache prewarm entry, an installer's database),
+        // where diffoscope would only show compressed-stream noise.
+        if is_vfs_image(rel) {
+            eprintln!("--- VFS image contents {rel} ---");
+            match crate::vfs_image_describe::explain_image_difference(&file_a, &file_b) {
+                Ok(paths) => eprintln!("{} image entries differ", paths.len()),
+                Err(error) => eprintln!("  could not describe the images: {error}"),
+            }
+            continue;
+        }
         match &diffoscope {
             Some(bin) => {
                 eprintln!("--- diffoscope {rel} ---");

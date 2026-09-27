@@ -638,6 +638,53 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// Say which files INSIDE two images differ, for a caller that already knows
+/// the image files' bytes differ and needs the reason.
+///
+/// The determinism check (`xtask check-determinism`) compares build outputs
+/// as opaque files, so a non-reproducible VFS image shows up there as one
+/// differing `.vfs.zst` -- which names the package but not the producer step
+/// at fault. Reporting the differing paths inside it (an opcache `.bin`, a
+/// database file) is what points at that step. Returns the differing entry
+/// paths; the full report goes to stderr like the `vfs-image diff` command.
+pub fn explain_image_difference(a: &Path, b: &Path) -> Result<Vec<String>, String> {
+    let da = describe(a)?;
+    let db = describe(b)?;
+    let ja = serde_json::to_value(&da).map_err(|e| e.to_string())?;
+    let jb = serde_json::to_value(&db).map_err(|e| e.to_string())?;
+    if ja == jb {
+        eprintln!(
+            "the two images decode identically: the difference is in the \
+             container encoding, not in any file, mode, or owner"
+        );
+        return Ok(Vec::new());
+    }
+    report_difference(&da, &db);
+    Ok(differing_entry_paths(&da, &db))
+}
+
+/// Paths whose entry (kind, mode, owner, size, link target or content digest)
+/// differs, or that exist in only one image. Sorted.
+fn differing_entry_paths(a: &ImageDescription, b: &ImageDescription) -> Vec<String> {
+    let pa: BTreeMap<_, _> = a.entries.iter().map(|e| (&e.path, e)).collect();
+    let pb: BTreeMap<_, _> = b.entries.iter().map(|e| (&e.path, e)).collect();
+    let mut out = Vec::new();
+    for (path, ea) in &pa {
+        match pb.get(path) {
+            Some(eb)
+                if serde_json::to_value(ea).ok() == serde_json::to_value(eb).ok() => {}
+            _ => out.push((*path).clone()),
+        }
+    }
+    for path in pb.keys() {
+        if !pa.contains_key(path) {
+            out.push((*path).clone());
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Report the first differences in each dimension rather than a whole-document
 /// dump. A diff of two 30,000-entry images that prints everything is not a
 /// diagnosis.
@@ -767,6 +814,16 @@ mod tests {
         let a = describe_ok(&build(0o644, b"hello image\n"));
         let b = describe_ok(&build(0o644, b"hello image\n"));
         assert_eq!(as_json(&a), as_json(&b));
+    }
+
+    /// The determinism check's drill-down names the file inside the image
+    /// whose bytes moved, and nothing else.
+    #[test]
+    fn differing_entry_paths_names_only_the_changed_file() {
+        let a = describe_ok(&build(0o644, b"hello image\n"));
+        let b = describe_ok(&build(0o644, b"hello IMAGE\n"));
+        assert_eq!(differing_entry_paths(&a, &b), vec!["/hello.txt".to_string()]);
+        assert!(differing_entry_paths(&a, &a).is_empty());
     }
 
     /// The growth ceiling is part of the description.

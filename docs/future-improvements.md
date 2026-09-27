@@ -276,6 +276,82 @@ unpublished generation exists.
 **Files:** `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
 package-source publication workflows, `docs/package-sources.md`
 
+### Build-time installers make the WordPress and LAMP images non-reproducible
+
+Two builds of the `wordpress` or `lamp` image package under the same cache
+key produce different bytes, so concurrent builds from two worktrees fight
+over the shared cache entry (the resolver keeps the first and records a
+rebuild-mismatch receipt). The `nginx-php-vfs` image had the same symptom
+from opcache's file cache; that one is fixed in the PHP recipe (see
+"Reproducible VFS image packages" in `docs/package-management.md`).
+
+The remaining differences come from running real software during the build,
+under the real guest clock and entropy source:
+
+- `wordpress-preinstall.ts` runs `wp_install()` against SQLite. Between two
+  builds the database differs in `wp_users.user_registered`, the post and
+  comment dates, the `admin_email_lifespan` option (all wall clock), and
+  the admin password hash (`$wp$2y$10$…`, a random bcrypt salt).
+- The `lamp` build also bootstraps MariaDB. 85 to 93 files under `/data`
+  differ between two builds (the count varies): `.frm` and Aria `.MAI`
+  headers carry freshly generated UUIDs, `aria_log_control` a random UUID,
+  and `ibdata1` / `ib_logfile0` carry LSNs that depend on background-thread
+  timing, in addition to the WordPress rows.
+
+No application setting controls these, and rewriting rows or data files
+after the installer ran would hide the source rather than remove it. The
+options, which need a maintainer decision:
+
+1. **Deterministic build-time guest.** Give build-time kernel boots (the
+   opcache prewarm, the WordPress installer) a clock pinned to
+   `SOURCE_DATE_EPOCH` and a seeded entropy source. This removes the
+   WordPress differences at their source. It is a host/kernel feature with
+   security weight (seeded entropy must never be reachable at runtime), a
+   frozen clock can stall software that waits on wall time, and it still
+   does not make InnoDB's thread-timing-dependent LSNs reproducible.
+2. **Install on first boot.** Ship the installer's inputs and run it when
+   the machine first boots. The images become reproducible; first boot pays
+   the install time the build-time install exists to avoid.
+3. **Accept and record the boundary.** Keep the build-time install, mark
+   these two packages as not byte-reproducible, and let their cache entries
+   be first-writer-wins without treating a differing rebuild as an error.
+
+**Files:** `images/vfs/scripts/wordpress-preinstall.ts`,
+`images/vfs/scripts/build-wp-vfs-image.ts`,
+`images/vfs/scripts/build-lamp-vfs-image.ts`, `host/src/node-kernel-host.ts`
+
+### `check-determinism run` cannot fetch sources under its fake clock
+
+`xtask check-determinism run` gives each of its two builds a fresh source
+cache and, when `faketime` is on `PATH` (the Nix dev shell provides it),
+runs them at fixed wall clocks in 2001 and 2029. Source downloads then
+fail TLS verification ("certificate not valid yet: verification time
+981191313") after eight attempts, so on a cold source cache the first
+build fails dozens of packages and blocks what depends on them (observed
+2026-09-26 with `--product browser-nginx-php`: 61 FAILED, shell and
+nginx-php-vfs BLOCKED). The clock the check varies should reach the build
+steps, not the source fetcher: fetch outside `faketime` (or seed both
+variations from one verified source cache, which the source digests
+already pin) and apply the fake clock only to the builds.
+
+**Files:** `tools/xtask/src/determinism_check.rs`
+
+### PHP-FPM workers cannot add opcache entries under prewarmed directories
+
+`opcache-prewarm.ts` writes the cache tree it dumps
+(`/var/cache/opcache/<system-id>/var/www/...`) as root-owned `0755`
+directories. The nginx-php image's FPM workers run as `nobody` (uid
+65534), so a worker that compiles a PHP file the build did not prewarm (a
+file added or edited from the demo terminal, or a replacement for an entry
+it rejected) cannot store it: on the Node host, `file_put_contents` into
+`/var/cache/opcache/<system-id>/var/www/html` fails with `EACCES`, and a
+new script's entry never appears. The prewarmed entries themselves are
+read and used. The fix belongs in the image builders: give the cache tree
+the ownership and mode the runtime writer needs, as the WordPress builder
+already does for its database directory.
+
+**Files:** `images/vfs/scripts/opcache-prewarm.ts`, the PHP image builders
+
 ### Define compatibility for restored lazy VFS images
 
 Kandelo currently rebuilds and publishes canonical VFS images for the current
