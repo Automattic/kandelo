@@ -1432,6 +1432,26 @@ pub extern "C" fn kernel_create_process_with_stdio(
     }
 }
 
+/// Make fd 0 of `pid` the read end of a new kernel pipe for host-supplied
+/// stdin and return the pipe index, or a negative errno (`-ESRCH` for an
+/// unknown pid).
+///
+/// The host holds the pipe's write end: it writes stdin bytes with
+/// `kernel_pipe_write` as the pipe has space and releases the write end with
+/// `kernel_pipe_close_write`, after which readers see end-of-file. fd 0 is an
+/// ordinary open file description, so it is shared across fork, dup, and
+/// exec with one read position (see
+/// `runtime_core::process_table::ProcessTable::install_host_stdin_pipe`).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_install_host_stdin_pipe(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    match table.install_host_stdin_pipe(pid, &mut host) {
+        Ok(pipe_idx) => pipe_idx as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
 /// Set the program's initial brk to the value of its `__heap_base` export.
 /// Called by the host once per process — between process creation
 /// (or post-exec re-init) and the first syscall from the new program — so
