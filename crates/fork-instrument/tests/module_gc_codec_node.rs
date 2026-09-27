@@ -416,6 +416,16 @@ function instantiate() {
       }
       pendingProvenance.references.push(transit.get(slot));
     },
+    // The first run of an `array.new_data` operand set streams its elements
+    // for the fork module to hash. This double keys provenance by object, so
+    // it has no use for them, but the call must arrive inside the open
+    // transaction.
+    __wpk_fork_ref_gc_provenance_contents(token, bits) {
+      if (pendingProvenance === null || pendingProvenance.token !== token) {
+        throw new Error("GC run contents outside their provenance transaction");
+      }
+      if (typeof bits !== "bigint") throw new Error("GC run contents are not i64");
+    },
     __wpk_fork_ref_gc_provenance_end(token) {
       if (
         pendingProvenance === null

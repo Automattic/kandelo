@@ -1700,6 +1700,7 @@ fn node_fresh_instance_restores_no_seed_module_state_and_segment_lifetime() {
           __wpk_fork_ref_gc_provenance_begin: () => 0,
           __wpk_fork_ref_gc_provenance_ref: () => {},
           __wpk_fork_ref_gc_provenance_end: () => {},
+          __wpk_fork_ref_gc_provenance_contents: () => {},
           __wpk_fork_ref_scratch_reserve: (size) => allocate(Number(size)),
           __wpk_fork_ref_scratch_release: () => {},
         };

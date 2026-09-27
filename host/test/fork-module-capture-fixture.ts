@@ -116,6 +116,13 @@ export const MUNMAP_COUNTER = 5 * PAGE;
  */
 export const MMAP_COUNTER = 5 * PAGE + 4;
 
+/**
+ * A u32 on the same free page: while it is non-zero the responder refuses
+ * every `SYS_MMAP` with ENOMEM. For a test of what the module does when a
+ * mapping it wants cannot be had.
+ */
+export const MMAP_FAIL_SWITCH = 5 * PAGE + 8;
+
 export const MMAP_FLOOR = 12 * 1024 * 1024;
 /** Where a CHILD worker's own module instance sits in the shared memory. */
 export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
@@ -138,7 +145,7 @@ export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
  */
 const CHANNEL_RESPONDER = `
 const { parentPort, workerData } = require("node:worker_threads");
-const { sab, channelBase, floor, mmapCounter, munmapCounter } = workerData;
+const { sab, channelBase, floor, mmapCounter, munmapCounter, mmapFailSwitch } = workerData;
 const i32 = new Int32Array(sab);
 const dv = new DataView(sab);
 // The tallies are OPTIONAL, because their address is not safe everywhere.
@@ -160,7 +167,10 @@ while (!stop) {
   const nr = dv.getUint32(channelBase + ${SYSCALL_OFFSET}, true);
   const size = Number(dv.getBigInt64(channelBase + ${ARGS_OFFSET} + ${ARG_SIZE}, true));
   let ret = -1n, errno = 22;
-  if (nr === ${SYS_MMAP}) {
+  if (nr === ${SYS_MMAP} && typeof mmapFailSwitch === "number"
+      && dv.getUint32(mmapFailSwitch, true) !== 0) {
+    ret = -12n; errno = 12; // ENOMEM
+  } else if (nr === ${SYS_MMAP}) {
     const addr = next;
     next += Math.ceil(size / ${PAGE}) * ${PAGE};
     if (countMmap) dv.setUint32(mmapCounter, dv.getUint32(mmapCounter, true) + 1, true);
@@ -216,6 +226,8 @@ export function startChannelResponder(options: {
    * time decision instead of a workerData field a caller can forget.
    */
   readonly counters?: { readonly mmap: number; readonly munmap: number };
+  /** Where the `SYS_MMAP` fail switch lives (see `MMAP_FAIL_SWITCH`), if any. */
+  readonly mmapFailSwitch?: number;
 }): Worker {
   const worker = new Worker(CHANNEL_RESPONDER, {
     eval: true,
@@ -225,6 +237,7 @@ export function startChannelResponder(options: {
       floor: options.floor,
       mmapCounter: options.counters?.mmap,
       munmapCounter: options.counters?.munmap,
+      mmapFailSwitch: options.mmapFailSwitch,
     },
   });
   live.push(worker);
@@ -338,6 +351,7 @@ export function fixture(): Fixture {
     channelBase: CHANNEL_BASE,
     floor: MMAP_FLOOR,
     counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
+    mmapFailSwitch: MMAP_FAIL_SWITCH,
   });
 
   (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);

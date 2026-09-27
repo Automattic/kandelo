@@ -2809,6 +2809,10 @@ fn render_ts_module() -> String {
             shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN,
         ),
         (
+            "WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_CONTENTS",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_CONTENTS,
+        ),
+        (
             "WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END",
             shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END,
         ),
@@ -9114,7 +9118,7 @@ mod tests {
         );
 
         let imports = fork["required_imports"].as_array().unwrap();
-        assert_eq!(imports.len(), 47);
+        assert_eq!(imports.len(), 48);
         // Externref stage E2 removed the 48th, the externref provenance import
         // (`__wpk_fork_ref_provenance_externref`): a fork no longer carries a
         // raw host externref, so nothing records where one came from. Pin its

@@ -433,6 +433,9 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // is deterministic across fresh instantiation and does not depend on
     // mutable guest table state.
     let function_catalog = inject_function_catalog(&mut module);
+    // What each element segment's items are at capture: the GC codec's
+    // descriptor carries them for the `array.new_elem` constructors.
+    let element_items = static_reference_plan.element_items().clone();
     static_reference_catalog::inject(&mut module, static_reference_plan);
 
     // Every dynamic activation is part of the process image even when none of
@@ -446,7 +449,8 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // to the module that imports fork would silently reset that state in a
     // fresh child.
     let staging_memory = module_state::ensure_staging_memory(&mut module);
-    let gc_codec = module_gc_codec::declare(&mut module, staging_memory)?;
+    let gc_codec =
+        module_gc_codec::declare_with_element_items(&mut module, staging_memory, &element_items)?;
     let exception_codec = module_exception_codec::inject_with_reference_overrides(
         &mut module,
         staging_memory,

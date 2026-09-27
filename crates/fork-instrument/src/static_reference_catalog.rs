@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use walrus::{
-    AbstractHeapType, ConstExpr, ElementId, ElementItems, FunctionBuilder, GlobalId, GlobalKind,
+    AbstractHeapType, ConstExpr, ConstOp, ElementId, ElementItems, FunctionBuilder, GlobalId, GlobalKind,
     HeapType, Module, RawCustomSection, RefType, TableId, ValType,
     ir::{RefNull, TableFill, TableGet, TableInit, TableSet},
 };
@@ -35,14 +35,44 @@ enum RootSource {
     ElementItem { element: ElementId, index: u32 },
 }
 
+/// What one item of an element segment is, in the coordinates a fork capture
+/// records it by.
+///
+/// An `array.new_elem` array's elements ARE its segment's items, so a capture
+/// can tell which run of the instruction made an array by comparing the
+/// array's captured elements with each segment's items
+/// (`fork_codec::gc_constructor`). That needs every item's capture-time
+/// coordinate, which is static: an allocating item is a static root harvested
+/// at instantiation, a `global.get` item is that global's root, and a null or
+/// `ref.i31` constant is itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementItemCoordinate {
+    /// An item no capture coordinate describes (a function reference, or an
+    /// item of a segment whose element type cannot take part in `ref.eq`).
+    Unmapped,
+    Null,
+    /// The item is the static root with this activation-local ordinal.
+    Root(u32),
+    /// A constant `ref.i31` item, as a capture reads it back (`i31.get_s`).
+    I31(i32),
+}
+
 #[derive(Debug, Default)]
 pub struct StaticReferenceCatalogPlan {
     roots: Vec<RootSource>,
+    element_items: HashMap<ElementId, Vec<ElementItemCoordinate>>,
 }
 
 impl StaticReferenceCatalogPlan {
     pub fn root_count(&self) -> usize {
         self.roots.len()
+    }
+
+    /// Every element segment's items as capture coordinates, for the segments
+    /// whose element type can take part in `ref.eq`. A segment absent here has
+    /// only `Unmapped` items.
+    pub fn element_items(&self) -> &HashMap<ElementId, Vec<ElementItemCoordinate>> {
+        &self.element_items
     }
 }
 
@@ -163,26 +193,43 @@ pub fn plan(module: &mut Module) -> StaticReferenceCatalogPlan {
             Some((element.id(), expressions.clone()))
         })
         .collect();
+    let mut element_items = HashMap::new();
     for (element, expressions) in elements {
+        let mut items = Vec::with_capacity(expressions.len());
         for (index, initializer) in expressions.into_iter().enumerate() {
-            match initializer {
-                ConstExpr::RefNull(_) | ConstExpr::RefFunc(_) => {}
+            let item = match initializer {
+                ConstExpr::RefNull(_) => ElementItemCoordinate::Null,
+                ConstExpr::RefFunc(_) => ElementItemCoordinate::Unmapped,
                 ConstExpr::Global(global) => {
-                    ordinals.intern_global(global);
+                    ElementItemCoordinate::Root(ordinals.intern_global(global))
                 }
-                _ => {
-                    ordinals.intern_source(RootSource::ElementItem {
+                other => {
+                    let ordinal = ordinals.intern_source(RootSource::ElementItem {
                         element,
                         index: u32::try_from(index)
                             .expect("element segment exceeds the Wasm u32 index space"),
                     });
+                    // An i31 is captured as its value, never as a root: the
+                    // codec tests for i31 before it looks a value up.
+                    match other {
+                        ConstExpr::Extended(ops) => match ops.as_slice() {
+                            [ConstOp::I32Const(value), ConstOp::RefI31] => {
+                                ElementItemCoordinate::I31((value << 1) >> 1)
+                            }
+                            _ => ElementItemCoordinate::Root(ordinal),
+                        },
+                        _ => ElementItemCoordinate::Root(ordinal),
+                    }
                 }
-            }
+            };
+            items.push(item);
         }
+        element_items.insert(element, items);
     }
 
     StaticReferenceCatalogPlan {
         roots: ordinals.roots,
+        element_items,
     }
 }
 

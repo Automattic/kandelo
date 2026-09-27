@@ -1183,26 +1183,40 @@ module (`fork_codec::gc_constructor`), from what the capture already has:
 - an `array.new` layout rebuilds a uniform immutable array (its first element
   is the fill value) and any mutable non-nullable array (seeded, then filled);
 - an `array.new_default` layout rebuilds an all-default immutable array;
-- an `array.new_data` / `array.new_elem` layout rebuilds an array only from a
-  RECORDED run of that instruction, because the segment offset it read is not
-  visible in the array and the parent may have dropped the segment since.
+- an `array.new_elem` layout rebuilds an array whose elements are a run of its
+  segment's items. Every item has a static capture coordinate (a static root,
+  null, or an i31 constant), and the GC codec descriptor lists them per
+  segment (its optional element-segment table), so the capture FINDS the
+  offset by matching the array's captured elements against the items. On
+  JavaScriptCore, which evaluates an allocating item afresh at every use,
+  nothing matches, and the array takes the only RECORDED run of its type and
+  length (operands only), or the fork is refused;
+- an `array.new_data` layout rebuilds an array only from a RECORDED run of that
+  instruction, because the segment offset it read is not visible in the array,
+  nothing static lists the segment's bytes, and the parent may have dropped
+  the segment since.
 
 Only two facts are therefore reported where the instruction runs, and only
 those sites are rewritten to call a wrapper (`records_constructor_run`): the
 seed of a mutable non-null internal reference field or element (the module
-keeps the first per `(layout, ordinal)` as a witness), and the operands of a
-segment constructor. Every other constructor site stays a bare instruction. The
-module keeps one entry per DISTINCT `(activation, layout, operands)` run, with
-the first array that run made as its witness, and matches a captured immutable
-array to a run by comparing its captured contents with the witness's; see
+keeps the first per `(layout, ordinal)` as a witness), and a run of
+`array.new_data` or `array.new_elem`. Every other constructor site stays a
+bare instruction. For
+`array.new_data` the wrapper calls `__wpk_fork_ref_gc_provenance_begin` with
+the `(offset, length)` operands; when the module answers that this is the
+FIRST run of that operand set (bit 1 of the token), the wrapper streams the
+new array's elements, one `__wpk_fork_ref_gc_provenance_contents(token, bits)`
+call each, and the module keeps a 128-bit hash of them. It keeps no array. A
+capture matches a captured array to a run by `(activation, layout, length,
+contents hash)`; see
 [fork-reference-support.md](fork-reference-support.md#constructor-provenance)
-for why the table is keyed by run rather than by object, and its bounds. The
-generated allocate helper reports the constructor run it makes in the child
-exactly as the original site did, so a child can fork again and reconstruct an
-equivalent grandchild. A child's fork module starts with no witnesses: its
-fresh instance holds none of the parent's. Nullable constructor seeds,
-including the unobservable seed of a zero-length array, remain canonical
-recipe zero.
+for why runs and not objects, why a hash and not a kept array, and the table's
+growth and failure behaviour. The generated allocate helper reports the runs
+it makes in the child exactly as the original site did, so a child can fork
+again and reconstruct an equivalent grandchild. A child's fork module starts
+with no records and no witnesses: its fresh instance holds none of the
+parent's objects. Nullable constructor seeds, including the unobservable seed
+of a zero-length array, remain canonical recipe zero.
 
 Mutable reference globals and tables are module-state, not activation-frame
 fields. Generated KFMS helpers save mutable globals, table length, sparse dirty

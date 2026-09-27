@@ -183,11 +183,14 @@ describe("the fork module refuses an array no constructor can rebuild", () => {
     expect(admitActivation(f, SIDE, { gcCodec: immutableBytesCodec() })).toBe(0);
     openCapture(f);
     defineArray(f, [1, 2, 3]);
+    bindAbortSlots(f);
     seal(f);
     expect(f.errno(), "the seal reports the refusal").toBe(EOPNOTSUPP);
-    expect(phase(f), "a refused capture is still a sealed parent").toBe(
-      PHASE_SEALED_PARENT,
-    );
+    // As for a host externref: the module abort-replays the parent itself,
+    // and the finish reports the seal's cause (2) with EOPNOTSUPP.
+    expect(phase(f), "a refused capture is abort-replaying").toBe(PHASE_ABORT_REPLAY);
+    const report = (f.x.fm_parent_finish as (abort: number) => number)(1);
+    expect(report).toBe((2 << 16) | EOPNOTSUPP);
   });
 
   it("seals when a constructor the program has reproduces the contents", () => {

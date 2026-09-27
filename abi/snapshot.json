@@ -6785,6 +6785,16 @@
         {
           "kind": "func",
           "module": "env",
+          "name": "__wpk_fork_ref_gc_provenance_contents",
+          "params": [
+            "i32",
+            "i64"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
           "name": "__wpk_fork_ref_gc_provenance_end",
           "params": [
             "i32"
