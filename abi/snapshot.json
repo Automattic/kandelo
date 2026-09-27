@@ -1211,6 +1211,73 @@
       }
     ]
   },
+  "host_env_imports": [
+    {
+      "kind": "tag",
+      "link_time": true,
+      "name": "__c_longjmp"
+    },
+    {
+      "kind": "global",
+      "link_time": true,
+      "name": "__channel_base"
+    },
+    {
+      "kind": "tag",
+      "link_time": true,
+      "name": "__cpp_exception"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlclose"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlerror"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_commit"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_main"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_next"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_prepare"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlsym"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_posix_vm_interrupt_after"
+    },
+    {
+      "kind": "memory",
+      "link_time": true,
+      "name": "memory"
+    }
+  ],
   "host_intercepted_syscalls": [
     {
       "name": "SYS_EXECVE",

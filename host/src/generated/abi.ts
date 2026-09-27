@@ -268,6 +268,23 @@ export type ProcessForkMode =
   | typeof PROCESS_FORK_MODE_FORK
   | typeof PROCESS_FORK_MODE_VFORK;
 export const WPK_FORK_PROCESS_IMPORT = { module: "kernel", name: "kernel_fork", params: ["i32"], results: ["i32"] } as const;
+/** The `env` imports the host supplies to user programs (besides the fork runtime's). */
+export const HOST_ENV_IMPORTS = [
+  { name: "__c_longjmp", kind: "tag", linkTime: true },
+  { name: "__channel_base", kind: "global", linkTime: true },
+  { name: "__cpp_exception", kind: "tag", linkTime: true },
+  { name: "__wasm_dlclose", kind: "function", linkTime: true },
+  { name: "__wasm_dlerror", kind: "function", linkTime: true },
+  { name: "__wasm_dlopen", kind: "function", linkTime: true },
+  { name: "__wasm_dlopen_commit", kind: "function", linkTime: true },
+  { name: "__wasm_dlopen_main", kind: "function", linkTime: true },
+  { name: "__wasm_dlopen_next", kind: "function", linkTime: true },
+  { name: "__wasm_dlopen_prepare", kind: "function", linkTime: true },
+  { name: "__wasm_dlsym", kind: "function", linkTime: true },
+  { name: "__wasm_posix_vm_interrupt_after", kind: "function", linkTime: true },
+  { name: "memory", kind: "memory", linkTime: true },
+] as const;
+
 export const WPK_FORK_REQUIRED_IMPORTS = [
   { module: "env", name: "__wpk_fork_frame_commit", params: ["ptr"], results: [] },
   { module: "env", name: "__wpk_fork_frame_next", params: ["ptr"], results: ["ptr"] },
