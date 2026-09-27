@@ -27,6 +27,7 @@ pub mod fork_lifecycle;
 pub mod guest_ptr;
 pub mod hostdir;
 pub mod hostname;
+pub mod image_build_determinism;
 pub mod image_policy;
 pub mod ipc;
 pub mod ipc_wire;
@@ -84,6 +85,11 @@ pub use process::HostIO as HostCapabilities;
 /// Get current real time in seconds (CLOCK_REALTIME).
 /// On wasm32, calls the host import. On native (tests), returns 0.
 pub fn current_time_secs() -> i64 {
+    // An image-build kernel answers the wall clock from the build's epoch
+    // (see `image_build_determinism`), like every other realtime read.
+    if let Some((sec, _nsec)) = image_build_determinism::realtime_for_current_task() {
+        return sec;
+    }
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
     {
         #[link(wasm_import_module = "env")]

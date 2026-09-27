@@ -1014,6 +1014,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::loadImage(imageLenLo, imageLenHi)",
   ),
+  // Reviewed: `kernel_set_image_build_determinism` takes the image-build
+  // seed and epoch as four 32-bit scalar words, once at boot before any
+  // process exists; it borrows no kernel memory.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.init::kernel-export-direct-use::enableDeterminism(seedLo, seedHi, epochLo, epochHi)",
+  ),
 ];
 
 const auditAllowances: AuditAllowance[] = [

@@ -12,6 +12,7 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
+import type { ImageBuildDeterminism } from "./types";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,6 +135,16 @@ export interface NodeKernelHostOptions {
    * module` with nothing to connect it back to resolution policy.
    */
   dylinkModuleBytes?: ArrayBuffer | Uint8Array;
+  /**
+   * Boot the kernel in deterministic image-build mode: `CLOCK_REALTIME`
+   * counts up from `epochSeconds` and every entropy read (`getrandom`,
+   * `/dev/urandom`) draws from a stream seeded by `seed`. For image builders
+   * only -- the kernels that run an installer inside an image being built --
+   * so the image is a function of its inputs. Seeded entropy is public: an
+   * image built this way must replace every secret on each machine's first
+   * boot. See `crates/runtime-core/src/image_build_determinism.rs`.
+   */
+  imageBuildDeterminism?: ImageBuildDeterminism;
   /** Called when a process writes to stdout */
   onStdout?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes to stderr */
@@ -446,6 +457,9 @@ export class NodeKernelHost {
             defaultThreadSlots: this.options.defaultThreadSlots,
             dataBufferSize: this.options.dataBufferSize ?? 65536,
             useSharedMemory: true,
+            imageBuildDeterminism: validImageBuildDeterminism(
+              this.options.imageBuildDeterminism,
+            ),
           },
           execPrograms: this.options.execPrograms,
           execProgramBytes,
@@ -1368,4 +1382,19 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
     `await import('${entryUrl}');`,
   ].join("\n");
   return new NodeThreadWorker(bootstrap, { eval: true });
+}
+
+/** Copy the option, refusing values the kernel's 64-bit words cannot carry. */
+function validImageBuildDeterminism(
+  determinism: ImageBuildDeterminism | undefined,
+): ImageBuildDeterminism | undefined {
+  if (determinism === undefined) return undefined;
+  const { seed, epochSeconds } = determinism;
+  if (!Number.isSafeInteger(seed) || seed < 0) {
+    throw new Error(`imageBuildDeterminism.seed must be a non-negative safe integer, got ${seed}`);
+  }
+  if (!Number.isSafeInteger(epochSeconds) || epochSeconds < 0) {
+    throw new Error(`imageBuildDeterminism.epochSeconds must be a non-negative safe integer, got ${epochSeconds}`);
+  }
+  return { seed, epochSeconds };
 }

@@ -9976,11 +9976,24 @@ pub fn sys_clock_gettime(
     host: &mut dyn HostIO,
     clock_id: u32,
 ) -> Result<WasmTimespec, Errno> {
-    let (sec, nsec) = host.host_clock_gettime(host_clock_id(clock_id)?)?;
+    let (sec, nsec) = guest_clock_now(host, host_clock_id(clock_id)?)?;
     Ok(WasmTimespec {
         tv_sec: sec,
         tv_nsec: nsec,
     })
+}
+
+/// What the calling guest task reads from `host_clock_id`. An image-build
+/// kernel answers the monotonic family from the task's logical clock
+/// (`image_build_determinism`); realtime is already answered below the
+/// `HostIO` boundary. The kernel's own deadlines never come through here.
+fn guest_clock_now(host: &mut dyn HostIO, host_clock_id: u32) -> Result<(i64, i64), Errno> {
+    if crate::image_build_determinism::is_monotonic_clock(host_clock_id) {
+        if let Some(reading) = crate::image_build_determinism::monotonic_for_current_task() {
+            return Ok(reading);
+        }
+    }
+    host.host_clock_gettime(host_clock_id)
 }
 
 /// Sleep for the specified duration.
@@ -9992,7 +10005,17 @@ pub fn sys_nanosleep(
     if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
         return Err(Errno::EINVAL);
     }
+    credit_image_build_sleep(req.tv_sec, req.tv_nsec);
     Ok(())
+}
+
+/// An image-build kernel's realtime clock advances by the time a task sleeps
+/// (`image_build_determinism`); a no-op otherwise.
+fn credit_image_build_sleep(sec: i64, nsec: i64) {
+    let ns = (sec.max(0) as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nsec.max(0) as u64);
+    crate::image_build_determinism::credit_current_task_sleep(ns);
 }
 
 /// Get clock resolution. Returns hardcoded values since Wasm doesn't
@@ -10042,8 +10065,9 @@ pub fn sys_clock_nanosleep(
     }
     const TIMER_ABSTIME: u32 = 1;
     if flags & TIMER_ABSTIME != 0 {
-        // Absolute sleep: compute relative delay from current clock
-        let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
+        // Absolute sleep: compute relative delay from the clock the guest
+        // computed its deadline on.
+        let (now_sec, now_nsec) = guest_clock_now(host, clock_id)?;
         let mut sec = req.tv_sec - now_sec;
         let mut nsec = req.tv_nsec - now_nsec;
         if nsec < 0 {
@@ -10058,9 +10082,11 @@ pub fn sys_clock_nanosleep(
         } else {
             out[0..8].copy_from_slice(&sec.to_le_bytes());
             out[8..16].copy_from_slice(&nsec.to_le_bytes());
+            credit_image_build_sleep(sec, nsec);
         }
         Ok(())
     } else {
+        credit_image_build_sleep(req.tv_sec, req.tv_nsec);
         Ok(())
     }
 }
@@ -15017,7 +15043,8 @@ pub fn sys_gettimeofday(_proc: &mut Process, host: &mut dyn HostIO) -> Result<(i
 /// channel and parks on. Sleeping here would block the single kernel thread
 /// that multiplexes every process in the machine, so a `usleep(500000)` in one
 /// process would stall all of them for half a second.
-pub fn sys_usleep(_proc: &mut Process, _host: &mut dyn HostIO, _usec: u32) -> Result<(), Errno> {
+pub fn sys_usleep(_proc: &mut Process, _host: &mut dyn HostIO, usec: u32) -> Result<(), Errno> {
+    credit_image_build_sleep(i64::from(usec / 1_000_000), i64::from(usec % 1_000_000) * 1_000);
     Ok(())
 }
 

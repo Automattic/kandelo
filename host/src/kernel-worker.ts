@@ -5821,6 +5821,29 @@ export class CentralizedKernelWorker {
         const abiVersion = abiVersionFn();
         validateKernelHostAdapterManifest(instance, this.#kernelMemory!);
 
+        // Before anything else touches the kernel: an image builder's kernel
+        // answers the wall clock and entropy from the build's seed and epoch
+        // (`KernelConfig.imageBuildDeterminism`, set only by the Node host's
+        // image builders; `crates/runtime-core/src/image_build_determinism.rs`
+        // has the design and why it is safe only there). A kernel without the
+        // export is refused rather than run on real entropy: a build that
+        // asked for determinism and did not get it would ship
+        // non-reproducible bytes under a reproducible cache key.
+        const determinism = this.config.imageBuildDeterminism;
+        if (determinism !== undefined) {
+          const enableDeterminism = instance.exports.kernel_set_image_build_determinism as
+            | ((seedLo: number, seedHi: number, epochLo: number, epochHi: number) => number)
+            | undefined;
+          const [seedLo, seedHi, epochLo, epochHi] = [determinism.seed, determinism.epochSeconds]
+            .flatMap((value) => [value >>> 0, Math.floor(value / 0x1_0000_0000)]);
+          const enabled = typeof enableDeterminism === "function"
+            ? enableDeterminism(seedLo, seedHi, epochLo, epochHi)
+            : -38; // ENOSYS: a kernel that predates the mode must be rebuilt
+          if (enabled < 0) {
+            throw new Error(`kernel_set_image_build_determinism failed with errno ${-enabled}`);
+          }
+        }
+
         // Phase 5 bring-up: optionally hand scratch-mount ownership to the
         // in-kernel tmpfs, and the `/` tree to the in-kernel rootfs overlay,
         // before any guest filesystem op runs.

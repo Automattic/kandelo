@@ -787,7 +787,9 @@ async function handleInit(msg: InitMessage) {
 
   kernelWorker = new CentralizedKernelWorker(
     {
-      maxWorkers: msg.config.maxWorkers,
+      // maxWorkers and imageBuildDeterminism pass through as the host sent
+      // them; the rest take the worker's defaults.
+      ...msg.config,
       dataBufferSize: msg.config.dataBufferSize ?? 65536,
       useSharedMemory: msg.config.useSharedMemory ?? true,
       defaultThreadSlots,
