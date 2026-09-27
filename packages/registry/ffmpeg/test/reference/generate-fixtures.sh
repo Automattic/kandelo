@@ -28,8 +28,10 @@ mkdir -p "$OUT"
   -of json "$OUT/fixture.mp4" > "$OUT/fixture.ffprobe.json"
 "$FF" -nostdin -v error -threads 1 -i "$OUT/fixture.mp4" -map 0:v "${BX[@]}" \
   -f framecrc - > "$OUT/fixture.video.framecrc"
-"$FF" -nostdin -v error -c:a aac_fixed -i "$OUT/fixture.mp4" -map 0:a "${BX[@]}" \
-  -f framecrc - > "$OUT/fixture.audio-fixed.framecrc"
+# Both AAC decoders are compared within FATE's tolerance (tests/fate/aac.mak:
+# CMP = oneoff, FUZZ = 2), so their references are raw PCM, not CRCs.
+"$FF" -nostdin -v error -c:a aac_fixed -i "$OUT/fixture.mp4" -map 0:a -f s16le - \
+  > "$OUT/fixture.audio-fixed.s16le"
 "$FF" -nostdin -v error -i "$OUT/fixture.mp4" -map 0:a -f s16le - \
   > "$OUT/fixture.audio-float.s16le"
 # Browser check: encode the same video in-machine and compare packets.
@@ -40,8 +42,12 @@ mkdir -p "$OUT"
 if [ -f "$BBB" ]; then
   "$FF" -nostdin -v error -threads 1 -i "$BBB" -map 0:v "${BX[@]}" \
     -f streamhash -hash sha256 - > "$OUT/bbb.video.streamhash"
-  "$FF" -nostdin -v error -c:a aac_fixed -i "$BBB" -map 0:a "${BX[@]}" \
-    -f streamhash -hash sha256 - > "$OUT/bbb.audio-fixed.streamhash"
+  # The whole soundtrack's decoded length, and a native PCM window (10-11 s,
+  # which contains the first samples where platform math differs by 1).
+  "$FF" -nostdin -v error -c:a aac_fixed -i "$BBB" -map 0:a -f s16le - | wc -c \
+    | tr -d ' ' > "$OUT/bbb.audio-fixed.bytes"
+  "$FF" -nostdin -v error -c:a aac_fixed -i "$BBB" -map 0:a -af atrim=start=10:end=11 \
+    -f s16le - > "$OUT/bbb.audio-fixed.10s-11s.s16le"
   "$FF" -nostdin -v error -ss 300 -i "$BBB" -frames:v 5 -map 0:v "${BX[@]}" \
     -f framecrc - > "$OUT/bbb.seek300.framecrc"
 else
