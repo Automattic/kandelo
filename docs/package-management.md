@@ -293,30 +293,106 @@ What each producer step does to keep its bytes a function of its inputs:
   with `opcache.validate_timestamps=1` (`nginx-php-vfs`) unlinks any entry
   whose recorded mtime differs from the shipped file's; "writes entries a
   timestamp-validating runtime accepts" in the same file covers that.
+- **Build-time installers** (`images/vfs/scripts/wordpress-preinstall.ts`).
+  The `wordpress` and `lamp` images run WordPress's installer during the
+  build (and `lamp` bootstraps MariaDB first), so a machine boots already
+  installed. The installer reads the clock (`user_registered`, post dates,
+  `admin_email_lifespan`, MariaDB's time-based table UUIDs) and the entropy
+  source (the admin password's bcrypt salt), so with the real clock and real
+  entropy no two builds agreed. The kernels these builds boot therefore run
+  in **deterministic image-build mode** (`NodeKernelHost`'s
+  `imageBuildDeterminism`; `crates/runtime-core/src/image_build_determinism.rs`):
+  the guest's `CLOCK_REALTIME` starts at `SOURCE_DATE_EPOCH` (the instant the
+  image writer stamps on every inode, so a fresh image reads as built on
+  1980-01-01 in the dev shell), the guest's monotonic clock starts at a fixed
+  base, and every entropy read (`getrandom`, `/dev/urandom`, the interface
+  MAC) draws from a stream seeded by the build. Both are per task: each
+  task's clock counts its own reads (a little over a microsecond each, so
+  software that polls for the clock to change still progresses) plus the
+  sleeps and timed waits it ran to their timeout, and each process's entropy
+  stream is named by its creation order rather than its pid. The kernel's own
+  deadlines stay on the real clock, so timeouts still expire in real time.
+  The mode has no syscall, is set once before the first process, and only
+  the Node image builders can ask for it; the browser host cannot express it.
+  One visible consequence: a fresh machine's WordPress was installed "on"
+  the build's epoch, so its admin email re-verification date has long
+  passed. The demo images ship an mu-plugin
+  (`WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN` in
+  `apps/browser-demos/lib/init/wordpress-runtime-config.ts`) that turns that
+  prompt off; the demo admin address is a placeholder, so the prompt had no
+  meaning, and it stopped the guide's "Log in as admin" flow.
 
-**Known exceptions: `wordpress` and `lamp` are not yet byte-reproducible.**
-Both run the WordPress installer during the build (and `lamp` bootstraps
-MariaDB), under the real guest clock and entropy source:
+  Seeded entropy is public: anyone can rebuild an image and recompute every
+  "random" byte it contains, and every download of one image contains the
+  same bytes (as every download always did). So the images carry no secrets.
+  The build installs with public placeholder keys and salts, and each
+  machine's **first boot** writes its own WordPress keys and salts from its
+  real entropy (the `wordpress-secrets` dinit service,
+  `images/vfs/scripts/wordpress-first-boot.ts`, which PHP-FPM depends on).
+  `wp-config.php` requires `/etc/kandelo/wordpress-secrets.php`; the image
+  ships only a placeholder there that stops WordPress with an explanation,
+  so a machine whose service did not run fails loudly instead of running on
+  shared or missing keys. The service uses bash builtins only (`$SRANDOM`),
+  because every program a first boot starts sits on the path to the first
+  page; a coreutils pipeline cost about four seconds of first response on
+  Node. The service is
+  idempotent: a later boot of the same filesystem keeps the machine's
+  secrets, a fresh boot of the image makes new ones. Today neither host
+  persists a machine's filesystem across reloads (a browser reload is a
+  fresh boot), so every boot is a first boot.
 
-- `wordpress` ships a SQLite database whose install timestamps
-  (`wp_users.user_registered`, post and comment dates,
-  `admin_email_lifespan`) are the build's wall clock, and whose admin
-  password hash has a random bcrypt salt. Its prewarmed opcache files are
-  already identical between builds.
-- `lamp` ships a MariaDB data directory in which 85 to 93 files differ
-  between two builds (the count itself varies), all under `/data`: table
-  `.frm` and Aria `.MAI` headers carry freshly generated UUIDs,
-  `aria_log_control` a random UUID, and the InnoDB system tablespace and
-  redo log timing-dependent LSNs, on top of the same WordPress rows. Its
-  prewarmed opcache files are identical between builds.
+  Why this design, and not the alternatives:
+  - *Install on first boot* would make the images reproducible with no new
+    kernel mode, but every first boot would pay the installer (bootstrap,
+    schema creation, bcrypt) that the build-time install exists to avoid.
+  - *Deterministic build only, no rotation* would publish every machine's
+    cookie-signing keys to anyone who can run the build.
+  - *Accept non-reproducible images* leaves the cache-key contract broken
+    and the build's secrets shared by every download anyway.
+  - *Rewriting rows or files after the installer ran* would hide where the
+    bytes come from instead of controlling them.
 
-No MariaDB or WordPress setting removes these, and rewriting the rows or
-files after the installer ran would only hide where the bytes come from. The
-choices (a deterministic guest clock and entropy source for build-time
-boots, installing on first boot instead of at build time, or accepting and
-recording the boundary) are open in `docs/future-improvements.md`
-("Build-time installers make the WordPress and LAMP images
-non-reproducible").
+  Residual risks, recorded rather than hidden:
+  - The admin account's password is the demo's published credential
+    (`admin` / `password`, which the demo guide's "Log in as admin" action
+    types for the user), and its bcrypt hash, salt included, is the same in
+    every image. The hash of a public password protects nothing, so it is
+    not rotated; a per-machine password would need the first-boot service to
+    compute a WordPress hash (the images ship no PHP CLI) and the guide to
+    read the machine's password. See `docs/future-improvements.md`.
+  - LAMP's MariaDB runs with `--skip-grant-tables --skip-networking`: it has
+    no credentials to rotate and is reachable only through its socket inside
+    the machine.
+
+  `host/test/image-build-determinism.test.ts` pins the mode (two boots with
+  one seed agree, a different seed differs, a normal boot stays real);
+  `host/test/wordpress-first-boot-secrets.test.ts` pins the rotation.
+
+**`wordpress` is byte-reproducible.** Two builds under one key produce the
+same image, database and prewarmed opcache included.
+
+**`lamp` is not yet byte-reproducible.** Its WordPress rows and the tables
+the installer creates now come out identical, but MariaDB's bootstrap does
+not: between 2 and about 76 files under `/data` differ between two builds
+(the count varies from pair to pair). Every pair differs in the InnoDB redo
+log and system tablespace: the log sequence number after bootstrap was
+43931 or 43943, and even with equal sequence numbers about 970 bytes of
+`ib_logfile0` differ. Some pairs also differ in one byte of a time-based
+UUID (the Aria server UUID stamped into every `.MAI` header and
+`aria_log_control`, and the `.frm` table version of the system tables the
+bootstrap creates). Both come from thread scheduling inside the server:
+the order in which InnoDB's background threads' work lands, and how many
+times the bootstrap thread reads its clock while it waits for them. A
+deterministic clock and entropy source cannot fix the order in which
+threads run, and neither did fewer InnoDB I/O and purge threads. The build
+does run the bootstrap to completion and shuts the server down slowly
+(`innodb_fast_shutdown=0`) with timer-driven background work turned off
+(`MARIADB_BUILD_ONLY_ARGS`), in the kernel's own filesystem rather than a
+host directory, which removed the build host's case sensitivity from the
+image. What remains needs a serialized (single-CPU) scheduling mode for
+build-time boots, a pinned bootstrapped `/data`, or an accepted, recorded
+boundary; see `docs/future-improvements.md` ("MariaDB's bootstrap is not
+reproducible").
 
 To find which files inside two builds of an image differ, run
 `cargo run -p xtask --target <host-target> -- vfs-image diff <a> <b>`. The
@@ -326,7 +402,11 @@ a `.vfs` or `.vfs.zst` differs it decodes both images and names the
 differing files inside them. `check-determinism diff <dir-a> <dir-b>` does
 this for two already-built trees, and `run` accepts `--product` more than
 once (for example `--product browser-main-shell --product
-browser-nginx-php`) to build and compare several products together. From a
+browser-nginx-php`) to build and compare several products together.
+`scripts/check-determinism.sh` does so by default for the main shell and the
+three images that run software at build time (`browser-nginx-php`,
+`browser-wordpress`, `browser-lamp`); `browser-lamp` is expected to fail
+until its MariaDB bootstrap is reproducible. From a
 cold source cache `run` does not currently complete when `faketime` is on
 `PATH`, as it is in the dev shell; see `docs/future-improvements.md`
 ("`check-determinism run` cannot fetch sources under its fake clock").

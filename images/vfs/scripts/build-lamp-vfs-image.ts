@@ -8,8 +8,10 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  *   wp-config-init    (internal) — dependency marker. The browser host writes
  *                                  runtime wp-config.php before dinit starts.
  *   smtp-capture      (process)  — local SMTP sink storing mail under /var/mail
+ *   wordpress-secrets (scripted) — this machine's WordPress keys, on first boot
  *   mariadb-ready     (scripted) — waits for the MariaDB socket
- *   php-fpm           (process)  — depends-on mariadb-ready, wp-config-init, smtp-capture
+ *   php-fpm           (process)  — depends-on mariadb-ready, wp-config-init,
+ *                                  smtp-capture, wordpress-secrets
  *   nginx             (process)  — depends-on php-fpm
  *
  * Produces: apps/browser-demos/public/lamp.vfs
@@ -37,6 +39,8 @@ import {
 } from "./kandelo-demo-config";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
   patchWordPressMysqliPersistentSource,
   renderWordPressConfig,
   wordpressConfigTemplate,
@@ -46,6 +50,11 @@ import {
   smtpCaptureService,
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
+import {
+  WORDPRESS_SECRETS_SERVICE,
+  populateWordPressFirstBootSecrets,
+  wordpressFirstBootSecretsService,
+} from "./wordpress-first-boot";
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
 import {
   loadShellBaseFileSystem,
@@ -360,12 +369,13 @@ function buildServices(fs: VfsImageFilesystem): DinitService[] {
       restart: false,
     },
     smtpCaptureService(),
+    wordpressFirstBootSecretsService(),
     mariadbReady,
     {
       name: "php-fpm",
       type: "process",
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["mariadb-ready", "wp-config-init", "smtp-capture"],
+      dependsOn: ["mariadb-ready", "wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -457,6 +467,7 @@ export async function buildLampVfsImage(
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs, inputs.opcache);
   populateSmtpCaptureConfig(fs);
+  populateWordPressFirstBootSecrets(fs);
 
   // Build-time MariaDB bootstrap script + default wp-config. The browser host
   // overwrites wp-config.php with the current page prefix/protocol before dinit starts.
@@ -473,6 +484,11 @@ export async function buildLampVfsImage(
     fs,
     "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
     wordpressSmtpCaptureMuPlugin(),
+  );
+  writeVfsFile(
+    fs,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
   );
 
   console.log("Writing WordPress core files...");

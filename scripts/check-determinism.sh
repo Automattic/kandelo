@@ -9,11 +9,17 @@
 # arguments.
 #
 # Usage:
-#   scripts/check-determinism.sh [--product <id>] [--scratch <dir>] \
+#   scripts/check-determinism.sh [--product <id> ...] [--scratch <dir>] \
 #                                [--report <file>] [--jobs N]
 #   scripts/check-determinism.sh diff <dir-a> <dir-b>
 #
-# Defaults build the browser-main-shell product from the local-supported set.
+# Defaults build, together in each of the two builds, the main shell and the
+# image products that run software at build time: browser-nginx-php (opcache
+# prewarm), browser-wordpress (WordPress installer on SQLite) and browser-lamp
+# (MariaDB bootstrap + WordPress installer). `--product` (repeatable) replaces
+# that list. browser-lamp is a known, documented exception (see
+# "Reproducible VFS image packages" in docs/package-management.md); the check
+# reports it rather than hiding it.
 # Heavy: this performs two full builds. Exit status is non-zero if any package
 # is non-reproducible.
 set -euo pipefail
@@ -22,7 +28,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SET="packages/sets/local-supported.toml"
-PRODUCT="browser-main-shell"
+PRODUCTS=()
+DEFAULT_PRODUCTS=(browser-main-shell browser-nginx-php browser-wordpress browser-lamp)
 SCRATCH="${TMPDIR:-/tmp}/kandelo-determinism"
 REPORT="$REPO_ROOT/determinism-report.txt"
 JOBS="8"
@@ -38,13 +45,21 @@ fi
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --product) PRODUCT="$2"; shift 2 ;;
+        --product) PRODUCTS+=("$2"); shift 2 ;;
         --scratch) SCRATCH="$2"; shift 2 ;;
         --report) REPORT="$2"; shift 2 ;;
         --jobs) JOBS="$2"; shift 2 ;;
         --set) SET="$2"; shift 2 ;;
         *) echo "check-determinism.sh: unknown argument $1" >&2; exit 2 ;;
     esac
+done
+
+if [ "${#PRODUCTS[@]}" -eq 0 ]; then
+    PRODUCTS=("${DEFAULT_PRODUCTS[@]}")
+fi
+PRODUCT_ARGS=""
+for product in "${PRODUCTS[@]}"; do
+    PRODUCT_ARGS="$PRODUCT_ARGS --product $product"
 done
 
 exec bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
@@ -59,7 +74,7 @@ exec bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
     cargo run --release -q -p xtask --target "$HOST_TARGET" -- \
         check-determinism run \
         --set "'"$SET"'" \
-        --product "'"$PRODUCT"'" \
+        '"$PRODUCT_ARGS"' \
         --scratch "'"$SCRATCH"'" \
         --jobs "'"$JOBS"'" \
         --report "'"$REPORT"'"

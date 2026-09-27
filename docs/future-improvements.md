@@ -276,49 +276,63 @@ unpublished generation exists.
 **Files:** `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
 package-source publication workflows, `docs/package-sources.md`
 
-### Build-time installers make the WordPress and LAMP images non-reproducible
+### MariaDB's bootstrap is not reproducible
 
-Two builds of the `wordpress` or `lamp` image package under the same cache
-key produce different bytes, so concurrent builds from two worktrees fight
-over the shared cache entry (the resolver keeps the first and records a
-rebuild-mismatch receipt). The `nginx-php-vfs` image had the same symptom
-from opcache's file cache; that one is fixed in the PHP recipe (see
-"Reproducible VFS image packages" in `docs/package-management.md`).
+The `wordpress` image is byte-reproducible: its build-time installer runs
+in deterministic image-build mode and each machine rotates its secrets on
+first boot ("Reproducible VFS image packages" in
+`docs/package-management.md`). The `lamp` image is not. Two builds under
+one key still differ in between 2 and about 76 files under `/data` (the
+count varies from pair to pair), all traceable to the MariaDB bootstrap:
 
-The remaining differences come from running real software during the build,
-under the real guest clock and entropy source:
+- One byte of a time-based UUID: the Aria server UUID in
+  `aria_log_control` and every `.MAI` header, and the `.frm` table version
+  of the system tables the bootstrap creates. MariaDB builds these UUIDs
+  from its monotonic clock; in deterministic mode that is the bootstrap
+  thread's logical clock, which counts the thread's own clock reads, and the
+  number of reads depends on how often the thread waits for InnoDB's
+  background threads.
+- The InnoDB redo log and system tablespace, in every pair: after bootstrap
+  the log sequence number was 43931 or 43943 across builds, and even with
+  equal sequence numbers about 970 bytes of `ib_logfile0` and 12 bytes of
+  two `ibdata1` pages differ -- the order in which the background threads'
+  mini-transactions land.
 
-- `wordpress-preinstall.ts` runs `wp_install()` against SQLite. Between two
-  builds the database differs in `wp_users.user_registered`, the post and
-  comment dates, the `admin_email_lifespan` option (all wall clock), and
-  the admin password hash (`$wp$2y$10$…`, a random bcrypt salt).
-- The `lamp` build also bootstraps MariaDB. 85 to 93 files under `/data`
-  differ between two builds (the count varies): `.frm` and Aria `.MAI`
-  headers carry freshly generated UUIDs, `aria_log_control` a random UUID,
-  and `ibdata1` / `ib_logfile0` carry LSNs that depend on background-thread
-  timing, in addition to the WordPress rows.
+The WordPress rows and the tables the installer creates are identical
+between builds. Fewer InnoDB purge and I/O threads did not remove the
+variation. The options, which need a maintainer decision:
 
-No application setting controls these, and rewriting rows or data files
-after the installer ran would hide the source rather than remove it. The
-options, which need a maintainer decision:
-
-1. **Deterministic build-time guest.** Give build-time kernel boots (the
-   opcache prewarm, the WordPress installer) a clock pinned to
-   `SOURCE_DATE_EPOCH` and a seeded entropy source. This removes the
-   WordPress differences at their source. It is a host/kernel feature with
-   security weight (seeded entropy must never be reachable at runtime), a
-   frozen clock can stall software that waits on wall time, and it still
-   does not make InnoDB's thread-timing-dependent LSNs reproducible.
-2. **Install on first boot.** Ship the installer's inputs and run it when
-   the machine first boots. The images become reproducible; first boot pays
-   the install time the build-time install exists to avoid.
-3. **Accept and record the boundary.** Keep the build-time install, mark
-   these two packages as not byte-reproducible, and let their cache entries
-   be first-writer-wins without treating a differing rebuild as an error.
+1. **Serialized build-time scheduling.** Run every guest thread of a
+   build-time kernel on one logical CPU in a deterministic order. This is
+   the only option that removes thread-timing nondeterminism generally, and
+   it is a substantial kernel/host feature.
+2. **Bootstrap once, keep the result as a pinned input.** Treat the
+   bootstrapped `/data` as a checked, content-addressed artifact that the
+   build starts from, so only the (reproducible) WordPress install runs per
+   build. The bootstrap then happens once per MariaDB/SQL change instead of
+   per build.
+3. **Accept and record the boundary** for `lamp` only: mark the package as
+   not byte-reproducible so a differing rebuild is expected rather than a
+   mismatch.
 
 **Files:** `images/vfs/scripts/wordpress-preinstall.ts`,
-`images/vfs/scripts/build-wp-vfs-image.ts`,
-`images/vfs/scripts/build-lamp-vfs-image.ts`, `host/src/node-kernel-host.ts`
+`crates/runtime-core/src/image_build_determinism.rs`
+
+### WordPress demo admin password is a published credential
+
+Every WordPress and LAMP machine starts with `admin` / `password`, which the
+demo guide's "Log in as admin" action types for the user, and the bcrypt
+hash of it (salt included) is the same in every image. The first-boot
+service rotates the keys and salts that sign cookies but not this: the hash
+of a public password protects nothing. A per-machine admin password would
+need the first-boot service to compute a WordPress password hash (the images
+ship `php-fpm` but no PHP CLI; running PHP at boot means adding one or a
+FastCGI client) and the guide to read the machine's password from its
+filesystem instead of a fixed payload. Worth doing before machines become
+reachable by anyone but their owner.
+
+**Files:** `images/vfs/scripts/wordpress-first-boot.ts`,
+`web-libs/kandelo-session/src/demo-guides.ts`
 
 ### `check-determinism run` cannot fetch sources under its fake clock
 
@@ -346,7 +360,13 @@ file added or edited from the demo terminal, or a replacement for an entry
 it rejected) cannot store it: on the Node host, `file_put_contents` into
 `/var/cache/opcache/<system-id>/var/www/html` fails with `EACCES`, and a
 new script's entry never appears. The prewarmed entries themselves are
-read and used. The fix belongs in the image builders: give the cache tree
+read and used. (Until 2026-09-27 the kernel let such a worker create and
+remove *directories* there: namespace changes on the in-kernel root and
+tmpfs skipped the parent-directory permission check. That is fixed, so the
+store now fails at `mkdir` rather than at the file.) The same applies to
+the WordPress and LAMP images, whose build deliberately does not prewarm
+`wp-config.php` (the host rewrites it at boot); PHP recompiles it on every
+request. The fix belongs in the image builders: give the cache tree
 the ownership and mode the runtime writer needs, as the WordPress builder
 already does for its database directory.
 
