@@ -699,7 +699,11 @@ async function buildVirtualPlatformIO(
     // addresses from hashed paths maps them in its FETCHER, which is where
     // `imageOwnedRuntimeUrlTable` does it, and nothing mutates a stored record
     // to say where bytes live.
-    const lazyFetcher = rootfsLazyAssets !== undefined
+    // One resolver answer per reference for this boot. Each lookup
+    // re-validates the program indexes synchronously (about 3.5 s measured),
+    // blocking the kernel worker, so it must not repeat per fetch.
+    const resolvedLazyReferences = new Map<string, string>();
+    rootfsLazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
@@ -716,7 +720,7 @@ async function buildVirtualPlatformIO(
         // so it stays unresolved and the read fails as a 404.
         const path = url.startsWith("file://")
           ? fileURLToPath(url)
-          : tryResolveBinary(url.replace(/^\/+/, "").replace(/^(?:binaries\/|kandelo-lazy:)/, "")) ?? url;
+          : resolvedLazyReferences.get(url) ?? resolvedLazyReferences.set(url, tryResolveBinary(url.replace(/^\/+/, "").replace(/^(?:binaries\/|kandelo-lazy:)/, "")) ?? url).get(url)!;
         if (!existsSync(path)) return new Response(null, { status: 404 });
         const bytes = new Uint8Array(readFileSync(path));
         return new Response(bytes, {
@@ -724,7 +728,6 @@ async function buildVirtualPlatformIO(
           headers: { "content-length": String(bytes.byteLength) },
         });
       };
-    rootfsLazyFetcher = lazyFetcher;
   }
   // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
   // `/` authority, so the host `/` mount is always dropped from the
