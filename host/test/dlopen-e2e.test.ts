@@ -240,6 +240,48 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
     expect(result.stdout).toContain("expected error:");
   });
 
+  // Side modules still link with --allow-undefined (their symbols resolve
+  // against the main program), so an unresolvable one is only discovered at
+  // dlopen. It must fail there, naming the symbol, not load and trap on the
+  // first call.
+  it("fails dlopen with dlerror naming a symbol nothing defines", { timeout: 30_000 }, async () => {
+    const soPath = buildSharedLib(
+      `
+      extern int kandelo_symbol_nothing_defines(int);
+      int calls_missing(int x) { return kandelo_symbol_nothing_defines(x) + 1; }
+      `,
+      "libunresolved",
+    );
+    const wasmPath = buildMainProgram(
+      `
+      #include <dlfcn.h>
+      #include <stdio.h>
+
+      int main(int argc, char **argv) {
+        void *lib = dlopen(argv[1], RTLD_NOW);
+        if (lib) {
+          printf("unexpectedly loaded\\n");
+          return 1;
+        }
+        const char *err = dlerror();
+        printf("dlerror: %s\\n", err ? err : "(null)");
+        return 0;
+      }
+      `,
+      "test-dlopen-unresolved",
+    );
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["test-dlopen-unresolved", soPath],
+      timeout: 10_000,
+      io: io(),
+    });
+
+    expect(result.exitCode, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/^dlerror: .*kandelo_symbol_nothing_defines/m);
+  });
+
   it("dlsym returns null for non-existent symbol", { timeout: 30_000 }, async () => {
     const soPath = buildSharedLib(
       `int foo(void) { return 42; }`,
