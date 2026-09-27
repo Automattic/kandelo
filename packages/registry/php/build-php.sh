@@ -1143,13 +1143,11 @@ if [ -f main/php_config.h ]; then
 fi
 
 # `make` per-file rules embed `INCLUDES` from configure but ignore
-# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`); `INCLUDES` for
-# our libxml2 ends up as `-I.../include/libxml` because PHP's
-# `ext/libxml/config.m4` adds the `/libxml` suffix. The real PHP
-# sources `#include <libxml/parser.h>`, which needs the parent
-# `-I.../include`. Pass it via `EXTRA_CFLAGS`, which the per-file
-# rules append last.
-EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include"
+# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`), so pass libxml2's own
+# pkg-config Cflags via `EXTRA_CFLAGS`, which the per-file rules append
+# last. With libxml2's upstream layout that is `-I…/include/libxml2`,
+# the directory PHP's `#include <libxml/parser.h>` resolves against.
+EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include/libxml2"
 
 echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" cli
