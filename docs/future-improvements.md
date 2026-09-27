@@ -281,42 +281,56 @@ package-source publication workflows, `docs/package-sources.md`
 The `wordpress` image is byte-reproducible: its build-time installer runs
 in deterministic image-build mode and each machine rotates its secrets on
 first boot ("Reproducible VFS image packages" in
-`docs/package-management.md`). The `lamp` image is not. Two builds under
-one key still differ in between 2 and about 76 files under `/data` (the
-count varies from pair to pair), all traceable to the MariaDB bootstrap:
+`docs/package-management.md`, which describes this gap in full). The
+`lamp` image is not. Two builds under one key still differ in between 2
+and about 76 files under `/data` (the count varies from pair to pair), all
+from the MariaDB bootstrap, and all from the order in which the server's
+threads run:
 
-- One byte of a time-based UUID: the Aria server UUID in
-  `aria_log_control` and every `.MAI` header, and the `.frm` table version
-  of the system tables the bootstrap creates. MariaDB builds these UUIDs
-  from its monotonic clock; in deterministic mode that is the bootstrap
-  thread's logical clock, which counts the thread's own clock reads, and the
-  number of reads depends on how often the thread waits for InnoDB's
-  background threads.
 - The InnoDB redo log and system tablespace, in every pair: after bootstrap
   the log sequence number was 43931 or 43943 across builds, and even with
   equal sequence numbers about 970 bytes of `ib_logfile0` and 12 bytes of
   two `ibdata1` pages differ -- the order in which the background threads'
   mini-transactions land.
+- One byte of a time-based UUID, in some pairs: the Aria server UUID in
+  `aria_log_control` and every `.MAI` header, and the `.frm` table version
+  of the system tables the bootstrap creates. MariaDB builds these from its
+  monotonic clock; in deterministic mode that is the bootstrap thread's
+  logical clock, which counts the thread's own reads, and how many reads it
+  makes depends on how often it waits for the background threads.
 
-The WordPress rows and the tables the installer creates are identical
-between builds. Fewer InnoDB purge and I/O threads did not remove the
-variation. The options, which need a maintainer decision:
+A deterministic clock and entropy source cannot remove a difference in
+thread order. Fewer InnoDB purge and I/O threads did not either.
 
-1. **Serialized build-time scheduling.** Run every guest thread of a
-   build-time kernel on one logical CPU in a deterministic order. This is
-   the only option that removes thread-timing nondeterminism generally, and
-   it is a substantial kernel/host feature.
-2. **Bootstrap once, keep the result as a pinned input.** Treat the
-   bootstrapped `/data` as a checked, content-addressed artifact that the
-   build starts from, so only the (reproducible) WordPress install runs per
-   build. The bootstrap then happens once per MariaDB/SQL change instead of
-   per build.
-3. **Accept and record the boundary** for `lamp` only: mark the package as
-   not byte-reproducible so a differing rebuild is expected rather than a
-   mismatch.
+**Decided (maintainer, 2026-09-27): serialized build-time scheduling.** A
+build-time kernel runs guest threads one at a time in a fixed order: a run
+token granted by the kernel at syscall boundaries, the kernel choosing
+which runnable thread proceeds, virtual time advancing only when every
+thread is blocked, new threads and forked children held until granted the
+token, and a build-time watchdog that fails the build loudly if a thread
+spins without making syscalls. Same security boundary as the deterministic
+mode: no syscall, set once before any task, Node image builders only.
+
+**It waits on moving blocking waits into Rust.** The scheduler needs the
+kernel to know which threads are blocked and to decide every wakeup, and
+today it does not: `futex` wait/wake is handled entirely in
+`host/src/kernel-worker.ts` (`Atomics.waitAsync` on guest memory; the Rust
+`kernel_futex` is bypassed), and sleeps, `waitpid`, `rt_sigtimedwait` and
+the poll/select/accept/advisory-lock retries are parked in host lists and
+resumed by host timers, several polling every 10, 50 or 500 ms of real
+time. A scheduler layered on those would still order threads by host
+timing, and writing it in TypeScript would grow the host kernel surface
+the Rust-first contract is shrinking. A separate lane moves futex, sleep,
+timed-wait and `waitpid` parking into the Rust wait queue
+(`crates/runtime-core/src/wait_queue.rs`, which already owns the
+deadlines); the scheduler follows it. The rejected alternatives: a pinned,
+content-addressed pre-bootstrapped `/data` as a build input (fixes one
+package, and hides a still non-reproducible step behind a checked-in
+artifact), or accepting `lamp` as non-reproducible.
 
 **Files:** `images/vfs/scripts/wordpress-preinstall.ts`,
-`crates/runtime-core/src/image_build_determinism.rs`
+`crates/runtime-core/src/image_build_determinism.rs`,
+`crates/runtime-core/src/wait_queue.rs`, `host/src/kernel-worker.ts`
 
 ### `check-determinism run` cannot fetch sources under its fake clock
 

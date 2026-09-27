@@ -379,28 +379,73 @@ What each producer step does to keep its bytes a function of its inputs:
 **`wordpress` is byte-reproducible.** Two builds under one key produce the
 same image, database and prewarmed opcache included.
 
-**`lamp` is not yet byte-reproducible.** Its WordPress rows and the tables
-the installer creates now come out identical, but MariaDB's bootstrap does
-not: between 2 and about 76 files under `/data` differ between two builds
-(the count varies from pair to pair). Every pair differs in the InnoDB redo
-log and system tablespace: the log sequence number after bootstrap was
-43931 or 43943, and even with equal sequence numbers about 970 bytes of
-`ib_logfile0` differ. Some pairs also differ in one byte of a time-based
-UUID (the Aria server UUID stamped into every `.MAI` header and
-`aria_log_control`, and the `.frm` table version of the system tables the
-bootstrap creates). Both come from thread scheduling inside the server:
-the order in which InnoDB's background threads' work lands, and how many
-times the bootstrap thread reads its clock while it waits for them. A
-deterministic clock and entropy source cannot fix the order in which
-threads run, and neither did fewer InnoDB I/O and purge threads. The build
-does run the bootstrap to completion and shuts the server down slowly
-(`innodb_fast_shutdown=0`) with timer-driven background work turned off
-(`MARIADB_BUILD_ONLY_ARGS`), in the kernel's own filesystem rather than a
-host directory, which removed the build host's case sensitivity from the
-image. What remains needs a serialized (single-CPU) scheduling mode for
-build-time boots, a pinned bootstrapped `/data`, or an accepted, recorded
-boundary; see `docs/future-improvements.md` ("MariaDB's bootstrap is not
-reproducible").
+**Known gap: `lamp` is not byte-reproducible.** Two builds of the
+`lamp` package under one cache key still produce different images, so the
+resolver keeps whichever build publishes first and records a
+rebuild-mismatch receipt for the other. Everything WordPress writes is
+identical between builds; the differences are all under `/data`, from
+MariaDB's bootstrap, between 2 and about 76 files per pair of builds:
+
+- **InnoDB redo log and system tablespace (every pair).** After bootstrap
+  the log sequence number was 43931 in some builds and 43943 in others,
+  and even when the numbers agree about 970 bytes of `ib_logfile0` and
+  12 bytes of two `ibdata1` pages differ. InnoDB's background threads
+  (purge, page cleaner, the master thread) write mini-transactions to the
+  redo log concurrently with the bootstrap thread, and the order in which
+  those land -- and so the log positions and page contents -- depends on
+  how the host happened to schedule the threads.
+- **Time-based table IDs (some pairs).** MariaDB stamps a time-based UUID
+  into every Aria `.MAI` header and `aria_log_control` (the server's Aria
+  UUID) and into each system table's `.frm` (its table version). It builds
+  them from its monotonic clock. In deterministic image-build mode that
+  clock counts the calling thread's own reads, and the bootstrap thread
+  reads it a different number of times depending on how often it had to
+  wait for the background threads, so one byte of the ID moves.
+
+**Why the deterministic clock and entropy cannot fix it.** Both
+differences are the order in which threads run, not what a thread reads
+from the clock or the entropy source. Fewer InnoDB purge and I/O threads,
+a slow shutdown (`innodb_fast_shutdown=0`) and turning off timer-driven
+background work (`MARIADB_BUILD_ONLY_ARGS`) all shrank the difference but
+did not remove it, because any two threads running at once can still
+interleave in more than one order.
+
+**What will fix it: serialized build-time scheduling** (the maintainer's
+decision, 2026-09-27). A build-time kernel would run its guest threads
+one at a time in a fixed order: a run token that only the kernel grants,
+passed at syscall boundaries, with the kernel choosing which runnable
+thread proceeds and advancing virtual time only when every thread is
+blocked. The order would then depend only on what the guests do, never on
+host timing, and MariaDB's bootstrap would be as reproducible as the
+WordPress install. It is the general fix: any threaded installer benefits,
+where the alternatives (a pinned pre-bootstrapped `/data`, or accepting
+`lamp` as non-reproducible) fix one package or none.
+
+**Why the scheduler waits for blocking waits to move into Rust.** To
+choose the next thread deterministically, the kernel must know every
+thread's state (running, runnable, or blocked and on what) and must
+decide every wakeup itself. Today most of that lives in the host:
+`futex` waits and wakes are handled entirely in
+`host/src/kernel-worker.ts` with `Atomics.waitAsync`/`Atomics.notify`,
+and the Rust kernel never sees them; sleeps, `waitpid`, signal waits and
+the poll/select/accept/lock retries are parked in host lists and resumed
+by host timers, several of them polling every 10, 50 or 500 ms of real
+time. A wakeup decided by a host timer arrives at a real-time moment, so
+a scheduler on top of it would still depend on host timing; and building
+the scheduler in TypeScript would grow the host kernel surface the
+Rust-first contract is shrinking. So the order is: first move futex,
+sleep, timed-wait and `waitpid` parking into the Rust wait queue
+(`crates/runtime-core/src/wait_queue.rs`, which already owns the
+deadlines), then add the scheduler in Rust on top. Until then the gap
+stays recorded here and in `docs/future-improvements.md` ("MariaDB's
+bootstrap is not reproducible").
+
+What the build already does, so the remaining difference is only thread
+order: the bootstrap runs to completion instead of a fixed wait and a
+kill, the server shuts down slowly, and `/data` lives in the booted
+kernel's own filesystem rather than a host directory, which removed the
+build host's case sensitivity (macOS made MariaDB set
+`lower_case_table_names=2`) from the image.
 
 To find which files inside two builds of an image differ, run
 `cargo run -p xtask --target <host-target> -- vfs-image diff <a> <b>`. The
@@ -414,7 +459,7 @@ browser-nginx-php`) to build and compare several products together.
 `scripts/check-determinism.sh` does so by default for the main shell and the
 three images that run software at build time (`browser-nginx-php`,
 `browser-wordpress`, `browser-lamp`); `browser-lamp` is expected to fail
-until its MariaDB bootstrap is reproducible. From a
+until the known gap above is closed. From a
 cold source cache `run` does not currently complete when `faketime` is on
 `PATH`, as it is in the dev shell; see `docs/future-improvements.md`
 ("`check-determinism run` cannot fetch sources under its fake clock").
