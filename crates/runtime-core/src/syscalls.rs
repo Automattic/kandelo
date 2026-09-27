@@ -9790,6 +9790,71 @@ pub fn sys_exit_with_locks(
     sys_exit_impl(proc, Some(locks), host, status);
 }
 
+/// Which POSIX exit was asked for.
+///
+/// WHY this is a parameter rather than something inferred from the caller:
+/// `exit_group(2)` terminates **every** thread in the process no matter which
+/// thread invokes it, while `exit(2)` terminates only the calling thread. That
+/// is a property of the *syscall*, not of the task. Deciding it from whether
+/// the calling task is a thread worker instead silently downgrades an
+/// `exit_group` issued by a non-main thread into a thread exit, leaving the
+/// process `Running` with an exit status recorded and no thread to publish it.
+/// libc's `exit()` and `_exit()` both route to `exit_group`, so that is the
+/// ordinary path for any threaded program, not a corner case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitScope {
+    /// `SYS_EXIT` — retire the calling task only, unless it is the leader.
+    Task,
+    /// `SYS_EXIT_GROUP` — retire the whole process, whoever is calling.
+    ProcessGroup,
+}
+
+/// Commit the exit of the task `table` has bound for this dispatch, consume
+/// that binding, and return the process's recorded low-eight-bit status.
+///
+/// This RETURNS. It is the one exit transition behind every kernel entry that
+/// can carry an exit: the returning host-adapter exports
+/// (`kernel_commit_process_exit`, `kernel_commit_process_group_exit`), the
+/// guest-facing `kernel_exit` import (which traps afterwards to implement
+/// `_Noreturn`), and `SYS_EXIT`/`SYS_EXIT_GROUP` arriving through
+/// `kernel_handle_channel`. The last one is guest-controlled input: until
+/// 2026-09-26 the channel dispatcher called a `-> !` wrapper that ended in
+/// `unreachable_unchecked()`, so any `exit_group` a host forwarded to
+/// `kernel_handle_channel` trapped the kernel (host-native forwarded every
+/// one). The kernel must answer a channel request, never trap on it; whether
+/// the exiting guest thread may run again is the HOST's decision, made from
+/// the state this commits.
+///
+/// With no bound task there is nothing to exit: `Err(ESRCH)`, never a panic.
+/// Either way the binding is consumed before returning, so deferred
+/// descriptor cleanup (which can call back into a host) never runs with the
+/// exited task still authorised to dispatch.
+pub fn commit_bound_task_exit(
+    table: &mut crate::process_table::ProcessTable,
+    host: &mut dyn HostIO,
+    status: i32,
+    scope: ExitScope,
+) -> Result<i32, Errno> {
+    let committed = match table.current_process_and_advisory_locks() {
+        Some((proc, locks)) => {
+            // A process leader's tid is its pid; a pthread's is not.
+            if scope == ExitScope::Task && current_tid_for_process(proc) != proc.pid {
+                // Thread exit: don't destroy shared process state (FDs,
+                // pipes, etc.). The host retires the task itself
+                // (`kernel_thread_exit`) once its exit handshake completes.
+                proc.exit_status = status & 0xff;
+                proc.exit_signal = 0;
+            } else {
+                sys_exit_with_locks(proc, locks, host, status);
+            }
+            Ok(proc.exit_status)
+        }
+        None => Err(Errno::ESRCH),
+    };
+    table.clear_current_tid_binding();
+    committed
+}
+
 fn sys_exit_impl(
     proc: &mut Process,
     locks: Option<&mut AdvisoryLockManager>,
@@ -19147,6 +19212,79 @@ mod tests {
 
     fn terminal_process(pid: u32) -> Process {
         Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
+    }
+
+    /// The request sequence that trapped the kernel on 2026-09-26: a pthread
+    /// posts `exit_group` on its own channel. The host binds the pthread's
+    /// tid and the dispatcher commits the exit. It must RETURN, end the whole
+    /// process (POSIX: `exit_group` retires every thread, whoever calls it),
+    /// and consume the binding so the zombie cannot dispatch again.
+    #[test]
+    fn exit_group_from_a_pthread_commits_the_process_exit_and_returns() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let leader = table.create_process().unwrap();
+        let tid = table.create_thread(leader, leader, 0, 0, 0x2000).unwrap();
+        table.bind_current_tid(leader, tid).unwrap();
+        let mut host = MockHostIO::new();
+
+        assert_eq!(
+            commit_bound_task_exit(&mut table, &mut host, 3, ExitScope::ProcessGroup),
+            Ok(3)
+        );
+        assert_eq!(table.get(leader).unwrap().state, ProcessState::Exited);
+        assert!(!table.has_current_tid_binding(leader));
+        // A second request from any thread of the zombie is refused at the
+        // binding, before it can reach the dispatcher.
+        assert_eq!(table.bind_current_tid(leader, tid), Err(Errno::ESRCH));
+        assert_eq!(table.bind_current_tid(leader, leader), Err(Errno::ESRCH));
+    }
+
+    /// `exit` (not `exit_group`) from a pthread retires only that task: the
+    /// process keeps running for its other threads.
+    #[test]
+    fn thread_exit_from_a_pthread_leaves_the_process_running() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let leader = table.create_process().unwrap();
+        let tid = table.create_thread(leader, leader, 0, 0, 0x2000).unwrap();
+        table.bind_current_tid(leader, tid).unwrap();
+        let mut host = MockHostIO::new();
+
+        assert_eq!(commit_bound_task_exit(&mut table, &mut host, 0, ExitScope::Task), Ok(0));
+        assert_eq!(table.get(leader).unwrap().state, ProcessState::Running);
+        assert!(!table.has_current_tid_binding(leader));
+    }
+
+    /// `exit` from the process leader (tid == pid) ends the process. Together
+    /// with the test above this pins the leader/pthread derivation the
+    /// task-scoped exit relies on (formerly `current_task_is_thread_worker`
+    /// in the kernel shell, which replaced a `host_is_thread_worker()` host
+    /// import).
+    #[test]
+    fn thread_exit_from_the_leader_ends_the_process() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let leader = table.create_process().unwrap();
+        table.bind_current_tid(leader, leader).unwrap();
+        let mut host = MockHostIO::new();
+
+        assert_eq!(commit_bound_task_exit(&mut table, &mut host, 7, ExitScope::Task), Ok(7));
+        assert_eq!(table.get(leader).unwrap().state, ProcessState::Exited);
+    }
+
+    /// With no bound task there is nothing to exit. The kernel's callers
+    /// used to reach `unreachable_unchecked()` here (wasm) or panic (host).
+    #[test]
+    fn exit_with_no_bound_task_is_esrch_not_a_panic() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let leader = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+
+        for scope in [ExitScope::Task, ExitScope::ProcessGroup] {
+            assert_eq!(
+                commit_bound_task_exit(&mut table, &mut host, 0, scope),
+                Err(Errno::ESRCH)
+            );
+        }
+        assert_eq!(table.get(leader).unwrap().state, ProcessState::Running);
     }
 
     fn set_test_credentials(

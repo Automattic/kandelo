@@ -47,7 +47,7 @@ use crate::signal::{
     deliver_pending_signals_with_locks, dequeue_signal_for, terminate_process_by_signal_with_locks,
     DefaultSignalOutcome,
 };
-use crate::syscalls;
+use crate::syscalls::{self, ExitScope};
 
 // ---------------------------------------------------------------------------
 // 1. Host function imports
@@ -1419,9 +1419,12 @@ unsafe fn get_process() -> (GklGuard, &'static mut Process) {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.current_process() {
         Some(p) => (guard, p),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => core::hint::unreachable_unchecked(),
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -1440,9 +1443,12 @@ unsafe fn get_process_and_advisory_locks() -> (
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.current_process_and_advisory_locks() {
         Some((process, locks)) => (guard, process, locks),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => unsafe { core::hint::unreachable_unchecked() },
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -1464,9 +1470,12 @@ unsafe fn get_process_tid_and_advisory_locks() -> (
     let tid = table.current_tid();
     match table.current_process_and_advisory_locks() {
         Some((process, locks)) => (guard, tid, process, locks),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => unsafe { core::hint::unreachable_unchecked() },
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -5255,13 +5264,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         122 => kernel_getdents64(a1, channel_mut_ptr!(1, u8), process_size_u32!(2)), // SYS_GETDENTS64
 
         // Process control
-        34 => {
-            kernel_exit(a1);
-            0
-        } // SYS_EXIT (thread exit)
-        387 => {
-            kernel_exit_group(a1);
-        } // SYS_EXIT_GROUP (process exit, every thread)
+        // Both RETURN once the exit is committed: a channel request is never
+        // allowed to end in a trap. See `dispatch_channel_exit`.
+        34 => dispatch_channel_exit(a1, ExitScope::Task), // SYS_EXIT (thread exit)
+        387 => dispatch_channel_exit(a1, ExitScope::ProcessGroup), // SYS_EXIT_GROUP (every thread)
         35 => kernel_kill(a1, a2 as u32), // SYS_KILL
         38 => kernel_raise(a1 as u32),    // SYS_RAISE
 
@@ -11148,75 +11154,65 @@ pub fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
     result
 }
 
-/// True when the currently-dispatched task is a pthread worker rather than
-/// the process leader (main thread).
-///
-/// A process leader's tid is its pid; pthread tids live in the owning
-/// `Process` record (the same convention `syscalls.rs` uses elsewhere, e.g.
-/// `caller_tid != proc.pid`). This used to be a host-supplied fact
-/// (`host_is_thread_worker()`), but the kernel already tracks the exact
-/// information needed to derive it — the currently-bound tid is set by
-/// `kernel_set_current_tid`/`ProcessTable::bind_current_tid` before any
-/// exported syscall runs — so no host import is needed here.
-fn current_task_is_thread_worker(proc: &Process) -> bool {
-    syscalls::current_tid_for_process(proc) != proc.pid
-}
-
-/// Commit the current task's exit transition and return its recorded status.
+/// Commit the current task's exit transition and return its recorded status,
+/// or `-ESRCH` when no task is bound.
 ///
 /// WHY: the host adapter must be able to verify process exit without treating
 /// the deliberate trap required by the guest-facing `_exit` ABI as an
-/// arbitrary recoverable WebAssembly exception. Both exported entry points
-/// share this exact transition so their cleanup and task-binding lifetime
-/// cannot drift.
-/// Which POSIX exit was asked for.
-///
-/// WHY this is a parameter rather than something inferred from the caller:
-/// `exit_group(2)` terminates **every** thread in the process no matter which
-/// thread invokes it, while `exit(2)` terminates only the calling thread. That
-/// is a property of the *syscall*, not of the task. Deciding it from
-/// `current_task_is_thread_worker` instead silently downgrades an
-/// `exit_group` issued by a non-main thread into a thread exit, leaving the
-/// process `Running` with an exit status recorded and no thread to publish it.
-/// libc's `exit()` and `_exit()` both route to `exit_group`, so that is the
-/// ordinary path for any threaded program, not a corner case.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ExitScope {
-    /// `SYS_EXIT` — retire the calling task only, unless it is the leader.
-    Task,
-    /// `SYS_EXIT_GROUP` — retire the whole process, whoever is calling.
-    ProcessGroup,
+/// arbitrary recoverable WebAssembly exception. Every exit entry — the two
+/// returning host-adapter exports, the guest-facing `kernel_exit`, and the
+/// `SYS_EXIT`/`SYS_EXIT_GROUP` arms of the channel dispatcher — shares this one
+/// transition (`syscalls::commit_bound_task_exit`) so their cleanup and
+/// task-binding lifetime cannot drift. The scope is the syscall's, never
+/// inferred from the caller; see [`ExitScope`].
+fn commit_current_task_exit(status: i32, scope: ExitScope) -> i32 {
+    let committed = {
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let mut host = WasmHostIO;
+        // Consumes the task binding on every path, before the deferred
+        // descriptor cleanup below can invoke a host callback: cleanup needs
+        // no process identity, and a callback trap must not leave the exited
+        // task available to a later dispatch.
+        syscalls::commit_bound_task_exit(table, &mut host, status, scope)
+    }; // _gkl dropped here — GKL released
+    finish_machine_scm_rights_cleanup_if_pending();
+    match committed {
+        Ok(status) => status,
+        Err(error) => -(error as i32),
+    }
 }
 
-fn commit_current_task_exit(status: i32, scope: ExitScope) -> i32 {
-    let committed_status;
-    {
-        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        if scope == ExitScope::Task && current_task_is_thread_worker(proc) {
-            // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
-            // Just set exit status and return — the guest import traps after
-            // the host completes its exit-channel handshake.
-            proc.exit_status = status & 0xff;
-            proc.exit_signal = 0;
-        } else {
-            let mut host = WasmHostIO;
-            syscalls::sys_exit_with_locks(proc, advisory_locks, &mut host, status);
-        }
-        committed_status = proc.exit_status;
-    } // _gkl dropped here — GKL released
-    // Consume task authority before deferred descriptor cleanup can invoke a
-    // host callback. Cleanup needs no process identity, and a callback trap
-    // must not leave the exited task available to a later dispatch.
-    unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-    finish_machine_scm_rights_cleanup_if_pending();
-    committed_status
+/// `SYS_EXIT`/`SYS_EXIT_GROUP` arriving through `kernel_handle_channel`.
+///
+/// Commits the exit and RETURNS: 0 once committed, `-errno` if not. The
+/// channel dispatcher must answer every request; it used to call `-> !`
+/// wrappers here that ended in `unreachable_unchecked()`, so an `exit_group`
+/// a host forwarded to the channel trapped the kernel mid-dispatch, skipping
+/// the dispatcher's own retry-state and SCM_RIGHTS cleanup. Host-native
+/// forwarded every one; a pthread's `exit_group` made the pump fail outright.
+/// The JavaScript hosts intercept both syscalls before the channel and call
+/// the `kernel_commit_process_*` exports instead, which share this
+/// transition.
+///
+/// The exited thread must not run on: that is the host's to enforce (it
+/// unwinds the thread rather than completing the channel), exactly as it is
+/// after the returning `kernel_commit_process_*` exports.
+fn dispatch_channel_exit(status: i32, scope: ExitScope) -> i32 {
+    let committed = commit_current_task_exit(status, scope);
+    if committed < 0 {
+        committed
+    } else {
+        0
+    }
 }
 
 /// Host-adapter exit boundary that returns after committing process state.
 ///
 /// The caller must compare the returned low-eight-bit status and independently
 /// verify `kernel_get_process_state(pid) == PROCESS_STATE_EXITED` before
-/// publishing lifecycle effects.
+/// publishing lifecycle effects. `-ESRCH` means no task was bound (the host
+/// skipped `kernel_set_current_tid`); nothing was committed.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_commit_process_exit(status: i32) -> i32 {
     commit_current_task_exit(status, ExitScope::Task)
@@ -11239,34 +11235,17 @@ pub extern "C" fn kernel_commit_process_group_exit(status: i32) -> i32 {
 
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 /// For thread workers, just sets exit_status without destroying shared state.
+///
+/// The guest-facing `_Noreturn` import shape: it traps after committing. That
+/// trap is this export's contract, so it is a defined `panic!` (with
+/// `panic=immediate-abort`, a Wasm `unreachable` instruction), never
+/// `unreachable_unchecked()`, whose reachability would be undefined
+/// behaviour. Channel requests never come here; see [`dispatch_channel_exit`].
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exit(status: i32) -> ! {
     let _ = commit_current_task_exit(status, ExitScope::Task);
     // Halt execution — musl's _exit loops forever if we just return.
-    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-    unsafe {
-        core::hint::unreachable_unchecked();
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-    unreachable!("kernel_exit should not return");
-}
-
-/// `exit_group(2)`: terminate the whole process, whichever thread calls it.
-///
-/// Distinct from [`kernel_exit`] only in scope, and that distinction is the
-/// whole point: routing `SYS_EXIT_GROUP` through the task-scoped path leaves a
-/// process `Running` after a non-main thread calls `exit()`, which is what
-/// `host/test/pthread.test.ts`'s "preserves exit(0) from a non-main thread
-/// while the main thread is blocked" observes.
-pub fn kernel_exit_group(status: i32) -> ! {
-    let _ = commit_current_task_exit(status, ExitScope::ProcessGroup);
-    // Halt execution — musl's _exit loops forever if we just return.
-    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-    unsafe {
-        core::hint::unreachable_unchecked();
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-    unreachable!("kernel_exit_group should not return");
+    panic!("kernel_exit does not return");
 }
 
 // ---------------------------------------------------------------------------
@@ -14509,38 +14488,6 @@ mod thread_exit_tests {
             kernel_thread_exit_in_table(&mut pt, 9_999, tid),
             Err(Errno::ESRCH)
         );
-    }
-}
-
-/// H2 (host-surface minimization): `current_task_is_thread_worker` replaced
-/// the `host_is_thread_worker()` host import. These tests pin the exact
-/// derivation `commit_current_task_exit` relies on: a process leader (main
-/// thread, tid == pid) is never a thread worker; a pthread task (tid != pid)
-/// always is — using a standalone `ProcessTable`, not the kernel's global
-/// singleton, so the test carries no dependency on ambient kernel state.
-#[cfg(test)]
-mod thread_worker_derivation_tests {
-    use super::*;
-
-    #[test]
-    fn main_thread_leader_is_not_a_thread_worker() {
-        let mut pt = crate::process_table::ProcessTable::new();
-        let leader = pt.create_process().unwrap();
-        pt.bind_current_tid(leader, leader).unwrap();
-
-        let (proc, _locks) = pt.current_process_and_advisory_locks().unwrap();
-        assert!(!current_task_is_thread_worker(proc));
-    }
-
-    #[test]
-    fn pthread_task_is_a_thread_worker() {
-        let mut pt = crate::process_table::ProcessTable::new();
-        let leader = pt.create_process().unwrap();
-        let tid = pt.create_thread(leader, leader, 0, 0, 0x2000).unwrap();
-        pt.bind_current_tid(leader, tid).unwrap();
-
-        let (proc, _locks) = pt.current_process_and_advisory_locks().unwrap();
-        assert!(current_task_is_thread_worker(proc));
     }
 }
 

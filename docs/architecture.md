@@ -1072,6 +1072,18 @@ stack. The process worker's separate `kernel_exit` import traps after the
 mailbox completes, so guest `_exit` remains non-returning without leaking the
 kernel's stack. Transport misrouting or earlier validation therefore cannot
 authorize a later dispatch.
+The same holds when `SYS_EXIT` or `SYS_EXIT_GROUP` itself arrives through
+`kernel_handle_channel`: the dispatcher commits the exit through the one exit
+transition the `kernel_commit_process_*` exports use and answers 0, and
+whether the exited thread may run again is the host's decision. Node and the
+browser intercept both syscalls before the channel; `crates/host-native`
+forwards them. Until 2026-09-26 those two dispatcher arms instead called
+diverging wrappers that ended in `unreachable_unchecked()`, so every exit the
+native host forwarded trapped the kernel after committing (and skipped the
+dispatcher's retry-state cleanup), and a pthread's `exit_group` failed the
+native pump outright. A source guard in `crates/kernel/src/lib.rs`
+(`channel_dispatch_never_calls_a_diverging_function`) keeps the dispatcher
+from calling a `-> !` function again.
 During the ABI 42 transition, the host also accepts the deliberate post-commit
 exit trap from an older ABI 42 kernel, then applies the same authoritative
 `Exited` state check. The compatibility path does not treat a trap alone as

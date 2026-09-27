@@ -344,6 +344,64 @@ mod wasm_api_source_guards {
         );
     }
 
+    /// A channel request must never end in a trap: the kernel answers it with
+    /// a result or an errno, whatever state the calling task is in.
+    ///
+    /// Until 2026-09-26 the dispatcher's `SYS_EXIT`/`SYS_EXIT_GROUP` arms
+    /// called `-> !` wrappers ending in `unreachable_unchecked()`. Every
+    /// `exit_group` a host forwarded to `kernel_handle_channel` therefore
+    /// trapped the kernel mid-dispatch (host-native forwarded every one, and
+    /// a pthread's made its pump fail). Two properties pin the fix, because
+    /// either alone can be regained silently:
+    ///
+    /// - nothing reachable from the channel dispatcher calls a diverging
+    ///   (`-> !`) function of this file; and
+    /// - this file contains no `unreachable_unchecked()`, whose reachability is
+    ///   undefined behaviour rather than a trap.
+    #[test]
+    fn channel_dispatch_never_calls_a_diverging_function() {
+        let source = include_str!("wasm_api.rs");
+        let start = source
+            .find("fn handle_owned_channel_allocation(")
+            .expect("channel dispatcher start");
+        let end = source[start..]
+            .find("\n// ---------------------------------------------------------------------------\n// SysV IPC kernel exports")
+            .expect("channel dispatcher end");
+        let dispatcher = &source[start..start + end];
+
+        let diverging: Vec<&str> = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(") -> ! {"))
+            .filter_map(|line| {
+                let after_fn = line.split("fn ").nth(1)?;
+                after_fn.split('(').next()
+            })
+            .collect();
+        // `kernel_exit` is the guest-facing `_Noreturn` import shape and must
+        // stay diverging; finding it proves this scan can see one.
+        assert!(
+            diverging.contains(&"kernel_exit"),
+            "the diverging-function scan found none: {diverging:?}"
+        );
+        for name in &diverging {
+            assert!(
+                !dispatcher.contains(&alloc::format!("{name}(")),
+                "the channel dispatcher calls the diverging `{name}`; a channel \
+                 request must return a result or an errno, never trap"
+            );
+        }
+        let unchecked: Vec<&str> = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(concat!("unreachable", "_unchecked")))
+            .collect();
+        assert!(
+            unchecked.is_empty(),
+            "wasm_api.rs reached for `unreachable_unchecked`; use a defined trap: {unchecked:?}"
+        );
+    }
+
     #[test]
     fn wasm_api_avoids_direct_current_tid_lookup() {
         let direct_lookup = concat!("crate::process_table::", "current_tid()");
