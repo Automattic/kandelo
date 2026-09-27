@@ -16,9 +16,12 @@ build and Kandelo exactly. (Big Buck Bunny's H.264/AAC hashes are the same
 either way.)
 
 Kandelo's `ffmpeg` must reproduce these outputs. FFmpeg's decoders are
-bit-exact, so video and fixed-point audio are compared byte for byte; the
-float AAC decoder is compared within one least-significant bit per sample,
-the tolerance FFmpeg's own FATE tests use for it.
+bit-exact, so video is compared byte for byte. Both AAC decoders — the
+fixed-point one included — are compared per sample within 2, the tolerance
+FFmpeg's own FATE tests use for them (`tests/fate/aac.mak`: `CMP = oneoff`,
+`FUZZ = 2`): tables built at startup with the C math library legitimately
+differ in the last bit between libms. Over Big Buck Bunny's whole
+soundtrack, 89 of 57,237,504 samples differ from native, each by 1.
 
 `manifest.json` records the sha256 of every file; `fixtures-manifest.test.ts`
 checks it.
@@ -30,11 +33,12 @@ checks it.
 | `fixture.mp4` | 2 s, 176x144, 10 fps MPEG-4 Part 2 (with B-frames) + 22.05 kHz mono AAC; `+faststart` so it can be read from a pipe |
 | `fixture.ffprobe.json` | `ffprobe` stream summary of `fixture.mp4` |
 | `fixture.video.framecrc` | per-frame CRCs of the decoded video |
-| `fixture.audio-fixed.framecrc` | per-frame CRCs of the audio decoded with the fixed-point `aac_fixed` decoder |
+| `fixture.audio-fixed.s16le` | raw PCM from the fixed-point `aac_fixed` decoder |
 | `fixture.audio-float.s16le` | raw PCM from the default (float) `aac` decoder |
 | `fixture.browser-encode.framecrc` | packet CRCs of encoding the fixture's video from `testsrc` (the browser test re-encodes in-machine) |
 | `bbb.video.streamhash` | SHA-256 of Big Buck Bunny's whole decoded video |
-| `bbb.audio-fixed.streamhash` | SHA-256 of its whole soundtrack via `aac_fixed` |
+| `bbb.audio-fixed.bytes` | length in bytes of its whole soundtrack decoded by `aac_fixed` to s16le |
+| `bbb.audio-fixed.10s-11s.s16le` | native `aac_fixed` PCM for 10–11 s, which contains the first samples that differ |
 | `bbb.seek300.framecrc` | 5 frames decoded after `-ss 300` |
 
 ## Commands
