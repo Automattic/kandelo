@@ -39,7 +39,7 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
-import { findRepoRoot, resolveBinary } from "./binary-resolver";
+import { resolveBinary, tryResolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
 // (`kernel.ts` needs the pointer width to build the import object), so the
 // artifact reader has to be reachable from this realm's first read onward.
@@ -705,9 +705,18 @@ async function buildVirtualPlatformIO(
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
       : async (url: string) => {
         if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+        // Images name deferred binaries by the mirror path they were built
+        // from (`binaries/programs/wasm32/dash.wasm`, or the shell catalog's
+        // `kandelo-lazy:programs/...`). Resolve those through the binary
+        // resolver, as the browser does; joining them onto the repo root
+        // found them only after fetch-binaries.sh, so in a source-built
+        // checkout every lazy `/bin/sh` read failed with EIO and no shell
+        // service in a WordPress or LAMP image could start on Node. A
+        // reference the resolver does not know is not in the repo either,
+        // so it stays unresolved and the read fails as a 404.
         const path = url.startsWith("file://")
           ? fileURLToPath(url)
-          : join(findRepoRoot(), url.replace(/^\/+/, ""));
+          : tryResolveBinary(url.replace(/^\/+/, "").replace(/^(?:binaries\/|kandelo-lazy:)/, "")) ?? url;
         if (!existsSync(path)) return new Response(null, { status: 404 });
         const bytes = new Uint8Array(readFileSync(path));
         return new Response(bytes, {
