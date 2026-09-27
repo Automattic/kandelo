@@ -344,6 +344,7 @@ export const WPK_FORK_REFERENCE_IMPORT_GC_LOAD = "__wpk_fork_ref_gc_load" as con
 export const WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP = "__wpk_fork_ref_gc_lookup" as const;
 export const WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN = "__wpk_fork_ref_gc_payload_len" as const;
 export const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN = "__wpk_fork_ref_gc_provenance_begin" as const;
+export const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_CONTENTS = "__wpk_fork_ref_gc_provenance_contents" as const;
 export const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END = "__wpk_fork_ref_gc_provenance_end" as const;
 export const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF = "__wpk_fork_ref_gc_provenance_ref" as const;
 export const WPK_FORK_REFERENCE_IMPORT_GC_ROUTE = "__wpk_fork_ref_gc_route" as const;
@@ -402,6 +403,7 @@ export const WPK_FORK_REQUIRED_IMPORTS = [
   { module: "env", name: "__wpk_fork_ref_gc_lookup", params: ["i32"], results: ["i32"] },
   { module: "env", name: "__wpk_fork_ref_gc_payload_len", params: ["i32", "i32", "i32"], results: ["i32"] },
   { module: "env", name: "__wpk_fork_ref_gc_provenance_begin", params: ["i32", "i32", "i32", "i32", "i64", "i64", "i32"], results: ["i32"] },
+  { module: "env", name: "__wpk_fork_ref_gc_provenance_contents", params: ["i32", "i64"], results: [] },
   { module: "env", name: "__wpk_fork_ref_gc_provenance_end", params: ["i32"], results: [] },
   { module: "env", name: "__wpk_fork_ref_gc_provenance_ref", params: ["i32", "i32", "i32"], results: [] },
   { module: "env", name: "__wpk_fork_ref_gc_route", params: ["i32", "i32"], results: ["i32"] },

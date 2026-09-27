@@ -3106,6 +3106,13 @@ pub mod abi {
         "__wpk_fork_ref_gc_provenance_begin";
     pub const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END: &str =
         "__wpk_fork_ref_gc_provenance_end";
+    /// `(token, element_bits)`: one element of the array an `array.new_data`
+    /// run just made, widened to 64 bits (a `v128` element is two calls, low
+    /// lane first). Sent, element by element, only for the FIRST run of each
+    /// distinct operand set: the token `__wpk_fork_ref_gc_provenance_begin`
+    /// returned has bit 1 set.
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_CONTENTS: &str =
+        "__wpk_fork_ref_gc_provenance_contents";
     pub const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF: &str =
         "__wpk_fork_ref_gc_provenance_ref";
     pub const WPK_FORK_REFERENCE_IMPORT_GC_ROUTE: &str = "__wpk_fork_ref_gc_route";
@@ -3395,6 +3402,12 @@ pub mod abi {
             name: WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN,
             params: &[I32, I32, I32, I32, I64, I64, I32],
             results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_CONTENTS,
+            params: &[I32, I64],
+            results: &[],
         },
         ProgramArtifactImport {
             module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
@@ -4596,7 +4609,7 @@ pub mod abi {
             assert_eq!(wpk_fork_linked_chunk_header_size(16), None);
             assert_eq!(wpk_fork_linked_node_header_size(16), None);
 
-            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 47);
+            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 48);
             let mut previous_import = ("", "");
             for requirement in WPK_FORK_REQUIRED_IMPORTS {
                 let current = (requirement.module, requirement.name);

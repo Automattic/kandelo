@@ -26,6 +26,19 @@
 //! field records are stored contiguously after the layout catalog; each layout
 //! owns the slice `[field_start, field_start + field_count)`.
 //!
+//! Element-segment table, OPTIONAL, after the field records: `+0` segment
+//! count (u32), then per segment `+0` segment ordinal (u32), `+4` item count
+//! (u32), then one 8-byte item each: `+0` kind (u32: 0 unmapped, 1 null, 2
+//! static root, 3 i31), `+4` value (the root's activation-local ordinal, or
+//! the i31's value bits). It describes every segment an `array.new_elem`
+//! constructor layout reads, item by item, in the coordinates a capture
+//! records references by, so a capture can tell which run of the instruction
+//! made an array from its elements (`gc_constructor`). Ordinals ascend and
+//! are unique, and the table ends the descriptor. The encoder omits it when
+//! no such layout exists, so a program without `array.new_elem` carries the
+//! same bytes it did before the table existed; the version is unchanged
+//! because this decoder, the only one, accepts both shapes.
+//!
 //! Unlike `linked_frames` and `module_state`, this wire is NOT a linear-memory
 //! pointer walk: it is a self-contained catalog of structural type evidence
 //! (layouts + fields). This decoder is the STRUCTURAL/VALIDATION half: given the
@@ -52,7 +65,7 @@
 use wasm_posix_shared::abi;
 use wasm_posix_shared::Errno;
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 const MAGIC: [u8; 4] = abi::WPK_FORK_GC_CODEC_MAGIC; // "KFGC"
@@ -134,13 +147,28 @@ pub struct GcLayoutDescriptor {
     pub provenance_reference_count: u32,
 }
 
+/// One element-segment item, as a capture records the reference it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementItem {
+    /// Nothing a capture coordinate names (a function reference, or an item
+    /// of a segment whose type cannot take part in `ref.eq`): never matched.
+    Unmapped,
+    Null,
+    /// The static root with this activation-local ordinal.
+    Root(u32),
+    I31(i32),
+}
+
 /// The fully decoded and validated GC codec descriptor: the canonical,
-/// id-ordered layout catalog. Mirrors what `decodeForkGcCodecDescriptor`
-/// produces (before the live `ForkGcCodecDescriptor` wrapper, whose dynamic
-/// lookups are the deferred runtime half; see the module doc comment).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// id-ordered layout catalog, and the element segments `array.new_elem`
+/// layouts read. Mirrors what `decodeForkGcCodecDescriptor` produced (before
+/// the live `ForkGcCodecDescriptor` wrapper, whose dynamic lookups are the
+/// deferred runtime half; see the module doc comment).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GcCodec {
     pub layouts: Vec<GcLayoutDescriptor>,
+    /// Segment ordinal -> its items.
+    pub element_segments: BTreeMap<u32, Vec<ElementItem>>,
 }
 
 /// Bounds-checked little-endian `u8` read.
@@ -228,13 +256,18 @@ pub fn decode_gc_codec(bytes: &[u8]) -> Result<GcCodec, Errno> {
     let field_count = r_u32(bytes, 12)?;
     let layouts_length = checked_product(layout_count, LAYOUT_RECORD_SIZE)?;
     let fields_length = checked_product(field_count, FIELD_RECORD_SIZE)?;
-    let expected_length = (HEADER_SIZE as u64)
+    let catalog_length = (HEADER_SIZE as u64)
         .checked_add(layouts_length)
         .and_then(|value| value.checked_add(fields_length))
         .ok_or(Errno::EINVAL)?;
-    if expected_length != bytes.len() as u64 {
+    if catalog_length > bytes.len() as u64 {
         return Err(Errno::EINVAL); // inconsistent bounds
     }
+    let element_segments = if catalog_length == bytes.len() as u64 {
+        BTreeMap::new()
+    } else {
+        decode_element_segments(bytes, catalog_length)?
+    };
 
     // --- Layout catalog --------------------------------------------------
     let mut raw_layouts: Vec<RawLayout> = Vec::with_capacity(layout_count as usize);
@@ -346,7 +379,51 @@ pub fn decode_gc_codec(bytes: &[u8]) -> Result<GcCodec, Errno> {
     }
 
     validate_catalog(&layouts)?;
-    Ok(GcCodec { layouts })
+    Ok(GcCodec {
+        layouts,
+        element_segments,
+    })
+}
+
+/// Decode the version-2 element-segment table at `at`, which must end the
+/// descriptor exactly.
+fn decode_element_segments(bytes: &[u8], at: u64) -> Result<BTreeMap<u32, Vec<ElementItem>>, Errno> {
+    let mut segments = BTreeMap::new();
+    let count = r_u32(bytes, at)?;
+    let mut cursor = at + 4;
+    let mut previous: Option<u32> = None;
+    for _ in 0..count {
+        let ordinal = r_u32(bytes, cursor)?;
+        let items = r_u32(bytes, cursor + 4)?;
+        cursor += 8;
+        if previous.is_some_and(|previous| ordinal <= previous) {
+            return Err(Errno::EINVAL); // ordinals must ascend
+        }
+        previous = Some(ordinal);
+        let end = cursor
+            .checked_add(u64::from(items) * 8)
+            .ok_or(Errno::EINVAL)?;
+        if end > bytes.len() as u64 {
+            return Err(Errno::EINVAL); // truncated segment
+        }
+        let mut decoded = Vec::with_capacity(items as usize);
+        for _ in 0..items {
+            let value = r_u32(bytes, cursor + 4)?;
+            decoded.push(match r_u32(bytes, cursor)? {
+                0 if value == 0 => ElementItem::Unmapped,
+                1 if value == 0 => ElementItem::Null,
+                2 => ElementItem::Root(value),
+                3 if value as i32 == ((value as i32) << 1) >> 1 => ElementItem::I31(value as i32),
+                _ => return Err(Errno::EINVAL), // unknown item kind or bad value
+            });
+            cursor += 8;
+        }
+        segments.insert(ordinal, decoded);
+    }
+    if cursor != bytes.len() as u64 {
+        return Err(Errno::EINVAL); // trailing bytes
+    }
+    Ok(segments)
 }
 
 /// Cross-layout validation. Mirrors the `ForkGcCodecDescriptor` constructor:
@@ -668,6 +745,49 @@ mod tests {
         put_u32(&mut bytes, f + 4, NO_ORDINAL); // scalar offset
         put_u32(&mut bytes, f + 8, 0); // reference ordinal
         bytes
+    }
+
+    /// `minimal_descriptor` with an element-segment table appended.
+    fn with_element_table(table: &[u32]) -> Vec<u8> {
+        let mut bytes = minimal_descriptor();
+        for word in table {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn decodes_the_optional_element_segment_table() {
+        assert!(decode_gc_codec(&minimal_descriptor()).unwrap().element_segments.is_empty());
+        let decoded = decode_gc_codec(&with_element_table(&[
+            2, // two segments
+            1, 3, 2, 7, 1, 0, 3, (-5i32) as u32, // segment 1: root 7, null, i31 -5
+            4, 1, 0, 0, // segment 4: one unmapped item
+        ]))
+        .unwrap();
+        assert_eq!(
+            decoded.element_segments.get(&1).unwrap(),
+            &alloc::vec![ElementItem::Root(7), ElementItem::Null, ElementItem::I31(-5)]
+        );
+        assert_eq!(
+            decoded.element_segments.get(&4).unwrap(),
+            &alloc::vec![ElementItem::Unmapped]
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_element_segment_table() {
+        // Truncated item, trailing word, descending ordinals, unknown kind, an
+        // i31 value outside 31 bits.
+        for table in [
+            &[1, 1, 1, 2][..],
+            &[0, 9][..],
+            &[2, 4, 0, 1, 0][..],
+            &[1, 1, 1, 9, 0][..],
+            &[1, 1, 1, 3, 0x4000_0000][..],
+        ] {
+            assert_eq!(decode_gc_codec(&with_element_table(table)), Err(Errno::EINVAL), "{table:?}");
+        }
     }
 
     #[test]

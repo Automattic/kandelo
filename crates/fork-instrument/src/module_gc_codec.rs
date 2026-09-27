@@ -20,7 +20,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, ensure};
 use walrus::{
-    AbstractHeapType, CompositeType, DataId, ElementId, FieldType, FunctionBuilder, FunctionId,
+    AbstractHeapType, CompositeType, DataId, ElementId, ElementItems, FieldType, FunctionBuilder,
+    FunctionId,
     FunctionKind, GlobalId, HeapType, ImportKind, LocalFunction, LocalId, MemoryId, Module,
     RawCustomSection, RefType, StorageType, TableId, TypeId, ValType,
     ir::{
@@ -34,6 +35,7 @@ use walrus::{
     },
 };
 
+use crate::static_reference_catalog::ElementItemCoordinate;
 use crate::{module_exception_codec, runtime};
 use wasm_posix_shared::abi::{
     WPK_FORK_EXCEPTION_IMPORT_ACTIVATION, WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE,
@@ -46,7 +48,8 @@ use wasm_posix_shared::abi::{
     WPK_FORK_REFERENCE_IMPORT_GC_DEFINE, WPK_FORK_REFERENCE_IMPORT_GC_I31,
     WPK_FORK_REFERENCE_IMPORT_GC_LOAD, WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP,
     WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN, WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN,
-    WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END, WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF,
+    WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_CONTENTS, WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END,
+    WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF,
     WPK_FORK_REFERENCE_IMPORT_GC_ROUTE, WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
 };
 
@@ -106,6 +109,18 @@ pub const IMPORT_CAPTURE_LAYOUT: &str = WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAY
 pub const IMPORT_PROVENANCE_BEGIN: &str = WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN;
 pub const IMPORT_PROVENANCE_REF: &str = WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF;
 pub const IMPORT_PROVENANCE_END: &str = WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END;
+pub const IMPORT_PROVENANCE_CONTENTS: &str = WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_CONTENTS;
+
+/// `__wpk_fork_ref_gc_provenance_begin` sets this bit in the token it returns
+/// when the run it opened is the FIRST of its operand set, and so wants the
+/// contents of the array it made (`__wpk_fork_ref_gc_provenance_contents`).
+pub const PROVENANCE_TOKEN_WANTS_CONTENTS: i32 = 1 << 1;
+
+/// Element-segment item kinds in the descriptor's segment table.
+pub const ELEMENT_ITEM_UNMAPPED: u32 = 0;
+pub const ELEMENT_ITEM_NULL: u32 = 1;
+pub const ELEMENT_ITEM_ROOT: u32 = 2;
+pub const ELEMENT_ITEM_I31: u32 = 3;
 
 pub const EXPORT_PROBE: &str = WPK_FORK_REFERENCE_EXPORT_GC_PROBE;
 pub const EXPORT_ENCODE_SLOT: &str = WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT;
@@ -218,6 +233,10 @@ pub struct GcLayout {
 pub struct GcCodecPlan {
     layouts: Vec<GcLayout>,
     dispatch_layouts: Vec<u32>,
+    /// `(segment ordinal, items)` for every element segment an
+    /// `array.new_elem` constructor layout reads, in ordinal order: what the
+    /// fork module matches a captured `array.new_elem` array against.
+    element_segments: Vec<(u32, Vec<ElementItemCoordinate>)>,
 }
 
 impl GcCodecPlan {
@@ -250,6 +269,7 @@ struct HostImports {
     provenance_begin: FunctionId,
     provenance_ref: FunctionId,
     provenance_end: FunctionId,
+    provenance_contents: FunctionId,
 }
 
 /// Stubs are declared before the exception codec so an exception payload that
@@ -278,6 +298,10 @@ pub struct DeclaredGcCodec {
     encode_slot_args: Vec<LocalId>,
     allocate_args: Vec<LocalId>,
     fill_args: Vec<LocalId>,
+    /// `(layout id, function, [array, token])`: per `array.new_data` layout,
+    /// the helper that sends a first run's contents to the fork module. Its
+    /// body needs the scratch imports, so it is emitted with the rest.
+    run_contents: Vec<(u32, FunctionId, Vec<LocalId>)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -299,7 +323,19 @@ pub struct InjectedGcCodec {
 /// fields can recursively refer to each other. The two codecs first exchange
 /// typed local function ids and only then emit their bodies.
 pub fn declare(module: &mut Module, memory: MemoryId) -> Result<DeclaredGcCodec> {
-    let plan = plan(module)?;
+    declare_with_element_items(module, memory, &HashMap::new())
+}
+
+/// [`declare`], describing every element segment an `array.new_elem`
+/// constructor reads with `element_items`
+/// (`StaticReferenceCatalogPlan::element_items`). A segment missing from the
+/// map is described as unmapped items, which a capture never matches.
+pub fn declare_with_element_items(
+    module: &mut Module,
+    memory: MemoryId,
+    element_items: &HashMap<ElementId, Vec<ElementItemCoordinate>>,
+) -> Result<DeclaredGcCodec> {
+    let plan = plan_with_element_items(module, element_items)?;
     let mut source_functions: Vec<_> = module
         .funcs
         .iter()
@@ -322,7 +358,8 @@ pub fn declare(module: &mut Module, memory: MemoryId) -> Result<DeclaredGcCodec>
         RefType::ANYREF,
     );
     let imports = inject_host_imports(module, ptr_ty);
-    inject_provenance_wrappers(module, &plan, transit, imports, &source_functions)?;
+    let run_contents =
+        inject_provenance_wrappers(module, &plan, transit, imports, &source_functions)?;
     let (encode_anyref, encode_anyref_args) = add_stub(
         module,
         &[ValType::Ref(RefType::ANYREF)],
@@ -385,6 +422,7 @@ pub fn declare(module: &mut Module, memory: MemoryId) -> Result<DeclaredGcCodec>
         encode_slot_args,
         allocate_args,
         fill_args,
+        run_contents,
     })
 }
 
@@ -394,14 +432,29 @@ fn inject_provenance_wrappers(
     transit: TableId,
     imports: HostImports,
     source_functions: &[FunctionId],
-) -> Result<()> {
+) -> Result<Vec<(u32, FunctionId, Vec<LocalId>)>> {
     let mut struct_wrappers = HashMap::new();
     let mut array_wrappers = HashMap::new();
+    let mut run_contents = Vec::new();
     for layout in plan.layouts() {
         if !records_constructor_run(layout) {
             continue;
         }
-        let wrapper = add_provenance_wrapper(module, layout, transit, imports)?;
+        let contents = matches!(layout.constructor, GcConstructorKind::ArrayData { .. }).then(|| {
+            let array = ValType::Ref(RefType {
+                nullable: true,
+                heap_type: HeapType::Concrete(layout.type_id),
+            });
+            let (function, args) = add_stub(
+                module,
+                &[array, ValType::I32],
+                &[],
+                &format!("__wpk_fork_ref_gc_run_contents_{}", layout.id),
+            );
+            run_contents.push((layout.id, function, args));
+            function
+        });
+        let wrapper = add_provenance_wrapper(module, layout, transit, imports, contents)?;
         match layout.constructor {
             GcConstructorKind::Struct => {
                 struct_wrappers.insert(layout.type_id, wrapper);
@@ -478,27 +531,45 @@ fn inject_provenance_wrappers(
         let entry = local.entry_block();
         dfs_pre_order_mut(&mut rewrite, local, entry);
     }
-    Ok(())
+    Ok(run_contents)
 }
 
 /// Whether a run of this layout's constructor must be reported to the fork
 /// module where it happens.
 ///
-/// Only two facts cannot be recovered from the object at capture time, so only
-/// sites producing one of them pay for a hook on the allocation path:
+/// WHY ANY CONSTRUCTOR IS REPORTED. A fork child is a fresh instance, so it
+/// rebuilds every GC object the parent holds. An immutable array cannot be
+/// filled after allocation, and Wasm has no instruction that builds one of
+/// runtime length from arbitrary values, so the child must re-run an
+/// allocation instruction that reproduces it. That is safe because
+/// `struct.new` and the `array.new*` instructions are pure allocation: no user
+/// code runs (a language-level constructor is an ordinary function around
+/// them, and is NOT re-run).
 ///
-/// * a SEED for a mutable non-null internal reference field or element (the
-///   module keeps the first one per `(layout, ordinal)` as a witness), and
-/// * the segment OFFSET an `array.new_data` / `array.new_elem` read, which the
-///   array's contents do not reveal and a later `data.drop`/`elem.drop` may
-///   make impossible to re-read in the parent.
-///
-/// Every other constructor is re-derived at capture from the object's own
-/// type, length and elements (`fork_codec::gc_constructor`): an immutable
-/// `array.new_fixed N` result is rebuilt by that instruction from its
+/// WHY ONLY THESE. Most of what the child needs is recovered at capture from
+/// the object's own type, length and elements (`fork_codec::gc_constructor`):
+/// an `array.new_fixed N` result is rebuilt by that instruction from its
 /// elements, a uniform one by `array.new`, an all-default one by
 /// `array.new_default`. Hooking those sites would record nothing the capture
-/// does not already have, at a cost on every allocation.
+/// does not already have, at a cost on every allocation. Three facts are NOT
+/// always recoverable, and only sites producing one of them pay for a hook:
+///
+/// * a SEED for a mutable non-null internal reference field or element (the
+///   module keeps the first one per `(layout, ordinal)` as a witness; the
+///   child's fill overwrites it, so any type-correct seed will do), and
+/// * the contents an `array.new_data` read: the array's bytes might occur at
+///   many segment offsets, and a later `data.drop` makes the segment
+///   unreadable in the parent. The module records each DISTINCT run once, by
+///   a hash of the contents it produced (see `crates/fork-module`,
+///   `record_segment_run`, for why a hash and not the array);
+/// * the offset an `array.new_elem` read, on an engine that does not give a
+///   segment's items one identity. The capture normally FINDS it by matching
+///   the array's elements against the segment's items (the GC codec
+///   descriptor lists them as static roots), but JavaScriptCore evaluates an
+///   allocating item afresh at every use, so its items match nothing. The
+///   module records each distinct run's operands (nothing else), and a
+///   capture that cannot compare falls back to the only run that could have
+///   made the array, if there is exactly one.
 fn records_constructor_run(layout: &GcLayout) -> bool {
     match layout.constructor {
         GcConstructorKind::ArrayGeneric => false,
@@ -515,6 +586,7 @@ fn add_provenance_wrapper(
     layout: &GcLayout,
     transit: TableId,
     imports: HostImports,
+    run_contents: Option<FunctionId>,
 ) -> Result<FunctionId> {
     let params: Vec<ValType> = match layout.constructor {
         GcConstructorKind::Struct => layout
@@ -614,6 +686,30 @@ fn add_provenance_wrapper(
         call(instrs, imports.provenance_begin);
         local_set(instrs, token);
         clear_transit_slot(instrs, transit, 0);
+    }
+    if let Some(run_contents) = run_contents {
+        // The FIRST run of an operand set: hand its contents to the module,
+        // which keeps only their hash. Later runs of the same operands make
+        // equal contents and skip this entirely.
+        let send = dangling(module, wrapper, walrus::ir::InstrSeqType::Simple(None));
+        {
+            let instrs = instrs_mut(module, wrapper, send);
+            local_get(instrs, result);
+            local_get(instrs, token);
+            call(instrs, run_contents);
+        }
+        let skip = dangling(module, wrapper, walrus::ir::InstrSeqType::Simple(None));
+        let instrs = instrs_mut(module, wrapper, entry);
+        local_get(instrs, token);
+        constant_i32(instrs, PROVENANCE_TOKEN_WANTS_CONTENTS);
+        binop(instrs, BinaryOp::I32And);
+        push(
+            instrs,
+            Instr::IfElse(IfElse {
+                consequent: send,
+                alternative: skip,
+            }),
+        );
     }
 
     let reference_args = provenance_reference_args(module, layout);
@@ -863,6 +959,7 @@ pub fn finish_declaration(
     // and non-defaultable layouts are constructed in dependency order.
     emit_allocate(module, &codec, deps, &seeds)?;
     emit_fill(module, &codec, deps)?;
+    emit_run_contents(module, &codec);
     Ok(InjectedGcCodec {
         encode_anyref: codec.encode_anyref,
         decode_anyref: codec.decode_anyref,
@@ -1891,6 +1988,15 @@ struct BaseType {
 /// Freeze original GC types and constructor sites before module-state/runtime
 /// helpers add synthetic functions and types.
 pub fn plan(module: &Module) -> Result<GcCodecPlan> {
+    plan_with_element_items(module, &HashMap::new())
+}
+
+/// [`plan`], with the capture coordinates of element segment items (see
+/// [`declare_with_element_items`]).
+pub fn plan_with_element_items(
+    module: &Module,
+    element_items: &HashMap<ElementId, Vec<ElementItemCoordinate>>,
+) -> Result<GcCodecPlan> {
     let mut type_ordinals = HashMap::new();
     for ty in module.types.iter() {
         if matches!(
@@ -2136,9 +2242,37 @@ pub fn plan(module: &Module) -> Result<GcCodecPlan> {
             .cmp(&left_layout.subtype_depth)
             .then_with(|| left.type_ordinal.cmp(&right.type_ordinal))
     });
+    let mut element_segments = Vec::new();
+    let mut described = HashSet::new();
+    for layout in &layouts {
+        let GcConstructorKind::ArrayElement { segment_ordinal } = layout.constructor else {
+            continue;
+        };
+        if !described.insert(segment_ordinal) {
+            continue;
+        }
+        let element = module
+            .elements
+            .iter()
+            .nth(segment_ordinal as usize)
+            .ok_or_else(|| anyhow::anyhow!("GC array element segment is not catalogued"))?;
+        let items = match element_items.get(&element.id()) {
+            Some(items) => items.clone(),
+            None => {
+                let count = match &element.items {
+                    ElementItems::Functions(functions) => functions.len(),
+                    ElementItems::Expressions(_, expressions) => expressions.len(),
+                };
+                vec![ElementItemCoordinate::Unmapped; count]
+            }
+        };
+        element_segments.push((segment_ordinal, items));
+    }
+    element_segments.sort_by_key(|(ordinal, _)| *ordinal);
     Ok(GcCodecPlan {
         layouts,
         dispatch_layouts: dispatch.into_iter().map(|entry| entry.layout_id).collect(),
+        element_segments,
     })
 }
 
@@ -2347,6 +2481,27 @@ pub fn encode_descriptor(plan: &GcCodecPlan) -> Vec<u8> {
             data.extend_from_slice(&field.reference_ordinal.unwrap_or(NO_ORDINAL).to_le_bytes());
         }
     }
+    // The element segments `array.new_elem` layouts read, each item as the
+    // coordinate a capture records it by; omitted when there are none. See
+    // `fork_codec::gc_codec` for the layout.
+    if plan.element_segments.is_empty() {
+        return data;
+    }
+    data.extend_from_slice(&(plan.element_segments.len() as u32).to_le_bytes());
+    for (ordinal, items) in &plan.element_segments {
+        data.extend_from_slice(&ordinal.to_le_bytes());
+        data.extend_from_slice(&(items.len() as u32).to_le_bytes());
+        for item in items {
+            let (kind, value) = match *item {
+                ElementItemCoordinate::Unmapped => (ELEMENT_ITEM_UNMAPPED, 0),
+                ElementItemCoordinate::Null => (ELEMENT_ITEM_NULL, 0),
+                ElementItemCoordinate::Root(ordinal) => (ELEMENT_ITEM_ROOT, ordinal),
+                ElementItemCoordinate::I31(value) => (ELEMENT_ITEM_I31, value as u32),
+            };
+            data.extend_from_slice(&kind.to_le_bytes());
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+    }
     data
 }
 
@@ -2438,6 +2593,12 @@ fn inject_host_imports(module: &mut Module, ptr_ty: ValType) -> HostImports {
             &[],
         ),
         provenance_end: import_function(module, IMPORT_PROVENANCE_END, &[ValType::I32], &[]),
+        provenance_contents: import_function(
+            module,
+            IMPORT_PROVENANCE_CONTENTS,
+            &[ValType::I32, ValType::I64],
+            &[],
+        ),
     }
 }
 
@@ -3028,9 +3189,162 @@ fn emit_replay_provenance_registration(
         binop(instrs, BinaryOp::I32Add);
         call(instrs, codec.imports.provenance_ref);
     }
+    if matches!(layout.constructor, GcConstructorKind::ArrayData { .. }) {
+        // A replayed run the child has not seen before: send the contents of
+        // the array it just rebuilt, exactly as the original site did.
+        let run_contents = codec
+            .run_contents
+            .iter()
+            .find(|(id, _, _)| *id == layout.id)
+            .map(|(_, function, _)| *function)
+            .expect("every array.new_data layout has a run-contents helper");
+        let send = dangling(
+            module,
+            codec.allocate,
+            walrus::ir::InstrSeqType::Simple(None),
+        );
+        {
+            let instrs = instrs_mut(module, codec.allocate, send);
+            local_get(instrs, recipe);
+            constant_i32(instrs, 1);
+            binop(instrs, BinaryOp::I32Add);
+            push(
+                instrs,
+                Instr::TableGet(TableGet {
+                    table: codec.transit,
+                }),
+            );
+            push(
+                instrs,
+                Instr::RefCast(RefCast {
+                    nullable: true,
+                    heap_type: HeapType::Concrete(layout.type_id),
+                }),
+            );
+            local_get(instrs, token);
+            call(instrs, run_contents);
+        }
+        let skip = dangling(
+            module,
+            codec.allocate,
+            walrus::ir::InstrSeqType::Simple(None),
+        );
+        let instrs = instrs_mut(module, codec.allocate, seq);
+        local_get(instrs, token);
+        constant_i32(instrs, PROVENANCE_TOKEN_WANTS_CONTENTS);
+        binop(instrs, BinaryOp::I32And);
+        push(
+            instrs,
+            Instr::IfElse(IfElse {
+                consequent: send,
+                alternative: skip,
+            }),
+        );
+    }
     let instrs = instrs_mut(module, codec.allocate, seq);
     local_get(instrs, token);
     call(instrs, codec.imports.provenance_end);
+}
+
+/// Emit each `array.new_data` layout's run-contents helper `(array, token)`:
+/// hand the array the run just made to the fork module ONE ELEMENT AT A TIME
+/// (`__wpk_fork_ref_gc_provenance_contents(token, bits)`), which hashes them
+/// into the run's record.
+///
+/// Element by element rather than through a staging buffer, because this runs
+/// on the program's allocation path: a buffer would have to be mapped, and a
+/// mapping can fail, while allocation must never fail because recording could
+/// not proceed. It costs one call per element, and runs only for the FIRST
+/// run of each distinct operand set.
+///
+/// The bits are the element's storage bits, widened to 64 (`i8`/`i16`
+/// unsigned, floats reinterpreted); a `v128` element is two calls, low lane
+/// first. The module takes the element's storage width of them, so it hashes
+/// exactly the bytes a capture later encodes for the array.
+fn emit_run_contents(module: &mut Module, codec: &DeclaredGcCodec) {
+    for (layout_id, function, args) in codec.run_contents.clone() {
+        let layout = codec.plan.layouts()[(layout_id - 1) as usize].clone();
+        let storage = layout.fields[0].field.element_type;
+        let (array, token) = (args[0], args[1]);
+        let length = module.locals.add(ValType::I32);
+        let index = module.locals.add(ValType::I32);
+        let entry = entry(function, module);
+        {
+            let instrs = instrs_mut(module, function, entry);
+            local_get(instrs, array);
+            push(instrs, Instr::ArrayLen(ArrayLen {}));
+            local_set(instrs, length);
+            constant_i32(instrs, 0);
+            local_set(instrs, index);
+        }
+        let outer = dangling(module, function, walrus::ir::InstrSeqType::Simple(None));
+        let body = dangling(module, function, walrus::ir::InstrSeqType::Simple(None));
+        {
+            let instrs = instrs_mut(module, function, body);
+            local_get(instrs, index);
+            local_get(instrs, length);
+            binop(instrs, BinaryOp::I32GeU);
+            push(instrs, Instr::BrIf(BrIf { block: outer }));
+            let element = |instrs: &mut Vec<(Instr, InstrLocId)>| {
+                local_get(instrs, array);
+                local_get(instrs, index);
+                emit_array_get(instrs, layout.type_id, storage);
+            };
+            let unop = |instrs: &mut Vec<(Instr, InstrLocId)>, op: UnaryOp| {
+                push(instrs, Instr::Unop(Unop { op }));
+            };
+            match storage {
+                StorageType::I8 | StorageType::I16 | StorageType::Val(ValType::I32) => {
+                    local_get(instrs, token);
+                    element(instrs);
+                    unop(instrs, UnaryOp::I64ExtendUI32);
+                    call(instrs, codec.imports.provenance_contents);
+                }
+                StorageType::Val(ValType::F32) => {
+                    local_get(instrs, token);
+                    element(instrs);
+                    unop(instrs, UnaryOp::I32ReinterpretF32);
+                    unop(instrs, UnaryOp::I64ExtendUI32);
+                    call(instrs, codec.imports.provenance_contents);
+                }
+                StorageType::Val(ValType::I64) => {
+                    local_get(instrs, token);
+                    element(instrs);
+                    call(instrs, codec.imports.provenance_contents);
+                }
+                StorageType::Val(ValType::F64) => {
+                    local_get(instrs, token);
+                    element(instrs);
+                    unop(instrs, UnaryOp::I64ReinterpretF64);
+                    call(instrs, codec.imports.provenance_contents);
+                }
+                StorageType::Val(ValType::V128) => {
+                    for lane in 0..2u8 {
+                        local_get(instrs, token);
+                        element(instrs);
+                        unop(instrs, UnaryOp::I64x2ExtractLane { idx: lane });
+                        call(instrs, codec.imports.provenance_contents);
+                    }
+                }
+                StorageType::Val(ValType::Ref(_)) => {
+                    unreachable!("array.new_data reads only numeric element types")
+                }
+            }
+            local_get(instrs, index);
+            constant_i32(instrs, 1);
+            binop(instrs, BinaryOp::I32Add);
+            local_set(instrs, index);
+            push(instrs, Instr::Br(Br { block: body }));
+        }
+        push(
+            instrs_mut(module, function, outer),
+            Instr::Loop(Loop { seq: body }),
+        );
+        push(
+            instrs_mut(module, function, entry),
+            Instr::Block(walrus::ir::Block { seq: outer }),
+        );
+    }
 }
 
 fn emit_replayed_provenance_scalars(

@@ -71,76 +71,222 @@ for the Node/browser parity work and its test coverage.
 
 ## Constructor provenance
 
-**The problem.** A fork child is a fresh instance, so every GC object reachable
-from the parent's live state is rebuilt in it. A struct is `struct.new`'d from
-its field snapshot, and a mutable array of a defaultable element type is
-allocated and then filled. An IMMUTABLE array cannot be filled after
-allocation, and Wasm has no instruction that builds an immutable array of
-runtime length from arbitrary values; a mutable array of a non-nullable
-reference type has no default to allocate with. The only faithful rebuild is to
-re-run the same kind of allocation instruction -- `array.new_fixed`,
-`array.new`, `array.new_default`, `array.new_data`, `array.new_elem` -- with
-operands that reproduce the object. Re-running one is safe: these instructions
-are pure allocation and run no user code. Language-level constructors are
-ordinary functions around them and are NOT re-run.
+This section explains how `fork()` rebuilds a Wasm-GC object that only its
+constructor can build, and why it is done this way. It is written to be read
+without any history of the work.
 
-**What is derived and what is recorded.** An immutable array's observable state
-is its type, its length and its elements; its identity is carried by the
-recipe graph (`ref.eq` holds between the rebuilt object and every other
-rebuilt reference to it). For three instructions those facts ARE the operands,
-so the fork module derives them at capture and the allocation path pays
-nothing: `array.new_fixed N` rebuilds any array of length N from its elements,
-`array.new` a uniform one from its first element, `array.new_default` an
-all-default one. `array.new_data` and `array.new_elem` read a segment offset
-that the array does not reveal, and the parent may have run `data.drop` or
-`elem.drop` since, so their runs are RECORDED where they happen. The child's
-fresh instance has every segment intact, and replays the parent's drops only
-after it has rebuilt the objects that read them, so it can re-run the
-instruction. A structure's rebuild needs nothing new; an immutable struct is
-`struct.new`'d from its fields.
+### Why the child re-runs a constructor at all
 
-**Keyed by the run, not by the object.** A record per object would have to die
-with its object, and nothing can observe that: Wasm has no weak reference, a
-JavaScript host's identity `WeakMap` frees an object without saying so, and
-Wasmtime roots are strong. A per-object table would therefore either pin every
-array it describes -- an unbounded leak in any program that allocates in a loop
-and never forks -- or keep records for objects long gone. Instead the fork
-module keeps one entry per distinct `(activation, layout, operands)` run, and
-the first array that run made as the entry's witness. Two runs with equal
-operands make interchangeable arrays, so at capture an immutable array is
-matched to the entry whose witness has its contents (it usually IS the
-witness), and the child re-runs that instruction with those operands. A mutable
-array is filled after allocation, so any entry of its length rebuilds it.
+A fork child runs in a fresh WebAssembly instance, so every GC object the
+parent holds is rebuilt in it. Most objects are rebuilt from their type: a
+struct is `struct.new`'d from its field snapshot, and a mutable array of a
+defaultable element type is allocated with `array.new_default` and then
+filled. Two shapes cannot be:
 
-**Bounds.** The table holds at most 65,536 distinct runs per worker, and the
-kept witnesses at most 16 MiB of elements between them; it grows by doubling a
-single mapping and is never pruned, because its size depends on the program's
-distinct segment reads, not on how often it allocates. Measured through a real
-Node process Worker, one million `array.new_data` allocations over 16 distinct
-offsets grew guest memory by one 64 KiB page, and over one million distinct
-offsets (the cap reached) by 97 pages (about 6 MiB, including the mappings the
-doublings freed); the same loops with recording disabled grew it by none. A run
-past either cap is not recorded, or recorded without a witness.
+- an IMMUTABLE array cannot be filled after allocation, and Wasm has no
+  instruction that builds an immutable array of runtime length from
+  arbitrary values;
+- a MUTABLE array of a non-nullable reference type has no default value to
+  allocate with.
 
-**Truthful failure.** An object no constructor in the program can rebuild -- an
-array whose run was not recorded (a cap was reached, or the run happened in a
-borrowed `vfork` child, whose transient module keeps nothing) and that no
-derivation fits -- makes the capture refuse with `EOPNOTSUPP`: `fork()` returns
-`-EOPNOTSUPP` in the parent and no child is created, on every host, exactly as
-for a host externref. It never becomes a child trapping in an allocator.
+The only faithful rebuild is to re-run one of the program's own allocation
+instructions -- `array.new_fixed`, `array.new`, `array.new_default`,
+`array.new_data` or `array.new_elem` -- with operands that reproduce the
+object. `fork-instrument` gives every such instruction in the program its own
+"constructor layout", with a generated allocator in the child that runs
+exactly that instruction.
 
-**Tests.** One fixture, `crates/host-native/fixtures/native_fork_gc_provenance.wat`,
-runs on all three hosts: `smoke_fork_gc_provenance_reconstructs`
-(`crates/host-native`), `host/test/fork-gc-provenance.test.ts` (Node, through a
-real process Worker) and "rebuilds constructor-only Wasm GC objects in fresh
-child workers" in `apps/browser-demos/test/fork-continuation.spec.ts`
-(Chromium and WebKit). It holds immutable `array.new_fixed`, `array.new`,
-`array.new_default`, `array.new_data` (two with the same operands, which must
-stay two objects) and `array.new_elem` arrays, an immutable struct and an
-immutable array referencing the other arrays, and a mutable non-null reference
-array; drops every segment; forks twice from the parent and once from the first
-child; and checks every object in every process. The selection rules are unit
-tested in `crates/fork-codec/src/gc_constructor.rs`.
+### Why re-running one is safe
+
+`struct.new` and the `array.new*` instructions are pure allocation: they run
+no user code, touch no memory and call nothing. A language-level constructor
+(a Kotlin or Dart `init`, say) is an ordinary function that happens to contain
+one of these instructions, and it is NOT re-run: only the instruction is.
+
+### Which constructor, and what is recorded
+
+An immutable array's observable state is its type, its length and its
+elements. Its identity is carried separately, by the recipe graph: `ref.eq`
+between the rebuilt array and every other rebuilt reference to it holds in
+the child exactly as in the parent. So the fork module chooses the constructor
+at capture, from what the capture already has
+(`crates/fork-codec/src/gc_constructor.rs`):
+
+- `array.new_fixed N` takes its N elements as operands, so it rebuilds any
+  array of length N;
+- `array.new` fills with one value, so it rebuilds a uniform immutable array
+  (its first element is the value), and any mutable non-null array (seeded
+  with a type-correct value, then filled);
+- `array.new_default` rebuilds an all-default immutable array;
+- `array.new_elem` copies a run of an element segment's items, and every item
+  has a static capture coordinate: an allocating item is a static root
+  harvested at instantiation, a `global.get` item is that global's root, and a
+  null or `ref.i31` constant is itself. `fork-instrument` lists each segment's
+  items in the GC codec descriptor, so the capture FINDS the offset by
+  matching the array's captured elements against them. That works where the
+  engine gives a segment's items one identity (V8, Wasmtime). JavaScriptCore
+  does not: it evaluates an allocating item afresh at every use (measured in
+  WebKit: an item copied by `table.init` is not `ref.eq` to the same item read
+  by `array.new_elem`), so on WebKit the elements match no item. For that
+  case each distinct run's OPERANDS are recorded (no contents), and an array
+  whose elements cannot be compared is given the only recorded
+  `array.new_elem` run of its type and length -- sound by elimination, since
+  every other constructor has been tried first and every run is recorded --
+  or, if there are two or more, the fork is refused.
+- `array.new_data` copies bytes from a data segment at an offset. The bytes
+  might occur at many offsets, nothing static lists the segment's bytes, and
+  once the parent runs `data.drop` it cannot read the segment again. So its
+  runs are RECORDED where they happen, with a hash of their contents.
+
+The child's fresh instance has every segment intact, and replays the parent's
+`data.drop`/`elem.drop` only after it has rebuilt the objects that read them,
+so it can always re-run the instruction.
+
+### Why records are per run, not per object
+
+A record per object would have to die with its object, and nothing can
+observe an object dying: Wasm has no weak reference, a JavaScript host's
+identity `WeakMap` frees an object without telling anyone, and Wasmtime's
+roots are strong. A per-object table would therefore either keep every array
+it describes alive -- an unbounded leak in any program that allocates in a
+loop and never forks -- or keep records for objects long gone.
+
+A RUN is a distinct `(activation, layout, operands)`. A data segment is
+immutable, so every run with the same operands makes an array with the same
+contents, and one record describes all of them. A later `data.drop` cannot
+change that: a dropped segment has length zero, so a later non-empty run traps
+before it allocates (it makes no array), and an empty run makes an empty array
+whatever the segment held.
+
+### Why a content hash, not a kept array
+
+The capture has to tell which run made a given array. The first design kept
+the first array each run made (a "witness") and compared contents with it,
+but a witness is pinned for the worker's life, which was rejected. Instead,
+the first run of each operand set sends the array's elements, one call per
+element (`__wpk_fork_ref_gc_provenance_contents`), and the record keeps a
+128-bit hash of them: the first 16 bytes of SHA-256 over a domain tag, the
+length and the element bytes, exactly as a capture encodes the array
+(`run_contents_hash`). SHA-256 because the match must agree bit for bit
+between the first allocation and a later capture on another engine or host,
+and a fixed, specified, unseeded function does; `sha2` was already the fork
+codec's `no_std` dependency. A capture hashes the array's captured contents
+the same way and matches on `(activation, layout, length, hash)`. Later runs
+with the same operands send nothing.
+
+Elements are streamed rather than copied to a buffer because this runs on the
+program's allocation path: a buffer would need a mapping, a mapping can fail,
+and allocation must never fail because recording could not proceed.
+
+### Why no fixed cap, and what happens instead
+
+The table's size is the number of DISTINCT runs, not the number of
+allocations. It is an open-addressing hash table in one mapping, doubled by
+re-mapping at half load; an entry is 40 bytes, so a run costs 80 to 160 bytes
+of mapping. Linear memory cannot shrink, so what the table grows to stays
+reserved until the process execs or exits. A doubling maps the new table
+before it returns the old one, and the old one's space is reusable only by a
+later mapping that fits in it, so linear memory grows by up to about twice
+the final table.
+
+When a doubling's mapping fails, recording STOPS for that worker, for good:
+restarting would leave records that describe only some runs. The allocation
+itself carries on unaffected. A later fork that meets an array it can match
+neither to a record nor to another constructor is refused: `fork()` returns
+`-EOPNOTSUPP` in the parent and no child is created -- never a trap, and
+never a rebuild from a partial record. Runs recorded before the failure still
+match.
+
+Measured through a real Node process Worker (`host/test` probe, one million
+allocations each, median of three):
+
+| Loop | Pages grown | Time, recording on | Time, recording off |
+|---|---:|---:|---:|
+| `array.new_fixed` (never hooked) | 0 | 320 ms | 327 ms |
+| `array.new_data`, 16 distinct runs | 1 | 399 ms | 410 ms |
+| `array.new_data`, 1,000,000 distinct runs | 2,561 | 1,081 ms | 405 ms |
+
+One million distinct runs end in a 2,097,152-entry table (80 MiB); with the
+generations the doublings left behind, linear memory grew by 160 MiB, about
+168 bytes per distinct run. Repeated runs cost nothing after the first: the
+16-run loop made a million arrays and grew memory by one page. The first run
+of each operand set pays one call per element to send its contents.
+
+### The residual risk, and why it was accepted
+
+A false match needs two arrays of one type and one length in one program
+whose contents collide in 128 bits of SHA-256. That is not a practical event,
+even for a program trying to cause one, and the only process it could
+mislead is that program's own child. Everything else fails truthfully: an
+array no constructor can rebuild -- its run went unrecorded because recording
+stopped, it was made in a borrowed `vfork` child, whose transient fork
+module keeps nothing, or (on JavaScriptCore) it is an `array.new_elem` array
+and two recorded runs of its type and length could have made it -- refuses
+the fork with `EOPNOTSUPP`.
+
+A second residual is specific to JavaScriptCore, and is a known gap rather
+than an accepted one: because an `array.new_elem` run there makes fresh item
+objects, and the capture cannot tell them from any other struct, an element
+object the program ALSO holds through another reference is rebuilt in the
+child twice -- once by the re-run `array.new_elem`, once as that other
+reference's own copy -- so `ref.eq` between them, true in the parent, is
+false in the child. The kept-witness design had the same split. V8 and
+Wasmtime share item identity and are not affected.
+
+### Alternatives considered and rejected
+
+- **Per-object records keyed by the hosts' identity oracle.** Stale records on
+  JavaScript hosts (the `WeakMap` frees the object, never the record), pinned
+  objects on Wasmtime (strong roots). See "why per run".
+- **Keeping the first array of each run as a witness.** Pins that array for
+  the worker's life. Replaced by the content hash.
+- **A fixed cap on runs.** A routine program that reads many distinct offsets
+  would lose provenance at an arbitrary count; the table is bounded by the
+  program's distinct reads instead, and degrades to a truthful refusal.
+- **Searching the child's fresh segment for the captured bytes.** Rebuilds
+  from contents rather than from the run that happened, costs segment size
+  times array length per array at child start, and needs child-side matching
+  that could only fail in the child.
+- **Copying data segments into a custom section** so the capture could search
+  them. Doubles the artifact's static data.
+- **Recording every constructor.** The other constructors' operands are the
+  array's own contents; recording them would add a call to every allocation
+  for nothing.
+- **Finding every `array.new_elem` run by its items alone.** Exact wherever
+  the engine gives a segment's items one identity, and kept as the first
+  choice; on JavaScriptCore it matches nothing, which is why those runs'
+  operands are recorded too.
+
+### Tests
+
+- `crates/host-native/fixtures/native_fork_gc_provenance.wat` runs on all
+  three hosts: `smoke_fork_gc_provenance_reconstructs` (`crates/host-native`),
+  `host/test/fork-gc-provenance.test.ts` (Node, through a real process
+  Worker) and "rebuilds constructor-only Wasm GC objects in fresh child
+  workers" in `apps/browser-demos/test/fork-continuation.spec.ts` (Chromium
+  and WebKit). It holds immutable `array.new_fixed`, `array.new`,
+  `array.new_default`, `array.new_data` (two with the same operands, which
+  must stay two objects) and `array.new_elem` arrays, an immutable struct and
+  an immutable array referencing the other arrays, and a mutable non-null
+  reference array; drops every segment; forks twice from the parent and once
+  from the first child; and checks every object in every process.
+- `host/test/fork-module-gc-runs.test.ts`: a run is asked for its contents
+  once; an array matches the run that made it and no run whose contents
+  differ; the module keeps no array; when the table cannot grow, recording
+  stops, allocation continues, an unrecorded run is refused with
+  `EOPNOTSUPP`, and a run recorded earlier still matches; and an
+  `array.new_elem` array whose elements cannot be compared takes the only
+  recorded run of its length, or is refused when there are two or none.
+- `host/test/fork-gc-provenance.test.ts` also runs a guest that makes 4,096
+  distinct 16 KiB `array.new_data` runs, keeps only the last, and measures
+  its own linear memory: the loop grows it by the run table (at most 16
+  pages), not by the 1,024 pages the arrays' contents would take, and the
+  last array is still rebuilt in a child.
+- `host/test/fork-module-capture-refusal.test.ts`: an array no constructor
+  can rebuild refuses the capture; its control seals.
+- `crates/fork-codec/src/gc_constructor.rs` and `gc_codec.rs`: the selection
+  rules, the element-run search, the pinned hash function and the
+  element-segment table's decoding.
 
 ## Host externrefs are not carried across fork
 

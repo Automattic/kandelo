@@ -216,13 +216,6 @@ mod wasm {
         /// `call_indirect` through the drive table (F3 step 2).
         fn __wpk_fork_capture_witness(activation: u32, witness_slot: u32) -> i32;
 
-        /// Retain the object staged in anyref transit slot `transit_slot` in
-        /// the module's witness table at `witness_slot`, growing the table
-        /// first if it is shorter. Answers 0, or -1 when the table could not
-        /// grow. Injector-rewritten to a `table.grow` + `table.set`: a Rust
-        /// module holds no reference.
-        fn __wpk_fork_witness_store(transit_slot: u32, witness_slot: u32) -> i32;
-
         /// Type-test the value staged in anyref transit slot `slot`, returning
         /// `(type_ordinal << 32) | layout_id`, or 0 when no layout matched.
         /// Injector-rewritten to a `call_indirect` through the drive table.
@@ -10388,13 +10381,7 @@ mod wasm {
             // ENCODE witnesses (re-entering the guest), so it runs before the
             // builder is borrowed below.
             let (layout_id, operands, prov_ids) = if kind_enum == AggregateKind::Array {
-                select_array_constructor(
-                    recipe_id,
-                    activation,
-                    layout_id,
-                    &snapshot,
-                    &field_vector,
-                )?
+                select_array_constructor(activation, layout_id, &snapshot, &field_vector)?
             } else {
                 (layout_id, Vec::new(), intern_layout_witnesses(activation, layout_id)?)
             };
@@ -10599,10 +10586,6 @@ mod wasm {
     // plain `table.set`, so there is no host call on the allocation path.
     //
     // See docs/plans/2026-09-12-lane-f-census.md sections 21 and 22.
-    //
-    // The witness TABLE starts with exactly these slots; the segment-run
-    // witnesses (see "one WITNESS per recorded segment run" below) are kept
-    // above them and grow it.
     const WITNESS_SLOTS: usize = 256;
 
     struct WitnessCell(UnsafeCell<WitnessState>);
@@ -10651,20 +10634,22 @@ mod wasm {
     ///
     /// Opens the witness transaction for a constructor with seed references
     /// (the seeds arrive at `__wpk_fork_ref_gc_provenance_ref`), and RECORDS
-    /// the run of a segment constructor: for an `array.new_data` /
-    /// `array.new_elem` layout, `scalar_lo` packs the instruction's `(offset,
-    /// length)` operands and transit slot `slot` holds the array it just made
-    /// (see `record_segment_run`). `fork-instrument` calls this only from
-    /// those two kinds of site, and from a replayed child's allocator for the
-    /// same layouts.
+    /// a run of `array.new_data`: `scalar_lo` packs the instruction's
+    /// `(offset, length)` operands (see `record_segment_run`). When the run is
+    /// the first of its operand set, the returned token has
+    /// `PROVENANCE_TOKEN_WANTS_CONTENTS` set, and the guest sends the array's
+    /// elements (`__wpk_fork_ref_gc_provenance_contents`) before `end`.
+    /// `fork-instrument` calls this only from those two kinds of site, and
+    /// from a replayed child's allocator for the same layouts.
     ///
-    /// `_base_layout` and `_scalar_hi` are accepted and ignored: the layout
-    /// names its base, and no recorded operand needs more than 64 bits. They
-    /// stay because the guest ABI declares them.
+    /// `_slot`, `_base_layout` and `_scalar_hi` are accepted and ignored: the
+    /// module keeps no object, the layout names its base, and no recorded
+    /// operand needs more than 64 bits. They stay because the guest ABI
+    /// declares them.
     #[allow(clippy::too_many_arguments)]
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_gc_provenance_begin(
-        slot: u32,
+        _slot: u32,
         activation: u32,
         _base_layout: u32,
         layout: u32,
@@ -10672,9 +10657,6 @@ mod wasm {
         _scalar_hi: u64,
         reference_count: u32,
     ) -> i32 {
-        if reference_count == 0 {
-            record_segment_run(slot, activation, layout, scalar_lo);
-        }
         if PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed) != 0 {
             // A second `begin` before an `end` means the emitted shape changed.
             set_err(Errno::EINVAL);
@@ -10685,7 +10667,12 @@ mod wasm {
             set_err(Errno::E2BIG);
             return -1;
         }
-        let token = 1u32;
+        let first_run = reference_count == 0 && record_segment_run(activation, layout, scalar_lo);
+        let token = if first_run {
+            1 | PROVENANCE_TOKEN_WANTS_CONTENTS
+        } else {
+            1
+        };
         PROVENANCE_IN_FLIGHT[0].store(token + 1, Ordering::Relaxed);
         PROVENANCE_IN_FLIGHT[1].store(layout, Ordering::Relaxed);
         PROVENANCE_IN_FLIGHT[2].store(reference_count, Ordering::Relaxed);
@@ -10778,6 +10765,7 @@ mod wasm {
         let declared = PROVENANCE_IN_FLIGHT[2].load(Ordering::Relaxed);
         let seen = PROVENANCE_IN_FLIGHT[3].load(Ordering::Relaxed);
         PROVENANCE_IN_FLIGHT[0].store(0, Ordering::Relaxed);
+        finish_segment_run();
         if declared != seen {
             set_err(Errno::EINVAL);
             return;
@@ -10785,68 +10773,128 @@ mod wasm {
         set_ok();
     }
 
-    // ---- Constructor provenance: one WITNESS per recorded segment run -------
+    // ---- Constructor provenance: recorded runs of `array.new_data` ----------
     //
-    // `array.new_data` and `array.new_elem` read a segment at an offset, and
-    // the array they make does not reveal it: its contents might occur at many
-    // offsets, and once the parent runs `data.drop`/`elem.drop` it cannot read
-    // the segment again to look. A fork child is a fresh instance with every
-    // segment intact, so it CAN re-run the instruction -- if it is told the
-    // operands. They are recorded here, where the instruction runs.
+    // WHY THE CHILD RE-RUNS A CONSTRUCTOR AT ALL. A fork child is a fresh
+    // instance, so every GC object the parent holds is rebuilt in it. An
+    // IMMUTABLE array cannot be filled after allocation, and Wasm has no
+    // instruction that builds an immutable array of runtime length from
+    // arbitrary values. The only faithful rebuild re-runs an allocation
+    // instruction that produces the same array. That is SAFE: `struct.new` and
+    // the `array.new*` instructions are pure allocation -- no user code runs --
+    // and a language-level constructor, being an ordinary function around
+    // them, is not re-run.
     //
-    // # Keyed by the RUN, not by the object
+    // WHY ONLY THE SEGMENT CONSTRUCTORS ARE RECORDED. The other constructors
+    // are chosen at capture from the array's type, length and elements
+    // (`fork_codec::gc_constructor`): `array.new_fixed N` takes its elements
+    // as operands, `array.new` a uniform value, `array.new_default` none.
+    // `array.new_data`'s bytes might occur at many offsets of its segment,
+    // nothing static lists the segment's bytes, and after `data.drop` the
+    // parent cannot read them: its runs are recorded, with a contents hash.
+    // An `array.new_elem` array's elements are its segment's items, whose
+    // capture coordinates the GC codec descriptor lists, so its offset is
+    // normally FOUND by comparing -- except on JavaScriptCore, which evaluates
+    // an allocating item afresh at every use (measured: an item `table.init`
+    // copied is not `ref.eq` to the same item `array.new_elem` read), so there
+    // is nothing to compare with. Its runs are recorded too, operands only, and
+    // an array nothing can be compared with is given the ONLY recorded run
+    // that could have made it, or refused.
     //
-    // A per-object record needs the record to die with the object, and nothing
-    // here can learn that an object died: Wasm has no weak reference, a
-    // JavaScript host's identity `WeakMap` frees the object but never says so,
-    // and Wasmtime roots are strong. So a per-object table either pins every
-    // array it describes -- a leak in any program that allocates in a loop and
-    // never forks -- or keeps records for objects long gone.
+    // WHY PER RUN AND NOT PER OBJECT. A record per object would have to die
+    // with its object, and nothing can observe that: Wasm has no weak
+    // reference, a JavaScript host's identity `WeakMap` frees an object
+    // without saying so, and Wasmtime roots are strong. A per-object record
+    // either keeps its object alive (pinning every array a program ever made,
+    // unbounded in a loop that never forks) or goes stale. A RUN -- a distinct
+    // `(activation, layout, operands)` -- needs neither: the segment is
+    // immutable, so every run with those operands makes an array with the same
+    // contents, and one record describes them all. A later `data.drop` cannot
+    // change that: a dropped segment has length zero, so a later run with a
+    // non-zero length traps before allocating (it makes no array to record),
+    // and a zero-length run makes an empty array whatever the segment holds.
     //
-    // An immutable array's observable state is its type, length and elements;
-    // its identity travels in the recipe graph. Two runs with equal operands
-    // therefore make interchangeable arrays, and the table needs one entry per
-    // DISTINCT `(activation, layout, operands)`, not per allocation. The first
-    // array a run makes is kept as that entry's witness, in the same module
-    // table the seed witnesses use. At capture an array is matched to an entry
-    // by comparing its captured contents with the witness's
-    // (`recorded_segment_run`): equal contents means re-running that
-    // instruction with those operands rebuilds it exactly. A MUTABLE array is
-    // filled after allocation, so any entry of its length will do.
+    // WHY A CONTENT HASH AND NOT A KEPT ARRAY. The capture must tell which run
+    // made a given array. It could compare the array with the first array
+    // that run made -- but keeping that "witness" pins it for the worker's
+    // life, which the maintainer rejected. So the first run of an operand set
+    // sends its contents, element by element
+    // (`__wpk_fork_ref_gc_provenance_contents`), and the record keeps their
+    // 128-bit hash (`fork_codec::gc_constructor::run_contents_hash`, SHA-256
+    // truncated: fixed and identical on every engine and host). A capture
+    // hashes the array's captured contents the same way and matches on
+    // `(activation, layout, length, hash)`. A false match needs two arrays of
+    // one type and length in one program to collide in 128 bits of SHA-256,
+    // which is not a practical event even for a program trying to cause one;
+    // the only process it could mislead is that program's own child.
     //
-    // The table is bounded by the program's distinct segment reads, not by
-    // how often it allocates, and both caps below fail truthfully: an
-    // unrecorded run leaves its arrays to be rebuilt by another constructor
-    // (`fork_codec::gc_constructor`) or refused with `EOPNOTSUPP` at fork.
+    // WHY NO FIXED CAP, AND WHAT HAPPENS INSTEAD. The table's size is the
+    // program's number of DISTINCT runs, not how often it allocates, so it is
+    // left to grow: an open-addressing hash table in one channel mapping,
+    // doubled by re-mapping at half load (40 bytes an entry, so 80 to 160
+    // bytes of mapping per run). Linear memory never shrinks, so what the
+    // table grows to stays reserved until exec or exit. When a doubling's
+    // mapping fails, recording STOPS for this worker (`SEGMENT_RUNS_STOPPED`,
+    // sticky): allocation carries on unaffected, and a later capture that
+    // meets an array it can match neither to a record nor to another
+    // constructor refuses the fork with `EOPNOTSUPP` -- never a trap, never a
+    // rebuild from a partial record.
     //
-    // Durable, so it cannot live in the per-fork bump heap: an open-addressing
-    // hash table in one channel mapping, doubled by re-mapping.
+    // ALTERNATIVES REJECTED: per-object records keyed by the host identity
+    // oracle (stale records on JavaScript, pinned objects on Wasmtime); a
+    // kept witness per run (pins the first array); a fixed run cap (a routine
+    // program that reads many offsets would lose provenance at an arbitrary
+    // count); searching the child's fresh segment for the captured bytes (the
+    // wrong instruction contract: it reconstructs from contents rather than
+    // re-running the recorded run, and costs segment size times array length
+    // per array at child start); copying data segments into a custom section
+    // (doubles the artifact's static data).
     //
-    // Entry, little-endian, 24 bytes:
+    // Entry, little-endian, 40 bytes:
     //   +0  activation: u32   +4 layout: u32   +8 operands: u64
-    //   +16 witness slot: u32 (`SEGMENT_RUN_NO_WITNESS` when none was kept)
-    //   +20 occupied: u32
-    const SEGMENT_RUN_ENTRY_BYTES: u64 = 24;
-    /// Distinct runs recorded per worker, at most. Beyond it a run is not
-    /// recorded (see the section note for what that costs).
-    const SEGMENT_RUN_MAX: u32 = 1 << 16;
-    /// Element bytes the kept witnesses may hold between them. A run past it is
-    /// recorded without a witness, so an immutable array it made can be
-    /// matched only through another constructor.
-    const SEGMENT_RUN_WITNESS_BUDGET: u64 = 16 << 20;
-    const SEGMENT_RUN_NO_WITNESS: u32 = u32::MAX;
-    /// A reference element's share of the budget: a slot in the array.
-    const SEGMENT_RUN_REFERENCE_BYTES: u64 = 8;
+    //   +16 contents hash: [u8; 16]   +32 flags: u32   +36 reserved
+    const SEGMENT_RUN_ENTRY_BYTES: u64 = 40;
+    const SEGMENT_RUN_OCCUPIED: u32 = 1 << 0;
+    /// The contents hash is complete. An `array.new_data` entry without it (its
+    /// first run's contents never arrived in full) matches nothing.
+    const SEGMENT_RUN_HASHED: u32 = 1 << 1;
+    /// An `array.new_elem` run: operands only, no hash.
+    const SEGMENT_RUN_ELEMENT: u32 = 1 << 2;
+    /// Bit 1 of a provenance token: this run is the first of its operand set,
+    /// and the module wants its contents. Must match
+    /// `fork_instrument::module_gc_codec::PROVENANCE_TOKEN_WANTS_CONTENTS`.
+    const PROVENANCE_TOKEN_WANTS_CONTENTS: u32 = 1 << 1;
 
     /// Base of the table mapping, or 0 before the first recorded run.
     static SEGMENT_RUNS_BASE: AtomicU64 = AtomicU64::new(0);
     /// Capacity in entries: a power of two, or 0 with no mapping.
     static SEGMENT_RUNS_CAP: AtomicU32 = AtomicU32::new(0);
     static SEGMENT_RUNS_LEN: AtomicU32 = AtomicU32::new(0);
-    static SEGMENT_RUNS_WITNESS_BYTES: AtomicU64 = AtomicU64::new(0);
-    /// Next witness-table slot for a run's witness. The first `WITNESS_SLOTS`
-    /// belong to the seed witnesses; 0 means "not started", read as that base.
-    static SEGMENT_RUNS_NEXT_SLOT: AtomicU32 = AtomicU32::new(0);
+    /// Set, for good, when the table could not grow: nothing more is
+    /// recorded in this worker.
+    static SEGMENT_RUNS_STOPPED: AtomicU32 = AtomicU32::new(0);
+
+    /// The first run whose contents are arriving: its key, the element bytes
+    /// each `contents` call contributes, and how many calls are still owed.
+    /// One at a time for the reason `PROVENANCE_IN_FLIGHT` needs one.
+    struct PendingRun {
+        activation: u32,
+        layout: u32,
+        operands: u64,
+        element_bytes: u32,
+        calls_left: u64,
+        hasher: fork_codec::gc_constructor::RunContentsHasher,
+    }
+    struct PendingRunCell(UnsafeCell<Option<PendingRun>>);
+    // SAFETY: single-threaded per worker, as `state()`.
+    unsafe impl Sync for PendingRunCell {}
+    static PENDING_RUN: PendingRunCell = PendingRunCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn pending_run() -> &'static mut Option<PendingRun> {
+        // SAFETY: single-threaded per worker, as `state()`.
+        unsafe { &mut *PENDING_RUN.0.get() }
+    }
 
     fn segment_run_hash(activation: u32, layout: u32, operands: u64) -> u32 {
         let mut h = ((u64::from(activation) << 32) | u64::from(layout))
@@ -10868,7 +10916,7 @@ mod wasm {
         let mut index = segment_run_hash(activation, layout, operands) & mask;
         loop {
             let at = segment_run_entry(base, index);
-            if arena_u32(at + 20) == 0
+            if arena_u32(at + 32) & SEGMENT_RUN_OCCUPIED == 0
                 || (arena_u32(at) == activation
                     && arena_u32(at + 4) == layout
                     && arena_u64(at + 8) == operands)
@@ -10887,7 +10935,9 @@ mod wasm {
         };
         let old_base = SEGMENT_RUNS_BASE.load(Ordering::Relaxed);
         let old_cap = SEGMENT_RUNS_CAP.load(Ordering::Relaxed);
-        let cap = if old_cap == 0 { 256 } else { old_cap * 2 };
+        let Some(cap) = (if old_cap == 0 { Some(256) } else { old_cap.checked_mul(2) }) else {
+            return false;
+        };
         let bytes = page_round_up(u64::from(cap) * SEGMENT_RUN_ENTRY_BYTES);
         // An anonymous mapping is zeroed, so every entry starts unoccupied.
         let Ok(base) = channel_mmap(channel, bytes) else {
@@ -10895,17 +10945,20 @@ mod wasm {
         };
         for index in 0..old_cap {
             let from = segment_run_entry(old_base, index);
-            if arena_u32(from + 20) == 0 {
+            if arena_u32(from + 32) & SEGMENT_RUN_OCCUPIED == 0 {
                 continue;
             }
             let (activation, layout, operands) =
                 (arena_u32(from), arena_u32(from + 4), arena_u64(from + 8));
             let to = segment_run_probe(base, cap, activation, layout, operands);
-            arena_set_u32(to, activation);
-            arena_set_u32(to + 4, layout);
-            arena_set_u64(to + 8, operands);
-            arena_set_u32(to + 16, arena_u32(from + 16));
-            arena_set_u32(to + 20, 1);
+            // SAFETY: both ranges are inside mappings this table owns.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    core::hint::black_box(from as usize) as *const u8,
+                    core::hint::black_box(to as usize) as *mut u8,
+                    SEGMENT_RUN_ENTRY_BYTES as usize,
+                );
+            }
         }
         if old_cap != 0 {
             let _ = channel_munmap(
@@ -10921,13 +10974,15 @@ mod wasm {
 
     /// Forget every recorded run and every seed witness.
     ///
-    /// For a worker whose witness table does not hold what these records name:
-    /// a COW child, whose fresh instance starts with an EMPTY table while its
-    /// memory clone carries the parent's records. Left in place, the child
-    /// would believe a seed was already witnessed (first-wins never stores
-    /// again) and a run already recorded, then intern empty slots at its own
-    /// first fork. `unmap` returns the run table's mapping; a caller whose
-    /// channel cannot unmap it yet passes false.
+    /// For a worker whose records do not describe its own instance: a COW
+    /// child, whose fresh instance starts with an EMPTY witness table while
+    /// its memory clone carries the parent's bookkeeping. Left in place, the
+    /// child would believe a seed was already witnessed (first-wins never
+    /// stores again) and intern empty slots at its own first fork. (Its run
+    /// records would still be TRUE -- the segments are the same -- but a child
+    /// re-records every run it rebuilds, so it starts from nothing too.)
+    /// `unmap` returns the run table's mapping; a caller whose channel cannot
+    /// unmap it yet passes false.
     fn constructor_witnesses_forget(unmap: bool) {
         let base = SEGMENT_RUNS_BASE.swap(0, Ordering::Relaxed);
         let cap = SEGMENT_RUNS_CAP.swap(0, Ordering::Relaxed);
@@ -10942,40 +10997,44 @@ mod wasm {
             );
         }
         SEGMENT_RUNS_LEN.store(0, Ordering::Relaxed);
-        SEGMENT_RUNS_WITNESS_BYTES.store(0, Ordering::Relaxed);
-        SEGMENT_RUNS_NEXT_SLOT.store(0, Ordering::Relaxed);
+        SEGMENT_RUNS_STOPPED.store(0, Ordering::Relaxed);
+        *pending_run() = None;
         let w = witness();
         w.keys = [u32::MAX; WITNESS_SLOTS];
         w.occupied = [false; WITNESS_SLOTS];
         w.recipes = [0u32; WITNESS_SLOTS];
     }
 
-    /// Record one run of a segment constructor, if `layout` is one.
+    /// Record one run of `array.new_data`, if `layout` is one, answering
+    /// whether this is the FIRST run of its operand set (whose contents the
+    /// caller must then send).
     ///
-    /// Called on the allocation path, so it allocates nothing from the bump
-    /// heap and answers nothing: a run it cannot record costs only the
-    /// ability to rebuild that run's arrays by re-running it, which the
-    /// capture then reports (see the section note).
-    fn record_segment_run(slot: u32, activation: u32, layout: u32, operands: u64) {
+    /// Called on the program's allocation path, so it allocates nothing from
+    /// the bump heap and never fails the allocation: a run it cannot record
+    /// only loses the ability to rebuild that run's arrays by re-running it,
+    /// which a later capture then reports (see the section note).
+    fn record_segment_run(activation: u32, layout: u32, operands: u64) -> bool {
         // A borrowed vfork child's module is transient and maps nothing it
         // keeps: its region is returned right after the child's one replay,
-        // while a run table it mapped would stay in the address space it SHARES
+        // while a table it mapped would stay in the address space it SHARES
         // with its parked parent (see `Bump::release_chunks`). A fork from a
-        // vfork child therefore rebuilds segment arrays only through another
-        // constructor, or is refused with `EOPNOTSUPP`.
-        if BORROWED_PREFIX_BASE.load(Ordering::Relaxed) != 0 {
-            return;
+        // vfork child therefore rebuilds `array.new_data` arrays only through
+        // another constructor, or is refused with `EOPNOTSUPP`.
+        if BORROWED_PREFIX_BASE.load(Ordering::Relaxed) != 0
+            || SEGMENT_RUNS_STOPPED.load(Ordering::Relaxed) != 0
+        {
+            return false;
         }
         let Some((descriptor, byte_len)) = arena_find(activation, REC_KIND_GC_CODEC) else {
-            return;
+            return false;
         };
         let Ok(descriptor) = guest_bytes(descriptor, byte_len) else {
-            return;
+            return false;
         };
-        let Some((stride, _data)) =
+        let Some((stride, is_data)) =
             fork_codec::gc_constructor::segment_constructor(descriptor, layout)
         else {
-            return;
+            return false;
         };
         let mut cap = SEGMENT_RUNS_CAP.load(Ordering::Relaxed);
         let len = SEGMENT_RUNS_LEN.load(Ordering::Relaxed);
@@ -10987,38 +11046,16 @@ mod wasm {
                 layout,
                 operands,
             );
-            if arena_u32(at + 20) != 0 {
-                return; // this run is already recorded, and has its witness
+            if arena_u32(at + 32) & SEGMENT_RUN_OCCUPIED != 0 {
+                return false; // this run is already recorded
             }
         }
-        if len >= SEGMENT_RUN_MAX {
-            return;
-        }
-        if (len + 1) * 2 > cap {
+        if u64::from(len + 1) * 2 > u64::from(cap) {
             if !segment_runs_grow() {
-                return;
+                SEGMENT_RUNS_STOPPED.store(1, Ordering::Relaxed);
+                return false;
             }
             cap = SEGMENT_RUNS_CAP.load(Ordering::Relaxed);
-        }
-        let element_bytes = if stride == 0 {
-            SEGMENT_RUN_REFERENCE_BYTES
-        } else {
-            u64::from(stride)
-        };
-        let witness_bytes = (operands >> 32) * element_bytes;
-        let spent = SEGMENT_RUNS_WITNESS_BYTES.load(Ordering::Relaxed);
-        let mut witness = SEGMENT_RUN_NO_WITNESS;
-        if spent + witness_bytes <= SEGMENT_RUN_WITNESS_BUDGET {
-            let next = match SEGMENT_RUNS_NEXT_SLOT.load(Ordering::Relaxed) {
-                0 => WITNESS_SLOTS as u32,
-                next => next,
-            };
-            // SAFETY: an injector-rewritten local thunk (see its declaration).
-            if unsafe { __wpk_fork_witness_store(slot, next) } == 0 {
-                witness = next;
-                SEGMENT_RUNS_NEXT_SLOT.store(next + 1, Ordering::Relaxed);
-                SEGMENT_RUNS_WITNESS_BYTES.store(spent + witness_bytes, Ordering::Relaxed);
-            }
         }
         let at = segment_run_probe(
             SEGMENT_RUNS_BASE.load(Ordering::Relaxed),
@@ -11030,19 +11067,106 @@ mod wasm {
         arena_set_u32(at, activation);
         arena_set_u32(at + 4, layout);
         arena_set_u64(at + 8, operands);
-        arena_set_u32(at + 16, witness);
-        arena_set_u32(at + 20, 1);
+        arena_set_u32(
+            at + 32,
+            if is_data {
+                SEGMENT_RUN_OCCUPIED
+            } else {
+                SEGMENT_RUN_OCCUPIED | SEGMENT_RUN_ELEMENT
+            },
+        );
         SEGMENT_RUNS_LEN.store(len + 1, Ordering::Relaxed);
+        if !is_data {
+            return false; // an `array.new_elem` run keeps its operands only
+        }
+        // The contents to expect: `length` elements (the operands' high word),
+        // each one call, or two for a 16-byte element.
+        let element_bytes = stride.min(8);
+        let calls_per_element = u64::from(stride.div_ceil(8));
+        let length = operands >> 32;
+        let mut hasher = fork_codec::gc_constructor::RunContentsHasher::new();
+        hasher.update(&(length as u32).to_le_bytes());
+        *pending_run() = Some(PendingRun {
+            activation,
+            layout,
+            operands,
+            element_bytes,
+            calls_left: length * calls_per_element,
+            hasher,
+        });
+        true
     }
 
-    /// Per-capture view of the recorded runs and what the capture learned
-    /// about them. Bump-backed: built at a capture's first need and abandoned
-    /// with the bump at the next fork (`reset_bump_heap`).
+    /// Complete the pending first run: store its contents hash, if every
+    /// element arrived. Called from `__wpk_fork_ref_gc_provenance_end`.
+    fn finish_segment_run() {
+        let Some(run) = pending_run().take() else {
+            return;
+        };
+        if run.calls_left != 0 {
+            return; // incomplete: the record stays unhashed, matching nothing
+        }
+        let cap = SEGMENT_RUNS_CAP.load(Ordering::Relaxed);
+        if cap == 0 {
+            return;
+        }
+        let at = segment_run_probe(
+            SEGMENT_RUNS_BASE.load(Ordering::Relaxed),
+            cap,
+            run.activation,
+            run.layout,
+            run.operands,
+        );
+        if arena_u32(at + 32) & SEGMENT_RUN_OCCUPIED == 0 {
+            return;
+        }
+        let hash = run.hasher.finish();
+        for (index, byte) in hash.iter().enumerate() {
+            // SAFETY: inside the table mapping (the probe found the entry).
+            unsafe {
+                *(core::hint::black_box(at as usize + 16 + index) as *mut u8) = *byte;
+            }
+        }
+        arena_set_u32(at + 32, SEGMENT_RUN_OCCUPIED | SEGMENT_RUN_HASHED);
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_provenance_contents(token, bits)`.
+    ///
+    /// One element of the array the pending first run made, widened to 64
+    /// bits (see `fork_instrument::module_gc_codec::emit_run_contents`); the
+    /// low `element_bytes` of them are hashed, which are exactly the bytes a
+    /// capture encodes for that element. The guest ABI returns nothing, so a
+    /// call with no matching pending run latches `EINVAL`, and a run whose
+    /// contents do not arrive in full is left unhashed, matching nothing.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_provenance_contents(token: u32, bits: u64) {
+        let open = PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed);
+        let Some(run) = pending_run().as_mut() else {
+            set_err(Errno::EINVAL);
+            return;
+        };
+        if open == 0
+            || open - 1 != token
+            || token & PROVENANCE_TOKEN_WANTS_CONTENTS == 0
+            || run.calls_left == 0
+        {
+            set_err(Errno::EINVAL);
+            return;
+        }
+        run.hasher
+            .update(&bits.to_le_bytes()[..run.element_bytes as usize]);
+        run.calls_left -= 1;
+        set_ok();
+    }
+
+    /// Per-capture view of the recorded runs. Bump-backed: built at a
+    /// capture's first need and abandoned with the bump at the next fork
+    /// (`reset_bump_heap`).
     struct SegmentRunCapture {
-        /// `(activation, layout, length)` -> `(operands, witness slot)`.
-        runs: BTreeMap<(u32, u32, u32), Vec<(u64, u32)>>,
-        /// Witness slot -> the recipe it encoded to in THIS capture.
-        witness_recipes: BTreeMap<u32, u32>,
+        /// `(activation, layout, length)` -> `(operands, contents hash)` of
+        /// every hashed `array.new_data` run and every `array.new_elem` run
+        /// (whose hash is zero and unused).
+        runs: BTreeMap<(u32, u32, u32), Vec<(u64, [u8; 16])>>,
         /// Decoded GC codecs, by activation.
         codecs: BTreeMap<u32, fork_codec::GcCodec>,
     }
@@ -11061,21 +11185,30 @@ mod wasm {
 
     fn segment_run_capture_view() -> &'static mut SegmentRunCapture {
         segment_run_capture().get_or_insert_with(|| {
-            let mut runs: BTreeMap<(u32, u32, u32), Vec<(u64, u32)>> = BTreeMap::new();
+            let mut runs: BTreeMap<(u32, u32, u32), Vec<(u64, [u8; 16])>> = BTreeMap::new();
             let base = SEGMENT_RUNS_BASE.load(Ordering::Relaxed);
             for index in 0..SEGMENT_RUNS_CAP.load(Ordering::Relaxed) {
                 let at = segment_run_entry(base, index);
-                if arena_u32(at + 20) == 0 {
+                let flags = arena_u32(at + 32);
+                if flags != SEGMENT_RUN_OCCUPIED | SEGMENT_RUN_HASHED
+                    && flags != SEGMENT_RUN_OCCUPIED | SEGMENT_RUN_ELEMENT
+                {
                     continue;
                 }
                 let operands = arena_u64(at + 8);
+                let mut hash = [0u8; 16];
+                for (index, byte) in hash.iter_mut().enumerate() {
+                    // SAFETY: inside the table mapping.
+                    *byte = unsafe {
+                        *(core::hint::black_box(at as usize + 16 + index) as *const u8)
+                    };
+                }
                 runs.entry((arena_u32(at), arena_u32(at + 4), (operands >> 32) as u32))
                     .or_default()
-                    .push((operands, arena_u32(at + 16)));
+                    .push((operands, hash));
             }
             SegmentRunCapture {
                 runs,
-                witness_recipes: BTreeMap::new(),
                 codecs: BTreeMap::new(),
             }
         })
@@ -11094,84 +11227,120 @@ mod wasm {
         Ok(codec)
     }
 
-    /// The recipe of the run witness at `witness_slot`, encoded at most once
-    /// per capture. `None` for a slot that holds nothing capturable.
-    fn intern_run_witness(activation: u32, witness_slot: u32) -> Option<u32> {
-        if let Some(recipe) = segment_run_capture_view().witness_recipes.get(&witness_slot) {
-            return Some(*recipe);
-        }
-        let recipe = capture_witness_via_injector(activation, witness_slot);
-        if recipe <= 0 {
-            return None;
-        }
-        segment_run_capture_view()
-            .witness_recipes
-            .insert(witness_slot, recipe as u32);
-        Some(recipe as u32)
-    }
-
-    /// A recorded run of the segment constructor `layout` that rebuilds the
-    /// array being defined as `recipe`, returning its operands.
+    /// The operands of a run of the segment constructor `layout` that
+    /// rebuilds the array being defined, if one does.
     ///
     /// The array's snapshot is `scalars` (`[length][elements]`) and
-    /// `references`. For a MUTABLE array any run of its length rebuilds it,
-    /// because the child fills it afterwards. An immutable one must be
-    /// indistinguishable from the run's witness: it IS the witness (the
-    /// common case, the first array a run makes), or its captured contents
-    /// equal the witness's.
-    #[allow(clippy::too_many_arguments)]
-    fn recorded_segment_run(
+    /// `references`.
+    ///
+    /// * `array.new_data`: a RECORDED run with the same length and contents
+    ///   hash (see the section note).
+    /// * `array.new_elem`: a run FOUND by matching the array's captured
+    ///   elements with the segment's items, whose capture coordinates the GC
+    ///   codec lists (`fork_codec::gc_constructor::find_element_run`). An
+    ///   element that is not a static root, null or i31 matches nothing. A
+    ///   MUTABLE array is filled afterwards, so any in-bounds run will do.
+    fn segment_run_for(
         activation: u32,
-        recipe: u32,
         layout: &fork_codec::GcLayoutDescriptor,
         mutable: bool,
         scalars: &[u8],
         references: &[u32],
         codec: &fork_codec::GcCodec,
     ) -> Option<u64> {
+        use fork_codec::gc_codec::{ElementItem, CONSTRUCTOR_ARRAY_DATA};
         let len = u32::from_le_bytes(scalars.get(..4)?.try_into().ok()?);
-        let candidates = segment_run_capture_view()
-            .runs
-            .get(&(activation, layout.id, len))?
-            .clone();
-        for (operands, witness_slot) in candidates {
-            if mutable {
-                return Some(operands);
-            }
-            if witness_slot == SEGMENT_RUN_NO_WITNESS {
-                continue;
-            }
-            let Some(witness) = intern_run_witness(activation, witness_slot) else {
-                continue;
-            };
-            if witness == recipe {
-                return Some(operands);
-            }
-            let builder = capture_builder().ok()?;
-            let Some(ReferenceRecipeNode::Array {
-                layout_id,
-                scalars: witness_scalars,
-                elements: witness_references,
-                ..
-            }) = builder.nodes().get(witness as usize)
-            else {
-                continue;
-            };
-            let Some(witness_layout) = layout_id
-                .checked_sub(1)
-                .and_then(|index| codec.layouts.get(index as usize))
-            else {
-                continue;
-            };
-            let skip_scalars = witness_layout.provenance_scalar_length as usize;
-            let skip_references = witness_layout.provenance_reference_count as usize;
-            if witness_scalars.get(skip_scalars..) == Some(scalars)
-                && witness_references.get(skip_references..) == Some(references)
+        if layout.constructor == CONSTRUCTOR_ARRAY_DATA {
+            let hash = fork_codec::gc_constructor::run_contents_hash(scalars);
+            return segment_run_capture_view()
+                .runs
+                .get(&(activation, layout.id, len))?
+                .iter()
+                .find(|(_, recorded)| *recorded == hash)
+                .map(|(operands, _)| *operands);
+        }
+        let items = codec.element_segments.get(&layout.auxiliary)?;
+        let builder = capture_builder().ok()?;
+        let elements: Vec<ElementItem> = references
+            .iter()
+            .map(|recipe| match builder.nodes().get(*recipe as usize) {
+                Some(ReferenceRecipeNode::Null) => ElementItem::Null,
+                Some(ReferenceRecipeNode::I31 { value }) => ElementItem::I31(*value),
+                Some(ReferenceRecipeNode::StaticRoot {
+                    module_activation,
+                    static_root_ordinal,
+                }) if *module_activation == activation => ElementItem::Root(*static_root_ordinal),
+                _ => ElementItem::Unmapped,
+            })
+            .collect();
+        if elements.len() != len as usize {
+            return None;
+        }
+        let offset = fork_codec::gc_constructor::find_element_run(items, &elements, mutable)?;
+        Some(u64::from(offset) | (u64::from(len) << 32))
+    }
+
+    /// The operands of the ONLY recorded `array.new_elem` run that could have
+    /// made the array being defined, for an array whose elements cannot be
+    /// compared with the segment's items (any element a capture could not
+    /// name by a static coordinate; see the section note on JavaScriptCore).
+    ///
+    /// Sound by elimination: every constructor but the segment ones is tried
+    /// before this (`fork_codec::gc_constructor::choose_constructor`), so the
+    /// array was made by a segment run, and every run is recorded -- unless
+    /// recording stopped, when this answers nothing. So exactly one recorded
+    /// `array.new_elem` run of this type and length, across all its segment
+    /// layouts, is the array's. Two or more cannot be told apart, and the
+    /// fork is refused.
+    fn segment_run_by_elimination(
+        activation: u32,
+        layout: &fork_codec::GcLayoutDescriptor,
+        scalars: &[u8],
+        references: &[u32],
+        codec: &fork_codec::GcCodec,
+    ) -> Option<u64> {
+        use fork_codec::gc_codec::CONSTRUCTOR_ARRAY_ELEMENT;
+        if layout.constructor != CONSTRUCTOR_ARRAY_ELEMENT
+            || SEGMENT_RUNS_STOPPED.load(Ordering::Relaxed) != 0
+        {
+            return None;
+        }
+        let builder = capture_builder().ok()?;
+        let comparable = references.iter().all(|recipe| {
+            matches!(
+                builder.nodes().get(*recipe as usize),
+                Some(
+                    ReferenceRecipeNode::Null
+                        | ReferenceRecipeNode::I31 { .. }
+                        | ReferenceRecipeNode::StaticRoot { .. }
+                )
+            )
+        });
+        if comparable {
+            return None; // compared already, and matched no run
+        }
+        let len = u32::from_le_bytes(scalars.get(..4)?.try_into().ok()?);
+        let view = segment_run_capture_view();
+        let mut found = None;
+        for candidate in codec.layouts.iter().filter(|candidate| {
+            candidate.base_layout_id == layout.base_layout_id
+                && candidate.constructor == CONSTRUCTOR_ARRAY_ELEMENT
+        }) {
+            for (operands, _) in view
+                .runs
+                .get(&(activation, candidate.id, len))
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
             {
-                return Some(operands);
+                if found.is_some() {
+                    return None; // two candidate runs: cannot tell which
+                }
+                found = Some((candidate.id, *operands));
             }
         }
-        None
+        found
+            .filter(|(id, _)| *id == layout.id)
+            .map(|(_, operands)| operands)
     }
 
     /// How many seed witnesses `layout` has, counted densely from ordinal 0
@@ -11194,11 +11363,11 @@ mod wasm {
     ///
     /// Returns `(layout_id, operand bytes, provenance edges)`. An array whose
     /// type rebuilds it (a defaultable mutable array) keeps `base_layout`.
-    /// One that no constructor in the program can rebuild REFUSES the capture
-    /// with `EOPNOTSUPP` and keeps its base layout, so the graph stays valid
-    /// and the seal -- not a child's allocator -- reports it.
+    /// One that no constructor in the program can rebuild -- including one
+    /// whose run went unrecorded because recording stopped -- REFUSES the
+    /// capture with `EOPNOTSUPP` and keeps its base layout, so the graph stays
+    /// valid and the seal, not a child's allocator, reports it.
     fn select_array_constructor(
-        recipe: u32,
         activation: u32,
         base_layout: u32,
         scalars: &[u8],
@@ -11231,11 +11400,8 @@ mod wasm {
             &codec,
             base_layout,
             snapshot,
-            |layout| {
-                recorded_segment_run(
-                    activation, recipe, layout, mutable, scalars, references, &codec,
-                )
-            },
+            |layout| segment_run_for(activation, layout, mutable, scalars, references, &codec),
+            |layout| segment_run_by_elimination(activation, layout, scalars, references, &codec),
             |layout| layout_witness_count(layout.id),
         );
         match choice {

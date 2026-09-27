@@ -33,12 +33,22 @@
 //! * `array.new_default n` is an all-default array.
 //!
 //! Deriving these costs the allocation path nothing. The two segment
-//! constructors are different: `array.new_data`/`array.new_elem` take a
-//! segment offset that the array's contents do not reveal, and the segment
-//! may have been dropped since. Their operands are RECORDED where the
-//! instruction runs (see `crates/fork-module`'s constructor witnesses) and
-//! offered here as `recorded`; this module only chooses between a recording
-//! and a derivation.
+//! constructors take a segment offset that the array's contents do not by
+//! themselves reveal, and the parent may have dropped the segment since:
+//!
+//! * `array.new_elem`'s elements ARE its segment's items, and every item has
+//!   a static capture coordinate (a static root, null, or an i31) that the
+//!   GC codec descriptor lists. So the offset is FOUND by matching the
+//!   array's captured elements against the items ([`find_element_run`]);
+//!   nothing is recorded.
+//! * `array.new_data`'s bytes might occur at many offsets, and nothing static
+//!   lists the segment's bytes. So each distinct run is RECORDED where the
+//!   instruction runs, by the operands and a hash of the contents it made
+//!   ([`run_contents_hash`]; see `crates/fork-module`, `record_segment_run`),
+//!   and matched here by that hash.
+//!
+//! The caller offers both as `recorded`; this module only chooses between a
+//! recorded or found run and a derivation.
 //!
 //! When nothing fits, the answer is [`ConstructorChoice::Unrebuildable`], and
 //! the caller refuses the capture with `EOPNOTSUPP` so `fork()` fails in the
@@ -46,13 +56,88 @@
 
 use alloc::vec::Vec;
 
+use sha2::{Digest, Sha256};
 use wasm_posix_shared::abi;
 
 use crate::gc_codec::{
+    ElementItem,
     CONSTRUCTOR_ARRAY_DATA, CONSTRUCTOR_ARRAY_DEFAULT, CONSTRUCTOR_ARRAY_ELEMENT,
     CONSTRUCTOR_ARRAY_FIXED, CONSTRUCTOR_ARRAY_NEW, FIELD_FLAG_MUTABLE, FIELD_FLAG_REFERENCE,
     GcCodec, GcLayoutDescriptor, KIND_ARRAY, LAYOUT_FLAG_DEFAULTABLE_SHELL,
 };
+
+/// The 128-bit hash a recorded `array.new_data` run is matched by: the first
+/// 16 bytes of SHA-256 over a domain tag and the array's contents as a
+/// capture encodes them, `[length: u32][element bytes]` (so the length is
+/// hashed too).
+///
+/// SHA-256 because the match must agree bit for bit between the run's first
+/// allocation (in whatever worker and engine) and a later capture (in another
+/// engine, perhaps another host): a fixed, specified function with no seed or
+/// platform-dependent word size does, and `sha2` is already this crate's
+/// `no_std` dependency. Truncated to 128 bits because the table keeps it per
+/// distinct run. A false match needs a collision between two arrays of the
+/// same type and length in one program; with a cryptographic hash that is not
+/// a practical event, even for a program trying to cause one, and the only
+/// process it could mislead is that program's own child.
+pub fn run_contents_hash(contents: &[u8]) -> [u8; 16] {
+    let mut hasher = RunContentsHasher::new();
+    hasher.update(contents);
+    hasher.finish()
+}
+
+/// [`run_contents_hash`], fed in pieces: the fork module hashes a run's
+/// contents as they arrive, element by element, without buffering them.
+#[derive(Clone)]
+pub struct RunContentsHasher(Sha256);
+
+impl RunContentsHasher {
+    pub fn new() -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"kandelo.fork.gc-run-contents\0");
+        Self(hasher)
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    pub fn finish(self) -> [u8; 16] {
+        let digest = self.0.finalize();
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&digest[..16]);
+        out
+    }
+}
+
+impl Default for RunContentsHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The offset of a run of `array.new_elem` over `items` that makes an array
+/// whose captured elements are `elements`, if one exists.
+///
+/// An immutable array's elements must equal a slice of the items, and an
+/// `Unmapped` item or element matches nothing: its identity is not something
+/// a capture can compare. A MUTABLE array is filled after allocation, so any
+/// in-bounds run of its length rebuilds it, and offset 0 is taken.
+pub fn find_element_run(items: &[ElementItem], elements: &[ElementItem], mutable: bool) -> Option<u32> {
+    let len = elements.len();
+    if len > items.len() {
+        return None;
+    }
+    if mutable {
+        return Some(0);
+    }
+    if elements.contains(&ElementItem::Unmapped) {
+        return None;
+    }
+    (0..=items.len() - len)
+        .find(|&offset| items[offset..offset + len] == *elements)
+        .map(|offset| offset as u32)
+}
 
 /// Where a chosen layout's constructor-only reference edges come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +180,13 @@ pub struct ArraySnapshot<'a> {
 /// answered `base_layout_id`.
 ///
 /// * `recorded(layout)` -- for a segment-constructor layout, the operands of a
-///   RECORDED invocation of that exact instruction whose result is
-///   indistinguishable from this object, or `None`. Asked in layout order.
+///   run of that exact instruction whose result is indistinguishable from
+///   this object, or `None`. Asked in layout order, before any derivation.
+/// * `unverified(layout)` -- for a segment-constructor layout, the operands of
+///   the ONLY run that could have made this object when its contents cannot be
+///   compared (see the fork module's `segment_run_for`), or `None`. Asked
+///   LAST, after every derivation, because it rests on elimination rather than
+///   on a comparison.
 /// * `witnesses(layout)` -- how many constructor witnesses the layout has.
 ///
 /// A struct, or an array of a defaultable mutable element type, keeps its base
@@ -106,6 +196,7 @@ pub fn choose_constructor(
     base_layout_id: u32,
     snapshot: ArraySnapshot<'_>,
     mut recorded: impl FnMut(&GcLayoutDescriptor) -> Option<u64>,
+    mut unverified: impl FnMut(&GcLayoutDescriptor) -> Option<u64>,
     mut witnesses: impl FnMut(&GcLayoutDescriptor) -> usize,
 ) -> ConstructorChoice {
     let keep = ConstructorChoice::Layout {
@@ -237,6 +328,19 @@ pub fn choose_constructor(
         }
     }
 
+    // 5. A segment run found by elimination.
+    for layout in constructors() {
+        if matches!(layout.constructor, CONSTRUCTOR_ARRAY_DATA | CONSTRUCTOR_ARRAY_ELEMENT)
+            && let Some(operands) = unverified(layout)
+        {
+            return ConstructorChoice::Layout {
+                layout_id: layout.id,
+                operands: operands.to_le_bytes().to_vec(),
+                edges: ProvenanceEdges::None,
+            };
+        }
+    }
+
     ConstructorChoice::Unrebuildable
 }
 
@@ -339,6 +443,7 @@ mod tests {
                 layout(4, 1, CONSTRUCTOR_ARRAY_NEW, 0, f, 1, 1, 0),
                 layout(5, 1, CONSTRUCTOR_ARRAY_DEFAULT, 0, f, 1, 0, 0),
             ],
+            ..Default::default()
         }
     }
 
@@ -351,7 +456,7 @@ mod tests {
     }
 
     fn pick(codec: &GcCodec, s: ArraySnapshot<'_>, recorded: Option<u64>) -> ConstructorChoice {
-        choose_constructor(codec, 1, s, |_| recorded, |_| 0)
+        choose_constructor(codec, 1, s, |_| recorded, |_| None, |_| 0)
     }
 
     #[test]
@@ -409,7 +514,7 @@ mod tests {
         codec
             .layouts
             .retain(|l| l.constructor != CONSTRUCTOR_ARRAY_NEW);
-        let got = choose_constructor(&codec, 1, snap(&[0, 0], &[], 2), |_| None, |_| 0);
+        let got = choose_constructor(&codec, 1, snap(&[0, 0], &[], 2), |_| None, |_| None, |_| 0);
         assert!(matches!(
             got,
             ConstructorChoice::Layout { layout_id: 5, .. }
@@ -420,14 +525,14 @@ mod tests {
     fn a_defaultable_mutable_array_and_a_struct_keep_their_base() {
         let mut codec = bytes_codec();
         codec.layouts[0].flags |= LAYOUT_FLAG_DEFAULTABLE_SHELL;
-        let got = choose_constructor(&codec, 1, snap(&[1, 2, 3], &[], 3), |_| None, |_| 0);
+        let got = choose_constructor(&codec, 1, snap(&[1, 2, 3], &[], 3), |_| None, |_| None, |_| 0);
         assert!(matches!(
             got,
             ConstructorChoice::Layout { layout_id: 1, .. }
         ));
         let mut codec = bytes_codec();
         codec.layouts[0].kind = KIND_STRUCT;
-        let got = choose_constructor(&codec, 1, snap(&[], &[], 0), |_| None, |_| 0);
+        let got = choose_constructor(&codec, 1, snap(&[], &[], 0), |_| None, |_| None, |_| 0);
         assert!(matches!(
             got,
             ConstructorChoice::Layout { layout_id: 1, .. }
@@ -444,6 +549,7 @@ mod tests {
                 layout(2, 1, CONSTRUCTOR_ARRAY_NEW, 0, f, 0, 0, 1),
                 layout(3, 1, CONSTRUCTOR_ARRAY_FIXED, 2, f, 0, 0, 2),
             ],
+            ..Default::default()
         }
     }
 
@@ -455,6 +561,7 @@ mod tests {
             &codec,
             1,
             snap(&[], &[4, 9], 2),
+            |_| None,
             |_| None,
             |l| l.provenance_reference_count as usize,
         );
@@ -472,6 +579,7 @@ mod tests {
             1,
             snap(&[], &[4, 9], 2),
             |_| None,
+            |_| None,
             |l| usize::from(l.id == 2),
         );
         assert!(matches!(
@@ -479,7 +587,7 @@ mod tests {
             ConstructorChoice::Layout { layout_id: 2, .. }
         ));
         // With no witness at all there is no type-correct seed: refused.
-        let got = choose_constructor(&codec, 1, snap(&[], &[4, 9], 2), |_| None, |_| 0);
+        let got = choose_constructor(&codec, 1, snap(&[], &[4, 9], 2), |_| None, |_| None, |_| 0);
         assert_eq!(got, ConstructorChoice::Unrebuildable);
     }
 
@@ -491,10 +599,11 @@ mod tests {
                 layout(1, 1, CONSTRUCTOR_ARRAY_GENERIC, 0, f, 0, 0, 0),
                 layout(2, 1, CONSTRUCTOR_ARRAY_NEW, 0, f, 0, 0, 1),
             ],
+            ..Default::default()
         };
         // A witness would be the wrong VALUE for an immutable array: the fill
         // value is observable, so it must be the array's own element.
-        let got = choose_constructor(&codec, 1, snap(&[], &[6, 6, 6], 3), |_| None, |_| 1);
+        let got = choose_constructor(&codec, 1, snap(&[], &[6, 6, 6], 3), |_| None, |_| None, |_| 1);
         assert_eq!(
             got,
             ConstructorChoice::Layout {
@@ -504,8 +613,72 @@ mod tests {
             }
         );
         // Not uniform: `array.new` cannot have made it.
-        let got = choose_constructor(&codec, 1, snap(&[], &[6, 7], 2), |_| None, |_| 1);
+        let got = choose_constructor(&codec, 1, snap(&[], &[6, 7], 2), |_| None, |_| None, |_| 1);
         assert_eq!(got, ConstructorChoice::Unrebuildable);
+    }
+
+    #[test]
+    fn a_run_found_by_elimination_is_the_last_resort() {
+        // Immutable reference array: base (1), `array.new_elem` of segment 0
+        // (2), `array.new_fixed 2` (3).
+        let f = ref_field(false, false);
+        let codec = GcCodec {
+            layouts: vec![
+                layout(1, 1, CONSTRUCTOR_ARRAY_GENERIC, 0, f, 0, 0, 0),
+                layout(2, 1, CONSTRUCTOR_ARRAY_ELEMENT, 0, f, 0, 8, 0),
+                layout(3, 1, CONSTRUCTOR_ARRAY_FIXED, 2, f, 0, 0, 0),
+            ],
+            ..Default::default()
+        };
+        let elimination = |l: &GcLayoutDescriptor| (l.id == 2).then_some(7u64);
+        // A derivation that reproduces the array wins over a run nobody
+        // compared with it.
+        let got = choose_constructor(&codec, 1, snap(&[], &[4, 9], 2), |_| None, elimination, |_| 0);
+        assert!(matches!(got, ConstructorChoice::Layout { layout_id: 3, .. }));
+        // With none, the eliminated run is taken, with its operands.
+        let got = choose_constructor(&codec, 1, snap(&[], &[4, 9, 5], 3), |_| None, elimination, |_| 0);
+        assert_eq!(
+            got,
+            ConstructorChoice::Layout {
+                layout_id: 2,
+                operands: 7u64.to_le_bytes().to_vec(),
+                edges: ProvenanceEdges::None,
+            }
+        );
+    }
+
+    #[test]
+    fn run_contents_hash_is_the_specified_function() {
+        // Pinned, so a change of function (or of the domain tag, or of what is
+        // hashed) is a visible, deliberate change: a recorded run and a later
+        // capture must compute the same bytes on every host.
+        let hash = run_contents_hash(&[4, 0, 0, 0, 100, 101, 102, 103]);
+        let mut hasher = Sha256::new();
+        hasher.update(b"kandelo.fork.gc-run-contents\0");
+        hasher.update([4u8, 0, 0, 0, 100, 101, 102, 103]);
+        assert_eq!(hash[..], hasher.finalize()[..16]);
+        // The length is part of the contents: equal element bytes of different
+        // lengths never match, nor do equal lengths of different bytes.
+        assert_ne!(hash, run_contents_hash(&[4, 0, 0, 0, 100, 101, 102, 104]));
+        assert_ne!(
+            run_contents_hash(&[1, 0, 0, 0, 7]),
+            run_contents_hash(&[2, 0, 0, 0, 7, 0]),
+        );
+    }
+
+    #[test]
+    fn an_element_run_is_found_by_its_items() {
+        use ElementItem::{I31, Null, Root, Unmapped};
+        let items = [Root(3), Root(4), Null, I31(-2), Root(4), Unmapped];
+        assert_eq!(find_element_run(&items, &[Root(4), Null], false), Some(1));
+        assert_eq!(find_element_run(&items, &[I31(-2), Root(4)], false), Some(3));
+        assert_eq!(find_element_run(&items, &[Root(4), Root(3)], false), None);
+        // An unmapped item's identity cannot be compared, even with itself.
+        assert_eq!(find_element_run(&items, &[Root(4), Unmapped], false), None);
+        // Longer than the segment: no run of the instruction made it.
+        assert_eq!(find_element_run(&items[..1], &[Root(3), Root(3)], true), None);
+        // A mutable array is filled afterwards: any in-bounds run will do.
+        assert_eq!(find_element_run(&items, &[Root(9), Root(9)], true), Some(0));
     }
 
     #[test]
