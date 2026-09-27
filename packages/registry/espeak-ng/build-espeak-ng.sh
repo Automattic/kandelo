@@ -130,15 +130,17 @@ GLUE_OBJ_DIR="$WORK_DIR/glue-objs"
 export ESPEAK_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"
 GLUE_SRC_DIR="$REPO_ROOT/libc/glue"
 mkdir -p "$GLUE_OBJ_DIR"
-if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ] || \
-   [ "$GLUE_SRC_DIR/channel_syscall.c" -nt "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
+# Compile both objects on every build. They are two small files, and a
+# timestamp check on channel_syscall.c alone missed changes to the headers it
+# includes (abi_constants.h carries the ABI version) and to compiler_rt.c.
+{
     echo "==> Compiling kandelo glue objs..."
     WASM_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SDK_SYSROOT"
     # shellcheck disable=SC2086
     "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
     # shellcheck disable=SC2086
     "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
-fi
+}
 
 # --- Phase 1: libpcaudio.a (OSS backend only) --------------------------
 # We don't run pcaudiolib's autotools / libtool — for five files we just
