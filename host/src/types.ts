@@ -11,6 +11,27 @@ export interface KernelConfig {
    *  are wasm32 — enabling enableSyscallLog drowns the trace in unrelated
    *  syscalls. */
   syscallLogPtrWidth?: 4 | 8;
+  /**
+   * Deterministic image-build mode, for kernels an image builder boots while
+   * building a VFS image: `CLOCK_REALTIME` counts up from `epochSeconds` and
+   * all entropy comes from a stream seeded by `seed`, so the software the
+   * build runs writes the same bytes every time. Seeded entropy is public;
+   * never set this for a machine a person uses. Only the Node host's image
+   * builders set it (`NodeKernelHost`'s `imageBuildDeterminism`); the browser
+   * host has no way to. See `crates/runtime-core/src/image_build_determinism.rs`.
+   */
+  imageBuildDeterminism?: ImageBuildDeterminism;
+}
+
+/** See {@link KernelConfig.imageBuildDeterminism}. */
+export interface ImageBuildDeterminism {
+  /**
+   * A number naming the build step (a non-negative safe integer). Different
+   * steps use different seeds so their streams are unrelated.
+   */
+  seed: number;
+  /** The instant the image's clock starts at: the image's SOURCE_DATE_EPOCH. */
+  epochSeconds: number;
 }
 
 export interface StatResult {

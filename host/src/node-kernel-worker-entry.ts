@@ -39,7 +39,7 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
-import { findRepoRoot, resolveBinary } from "./binary-resolver";
+import { resolveBinary, tryResolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
 // (`kernel.ts` needs the pointer width to build the import object), so the
 // artifact reader has to be reachable from this realm's first read onward.
@@ -699,15 +699,28 @@ async function buildVirtualPlatformIO(
     // addresses from hashed paths maps them in its FETCHER, which is where
     // `imageOwnedRuntimeUrlTable` does it, and nothing mutates a stored record
     // to say where bytes live.
-    const lazyFetcher = rootfsLazyAssets !== undefined
+    // One resolver answer per reference for this boot. Each lookup
+    // re-validates the program indexes synchronously (about 3.5 s measured),
+    // blocking the kernel worker, so it must not repeat per fetch.
+    const resolvedLazyReferences = new Map<string, string>();
+    rootfsLazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
       : async (url: string) => {
         if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+        // Images name deferred binaries by the mirror path they were built
+        // from (`binaries/programs/wasm32/dash.wasm`, or the shell catalog's
+        // `kandelo-lazy:programs/...`). Resolve those through the binary
+        // resolver, as the browser does; joining them onto the repo root
+        // found them only after fetch-binaries.sh, so in a source-built
+        // checkout every lazy `/bin/sh` read failed with EIO and no shell
+        // service in a WordPress or LAMP image could start on Node. A
+        // reference the resolver does not know is not in the repo either,
+        // so it stays unresolved and the read fails as a 404.
         const path = url.startsWith("file://")
           ? fileURLToPath(url)
-          : join(findRepoRoot(), url.replace(/^\/+/, ""));
+          : resolvedLazyReferences.get(url) ?? resolvedLazyReferences.set(url, tryResolveBinary(url.replace(/^\/+/, "").replace(/^(?:binaries\/|kandelo-lazy:)/, "")) ?? url).get(url)!;
         if (!existsSync(path)) return new Response(null, { status: 404 });
         const bytes = new Uint8Array(readFileSync(path));
         return new Response(bytes, {
@@ -715,7 +728,6 @@ async function buildVirtualPlatformIO(
           headers: { "content-length": String(bytes.byteLength) },
         });
       };
-    rootfsLazyFetcher = lazyFetcher;
   }
   // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
   // `/` authority, so the host `/` mount is always dropped from the
@@ -787,7 +799,9 @@ async function handleInit(msg: InitMessage) {
 
   kernelWorker = new CentralizedKernelWorker(
     {
-      maxWorkers: msg.config.maxWorkers,
+      // maxWorkers and imageBuildDeterminism pass through as the host sent
+      // them; the rest take the worker's defaults.
+      ...msg.config,
       dataBufferSize: msg.config.dataBufferSize ?? 65536,
       useSharedMemory: msg.config.useSharedMemory ?? true,
       defaultThreadSlots,

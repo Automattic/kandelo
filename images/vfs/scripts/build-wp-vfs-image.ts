@@ -4,6 +4,7 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  * starts from shell.vfs.zst, then dinit, the first user process, brings up:
  *
  *   wp-config-init (internal) + smtp-capture (process)
+ *     + wordpress-secrets (scripted; this machine's keys, on first boot)
  *       → php-fpm (process) → nginx (process)
  *
  * The browser host overwrites wp-config.php with the page-supplied
@@ -37,6 +38,11 @@ import {
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
 import {
+  WORDPRESS_SECRETS_SERVICE,
+  populateWordPressFirstBootSecrets,
+  wordpressFirstBootSecretsService,
+} from "./wordpress-first-boot";
+import {
   loadShellBaseFileSystem,
   loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
@@ -46,6 +52,8 @@ import {
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
   renderWordPressConfig,
   wordpressConfigTemplate,
 } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
@@ -306,6 +314,7 @@ function buildServices(): DinitService[] {
       restart: false,
     },
     smtpCaptureService(),
+    wordpressFirstBootSecretsService(),
     {
       name: "php-fpm",
       type: "process",
@@ -314,7 +323,7 @@ function buildServices(): DinitService[] {
       // the default /usr/local/lib/php/php.ini-development lookup, which
       // trips unsupported-config errors on our wasm port.
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["wp-config-init", "smtp-capture"],
+      dependsOn: ["wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -362,6 +371,7 @@ export async function buildWordPressVfsImage(
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs, inputs.opcache);
   populateSmtpCaptureConfig(fs);
+  populateWordPressFirstBootSecrets(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
@@ -386,6 +396,11 @@ export async function buildWordPressVfsImage(
     fs,
     "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
     wordpressSmtpCaptureMuPlugin(),
+  );
+  writeVfsFile(
+    fs,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
   );
 
   // WordPress core files

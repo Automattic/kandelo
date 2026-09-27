@@ -20,6 +20,7 @@ inputs = [
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
   "images/vfs/scripts/wordpress-preinstall.ts",
+  "images/vfs/scripts/wordpress-first-boot.ts",
   "images/vfs/scripts/wordpress-source-layout.ts",
   "apps/browser-demos/lib/init/mysql-benchmark.ts",
   "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
@@ -53,4 +54,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 18
+revision    = 19

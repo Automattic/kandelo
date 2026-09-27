@@ -38,6 +38,7 @@ export type {
   WriteVfsFileMessage,
   ProcEventMessage,
 } from "./kernel-protocol-shared";
+import type { ImageBuildDeterminism } from "./types";
 import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
@@ -136,6 +137,8 @@ export interface InitMessage {
     defaultThreadSlots?: number;
     dataBufferSize?: number;
     useSharedMemory?: boolean;
+    /** See `NodeKernelHostOptions.imageBuildDeterminism`. */
+    imageBuildDeterminism?: ImageBuildDeterminism;
   };
   /**
    * Virtual path → immutable host file for spawn-only preflight. Exec never
