@@ -583,12 +583,12 @@ export interface DlopenSupport {
   acquireArchiveWriter(): void;
   /** Release exactly one writer depth acquired by this Worker. */
   releaseArchiveWriter(): void;
-  /** Acquire one process-archive reader token, blocking behind a writer. */
-  acquireArchiveReader(): void;
-  /** Release one reader token acquired by this Worker. */
-  releaseArchiveReader(): void;
   withArchiveWriter<T>(operation: () => T): T;
-  withArchiveReader<T>(operation: () => T): T;
+  /**
+   * Install how the writer asks whether this Worker's fork holds the archive
+   * READER. The fork module owns that token (lane F step 3c, ruling 4).
+   */
+  setForkReaderProbe(probe: () => boolean): void;
   writerOwned(): boolean;
   /** Run after a fresh writer acquisition and before the protected operation. */
   setWriterAcquireObserver(observer: () => void): void;
@@ -1106,7 +1106,10 @@ export function buildDlopenImports(
   >();
   let hostDlopenError: string | null = null;
   let mainDlopenDepth = 0;
-  let mainArchiveReaderDepth = 0;
+  // Whether this Worker's fork holds the process archive READER. The fork
+  // module owns that token (lane F step 3c, ruling 4); the loader asks it,
+  // through `setForkReaderProbe`, before taking the writer.
+  let forkReaderHeld: () => boolean = () => false;
   const ownedDlopenTransactions = new Set<number>();
   let tableMutationPending = false;
   let commitObserver:
@@ -1199,9 +1202,9 @@ export function buildDlopenImports(
   };
   const acquireArchiveWriter = (): void => {
     requireOwnedMemory("acquire the dynamic-loader archive writer");
-    if (mainArchiveReaderDepth > 0) {
+    if (forkReaderHeld()) {
       throw new Error(
-        "cannot acquire the process archive writer while owning a reader",
+        "cannot acquire the process archive writer while this Worker's fork holds a reader",
       );
     }
     if (mainDlopenDepth > 0) {
@@ -1230,66 +1233,6 @@ export function buildDlopenImports(
       Atomics.wait(archiveLock, 0, owner);
     }
     finishFreshWriterAcquisition();
-  };
-  const acquireArchiveReader = (): void => {
-    requireOwnedMemory("acquire the dynamic-loader archive reader");
-    if (mainDlopenDepth > 0) {
-      throw new Error(
-        "cannot acquire a process archive reader while owning its writer",
-      );
-    }
-    for (;;) {
-      const transactionOwner = foreignLoaderOwner();
-      if (transactionOwner !== DLOPEN_OWNER_IDLE) {
-        // POSIX fork preserves only its calling thread. Waiting here prevents
-        // a child from inheriting another thread's half-executed constructor,
-        // whose Wasm continuation cannot exist in the child.
-        Atomics.wait(loaderOwner, 0, transactionOwner);
-        continue;
-      }
-      const owner = Atomics.load(archiveLock, 0);
-      if (owner < 0) {
-        Atomics.wait(archiveLock, 0, owner);
-        continue;
-      }
-      if (owner >= DLOPEN_LOCK_MAX_READERS) {
-        throw new RangeError("dlopen process archive reader count exhausted");
-      }
-      if (Atomics.compareExchange(archiveLock, 0, owner, owner + 1) !== owner) {
-        continue;
-      }
-      mainArchiveReaderDepth++;
-      return;
-    }
-  };
-  const releaseArchiveReader = (): void => {
-    if (mainArchiveReaderDepth <= 0) {
-      throw new Error(
-        "dlopen process archive reader released without ownership",
-      );
-    }
-    for (;;) {
-      const owner = Atomics.load(archiveLock, 0);
-      if (owner <= DLOPEN_LOCK_IDLE) {
-        throw new Error(
-          `dlopen process archive reader lost ownership (state=${owner})`,
-        );
-      }
-      if (Atomics.compareExchange(archiveLock, 0, owner, owner - 1) !== owner) {
-        continue;
-      }
-      mainArchiveReaderDepth--;
-      if (owner === 1) Atomics.notify(archiveLock, 0);
-      return;
-    }
-  };
-  const withArchiveReader = <T>(operation: () => T): T => {
-    acquireArchiveReader();
-    try {
-      return operation();
-    } finally {
-      releaseArchiveReader();
-    }
   };
   const notifyCommit = (publication: LoaderTableState | undefined): void => {
     const mutated = tableMutationPending;
@@ -2128,10 +2071,10 @@ export function buildDlopenImports(
       readArchiveHead() === 0 ? 0 : readGenerationFence(),
     acquireArchiveWriter,
     releaseArchiveWriter: releaseMainDlopenLock,
-    acquireArchiveReader,
-    releaseArchiveReader,
     withArchiveWriter,
-    withArchiveReader,
+    setForkReaderProbe: (probe: () => boolean) => {
+      forkReaderHeld = probe;
+    },
     writerOwned: () => mainDlopenDepth > 0,
     setWriterAcquireObserver: (observer) => {
       writerAcquireObserver = observer;
@@ -2663,8 +2606,6 @@ export interface ForkActivationTableReplication {
 export interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   /** Bring this Worker to the latest complete process generation. */
   reconcileNow(): number;
-  /** Check the archive fence while the caller already excludes writers. */
-  isCurrentUnderLock(): boolean;
   /**
    * The fork module's `__wpk_fork_host_materialize_dlopen_archive`: bring
    * this Worker up to at least `generation`, which instantiates every library
@@ -2842,8 +2783,6 @@ function createProcessTableReplicationOwner(options: {
   return {
     generationAddress,
     reconcileNow,
-    isCurrentUnderLock: () =>
-      replica.generation() === options.dlopen.archiveGeneration(),
     materialize: (generation) =>
       BigInt(reconcileNow()) >= generation ? 0 : 11 /* EAGAIN */,
   };
@@ -3628,7 +3567,7 @@ export async function centralizedWorkerMain(
         kernelImports.kernel_exit(0);
         exitCode = kernelExitStatus ?? 0;
       }
-      fork.finish(true);
+      fork.finish();
       port.postMessage({
         type: "exit",
         pid,
@@ -4558,9 +4497,8 @@ export async function centralizedThreadWorkerMain(
           label: `pid=${pid} tid=${tid}`,
         })
       : null;
-    // The fork's archive reader is the loader's own process-archive reader
-    // token, taken through this Worker's loader exactly as the process path
-    // takes it. (A hand-written copy of that lock used to live here.)
+    // The fork's archive reader is the fork module's, on the loader's own
+    // lock word; binding lets this Worker's loader ask the module about it.
     if (fork && threadTableReplication) {
       fork.bindArchive(threadDlopenSupport, threadTableReplication);
     }
@@ -4705,11 +4643,9 @@ export async function centralizedThreadWorkerMain(
         () => (resumeThread as ThreadEntry)(fnPtr, threadArg),
         () => kernelThreadExitStatus,
       );
+      // No `fork.finish()`: after `kernel_exit` this thread's channel is
+      // gone, and a module release through it would park forever.
       result = "exited" in outcome ? outcome.exited : Number(outcome.returned);
-      // Reports the parent frames and releases a reader token an unexpected
-      // exit could strand. No teardown: after `kernel_exit` this thread's
-      // channel is gone, and a module release through it would park forever.
-      fork.finish(false);
     } else {
       try {
         const raw = threadFn(...buildThreadEntryArgs(threadFn, argPtr, ptrWidth));
@@ -4759,8 +4695,8 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
-    // `ForkWorker.run` released any archive reader a fork held before this
-    // error reached here; the module reclaims its own transaction state.
+    // The fork module released any archive reader a fork held before this
+    // error reached here, and reclaims its own transaction state.
     if (err instanceof ExecRetirement) {
       port.postMessage({
         type: "exec_retired",

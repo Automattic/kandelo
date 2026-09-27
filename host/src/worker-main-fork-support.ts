@@ -210,7 +210,6 @@ export class ForkWorker {
     readonly dlopen: DlopenSupport;
     readonly replication: ProcessTableReplicationOwner;
   } | null = null;
-  private readerHeld = false;
   private mainRegistered = false;
   private forkMode: ProcessForkMode;
   /** What the guest's `fork()` returns once its replay finishes. */
@@ -337,47 +336,25 @@ export class ForkWorker {
    * Attach this Worker's dynamic loader and table replica.
    *
    * Late because of a construction cycle: the loader's imports need this
-   * object's unwind tag and activation records, and a fork needs the loader's
-   * archive lock.
+   * object's unwind tag and activation records, and the module's archive
+   * reader needs the loader to materialize what peers published. The loader
+   * in turn asks the MODULE whether this Worker's fork holds the archive
+   * reader before it takes the writer (it would wait on itself forever):
+   * the module owns that token (lane F step 3c, ruling 4).
    */
   bindArchive(dlopen: DlopenSupport, replication: ProcessTableReplicationOwner): void {
     this.archive = { dlopen, replication };
+    const held = this.instance.exports.__wpk_fork_archive_reader_held;
+    if (!(held instanceof WebAssembly.Global)) {
+      throw new Error(`${this.options.label}: the fork module exports no archive reader state`);
+    }
+    dlopen.setForkReaderProbe(() => held.value !== 0);
   }
 
   /** Remember activation 0; a `fork()` before this answers ENOSYS. */
   registerMain(instance: WebAssembly.Instance): void {
     this.activations.register({ activationId: 0, instance });
     this.mainRegistered = true;
-  }
-
-  /**
-   * Take a reader token on the process archive at a generation this Worker
-   * has already materialized.
-   *
-   * Reconciliation may instantiate a missing side module and run its start
-   * function, so it needs the writer; the reader is taken after it, and a
-   * publication that won the handoff race sends the loop round again. The
-   * token is held from capture until the parent's replay finishes, so no
-   * library can join the archive between the snapshot and the child.
-   */
-  private acquireArchiveReader(): void {
-    const archive = this.archive;
-    if (!archive) {
-      throw new Error(`${this.options.label}: fork archive owner is not initialized`);
-    }
-    for (;;) {
-      archive.replication.reconcileNow();
-      archive.dlopen.acquireArchiveReader();
-      this.readerHeld = true;
-      if (archive.replication.isCurrentUnderLock()) return;
-      this.releaseArchiveReader();
-    }
-  }
-
-  private releaseArchiveReader(): void {
-    if (!this.readerHeld) return;
-    this.readerHeld = false;
-    this.archive?.dlopen.releaseArchiveReader();
   }
 
   /** Abort a transaction the module still holds, keeping the first error. */
@@ -415,12 +392,8 @@ export class ForkWorker {
       // through the kernel (`SYS_FORK_DIAGNOSTIC`): an abort and why, or the
       // frames and references it drove. So no abort path can forget to say
       // why, and every host says it in the kernel's words.
-      let finished: { readonly errno: number; readonly cause: number };
-      try {
-        finished = this.module().parentFinish(phase === "abort-replay");
-      } finally {
-        this.releaseArchiveReader();
-      }
+      // The finish also hands the fork's archive reader back.
+      const finished = this.module().parentFinish(phase === "abort-replay");
       if (phase === "abort-replay") return -finished.errno;
       // A child's finish has already reported SYS_FORK_REPLAY_READY from
       // inside the module. A borrowed (vfork) child keeps its fork-module
@@ -435,19 +408,14 @@ export class ForkWorker {
     if (this.options.borrowedChild) return -EAGAIN;
     this.forkMode = mode;
     try {
-      this.acquireArchiveReader();
-    } catch (error) {
-      this.releaseArchiveReader();
-      throw error;
-    }
-    try {
       // The module fills its merged static-root catalog itself, from each
       // activation's own, before it opens the capture.
       this.options.publishLaunchRoot(0);
       this.options.publishLaunchRoot(this.module().parentBeginCapture(this.options.channelOffset));
     } catch (error) {
+      // The module takes the archive reader as it opens the capture and
+      // hands it back on any failure to open (and `abort` releases it too).
       this.abortIfOpen();
-      this.releaseArchiveReader();
       if (error instanceof ContinuationAllocationError) return -error.errno;
       throw error;
     }
@@ -519,7 +487,6 @@ export class ForkWorker {
         return { returned };
       }
     } catch (error) {
-      this.releaseArchiveReader();
       const status = exitStatus();
       if (isWasmUnreachableTrap(error) && status !== null) return { exited: status };
       this.abortIfOpen();
@@ -528,20 +495,21 @@ export class ForkWorker {
   }
 
   /**
-   * Release what the Worker still holds.
+   * Abort the module's transaction and release every activation, at a
+   * process Worker's exit.
    *
-   * `teardown` also aborts the module's transaction and releases every
-   * activation. A pthread Worker must NOT: after its `kernel_exit` its channel
+   * A pthread Worker must NOT call this: after its `kernel_exit` its channel
    * is gone, and a module release that unmaps through it would park the
    * Worker forever. Nor does a borrowed (vfork) child, for the same reason
    * and because nothing it mapped outlives its image: the kernel reclaims
-   * every mapping it made on its parent's image when that image ends.
+   * every mapping it made on its parent's image when that image ends. (A
+   * fork's archive reader is the module's and ends with the fork, and its
+   * reports go through the kernel, so neither needs a finish here.)
    */
-  finish(teardown: boolean): void {
-    if (teardown && !this.options.borrowedChild) {
+  finish(): void {
+    if (!this.options.borrowedChild) {
       this.module().abort();
       this.activations.clear();
     }
-    this.releaseArchiveReader();
   }
 }

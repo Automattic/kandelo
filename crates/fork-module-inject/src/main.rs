@@ -105,6 +105,10 @@ const DRIVE_SLOT_STATIC_ROOT_FILL: i32 =
 /// The placeholder the module declares for driving one activation's
 /// static-root fill shim; rewritten like the probe and encode ones.
 const STATIC_ROOT_FILL_THUNK_IMPORT: &str = "__wpk_fork_fill_static_roots";
+/// The placeholder the module mirrors its archive-reader state through, and
+/// the exported global it lands in (`inject_reader_held_global`).
+const READER_HELD_THUNK_IMPORT: &str = "__wpk_fork_set_reader_held";
+const READER_HELD_GLOBAL_EXPORT: &str = "__wpk_fork_archive_reader_held";
 /// The cross-activation exception throw placeholder: the module asks the
 /// activation that OWNS a tag to raise the exception, because only that
 /// activation can raise it with the right tag.
@@ -1211,6 +1215,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_exn_throw into a thunk")?;
     inject_static_root_fill_thunk(&mut module)
         .context("rewriting __wpk_fork_fill_static_roots into a thunk")?;
+    inject_reader_held_global(&mut module)
+        .context("rewriting __wpk_fork_set_reader_held into a global store")?;
     inject_transit_grow_thunk(&mut module)
         .context("rewriting __wpk_fork_transit_grow into a thunk")?;
     inject_static_root_grow_thunk(&mut module)
@@ -1646,6 +1652,36 @@ fn inject_static_root_fill_thunk(module: &mut Module) -> Result<()> {
         DRIVE_SLOT_STATIC_ROOT_FILL,
         &[ValType::I32],
     )
+}
+
+/// Rewrite `__wpk_fork_set_reader_held(held)` into a store to an exported
+/// mutable `i32` global, `__wpk_fork_archive_reader_held`.
+///
+/// # Why a global
+///
+/// The fork module owns the process archive READER a fork holds from capture
+/// until the parent's finish (lane F step 3c, ruling 4), and the host's
+/// dynamic loader must still refuse to take the WRITER while this Worker holds
+/// that reader -- it would wait on itself forever. The loader has to ask the
+/// module, and a global it reads with `.value` is an answer that costs no
+/// call and no new entry. Per Worker, like the module instance it lives in.
+fn inject_reader_held_global(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, READER_HELD_THUNK_IMPORT) else {
+        return Ok(());
+    };
+    let global = module.globals.add_local(
+        ValType::I32,
+        true,
+        false,
+        ConstExpr::Value(walrus::ir::Value::I32(0)),
+    );
+    module.exports.add(READER_HELD_GLOBAL_EXPORT, global);
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            body.local_get(args[0]).global_set(global);
+        })
+        .with_context(|| format!("rewriting {READER_HELD_THUNK_IMPORT} import into a global store"))?;
+    Ok(())
 }
 
 fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {

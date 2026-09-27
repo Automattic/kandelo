@@ -72,6 +72,13 @@ const STATUS_PENDING = 1;
 const STATUS_COMPLETE = 2;
 const SYS_MMAP = 46;
 const SYS_MUNMAP = 47;
+const SYS_GETTID = 202;
+/**
+ * The thread id the responder answers `SYS_GETTID` with. The module asks it
+ * only to tell this Worker's own dynamic-loader transaction from a peer's
+ * (see `fork-archive-reader.test.ts`).
+ */
+export const RESPONDER_TID = 7;
 
 // Drive-table slots the capture plan drives, from `fork_codec::drive_plan`.
 export const DRIVE_SLOT_REWIND_BEGIN = 5;
@@ -180,6 +187,8 @@ while (!stop) {
   } else if (nr === ${SYS_MUNMAP}) {
     if (countMunmap) dv.setUint32(munmapCounter, dv.getUint32(munmapCounter, true) + 1, true);
     ret = 0n; errno = 0;
+  } else if (nr === ${SYS_GETTID}) {
+    ret = ${RESPONDER_TID}n; errno = 0;
   }
   dv.setBigInt64(channelBase + ${RETURN_OFFSET}, ret, true);
   dv.setUint32(channelBase + ${ERRNO_OFFSET}, errno, true);
@@ -317,7 +326,15 @@ afterAll(() => {
   }
 });
 
-export function fixture(): Fixture {
+export function fixture(
+  options: {
+    /**
+     * A process archive control address for `fm_set_format`, for a test of
+     * the fork's archive reader; 0 (the default) means no archive to lock.
+     */
+    readonly archiveControl?: number;
+  } = {},
+): Fixture {
   const memory = new WebAssembly.Memory({
     initial: 256,
     maximum: 16384,
@@ -356,7 +373,12 @@ export function fixture(): Fixture {
     mmapFailSwitch: MMAP_FAIL_SWITCH,
   });
 
-  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, CHANNEL_BASE);
+  (x.fm_set_format as (...a: number[]) => void)(
+    4,
+    0,
+    options.archiveControl ?? 0,
+    CHANNEL_BASE,
+  );
   // Activation 0 ADMITTED, the way every worker's `setup()` admits it before
   // any fork: an all-zero template id and an EMPTY resume catalog. The module
   // registers an activation's resume slots from its admitted catalog and from

@@ -237,6 +237,12 @@ mod wasm {
         /// `__wpk_fork_static_root_fill` through the drive table.
         fn __wpk_fork_fill_static_roots(activation: u32, base: u32) -> i32;
 
+        /// Mirror whether this Worker's fork holds the process archive
+        /// reader into the exported global `__wpk_fork_archive_reader_held`,
+        /// which the host's dynamic loader reads before taking the writer.
+        /// Injector-rewritten into a `global.set`.
+        fn __wpk_fork_set_reader_held(held: u32);
+
         /// The guest table shims, reached through `activation`'s drive-table
         /// slice. Each is injector-rewritten into a thunk that `call_indirect`s
         /// the guest's `wpk_fork_module_table_{read,length,apply}` with the
@@ -7818,6 +7824,9 @@ mod wasm {
         archive_control_addr: usize,
         channel_base: usize,
     ) {
+        // A COW child starts with its parent's module state cloned, including
+        // the archive reader its parent held mid-fork; the child holds none.
+        READER_HELD.store(false, Ordering::Relaxed);
         match set_format_impl(
             pointer_width,
             fixed_prefix_size,
@@ -7857,6 +7866,9 @@ mod wasm {
         let result = abort_impl();
         enter_phase(PHASE_IDLE);
         ABORT_REPORT.store(0, Ordering::Relaxed);
+        // A guest that trapped between a capture and its finish left the
+        // archive reader held; the host's error path lands here.
+        release_fork_archive_reader();
         match result {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
@@ -8431,6 +8443,190 @@ mod wasm {
         );
     }
 
+    // -- The fork's archive reader (lane F step 3c, ruling 4) ---------------
+    //
+    // A fork holds the process archive READER from its capture until its
+    // finish, so no library can join the archive between the snapshot and the
+    // child. The host used to take and return that token around the module's
+    // capture and finish, through the dynamic loader's own reader counter. The
+    // module owns both ends of the window, so it owns the token; the loader
+    // asks the module (the exported `__wpk_fork_archive_reader_held` global)
+    // before it takes the writer, so a Worker still cannot wait on itself.
+
+    /// Whether this Worker's fork holds the process archive reader.
+    static READER_HELD: AtomicBool = AtomicBool::new(false);
+
+    /// Byte offset of the dynamic loader's owner word below the control
+    /// address. DUPLICATED from `host/src/worker-main.ts`
+    /// (`DLOPEN_OWNER_OFFSET_WASM32` / `_WASM64`) for the reason
+    /// `DLOPEN_HEAD_OFFSET_*` is, and pinned by the same test.
+    const DLOPEN_OWNER_OFFSET_WASM32: usize = 24;
+    const DLOPEN_OWNER_OFFSET_WASM64: usize = 36;
+    /// The loader-owner word's "no loader transaction in progress".
+    const DLOPEN_OWNER_IDLE: i32 = 0;
+    /// The most readers the lock word may count (the host's own bound).
+    const DLOPEN_LOCK_MAX_READERS: i32 = 0x7fff_ffff;
+
+    /// The loader-owner word as an atomic.
+    fn loader_owner() -> Result<&'static AtomicI32, Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed);
+        let offset = match format()?.pointer_width {
+            4 => DLOPEN_OWNER_OFFSET_WASM32,
+            8 => DLOPEN_OWNER_OFFSET_WASM64,
+            _ => return Err(Errno::EINVAL),
+        };
+        let addr = control.checked_sub(offset).ok_or(Errno::EINVAL)?;
+        if addr % 4 != 0 || addr.checked_add(4).ok_or(Errno::EINVAL)? > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds- and alignment-checked; the host's loader writes the
+        // same word with `Atomics`.
+        Ok(unsafe { &*(addr as *const AtomicI32) })
+    }
+
+    /// The archive generation a Worker must have reached to be current: 0
+    /// while nothing was ever published, else the process generation fence
+    /// (the host loader's `archiveGeneration()`).
+    fn current_archive_generation() -> Result<u64, Errno> {
+        if archive_head()? == 0 {
+            return Ok(0);
+        }
+        Ok(generation_fence()?.load(Ordering::SeqCst))
+    }
+
+    /// Take the process archive reader for a fork, at a generation this
+    /// Worker has already materialized.
+    ///
+    /// Materializing a library a peer published needs the WRITER and may run
+    /// the library's constructors, so it happens first, through the existing
+    /// `__wpk_fork_host_materialize_dlopen_archive` import (only the host can
+    /// instantiate a module; nothing else about the lock is the host's). A
+    /// publication that won the race to the reader sends the loop round
+    /// again, as the host's own loop did.
+    fn acquire_fork_archive_reader() -> Result<(), Errno> {
+        if ARCHIVE_CONTROL.load(Ordering::Relaxed) == 0 || READER_HELD.load(Ordering::Relaxed) {
+            // No archive control block means no archive to lock.
+            return Ok(());
+        }
+        loop {
+            let target = current_archive_generation()?;
+            let materialized = if target == 0 {
+                0
+            } else {
+                // SAFETY: a plain host import taking and returning integers;
+                // this module holds nothing across it.
+                unsafe { __wpk_fork_host_materialize_dlopen_archive(target) }
+            };
+            if materialized != 0 && materialized != Errno::EAGAIN as i32 {
+                return Err(Errno::from_u32(materialized as u32).unwrap_or(Errno::EIO));
+            }
+            take_archive_reader()?;
+            if materialized == 0 && current_archive_generation()? == target {
+                READER_HELD.store(true, Ordering::Relaxed);
+                // SAFETY: after injection a local `global.set`.
+                unsafe { __wpk_fork_set_reader_held(1) };
+                return Ok(());
+            }
+            return_archive_reader()?;
+        }
+    }
+
+    /// One reader on the lock word, waiting out another Worker's loader
+    /// transaction and any writer.
+    ///
+    /// A loader transaction that is this Worker's own is not waited for: a
+    /// fork from inside a library constructor the loader is running is legal
+    /// (the constructor's frames are the calling thread's). But if this
+    /// Worker's transaction also still holds the WRITER, the reader can never
+    /// be had -- waiting would wait on itself -- so the fork is refused with
+    /// `EDEADLK` rather than hung.
+    fn take_archive_reader() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        let owner = loader_owner()?;
+        loop {
+            let transaction = owner.load(Ordering::SeqCst);
+            let own_transaction =
+                transaction != DLOPEN_OWNER_IDLE && transaction == calling_thread_id()?;
+            if transaction != DLOPEN_OWNER_IDLE && !own_transaction {
+                // POSIX fork keeps only its calling thread, so a child must
+                // not inherit another thread's half-run constructor.
+                if atomic_wait32(owner as *const AtomicI32 as usize, transaction) < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                continue;
+            }
+            let state = lock.load(Ordering::SeqCst);
+            if state < 0 && own_transaction {
+                return Err(Errno::EDEADLK);
+            }
+            if state < 0 {
+                if atomic_wait32(lock as *const AtomicI32 as usize, state) < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                continue;
+            }
+            if state >= DLOPEN_LOCK_MAX_READERS {
+                return Err(Errno::EAGAIN);
+            }
+            if lock
+                .compare_exchange(state, state + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    /// The calling thread's id, asked of the kernel on this Worker's channel.
+    ///
+    /// The dynamic loader writes this Worker's identity into the loader-owner
+    /// word, and that identity is the kernel's `gettid()` answer: the pid for
+    /// a process Worker, the tid for a pthread's. Asking the kernel means the
+    /// host passes the module nothing it could get wrong.
+    fn calling_thread_id() -> Result<i32, Errno> {
+        let (tid, errno) = channel_syscall(
+            channel_base()?,
+            wasm_posix_shared::abi::extended_syscalls::SYS_GETTID,
+            [0; 6],
+        );
+        if errno != 0 || tid <= 0 {
+            return Err(Errno::from_u32(errno).unwrap_or(Errno::EIO));
+        }
+        i32::try_from(tid).map_err(|_| Errno::EIO)
+    }
+
+    /// Give one reader back, waking a waiting writer when it was the last.
+    fn return_archive_reader() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        loop {
+            let state = lock.load(Ordering::SeqCst);
+            if state <= 0 {
+                // Not holding one means another participant's view of the
+                // protocol is already wrong; forcing the word would hand the
+                // lock to two owners.
+                return Err(Errno::EPERM);
+            }
+            if lock
+                .compare_exchange(state, state - 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                if state == 1 {
+                    atomic_notify(lock as *const AtomicI32 as usize);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    /// Release the fork's reader if it holds one. Idempotent.
+    fn release_fork_archive_reader() {
+        if READER_HELD.swap(false, Ordering::Relaxed) {
+            let _ = return_archive_reader();
+            // SAFETY: after injection a local `global.set`.
+            unsafe { __wpk_fork_set_reader_held(0) };
+        }
+    }
+
     /// Clamp a proof-of-use counter into the diagnostic's `u32` value.
     fn stat_value(counter: &AtomicU64) -> u32 {
         u32::try_from(counter.load(Ordering::Relaxed)).unwrap_or(u32::MAX)
@@ -8642,6 +8838,10 @@ mod wasm {
                 return Err(Errno::EINVAL);
             }
             format()?;
+            // The fork holds the process archive READER from here until its
+            // finish, so no library joins the archive between the snapshot and
+            // the child (lane F step 3c, ruling 4: the module owns the token).
+            acquire_fork_archive_reader()?;
             // The capture is about to ask which merged slot holds a
             // statically initialised reference, so the catalog must hold them
             // now. Before the session opens, so a refused fill resets nothing.
@@ -8679,6 +8879,7 @@ mod wasm {
                 // module frees exactly what the module mapped.
                 let _ = abort_impl();
                 enter_phase(PHASE_IDLE);
+                release_fork_archive_reader();
                 set_err(errno);
                 0
             }
@@ -8722,7 +8923,14 @@ mod wasm {
         } else {
             require_phase_either(PHASE_PARENT_REPLAY, PHASE_CHILD_REPLAY)
         };
+        let in_phase = allowed.is_ok();
         let finished = allowed.and_then(|()| finish_transaction_impl(abort != 0));
+        // The fork is over, finished or not: hand the archive reader back
+        // (the host used to, in a `finally`, right after this call). A
+        // finish refused for being out of phase ended nothing.
+        if in_phase {
+            release_fork_archive_reader();
+        }
         match finished.and_then(|()| {
             if child_replay {
                 report_fork_replay_ready()

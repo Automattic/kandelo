@@ -416,6 +416,21 @@ Unchanged generations take a fast path. This supports `dlopen`/`dlsym` from a
 pthread and `fork()` after dynamic loading; the fork child recreates the
 calling thread's local replica and process module/table state.
 
+A fork holds the archive's READER from the moment its capture opens until the
+parent's finish, so no library joins the archive between the snapshot and the
+child. The fork module owns that token (lane F step 3c, ruling 4): it first
+brings this Worker up to the published generation through the existing
+`__wpk_fork_host_materialize_dlopen_archive` import (only the host can
+instantiate a module), then takes the reader on the loader's lock word, waiting
+out a peer thread's loader transaction (POSIX fork keeps only the calling
+thread, so a child must not inherit another thread's half-run constructor).
+A transaction that is this thread's own -- a fork from a library constructor
+-- is not waited for, but if it still holds the writer the fork fails with
+`EDEADLK` instead of waiting on itself. The module returns the reader at the
+finish, at `fm_abort`, and when a capture fails to open, and mirrors "held"
+into its exported `__wpk_fork_archive_reader_held` global, which the host
+loader reads so a Worker never takes the writer behind its own fork's reader.
+
 For TLS-bearing side modules, each archive entry also preserves the live
 positive `__tls_base`. Replay restores only that mutable global using the
 process pointer type. It does not call `__wasm_init_tls`: the child memory copy

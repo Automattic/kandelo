@@ -1158,6 +1158,17 @@ snapshot diff.
     `TYPE_FORK_LIFECYCLE` wake. The Worker messages `fork_aborted`,
     `fork_module_frames`, `fork_module_child_frames` and
     `fork_module_references` are removed from the worker protocol.
+  - *The fork module holds the fork's archive reader.* The process
+    dynamic-loader archive READER a fork holds from its capture to its
+    finish is taken and returned by the fork module, on the loader's own
+    lock word and owner word (same encoding, so no guest or kernel record
+    changed). It asks the kernel `gettid()` on its own channel to tell this
+    thread's loader transaction from a peer's, and refuses the capture with
+    `EDEADLK` when this thread's own transaction still holds the writer.
+    The injected module exports a mutable `i32` global,
+    `__wpk_fork_archive_reader_held`, which the host loader reads before
+    taking the writer: an internal host-module contract rebuilt in
+    lockstep, with no new host import and no new `fm_*` entry.
 
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were

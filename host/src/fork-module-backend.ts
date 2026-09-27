@@ -78,8 +78,12 @@ export function encodeForkBindings(rows: readonly ForkBindingRow[]): Uint8Array 
   return out;
 }
 
-/** `ENOMEM`: the module could not get memory, which a fork survives. */
-const FORK_MODULE_ENOMEM = 12;
+/**
+ * Refusals a fork survives with `fork()` = `-errno`: the module could not get
+ * memory (`ENOMEM`), or the archive reader it takes as it opens the capture
+ * would wait on this Worker's own loader transaction (`EDEADLK`).
+ */
+const FORK_MODULE_SURVIVABLE_BEGIN = new Set([12, 35]);
 /** `PHASE_ABORT_REPLAY` in `crates/fork-module/src/lib.rs`. */
 const FORK_MODULE_PHASE_ABORT_REPLAY = 5;
 
@@ -362,7 +366,7 @@ export class ForkModuleContinuationBackend {
       channelBase,
     );
     const errno = this.lastErrno();
-    if (errno === FORK_MODULE_ENOMEM) {
+    if (FORK_MODULE_SURVIVABLE_BEGIN.has(errno)) {
       throw new ContinuationAllocationError(
         errno,
         0,
