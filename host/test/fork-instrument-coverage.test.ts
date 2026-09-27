@@ -505,6 +505,29 @@ describe("fork_instrument_coverage / F-* boundaries and Wasm-GC", () => {
     expect(r.stderr).toMatch(symbol);
   });
 
+  // A package that references ucontext without depending on it (PHP's
+  // always-compiled Fibers) can opt in to libkandelo-ucontext-unsupported.
+  // The program then links, and reaching ucontext stops at the first call
+  // with a diagnostic and SIGABRT rather than running on.
+  it("F-02 ucontext opt-in: links, then aborts at the first ucontext call", async () => {
+    const out = join(mkdtempSync(join(tmpdir(), "ucontext-optin-")), "t.wasm");
+    const link = spawnSync(join(repoRoot, "sdk/bin/wasm32posix-cc"),
+      [join(repoRoot, "programs/f_02_ucontext_makeswap.c"), "-o", out,
+        "-lkandelo-ucontext-unsupported"], { encoding: "utf8" });
+    expect(link.stderr).toBe("");
+    expect(link.status).toBe(0);
+    const { exitCode, stdout, stderr } = await runCentralizedProgram({
+      programPath: out,
+      argv: ["f_02"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
+    });
+    expect(stderr).toContain("getcontext: ucontext is not supported on Kandelo");
+    expect(stdout).not.toContain("PASS");
+    // 134 = 128+SIGABRT; 132 is abort()'s trap backstop (see wasm-trap.test.ts).
+    expect([134, 132]).toContain(exitCode);
+  });
+
   // F-03, F-04 — wasm-GC anyref / struct.new have no C-source surface.
   // `coverage_wat.rs` verifies that both are accepted, encoded into
   // activation-owned recipes, and emitted as independently valid Wasm.
