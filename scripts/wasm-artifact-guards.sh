@@ -5,6 +5,8 @@
 # `asyncify_*` is a stale fork-continuation artifact, regardless of ABI
 # metadata.
 
+_WASM_ARTIFACT_GUARDS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 wasm_is_binary() {
     local path="${1:-}"
     [ -f "$path" ] || return 1
@@ -26,12 +28,14 @@ wasm_require_no_legacy_asyncify() {
 }
 
 # Reject unresolved imports in the namespaces Kandelo reserves for itself
-# unless the host deliberately implements that exact API. The SDK linker
-# permits undefined symbols so packages can retain real host/kernel imports.
-# Without this boundary, an up-to-date glue object linked against a stale
-# sysroot can turn a private libc helper into an env import; the generic host
-# stub then lets the program instantiate and traps only when the helper is
-# called.
+# unless the host deliberately implements that exact API. The approved names
+# are the generated host-import allowance (libc/glue/kandelo-host-imports.txt,
+# from HOST_ENV_IMPORTS in crates/shared/src/lib.rs) — the same list the SDK
+# links against — so the guard and the linker cannot disagree. Executables
+# linked by the SDK already fail on any other undefined symbol; this guard
+# still covers artifacts linked some other way, and side modules, which link
+# with --allow-undefined and resolve against the main program at dlopen time.
+# KANDELO_HOST_IMPORTS_FILE overrides the allowance path (tests use it).
 #
 # Two reserved families, matching `is_reserved_env_import_name` in
 # crates/fork-instrument/src/contract_inventory.rs:
@@ -56,9 +60,21 @@ _wasm_reserved_env_import_inventory() {
     "$inventory_tool" --reserved-env-imports "$path" 2>/dev/null || return 2
 }
 
+_wasm_host_imports_file() {
+    printf '%s\n' "${KANDELO_HOST_IMPORTS_FILE:-$_WASM_ARTIFACT_GUARDS_DIR/../libc/glue/kandelo-host-imports.txt}"
+}
+
 wasm_require_approved_reserved_env_imports() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 0
+
+    local allowance
+    allowance="$(_wasm_host_imports_file)"
+    if [ ! -f "$allowance" ]; then
+        echo "ERROR: host-import allowance not found: $allowance" >&2
+        echo "       Regenerate it with scripts/check-abi-version.sh --update." >&2
+        return 1
+    fi
 
     local inventory inventory_status=0 rejected
     inventory="$(_wasm_reserved_env_import_inventory "$path")" || inventory_status=$?
@@ -66,12 +82,16 @@ wasm_require_approved_reserved_env_imports() {
         if [ -z "$inventory" ]; then
             rejected=""
         elif ! rejected="$(
-            awk -F '\t' '
+            awk -F '\t' -v allowance="$allowance" '
+                BEGIN {
+                    while ((getline name < allowance) > 0)
+                        if (name != "") approved["env." name] = 1
+                }
                 NF != 2 || ($1 != "func" && $1 != "table" &&
                             $1 != "memory" && $1 != "global" && $1 != "tag") {
                     exit 2
                 }
-                $1 == "func" && $2 == "env.__wasm_posix_vm_interrupt_after" { next }
+                $2 in approved { next }
                 { print $2 }
             ' <<<"$inventory"
         )"; then
@@ -84,13 +104,16 @@ wasm_require_approved_reserved_env_imports() {
             return 1
         fi
         if ! rejected="$(
-            _wasm_stream_awk '
+            _WASM_HOST_IMPORTS_ALLOWANCE="$allowance" _wasm_stream_awk '
+            BEGIN {
+                allowance = ENVIRON["_WASM_HOST_IMPORTS_ALLOWANCE"]
+                while ((getline name < allowance) > 0)
+                    if (name != "") approved["env." name] = 1
+            }
             / <- env\.(__wasm_posix_|gbm_|drm[A-Z]|egl[A-Z]|gl[A-Z])/ {
                 identity = $0
                 sub(/^.* <- /, "", identity)
-                # This timer callback is an intentional host API used by PHP.
-                if (identity == "env.__wasm_posix_vm_interrupt_after" &&
-                    $0 ~ /^ - func\[/) next
+                if (identity in approved) next
                 print identity
             }
             ' wasm-objdump -x "$path"
@@ -109,7 +132,7 @@ wasm_require_approved_reserved_env_imports() {
         done <<<"$rejected"
         echo "       Rebuild the sysroot (scripts/dev-shell.sh ./run.sh setup), link the" >&2
         echo "       sysroot library the program calls into, implement the missing entry" >&2
-        echo "       point, or explicitly add a host-owned API to the guard." >&2
+        echo "       point, or declare a host-owned API in HOST_ENV_IMPORTS." >&2
         return 1
     fi
 }
