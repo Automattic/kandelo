@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyUndefinedSymbolPolicy,
   COMPILE_FLAGS,
   DEFAULT_MAIN_THREAD_STACK_SIZE,
   filterArgs,
@@ -444,29 +443,5 @@ describe('archive group flags', () => {
   it('drops --start-group/--end-group, which wasm-ld rejects', () => {
     const result = filterArgs(['main.o', '-Wl,--start-group', 'liba.a', 'libb.a', '-Wl,--end-group']);
     expect(result.filtered).toEqual(['main.o', 'liba.a', 'libb.a']);
-  });
-});
-
-describe('applyUndefinedSymbolPolicy', () => {
-  const syms = '/glue/contract-imports.syms';
-
-  it('keeps the default contract when unset or import', () => {
-    expect(applyUndefinedSymbolPolicy(LINK_FLAGS, {}, syms)).toEqual(LINK_FLAGS);
-    expect(applyUndefinedSymbolPolicy(LINK_FLAGS, { WASM_POSIX_LINK_UNDEFINED: 'import' }, syms))
-      .toEqual(LINK_FLAGS);
-  });
-
-  it('allows only the contract imports under the error policy', () => {
-    const strict = applyUndefinedSymbolPolicy(LINK_FLAGS, { WASM_POSIX_LINK_UNDEFINED: 'error' }, syms);
-    expect(strict).not.toContain('-Wl,--allow-undefined');
-    expect(strict).toContain(`-Wl,--allow-undefined-file=${syms}`);
-    expect(strict).not.toContain('-Wl,--export=__abi_version');
-    expect(strict).toContain('-Wl,--export-if-defined=__abi_version');
-    expect(strict.length).toBe(LINK_FLAGS.length);
-  });
-
-  it('rejects unknown policies instead of guessing', () => {
-    expect(() => applyUndefinedSymbolPolicy(LINK_FLAGS, { WASM_POSIX_LINK_UNDEFINED: 'strict' }, syms))
-      .toThrow(/must be 'import' or 'error'/);
   });
 });

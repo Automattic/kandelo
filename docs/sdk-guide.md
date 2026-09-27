@@ -615,10 +615,10 @@ Two options keep dependency resolution on the package path:
   configure instead of silently downloading and building an upstream
   subproject (Meson "wrap") in place of the resolver-provided package.
 
-Meson's feature probes are link tests, so the cross file runs the compilers
-with `WASM_POSIX_LINK_UNDEFINED=error` (see below). Under the default link
-contract a missing function links as an `env` import, which would make a bare
-`cc.has_function()` report every missing libc function as present.
+Meson's feature probes are link tests. They report missing functions as
+missing because every executable link is strict: the SDK leaves undefined only
+the imports the host provides (`libc/glue/kandelo-host-imports.txt`), so a bare
+`cc.has_function()` is truthful.
 
 ## Fork instrumentation (`wasm-fork-instrument`)
 
@@ -664,7 +664,6 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
 | `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
 | `WASM_POSIX_CALLTYPES_PLUGIN` | Use this prebuilt KandeloCallTypes plugin instead of building one; it must be built for the same compiler |
-| `WASM_POSIX_LINK_UNDEFINED` | Executable undefined-symbol policy. `import` (default) keeps `--allow-undefined`: any undefined symbol becomes an `env` import. `error` rejects undefined symbols except the syscall glue's contract imports (`libc/glue/contract-imports.syms`), making link-test feature probes truthful. Other values are rejected. |
 
 ## Running Programs
 

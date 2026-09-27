@@ -11,13 +11,13 @@ import {
   filterArgs,
   inferThreadSlotDeclaration,
   linkFlags,
-  applyUndefinedSymbolPolicy,
   mainThreadStackSize,
   MAX_EXECUTABLE_MEMORY_SIZE,
   needsLinking,
   parseArgs,
   requestsCfi,
   SHARED_LINK_FLAGS,
+  hostImportsAllowance,
   THREAD_SLOT_USE_HOST_DEFAULT,
   threadSlotDeclarationDefine,
   tokenizeGnuResponseFile,
@@ -441,11 +441,7 @@ function buildClangArgsInternal(
         // it nor accepts --no-stack-first. Preserve Kandelo's established
         // stack-after-data layout explicitly only where the option exists.
         ...(toolchain.lldMajor >= 22 ? ['-Wl,--no-stack-first'] : []),
-        ...applyUndefinedSymbolPolicy(
-          linkFlags(arch, preparedStackSize),
-          process.env,
-          join(toolchain.glueDir, 'contract-imports.syms'),
-        ),
+        ...linkFlags(arch, hostImportsAllowance(toolchain.glueDir), preparedStackSize),
       );
     }
   }
