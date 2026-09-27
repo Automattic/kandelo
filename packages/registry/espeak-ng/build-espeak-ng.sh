@@ -268,6 +268,12 @@ echo "==> libcxx resolved at $LIBCXX_PREFIX (copied into $SYSROOT)"
 
 # --- Phase 3: cross build of espeak-ng ---------------------------------
 CROSS_BUILD_DIR="$HERE/espeak-ng-cross-build"
+# Configure from scratch. CMake applies a toolchain file's *_INIT flags only
+# on the first configure of a build tree, so a reused tree silently kept the
+# link line from whichever toolchain first configured it. The resolver runs
+# this script only when the package's inputs changed; that is exactly when a
+# stale cache would be wrong.
+rm -rf "$CROSS_BUILD_DIR"
 mkdir -p "$CROSS_BUILD_DIR"
 
 echo "==> Cross-compiling espeak-ng for wasm32..."
