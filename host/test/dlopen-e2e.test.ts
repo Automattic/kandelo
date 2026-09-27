@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -20,8 +21,11 @@ const SYSROOT64 = join(REPO_ROOT, "sysroot64");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasSysroot64 = existsSync(join(SYSROOT64, "lib", "libc.a"));
-const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
-  existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
+// The kernel is found the way the test helper boots it (the resolver), not
+// by probing binaries/ or local-binaries/ directly: ./run.sh setup installs
+// it under local-binaries/source-only-v1/, where the old probe missed it and
+// silently skipped this suite.
+const hasKernel = tryResolveBinary("kernel.wasm") !== null;
 function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
     execFileSync(compiler, ["--version"], { stdio: "ignore" });
@@ -236,6 +240,48 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("expected error:");
+  });
+
+  // Side modules still link with --allow-undefined (their symbols resolve
+  // against the main program), so an unresolvable one is only discovered at
+  // dlopen. It must fail there, naming the symbol, not load and trap on the
+  // first call.
+  it("fails dlopen with dlerror naming a symbol nothing defines", async () => {
+    const soPath = buildSharedLib(
+      `
+      extern int kandelo_symbol_nothing_defines(int);
+      int calls_missing(int x) { return kandelo_symbol_nothing_defines(x) + 1; }
+      `,
+      "libunresolved",
+    );
+    const wasmPath = buildMainProgram(
+      `
+      #include <dlfcn.h>
+      #include <stdio.h>
+
+      int main(int argc, char **argv) {
+        void *lib = dlopen(argv[1], RTLD_NOW);
+        if (lib) {
+          printf("unexpectedly loaded\\n");
+          return 1;
+        }
+        const char *err = dlerror();
+        printf("dlerror: %s\\n", err ? err : "(null)");
+        return 0;
+      }
+      `,
+      "test-dlopen-unresolved",
+    );
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["test-dlopen-unresolved", soPath],
+      timeout: 10_000,
+      io: io(),
+    });
+
+    expect(result.exitCode, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/^dlerror: .*kandelo_symbol_nothing_defines/m);
   });
 
   it("dlsym returns null for non-existent symbol", async () => {
