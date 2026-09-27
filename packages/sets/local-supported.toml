@@ -2,7 +2,6 @@ schema = 1
 policy = "source-only-v1"
 dependency_only = [
   "pcre2-source",
-  "wayland-protocols",
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = []
@@ -173,6 +172,12 @@ class = "platform"
 
 [[packages]]
 name = "libwayland"
+class = "platform"
+
+[[packages]]
+# Vendored protocol XML consumed by libwayland and wayland-demo via
+# wayland-scanner. A library, not a source package: its bytes ship in-tree.
+name = "wayland-protocols"
 class = "platform"
 
 [[packages]]
