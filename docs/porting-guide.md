@@ -65,8 +65,11 @@ for the full transform and ABI.
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
 **C++ and libc++**: For C++ programs, depend on the `libcxx` package and
-compile against its resolved headers and libraries, normally symlinked into
-the Kandelo sysroot by the consuming package build script. Do not copy libc++
+compile against its resolved headers and libraries. Package builds overlay
+them onto a private copy of the SDK sysroot with
+`kandelo_package_prepare_private_sysroot` (`scripts/package-build-roots.sh`);
+never copy them into the shared worktree sysroot, whose contents would then
+depend on build order. Do not copy libc++
 headers from an arbitrary host LLVM install; the libcxx package generates and
 ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
 See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
