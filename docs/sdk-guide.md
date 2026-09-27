@@ -383,6 +383,22 @@ prefix from the `.pc` file location, so copying or mounting the complete
 sysroot at a different host path preserves the emitted include and library
 paths.
 
+### Headers beyond musl
+
+The sysroot is musl plus `libc/musl-overlay/include/`. Most overlay headers
+declare Kandelo platform interfaces, but a few exist only because musl
+deliberately leaves out a header that glibc, the BSDs and macOS all ship, and
+portable software includes it unconditionally:
+
+| Header | Source | Why |
+|--------|--------|-----|
+| `<sys/queue.h>` | glibc 2.42 `misc/sys/queue.h`, unmodified | BSD linked-list macros. Musl distributions add it back as a separate package (Alpine's `bsd-compat-headers`); Kandelo ships glibc's copy so the header matches Linux. Used by chimerautils' `gencat`. Macros only, so it adds no ABI surface. |
+
+Add a header here only when portable software fails to build without it and
+the header is standard on glibc Linux. Copy it unmodified from its upstream,
+record the upstream version and path at the top of the file, and list it in
+this table.
+
 ### Pthread slot limit
 
 Executable builds also declare the process's pthread concurrency limit through the exported `__wasm_posix_thread_slots` function:
