@@ -205,9 +205,29 @@ const WORKER_MAIN_OTHER_LANES = [
   "setupChannelBase",
   "encodeStartupMetadata",
   "describeMainImage",
+  // Process launches that carry no fork work: a WASI guest, and a program
+  // built without fork instrumentation. Both sat inside
+  // `centralizedWorkerMain` until the maintainer ruled (2026-09-25) that they
+  // be extracted into named functions and excluded here.
+  "runWasiProcess",
+  "runUninstrumentedProcess",
 ] as const;
 
-/** `worker-main.ts`'s code lines MINUS the declarations named above. */
+/**
+ * The fork path `worker-main.ts` shares between its process and pthread mains.
+ *
+ * Counted WHOLE, in both worker-main measures, by the maintainer's ruling
+ * (2026-09-25): the merged fork path lives in its own file only so the two
+ * mains can share it, and it stays in lane F's closure measure. Without this,
+ * moving a line out of `worker-main.ts` would read as a reduction; only
+ * deleting one should.
+ */
+const WORKER_MAIN_FORK_SUPPORT = "host/src/worker-main-fork-support.ts";
+
+/**
+ * `worker-main.ts`'s code lines MINUS the declarations named above, PLUS all
+ * of `WORKER_MAIN_FORK_SUPPORT`.
+ */
 function workerMainForkLines(): number {
   const source = readFileSync(
     join(repoRoot, "host/src/worker-main.ts"),
@@ -230,7 +250,8 @@ function workerMainForkLines(): number {
     const end = index + 1 < starts.length ? starts[index + 1]!.line : lines.length;
     excluded += codeLinesInSource(lines.slice(start.line, end).join("\n"));
   });
-  return codeLinesInSource(source) - excluded;
+  const support = readFileSync(join(repoRoot, WORKER_MAIN_FORK_SUPPORT), "utf8");
+  return codeLinesInSource(source) - excluded + codeLinesInSource(support);
 }
 
 /** @internal Exported shape kept simple so the scanner itself is testable. */
@@ -354,7 +375,8 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-guest-sections.ts",
       "host/src/fork-tables.ts",
     ]),
-  workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
+  workerMainTypeScript: () =>
+    codeLineCount(["host/src/worker-main.ts", WORKER_MAIN_FORK_SUPPORT]),
   workerMainForkTypeScript: () => workerMainForkLines(),
   hostImportFunctions: () =>
     Number.parseInt(

@@ -23,6 +23,14 @@ const processWorkerSource = readFileSync(
   join(repoRoot, "host/src/worker-main.ts"),
   "utf8",
 );
+/**
+ * The fork half of every process and pthread Worker, written once
+ * (`ForkWorker`, lane F step 3). The abort report lives here now.
+ */
+const forkWorkerSource = readFileSync(
+  join(repoRoot, "host/src/worker-main-fork-support.ts"),
+  "utf8",
+);
 /** The single implementation both entries call for shared lifecycle logic. */
 const sharedLifecycleSource = readFileSync(
   join(repoRoot, "host/src/process-lifecycle.ts"),
@@ -215,24 +223,24 @@ describe("an aborted fork says why", () => {
   // frame reserve that failed mid-unwind, a seal that failed, a child the
   // kernel refused -- is begun or recorded by the fork MODULE, which hands the
   // errno and its cause back at the one abort finish. So the checkable form
-  // is: the process path finishes an abort in exactly one place, and reports
-  // there, from what that finish returned.
+  // is: a Worker finishes every replay, abort or not, in exactly one place
+  // (`ForkWorker.kernelFork`, shared by process and pthread Workers), and
+  // reports there, from what that finish returned.
   it("reports every abort at the one abort finish, from the module's record", () => {
-    const finishes =
-      processWorkerSource.match(/forkModule\(\)\.parentFinish\(true\)/g) ?? [];
-    expect(finishes.length, "abort finishes on the process path").toBe(1);
-    // The helper's own declaration is `const reportForkAborted = (` , so this
-    // counts CALLS only.
-    const reports = processWorkerSource.match(/reportForkAborted\(/g) ?? [];
+    const finishes = forkWorkerSource.match(/\.parentFinish\(/g) ?? [];
+    expect(finishes.length, "replay finishes in the shared fork path").toBe(1);
+    const reports = forkWorkerSource.match(/type: "fork_aborted"/g) ?? [];
     expect(reports.length, "one report, at that finish").toBe(1);
-    const finish = processWorkerSource.indexOf("forkModule().parentFinish(true)");
-    const report = processWorkerSource.indexOf("reportForkAborted(aborted.errno, aborted.cause)");
+    expect(processWorkerSource).not.toContain('type: "fork_aborted"');
+    const finish = forkWorkerSource.indexOf('.parentFinish(phase === "abort-replay")');
+    const report = forkWorkerSource.indexOf("const { errno, cause } = finished;");
+    expect(finish, "the finish is the abort-aware one").toBeGreaterThan(0);
     expect(report, "the report uses the finish's own errno and cause").toBeGreaterThan(finish);
-    expect(report - finish, "and follows it directly").toBeLessThan(200);
+    expect(report - finish, "and follows it directly").toBeLessThan(300);
   });
 
   it("names the errno and a reason a reader can act on", () => {
-    expect(processWorkerSource).toMatch(
+    expect(forkWorkerSource).toMatch(
       /type: "fork_aborted", pid, errno, reason/,
     );
     // The two causes, each in words rather than a code. There were three
@@ -240,11 +248,11 @@ describe("an aborted fork says why", () => {
     // raw host externref) is refused inside the fork module now, so it arrives
     // as "the capture could not seal" with that errno (EOPNOTSUPP) instead of
     // a worker-side branch of its own.
-    expect(processWorkerSource).toContain("the capture could not seal");
+    expect(forkWorkerSource).toContain("the capture could not seal");
     // And the third, which reported nothing until 2026-09-26: the host's frame
     // reserve wrapper aborted the fork without a word.
-    expect(processWorkerSource).toContain("could not be reserved mid-unwind");
-    expect(processWorkerSource).toContain(
+    expect(forkWorkerSource).toContain("could not be reserved mid-unwind");
+    expect(forkWorkerSource).toContain(
       "the kernel refused to create the child process",
     );
   });
