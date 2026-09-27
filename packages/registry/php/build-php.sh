@@ -906,7 +906,14 @@ if [ ! -f Makefile ]; then
     # musl exposes Linux unshare() as an ENOSYS stub. PHP must not advertise
     # pcntl_unshare() when this target cannot provide namespace isolation, so
     # override the cross probe with the target's real capability.
+    #
+    # Zend always compiles Fibers, and with no Fiber assembly for Wasm
+    # (--disable-fiber-asm) it builds them on <ucontext.h>. Kandelo does not
+    # support ucontext and libc defines none of it, so PHP opts in to the
+    # SDK's abort-on-call stand-ins: PHP code that never starts a Fiber runs
+    # normally, and starting one aborts with a diagnostic naming ucontext.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+    LIBS="-lkandelo-ucontext-unsupported" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
