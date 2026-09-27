@@ -1122,6 +1122,9 @@ impl ProcessTable {
         // fresh address space with its record.
         if mode == Mode::Vfork {
             child.address_space = parent_address_space;
+            // What the child maps on the borrowed image is its own, and the
+            // kernel reclaims it when the image ends (`end_vfork_borrow`).
+            child.memory.begin_vfork_borrow();
         }
         child.fork_launch = Some(PendingForkLaunch {
             parent_pid,
@@ -1318,6 +1321,22 @@ impl ProcessTable {
         match disposition {
             VforkReleaseDisposition::Resume => {
                 if still_borrowing {
+                    return Err(Errno::EBUSY);
+                }
+                // RECLAIM BEFORE RESUME. The child's image ended (exec or
+                // exit), and that is where the kernel reclaimed every mapping
+                // the child made on the borrowed image -- its fork module's
+                // region above all (`Process::end_vfork_borrow`). The parent
+                // never referenced any of it, but it must not resume while the
+                // kernel still records the child owning part of the image the
+                // parent is about to run on again. A zombie child keeps its
+                // table until it is reaped, so this is checkable on exit; an
+                // exec replaced the table outright.
+                if self
+                    .processes
+                    .get(&child_pid)
+                    .is_some_and(|child| child.memory.has_vfork_borrowed_mappings())
+                {
                     return Err(Errno::EBUSY);
                 }
                 self.vfork_borrowers.remove(&space);

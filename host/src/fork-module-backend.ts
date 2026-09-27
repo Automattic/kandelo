@@ -51,29 +51,6 @@ export const FORK_MODULE_STATS = [
   "externrefHandlesScanned",
 ] as const;
 
-/**
- * The backend, or a loud failure naming what was missing.
- *
- * The handle is nullable everywhere in the worker, and every fork path that
- * reaches these calls has one by construction — a fork only gets here having
- * instantiated the module. A bare `!` would be right and would also mean that
- * if the impossible ever happened, the failure would name a JavaScript property
- * rather than the thing that was absent.
- *
- * One guard rather than one per call site: this replaced a
- * `borrowedReplayWorkspaceOf` that did the same job for exactly one method,
- * which stopped being the right shape as soon as a second caller needed it.
- */
-export function requireForkModuleBackend(
-  backend: ForkModuleContinuationBackend | null,
-  pid: number,
-): ForkModuleContinuationBackend {
-  if (backend === null) {
-    throw new Error(`pid=${pid}: this fork path needs a fork-module backend`);
-  }
-  return backend;
-}
-
 /** Sizes a vfork BORROWED child's host-reserved private workspace. */
 export interface ForkBorrowedReplayWorkspace {
   readonly prefixBytes: number;

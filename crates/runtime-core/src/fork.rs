@@ -1406,11 +1406,14 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         let len = r.read_u32()? as usize;
         let prot = r.read_u32()?;
         let flags = r.read_u32()?;
+        // A child's inherited mappings are its parent's, never borrowed: a
+        // vfork child marks only what it maps itself (`begin_vfork_borrow`).
         mappings.push(MappedRegion {
             addr,
             len,
             prot,
             flags,
+            borrowed: false,
         });
     }
     memory.set_mappings(mappings);

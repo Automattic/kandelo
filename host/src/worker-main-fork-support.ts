@@ -36,7 +36,6 @@
  */
 import type { WorkerToHostMessage } from "./worker-protocol";
 import {
-  ABI_SYSCALLS,
   CHANNEL_STATUS_IDLE,
   CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
@@ -69,9 +68,7 @@ import {
 import {
   type ForkBorrowedReplayWorkspace,
   type ForkModuleStat,
-  FORK_MODULE_STATS,
   ForkModuleContinuationBackend,
-  requireForkModuleBackend,
 } from "./fork-module-backend";
 import { computeForkModuleTemplateId } from "./fork-guest-sections";
 import { ForkImportIdentity } from "./fork-import-identity";
@@ -216,9 +213,8 @@ const FORK_ABORT_REASONS: Readonly<Record<number, string>> = {
  * the host keeps beside it.
  */
 export class ForkWorker {
-  /** Null only after a borrowed child handed its region back. */
-  private backend: ForkModuleContinuationBackend | null;
-  private moduleExports: Record<string, unknown> | null;
+  private readonly backend: ForkModuleContinuationBackend;
+  private readonly moduleExports: Record<string, unknown>;
   readonly instance: ForkModuleInstance;
   readonly unwindTag: WebAssembly.Tag;
   readonly activations: ForkActivations;
@@ -237,18 +233,6 @@ export class ForkWorker {
   private forkMode: ProcessForkMode;
   /** What the guest's `fork()` returns once its replay finishes. */
   private forkResult = 0;
-  /**
-   * The module's counters, read while its memory still exists.
-   *
-   * ONLY a borrowed (vfork) child sets this. It hands its fork-module region
-   * back to the kernel the moment its one replay finishes (see
-   * `releaseBorrowedRegion`), and every counter `fm_stats` reports lives in
-   * that region -- measured on the `vfork-lifecycle` child that attempts a
-   * nested fork, the reused region read back `RESUME_NEXT_SLOT` 0, a value no
-   * writer in the module produces. So the counters are READ before the
-   * release and REPORTED from here.
-   */
-  private finalStats: Record<ForkModuleStat, number> | null = null;
 
   constructor(private readonly options: ForkWorkerOptions, forkMode: ProcessForkMode) {
     const { label, memory } = options;
@@ -332,12 +316,12 @@ export class ForkWorker {
     };
   }
 
-  /** The module backend; throws once a borrowed child has released it. */
+  /** The module backend. */
   module(): ForkModuleContinuationBackend {
-    return requireForkModuleBackend(this.backend, this.options.pid);
+    return this.backend;
   }
 
-  /** The module's phase, or `idle` once a borrowed child released it. */
+  /** The module's phase. */
   phase(): ForkPhase {
     return forkPhase(this.moduleExports, this.options.pid);
   }
@@ -472,8 +456,9 @@ export class ForkWorker {
         return -errno;
       }
       // A child's finish has already reported SYS_FORK_REPLAY_READY from
-      // inside the module.
-      if (this.options.borrowedChild) this.releaseBorrowedRegion();
+      // inside the module. A borrowed (vfork) child keeps its fork-module
+      // region until its image ends: the KERNEL reclaims it then, before the
+      // parent may resume (`reclaim_vfork_borrow` in crates/runtime-core).
       return this.forkResult;
     }
     if (phase !== "idle") {
@@ -503,45 +488,9 @@ export class ForkWorker {
     return 0; // ignored: the guest is unwinding
   }
 
-  /**
-   * Give a borrowed (vfork) child's fork-module region back, now.
-   *
-   * The child's one replay is done, and leaving ~5.4 MiB mapped would leak it
-   * into the parked parent's restored address space (the kernel never
-   * shrinks memory). EVERYTHING the module is asked for happens above the
-   * munmap, because below it there is no module: the counter snapshot, the
-   * abort, and `clear()`, which releases arena chunks out of the address
-   * space this child shares with its parent -- running it on freed roots is
-   * how you unmap someone else's mapping. The handles go with it, so a later
-   * `kernel_fork` answers from the host's own "idle" and falls through to
-   * EAGAIN instead of reading freed bytes.
-   */
-  private releaseBorrowedRegion(): void {
-    const { memory, channelOffset, label } = this.options;
-    const module = this.module();
-    this.finalStats = Object.fromEntries(
-      FORK_MODULE_STATS.map((name) => [name, Number(module.stat(name))]),
-    ) as Record<ForkModuleStat, number>;
-    module.abort();
-    this.activations.clear();
-    const { memoryBase, regionBytes } = this.instance;
-    const result = channelSyscall(memory, channelOffset, ABI_SYSCALLS.Munmap, [
-      BigInt(memoryBase),
-      BigInt(regionBytes),
-    ]);
-    if (result < 0) {
-      throw new Error(
-        `${label}: borrowed fork-module region: munmap(0x${memoryBase.toString(16)}, ` +
-          `${regionBytes}) failed errno=${-result}`,
-      );
-    }
-    this.backend = null;
-    this.moduleExports = null;
-  }
-
-  /** A counter: from the borrowed child's snapshot once taken, else live. */
+  /** A live counter from the module. */
   private stat(name: ForkModuleStat): number {
-    return this.finalStats?.[name] ?? Number(this.module().stat(name));
+    return Number(this.module().stat(name));
   }
 
   private post(message: WorkerToHostMessage): void {
@@ -554,7 +503,7 @@ export class ForkWorker {
    * main-thread host a fork parent's tail can be torn down before it runs.
    */
   private postParentFrames(): void {
-    if (this.options.forkChild || !this.backend) return;
+    if (this.options.forkChild) return;
     this.post({
       type: "fork_module_frames",
       pid: this.options.pid,
@@ -643,14 +592,15 @@ export class ForkWorker {
    * `teardown` also aborts the module's transaction and releases every
    * activation. A pthread Worker must NOT: after its `kernel_exit` its channel
    * is gone, and a module release that unmaps through it would park the
-   * Worker forever.
+   * Worker forever. Nor does a borrowed (vfork) child, for the same reason
+   * and because nothing it mapped outlives its image: the kernel reclaims
+   * every mapping it made on its parent's image when that image ends.
    */
   finish(teardown: boolean): void {
     this.postParentFrames();
-    if (this.options.forkChild && (this.backend || this.finalStats)) this.postChildProof();
-    if (teardown) {
-      // No-ops for a borrowed child, which ran both before its release.
-      if (this.backend) this.module().abort();
+    if (this.options.forkChild) this.postChildProof();
+    if (teardown && !this.options.borrowedChild) {
+      this.module().abort();
       this.activations.clear();
     }
     this.releaseArchiveReader();

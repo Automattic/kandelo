@@ -9662,8 +9662,11 @@ mod wasm {
     /// Such a child runs on its parked parent's memory, with the table snapshot
     /// its replay already materialized, while the parent holds the archive
     /// READER until the child execs or exits -- so the archive cannot move
-    /// under it. It must also not allocate: its heap chunks are returned when
-    /// its replay finishes (`fm_child_finish`). So its table path adopts the
+    /// under it. It must also not publish: whatever it maps lives on its
+    /// parent's image only until that image ends, when the KERNEL reclaims
+    /// every mapping the child made (`reclaim_vfork_borrow` in
+    /// crates/runtime-core), so nothing it could publish outlives it. So its
+    /// table path adopts the
     /// fence and touches neither the lock nor the heap. The host's TypeScript
     /// replica makes the same choice (`borrowedImmutableSnapshot`).
     fn borrowed_child() -> bool {

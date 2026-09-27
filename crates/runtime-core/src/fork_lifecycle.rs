@@ -427,6 +427,110 @@ mod table_tests {
         assert_eq!(reaped, child);
     }
 
+    /// `(addr, len, borrowed)` of every mapping in `pid`'s table.
+    fn mappings_of(table: &ProcessTable, pid: u32) -> Vec<(usize, usize, bool)> {
+        table
+            .get(pid)
+            .unwrap()
+            .memory
+            .mappings()
+            .iter()
+            .map(|m| (m.addr, m.len, m.borrowed))
+            .collect()
+    }
+
+    const REGION: usize = 0x0005_0000; // five wasm pages, a stand-in fork-module region
+
+    /// Lane F step 3c ruling 1: the kernel reclaims a vfork child's own
+    /// mappings -- above all its co-resident fork module's region -- when its
+    /// image ends, strictly before the parent resumes, and the parent's own
+    /// memory and fork-module region come through untouched.
+    #[test]
+    fn a_vfork_childs_region_is_reclaimed_before_the_parent_resumes_and_the_parents_is_untouched() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let (mut table, parent) = setup();
+        // The parent's own fork-module region, mapped before it vforks.
+        let parent_region = table
+            .get_mut(parent)
+            .unwrap()
+            .memory
+            .mmap_anonymous(0, REGION, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        let parent_before = mappings_of(&table, parent);
+        assert_eq!(parent_before, [(parent_region, REGION, false)]);
+
+        let child = kernel_fork(&mut table, parent, Mode::Vfork).unwrap();
+        assert_eq!(table.fork_replay_ready(child), Ok(()));
+        // The child's fork module maps its own region on the borrowed image.
+        let child_region = table
+            .get_mut(child)
+            .unwrap()
+            .memory
+            .mmap_anonymous(0, REGION, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_ne!(child_region, parent_region, "the child's region never overlaps the parent's");
+        assert_eq!(
+            mappings_of(&table, child),
+            [(parent_region, REGION, false), (child_region, REGION, true)],
+            "inherited mappings stay the parent's; only the child's own are borrowed",
+        );
+        let _ = take_for_test();
+
+        // The child exits. Its image ended, so the reclaim has already run by
+        // the time the host is asked for its quiescence proof.
+        assert!(table.get_mut(child).unwrap().record_normal_exit(0));
+        assert_eq!(
+            take_for_test(),
+            [awaiting(child, parent, wire::QUIESCENCE_REASON_EXIT)]
+        );
+        assert_eq!(
+            mappings_of(&table, child),
+            [(parent_region, REGION, false)],
+            "the child's own region is reclaimed at image end, before any resume",
+        );
+        assert_eq!(mappings_of(&table, parent), parent_before, "the parent's table is untouched");
+
+        let mut host = NoopHost;
+        assert_eq!(
+            table.vfork_address_space_released(child, VforkReleaseDisposition::Resume, &mut host),
+            Ok(None)
+        );
+        assert_eq!(
+            take_for_test(),
+            [parent_complete(Mode::Vfork, child, parent, child as i32)]
+        );
+        assert_eq!(mappings_of(&table, parent), parent_before, "resuming changed nothing of the parent's");
+    }
+
+    /// The kernel refuses to resume a vfork parent while it still records a
+    /// borrowed mapping, so "reclaim before resume" cannot be skipped by a
+    /// path that ends the borrow some other way.
+    #[test]
+    fn a_vfork_parent_does_not_resume_while_a_borrowed_mapping_remains() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let (mut table, parent) = setup();
+        let child = kernel_fork(&mut table, parent, Mode::Vfork).unwrap();
+        assert_eq!(table.fork_replay_ready(child), Ok(()));
+        table
+            .get_mut(child)
+            .unwrap()
+            .memory
+            .mmap_anonymous(0, REGION, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        // End the borrow WITHOUT the image-end reclaim.
+        table.get_mut(child).unwrap().vfork_parent = None;
+        let _ = take_for_test();
+        let mut host = NoopHost;
+        assert_eq!(
+            table.vfork_address_space_released(child, VforkReleaseDisposition::Resume, &mut host),
+            Err(Errno::EBUSY)
+        );
+        assert!(take_for_test().is_empty(), "the parent was not completed");
+        // Once reclaimed, the same release completes the parent.
+        table.get_mut(child).unwrap().memory.reclaim_vfork_borrow();
+        assert_eq!(
+            table.vfork_address_space_released(child, VforkReleaseDisposition::Resume, &mut host),
+            Ok(None)
+        );
+    }
+
     #[test]
     fn stale_and_duplicate_readiness_is_refused() {
         let (mut table, parent) = setup();

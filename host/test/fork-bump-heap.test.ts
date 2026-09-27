@@ -31,11 +31,11 @@ import {
  * (`catalog.to_vec()`), so a three-ordinal catalog is enough to make the
  * allocator grow.
  *
- * WHAT `fm_abort` REACHES: `abort_impl`, which is the vfork BORROWED child's
- * last releasing call before the host returns its module region to the
- * kernel (`worker-main.ts`, "borrowed fork-module region"). The static floor
- * used to go with that region; a mapped chunk does not, so the module returns
- * it there -- and ONLY there. A durable worker keeps its chunks across an
+ * WHAT `fm_abort` REACHES: `abort_impl`, which returns a vfork BORROWED
+ * child's heap chunks -- and ONLY a borrowed child's. No production host calls
+ * it for one any more: a borrowed child keeps its module, heap and all, until
+ * its image ends, and the KERNEL then reclaims every mapping it made on its
+ * parent's image (`reclaim_vfork_borrow`, lane F step 3c). A durable worker keeps its chunks across an
  * abort, because retaining them is what makes growth a one-time cost. The
  * borrowed half is proven through a real borrowed install, in
  * `fork-module-child-install.test.ts` ("returns a borrowed child's bump heap

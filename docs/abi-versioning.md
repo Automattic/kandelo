@@ -1120,6 +1120,20 @@ snapshot diff.
   Not additive, but 44 is unreleased and every host, kernel and fork-module
   artifact is rebuilt from source together, so there is no version bump.
 
+- **The fork run loop moves into the fork module (lane F step 3c,
+  2026-09-27).** Content folded into unreleased 44 on the maintainer's
+  rulings of 2026-09-27 (snapshot regeneration only, no bump, every
+  artifact rebuilt):
+
+  - *The kernel reclaims a vfork child's own mappings.* A mapping a vfork
+    child makes on its parent's image is marked borrowed in the child's
+    mapping table; the kernel drops every such mapping when the child's
+    image ends (exec or exit), and `kernel_vfork_address_space_released`
+    answers `EBUSY` for `RESUME` while one remains, so the reclaim always
+    precedes the parent's resume. The Node/browser host no longer unmaps a
+    borrowed child's fork-module region after its replay. No export or
+    record changed shape; the change is who releases the memory, and when.
+
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
   removed and ten directory-relative `*at` replacements added, taking the built

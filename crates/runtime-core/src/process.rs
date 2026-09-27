@@ -1653,6 +1653,18 @@ impl Process {
         use wasm_posix_shared::fork_lifecycle_event_wire as wire;
 
         if let Some(link) = self.vfork_parent.take() {
+            // The kernel's half of ending a borrow: forget every mapping this
+            // child made on its parent's image (its fork module's region, that
+            // module's heap and arena chunks, whatever the child mapped before
+            // exec or `_exit`). Done here, at the image's end and before the
+            // event that lets the host prove quiescence, so it always precedes
+            // the parent's resume, which `vfork_address_space_released`
+            // additionally refuses while any borrowed mapping remains. The
+            // mappings the child inherited are its parent's and stay. An exec
+            // reaches here with a fresh table already (the old image's table,
+            // borrowed mappings included, went with it), so this is a no-op
+            // there.
+            let _ = self.memory.reclaim_vfork_borrow();
             crate::fork_lifecycle::push(ForkLifecycleEvent {
                 kind: wire::KIND_VFORK_AWAITING_QUIESCENCE,
                 mode: wasm_posix_shared::fork_contract::Mode::Vfork,
