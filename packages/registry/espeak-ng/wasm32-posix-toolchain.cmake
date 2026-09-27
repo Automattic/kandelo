@@ -121,8 +121,11 @@ set(WASM32_LINK_FLAGS
 )
 string(REPLACE ";" " " WASM32_LINK_FLAGS_STR "${WASM32_LINK_FLAGS}")
 
+# speechPlayer is C++, and -nostdlib keeps the driver from adding its runtime,
+# so name libc++/libc++abi (indexed into the sysroot by build-espeak-ng.sh).
+# Before honest links the missing operator new/delete became host imports.
 set(CMAKE_EXE_LINKER_FLAGS_INIT
-  "${WASM32_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc"
+  "${WASM32_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc++ -lc++abi -lc"
 )
 
 # --- Type sizes for wasm32 ILP32 ---
