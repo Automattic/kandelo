@@ -1967,12 +1967,12 @@ mod tests {
     /// 10,000,000 activations are about twenty times what 8 MiB holds of
     /// this 16-byte frame.
     ///
-    /// Main thread only. On a pthread the overflow also traps cleanly (the
-    /// worker reports "call stack exhausted" and the host process lives),
-    /// but this host does not yet turn ANY pthread fault into the process's
-    /// signal exit: `run_worker_thread` prints the trap and ends the thread,
-    /// and the pump waits out its 30 s cap. That gap predates the stack
-    /// change and is recorded in `docs/future-improvements.md`.
+    /// On the main thread and on a pthread. The pthread arm is the POSIX
+    /// rule that a fault kills the whole PROCESS, not just its thread: the
+    /// main thread is parked in `pthread_join` when the pthread overflows,
+    /// and must be torn down with it. Until 2026-09-26 this host printed the
+    /// pthread's trap, ended only that OS thread, and the pump waited out
+    /// its 30 s cap (`retire_faulted_threads` in `guest.rs` closed it).
     #[test]
     fn smoke_guest_recursion_past_the_wasm_stack_is_sigsegv() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -1980,21 +1980,148 @@ mod tests {
         };
         let sigsegv_status =
             wasm_posix_shared::trap_signal::signal_exit_status(wasm_posix_shared::signal::SIGSEGV);
+        for on_pthread in [false, true] {
+            let started = std::time::Instant::now();
+            let outcome = run_stack_depth(&path, 10_000_000, on_pthread)?;
+            let stdout = String::from_utf8_lossy(&outcome.stdout);
+            assert!(
+                !stdout.contains("DEPTH_REACHED"),
+                "a 10,000,000-deep recursion cannot fit 8 MiB (pthread: {on_pthread}, \
+                 stdout: {stdout:?})"
+            );
+            assert_eq!(
+                outcome.exit_code, sigsegv_status,
+                "stack exhaustion must end the process as SIGSEGV (pthread: {on_pthread}, \
+                 stdout: {stdout:?}, stderr: {:?})",
+                String::from_utf8_lossy(&outcome.stderr),
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "the fault must end the process promptly, not after the pump's cap \
+                 (pthread: {on_pthread})"
+            );
+        }
+        Ok(())
+    }
+
+    /// Run `native_thread_fault.wasm` with `args`, with the same program at
+    /// `/bin/fault` so its `spawn` mode can launch and reap a second copy.
+    fn run_thread_fault(path: &Path, args: &[&str]) -> anyhow::Result<RunOutcome> {
+        let wasm = crate::fixtures::fixture("native_thread_fault.wasm");
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/fault", 3, 0o755, wasm.to_vec()),
+        ]);
+        let mut argv = vec!["native_thread_fault".to_string()];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        let options =
+            guest::GuestOptions { argv, base_image: Some(base_image), ..Default::default() };
+        guest::run_guest(path, wasm, &options)
+    }
+
+    /// A pthread that executes Wasm `unreachable` has faulted: the process
+    /// ends as SIGILL (`128 + 4`), promptly, with its main thread parked in
+    /// `pthread_join`. This host used to read EVERY pthread `unreachable` as
+    /// musl's detached-thread teardown -- a clean thread exit -- so the fault
+    /// vanished and the join parked until the pump's cap. That teardown
+    /// cannot trap here (its `SYS_exit` leaves through the `kernel_exit`
+    /// import first); an `unreachable` is an exit only when the pump
+    /// published `CH_TEARDOWN` on the thread's channel, as on the main
+    /// thread (`smoke_guest_unreachable_is_a_fault`).
+    #[test]
+    fn smoke_pthread_unreachable_is_sigill() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
         let started = std::time::Instant::now();
-        let outcome = run_stack_depth(&path, 10_000_000, false)?;
+        let outcome = run_thread_fault(&path, &["unreachable"])?;
+        let elapsed = started.elapsed();
+        let sigill_status =
+            wasm_posix_shared::trap_signal::signal_exit_status(wasm_posix_shared::signal::SIGILL);
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert_eq!(
+            outcome.exit_code, sigill_status,
+            "a pthread `unreachable` must end the process as SIGILL (stdout: {stdout:?}, \
+             stderr: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+        );
+        assert_eq!(stdout, "thread running\n", "the pthread must run up to its fault");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "the fault must end the process promptly, not after the pump's cap: {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// A parent reaps a child killed by its pthread's fault as WIFSIGNALED
+    /// with the fault's signal -- `kernel_mark_process_signaled`, the kernel
+    /// entry the JavaScript hosts use for a faulting thread Worker -- not as
+    /// a plain exit with status `128 + signum`. The fixture's parent prints
+    /// the status it reaped.
+    #[test]
+    fn smoke_pthread_fault_is_reaped_as_wifsignaled() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        for (mode, expected) in [("overflow", "signaled=11\n"), ("unreachable", "signaled=4\n")] {
+            let started = std::time::Instant::now();
+            let outcome = run_thread_fault(&path, &["spawn", mode])?;
+            let stdout = String::from_utf8_lossy(&outcome.stdout);
+            assert_eq!(
+                outcome.exit_code, 0,
+                "the parent must reap its child (mode {mode}, stdout: {stdout:?}, stderr: {:?})",
+                String::from_utf8_lossy(&outcome.stderr),
+            );
+            assert!(
+                stdout.contains("thread running\n") && stdout.ends_with(expected),
+                "mode {mode}: the child's pthread must run and the parent must reap \
+                 {expected:?}: {stdout:?}"
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "mode {mode}: the fault must end the child promptly"
+            );
+        }
+        Ok(())
+    }
+
+    /// `exit(3)` from a pthread ends the whole process with status 3
+    /// (`exit_group` retires every thread, whichever thread calls it), and a
+    /// parent reaps it as WIFEXITED 3.
+    ///
+    /// This is the request sequence that trapped the KERNEL: `exit_group`
+    /// posted on a pthread's own channel reached the channel dispatcher's
+    /// exit arm, which called a `-> !` wrapper ending in `unreachable`, and
+    /// the pump failed with that trap. The kernel now commits the exit and
+    /// returns (`dispatch_channel_exit` in `crates/kernel/src/wasm_api.rs`),
+    /// and the pump ends the process's other threads.
+    #[test]
+    fn smoke_pthread_exit_ends_the_process() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let started = std::time::Instant::now();
+        let outcome = run_thread_fault(&path, &["exit"])?;
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert_eq!(
+            outcome.exit_code, 3,
+            "exit(3) from a pthread must end the process with 3 (stdout: {stdout:?}, \
+             stderr: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+        );
+        assert_eq!(stdout, "thread running\n");
+
+        let outcome = run_thread_fault(&path, &["spawn", "exit"])?;
         let stdout = String::from_utf8_lossy(&outcome.stdout);
         assert!(
-            !stdout.contains("DEPTH_REACHED"),
-            "a 10,000,000-deep recursion cannot fit 8 MiB (stdout: {stdout:?})"
-        );
-        assert_eq!(
-            outcome.exit_code, sigsegv_status,
-            "stack exhaustion must end the process as SIGSEGV (stdout: {stdout:?}, stderr: {:?})",
+            stdout.ends_with("exited=3\n"),
+            "the parent must reap WIFEXITED 3: {stdout:?} (stderr: {:?})",
             String::from_utf8_lossy(&outcome.stderr),
         );
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "the fault must end the process promptly, not after the pump's cap"
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "exit from a pthread must end the process promptly"
         );
         Ok(())
     }

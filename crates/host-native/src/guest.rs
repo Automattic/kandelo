@@ -2024,6 +2024,11 @@ fn run_guest_inner(
         kernel.get_typed_func::<u32, i32>(&mut kernel_store, "kernel_get_process_exit_signal")?;
     let reap_exited_child =
         kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_reap_exited_child")?;
+    // A pthread's fault is its process's signal death, through the same
+    // kernel entry the JavaScript hosts use for a faulting thread Worker
+    // (see `retire_faulted_threads`).
+    let mark_process_signaled = kernel
+        .get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_mark_process_signaled")?;
 
     // --- Kernel-side process setup -------------------------------------------
     // Only the pid is created here; the rest of this process's launch (scratch
@@ -2245,6 +2250,7 @@ fn run_guest_inner(
         &handle_channel,
         &get_exit_status,
         &get_exit_signal,
+        &mark_process_signaled,
         &blocking_retry_token,
         &blocking_retry_release,
         &thread_exit,
@@ -6073,7 +6079,8 @@ fn launch_process(
         channels: vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }],
         thread_handles,
         fork_format,
-        signal_killed: false,
+        ended: false,
+        thread_faults: ThreadFaultSlot::default(),
     })
 }
 
@@ -6194,7 +6201,8 @@ fn launch_vfork_borrowed_child(
         channels: vec![PumpChannel { offset: child_layout.channel_offset, tid: pid, is_main: true }],
         thread_handles,
         fork_format,
-        signal_killed: false,
+        ended: false,
+        thread_faults: ThreadFaultSlot::default(),
     })
 }
 
@@ -7296,7 +7304,10 @@ fn wasmtime_trap_kind(error: &wasmtime::Error) -> Option<WasmTrapKind> {
 /// `WIFSIGNALED` is true and `WTERMSIG` names the signal. That export must be
 /// called on the kernel `Store`, which belongs to the pump thread, not to this
 /// guest OS thread — so this host reports the right status without the signal
-/// flag. Tracked in `docs/future-improvements.md`.
+/// flag. Tracked in `docs/future-improvements.md`. A PTHREAD's fault no longer
+/// comes here: its worker hands the signal to the pump
+/// (`GuestProcess::thread_faults`, drained by `retire_faulted_threads`), which
+/// does make that call; the main thread can take the same route.
 fn post_guest_trap_exit(guest_mem: &SharedMemory, channel_offset: usize, status: i32) {
     post_process_exit_group(guest_mem, channel_offset, status);
 }
@@ -7364,18 +7375,61 @@ fn spawn_worker_thread(
     use_fork_module: bool,
     fork_format: Option<Arc<GuestForkFormat>>,
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
+    thread_faults: ThreadFaultSlot,
 ) -> thread::JoinHandle<()> {
     let engine = engine.clone();
     let module = module.clone();
     spawn_guest_os_thread(move || {
-        if let Err(e) = run_worker_thread(
+        let Err(e) = run_worker_thread(
             &engine, &module, &guest_mem, channel_offset, tls_offset, stack_ptr, tls_ptr, fn_ptr, arg,
             layout, use_fork_module, fork_format, fork_proof_of_use,
-        ) {
-            eprintln!("worker thread (channel {channel_offset:#x}) failed: {e:?}");
+        ) else {
+            return;
+        };
+        match e.downcast_ref::<GuestThreadFault>() {
+            // The guest faulted. POSIX makes that the whole process's signal
+            // death, which only the pump can hand the kernel (it owns the
+            // kernel `Store`): report it and end this OS thread. The pump's
+            // `retire_faulted_threads` does the rest, as a JavaScript host's
+            // `failThread` does for a thread Worker's trap.
+            Some(fault) => {
+                let signum = fault.kind.signal();
+                eprintln!(
+                    "guest pthread faulted: {} trap (signal {signum}, status {}): {}",
+                    fault.kind.as_str(),
+                    wasm_posix_shared::trap_signal::signal_exit_status(signum),
+                    fault.detail
+                );
+                thread_faults.lock().unwrap().push(ThreadFault { channel_offset, signum });
+            }
+            // Not a guest fault: this host could not run the thread at all
+            // (instantiation, a missing export, a fork-module failure). That
+            // is a host defect, not a signal the guest raised, so it is not
+            // dressed up as one; the JavaScript hosts likewise report a
+            // non-trap thread failure as a host diagnostic without killing
+            // the process (`threadWorkerFailureDisposition`).
+            None => eprintln!("worker thread (channel {channel_offset:#x}) failed: {e:?}"),
         }
     })
 }
+
+/// A pthread's Wasm trap, classified: `run_worker_thread`'s error when the
+/// guest itself faulted (as opposed to this host failing to run the thread).
+/// [`spawn_worker_thread`] turns it into a [`ThreadFault`] for the pump.
+#[derive(Debug)]
+struct GuestThreadFault {
+    kind: WasmTrapKind,
+    /// The engine's own report of the trap, for the diagnostic.
+    detail: String,
+}
+
+impl std::fmt::Display for GuestThreadFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "guest pthread fault ({}): {}", self.kind.as_str(), self.detail)
+    }
+}
+
+impl std::error::Error for GuestThreadFault {}
 
 /// N1 residual #4a (non-main-thread `fork()`): a worker (pthread) thread that
 /// can itself call a REAL, fork-instrumented `fork()` — not just run to
@@ -7683,11 +7737,39 @@ fn run_worker_thread(
             }
         };
         match step {
-            // musl's detached-thread exit (__unmapself) issues SYS_munmap + SYS_exit
-            // — which the pump routes to kernel_thread_exit — then executes
-            // `unreachable` to halt the thread. That trap is the expected, clean end
-            // of the thread, exactly like the process exit trap on the main thread.
-            Err(e) if is_unreachable_trap(&e) => break Ok(()),
+            // An `unreachable` trap is either the host unwinding this thread
+            // on purpose or the guest faulting; the channel says which, as it
+            // does for the main thread in `run_fork_capable_entry`:
+            //
+            //  * `CH_TEARDOWN` on this thread's channel: the pump woke it to
+            //    unwind -- its process ended (`end_process_threads`: a
+            //    signal, a fault, or an `exit_group` from any thread,
+            //    including this one), or its image was superseded (exec,
+            //    spawn rollback). The glue's `__builtin_trap()` is that
+            //    unwind. Nothing to report.
+            //  * Anything else: the guest executed `unreachable` itself, a
+            //    SIGILL fault. This used to be read as a clean exit, on the
+            //    theory that musl's detached-thread teardown (`__unmapself`:
+            //    SYS_munmap, SYS_exit, `__builtin_unreachable()`) ends in
+            //    this trap. It cannot here: the glue routes every `SYS_exit`
+            //    to the `kernel_exit` import, which this thread wires to end
+            //    the call with `ThreadKernelExit` (below) before any
+            //    `unreachable` after it runs. So the old reading swallowed
+            //    genuine faults -- and the thread's `pthread_join` then
+            //    parked until the pump's cap.
+            Err(e) if is_unreachable_trap(&e) => {
+                let channel_status =
+                    unsafe { atomic_u32(guest_mem, channel_offset + STATUS_OFFSET) }
+                        .load(Ordering::SeqCst);
+                if channel_status == ChannelStatus::Teardown as u32 {
+                    break Ok(());
+                }
+                break Err(GuestThreadFault {
+                    kind: WasmTrapKind::IllegalInstruction,
+                    detail: format!("{e:#}"),
+                }
+                .into());
+            }
             // `kernel_exit`'s own closure already posted SYS_EXIT and
             // completed the channel round trip (see its wiring's doc
             // comment) before returning this marker error to force the wasm
@@ -7715,7 +7797,15 @@ fn run_worker_thread(
                     break Err(anyhow::anyhow!("fork-capture seal/launch-child failed (see stderr)"));
                 }
             }
-            Err(e) => break Err(e.into()),
+            // Every other trap kind the main thread classifies (memory,
+            // bounds, stack overflow, arithmetic, bad indirect calls) is the
+            // same fault on a pthread; see `wasmtime_trap_kind`.
+            Err(e) => match wasmtime_trap_kind(&e) {
+                Some(kind) => {
+                    break Err(GuestThreadFault { kind, detail: format!("{e:#}") }.into());
+                }
+                None => break Err(e.into()),
+            },
             // A thread entry that returns without self-exiting is unusual
             // (musl always exits via __pthread_exit); post the exit
             // ourselves as a fallback — applies equally whether this is the
@@ -7759,9 +7849,8 @@ impl std::error::Error for ThreadKernelExit {}
 ///
 /// The trap alone does not say whether the guest faulted or was unwound by
 /// the host; each caller must decide that from state it can read.
-/// `run_fork_capable_entry` does (`CH_TEARDOWN` on its channel, else SIGILL).
-/// `run_worker_thread` still treats every such trap as a clean thread exit —
-/// see `docs/future-improvements.md`.
+/// `run_fork_capable_entry` and `run_worker_thread` both do: `CH_TEARDOWN`
+/// on the thread's own channel is the host's unwind, anything else SIGILL.
 fn is_unreachable_trap(e: &wasmtime::Error) -> bool {
     matches!(
         e.downcast_ref::<wasmtime::Trap>(),
@@ -7841,15 +7930,36 @@ struct GuestProcess {
     /// drive a real [`ForkEntry::ChildReplay`] or must fall back to
     /// [`ForkEntry::ChildPendingStub`].
     fork_format: Option<Arc<GuestForkFormat>>,
-    /// The kernel recorded this process's death by a signal (another
-    /// process's `kill`, a host-generated signal, or a vfork containment),
-    /// and the pump has recorded its wait status. From then on every one of
-    /// its threads is torn down (`CH_TEARDOWN` + join) the moment it parks
-    /// on its channel, and none of its requests is dispatched: the kernel
-    /// must never see another syscall from a process it already ended. Set
-    /// only by `retire_signal_killed_processes`.
-    signal_killed: bool,
+    /// The kernel recorded this process's end while threads of it may still
+    /// be running, and the pump has recorded its wait status. Either the
+    /// process died by a signal (another process's `kill`, a host-generated
+    /// signal, a vfork containment, or a pthread's fault, which
+    /// [`retire_faulted_threads`] turns into its signal death), or a pthread
+    /// called `exit_group` (`exit()` from a non-main thread). From then on
+    /// every one of its threads is torn down (`CH_TEARDOWN` + join) the
+    /// moment it parks on its channel, and none of its requests is
+    /// dispatched: the kernel must never see another syscall from a process
+    /// it already ended. Set only by [`end_process_threads`].
+    ended: bool,
+    /// Faults of this image's pthreads, handed to the pump by the faulting
+    /// worker's OS thread. That thread cannot tell the kernel itself: the
+    /// kernel `Store` belongs to the pump thread. See
+    /// [`retire_faulted_threads`]. Per image: an exec replaces the whole
+    /// `GuestProcess`, so a fault of a superseded image's straggler lands in
+    /// a slot nobody drains and cannot kill the new image.
+    thread_faults: ThreadFaultSlot,
 }
+
+/// A pthread's fault, as its worker OS thread reports it to the pump.
+#[derive(Clone, Copy, Debug)]
+struct ThreadFault {
+    /// The faulting thread's channel, which identifies it to the pump.
+    channel_offset: usize,
+    /// The signal the fault raises (`WasmTrapKind::signal`).
+    signum: u32,
+}
+
+type ThreadFaultSlot = Arc<Mutex<Vec<ThreadFault>>>;
 
 /// A blocking syscall parked awaiting readiness (or its timeout deadline). The
 /// pump re-dispatches it under `token` on later iterations instead of looping in
@@ -8089,7 +8199,7 @@ impl ParkedForkParent {
     fn still_parked(&self, processes: &[GuestProcess]) -> bool {
         processes.get(self.process_index).is_some_and(|p| {
             mem_base(&p.memory) == mem_base(&self.parent_mem)
-                && !p.signal_killed
+                && !p.ended
                 && p.channels.iter().any(|c| c.offset == self.ch.offset && c.tid == self.ch.tid)
         })
     }
@@ -8195,14 +8305,16 @@ fn complete_parked_fork_parents(
 /// signal since the last pass.
 ///
 /// Signal death is decided in the kernel (a guest `kill`, a host-generated
-/// signal, a vfork containment). This host learns of it here, as
+/// signal, a vfork containment, a pthread's fault reported by
+/// [`retire_faulted_threads`]). This host learns of it here, as
 /// `reapKilledProcessesAfterSyscall` does on the JavaScript hosts: it records
-/// the wait status, drops the process's parked and blocked requests, and
-/// tears down every thread already parked on its channel (`CH_TEARDOWN` +
-/// join). A thread still computing cannot be stopped from outside; the pump
-/// tears it down the moment it next parks, and never dispatches its request.
-/// If the process borrowed a vfork parent's image, the borrow ends here:
-/// `RESUME` when every thread was joined, `CONTAIN` otherwise.
+/// the wait status and ends the process's threads ([`end_process_threads`]).
+///
+/// The boot process's run outcome is the shell's `$?` form, `128 + signum`,
+/// which is what the JavaScript hosts hand their exit callback for a signal
+/// death. The kernel's own exit STATUS is 0 then (the signal is recorded
+/// separately), so reporting that would make a killed run look like a clean
+/// `exit(0)`.
 #[allow(clippy::too_many_arguments)]
 fn retire_signal_killed_processes(
     kernel_store: &mut Store<()>,
@@ -8216,7 +8328,7 @@ fn retire_signal_killed_processes(
     root_exit_code: &mut Option<i32>,
 ) -> anyhow::Result<()> {
     for pi in 0..processes.len() {
-        if processes[pi].signal_killed || processes[pi].channels.is_empty() {
+        if processes[pi].ended || processes[pi].channels.is_empty() {
             continue;
         }
         let pid = processes[pi].pid;
@@ -8227,32 +8339,115 @@ fn retire_signal_killed_processes(
         let code = get_exit_status.call(&mut *kernel_store, pid)?;
         wait_table.lock().unwrap().exited.insert(pid, encode_wait_status(code, signal));
         if pi == 0 {
-            *root_exit_code = Some(code);
+            *root_exit_code = Some(wasm_posix_shared::trap_signal::signal_exit_status(signal as u32));
         }
-        blocked.retain(|op| op.process_index != pi);
-        parked.retain(|p| p.process_index != pi);
-        let proc_ = &mut processes[pi];
-        proc_.signal_killed = true;
-        let memory = proc_.memory.clone();
-        let parked_channels: Vec<PumpChannel> = proc_
-            .channels
-            .iter()
-            .copied()
-            .filter(|ch| {
-                unsafe { atomic_u32(&memory, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst)
-                    == STATUS_PENDING
-            })
-            .collect();
-        for ch in &parked_channels {
-            teardown_parked_thread(proc_, ch);
-        }
-        let quiescent = proc_.channels.is_empty();
-        release_vfork_address_space(kernel_store, launch, pid, quiescent)?;
+        end_process_threads(kernel_store, launch, processes, pi, blocked, parked)?;
     }
     Ok(())
 }
 
-/// Unwind one parked thread of a signal-killed process and drop its channel.
+/// The kernel has ended process `pi` while threads of it may still run: drop
+/// its parked and blocked requests and tear down every thread already parked
+/// on its channel (`CH_TEARDOWN` + join). A thread still computing cannot be
+/// stopped from outside; `ended` makes the pump tear it down the moment it
+/// next parks, and never dispatch its request. If the process borrowed a
+/// vfork parent's image, the borrow ends here: `RESUME` when every thread was
+/// joined, `CONTAIN` otherwise.
+///
+/// Shared by the two ways a process ends with threads still live: a signal
+/// death ([`retire_signal_killed_processes`]) and an `exit_group` a pthread
+/// issued (`run_pump`'s exit branch). POSIX gives both the same effect on the
+/// process's other threads: they are gone.
+fn end_process_threads(
+    kernel_store: &mut Store<()>,
+    launch: &ForkLaunchKernel,
+    processes: &mut [GuestProcess],
+    pi: usize,
+    blocked: &mut Vec<BlockedOp>,
+    parked: &mut Vec<ParkedForkParent>,
+) -> anyhow::Result<()> {
+    blocked.retain(|op| op.process_index != pi);
+    parked.retain(|p| p.process_index != pi);
+    let proc_ = &mut processes[pi];
+    proc_.ended = true;
+    let memory = proc_.memory.clone();
+    let parked_channels: Vec<PumpChannel> = proc_
+        .channels
+        .iter()
+        .copied()
+        .filter(|ch| {
+            unsafe { atomic_u32(&memory, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst)
+                == STATUS_PENDING
+        })
+        .collect();
+    for ch in &parked_channels {
+        teardown_parked_thread(proc_, ch);
+    }
+    let pid = proc_.pid;
+    let quiescent = proc_.channels.is_empty();
+    release_vfork_address_space(kernel_store, launch, pid, quiescent)
+}
+
+/// Turn each pthread fault its worker reported since the last pass into the
+/// process's signal death, through the SAME kernel entry the JavaScript hosts
+/// use for a faulting thread Worker: `kernel_mark_process_signaled(pid,
+/// signum)` (`notifyHostProcessCrashed` in `host/src/kernel-worker.ts`,
+/// reached from `failThread` in `host/src/process-lifecycle.ts`).
+///
+/// POSIX: a fault is a synchronous signal to the faulting thread, and the
+/// default action of `SIGSEGV`/`SIGILL`/`SIGFPE` terminates the whole
+/// process. A Wasm trap cannot be resumed, so a handler could never return
+/// into the faulting code, and every Kandelo host takes the default action.
+/// The kernel then holds the process `Exited` with the signal, the next
+/// [`retire_signal_killed_processes`] records `WIFSIGNALED` for its parent
+/// and tears down the other threads, and a `pthread_join` parked on the
+/// faulted thread is unwound with the rest instead of waiting out the pump's
+/// cap.
+///
+/// The faulted thread itself has already left the guest: its channel is
+/// dropped and its OS thread joined here. It must not go through
+/// `kernel_thread_exit`, which would retire it as if it had exited cleanly.
+/// A fault in a process the kernel already ended (it exited or was killed
+/// first) changes nothing: the first death stands, and the kernel ignores a
+/// second (`record_signal_exit` on an `Exited` process). `-ESRCH` (already
+/// reaped) is equally that case.
+fn retire_faulted_threads(
+    kernel_store: &mut Store<()>,
+    mark_process_signaled: &wasmtime::TypedFunc<(u32, u32), i32>,
+    processes: &mut [GuestProcess],
+) -> anyhow::Result<bool> {
+    let mut progressed = false;
+    for proc_ in processes.iter_mut() {
+        let faults = std::mem::take(&mut *proc_.thread_faults.lock().unwrap());
+        for fault in faults {
+            progressed = true;
+            proc_.channels.retain(|c| c.offset != fault.channel_offset);
+            if let Some(handle) = proc_.thread_handles.remove(&fault.channel_offset) {
+                // The thread reported its fault as its last act; the join
+                // only waits for its closure to return.
+                if handle.join().is_err() {
+                    eprintln!(
+                        "[host-native] pid {}'s faulted thread panicked after reporting its fault",
+                        proc_.pid
+                    );
+                }
+            }
+            if proc_.ended {
+                continue;
+            }
+            let rc = mark_process_signaled.call(&mut *kernel_store, (proc_.pid, fault.signum))?;
+            anyhow::ensure!(
+                rc == 0 || rc == -libc_errno::ESRCH,
+                "kernel_mark_process_signaled({}, {}) refused a pthread fault: {rc}",
+                proc_.pid,
+                fault.signum
+            );
+        }
+    }
+    Ok(progressed)
+}
+
+/// Unwind one parked thread of an ended process and drop its channel.
 fn teardown_parked_thread(proc_: &mut GuestProcess, ch: &PumpChannel) {
     reclaim_parked_thread(&proc_.memory, ch);
     if let Some(handle) = proc_.thread_handles.remove(&ch.offset) {
@@ -8436,6 +8631,7 @@ fn run_pump(
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
     get_exit_status: &wasmtime::TypedFunc<u32, i32>,
     get_exit_signal: &wasmtime::TypedFunc<u32, i32>,
+    mark_process_signaled: &wasmtime::TypedFunc<(u32, u32), i32>,
     blocking_retry_token: &wasmtime::TypedFunc<(u32, u32, u32), i64>,
     blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
     thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
@@ -8493,8 +8689,10 @@ fn run_pump(
         }
         let mut progressed = false;
 
-        // 0) Retire processes the kernel ended by a signal, and forget parked
-        // fork parents whose thread no longer exists (exec'd or killed).
+        // 0) Turn pthread faults into their process's signal death, retire
+        // processes the kernel ended by a signal, and forget parked fork
+        // parents whose thread no longer exists (exec'd or killed).
+        progressed |= retire_faulted_threads(kernel_store, mark_process_signaled, processes)?;
         retire_signal_killed_processes(
             kernel_store, launch, get_exit_status, get_exit_signal, processes, &mut blocked,
             &mut parked_forks, wait_table, &mut root_exit_code,
@@ -8589,10 +8787,10 @@ fn run_pump(
                     ci += 1;
                     continue;
                 }
-                // A thread of a process the kernel already killed has just
+                // A thread of a process the kernel already ended has just
                 // parked: unwind it instead of dispatching into a dead
-                // process (see `retire_signal_killed_processes`).
-                if processes[pi].signal_killed {
+                // process (see `end_process_threads`).
+                if processes[pi].ended {
                     teardown_parked_thread(&mut processes[pi], &ch);
                     progressed = true;
                     continue; // the vec shifted; do not advance ci
@@ -8607,22 +8805,32 @@ fn run_pump(
                 let (syscall_nr, mut args, is_record) = read_channel_request(&guest_mem, ch.offset);
                 trace.push(syscall_nr);
 
-                // Process exit on the MAIN channel: the kernel commits the
-                // status, then the pump wakes the exited thread with
-                // `CH_TEARDOWN` so it unwinds (below). Only
-                // `processes[0]`'s (the boot process) exit marks the run as
-                // done, but does not necessarily return immediately (see this
-                // function's doc comment: it drains any spawned children
-                // first). A spawned child's exit always just commits into the
-                // kernel and drops its channel.
-                if ch.is_main && (syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP) {
+                // Process exit: `exit`/`exit_group` on the MAIN channel, or
+                // `exit_group` on ANY channel -- POSIX `exit_group` ends every
+                // thread of the process whichever thread calls it, and libc's
+                // `exit()` from a pthread is exactly that. The kernel commits
+                // the status, then the pump wakes the exited thread with
+                // `CH_TEARDOWN` so it unwinds (below) and ends the process's
+                // other threads. Only `processes[0]`'s (the boot process)
+                // exit marks the run as done, but does not necessarily return
+                // immediately (see this function's doc comment: it drains any
+                // spawned children first). A spawned child's exit always just
+                // commits into the kernel and drops its channel.
+                if syscall_nr == SYS_EXIT_GROUP || (ch.is_main && syscall_nr == Syscall::Exit as u32) {
                     let _ = stage_raw(
                         kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut args, pointer_width,
                     )?;
-                    let _ = bind_and_dispatch(
+                    // The kernel RETURNS from an exit it dispatches (it
+                    // commits the exit and answers 0). Until 2026-09-26 its
+                    // channel dispatcher trapped on `unreachable` after
+                    // committing, and this call discarded that error, which
+                    // is why a pthread's `exit_group` -- then routed through
+                    // the generic path below, which does not discard it --
+                    // failed the whole pump. A failure here is now a real one.
+                    bind_and_dispatch(
                         kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
                         &guest_mem, current_memory, current_pid,
-                    );
+                    )?;
                     let code = get_exit_status
                         .call(&mut *kernel_store, pid)
                         .unwrap_or(args[0] as i32 & 0xff);
@@ -8660,7 +8868,7 @@ fn run_pump(
                     if let Some(handle) = processes[pi].thread_handles.remove(&ch.offset) {
                         if handle.join().is_err() {
                             eprintln!(
-                                "[host-native] pid {pid}'s exited main thread panicked instead of \
+                                "[host-native] pid {pid}'s exiting thread panicked instead of \
                                  unwinding on TEARDOWN"
                             );
                         }
@@ -8673,12 +8881,17 @@ fn run_pump(
                     // recorded in `wait_table`, ready for `host_waitpid` to
                     // resolve a parked or future `waitpid`.
                     processes[pi].channels.remove(ci);
-                    // If this process borrowed a vfork parent's image, the
-                    // exit ended the borrow in the kernel; the join above is
-                    // the quiescence proof (a vfork child has no other
-                    // threads, which the kernel enforces).
-                    let quiescent = processes[pi].channels.is_empty();
-                    release_vfork_address_space(kernel_store, launch, pid, quiescent)?;
+                    // The process is over, so are its other threads: tear
+                    // down the parked ones now and the rest as they park, and
+                    // never dispatch another request of theirs into the dead
+                    // process (the kernel would refuse the binding). If this
+                    // process borrowed a vfork parent's image, the exit ended
+                    // the borrow in the kernel, and this releases it; the
+                    // joins are the quiescence proof (a vfork child has no
+                    // other threads, which the kernel enforces).
+                    end_process_threads(
+                        kernel_store, launch, processes, pi, &mut blocked, &mut parked_forks,
+                    )?;
                     continue; // the vec shifted; do not advance ci
                 }
 
@@ -8805,6 +9018,7 @@ fn run_pump(
                         use_fork_module,
                         processes[pi].fork_format.clone(),
                         Arc::clone(fork_proof_of_use),
+                        Arc::clone(&processes[pi].thread_faults),
                     );
                     processes[pi].channels.push(PumpChannel {
                         offset: thread_channel_offset,

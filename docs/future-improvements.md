@@ -587,51 +587,56 @@ predicate from the frozen array (a `Set` membership test with a
 `value is KernelScratchExportName` return), or have a test assert the two agree
 name-for-name. Either removes the second authority.
 
-### `crates/host-native` reports a faulting guest without `WIFSIGNALED`
+### `crates/host-native` reports a faulting main thread without `WIFSIGNALED`
 
-A guest that traps under `crates/host-native` now ends with the same wait
-status a JavaScript host records — `128 + signum`, with the signal chosen by
-`wasm_posix_shared::trap_signal` from wasmtime's typed `Trap`. Two pieces of
-fidelity are still missing, and both are recorded here rather than papered
-over in the host.
+A guest that traps under `crates/host-native` ends with the same wait status a
+JavaScript host records — `128 + signum`, with the signal chosen by
+`wasm_posix_shared::trap_signal` from wasmtime's typed `Trap`. On a pthread
+that is now full parity; on the main thread one piece of fidelity is still
+missing, and it is recorded here rather than papered over in the host.
 
-- **The signal flag.** Node and the browser additionally call the kernel's
-  `kernel_mark_process_signaled(pid, signum)` export, which is what makes
-  `WIFSIGNALED(status)` true and `WTERMSIG(status)` name the signal. That
-  export must be called on the kernel `Store`, which belongs to the pump
-  thread; the fault is detected on the guest's own OS thread, which has no
-  access to it. Closing this needs the guest thread to hand the classified
-  signal to the pump — a small shared slot the pump drains beside the exit it
-  already processes — rather than a new export.
-- **A worker thread's own `unreachable` is swallowed.** The process's main
-  thread no longer has this gap. When the kernel records a process's exit,
-  the pump publishes `CH_TEARDOWN` on the exited main thread's channel and
-  joins it, the native form of a JavaScript host's `kernel_exit` returning
-  once the exit is committed (`kernelExitStatus` in
-  `host/src/worker-main.ts`). `run_fork_capable_entry` therefore reads an
-  `unreachable` trap as an exit only when its channel holds `CH_TEARDOWN`,
-  and otherwise reports SIGILL through the kernel
-  (`smoke_guest_unreachable_is_a_fault`,
-  `smoke_fork_child_unreachable_is_reaped_as_a_fault`). A pthread's entry
-  loop, `run_worker_thread`, still treats every `unreachable` trap as a clean
-  thread exit, because musl's detached-thread teardown ends in exactly that
-  trap after posting `SYS_exit`. Separating the two there needs the same
-  signal for worker-thread exits.
-- **A worker thread's other faults do not end the process either.** On the
-  main thread every other trap kind — memory, table/array bounds, stack
-  overflow, integer division and conversion faults, null and mistyped
-  indirect calls — is classified and reported. On a pthread,
-  `run_worker_thread` returns the trap to `spawn_worker_thread`, which
-  prints it and lets the OS thread end; the kernel never learns the process
-  faulted, and a `pthread_join` on it parks until the pump's 30 s cap.
-  Observed 2026-09-26 with a pthread recursing past the 8 MiB guest Wasm
-  stack (`native_stack_depth.c` with `thread`): the worker reported "call
-  stack exhausted" and the run ended in "pump timed out after 30s". Simply
-  reporting the fault from the worker (posting `exit_group` with the signal
-  status on the worker's own channel, as the main thread does) is not
-  enough: tried the same day, the kernel's `kernel_handle_channel` then
-  trapped on `unreachable` (a kernel panic) while servicing that
-  `exit_group`, so worker-originated process exit needs its own look.
+- **The signal flag, for a main-thread fault.** Node and the browser call the
+  kernel's `kernel_mark_process_signaled(pid, signum)` export, which is what
+  makes `WIFSIGNALED(status)` true and `WTERMSIG(status)` name the signal. The
+  native host's main thread still posts `exit_group(128 + signum)` instead
+  (`report_guest_fault` in `crates/host-native/src/guest.rs`), so its parent
+  sees `WIFEXITED` with that status. The mechanism to close it exists: since
+  2026-09-26 a faulting pthread hands its signal to the pump through a per-image
+  slot (`GuestProcess::thread_faults`), and the pump, which owns the kernel
+  `Store`, calls `kernel_mark_process_signaled` (`retire_faulted_threads`). The
+  main thread was left on the old path only because its entry loop
+  (`run_fork_capable_entry`, which calls `report_guest_fault`) was being
+  restructured by lane F step 3 at the time; handing it the same slot is a
+  small change once that lands.
+
+Closed on 2026-09-26, for the record:
+
+- **A pthread's own `unreachable` was swallowed.** `run_worker_thread` read
+  every `unreachable` trap as musl's detached-thread teardown (`__unmapself`
+  posts `SYS_exit`, then `__builtin_unreachable()`), a clean exit. That
+  teardown cannot trap on this host: the glue sends every `SYS_exit` through
+  the `kernel_exit` import, which ends the call with `ThreadKernelExit` first.
+  A pthread's `unreachable` is now an exit only when the pump published
+  `CH_TEARDOWN` on its channel, as on the main thread, and otherwise SIGILL
+  (`smoke_pthread_unreachable_is_sigill`).
+- **A pthread's other faults did not end the process.** `spawn_worker_thread`
+  printed the trap and let the OS thread end; the kernel never learned the
+  process faulted, and a `pthread_join` on it parked until the pump's 30 s cap
+  (observed with a pthread recursing past the 8 MiB guest Wasm stack). The
+  fault now kills the process as SIGSEGV/SIGILL/SIGFPE through the kernel
+  entry above, the pump tears down the other threads, and a parent reaps
+  `WIFSIGNALED` (`smoke_guest_recursion_past_the_wasm_stack_is_sigsegv`,
+  `smoke_pthread_fault_is_reaped_as_wifsignaled`).
+- **A pthread's `exit_group` trapped the kernel.** The first attempt at the
+  previous item posted `exit_group` from the faulting worker and hit
+  `unreachable` inside `kernel_handle_channel`. The cause was not the fault
+  path: the dispatcher's `SYS_EXIT`/`SYS_EXIT_GROUP` arms called diverging
+  wrappers ending in `unreachable_unchecked()`, so EVERY exit forwarded to the
+  channel trapped the kernel after committing. The native pump had discarded
+  that trap for main-thread exits; a pthread's `exit()` (libc's
+  `exit_group`) took the generic path, which does not, and failed the pump.
+  The arms now return, and the pump routes `exit_group` from any thread to its
+  process-exit branch (`smoke_pthread_exit_ends_the_process`).
 
 ### The `__heap_base` truthful-failure guard holds on the TypeScript host only
 

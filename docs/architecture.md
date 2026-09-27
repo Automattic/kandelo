@@ -1117,6 +1117,20 @@ Once Rust has made that Process Exited, those channels can finish only musl's
 and never re-enters kernel state. Final teardown removes all PID-prefixed thread
 channel, fork-context, and clear-TID metadata.
 
+A pthread whose Wasm traps ends its whole process with the fault's signal on
+every host, as POSIX's default action for `SIGSEGV`, `SIGILL` and `SIGFPE`
+requires; a trap cannot be resumed, so a handler could never return into the
+faulting code. The host classifies the trap, calls
+`kernel_mark_process_signaled(pid, signum)`, and tears down the process's
+other threads, so a parent's wait reports `WIFSIGNALED` with that signal. Node
+and the browser do it from `failThread` (`host/src/process-lifecycle.ts`); the
+native host's worker thread hands the signal to its pump
+(`retire_faulted_threads` in `crates/host-native/src/guest.rs`), because only
+the pump's thread holds the kernel instance. A pthread `unreachable` is a
+fault there unless the pump published `CH_TEARDOWN` on the thread's channel to
+unwind it. A faulting MAIN thread on the native host still reports
+`128 + signum` as a plain exit status; see `docs/future-improvements.md`.
+
 ### fork()
 
 Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
