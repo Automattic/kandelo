@@ -1636,7 +1636,6 @@ fn top_level_stack_effect(module: &Module, local: &LocalFunction, instr: &Instr)
         Instr::LocalTee(_)
         | Instr::Unop(_)
         | Instr::Load(_)
-        | Instr::LoadSimd(_)
         | Instr::MemoryGrow(_)
         | Instr::TableGet(_)
         | Instr::RefIsNull(_)
@@ -1648,6 +1647,13 @@ fn top_level_stack_effect(module: &Module, local: &LocalFunction, instr: &Instr)
         | Instr::RefCast(_)
         | Instr::AnyConvertExtern(_)
         | Instr::ExternConvertAny(_) => Delta { pops: 1, pushes: 1 },
+
+        // walrus files SIMD lane memory ops under LoadSimd with the plain
+        // SIMD loads, but their stack effects differ (see load_simd_effect).
+        Instr::LoadSimd(load) => {
+            let (pops, pushes) = crate::reference_analysis::load_simd_effect(&load.kind);
+            Delta { pops, pushes }
+        }
 
         // --- 2 → 0 ---
         Instr::Store(_) | Instr::TableSet(_) => Delta { pops: 2, pushes: 0 },
