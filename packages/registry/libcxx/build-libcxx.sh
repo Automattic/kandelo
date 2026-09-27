@@ -176,6 +176,11 @@ NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 # compile-flags string (plus any extra cmake args). Factored so the default
 # static archives and the position-independent variant (below) share ONE cmake
 # recipe and cannot drift apart.
+# LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF: with
+# CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY, CMake's check_library_exists
+# only compiles, never links, so it reports every function present. musl has
+# no __cxa_thread_atexit_impl, so libc++abi must use its own pthread-key
+# implementation of __cxa_thread_atexit (the answer is seeded, not probed).
 build_libcxx_variant() {
     local variant_build_dir="$1"; shift
     local variant_c_flags="$1"; shift
@@ -184,7 +189,8 @@ build_libcxx_variant() {
     ( cd "$variant_build_dir"
       cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
         -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
-        -DCMAKE_SYSTEM_NAME=Generic \
+        -DCMAKE_SYSTEM_NAME=Kandelo \
+        -DCMAKE_MODULE_PATH="$REPO_ROOT/sdk/cmake" \
         -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
         -DCMAKE_C_COMPILER="$LLVM_CLANG" \
         -DCMAKE_CXX_COMPILER="$LLVM_CLANG" \
@@ -221,6 +227,7 @@ build_libcxx_variant() {
         -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
         -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=ON \
         -DLIBCXXABI_ENABLE_THREADS=ON \
+        -DLIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF \
         -DLIBCXXABI_HAS_PTHREAD_API=ON \
         -DLIBCXXABI_INCLUDE_TESTS=OFF \
         \
