@@ -17,7 +17,7 @@
 #      `wl_interface`/`wl_message` tables are frozen by these exact files.
 #      Vendoring makes the pin reviewable and independent of nixpkgs bumps.
 #   3. Simple dep wiring — consumers list `wayland-protocols` in
-#      `depends_on` and read `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/`.
+#      `depends_on` and read `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/`.
 #
 # VERSION PIN (must stay coherent with the host `wayland-scanner` and the
 # eventual `libwayland` port in PR3):
@@ -32,14 +32,23 @@
 # schema parses; the `[build]` script stages the vendored `xml/` into the
 # cache instead of fetching (matches the libffi / libinput-lite
 # in-tree-only convention).
+#
+# That sentinel is why this is `kind = "library"` and not `kind = "source"`.
+# Under the source-only policy a `source` package MUST resolve to a real
+# fetched, sha256-verified upstream archive -- the resolver rejects a
+# sentinel URL outright ("source-only source dependency requires
+# source.provider = \"archive\""), which blocked libwayland and every
+# product built on the shell image. The XML is vendored data this package
+# installs into its own prefix, so it is a library whose outputs happen to
+# be data files rather than archives and headers; `[outputs].files` is the
+# declared shape for exactly that. Consumers read
+# `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/`.
 
-kind = "source"
+kind = "library"
 
 name = "wayland-protocols"
 version = "1.45"
-# Required because this source package declares a [build] script (the
-# resolver enforces it for script-override sources). The XML is
-# arch-agnostic, but kernel_abi must track ABI_VERSION in
+# The XML is arch-agnostic, but kernel_abi must track ABI_VERSION in
 # crates/shared/src/lib.rs.
 kernel_abi = 16
 depends_on = []
@@ -56,3 +65,8 @@ url = "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/1.45/COPY
 
 [build]
 script_path = "packages/registry/wayland-protocols/build-wayland-protocols.sh"
+
+[outputs]
+# Vendored protocol XML, installed into the prefix by the build script.
+# wayland-scanner (a host tool) reads these; nothing links against them.
+files = ["xml/wayland.xml", "xml/xdg-shell.xml"]

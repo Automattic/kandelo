@@ -28,7 +28,7 @@
 #     WASM_POSIX_DEP_SOURCE_URL                  # tarball URL
 #     WASM_POSIX_DEP_SOURCE_SHA256               # expected sha256
 #     WASM_POSIX_DEP_LIBFFI_DIR                  # libffi shim prefix (ffi.h)
-#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR   # vendored protocol XML (xml/)
+#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR   # vendored protocol XML (xml/)
 
 set -euo pipefail
 
@@ -50,7 +50,7 @@ for tool in wasm32posix-cc wasm32posix-ar wayland-scanner; do
 done
 
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
-PROTO_SRC="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
+PROTO_SRC="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
 WAYLAND_XML="$PROTO_SRC/xml/wayland.xml"
 
 if [ ! -f "$LIBFFI_PREFIX/include/ffi.h" ]; then

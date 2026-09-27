@@ -67,10 +67,12 @@ PROTOCOLS="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:-}"
 # --- Generate the xdg-shell protocol glue -----------------------------
 GEN="$WORK_DIR/gen"
 mkdir -p "$GEN"
+# wayland-protocols installs its vendored XML at <prefix>/xml/ (see its
+# package.toml [outputs].files). Prefer the resolved prefix; fall back to
+# the reviewed in-tree copy for a direct, non-resolver invocation.
 XDG_XML="$SOURCE_ROOT/packages/registry/wayland-protocols/xml/xdg-shell.xml"
-if [ -n "$PROTOCOLS" ] && \
-   [ -f "$PROTOCOLS/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml" ]; then
-    XDG_XML="$PROTOCOLS/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
+if [ -n "$PROTOCOLS" ] && [ -f "$PROTOCOLS/xml/xdg-shell.xml" ]; then
+    XDG_XML="$PROTOCOLS/xml/xdg-shell.xml"
 fi
 [ -f "$XDG_XML" ] || { echo "ERROR: xdg-shell.xml not found at $XDG_XML" >&2; exit 1; }
 echo "==> Generating xdg-shell glue from $XDG_XML..."

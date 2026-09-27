@@ -7,16 +7,16 @@
 # under `xml/`. This script just copies it into the resolver's
 # `$WASM_POSIX_DEP_OUT_DIR` so consumers that list `wayland-protocols`
 # in `depends_on` find it at
-# `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/`.
+# `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/`.
 #
 # Consumers generate C glue from these files with the host
 # `wayland-scanner` (provided via flake.nix), e.g.:
 #
 #     wayland-scanner client-header \
-#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/xdg-shell.xml" \
+#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml" \
 #         xdg-shell-client-protocol.h
 #     wayland-scanner private-code  \
-#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/xdg-shell.xml" \
+#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml" \
 #         xdg-shell-protocol.c
 #
 # See docs/package-management.md ("Source-kind manifests").
