@@ -60,6 +60,10 @@ ESPEAK_LANG_LIST="${ESPEAK_LANG_LIST:-en}"
 source "$REPO_ROOT/sdk/activate.sh"
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
+SDK_SYSROOT="$SYSROOT"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$HERE/espeak-ng-work" wasm32
 
 if ! command -v wasm32posix-cc >/dev/null; then
     echo "ERROR: wasm32posix-cc not found on PATH after sourcing sdk/activate.sh." >&2
@@ -109,15 +113,17 @@ LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 GLUE_OBJ_DIR="$HERE/glue-objs"
 GLUE_SRC_DIR="$REPO_ROOT/libc/glue"
 mkdir -p "$GLUE_OBJ_DIR"
-if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ] || \
-   [ "$GLUE_SRC_DIR/channel_syscall.c" -nt "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
+# Compile both objects on every build. They are two small files, and a
+# timestamp check on channel_syscall.c alone missed changes to the headers it
+# includes (abi_constants.h carries the ABI version) and to compiler_rt.c.
+{
     echo "==> Compiling kandelo glue objs..."
     WASM_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SYSROOT"
     # shellcheck disable=SC2086
     "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
     # shellcheck disable=SC2086
     "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
-fi
+}
 
 # --- Phase 1: libpcaudio.a (OSS backend only) --------------------------
 # We don't run pcaudiolib's autotools / libtool — for five files we just
@@ -233,11 +239,14 @@ if [ ! -d "$NATIVE_BUILD_DIR/espeak-ng-data" ]; then
     cmake --build "$NATIVE_BUILD_DIR" --target data           -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 fi
 
-# --- Resolve libcxx, then index it into the sysroot --------------------
+# --- Resolve libcxx into a private sysroot -----------------------------
 # espeak-ng's speechPlayer synthesizer is C++, and upstream builds it
 # unconditionally — src/CMakeLists.txt adds the subdirectory without
-# testing USE_SPEECHPLAYER. Index the resolved header tree and archives
-# into the sysroot the same way build-mariadb.sh does.
+# testing USE_SPEECHPLAYER. Overlay the resolved libcxx onto a private copy
+# of the SDK sysroot, as build-mariadb.sh does. Copying it into the shared
+# worktree sysroot made libc++'s presence there depend on build order:
+# scripts/build-musl.sh recreates the sysroot without it, and any later
+# build could silently pick up whichever libcxx was copied last.
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
 if [ -z "$LIBCXX_PREFIX" ]; then
     echo "==> Resolving libcxx via cargo xtask build-deps..."
@@ -251,20 +260,13 @@ for artifact in lib/libc++.a lib/libc++abi.a include/c++/v1; do
     }
 done
 
-mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-# Copy libcxx into the sysroot rather than symlinking it. A symlink points
-# into the per-user source-only cache (~/.cache/kandelo/...), which pollutes
-# the shared sysroot and trips the kandelo-sdk seed integrity check
-# (scripts/package-build-roots.sh rejects symlinks in the SDK seed because a
-# machine-specific link is not reproducible). Copying real files keeps the
-# seed clean — the same approach build-kandelo-sdk.sh uses. Remove any
-# pre-existing dst first so a prior symlink can't be followed into the cache.
-rm -f "$SYSROOT/lib/libc++.a" "$SYSROOT/lib/libc++abi.a"
-cp "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
-cp "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-rm -rf "$SYSROOT/include/c++/v1"
-cp -RL "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
-echo "==> libcxx resolved at $LIBCXX_PREFIX (copied into $SYSROOT)"
+export WASM_POSIX_DEP_WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+SYSROOT="$(
+    kandelo_package_prepare_private_sysroot espeak-ng "$SDK_SYSROOT" libcxx
+)"
+export WASM_POSIX_SYSROOT="$SYSROOT"
+echo "==> libcxx resolved at $LIBCXX_PREFIX (projected into $SYSROOT)"
 
 # --- Phase 3: cross build of espeak-ng ---------------------------------
 CROSS_BUILD_DIR="$HERE/espeak-ng-cross-build"
