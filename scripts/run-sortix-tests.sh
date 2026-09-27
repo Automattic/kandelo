@@ -153,7 +153,7 @@ LINK_FLAGS=(
     -Wl,--import-memory
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
+    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--growable-table
@@ -181,7 +181,7 @@ SO_LINK_FLAGS=(
     -Wl,--shared
     -Wl,--shared-memory
     -Wl,--export-all
-    -Wl,--allow-undefined
+    -Wl,--allow-undefined # side-module: dynamic linking resolves at dlopen
 )
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"

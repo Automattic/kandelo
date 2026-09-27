@@ -84,6 +84,19 @@ string(REPLACE ";" " " WASM64_FLAGS_STR "${WASM64_FLAGS}")
 set(CMAKE_C_FLAGS_INIT "${WASM64_FLAGS_STR}")
 set(CMAKE_CXX_FLAGS_INIT "${WASM64_FLAGS_STR} -nostdinc++ -isystem ${WASM_POSIX_SYSROOT}/include/c++/v1 -D_LIBCPP_HAS_MUSL_LIBC -D_LIBCPP_HAS_THREAD_API_PTHREAD -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE")
 
+# Executables may leave undefined only the imports the host supplies:
+# libc/glue/kandelo-host-imports.txt, generated from
+# shared::abi::HOST_ENV_IMPORTS (same contract as sdk/src/lib/flags.ts).
+if(DEFINED ENV{WASM_POSIX_GLUE_DIR})
+  set(_KANDELO_GLUE_DIR "$ENV{WASM_POSIX_GLUE_DIR}")
+else()
+  get_filename_component(_KANDELO_GLUE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../libc/glue" ABSOLUTE)
+endif()
+set(_KANDELO_HOST_IMPORTS "${_KANDELO_GLUE_DIR}/kandelo-host-imports.txt")
+if(NOT EXISTS "${_KANDELO_HOST_IMPORTS}")
+  message(FATAL_ERROR "Link allowance not found at ${_KANDELO_HOST_IMPORTS}")
+endif()
+
 # --- Linker flags ---
 set(WASM64_LINK_FLAGS
   "-nostdlib"
@@ -93,7 +106,7 @@ set(WASM64_LINK_FLAGS
   "-Wl,--import-memory"
   "-Wl,--shared-memory"
   "-Wl,--max-memory=1073741824"
-  "-Wl,--allow-undefined"
+  "-Wl,--allow-undefined-file=${_KANDELO_HOST_IMPORTS}"
   "-Wl,--global-base=1114112"
   "-Wl,--table-base=3"
   "-Wl,--export-table"

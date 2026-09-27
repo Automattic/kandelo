@@ -106,6 +106,9 @@ export async function buildKandeloSdkVfsImage(
   requireInput(join(inputs.sdkBinDirectory, "wasm32posix-cc"), "compiler wrapper");
   requireInput(inputs.configSitePath, "config.site");
   requireInput(inputs.clangResourceDirectory, "Clang resource headers");
+  // The in-Kandelo wasm32posix-cc links executables against this generated
+  // allowance (shared::abi::HOST_ENV_IMPORTS); without it every link fails.
+  requireInput(join(inputs.glueDirectory, "kandelo-host-imports.txt"), "link allowance");
   for (const name of glueNames) {
     requireInput(join(inputs.glueDirectory, `${name}.c`), `${name} glue source`);
     requireInput(join(inputs.glueObjectsDirectory, `${name}.o`), `${name} glue object`);

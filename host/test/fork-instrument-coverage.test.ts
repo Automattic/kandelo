@@ -31,6 +31,13 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -481,26 +488,21 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
 // ---------------------------------------------------------------------------
 
 describe("fork_instrument_coverage / F-* boundaries and Wasm-GC", () => {
-  // F-01: getcontext(). Empirically: musl's wasm sysroot exposes
-  // the symbol via an `env.getcontext` import that the kernel
-  // doesn't implement — the program traps at first call with
-  // "Unimplemented import: env.getcontext". That's the accepted
-  // failure mode (loud trap, not silent miscompile). Marked
-  // `it.fails` to encode the trap-as-expected contract.
-  it.fails("F-01 getcontext accepted limit (traps cleanly on unimplemented import)", async () => {
-    await runFixture("programs/f_01_ucontext_get.wasm", {
-      contains: ["PASS: F-01"],
-    });
-  });
-
-  // F-02: makecontext + swapcontext. Userspace stack-switching is
-  // unsupported by this kernel. Same trap mode as F-01 — same
-  // accepted-limit contract.
-  it.fails("F-02 makecontext/swapcontext accepted limit (traps cleanly on unimplemented import)", async () => {
-    await runFixture("programs/f_02_ucontext_makeswap.wasm", {
-      contains: ["PASS: F-02"],
-      timeout: 5_000,
-    });
+  // F-01 / F-02: ucontext (getcontext/makecontext/swapcontext) is a
+  // documented unsupported API (docs/posix-status.md) and libc has no such
+  // symbols. Before ABI 44 these fixtures linked anyway and trapped on
+  // "Unimplemented import: env.getcontext"; with honest links the boundary
+  // is a link failure on exactly those symbols, which is what we assert.
+  // (scripts/build-programs.sh enforces the same when building fixtures.)
+  it.each([
+    ["F-01", "programs/f_01_ucontext_get.c", /undefined symbol: getcontext/],
+    ["F-02", "programs/f_02_ucontext_makeswap.c", /undefined symbol: (makecontext|swapcontext|getcontext)/],
+  ])("%s ucontext boundary: the program does not link", (_id, rel, symbol) => {
+    const out = join(mkdtempSync(join(tmpdir(), "ucontext-boundary-")), "t.wasm");
+    const r = spawnSync(join(repoRoot, "sdk/bin/wasm32posix-cc"),
+      [join(repoRoot, rel), "-o", out], { encoding: "utf8" });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(symbol);
   });
 
   // F-03, F-04 — wasm-GC anyref / struct.new have no C-source surface.

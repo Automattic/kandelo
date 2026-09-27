@@ -179,8 +179,9 @@ rm -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc.bak"
 # src/video/SDL_egl.c bind `eglFoo` as a direct symbol reference instead of
 # an SDL_LoadFunction lookup. libSDL2.a therefore has hard undefined
 # references to EGL and GLES2, and consumers that link through this file must
-# be told so. Without it, `-Wl,--allow-undefined` turns each one into an
-# `env.*` import that traps the first time a window is created.
+# be told so. Without it their links fail on the undefined EGL/GLES2
+# symbols (before ABI 44, `--allow-undefined` turned each into an `env.*`
+# import that trapped the first time a window was created).
 sdl2_pc="$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
 awk '
     /^Libs:/ {
