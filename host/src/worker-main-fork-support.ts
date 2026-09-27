@@ -146,6 +146,26 @@ export function channelSyscall(
   return err ? -err : result;
 }
 
+/**
+ * SYS_FORK or SYS_VFORK for `mode`; -errno or the child pid. A vfork also
+ * tells the kernel how much private workspace the borrowed child's replay
+ * needs, from the module's seal row.
+ */
+export function sendForkSyscall(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+  mode: ProcessForkMode,
+  sealed: ForkBorrowedReplayWorkspace,
+): number {
+  const vfork = mode === PROCESS_FORK_MODE_VFORK;
+  return channelSyscall(
+    memory,
+    channelOffset,
+    vfork ? HOST_INTERCEPTED_SYSCALLS.SYS_VFORK : HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+    vfork ? [BigInt(sealed.prefixBytes), BigInt(sealed.scratchBytes)] : [],
+  );
+}
+
 /** Everything that differs between a process Worker and a pthread Worker. */
 export interface ForkWorkerOptions {
   readonly port: MessagePort;
@@ -553,7 +573,8 @@ export class ForkWorker {
   private forkFromCapture(): void {
     const sealed = this.module().sealCaptureAndSerialize();
     if (sealed !== null) {
-      const childPid = this.sendForkSyscall(sealed);
+      const { memory, channelOffset } = this.options;
+      const childPid = sendForkSyscall(memory, channelOffset, this.forkMode, sealed);
       this.forkResult = childPid;
       this.module().parentReplay(childPid < 0 ? -childPid : 0);
       if (childPid < 0) return;
@@ -561,19 +582,6 @@ export class ForkWorker {
     this.postParentFrames();
   }
 
-  /**
-   * SYS_FORK or SYS_VFORK. A vfork also tells the kernel how much private
-   * workspace the borrowed child's replay needs, from the module's seal row.
-   */
-  private sendForkSyscall(sealed: ForkBorrowedReplayWorkspace): number {
-    const vfork = this.forkMode === PROCESS_FORK_MODE_VFORK;
-    return channelSyscall(
-      this.options.memory,
-      this.options.channelOffset,
-      vfork ? HOST_INTERCEPTED_SYSCALLS.SYS_VFORK : HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-      vfork ? [BigInt(sealed.prefixBytes), BigInt(sealed.scratchBytes)] : [],
-    );
-  }
 
   /**
    * Run a guest entry until it returns or exits, serving every fork it issues.

@@ -229,6 +229,12 @@ describe("an aborted fork says why", () => {
   it("reports every abort at the one abort finish, from the module's record", () => {
     const finishes = forkWorkerSource.match(/\.parentFinish\(/g) ?? [];
     expect(finishes.length, "replay finishes in the shared fork path").toBe(1);
+    // And none in either Worker main: a pthread fork that finished its own
+    // abort is how the pthread path stayed silent until lane F step 3b.
+    expect(
+      processWorkerSource.match(/\.parentFinish\(/g) ?? [],
+      "no second finish in the process or pthread main",
+    ).toEqual([]);
     const reports = forkWorkerSource.match(/type: "fork_aborted"/g) ?? [];
     expect(reports.length, "one report, at that finish").toBe(1);
     expect(processWorkerSource).not.toContain('type: "fork_aborted"');
@@ -267,6 +273,18 @@ describe("an aborted fork says why", () => {
     expect(head).toContain("reportHostDiagnostic(");
     expect(head).toContain(
       "`fork aborted with errno=${message.errno}: ${message.reason}`",
+    );
+    expect(head).toContain('"warn",');
+  });
+
+  it("is forwarded from a pthread Worker too, which runs the same fork path", () => {
+    const forward = sharedLifecycleSource.slice(
+      sharedLifecycleSource.indexOf('m.type === "fork_aborted"'),
+    );
+    const head = forward.slice(0, 800);
+    expect(head).toContain("reportHostDiagnostic(");
+    expect(head).toContain(
+      "`fork aborted with errno=${m.errno}: ${m.reason}`",
     );
     expect(head).toContain('"warn",');
   });

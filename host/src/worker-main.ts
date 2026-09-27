@@ -52,7 +52,6 @@ import {
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
-  HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
   PROCESS_FORK_MODE_VFORK,
@@ -80,20 +79,9 @@ import {
   forkActivationFrameImports,
   FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
   FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
-  forkUnwindTagFrom,
-  isForkUnwindException,
   requireForkUnwindTag,
 } from "./fork-guest-imports";
-import { forkPhase } from "./fork-phase";
-import {
-  type ForkModuleInstance,
-  instantiateForkModule,
-} from "./fork-module-instance";
-import {
-  type ForkBorrowedReplayWorkspace,
-  requireForkModuleBackend,
-  ForkModuleContinuationBackend,
-} from "./fork-module-backend";
+import { ForkModuleContinuationBackend } from "./fork-module-backend";
 import {
   computeForkModuleTemplateId,
   readForkModuleStateRoot,
@@ -104,8 +92,7 @@ import {
   type ForkWasmImports,
   type PreparedForkParentActivation,
 } from "./fork-import-identity";
-import { ForkActivations, forkActivationCatalogSink } from "./fork-activations";
-import { ForkTables } from "./fork-tables";
+import { ForkActivations } from "./fork-activations";
 import { ForkChildImports } from "./fork-child-imports";
 import {
   checkedWasmGuestPointerOffset,
@@ -217,12 +204,6 @@ const STARTUP_ENOMEM = 12;
 const STARTUP_EFAULT = 14;
 const STARTUP_EINVAL = 22;
 const STARTUP_ERANGE = 34;
-
-function processForkSyscall(mode: ProcessForkMode): number {
-  return mode === PROCESS_FORK_MODE_VFORK
-    ? HOST_INTERCEPTED_SYSCALLS.SYS_VFORK
-    : HOST_INTERCEPTED_SYSCALLS.SYS_FORK;
-}
 
 interface EncodedStartupMetadata {
   argv: readonly Uint8Array[];
@@ -455,38 +436,17 @@ function buildKernelImports(
       return result;
     },
 
-    // Fork dispatches through the mode's dedicated channel syscall.
-    kernel_fork: (rawMode: number): number => {
-      const mode = processForkMode(rawMode);
-      if (mode === null) return -STARTUP_EINVAL;
-      const view = new DataView(memory.buffer);
-      const base = channelOffset;
-      view.setInt32(
-        base + CH_SYSCALL,
-        processForkSyscall(mode),
-        true,
+    // Fail loud by default. A fork-instrumented Worker replaces this with its
+    // `ForkWorker`'s import; anything else cannot represent a fork, because
+    // the child has no way to resume at the fork call site. This default used
+    // to issue SYS_FORK with no continuation behind it, and every caller
+    // replaced it -- a dead path that would have created a child with nothing
+    // to run had anything ever reached it.
+    kernel_fork: (_mode: number): number => {
+      throw new Error(
+        "kernel_fork reached without complete wasm-fork-instrument exports. "
+          + "Rebuild the program with scripts/run-wasm-fork-instrument.sh.",
       );
-      for (let i = 0; i < 6; i++)
-        view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-
-      markDeferredSignalDelivery(view, base);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
-
-      const result = Number(view.getBigInt64(base + CH_RETURN, true));
-      const err = view.getUint32(base + CH_ERRNO, true);
-      clearDeferredSignalDelivery(view, base);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
-
-      if (err) return -err;
-      return result;
     },
   };
 }
@@ -3079,16 +3039,6 @@ async function runUninstrumentedProcess(
   const { kernelImports, dlopenArchiveControlAddr } = launch;
   const processLongjmpTag = launch.longjmpTag;
   const processCppExceptionTag = launch.cppExceptionTag;
-  // No fork instrumentation: fork cannot be represented safely because
-  // the child cannot resume at the fork call site. Fail loudly if the
-  // program reaches kernel_fork instead of silently degrading.
-  kernelImports.kernel_fork = (_mode: number): number => {
-    throw new Error(
-      `pid=${pid}: kernel_fork reached without complete wasm-fork-instrument ` +
-        "exports. Rebuild the program with scripts/run-wasm-fork-instrument.sh.",
-    );
-  };
-
   let processInstance: WebAssembly.Instance | null = null;
   const dlopenSupport = buildDlopenImports(
     memory,
@@ -3979,29 +3929,6 @@ function setupChannelBase(
 }
 
 /**
- * Send SYS_FORK or SYS_VFORK through the channel and wait for the result.
- * Returns child pid on success, or -errno on failure.
- */
-function sendForkSyscall(
-  memory: WebAssembly.Memory,
-  channelOffset: number,
-  mode: ProcessForkMode,
-  borrowedReplay?: ForkBorrowedReplayWorkspace,
-): number {
-  if (mode === PROCESS_FORK_MODE_VFORK && !borrowedReplay) {
-    throw new Error("vfork capture is missing borrowed replay workspace");
-  }
-  return channelSyscall(
-    memory,
-    channelOffset,
-    processForkSyscall(mode),
-    mode === PROCESS_FORK_MODE_VFORK
-      ? [BigInt(borrowedReplay!.prefixBytes), BigInt(borrowedReplay!.scratchBytes)]
-      : [],
-  );
-}
-
-/**
  * Patch a Wasm binary for use in a thread instance (shared memory).
  *
  * In LLVM's shared-memory Wasm model:
@@ -4483,72 +4410,6 @@ export async function centralizedThreadWorkerMain(
   synchronizeReceivedSharedWasmMemory(memory, ptrWidth);
 
   let threadInstance: WebAssembly.Instance | undefined;
-  // Visible to the worker-tail teardown, which runs outside the block the
-  // registry is built in.
-  let threadTableReplication: ProcessTableReplicationOwner | null = null;
-  let processDlopenLock: Int32Array | undefined;
-  let processDlopenOwner: Int32Array | undefined;
-  let pthreadForkLockHeld = false;
-  const acquirePthreadForkLock = (): boolean => {
-    if (!processDlopenLock || !processDlopenOwner) {
-      throw new Error(
-        `pid=${pid} tid=${tid}: missing process dlopen ownership`,
-      );
-    }
-    if (pthreadForkLockHeld) {
-      throw new Error(`pid=${pid} tid=${tid}: pthread fork lock already held`);
-    }
-    for (;;) {
-      const transactionOwner = Atomics.load(processDlopenOwner, 0);
-      if (transactionOwner !== DLOPEN_OWNER_IDLE && transactionOwner !== tid) {
-        Atomics.wait(processDlopenOwner, 0, transactionOwner);
-        continue;
-      }
-      const owner = Atomics.load(processDlopenLock, 0);
-      if (owner < DLOPEN_LOCK_IDLE) {
-        // dlopen is finite and publishes the archive generation before
-        // releasing this writer token. Waiting preserves ordinary pthread
-        // fork/dlopen semantics instead of exposing a scheduler race as
-        // ENOTSUP.
-        Atomics.wait(processDlopenLock, 0, owner);
-        continue;
-      }
-      if (owner >= DLOPEN_LOCK_MAX_READERS) {
-        throw new Error(
-          `pid=${pid} tid=${tid}: process dlopen lock reader overflow`,
-        );
-      }
-      if (
-        Atomics.compareExchange(processDlopenLock, 0, owner, owner + 1) ===
-        owner
-      ) {
-        pthreadForkLockHeld = true;
-        return true;
-      }
-    }
-  };
-  const releasePthreadForkLock = (): void => {
-    if (!pthreadForkLockHeld || !processDlopenLock) return;
-    for (;;) {
-      const owner = Atomics.load(processDlopenLock, 0);
-      if (owner <= DLOPEN_LOCK_IDLE) {
-        pthreadForkLockHeld = false;
-        throw new Error(
-          `pid=${pid} tid=${tid}: pthread fork lost reader ownership ` +
-            `(state=${owner})`,
-        );
-      }
-      if (
-        Atomics.compareExchange(processDlopenLock, 0, owner, owner - 1) ===
-        owner
-      ) {
-        pthreadForkLockHeld = false;
-        if (owner === 1) Atomics.notify(processDlopenLock, 0);
-        return;
-      }
-    }
-  };
-
   try {
     // Strip the start section AND neuter the constructor function body to prevent
     // constructors from re-running. Thread instances share memory with the main
@@ -4566,198 +4427,46 @@ export async function centralizedThreadWorkerMain(
     );
 
     const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
-    const threadForkCapabilityClaim = readForkInstrumentCapabilityClaim(module);
     const hasDylinkForkRole = forkInstrumentRoleAvailable(
-      threadForkCapabilityClaim,
+      readForkInstrumentCapabilityClaim(module),
       FORK_CAP_DYLINK_MAIN,
     );
+    // A pthread shares its PROCESS's dlopen archive, lock words and
+    // table-generation fence, all below the process main channel.
+    const processArchiveControlAddr = processChannelOffset - FORK_BUF_SIZE;
+    const processGenerationAddress = processArchiveControlAddr - (ptrWidth === 8
+      ? DLOPEN_GENERATION_OFFSET_WASM64
+      : DLOPEN_GENERATION_OFFSET_WASM32);
+    // A fork issued FROM this thread unwinds and seals through this thread's
+    // own co-resident fork module -- the same `ForkWorker` a process Worker
+    // runs. Only three facts differ: the module's region is always a fresh
+    // mapping (a pthread Worker is never a fork child, so it inherits
+    // nothing), the launch root goes in THIS thread's anchor word (the child
+    // resumes the thread's function, not `_start`), and the archive it reads
+    // is the process's. The multi-activation RECONSTRUCTION runs in the child,
+    // on the process path.
     const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
-    const threadTemplateId = hasForkInstrumentation
-      ? computeForkModuleTemplateId(initData.programBytes)
-      : null;
-    // The host thread arena is gone for the reason the process one is: the
-    // module maps the KFMS chunks and frees them, so nothing here allocates or
-    // releases a chunk it never owned.
-    let threadForkActivations: ForkActivations | null = null;
-    const threadForkTables = new ForkTables(
-      {
-        markTablePages: (groupMark, firstPage, pageCount) =>
-          (
-            threadForkModuleInstance!.exports
-              .__wpk_fork_module_state_table_dirty_mark as (
-                owner: number,
-                first: bigint,
-                count: bigint,
-              ) => void
-          )(groupMark, firstPage, pageCount),
-      },
-      `pid=${pid} tid=${tid}: fork tables`,
-    );
-    let threadImportedStateCapture: ForkImportIdentity | null = null;
-    // WHAT USED TO BE HERE: this worker's exception broker. It resolved an
-    // exception recipe's owning activation and called that activation's
-    // exported thrower. The module does both now -- the owner comes out of the
-    // graph it decoded, the thrower through a drive slot -- so a pthread worker
-    // supplies nothing for exceptions at all. Census section 192.
-
-    // The fork-from-thread launch anchor, as two plain functions. They were
-    // options on `prepareActivation`, whose other argument -- the continuation
-    // whose entry points the module drives -- has no reader left.
-    const publishThreadLaunchRoot = (address: number): void => {
-      // The anchor write IS the publication. A `forkBufAddr` local used to be
-      // assigned here too and read by nothing: on the process path that
-      // variable answers `borrowedForkChild`'s launch-root query, and a pthread
-      // worker never has one.
-      writeForkContinuationAnchor(memory, forkAnchorAddr, ptrWidth, address);
-    };
-    // Phase 6 D7b: wire the co-resident fork-module into the PTHREAD PARENT
-    // worker so a fork issued FROM a thread unwinds/serializes/parent-replays
-    // through the module — the parent SIDE of a fork-from-thread. Without this
-    // the parent would journal through the JS closures while the child (admitted
-    // above on the main worker path) expects to read the MODULE-serialized KFRE
-    // journal image from the frame arena; the two sides must move together. This
-    // mirrors the main process worker's instantiate + backend + enableModuleBacking
-    // block (width match + catalog fits the cap). The co-resident module is now
-    // the UNCONDITIONAL fork engine (no JS reference fallback), so a pthread
-    // parent MUST capture through it — including one in a dlopen-capable program
-    // (`hasDylinkForkRole`): the pthread parent only unwinds + serializes, and
-    // the multi-activation RECONSTRUCTION runs in the fresh child on the main
-    // worker path. (The earlier `!hasDylinkForkRole` single-activation gate would
-    // now leave a dlopen pthread with no capture module and hang its fork.) The
-    // pthread parent never reconstructs references (that happens in the child).
-    // Phase 3: a catalog past the (raised) module cap now FAILS
-    // LOUD here — the cap is a module-BSS structure that holds every real guest's
-    // catalog, so an overflow is a genuine module-capacity boundary, never a
-    // silent drop to the (Phase 4: to-be-deleted) JS continuation twin.
-    let threadForkModuleInstance: ForkModuleInstance | null = null;
-    // The MODULE owns the unwind tag and exports it; a host that mints its own
-    // leaves that export dead and makes the two disagree the moment the module
-    // throws one. Read from the module below, exactly as the process path has
-    // since `forkUnwindTagFrom` landed.
-    let threadModuleUnwindTag: WebAssembly.Tag | undefined;
-    let threadForkModuleBackend: ForkModuleContinuationBackend | null = null;
-    if (hasForkInstrumentation) {
-      const forkModuleModule = initData.forkModuleModule;
-      if (!forkModuleModule) {
-        throw new Error(
-          `pid=${pid} tid=${tid}: fork-instrumented worker requires the ` +
-            "co-resident fork module",
-        );
-      }
-      {
-        threadForkModuleInstance = instantiateForkModule({
-          module: forkModuleModule,
-          memory,
-          reserve: (size) =>
-            continuationMmap(
-              memory,
-              channelOffset,
-              size,
-              `pid=${pid} tid=${tid}: fork-module`,
-            ),
-          label: `pid=${pid} tid=${tid}: fork-module`,
-          hostImports: { __wpk_fork_host_materialize_dlopen_archive: (generation) => threadTableReplication?.materialize(generation) ?? 38 },
-        });
-        // Stage into the dedicated slab inside this thread's fork-module region
-        // rather than a growing channel mmap (see the process-worker path for
-        // the full rationale): keeps the staging from permanently growing the
-        // shared process memory a fork-from-thread child would clone.
-        threadForkModuleBackend = new ForkModuleContinuationBackend({
-          instance: threadForkModuleInstance,
+    const fork = hasForkInstrumentation
+      ? new ForkWorker({
+          port,
           memory,
           ptrWidth,
-          channelBase: channelOffset,
-          // The PROCESS control block: a pthread shares the process archive.
-          archiveControlAddr: processChannelOffset - FORK_BUF_SIZE,
-          label: `pid=${pid} tid=${tid}: fork-module`,
-        });
-        // The same two calls as the process path: the per-worker format, then
-        // activation 0's admission, which also checks the program's pointer
-        // width against this worker.
-        threadForkModuleBackend.setup();
-        threadForkModuleBackend.admitActivation(0, module, threadTemplateId!);
-        threadModuleUnwindTag = forkUnwindTagFrom(
-          threadForkModuleInstance.exports,
-          `pid=${pid} tid=${tid} unwind`,
-        );
-        // Built here rather than beside the registry above, because it publishes
-        // straight into this thread's module and there is no module before this
-        // point. Nothing reads it earlier.
-        const backend = threadForkModuleBackend;
-        // A pthread replica runs its OWN fork-module instance, so it needs
-        // its own merged catalog and its own bases -- and, like every other
-        // worker, its own activation record.
-        threadForkActivations = new ForkActivations(
-          backend,
-          `pid=${pid} tid=${tid}: fork activations`,
-          forkActivationCatalogSink({
-            functionCatalog: threadForkModuleInstance.functionCatalog,
-          }),
-        );
-        threadImportedStateCapture = new ForkImportIdentity(
-          backend,
-          `pid=${pid} tid=${tid}: imported activation state`,
-          threadForkTables,
-        );
-      }
-    }
-    const processArchiveHeadOffset =
-      ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
-    const processArchiveHeadAddr =
-      processChannelOffset - FORK_BUF_SIZE - processArchiveHeadOffset;
-    const processArchiveLockOffset =
-      ptrWidth === 8 ? DLOPEN_LOCK_OFFSET_WASM64 : DLOPEN_LOCK_OFFSET_WASM32;
-    const processArchiveLockAddr =
-      processChannelOffset - FORK_BUF_SIZE - processArchiveLockOffset;
-    const processArchiveOwnerOffset =
-      ptrWidth === 8 ? DLOPEN_OWNER_OFFSET_WASM64 : DLOPEN_OWNER_OFFSET_WASM32;
-    const processArchiveOwnerAddr =
-      processChannelOffset - FORK_BUF_SIZE - processArchiveOwnerOffset;
-    if (
-      !Number.isSafeInteger(processArchiveHeadAddr) ||
-      processArchiveHeadAddr <= 0 ||
-      processArchiveHeadAddr + ptrWidth > memory.buffer.byteLength ||
-      !Number.isSafeInteger(processArchiveLockAddr) ||
-      processArchiveLockAddr <= 0 ||
-      processArchiveLockAddr + 4 > memory.buffer.byteLength ||
-      !Number.isSafeInteger(processArchiveOwnerAddr) ||
-      processArchiveOwnerAddr <= 0 ||
-      processArchiveOwnerAddr + 4 > memory.buffer.byteLength
-    ) {
-      throw new Error(
-        `pid=${pid} tid=${tid}: invalid process dlopen archive anchor ` +
-          `${String(processArchiveHeadAddr)}`,
-      );
-    }
-    processDlopenLock = new Int32Array(
-      memory.buffer,
-      processArchiveLockAddr,
-      1,
-    );
-    processDlopenOwner = new Int32Array(
-      memory.buffer,
-      processArchiveOwnerAddr,
-      1,
-    );
-    const processArchiveControlAddr = processChannelOffset - FORK_BUF_SIZE;
-    const processGenerationOffset =
-      ptrWidth === 8
-        ? DLOPEN_GENERATION_OFFSET_WASM64
-        : DLOPEN_GENERATION_OFFSET_WASM32;
-    const processGenerationAddress =
-      processArchiveControlAddr - processGenerationOffset;
-    const threadTableReplicationImports: ForkActivationTableReplication = {
-      generationAddress: new WebAssembly.Global(
-        { value: "i64", mutable: false },
-        BigInt(processGenerationAddress),
-      ),
-    };
-    let forkResult = 0;
-    // Resolved per call rather than captured: the backend is built later, in the
-    // block that instantiates this thread's fork-module.
-    const threadForkModule = () =>
-      requireForkModuleBackend(threadForkModuleBackend, pid);
-    let forkMode: ProcessForkMode = PROCESS_FORK_MODE_FORK;
+          channelOffset,
+          pid,
+          label: `pid=${pid} tid=${tid}`,
+          forkModuleModule: initData.forkModuleModule,
+          guestModule: module,
+          guestBytes: initData.programBytes,
+          archiveControlAddr: processArchiveControlAddr,
+          generationAddress: processGenerationAddress,
+          forkChild: false,
+          borrowedChild: false,
+          reserve: (size) =>
+            continuationMmap(memory, channelOffset, size, `pid=${pid} tid=${tid}: fork-module`),
+          publishLaunchRoot: (address) =>
+            writeForkContinuationAnchor(memory, forkAnchorAddr, ptrWidth, address),
+        }, PROCESS_FORK_MODE_FORK)
+      : null;
 
     let kernelThreadExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
@@ -4771,154 +4480,37 @@ export async function centralizedThreadWorkerMain(
         kernelThreadExitStatus = status;
       },
     );
-    if (hasForkInstrumentation) {
-      kernelImports.kernel_fork = (rawMode: number): number => {
-        if (!threadInstance) return -38; // ENOSYS
-        const mode = processForkMode(rawMode);
-        if (mode === null) return -STARTUP_EINVAL;
-
-        const phase = forkPhase(threadForkModuleInstance?.exports ?? null, pid);
-        if (phase === "parent-replay") {
-          if (mode !== forkMode) {
-            throw new Error(
-              `pid=${pid} tid=${tid}: fork replay mode ${mode} does not ` +
-                `match captured mode ${forkMode}`,
-            );
-          }
-          try {
-            threadForkModule().parentFinish(false);
-          } finally {
-            releasePthreadForkLock();
-          }
-          return forkResult;
-        }
-        if (phase === "abort-replay") {
-          if (mode !== forkMode) {
-            throw new Error(
-              `pid=${pid} tid=${tid}: fork abort mode ${mode} does not ` +
-                `match captured mode ${forkMode}`,
-            );
-          }
-          try {
-            return -threadForkModule().parentFinish(true).errno;
-          } finally {
-            releasePthreadForkLock();
-          }
-        }
-        if (phase !== "idle") {
-          throw new Error(
-            `pid=${pid} tid=${tid}: fork import reached while process ` +
-              `continuation is ${phase}`,
-          );
-        }
-        forkMode = mode;
-
-        try {
-          // Reconciliation may instantiate a missing side module and execute
-          // its start function, so it requires writer ownership. Afterward,
-          // acquire the long-lived fork reader and verify no publication won
-          // the handoff race before capturing activation state.
-          for (;;) {
-            threadTableReplication?.reconcileNow();
-            acquirePthreadForkLock();
-            if (
-              !threadTableReplication ||
-              threadTableReplication.isCurrentUnderLock()
-            ) {
-              break;
-            }
-            releasePthreadForkLock();
-          }
-        } catch (error) {
-          releasePthreadForkLock();
-          throw error;
-        }
-
-        try {
-          publishThreadLaunchRoot(0);
-          publishThreadLaunchRoot(
-            threadForkModule().parentBeginCapture(channelOffset),
-          );
-        } catch (error) {
-          // The module owns this thread's arena too, and its abort releases it.
-          if (forkPhase(threadForkModuleInstance?.exports ?? null, pid) !== "idle") {
-            try {
-              threadForkModule().abort();
-            } catch {
-              // Preserve the capture failure.
-            }
-          }
-          releasePthreadForkLock();
-          if (error instanceof ContinuationAllocationError) return -error.errno;
-          throw error;
-        }
-        return 0;
-      };
-    } else {
-      kernelImports.kernel_fork = (_mode: number): number => {
-        throw new Error(
-          `pid=${pid} tid=${tid}: kernel_fork reached without complete ` +
-            "wasm-fork-instrument exports. Rebuild the program with " +
-            "scripts/run-wasm-fork-instrument.sh.",
-        );
-      };
-    }
+    if (fork) kernelImports.kernel_fork = (rawMode: number): number => fork.kernelFork(rawMode);
     const threadLongjmpTag = createLongjmpTag(ptrWidth);
     const threadCppExceptionTag = createCppExceptionTag(ptrWidth);
-    // This called a function that no longer exists, so a fork-instrumented
-    // pthread worker failed at startup with a ReferenceError.
-    const threadForkUnwindTag = (): WebAssembly.Tag =>
-      requireForkUnwindTag(
-        threadModuleUnwindTag,
-        `pid=${pid} tid=${tid}: fork unwind`,
-      );
-    // The two import binders below take `threadModuleUnwindTag` RAW rather than
-    // through the asserting accessor above, and that is the whole fix for an
-    // uninstrumented pthread replica. The tag is the fork-module's export,
-    // assigned only inside `hasForkInstrumentation`; the accessor is right
-    // where a fork path needs it and wrong at the binders, which run for EVERY
-    // replica -- so an uninstrumented one threw "missing valid process-owned
-    // fork unwind tag" before its guest ran a single instruction. Both binders
-    // bind `env.__wpk_fork_unwind` only when the guest DECLARES that import,
-    // and an uninstrumented guest declares nothing of the kind. The process
-    // worker had the same defect and the same fix.
-    const replicaActivationOwner =
-      hasDylinkForkRole &&
-      hasForkInstrumentation
-        ? createProcessDylinkActivationOwner({
-            importedStateCapture: threadImportedStateCapture ?? undefined,
-            // Built with the module above whenever `hasForkInstrumentation`.
-            activations: threadForkActivations!,
-            tableReplication: threadTableReplicationImports,
-            isForkChild: false,
-            isPthreadReplica: true,
-            // A pthread replica instantiates its OWN co-resident fork-module
-            // (`threadForkModuleInstance`, above), and its side activations need
-            // the same frame/resume flip the main worker's do: the module is the
-            // only frame/journal implementation on this path too, so an
-            // activation without the flip has no continuation at all. Omitting
-            // it here is what made a dlopen from a pthread fail with "side
-            // activation N has no fork module" even though the module was
-            // sitting right there.
-            forkModuleFrameFlip: threadForkModuleBackend
-              ? {
-                  moduleExports: threadForkModuleInstance!.exports,
-                  backend: threadForkModuleBackend,
-                }
-              : undefined,
-            invokeProcessFork: () => {
-              const fork = threadInstance?.exports.fork;
-              if (typeof fork !== "function") {
-                throw new Error(
-                  `pid=${pid} tid=${tid}: dylink fork role is missing ` +
-                    "the main libc fork export",
-                );
-              }
-              return Number((fork as () => number)());
-            },
-            label: `pid=${pid} tid=${tid}: dylink table activations`,
-          })
-        : undefined;
+    // The import binders below take the unwind tag as `fork?.unwindTag`, which
+    // is undefined for an uninstrumented replica, and that is right: both bind
+    // `env.__wpk_fork_unwind` only when the guest DECLARES that import, and an
+    // uninstrumented guest declares nothing of the kind.
+    const replicaActivationOwner = hasDylinkForkRole && fork
+      ? createProcessDylinkActivationOwner({
+          importedStateCapture: fork.identity,
+          activations: fork.activations,
+          tableReplication: fork.tableReplication,
+          isForkChild: false,
+          isPthreadReplica: true,
+          // A pthread replica's side activations need the same frame/resume
+          // flip the main worker's do: the module is the only frame/journal
+          // implementation, so an activation without it has no continuation.
+          forkModuleFrameFlip: fork.frameFlip(),
+          invokeProcessFork: () => {
+            const forkExport = threadInstance?.exports.fork;
+            if (typeof forkExport !== "function") {
+              throw new Error(
+                `pid=${pid} tid=${tid}: dylink fork role is missing ` +
+                  "the main libc fork export",
+              );
+            }
+            return Number((forkExport as () => number)());
+          },
+          label: `pid=${pid} tid=${tid}: dylink table activations`,
+        })
+      : undefined;
     const threadDlopenSupport = buildDlopenImports(
       memory,
       channelOffset,
@@ -4937,79 +4529,40 @@ export async function centralizedThreadWorkerMain(
       hasDylinkForkRole
         ? undefined
         : `pid=${pid} tid=${tid}: main artifact lacks the dylink fork role capability`,
-      threadModuleUnwindTag,
-      (table, firstIndex, length) => {
-        threadForkTables.markTableMutation(table, firstIndex, length);
-      },
-      hasForkInstrumentation ? guardFunctionImport : undefined,
+      fork?.unwindTag,
+      fork
+        ? (table, firstIndex, length) => {
+            fork.tables.markTableMutation(table, firstIndex, length);
+          }
+        : undefined,
+      fork ? guardFunctionImport : undefined,
       tid,
       "copied",
       initData.dylinkModuleModule,
     );
-    if (hasForkInstrumentation) {
-      threadTableReplication = createProcessTableReplicationOwner({
-        generationAddress: processGenerationAddress,
-        tableCheckpoint: createForkPeerTableCheckpoint(
-          () => requireForkModuleBackend(threadForkModuleBackend, pid),
-          () => {
-            if (!threadForkActivations) {
-              throw new Error(
-                `pid=${pid} tid=${tid}: peer table checkpoint ran before this ` +
-                  `thread registered any activation`,
-              );
-            }
-            return threadForkActivations;
+    const threadTableReplication = fork
+      ? createProcessTableReplicationOwner({
+          generationAddress: processGenerationAddress,
+          tableCheckpoint: createForkPeerTableCheckpoint(
+            () => fork.module(),
+            () => fork.activations,
+            channelOffset,
+            pid,
+          ),
+          dlopen: threadDlopenSupport,
+          materializeModules: () => {
+            threadDlopenSupport.replayDlopens();
           },
-          channelOffset,
-          pid,
-        ),
-        dlopen: threadDlopenSupport,
-        materializeModules: () => {
-          threadDlopenSupport.replayDlopens();
-        },
-        restoreSnapshots: true,
-        label: `pid=${pid} tid=${tid}`,
-      });
+          restoreSnapshots: true,
+          label: `pid=${pid} tid=${tid}`,
+        })
+      : null;
+    // The fork's archive reader is the loader's own process-archive reader
+    // token, taken through this Worker's loader exactly as the process path
+    // takes it. (A hand-written copy of that lock used to live here.)
+    if (fork && threadTableReplication) {
+      fork.bindArchive(threadDlopenSupport, threadTableReplication);
     }
-    const threadForkEnvImports =
-      hasForkInstrumentation
-        ? {
-            // Everything the module serves, plus the three object imports a JS
-            // host supplies. Fails by NAME here if anything is unbound, rather
-            // than as an opaque LinkError.
-            ...(threadForkModuleInstance
-              ? (buildForkGuestImports({
-                  moduleExports: threadForkModuleInstance.exports as Record<
-                    string,
-                    unknown
-                  >,
-                  extras: {
-                    [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]:
-                      new WebAssembly.Global(
-                        { value: "i32", mutable: false },
-                        0,
-                      ),
-                    [FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT]:
-                      threadTableReplicationImports.generationAddress,
-                  },
-                  guestModule: module,
-                  label: `pid=${pid} tid=${tid}: fork imports`,
-                }) as Record<string, WebAssembly.ImportValue>)
-              : {
-                  // No fork-module on this branch, so no resume table either:
-                  // an uninstrumented guest declares no `__wpk_fork_*` import
-                  // to satisfy.
-                }),
-            // Phase 6 D7b IMPORT FLIP (mirrors the main worker path): when the
-            // fork-module is wired into this pthread parent, the thread's guest
-            // calls the module's frame/resume exports directly (wasm->wasm over
-            // shared memory), replacing exactly the five per-frame JS closures.
-            // The coordinator's module-backed capture then journals through the
-            // module, and it serializes the KFRE image the fork-from-thread child
-            // reads. Everything else stays JS. Guest ABI names/signatures are
-            // unchanged; no re-instrumentation. Flag-off skips this entirely.
-          }
-        : undefined;
     const importObject = buildImportObject(
       module,
       memory,
@@ -5020,7 +4573,7 @@ export async function centralizedThreadWorkerMain(
       ptrWidth,
       threadLongjmpTag,
       threadCppExceptionTag,
-      threadModuleUnwindTag,
+      fork?.unwindTag,
       (timedOutPtr, vmInterruptPtr, seconds) => {
         port.postMessage({
           type: "vm_interrupt_timer",
@@ -5030,37 +4583,33 @@ export async function centralizedThreadWorkerMain(
           seconds,
         } satisfies WorkerToHostMessage);
       },
-      threadForkEnvImports,
+      fork?.guestImports(),
     );
-    const routedThreadImportObject = hasForkInstrumentation
+    const routedThreadImportObject = fork
       ? guardImportObject(initData.programBytes, importObject)
       : importObject;
-    const threadMainImportedState =
-      threadImportedStateCapture?.prepareActivation(
-        0,
-        module,
-        routedThreadImportObject,
-      );
+    const threadMainImportedState = fork?.identity.prepareActivation(
+      0,
+      module,
+      routedThreadImportObject,
+    );
     const threadInstanceImports = (threadMainImportedState?.imports ??
       routedThreadImportObject) as WebAssembly.Imports;
     const instance = new WebAssembly.Instance(module, threadInstanceImports);
     threadInstance = instance;
     threadMainImportedState?.complete(instance);
-    if (
-      hasForkInstrumentation &&
-      threadTemplateId
-    ) {
+    if (fork) {
       // Required by `hasCompleteForkInstrumentation`, so present here.
       const threadBootstrap = instance.exports
         .wpk_fork_module_thread_bootstrap as () => void;
-      threadForkActivations?.register({ activationId: 0, instance });
+      fork.registerMain(instance);
       try {
         // The pthread bootstrap consumes passive element segments, so static
         // root harvesting and table-dirty registration must precede it just as
         // they do for the process-main bootstrap.
         threadBootstrap();
       } catch (error) {
-        threadForkActivations?.forget(0);
+        fork.activations.forget(0);
         throw error;
       }
     }
@@ -5133,71 +4682,28 @@ export async function centralizedThreadWorkerMain(
 
     const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
     const threadArgs = buildThreadEntryArgs(threadFn, argPtr, ptrWidth);
-    const resumeThread = hasForkInstrumentation
-      ? (instance.exports.wpk_fork_resume_thread as
-          | ((tableIndex: number, arg: number | bigint) => number | bigint)
-          | undefined)
-      : undefined;
-    if (hasForkInstrumentation && typeof resumeThread !== "function") {
-      throw new Error(
-        `pid=${pid} tid=${tid}: fork-capable program is missing ` +
-          "wpk_fork_resume_thread",
-      );
-    }
     let result = 0;
-    if (hasForkInstrumentation) {
-      for (;;) {
-        let transportedForkUnwind = false;
-        try {
-          const raw =
-            forkPhase(threadForkModuleInstance?.exports ?? null, pid) === "idle"
-              ? threadFn(...threadArgs)
-              : resumeThread!(fnPtr, threadArg);
-          result = Number(raw);
-        } catch (e) {
-          if (isForkUnwindException(e, threadForkUnwindTag())) {
-            transportedForkUnwind = true;
-          } else if (
-            isWasmUnreachableTrap(e) && kernelThreadExitStatus !== null
-          ) {
-            result = kernelThreadExitStatus;
-            break;
-          } else {
-            throw e;
-          }
-        }
-
-        const phase = forkPhase(threadForkModuleInstance?.exports ?? null, pid);
-        if (transportedForkUnwind && phase !== "capture") {
-          throw new Error(
-            `pid=${pid} tid=${tid}: private fork-unwind exception escaped ` +
-              `while process continuation is ${phase}`,
-          );
-        }
-        if (phase === "capture") {
-          // The module seals its own capture, as the process path does; a
-          // null seal is one the module has already turned into an abort
-          // replay.
-          const sealed = threadForkModule().sealCaptureAndSerialize();
-          if (sealed === null) continue;
-          const childPid = sendForkSyscall(
-            memory,
-            channelOffset,
-            forkMode,
-            Number(forkMode) === PROCESS_FORK_MODE_VFORK ? sealed : undefined,
-          );
-          forkResult = childPid;
-          threadForkModule().parentReplay(childPid < 0 ? -childPid : 0);
-          continue;
-        }
-        if (phase !== "idle") {
-          throw new Error(
-            `pid=${pid} tid=${tid}: pthread entry returned while process ` +
-              `continuation is ${phase}`,
-          );
-        }
-        break;
+    if (fork) {
+      // The fork run loop: the thread function, or -- once a fork from this
+      // thread has captured -- `wpk_fork_resume_thread`, which rewinds the
+      // parent's frames back into it.
+      const resumeThread = instance.exports.wpk_fork_resume_thread;
+      if (typeof resumeThread !== "function") {
+        throw new Error(
+          `pid=${pid} tid=${tid}: fork-capable program is missing ` +
+            "wpk_fork_resume_thread",
+        );
       }
+      const outcome = fork.run(
+        () => threadFn(...threadArgs),
+        () => (resumeThread as (index: number, arg: number | bigint) => unknown)(fnPtr, threadArg),
+        () => kernelThreadExitStatus,
+      );
+      result = "exited" in outcome ? outcome.exited : Number(outcome.returned);
+      // Reports the parent frames and releases a reader token an unexpected
+      // exit could strand. No teardown: after `kernel_exit` this thread's
+      // channel is gone, and a module release through it would park forever.
+      fork.finish(false);
     } else {
       try {
         const raw = threadFn(...threadArgs);
@@ -5210,24 +4716,6 @@ export async function centralizedThreadWorkerMain(
         }
       }
     }
-
-    // Phase 6 D7b proof-of-use: a pthread PARENT worker that ran a fork through
-    // the co-resident module reports how many frames the module committed during
-    // its unwind. This is the PARENT side of a fork-from-thread; the child posts
-    // its replay-side `fork_module_child_frames`. A silent JS fallback would
-    // leave the counter at zero and fail the flag-on proof.
-    if (threadForkModuleBackend) {
-      port.postMessage({
-        type: "fork_module_frames",
-        pid,
-        frames: Number(threadForkModuleBackend.stat("framesCommitted")),
-      } satisfies WorkerToHostMessage);
-    }
-
-    // A well-formed replay releases its reader token from the inherited fork
-    // import above. Keep normal-return cleanup defensive so an unexpected
-    // execution exit cannot strand the process-wide writer lock.
-    releasePthreadForkLock();
 
     // A normal return has not passed through libc's noreturn kernel_exit
     // import, so publish SYS_EXIT here. When kernel_exit already ran it sent
@@ -5265,10 +4753,8 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
-    releasePthreadForkLock();
-    // The registry's `clear()` released its capture transaction's roots here.
-    // The module holds them now and reclaims them with its bump heap on the
-    // next fork, so there is no host-side transaction left to unwind.
+    // `ForkWorker.run` released any archive reader a fork held before this
+    // error reached here; the module reclaims its own transaction state.
     if (err instanceof ExecRetirement) {
       port.postMessage({
         type: "exec_retired",
