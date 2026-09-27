@@ -2548,6 +2548,34 @@ fn check_parent_writable(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> 
     check_access(proc, &st, W_OK | X_OK)
 }
 
+/// The permission checks for removing the directory entry `path`: write and
+/// search permission on its parent, plus the sticky-directory owner rule.
+///
+/// Every filesystem that holds entries must apply this before removing one:
+/// the in-kernel rootfs overlay and tmpfs stores take no credentials, so the
+/// syscall layer is the only place the check can live.
+fn check_may_delete(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    check_parent_writable(proc, host, path)?;
+    check_sticky_child(proc, host, path)
+}
+
+/// The permission checks for `rename(old, new)`: remove the old name, create
+/// the new one, and (when `new` exists) remove what it replaces.
+fn check_may_rename(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    old: &[u8],
+    new: &[u8],
+) -> Result<(), Errno> {
+    check_parent_writable(proc, host, old)?;
+    check_parent_writable(proc, host, new)?;
+    check_sticky_child(proc, host, old)?;
+    if fs_lstat(host, new).is_ok() {
+        check_sticky_child(proc, host, new)?;
+    }
+    Ok(())
+}
+
 fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let parent = parent_path(path);
     let parent_st = namespace_lstat_raw(proc, host, &parent)?;
@@ -7832,6 +7860,7 @@ pub fn sys_mkdir(
     // assign ownership from the caller's credentials directly.
     if crate::tmpfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
+        check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
         return crate::tmpfs::mkdir(
             &resolved,
@@ -7842,6 +7871,7 @@ pub fn sys_mkdir(
     }
     if crate::rootfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
+        check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
         return crate::rootfs::mkdir(
             &resolved,
@@ -7860,9 +7890,11 @@ pub fn sys_mkdir(
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     if crate::tmpfs::claims_path(&resolved) {
+        check_may_delete(proc, host, &resolved)?;
         return crate::tmpfs::rmdir(&resolved);
     }
     if crate::rootfs::claims_path(&resolved) {
+        check_may_delete(proc, host, &resolved)?;
         return crate::rootfs::rmdir(&resolved);
     }
     ensure_host_mutable_namespace_path(&resolved)?;
@@ -8107,6 +8139,7 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     // bound AF_UNIX socket node also has a path-keyed registry entry; drop it
     // (waking any parked datagram senders) before removing the tmpfs node.
     if crate::tmpfs::claims_path(&resolved) {
+        check_may_delete(proc, host, &resolved)?;
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
@@ -8120,6 +8153,7 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     // fifo lives in the fifo/pipe table, a bound AF_UNIX socket in the registry;
     // drop those before removing the tree entry.
     if crate::rootfs::claims_path(&resolved) {
+        check_may_delete(proc, host, &resolved)?;
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
@@ -8179,6 +8213,7 @@ pub fn sys_rename(
         if old_tmpfs != new_tmpfs {
             return Err(Errno::EXDEV);
         }
+        check_may_rename(proc, host, &old, &new)?;
         // A tmpfs fifo lives in the fifo/pipe table keyed by path (alongside its
         // Special inode), and an AF_UNIX socket in the unix-socket registry.
         // Advance a displaced fifo's cached ctime and rekey both registries
@@ -8200,6 +8235,7 @@ pub fn sys_rename(
         if old_rootfs != new_rootfs {
             return Err(Errno::EXDEV);
         }
+        check_may_rename(proc, host, &old, &new)?;
         crate::rootfs::rename(&old, &new)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.rename_path(&old, &new) {
@@ -8241,6 +8277,8 @@ pub fn sys_link(
         if old_tmpfs != new_tmpfs {
             return Err(Errno::EXDEV);
         }
+        check_search_path(proc, host, &old)?;
+        check_parent_writable(proc, host, &new)?;
         tmpfs_stamp_now(host)?;
         return crate::tmpfs::link(&old, &new);
     }
@@ -8250,6 +8288,8 @@ pub fn sys_link(
         if old_rootfs != new_rootfs {
             return Err(Errno::EXDEV);
         }
+        check_search_path(proc, host, &old)?;
+        check_parent_writable(proc, host, &new)?;
         tmpfs_stamp_now(host)?;
         return crate::rootfs::link(&old, &new);
     }
@@ -8270,10 +8310,12 @@ pub fn sys_symlink(
     // Note: symlink target is stored as-is (not resolved), but linkpath is resolved
     let link = resolve_namespace_path(proc, host, linkpath, PathResolveOptions::CREATE_ENTRY)?.path;
     if crate::tmpfs::claims_path(&link) {
+        check_parent_writable(proc, host, &link)?;
         tmpfs_stamp_now(host)?;
         return crate::tmpfs::symlink(target, &link, proc.effective_uid(), proc.effective_gid());
     }
     if crate::rootfs::claims_path(&link) {
+        check_parent_writable(proc, host, &link)?;
         tmpfs_stamp_now(host)?;
         return crate::rootfs::symlink(target, &link, proc.effective_uid(), proc.effective_gid());
     }
@@ -15416,9 +15458,11 @@ pub fn sys_unlinkat(
     if flags & AT_REMOVEDIR != 0 {
         // Mirrors `sys_rmdir`.
         if crate::tmpfs::claims_path(&resolved) {
+            check_may_delete(proc, host, &resolved)?;
             return crate::tmpfs::rmdir(&resolved);
         }
         if crate::rootfs::claims_path(&resolved) {
+            check_may_delete(proc, host, &resolved)?;
             return crate::rootfs::rmdir(&resolved);
         }
         ensure_host_mutable_namespace_path(&resolved)?;
@@ -15431,6 +15475,7 @@ pub fn sys_unlinkat(
     // owning filesystem's inode store, and a bound AF_UNIX socket node also has
     // a path-keyed registry entry, so both are dropped before the node is.
     if crate::tmpfs::claims_path(&resolved) {
+        check_may_delete(proc, host, &resolved)?;
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
@@ -15441,6 +15486,7 @@ pub fn sys_unlinkat(
         return crate::tmpfs::unlink(&resolved);
     }
     if crate::rootfs::claims_path(&resolved) {
+        check_may_delete(proc, host, &resolved)?;
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
@@ -15490,6 +15536,7 @@ pub fn sys_mkdirat(
     .path;
     if crate::tmpfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
+        check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
         return crate::tmpfs::mkdir(
             &resolved,
@@ -15500,6 +15547,7 @@ pub fn sys_mkdirat(
     }
     if crate::rootfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
+        check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
         return crate::rootfs::mkdir(
             &resolved,
@@ -15542,6 +15590,7 @@ pub fn sys_renameat(
         if old_tmpfs != new_tmpfs {
             return Err(Errno::EXDEV);
         }
+        check_may_rename(proc, host, &old_resolved, &new_resolved)?;
         // Keep the fifo/pipe table and unix-socket registry coherent across the
         // move (see sys_rename): advance a displaced fifo's cached ctime, rekey
         // both registries.
@@ -15563,6 +15612,7 @@ pub fn sys_renameat(
         if old_rootfs != new_rootfs {
             return Err(Errno::EXDEV);
         }
+        check_may_rename(proc, host, &old_resolved, &new_resolved)?;
         crate::rootfs::rename(&old_resolved, &new_resolved)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.rename_path(&old_resolved, &new_resolved) {
@@ -18271,6 +18321,8 @@ pub fn sys_linkat(
         if old_tmpfs != new_tmpfs {
             return Err(Errno::EXDEV);
         }
+        check_search_path(proc, host, &old_resolved)?;
+        check_parent_writable(proc, host, &new_resolved)?;
         tmpfs_stamp_now(host)?;
         return crate::tmpfs::link(&old_resolved, &new_resolved);
     }
@@ -18280,6 +18332,8 @@ pub fn sys_linkat(
         if old_rootfs != new_rootfs {
             return Err(Errno::EXDEV);
         }
+        check_search_path(proc, host, &old_resolved)?;
+        check_parent_writable(proc, host, &new_resolved)?;
         tmpfs_stamp_now(host)?;
         return crate::rootfs::link(&old_resolved, &new_resolved);
     }
@@ -18311,6 +18365,7 @@ pub fn sys_symlinkat(
     )?
     .path;
     if crate::tmpfs::claims_path(&resolved_link) {
+        check_parent_writable(proc, host, &resolved_link)?;
         tmpfs_stamp_now(host)?;
         return crate::tmpfs::symlink(
             target,
@@ -18320,6 +18375,7 @@ pub fn sys_symlinkat(
         );
     }
     if crate::rootfs::claims_path(&resolved_link) {
+        check_parent_writable(proc, host, &resolved_link)?;
         tmpfs_stamp_now(host)?;
         return crate::rootfs::symlink(
             target,
@@ -19656,6 +19712,103 @@ mod tests {
             ),
             Err(e) => panic!("unexpected error after removal: {e:?}"),
         }
+    }
+
+    /// POSIX: removing, creating or renaming a directory entry needs write and
+    /// search permission on the directory that holds it, and a sticky
+    /// directory additionally limits removal to the entry's or directory's
+    /// owner. These operations used to be dispatched to the in-kernel rootfs
+    /// overlay and tmpfs before any of those checks ran, so an unprivileged
+    /// process could delete, create and rename entries in root-owned `0755`
+    /// directories anywhere under `/`, and delete other users' files from
+    /// `/tmp`. The host-directory path always enforced them; this drives the
+    /// same operations through the two in-kernel filesystems.
+    #[test]
+    fn unprivileged_namespace_changes_obey_directory_permissions_in_kernel_filesystems() {
+        use wasm_posix_shared::flags::AT_REMOVEDIR;
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+
+        let mut root = Process::new(1);
+        let mut host = MockHostIO::new();
+        // A root-owned 0755 directory on `/` holding a root-owned file and
+        // directory, and a directory an unprivileged user owns.
+        sys_mkdir(&mut root, &mut host, b"/locked", 0o755).unwrap();
+        let fd = sys_open(&mut root, &mut host, b"/locked/file", O_CREAT | O_RDWR, 0o644).unwrap();
+        sys_close(&mut root, &mut host, fd).unwrap();
+        sys_mkdir(&mut root, &mut host, b"/locked/dir", 0o755).unwrap();
+        sys_mkdir(&mut root, &mut host, b"/mine", 0o755).unwrap();
+        sys_chown(&mut root, &mut host, b"/mine", 1000, 1000).unwrap();
+        assert!(crate::rootfs::claims_path(b"/locked/file"), "precondition: rootfs owns it");
+        // A root-owned file in the sticky, world-writable /tmp.
+        let fd = sys_open(&mut root, &mut host, b"/tmp/perm-root-owned", O_CREAT | O_RDWR, 0o644)
+            .unwrap();
+        sys_close(&mut root, &mut host, fd).unwrap();
+        assert!(crate::tmpfs::claims_path(b"/tmp/perm-root-owned"), "precondition: tmpfs owns it");
+
+        let mut user = user_process(2);
+        let denied = |r: Result<(), Errno>| r.unwrap_err();
+        assert_eq!(denied(sys_unlink(&mut user, &mut host, b"/locked/file")), Errno::EACCES);
+        assert_eq!(
+            denied(sys_unlinkat(&mut user, &mut host, AT_FDCWD, b"/locked/file", 0)),
+            Errno::EACCES,
+        );
+        assert_eq!(denied(sys_rmdir(&mut user, &mut host, b"/locked/dir")), Errno::EACCES);
+        assert_eq!(
+            denied(sys_unlinkat(&mut user, &mut host, AT_FDCWD, b"/locked/dir", AT_REMOVEDIR)),
+            Errno::EACCES,
+        );
+        assert_eq!(denied(sys_mkdir(&mut user, &mut host, b"/locked/new", 0o755)), Errno::EACCES);
+        assert_eq!(
+            denied(sys_mkdirat(&mut user, &mut host, AT_FDCWD, b"/locked/new", 0o755)),
+            Errno::EACCES,
+        );
+        assert_eq!(
+            denied(sys_rename(&mut user, &mut host, b"/locked/file", b"/mine/stolen")),
+            Errno::EACCES,
+        );
+        assert_eq!(
+            denied(sys_renameat(&mut user, &mut host, AT_FDCWD, b"/locked/file", AT_FDCWD, b"/mine/stolen")),
+            Errno::EACCES,
+        );
+        assert_eq!(denied(sys_symlink(&mut user, &mut host, b"x", b"/locked/link")), Errno::EACCES);
+        assert_eq!(
+            denied(sys_symlinkat(&mut user, &mut host, b"x", AT_FDCWD, b"/locked/link")),
+            Errno::EACCES,
+        );
+        assert_eq!(
+            denied(sys_link(&mut user, &mut host, b"/mine", b"/locked/hard")),
+            Errno::EACCES,
+        );
+        // Sticky /tmp: writable by everyone, but only the owner may remove.
+        assert_eq!(denied(sys_unlink(&mut user, &mut host, b"/tmp/perm-root-owned")), Errno::EPERM);
+        assert_eq!(
+            denied(sys_rename(&mut user, &mut host, b"/tmp/perm-root-owned", b"/tmp/perm-moved")),
+            Errno::EPERM,
+        );
+
+        // Nothing above changed the tree.
+        sys_lstat(&mut root, &mut host, b"/locked/file").unwrap();
+        sys_lstat(&mut root, &mut host, b"/locked/dir").unwrap();
+        sys_lstat(&mut root, &mut host, b"/tmp/perm-root-owned").unwrap();
+        assert_eq!(sys_lstat(&mut root, &mut host, b"/locked/new").unwrap_err(), Errno::ENOENT);
+        assert_eq!(sys_lstat(&mut root, &mut host, b"/mine/stolen").unwrap_err(), Errno::ENOENT);
+
+        // The same user may change entries in a directory it owns, and in /tmp
+        // may create and remove its own files.
+        sys_mkdir(&mut user, &mut host, b"/mine/sub", 0o755).unwrap();
+        sys_rename(&mut user, &mut host, b"/mine/sub", b"/mine/sub2").unwrap();
+        sys_rmdir(&mut user, &mut host, b"/mine/sub2").unwrap();
+        let fd = sys_open(&mut user, &mut host, b"/tmp/perm-user-owned", O_CREAT | O_RDWR, 0o644)
+            .unwrap();
+        sys_close(&mut user, &mut host, fd).unwrap();
+        sys_unlink(&mut user, &mut host, b"/tmp/perm-user-owned").unwrap();
+
+        // Root is not bound by either rule.
+        sys_unlink(&mut root, &mut host, b"/tmp/perm-root-owned").unwrap();
+        sys_unlink(&mut root, &mut host, b"/locked/file").unwrap();
     }
 
     /// Restore the rootfs enable flag and clear the store on drop (serial suite;
