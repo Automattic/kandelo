@@ -1209,7 +1209,10 @@ fn bounded_stack_effect(
             })],
         ),
         Instr::Load(load) => exact(1, vec![load_type(load.kind)]),
-        Instr::LoadSimd(_) => exact(1, vec![ValType::V128]),
+        Instr::LoadSimd(load) => match load_simd_effect(&load.kind) {
+            (pops, 0) => exact(pops, vec![]),
+            (pops, _) => exact(pops, vec![ValType::V128]),
+        },
         Instr::Store(_) | Instr::TableSet(_) => exact(2, vec![]),
         Instr::MemorySize(_) | Instr::TableSize(_) => exact(0, vec![ValType::I32]),
         Instr::MemoryGrow(_) => exact(1, vec![ValType::I32]),
@@ -1620,5 +1623,21 @@ mod tests {
         let (&value, _) = analysis.reference_locals.iter().next().unwrap();
         assert!(!call.live_ref_locals_on_normal_return.contains(&value));
         assert!(call.live_ref_locals_on_any_successor.contains(&value));
+    }
+}
+
+/// Operand-stack `(pops, pushes)` of a walrus `LoadSimd` instruction.
+///
+/// Splat, extending, and zero-filling loads take an address and produce a
+/// v128 (1 -> 1). Lane loads also take the v128 whose lane they replace
+/// (2 -> 1); lane stores take an address and a v128 and produce nothing
+/// (2 -> 0).
+pub(crate) fn load_simd_effect(kind: &walrus::ir::LoadSimdKind) -> (usize, usize) {
+    use walrus::ir::LoadSimdKind::*;
+    match kind {
+        V128Load8Lane(_) | V128Load16Lane(_) | V128Load32Lane(_) | V128Load64Lane(_) => (2, 1),
+        V128Store8Lane(_) | V128Store16Lane(_) | V128Store32Lane(_) | V128Store64Lane(_) => (2, 0),
+        Splat8 | Splat16 | Splat32 | Splat64 | V128Load8x8S | V128Load8x8U | V128Load16x4S
+        | V128Load16x4U | V128Load32x2S | V128Load32x2U | V128Load32Zero | V128Load64Zero => (1, 1),
     }
 }
