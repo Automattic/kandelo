@@ -102,11 +102,13 @@ part of the task. Build or fetch what is missing:
    npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
    (cd host && npm ci)
    ```
-4. **Prebuilt test binaries** the source build does not produce, e.g. the
-   MariaDB/Perl VFS images a few Vitest cases load:
-   ```bash
-   scripts/dev-shell.sh bash scripts/fetch-binaries.sh
-   ```
+4. **Package artifacts the suites load** — the MariaDB and Perl VFS images, the
+   program `.wasm` files, and the browser VFS products. `./run.sh setup` builds
+   all of them from source into `local-binaries/`; there is no separate fetch
+   step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
+   local-first; do not look for it. A single package can be resolved on demand
+   with `cargo xtask build-deps resolve <name>`, which prefers the per-user
+   cache and falls back to a source build.)
 5. **Program and test-fixture binaries** under `local-binaries/programs/` and
    `local-binaries/test-fixtures/` — `scripts/build-programs.sh` emits these,
    and several Vitest cases load them directly. The `exact-abi-source` suite,
@@ -116,7 +118,7 @@ part of the task. Build or fetch what is missing:
    `exec-state-tracking`, `spawn-*`, `vfork-production-mechanism`, and
    `demo-login-image` fail with `ENOENT`/`existsSync === false` that has nothing
    to do with your change. The same script builds `hello64.wasm`, the LP64
-   program the `wasm64` cases need and that `fetch-binaries.sh` does not carry:
+   program the `wasm64` cases need and that `./run.sh setup` does not build:
    ```bash
    scripts/dev-shell.sh bash scripts/build-programs.sh
    ```
@@ -132,9 +134,9 @@ part of the task. Build or fetch what is missing:
 After that the full suites run. Do **not** report "I can't run Vitest / the
 conformance suites / the browser" because a fresh worktree lacks artifacts —
 build or fetch them with the steps above, then run the suite and report the real
-result. If a suite genuinely cannot run (no network for `fetch-binaries.sh`, no
-display for browser tests, etc.), name the exact step that failed and why; that
-is different from validation being impossible.
+result. If a suite genuinely cannot run (no network for a package source
+download, no display for browser tests, etc.), name the exact step that failed
+and why; that is different from validation being impossible.
 
 Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for

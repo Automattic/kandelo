@@ -9,13 +9,15 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs.zst");
 
 describe.skipIf(!existsSync(rootfsImage))("PHP browser PHPT lazy assets", () => {
-  it("rewrites every canonical rootfs executable URL, including dash, ps, and pgrep", () => {
+  it("rewrites every canonical rootfs executable URL, including bash, ps, and pgrep", () => {
     const fs = MemoryFileSystem.fromImage(
       new Uint8Array(readFileSync(rootfsImage)),
     );
     const before = fs.exportLazyEntries();
     const expected = new Map([
-      ["/usr/bin/dash", "binaries/programs/wasm32/dash.wasm"],
+      // bash replaced dash as the only shell, including /bin/sh (PR #1403), so
+      // /usr/bin/dash is no longer a rootfs lazy entry.
+      ["/usr/bin/bash", "binaries/programs/wasm32/bash.wasm"],
       ["/usr/bin/ps", "binaries/programs/wasm32/posix-utils-lite/ps.wasm"],
       ["/usr/bin/pgrep", "binaries/programs/wasm32/posix-utils-lite/pgrep.wasm"],
       ["/usr/bin/sudo-lite", "binaries/programs/wasm32/sudo-lite.wasm"],

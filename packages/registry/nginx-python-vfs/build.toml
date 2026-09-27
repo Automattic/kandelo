@@ -13,8 +13,10 @@ inputs = [
   "images/vfs/lib/init/shell-binaries.ts",
   "images/rootfs/etc/services",
   "packages/registry/nginx-python-vfs/app",
-  # The image builder reaches shared VFS modules transitively; track the
-  # whole tree so cache identity cannot outlive either contract.
+  # images/vfs/scripts/python-bytecode-prewarm.ts boots a NodeKernelHost to
+  # prewarm .pyc files into the image, so the whole host runtime is part of
+  # this image's cache identity — the same reason nginx-php-vfs, lamp, and
+  # wordpress track the tree for their opcache prewarm.
   "host/src",
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",

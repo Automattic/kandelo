@@ -32,10 +32,7 @@ FUNCTIONAL_EXPECTED_FAIL=(
 )
 REGRESSION_EXPECTED_FAIL=(
     malloc-brk-fail
-    malloc-oom
-    pthread_create-oom
     raise-race
-    setenv-oom
     tls_get_new-dtv
     fflush-exit
     daemon-failure
@@ -94,6 +91,9 @@ CFLAGS_BASE=(
     --target=wasm32-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib -O2
+    # Same reason as scripts/run-libc-tests.sh: without it clang compiles
+    # libc-test's t_memfill() to return -1 unconditionally.
+    -fno-builtin-malloc
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
@@ -135,10 +135,14 @@ LINK_FLAGS=(
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
     mv "$wasm.instr" "$wasm"
+    abi_contract_stamp "$wasm"
 }
 
 TEST_TIMEOUT=30000  # ms (for browser runner)
@@ -239,6 +243,7 @@ if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 PASS=0
 FAIL=0

@@ -39,7 +39,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs.zst mount", 
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
 
     // Iteration: must see all 7 entries from images/rootfs/etc/passwd, in order.
-    expect(result.stdout).toContain("PWENT 0 name=root uid=0 gid=0 home=/root shell=/bin/sh");
+    expect(result.stdout).toContain("PWENT 0 name=root uid=0 gid=0 home=/root shell=/bin/bash");
     expect(result.stdout).toContain(
       "PWENT 1 name=daemon uid=1 gid=1 home=/usr/sbin shell=/usr/sbin/nologin",
     );
@@ -61,7 +61,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs.zst mount", 
     expect(result.stdout).toContain("PWENT count=7");
 
     // Targeted name lookups.
-    expect(result.stdout).toContain("PWNAM name=root uid=0 gid=0 home=/root shell=/bin/sh");
+    expect(result.stdout).toContain("PWNAM name=root uid=0 gid=0 home=/root shell=/bin/bash");
     expect(result.stdout).toContain(
       "PWNAM name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/bash",
     );
@@ -71,7 +71,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs.zst mount", 
     expect(result.stdout).toContain("PWNAM name=nonexistent-user-xyz result=NULL");
 
     // Targeted uid lookups.
-    expect(result.stdout).toContain("PWUID uid=0 name=root gid=0 home=/root shell=/bin/sh");
+    expect(result.stdout).toContain("PWUID uid=0 name=root gid=0 home=/root shell=/bin/bash");
     expect(result.stdout).toContain(
       "PWUID uid=1000 name=maker gid=1000 home=/home/maker shell=/bin/bash",
     );

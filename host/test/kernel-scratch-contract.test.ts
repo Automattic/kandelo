@@ -677,6 +677,13 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#killAllBlockedForTeardownWithinKernelEntry::kernel-export-direct-use::getExitStatus(registration.pid)",
   ),
+  // Same read as the sibling above, from the single-process teardown path
+  // added with the Safari/iOS machine-switch fix (PR #1410): a pid in, an
+  // exit-status scalar out, so the kernel can skip a process it already
+  // marked Exited.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#killBlockedProcessForTeardownWithinKernelEntry::kernel-export-direct-use::getExitStatus(pid)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#notifyThreadExitWithinKernelEntry::kernel-export-direct-use::threadExit(pid, tid)",
   ),

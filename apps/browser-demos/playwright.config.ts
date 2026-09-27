@@ -92,6 +92,23 @@ for (const key of browserEnvironmentKeys) {
   }
 }
 
+const sharedLaunchArgs =
+  protectedBrowserBaseUrl === undefined
+    ? []
+    : ["--proxy-bypass-list=<-loopback>"];
+
+// Chromium lets an origin with a history of audible playback (its Media
+// Engagement Index) start Web Audio without a user gesture. Playwright's
+// contexts share that history within one browser process, so after a test
+// plays sound, a later test on the same origin could find audio already
+// running, depending on which worker ran what first. Tests that assert the
+// no-gesture state (kandelo-audio-toast) need the policy a first-time
+// visitor gets, so turn off the engagement bypass for the test browser.
+const chromiumLaunchArgs = [
+  ...sharedLaunchArgs,
+  "--disable-features=MediaEngagementBypassAutoplayPolicies",
+];
+
 export default defineConfig({
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
@@ -118,10 +135,7 @@ export default defineConfig({
     // environment than Chromium/Firefox and can crash before navigation.
     launchOptions: {
       env: browserLaunchEnv,
-      args:
-        protectedBrowserBaseUrl === undefined
-        ? undefined
-        : ["--proxy-bypass-list=<-loopback>"],
+      args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
     },
     proxy:
       protectedBrowserBaseUrl === undefined
@@ -160,7 +174,11 @@ export default defineConfig({
       // which the modeset KMS pane relies on; the legacy headless
       // shell silently returns null for getContext("webgl2") on the
       // worker side.
-      use: { browserName: "chromium", channel: "chromium" },
+      use: {
+        browserName: "chromium",
+        channel: "chromium",
+        launchOptions: { env: browserLaunchEnv, args: chromiumLaunchArgs },
+      },
     },
     {
       name: "firefox",

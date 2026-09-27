@@ -28,10 +28,17 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
     .getByRole("button", { name: "Launch" })
     .click();
 
+  // The app rewrites the URL only after the new machine has booted (#1410),
+  // so a failed boot never leaves the address bar naming a machine that is
+  // not running. Shell and Node.js share one image, so waiting on `vfs`
+  // would pass on the pre-launch URL: wait on the profile instead.
   await expect
-    .poll(() => new URL(page.url()).searchParams.get("vfs"))
-    .toContain("/shell.vfs.zst");
+    .poll(() => new URL(page.url()).searchParams.get("profile"), {
+      timeout: 120_000,
+    })
+    .toBe("node");
   const url = new URL(page.url());
+  expect(url.searchParams.get("vfs")).toContain("/shell.vfs.zst");
   // The machine is named by the profile the IMAGE declares, not by an app-side
   // id: `&profile=` carries it. The image URL itself never carries a
   // fragment, and the removed `?demo=` must not come back.

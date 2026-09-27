@@ -65,6 +65,11 @@ IO_EXPECTED_FAIL=(
 )
 
 SIGNAL_EXPECTED_FAIL=()
+
+# Upstream tests that do not test a POSIX requirement on Kandelo are
+# reported as SKIP; see scripts/sortix-not-applicable.sh.
+source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
+
 PROCESS_EXPECTED_FAIL=()
 PATHS_EXPECTED_FAIL=()
 UDP_EXPECTED_FAIL=(
@@ -186,11 +191,18 @@ SO_LINK_FLAGS=(
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
+# The per-test budget in seconds. It is forwarded to examples/run-example.ts
+# as TIMEOUT (its own guest watchdog, 30 s by default, which exits 124 like
+# timeout(1)), so raising TEST_TIMEOUT really lets a slow guest run longer;
+# the outer kill gets a few seconds of grace behind it.
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 XFAIL_TIMEOUT=${XFAIL_TIMEOUT:-10}  # Shorter timeout for known-failing tests
 PARALLEL=${PARALLEL:-$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)}
@@ -625,6 +637,13 @@ _run_runtime_test_worker() {
     local result_dir="$3"
     local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
 
+    local skip_reason
+    skip_reason="$(not_applicable_reason "$suite" "$test_name")"
+    if [ -n "$skip_reason" ]; then
+        { echo "SKIP"; echo "$skip_reason"; } > "$result_dir/${test_name//\//__}.result"
+        return
+    fi
+
     local is_xfail=false
     if _check_xfail_serialized "$test_name" 2>/dev/null; then
         is_xfail=true
@@ -664,7 +683,8 @@ _run_runtime_test_worker() {
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
         KANDELO_RUNNER_VFS=isolated \
-        run_with_timeout "$this_timeout" node --experimental-wasm-exnref \
+        TIMEOUT="$((this_timeout * 1000))" \
+        run_with_timeout "$((this_timeout + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null >"$host_diagnostic_file" 2>&1)
     rc=$?
@@ -913,6 +933,11 @@ _collect_result() {
             RESULTS+=("XFAIL ${suite}/${test_name}")
             XFAIL=$((XFAIL + 1))
             ;;
+        SKIP)
+            echo "SKIP  ${suite}/${test_name} ($(sed -n 2p "$result_file"))"
+            RESULTS+=("SKIP  ${suite}/${test_name}")
+            SKIP=$((SKIP + 1))
+            ;;
         XPASS)
             echo "XPASS ${suite}/${test_name}"
             RESULTS+=("XPASS ${suite}/${test_name}")
@@ -1025,7 +1050,8 @@ run_suite() {
             "$CC" "${cflags[@]}" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
-            "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+            "$FORK_INSTRUMENT" "$wasm" -o "$wasm" || return 1
+            abi_contract_stamp "$wasm" || return 1
             # Build shared library (.so) if source has #ifdef SHARED
             if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
                 local so="$BUILD_DIR/$suite/${test_name}.so"
@@ -1045,7 +1071,7 @@ run_suite() {
         # Export everything needed by the worker function
         export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
         export -f _run_runtime_test_worker _run_runtime_test_with_private_fixture
-        export -f _check_xfail_serialized run_with_timeout
+        export -f _check_xfail_serialized run_with_timeout not_applicable_reason
 
         # Export serialized XFAIL list for this suite
         _export_xfail_for_suite "$suite"
@@ -1117,6 +1143,7 @@ if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 PASS=0
 FAIL=0

@@ -5397,6 +5397,7 @@ fn program_package_index_for_root_once(
     root: &Path,
     registry: &Registry,
 ) -> Result<ProgramPackageIndex, String> {
+    let _hash_pass = BuildInputHashPass::enter();
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|e| format!("resolve program registry root {}: {e}", root.display()))?;
     let mut first_existing_root = None;
@@ -7227,26 +7228,20 @@ struct CargoLockPackage {
     checksum: Option<String>,
 }
 
-const FORK_INSTRUMENT_CARGO_METADATA_ARGS: &[&str] =
-    &["metadata", "--format-version=1", "--locked"];
-
 fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
     // WHY: program cache paths have no build-host dimension. Filtering this
     // graph through the current macOS or Linux host made one source tree
     // compute different identities. Cargo's unfiltered graph is the stable
     // union, so any dependency that can build the instrumenter invalidates the
     // shared generation without making the key host-specific.
-    let output = Command::new("cargo")
-        .args(FORK_INSTRUMENT_CARGO_METADATA_ARGS)
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("run cargo metadata for fork-instrument cache key: {e}"))?;
-    fork_instrument_cargo_dependency_digest_from_output(root, output, None)
+    let output = crate::cargo_closure::cargo_metadata_output(root)
+        .map_err(|e| format!("fork-instrument cache key: {e}"))?;
+    fork_instrument_cargo_dependency_digest_from_output(root, &output, None)
 }
 
 fn fork_instrument_cargo_dependency_digest_from_output(
     root: &Path,
-    output: std::process::Output,
+    output: &std::process::Output,
     inert_source_root: Option<&Path>,
 ) -> Result<[u8; 32], String> {
     if !output.status.success() {
@@ -8628,10 +8623,71 @@ fn require_selected_registry_build_input(
     ))
 }
 
+thread_local! {
+    /// Digests already computed in the current projection pass; `None`
+    /// outside one. See [`BuildInputHashPass`].
+    static BUILD_INPUT_HASH_MEMO: std::cell::RefCell<
+        Option<std::collections::HashMap<PathBuf, [u8; 32]>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Scope inside which [`hash_build_input`] reuses a digest it already
+/// computed for the same path.
+///
+/// WHY: one program-package projection pass recomputes every package's cache
+/// key, and each key recursively recomputes its dependencies' keys. On the
+/// full registry that was 14,844 hashes of 284 distinct inputs — 612 MB read
+/// for 17 MB of distinct content — and the host resolver runs that pass on
+/// every `resolveBinary` of a program. Nothing is built or written inside a
+/// pass, so an input cannot change between two reads within it.
+///
+/// The scope is deliberately one pass, not the whole projection:
+/// [`program_package_index_for_root_with`] computes the projection twice and
+/// compares the results to catch a registry changing underneath it. A memo
+/// spanning both passes would replay first-pass digests into the second and
+/// make that comparison unable to fail for an edited build input.
+struct BuildInputHashPass {
+    outermost: bool,
+}
+
+impl BuildInputHashPass {
+    fn enter() -> Self {
+        let outermost = BUILD_INPUT_HASH_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            if memo.is_none() {
+                *memo = Some(std::collections::HashMap::new());
+                true
+            } else {
+                false
+            }
+        });
+        Self { outermost }
+    }
+}
+
+impl Drop for BuildInputHashPass {
+    fn drop(&mut self) {
+        if self.outermost {
+            BUILD_INPUT_HASH_MEMO.with(|memo| *memo.borrow_mut() = None);
+        }
+    }
+}
+
 fn hash_build_input(path: &Path) -> Result<[u8; 32], String> {
+    if let Some(digest) = BUILD_INPUT_HASH_MEMO
+        .with(|memo| memo.borrow().as_ref().and_then(|memo| memo.get(path).copied()))
+    {
+        return Ok(digest);
+    }
     let mut h = Sha256::new();
     hash_build_input_entry(&mut h, path, path)?;
-    Ok(h.finalize().into())
+    let digest: [u8; 32] = h.finalize().into();
+    BUILD_INPUT_HASH_MEMO.with(|memo| {
+        if let Some(memo) = memo.borrow_mut().as_mut() {
+            memo.insert(path.to_path_buf(), digest);
+        }
+    });
+    Ok(digest)
 }
 
 fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<(), String> {
@@ -22060,6 +22116,57 @@ wasm = "changing-command.wasm"
     }
 
     #[test]
+    fn program_package_projection_rejects_a_build_input_edit_between_snapshots() {
+        // Guards BuildInputHashPass's scope. A hash memo spanning both snapshot
+        // passes would replay the first pass's digest into the second and
+        // hide this edit; the edited input is a dependency's, so the edit only
+        // reaches `command` through the recursive dependency key.
+        let root = tempdir("program-projection-build-input-mutation");
+        write(&root, "dependency", "1.0.0", &[]);
+        write_build_with_input(&root, "dependency", 1, "recipe.txt", "dependency-one\n");
+        write_program(
+            &root,
+            "command",
+            "1.0.0",
+            &["dependency@1.0.0"],
+            ":",
+            &[("command", "command.wasm")],
+        );
+        write_build_with_input(&root, "command", 1, "recipe.txt", "command-one\n");
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let recipe = root.join("dependency").join("recipe.txt");
+        let mut mutate = || fs::write(&recipe, "dependency-two\n").unwrap();
+
+        let error = program_package_index_for_root_with(&root, &registry, &mut mutate)
+            .unwrap_err();
+        assert!(
+            error.contains("registry changed while generating"),
+            "got: {error}",
+        );
+    }
+
+    #[test]
+    fn build_input_hash_memo_is_scoped_to_one_pass() {
+        let root = tempdir("build-input-hash-memo-scope");
+        let input = root.join("input.txt");
+        fs::write(&input, "one\n").unwrap();
+        let (first, second_in_pass) = {
+            let _pass = BuildInputHashPass::enter();
+            let first = hash_build_input(&input).unwrap();
+            fs::write(&input, "two\n").unwrap();
+            (first, hash_build_input(&input).unwrap())
+        };
+        assert_eq!(first, second_in_pass, "a pass reuses the digest it computed");
+        assert_ne!(
+            hash_build_input(&input).unwrap(),
+            first,
+            "outside a pass every call reads the file",
+        );
+    }
+
+    #[test]
     fn program_package_projection_rejects_cross_package_mirror_collisions() {
         let registry = tempdir("program-projection-collision");
         for package in ["first", "second"] {
@@ -23503,12 +23610,12 @@ version = "0.1.0"
     #[test]
     fn fork_instrument_dependency_metadata_is_not_build_host_filtered() {
         assert_eq!(
-            FORK_INSTRUMENT_CARGO_METADATA_ARGS,
+            crate::cargo_closure::CARGO_METADATA_ARGS,
             ["metadata", "--format-version=1", "--locked"],
             "shared package cache keys must hash Cargo's cross-host dependency union"
         );
         assert!(
-            !FORK_INSTRUMENT_CARGO_METADATA_ARGS.contains(&"--filter-platform"),
+            !crate::cargo_closure::CARGO_METADATA_ARGS.contains(&"--filter-platform"),
             "a host-filtered dependency graph gives macOS and Linux different package identities"
         );
     }

@@ -199,11 +199,8 @@ then to a source build via the per-library `build-<name>.sh`. See
 [docs/package-management.md](docs/package-management.md) for the
 full schema, resolution order, and release-archive contract.
 
-If you prefer to skip cargo-driven dep resolution and pull every
-pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
-`./run.sh setup`. It walks every `packages/registry/<pkg>/package.toml`
-with a `[binary.<arch>]` block and resolves the archives into the
-content-addressed cache plus `binaries/programs/<arch>/` symlinks.
+`./run.sh setup` already resolves every registry package this way, so a
+fresh checkout needs no separate fetch step.
 
 To source-build the current seven browser VFS products and their declared
 dependency graph, use the local DAG builder from the repository root:

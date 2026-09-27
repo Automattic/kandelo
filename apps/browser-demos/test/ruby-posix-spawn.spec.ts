@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { devServerAssetUrl } from "./support/dev-server-assets";
+import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,8 +25,8 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
 const rubyBinaryPath = tryResolveBinary("programs/ruby/ruby.wasm");
-const execChildBinaryPath = tryResolveBinary("programs/exec-child.wasm");
-const artifactsAvailable = rubyBinaryPath !== null && execChildBinaryPath !== null;
+const execChildBinaryPath = buildProgramsFixture("programs/wasm32/exec-child.wasm");
+const artifactsAvailable = rubyBinaryPath !== null;
 const browserKernelModulePath = resolve(
   repoRoot,
   "host/src/browser-kernel-host.ts",
@@ -72,7 +74,7 @@ async function runRubyCases(
   baseURL: string,
   cases: readonly RubyBrowserCase[],
 ): Promise<RubyBrowserResult[]> {
-  if (rubyBinaryPath === null || execChildBinaryPath === null) {
+  if (rubyBinaryPath === null) {
     throw new Error("browser fixture unavailable");
   }
   await page.route("**/favicon.ico", (route) =>
@@ -216,13 +218,15 @@ async function runRubyCases(
       // This focused runtime test already selected exact artifacts through
       // Kandelo's resolver and must not require unrelated demo packages such
       // as Bash merely to transfer those bytes into a browser worker.
-      rubyUrl: asViteFsUrl(rubyBinaryPath),
+      rubyUrl: await devServerAssetUrl(page, "@binaries/programs/wasm32/ruby/ruby.wasm"),
       execChildUrl: asViteFsUrl(execChildBinaryPath),
       executable: RUBY_VFORK_EXECUTABLE,
       cases,
     },
   );
 }
+
+test.beforeAll(() => requireBuiltFixtures([execChildBinaryPath]));
 
 test("Ruby uid 1000 selects upstream vfork in every browser engine", async ({
   page,
