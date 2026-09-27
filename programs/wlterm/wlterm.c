@@ -103,11 +103,18 @@ int main(int argc, char **argv) {
     pid_t pid = forkpty(&master, NULL, NULL, &ws);
     if (pid < 0) { perror("forkpty"); return 1; }
     if (pid == 0) {
-        /* Child: exec argv[ai..], defaulting to an interactive dash. */
+        /* Child: exec argv[ai..], else `sh`.
+         *
+         * `sh` is the one shell name POSIX guarantees, and it is what this
+         * image provides. The previous default was "dash", which this image
+         * does not ship at all -- wlterm exited 127 the moment it started
+         * and took the whole desktop down with it. Resolving through PATH
+         * means whatever the image makes `sh` (bash here) is what runs; the
+         * terminal has no business preferring one shell binary over it. */
         if (ai < argc) {
             execvp(argv[ai], &argv[ai]);
         } else {
-            char *sh[] = {"dash", NULL};
+            char *sh[] = {"sh", NULL};
             execvp(sh[0], sh);
         }
         perror("execvp");

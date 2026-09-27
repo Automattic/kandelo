@@ -3,24 +3,24 @@
 #
 # The compositor must be up before any client connects: it takes DRM master
 # on /dev/dri/card0, creates the wl_shm/xdg-shell globals, and binds the
-# socket the clients dial. Waiting on the SOCKET rather than sleeping keeps
-# this correct on a slow first boot instead of merely usually correct.
+# socket the clients dial.
+#
+# That socket path is FIXED at /tmp/wayland-0, in both wlcompositor and
+# libkwl -- neither reads XDG_RUNTIME_DIR. Under this kernel / is a
+# read-only rootfs and /var/run is root-owned 0755, so /tmp (mode 1777) is
+# the only directory any uid can write; it plays the XDG_RUNTIME_DIR role.
+# Waiting on the SOCKET rather than sleeping keeps this correct on a slow
+# first boot instead of merely usually correct.
 set -u
 
-: "${XDG_RUNTIME_DIR:=/run/user/0}"
-: "${WAYLAND_DISPLAY:=wayland-0}"
-export XDG_RUNTIME_DIR WAYLAND_DISPLAY
-mkdir -p "$XDG_RUNTIME_DIR"
-
-SOCKET="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-rm -f "$SOCKET"
+SOCKET=/tmp/wayland-0
 
 wlcompositor &
 compositor_pid=$!
 
-# Give the compositor up to ~10s to bind. Each iteration also re-checks that
-# it is still alive, so a compositor that dies during startup reports that
-# failure instead of hanging until the timeout.
+# Give the compositor up to ~10s to bind. Each iteration re-checks that it is
+# still alive, so a compositor that dies during startup reports that failure
+# instead of hanging until the timeout.
 i=0
 while [ ! -e "$SOCKET" ]; do
     if ! kill -0 "$compositor_pid" 2>/dev/null; then

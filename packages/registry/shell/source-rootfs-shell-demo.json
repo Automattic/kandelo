@@ -231,13 +231,12 @@
     "wayland": {
       "identity": {
         "title": "Wayland desktop",
-        "summary": "A real Wayland stack on /dev/dri/card0: wlcompositor (a wl_shm and xdg-shell server driving KMS) composites three clients — wlclock, wlpaint, and wlterm, a VT100 terminal on the in-tree libkwl toolkit running a forkpty'd dash shell. Type to drive the shell; drag a titlebar to move a window.",
+        "summary": "A real Wayland stack on /dev/dri/card0: wlcompositor (a wl_shm and xdg-shell server driving KMS) composites three clients — wlclock, wlpaint, and wlterm, a VT100 terminal on the in-tree libkwl toolkit running a forkpty'd shell. Type to drive the shell; drag a titlebar to move a window.",
         "accent": "#3a7d7b",
         "glyph": "W",
         "packages": [
           "bash@local",
-          "coreutils@local",
-          "dash@local"
+          "coreutils@local"
         ]
       },
       "runtime": {
