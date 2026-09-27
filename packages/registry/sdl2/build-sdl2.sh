@@ -117,6 +117,13 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
 # variables short-circuits the lookup (acinclude/pkg.m4, _PKG_CONFIG's
 # first branch).
 #
+# --enable-render: ffplay (and any SDL program using SDL_CreateRenderer)
+# draws every frame through SDL's render API. It was disabled only because
+# this package began audio-only and its first video consumer draws with
+# GLES2 directly. On Kandelo the GLES2 renderer presents through the
+# browser's WebGL; KMSDRM has no window framebuffer, so SDL's software
+# renderer cannot present without GL (the Node host has none).
+#
 # SDL_VIDEO_STATIC_ANGLE forces src/video/SDL_egl.c's LOAD_FUNC macro
 # down its static-link branch, so `_this->egl_data->eglFoo` binds to the
 # libEGL.a symbol instead of going through SDL_LoadFunction. With
@@ -164,7 +171,7 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
         --enable-video-opengl-es2 \
         --enable-events \
         --enable-input-events \
-        --disable-render \
+        --enable-render \
         --disable-joystick \
         --disable-haptic \
         --disable-hidapi \
@@ -278,10 +285,16 @@ test -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
 # library that links but cannot open a window. Fail the build instead.
 for feature in SDL_VIDEO_DRIVER_KMSDRM SDL_VIDEO_DRIVER_WAYLAND \
     SDL_VIDEO_OPENGL_ES2 SDL_VIDEO_OPENGL_EGL SDL_INPUT_LINUXEV \
-    SDL_AUDIO_DRIVER_OSS; do
+    SDL_AUDIO_DRIVER_OSS SDL_VIDEO_RENDER_OGL_ES2; do
     grep -q "^#define $feature 1" "$INSTALL_DIR/include/SDL2/SDL_config.h" || {
         echo "ERROR: configure did not enable $feature" >&2
         exit 1
     }
 done
+# The render subsystem (SDL_CreateRenderer and friends) must be compiled in:
+# ffplay and other SDL programs draw every frame through it.
+if grep -q "^#define SDL_RENDER_DISABLED 1" "$INSTALL_DIR/include/SDL2/SDL_config.h"; then
+    echo "ERROR: SDL's render subsystem is disabled" >&2
+    exit 1
+fi
 echo "==> SDL2 static package complete (KMSDRM + Wayland video, evdev input, OSS audio)"

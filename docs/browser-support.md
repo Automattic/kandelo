@@ -2095,6 +2095,25 @@ exits can exceed it. JavaScript cannot hard-bound native backing that the
 browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
+### SDL rendering needs GL, which only the browser host provides
+
+SDL2 on Kandelo presents video through its KMSDRM backend with the OpenGL ES 2
+renderer, which the browser host bridges to WebGL on the `/dev/dri/card0`
+scanout. The Node host has no GL context (`host_gl_query` returns -1), and SDL2's
+KMSDRM backend implements no window framebuffer, so SDL's software renderer
+cannot present there either. A program that creates an SDL renderer therefore
+shows video only in the browser. On Node, `ffplay` reports
+`Failed to create window or renderer: Couldn't find matching render driver` and
+exits as upstream does (status 0); `ffplay -nodisp` still plays audio through
+SDL's OSS backend to `/dev/dsp`, and FFmpeg's own `fbdev` and `oss` outputs work
+on both hosts.
+
+Why not a Node software path: it would need either a GL implementation on the
+Node host or a KMSDRM window framebuffer in SDL, and SDL's KMSDRM backend has no
+framebuffer path upstream. Residual risk: an SDL program that falls back from a
+failed renderer differently from ffplay may behave differently on Node than in
+the browser.
+
 ### npm registry access in the browser
 
 The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.
