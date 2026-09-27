@@ -334,7 +334,7 @@ export const SHARED_LINK_FLAGS: string[] = [
   '-Wl,--shared',
   '-Wl,--shared-memory',
   '-Wl,--export-all',
-  '-Wl,--allow-undefined',
+  '-Wl,--allow-undefined', // side-module: dynamic linking resolves at dlopen
 ];
 
 const IGNORED_EXACT = new Set([

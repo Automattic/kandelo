@@ -183,7 +183,7 @@ LINK_POST_LIBS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,-z,stack-size=8388608
-    -Wl,--allow-undefined
+    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--growable-table
@@ -193,7 +193,6 @@ LINK_POST_LIBS=(
     -Wl,--export=__tls_align
     -Wl,--export=__stack_pointer
     -Wl,--export=__wasm_thread_init
-    -Wl,--export=__abi_version
 )
 
 # Fork support comes from wasm-fork-instrument. The tool auto-discovers
@@ -906,6 +905,25 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
                 "$SYSROOT/lib/libffi.a"
             ;;
+        f_01_ucontext_get.c|f_02_ucontext_makeswap.c)
+            # ucontext (getcontext/makecontext/swapcontext/setcontext) is a
+            # documented unsupported API (docs/posix-status.md), and libc has
+            # no such symbols. Since ABI 46 links are honest, so the boundary
+            # shows up where it belongs: these fixtures must FAIL to link on
+            # exactly those symbols. If one ever links, revisit the boundary.
+            local_log="$(mktemp)"
+            if "$CC" "${CFLAGS[@]}" "${LINK_PRE_LIBS[@]}" "$src" "${LINK_POST_LIBS[@]}" \
+                    -o "$(mktemp -d)/ucontext.wasm" >"$local_log" 2>&1; then
+                echo "Error: $(basename "$src") linked, but ucontext is documented as unsupported" >&2
+                rm -f "$local_log"; exit 1
+            fi
+            if ! grep -qE 'undefined symbol: (getcontext|makecontext|swapcontext|setcontext)$' "$local_log"; then
+                echo "Error: $(basename "$src") failed to link for an unexpected reason:" >&2
+                cat "$local_log" >&2; rm -f "$local_log"; exit 1
+            fi
+            rm -f "$local_log"
+            echo "  $(basename "$src" .c): does not link (ucontext unsupported) — as expected"
+            ;;
         posix-timer-thread.c)
             # Keep the fixture's pthread capacity small so its timer-helper
             # churn test proves detached helpers are actually reclaimed.
@@ -1340,7 +1358,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--shared-memory
         -Wl,--max-memory=1073741824
         -Wl,-z,stack-size=8388608
-        -Wl,--allow-undefined
+        -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
         -Wl,--table-base=3
         -Wl,--export-table
         -Wl,--growable-table
@@ -1350,7 +1368,6 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--export=__tls_align
         -Wl,--export=__stack_pointer
         -Wl,--export=__wasm_thread_init
-        -Wl,--export=__abi_version
     )
 
     for src in \

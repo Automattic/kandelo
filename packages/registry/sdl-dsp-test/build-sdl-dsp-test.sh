@@ -37,10 +37,8 @@ REPRO_FLAGS=(
 
 # libSDL2.a is built with the KMSDRM video backend, so it references
 # libdrm, libgbm and (through SDL_egl.c's SDL_VIDEO_STATIC_ANGLE path)
-# EGL/GLES2 even in a fixture that only ever calls SDL_INIT_AUDIO. Leaving
-# them off the link does not fail: `-Wl,--allow-undefined` turns each one
-# into an `env.*` import the host resolves to a throwing stub. Link the
-# sysroot libraries SDL2 actually calls into.
+# EGL/GLES2 even in a fixture that only ever calls SDL_INIT_AUDIO, so the
+# link fails unless the sysroot libraries SDL2 calls into are linked too.
 SDL2_PLATFORM_LIBS="$(wasm32posix-pkg-config --libs gbm libdrm egl glesv2)"
 # libSDL2.a includes the Wayland video backend, which calls into
 # libwayland-{client,egl,cursor} and libxkbcommon, and libwayland-client

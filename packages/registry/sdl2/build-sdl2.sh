@@ -227,8 +227,9 @@ rm -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc.bak"
 # src/video/SDL_egl.c bind `eglFoo` as a direct symbol reference instead of
 # an SDL_LoadFunction lookup. libSDL2.a therefore has hard undefined
 # references to EGL and GLES2, and consumers that link through this file must
-# be told so. Without it, `-Wl,--allow-undefined` turns each one into an
-# `env.*` import that traps the first time a window is created. The same
+# be told so. Without it their links fail on the undefined EGL/GLES2
+# symbols (before ABI 46, `--allow-undefined` turned each into an `env.*`
+# import that trapped the first time a window was created). The same
 # holds for libffi: configure's Libs names the static Wayland archives, but
 # libwayland-client marshals every request through ffi_call, and nothing
 # else would tell a consumer to link it.

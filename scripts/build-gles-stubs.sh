@@ -54,9 +54,9 @@ STAMP="$SYSROOT/.kandelo-gles-stubs.input-hash"
 # Same freshness contract as scripts/build-dri-stubs.sh: a sysroot that
 # already has libc.a is only header-resynced by `xtask bootstrap sysroot`,
 # so without a recorded digest these archives can stay older than the glue
-# they are built from. `-Wl,--allow-undefined` then turns each entry point
-# the stale archive lacks into an `env.*` import that traps at call time
-# instead of failing the link.
+# they are built from, and every entry point a stale archive lacks fails the
+# link of each program that uses it (before ABI 46, `--allow-undefined`
+# turned it into an `env.*` import that trapped at call time instead).
 GLES_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
     scripts/build-gles-stubs.sh \
     scripts/write-graphics-pkgconfig.sh \
