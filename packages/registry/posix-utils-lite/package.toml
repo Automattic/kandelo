@@ -49,16 +49,8 @@ name = "ed"
 wasm = "ed.wasm"
 
 [[outputs]]
-name = "ex"
-wasm = "ex.wasm"
-
-[[outputs]]
 name = "fuser"
 wasm = "fuser.wasm"
-
-[[outputs]]
-name = "gencat"
-wasm = "gencat.wasm"
 
 [[outputs]]
 name = "getconf"
@@ -67,10 +59,6 @@ wasm = "getconf.wasm"
 [[outputs]]
 name = "gettext"
 wasm = "gettext.wasm"
-
-[[outputs]]
-name = "iconv"
-wasm = "iconv.wasm"
 
 [[outputs]]
 name = "ipcrm"
@@ -91,14 +79,6 @@ wasm = "locale.wasm"
 [[outputs]]
 name = "logger"
 wasm = "logger.wasm"
-
-[[outputs]]
-name = "man"
-wasm = "man.wasm"
-
-[[outputs]]
-name = "more"
-wasm = "more.wasm"
 
 [[outputs]]
 name = "msgfmt"

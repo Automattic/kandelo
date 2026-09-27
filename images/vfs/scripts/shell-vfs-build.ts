@@ -30,7 +30,8 @@ import {
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
 import {
-  displacePosixUtilsLiteManApplet,
+  aliasExToArchiveVim,
+  displaceRootfsMan,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerShellProfileScripts,
@@ -649,10 +650,10 @@ function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
 
   symlink(fs, "/usr/bin/lsof", "/bin/lsof");
 
-  // posix-utils-lite's raw `man` applet already ships /bin/man as a symlink
-  // to /usr/bin/man (see displacePosixUtilsLiteManApplet). This alias is a
-  // no-op there (symlink() swallows EEXIST) and is load-bearing for the
-  // from-scratch composition path, where no applet has claimed /bin/man yet.
+  // The base rootfs already ships /bin/man as a symlink to /usr/bin/man (see
+  // displaceRootfsMan). This alias is a no-op there (symlink() swallows
+  // EEXIST) and is load-bearing for the from-scratch composition path, where
+  // no rootfs has claimed /bin/man yet.
   symlink(fs, "/usr/bin/man", "/bin/man");
 }
 
@@ -774,6 +775,7 @@ function populateVimArchive(
     SHELL_LAZY_ARCHIVE_SPECS[0],
     resolveArtifact,
   );
+  aliasExToArchiveVim(fs);
 }
 
 function populateNetHackArchive(
@@ -835,9 +837,9 @@ function populateManArchive(
   fs: MemoryFileSystem,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
-  // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man on a
-  // baseProvided rootfs; clear it first so mandoc's formatting `man` wins.
-  displacePosixUtilsLiteManApplet(fs);
+  // The rootfs's standalone mandoc may already occupy /usr/bin/man on a
+  // baseProvided rootfs; clear it first so the archive's `man` claims it.
+  displaceRootfsMan(fs);
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[6],

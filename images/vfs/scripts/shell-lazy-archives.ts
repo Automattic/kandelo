@@ -263,22 +263,43 @@ export function registerManShellProfile(fs: MemoryFileSystem): void {
 }
 
 /**
- * posix-utils-lite installs a raw `man` applet at /usr/bin/man in the base
- * rootfs (cats the raw troff source with no formatting). The mandoc
- * lazy-archive's `bin/man` member mounts a formatting `man` front-end at the
- * exact same path, so registering the archive over an existing applet would
- * throw EEXIST. Clear the applet's entry first so the archive's own symlink
- * can claim /usr/bin/man — mandoc must win. /bin/man is an existing symlink
- * to /usr/bin/man (not a separate inode), so it needs no separate removal:
- * it keeps resolving to whatever now lives at /usr/bin/man.
+ * The base rootfs installs mandoc's `man` front-end at /usr/bin/man as a
+ * standalone lazy file. The mandoc lazy-archive carries the same program
+ * together with bin/mandoc and etc/man.conf, and its `bin/man` member mounts
+ * at the exact same path, so registering the archive over the rootfs file
+ * would throw EEXIST. Clear the rootfs entry first so the archive's own
+ * symlink claims /usr/bin/man and the shell image carries one mandoc, not
+ * two. /bin/man is an existing symlink to /usr/bin/man (not a separate
+ * inode), so it needs no separate removal: it keeps resolving to whatever
+ * now lives at /usr/bin/man.
  */
-export function displacePosixUtilsLiteManApplet(fs: MemoryFileSystem): void {
+export function displaceRootfsMan(fs: MemoryFileSystem): void {
   try {
     fs.lstat("/usr/bin/man");
   } catch {
     return;
   }
   fs.unlink("/usr/bin/man");
+}
+
+/**
+ * The base rootfs installs Vim as ex(1): a standalone lazy file at
+ * /usr/bin/ex holding the same vim.wasm the Vim lazy-archive mounts at
+ * /usr/bin/vim. Vim run as ex still reads its runtime (defaults.vim) from the
+ * archive, so keeping the rootfs file would make `ex` in a shell image
+ * download the Vim binary twice. Point /usr/bin/ex at the archive's vim, the
+ * way /usr/bin/vi already is; Vim picks Ex mode from argv[0], which the
+ * symlink preserves. Call only after the Vim archive is registered.
+ */
+export function aliasExToArchiveVim(fs: MemoryFileSystem): void {
+  let present = true;
+  try {
+    fs.lstat("/usr/bin/ex");
+  } catch {
+    present = false;
+  }
+  if (present) fs.unlink("/usr/bin/ex");
+  fs.symlink("/usr/bin/vim", "/usr/bin/ex");
 }
 
 export interface DeclaredShellLazyArchive {

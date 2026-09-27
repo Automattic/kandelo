@@ -479,30 +479,36 @@ function optionalLazyIdentity(
 }
 
 /**
- * posix-utils-lite's raw `man` applet (cats the unformatted troff source) may
- * already occupy /usr/bin/man on the imported rootfs. The mandoc lazy-archive
- * (registered by populateSourceRootfsShellOverlay) mounts a formatting `man`
- * front-end at the exact same path and is meant to win, superseding the
- * applet's lazy identity there — an intentional identity change, exactly
- * like Bash's lazy-to-eager materialization above. Verify the supersession
- * actually happened rather than silently accepting either an unrelated
- * change or no change at all.
+ * Rootfs programs a shell lazy-archive supersedes at the same VFS path. The
+ * imported rootfs installs each as a standalone lazy file; the overlay
+ * (populateSourceRootfsShellOverlay) replaces it with a symlink into the
+ * archive that carries the same program, so the image holds one copy:
+ *
+ * - /usr/bin/man: the mandoc archive mounts its own `bin/man` (with
+ *   bin/mandoc and etc/man.conf) there.
+ * - /usr/bin/ex: aliased to the Vim archive's /usr/bin/vim, like vi.
+ *
+ * Each is an intentional identity change, exactly like Bash's lazy-to-eager
+ * materialization above.
  */
-function requireManSupersededByMandoc(
+const ARCHIVE_SUPERSEDED_ROOTFS_PROGRAMS = ["/usr/bin/man", "/usr/bin/ex"];
+
+/**
+ * Verify a rootfs program was superseded by an archive symlink, rather than
+ * silently accepting either an unrelated change or no change at all.
+ */
+function requireSupersededByArchive(
   fs: MemoryFileSystem,
+  path: string,
   priorIdentity: LazyIdentity | null,
 ): void {
   if (priorIdentity === null) return;
-  const stat = fs.lstat("/usr/bin/man");
+  const stat = fs.lstat(path);
   if ((stat.mode & FILE_TYPE_MASK) !== SYMBOLIC_LINK_MODE) {
-    throw new Error(
-      "/usr/bin/man must be superseded by the mandoc archive's symlink",
-    );
+    throw new Error(`${path} must be superseded by a lazy-archive symlink`);
   }
   if (sameLazyIdentity(stat, priorIdentity)) {
-    throw new Error(
-      "/usr/bin/man still resolves to the posix-utils-lite applet",
-    );
+    throw new Error(`${path} still resolves to the rootfs's standalone copy`);
   }
 }
 
@@ -772,14 +778,18 @@ export async function buildSourceRootfsShellImage(
     requireImageExecutable(fs, terminalSession.afterExit);
   }
   const sourceBash = requireLazyBashIdentity(fs);
-  // WHY: mandoc is expected to supersede posix-utils-lite's raw `man` applet
-  // at the same VFS path (see requireManSupersededByMandoc below). Capture
-  // its prior identity now, alongside Bash's, so the overlay's "nothing else
-  // changed" check does not flag this one intentional supersession.
-  const priorManIdentity = optionalLazyIdentity(fs, "/usr/bin/man");
+  // WHY: shell lazy-archives are expected to supersede some rootfs programs
+  // at the same VFS path (see ARCHIVE_SUPERSEDED_ROOTFS_PROGRAMS). Capture
+  // their prior identities now, alongside Bash's, so the overlay's "nothing
+  // else changed" check does not flag these intentional supersessions.
+  const priorSupersededIdentities = ARCHIVE_SUPERSEDED_ROOTFS_PROGRAMS.map(
+    (path) => [path, optionalLazyIdentity(fs, path)] as const,
+  );
   const omittedLazyIdentities = [
     sourceBash.identity,
-    ...(priorManIdentity ? [priorManIdentity] : []),
+    ...priorSupersededIdentities.flatMap(([, identity]) =>
+      identity ? [identity] : []
+    ),
   ];
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
@@ -811,7 +821,9 @@ export async function buildSourceRootfsShellImage(
     fs,
     "production shell overlay",
   );
-  requireManSupersededByMandoc(fs, priorManIdentity);
+  for (const [path, identity] of priorSupersededIdentities) {
+    requireSupersededByArchive(fs, path, identity);
+  }
   requireCompleteProductShellContract(fs);
 
   ensureDirRecursive(fs, "/usr/local/bin");

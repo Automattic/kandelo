@@ -413,7 +413,6 @@ for packer_support in \
 done
 : >"$composed_repo/host/wasm/rootfs.vfs"
 for required in \
-    gencat.wasm \
     pthread_channel_reuse_test.wasm \
     wait_lifecycle_test.wasm; do
     : >"$composed_repo/examples/$required"

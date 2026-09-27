@@ -18,6 +18,11 @@ depends_on = [
   "make@4.4.1",
   "findutils@4.10.0",
   "diffutils@3.10",
+  "mandoc@1.14.6",
+  "less@668",
+  "vim@9.1.0900",
+  "iconv@1.17",
+  "gencat@15.1.1",
   "posix-utils-lite@0.1.0",
 ]
 

@@ -2831,7 +2831,6 @@ exit 2
 
     for (const relPath of [
       "host/wasm/rootfs.vfs.zst",
-      "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
       "examples/wait_lifecycle_test.wasm",
       ...memory64ExampleOutputs,

@@ -51,7 +51,20 @@ const supportablePosixUtilities = [
   "yacc",
 ];
 
-const existingPackageUtilities = new Set(["awk", "cmp", "diff", "find", "tabs", "tput", "xargs"]);
+const existingPackageUtilities = new Set([
+  "awk",
+  "cmp",
+  "diff",
+  "ex",
+  "find",
+  "gencat",
+  "iconv",
+  "man",
+  "more",
+  "tabs",
+  "tput",
+  "xargs",
+]);
 
 function quotedValues(text: string): string[] {
   return [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
@@ -88,5 +101,10 @@ describe("rootfs package composition", () => {
       .filter((utility) => !outputs.has(utility));
 
     expect(missing).toEqual([]);
+
+    // A utility an upstream package now supplies must not also ship from
+    // posix-utils-lite, or two packages would claim the same /usr/bin path.
+    const duplicated = [...outputs].filter((utility) => existingPackageUtilities.has(utility));
+    expect(duplicated).toEqual([]);
   });
 });
