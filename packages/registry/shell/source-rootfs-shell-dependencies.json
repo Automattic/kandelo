@@ -32,11 +32,6 @@
       "role": "eager-program"
     },
     {
-      "name": "evdev-demo",
-      "version": "0.1.0",
-      "role": "eager-program"
-    },
-    {
       "name": "espeak-ng",
       "version": "1.52.0",
       "role": "eager-program"

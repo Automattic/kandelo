@@ -55,10 +55,6 @@
     },
     {
       "product": "browser-main-shell",
-      "profile": "evdev"
-    },
-    {
-      "product": "browser-main-shell",
       "profile": "espeak"
     }
   ]

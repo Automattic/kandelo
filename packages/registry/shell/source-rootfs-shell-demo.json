@@ -175,35 +175,6 @@
         "internalsAccess": "drawer"
       }
     },
-    "evdev": {
-      "identity": {
-        "title": "Evdev input log",
-        "summary": "Keystrokes + pointer motion captured from the DOM and replayed through /dev/input/event{0,1}.",
-        "accent": "#7e57c2",
-        "glyph": "E",
-        "packages": [
-          "bash@local",
-          "coreutils@local"
-        ]
-      },
-      "runtime": {
-        "features": [
-          "evdev-input"
-        ]
-      },
-      "init": {
-        "shellCommand": "/usr/local/bin/evdev_demo"
-      },
-      "presentation": {
-        "bootPrimary": "syslog",
-        "runningPrimary": [
-          "terminal",
-          "syslog"
-        ],
-        "terminalAccess": "primary",
-        "internalsAccess": "drawer"
-      }
-    },
     "espeak": {
       "identity": {
         "title": "OSS - Espeak-NG",

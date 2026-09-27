@@ -75,7 +75,6 @@ export interface SourceRootfsShellInputs {
   wlclockPath: string;
   wlpaintPath: string;
   wldesktopPath: string;
-  evdevDemoPath: string;
   espeakNgPath: string;
   espeakNgDataPath: string;
   demoConfigPath: string;
@@ -803,10 +802,6 @@ export async function buildSourceRootfsShellImage(
     inputs.wldesktopPath,
     "wldesktop launcher dependency",
   );
-  const evdevDemo = readRegularInput(
-    inputs.evdevDemoPath,
-    "evdev_demo dependency",
-  );
   const espeakNg = readRegularInput(inputs.espeakNgPath, "espeak-ng dependency");
   const espeakNgData = readRegularInput(
     inputs.espeakNgDataPath,
@@ -834,7 +829,6 @@ export async function buildSourceRootfsShellImage(
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/sdl2", sdl2, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/evdev_demo", evdevDemo, 0o755);
   // The Wayland desktop. /usr/local/bin/wldesktop arrives as a wayland-demo
   // runtime_file and execs these four by name, so they must be on PATH as
   // regular eager programs — a launcher whose programs are missing exits
@@ -931,7 +925,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--wlclock",
     "--wlpaint",
     "--wldesktop",
-    "--evdev-demo",
     "--espeak-ng",
     "--espeak-ng-data",
     "--demo-config",
@@ -955,7 +948,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
           "--wlcompositor <wlcompositor.wasm> --wlterm <wlterm.wasm> " +
           "--wlclock <wlclock.wasm> --wlpaint <wlpaint.wasm> " +
-          "--evdev-demo <evdev_demo.wasm> --espeak-ng <espeak-ng.wasm> " +
+          "--espeak-ng <espeak-ng.wasm> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
@@ -978,7 +971,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     wlclockPath: values.get("--wlclock")!,
     wlpaintPath: values.get("--wlpaint")!,
     wldesktopPath: values.get("--wldesktop")!,
-    evdevDemoPath: values.get("--evdev-demo")!,
     espeakNgPath: values.get("--espeak-ng")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
