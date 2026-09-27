@@ -17812,8 +17812,12 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
             // (where fsync is already a no-op) and matching the read/write/lseek
             // short-circuit convention. Reaching host_fsync with a sentinel
             // handle would hit the host with a bad fd and fail spuriously.
+            // Directories on those filesystems too: fsync of a directory fd is
+            // how software makes a newly created name durable.
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle)
+                || ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
                 || crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
+                || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
             {
                 return Ok(());
             }
@@ -34232,6 +34236,32 @@ mod tests {
         assert!(sys_fsync(&mut proc, &mut host, fd).is_ok());
         assert!(sys_fdatasync(&mut proc, &mut host, fd).is_ok());
         assert!(host.fsync_calls.is_empty(), "rootfs fsync leaked to host");
+    }
+
+    /// fsync on a DIRECTORY opened on the rootfs overlay or tmpfs is how
+    /// software makes a new name durable (MariaDB's `my_sync_dir` after
+    /// creating `aria_log_control`). POSIX allows it and Linux returns 0.
+    /// The directory handles are in-kernel sentinels like the file handles;
+    /// sending one to the host returned EPERM and MariaDB could not create its
+    /// Aria control file anywhere under `/`.
+    #[test]
+    fn test_fsync_in_kernel_directory_handles_are_noop() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o755, 0, 0, 2).unwrap();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_mkdir(&mut proc, &mut host, b"/srv/fsync-dir", 0o755).unwrap();
+        for dir in [&b"/data"[..], &b"/srv/fsync-dir"[..]] {
+            let fd = sys_open(&mut proc, &mut host, dir, O_RDONLY | O_DIRECTORY, 0).unwrap();
+            assert_eq!(sys_fsync(&mut proc, &mut host, fd), Ok(()));
+            assert_eq!(sys_fdatasync(&mut proc, &mut host, fd), Ok(()));
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        assert!(host.fsync_calls.is_empty(), "in-kernel directory fsync leaked to host");
     }
 
     #[test]
