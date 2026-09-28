@@ -337,6 +337,14 @@ export interface KernelLike {
 
 // ── Status & lifecycle ─────────────────────────────────────────────────────
 
+/**
+ * The CRTC a KMS display pane scans out. The kernel exposes one CRTC today
+ * (SETCRTC and PAGE_FLIP reject any other id), so the pane, the host API
+ * defaults, and the boot flow's display-size wait all name it through this
+ * constant rather than each hard-coding 1.
+ */
+export const KMS_PRIMARY_CRTC = 1;
+
 export type MachineStatus =
   | "idle"      // no descriptor applied yet
   | "booting"   // applyBootDescriptor is in progress; dmesg streams
@@ -1181,6 +1189,10 @@ export class LiveKernelHost implements KernelHost {
    * lets the handle drop naturally when the canvas itself is GC'd.
    */
   private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
+  /** The display-size ResizeObserver per attached canvas: disconnected when
+   *  the pane closes its handle, reconnected when the cached handle is
+   *  reused (StrictMode's mount → cleanup → mount). */
+  private kmsResizeObservers = new WeakMap<HTMLCanvasElement, ResizeObserver>();
   /**
    * Default paint mode for `attachKmsDisplay` when the caller passes no
    * explicit `opts.mode`. The wayland boot flow sets `"webgl2-scanout"`
@@ -2595,7 +2607,7 @@ export class LiveKernelHost implements KernelHost {
   /** See {@link kmsDisplaySizes}: last device-pixel display size the
    *  attached pane reported for `crtcId`, or undefined before the
    *  first ResizeObserver delivery. */
-  getKmsDisplaySize(crtcId: number = 1): { width: number; height: number } | undefined {
+  getKmsDisplaySize(crtcId: number = KMS_PRIMARY_CRTC): { width: number; height: number } | undefined {
     const size = this.kmsDisplaySizes.get(crtcId);
     return size ? { ...size } : undefined;
   }
@@ -2649,7 +2661,7 @@ export class LiveKernelHost implements KernelHost {
 
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
-    crtcId: number = 1,
+    crtcId: number = KMS_PRIMARY_CRTC,
     opts: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" } = {},
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
@@ -2660,7 +2672,12 @@ export class LiveKernelHost implements KernelHost {
     // memoize the handle here. The cached handle keeps the original
     // statsSab/OffscreenCanvas alive across the StrictMode unmount.
     const cached = this.kmsHandles.get(canvas);
-    if (cached) return cached;
+    if (cached) {
+      // The earlier close() disconnected the observer; the reused handle
+      // must keep feeding display sizes.
+      this.kmsResizeObservers.get(canvas)?.observe(canvas);
+      return cached;
+    }
     // 8 i32 slots × 4 bytes = 32 bytes; align to 64 so atomics are happy.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
@@ -2709,6 +2726,7 @@ export class LiveKernelHost implements KernelHost {
         }
       });
       resizeObserver.observe(canvas);
+      this.kmsResizeObservers.set(canvas, resizeObserver);
     }
     // evdev codes for the pointer path (struct input_event).
     const EV_SYN = 0x00, EV_KEY = 0x01, EV_REL = 0x02;
@@ -2756,13 +2774,12 @@ export class LiveKernelHost implements KernelHost {
       },
       close: () => {
         // The worker auto-stops the pump tick for unused CRTCs on the
-        // next teardown; there's no explicit detach API yet. Closing
-        // the handle just drops the local view so callers can drop
-        // their reference. The ResizeObserver intentionally stays
-        // live: StrictMode's mount → cleanup → mount cycle closes the
-        // handle once and then reuses it from the cache, and the
-        // cached handle must keep feeding display sizes. The observer
-        // dies with the canvas (WeakMap entry) instead.
+        // next teardown; there's no explicit detach API yet. Closing the
+        // handle disconnects its display-size observer, so an unmounted
+        // pane stops holding the canvas and the kernel it attached to
+        // (an observer on a removed element need not fire again to notice).
+        // A StrictMode remount reuses the cached handle and reconnects it.
+        this.kmsResizeObservers.get(canvas)?.disconnect();
       },
     };
     this.kmsHandles.set(canvas, handle);

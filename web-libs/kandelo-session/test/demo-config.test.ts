@@ -52,6 +52,17 @@ describe("runtime block", () => {
     }))).toThrow(/must not contain duplicate features/);
   });
 
+  // The boot flow waits for the KMS pane's size on kms-gl-scanout; without
+  // "kms" no pane mounts, so an untrusted image could stall every boot.
+  it("rejects kms-gl-scanout without kms", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { features: ["kms-gl-scanout"] },
+    }))).toThrow(/"kms-gl-scanout" requires "kms"/);
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { features: ["kms", "kms-gl-scanout"] },
+    }))).not.toThrow();
+  });
+
   // Review Focus 1: an untrusted image must not get to ask for 128 GiB.
   it("rejects an absurd memoryPages request", () => {
     expect(() => validateKandeloDemoConfig(withProfile({

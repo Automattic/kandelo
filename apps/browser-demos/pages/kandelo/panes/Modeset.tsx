@@ -4,7 +4,10 @@
 
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
-import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  KMS_PRIMARY_CRTC,
+  type KmsDisplayHandle,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
 import { DemoSurfaceDockControls } from "./Framebuffer";
 import { useFittedCanvasStyle } from "./canvasFit";
@@ -56,7 +59,7 @@ const ZERO_STATS: KmsStats = {
 
 const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webgl2-gl" };
 
-export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChange }) => {
+export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
   const stageRef = React.useRef<HTMLDivElement>(null);

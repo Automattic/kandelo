@@ -29,6 +29,7 @@ import {
 } from "../../../lib/browser-cors-proxy";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import {
+  KMS_PRIMARY_CRTC,
   LiveKernelHost,
   type BootDescriptor,
   type BootInput,
@@ -1552,8 +1553,14 @@ async function bootProfile(
     // size report before anything that could start such a client runs.
     // Bounded: a pane that never lays out must not stall boot; the
     // connector then keeps its default 1920×1080 mode, as on Node.
-    if (machine.runtime.features.includes("kms-gl-scanout")) {
-      const size = await host.whenKmsDisplaySized(1, KMS_DISPLAY_SIZE_WAIT_MS);
+    // Only when the pane is part of this machine's presentation: the KMS
+    // demo surface mounts from runningPrimary, so without "kms" there no
+    // pane will ever report.
+    if (
+      machine.runtime.features.includes("kms-gl-scanout")
+      && presentation.runningPrimary.includes("kms")
+    ) {
+      const size = await host.whenKmsDisplaySized(KMS_PRIMARY_CRTC, KMS_DISPLAY_SIZE_WAIT_MS);
       assertCurrent();
       tick(
         size

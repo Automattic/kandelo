@@ -252,7 +252,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
       <div className="kmachine-workspace">
         <div className="kmachine-primary">
           {shouldMountDemoSurface && (
-            <PrimarySurfaceSlot active={activePrimary === demoSurface}>
+            <PrimarySurfaceSlot
+              active={activePrimary === demoSurface}
+              measureWhileHidden={demoSurface === "kms"}
+            >
               <Display
                 ref={displayRef}
                 autoFocus={activePrimary === demoSurface}
@@ -295,11 +298,24 @@ function parseWordPressLoginPayload(payload: string): WordPressLoginOptions {
   };
 }
 
+/**
+ * One primary surface. A hidden slot is `display: none` -- out of layout and
+ * paint -- except with `measureWhileHidden`, which keeps it laid out (and
+ * invisible) so its pane still has a real size. Only the KMS display needs
+ * that: it reports its size to the kernel before the machine's command picks
+ * a video mode, while the boot view is still in front.
+ */
 const PrimarySurfaceSlot: React.FC<{
   active: boolean;
+  measureWhileHidden?: boolean;
   children: React.ReactNode;
-}> = ({ active, children }) => (
-  <div className={`kmachine-primary-slot${active ? "" : " is-hidden"}`} aria-hidden={!active}>
+}> = ({ active, measureWhileHidden = false, children }) => (
+  <div
+    className={`kmachine-primary-slot${
+      active ? "" : measureWhileHidden ? " is-hidden is-measured" : " is-hidden"
+    }`}
+    aria-hidden={!active}
+  >
     {children}
   </div>
 );

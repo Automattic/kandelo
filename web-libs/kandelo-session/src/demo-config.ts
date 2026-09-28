@@ -485,6 +485,13 @@ function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
       features.push(entry as DemoRuntimeFeature);
     });
   }
+  // kms-gl-scanout only refines how a KMS display is presented. Without
+  // "kms" there is no display for it to refine -- and the boot flow, which
+  // waits for the KMS pane's size on this feature, would wait for a pane
+  // that never mounts. Reject the combination from untrusted image metadata.
+  if (features.includes("kms-gl-scanout") && !features.includes("kms")) {
+    throw new Error(`${field}.features: "kms-gl-scanout" requires "kms"`);
+  }
 
   return {
     features,

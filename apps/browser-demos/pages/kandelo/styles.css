@@ -2180,10 +2180,16 @@
   min-width: 0;
   display: flex;
 }
-/* Hidden, but still laid out over the visible slot (not display: none), so a
-   hidden surface keeps its real size: a KMS pane mounted during boot reports
-   that size to the kernel before the machine's command picks a video mode. */
 .kmachine-primary-slot.is-hidden {
+  display: none;
+}
+/* Hidden but still laid out over the visible slot, so the surface keeps its
+   real size: a KMS pane mounted during boot reports that size to the kernel
+   before the machine's command picks a video mode. Scoped to that pane
+   (MachineView's measureWhileHidden); other hidden surfaces leave layout and
+   paint entirely. */
+.kmachine-primary-slot.is-hidden.is-measured {
+  display: flex;
   position: absolute;
   inset: 0;
   visibility: hidden;

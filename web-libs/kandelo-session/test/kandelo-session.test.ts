@@ -2427,9 +2427,14 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     constructor(public cb: (entries: unknown[]) => void) {
       FakeResizeObserver.instances.push(this);
     }
-    observe(): void {}
+    observing = false;
+    observe(): void {
+      this.observing = true;
+      this.disconnected = false;
+    }
     disconnect(): void {
       this.disconnected = true;
+      this.observing = false;
     }
   }
 
@@ -2528,6 +2533,23 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
     expect(await sized).toEqual({ width: 1280, height: 720 });
     expect(kernel!.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1280, 720);
+  });
+
+  it("closing the pane's handle disconnects its observer; a StrictMode reuse reconnects it", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas();
+      const handle = host.attachKmsDisplay(canvas)!;
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro.observing).toBe(true);
+      handle.close();                       // unmount: no dangling observer
+      expect(ro.observing).toBe(false);
+      expect(host.attachKmsDisplay(canvas)).toBe(handle); // StrictMode remount
+      expect(ro.observing).toBe(true);
+      expect(FakeResizeObserver.instances).toHaveLength(1);
+    });
   });
 
   it("whenKmsDisplaySized is bounded, and a detach releases it", async () => {
