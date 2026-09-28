@@ -116,6 +116,9 @@ const EXHAUSTING = `
 
 describe("dlclose and the fork activation cap", () => {
   let libs: string[] = [];
+  // Three side modules go through the SDK and fork instrumentation, about 8 s
+  // on a warm machine: vitest's 10 s hook default times out under a parallel
+  // suite or a cold compile cache, which reads as a fork failure.
   beforeAll(() => {
     mkdirSync(buildDir, { recursive: true });
     libs = [
@@ -123,7 +126,7 @@ describe("dlclose and the fork activation cap", () => {
       sideModule("libeven", "int even_value(int x) { return x + 20; }"),
       sideModule("libodd", "int odd_value(int x) { return x + 30; }"),
     ];
-  });
+  }, 120_000);
 
   it(`opens and closes a library ${CYCLES} times, then forks`, { timeout: 180_000 }, async () => {
     const program = build("cycle.wasm", CYCLING, ["-O2", "-ldl"]);
