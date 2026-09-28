@@ -4,7 +4,6 @@ import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
 import {
   CAPTURE_KIND_EXNREF,
   INTERN_KIND_I31,
-  beginParentReplay,
   captureGraph,
   driveBase,
   fixture,
@@ -52,6 +51,9 @@ function bindThrower(
 ): number[] {
   const calls: number[] = [];
   const base = driveBase(activation);
+  const table = f.instance.driveTable;
+  const needed = base + FORK_ACTIVATION_DRIVE_BINDINGS.length;
+  if (table.length < needed) table.grow(needed - table.length);
   const thunk = saveSlotThunk((recipe) => {
     calls.push(recipe);
     if (raise) throw new Error(`activation ${activation} raised ${recipe}`);
@@ -76,7 +78,12 @@ describe("the module raises an exception inside the activation that owns it", ()
     // has a thrower bound. Activation 0 is the one a module that ignored the
     // owner would reach: it is the primary, and its slice is first in the
     // drive table.
-    const { root, aggregateRecipes } = captureGraph(
+    const wrongActivation = bindThrower(f, 0, true);
+    const owningActivation = bindThrower(f, OWNER, true);
+    // Raised while the PARENT replays, as its resuming guest code would.
+    let raised: unknown;
+    let recipe = 0;
+    captureGraph(
       f,
       [[INTERN_KIND_I31, PAYLOAD_I31, 0]],
       [
@@ -88,22 +95,23 @@ describe("the module raises an exception inside the activation that owns it", ()
           edges: ({ leaves }) => [leaves[0]!],
         },
       ],
-      { sideActivations: [OWNER] },
+      {
+        sideActivations: [OWNER],
+        duringReplay: ({ aggregateRecipes }) => {
+          recipe = aggregateRecipes[0]!;
+          try {
+            x.__wpk_fork_ref_exn_broker_throw_recipe(recipe);
+          } catch (error) {
+            raised = error;
+          }
+        },
+      },
     );
-    const recipe = aggregateRecipes[0]!;
-
-    const wrongActivation = bindThrower(f, 0, true);
-    const owningActivation = bindThrower(f, OWNER, true);
-
-    beginParentReplay(f, [0, OWNER]);
-    expect(f.errno(), "the replay begins").toBe(0);
 
     // THE RAISE PROPAGATES. A module that swallowed it would let the guest
     // continue past an exception it never delivered, which is the silent
     // corruption this whole path exists to prevent.
-    expect(() => x.__wpk_fork_ref_exn_broker_throw_recipe(recipe)).toThrow(
-      new RegExp(`activation ${OWNER} raised ${recipe}`),
-    );
+    expect(String(raised)).toMatch(new RegExp(`activation ${OWNER} raised ${recipe}`));
 
     expect(owningActivation, "the owner's thrower ran, with this recipe").toEqual([
       recipe,
@@ -122,7 +130,11 @@ describe("the module raises an exception inside the activation that owns it", ()
     // call and the import is declared never to come back.
     const f = fixture();
     const x = f.x as Record<string, (...a: number[]) => number>;
-    const { root, aggregateRecipes } = captureGraph(
+    const calls = bindThrower(f, OWNER, false); // returns instead of raising
+    let trapped: unknown;
+    let recipe = 0;
+    let errno = -1;
+    captureGraph(
       f,
       [[INTERN_KIND_I31, PAYLOAD_I31, 0]],
       [
@@ -134,18 +146,22 @@ describe("the module raises an exception inside the activation that owns it", ()
           edges: ({ leaves }) => [leaves[0]!],
         },
       ],
-      { sideActivations: [OWNER] },
+      {
+        sideActivations: [OWNER],
+        duringReplay: ({ aggregateRecipes }) => {
+          recipe = aggregateRecipes[0]!;
+          try {
+            x.__wpk_fork_ref_exn_broker_throw_recipe(recipe);
+          } catch (error) {
+            trapped = error;
+          }
+          errno = x.fm_last_errno();
+        },
+      },
     );
-    const recipe = aggregateRecipes[0]!;
-    const calls = bindThrower(f, OWNER, false); // returns instead of raising
 
-    beginParentReplay(f, [0, OWNER]);
-    expect(f.errno()).toBe(0);
-
-    expect(() => x.__wpk_fork_ref_exn_broker_throw_recipe(recipe)).toThrow(
-      WebAssembly.RuntimeError,
-    );
+    expect(trapped).toBeInstanceOf(WebAssembly.RuntimeError);
     expect(calls, "the thrower was reached").toEqual([recipe]);
-    expect(x.fm_last_errno(), "and the refusal says why").toBe(22);
+    expect(errno, "and the refusal says why").toBe(22);
   });
 });

@@ -71,10 +71,7 @@ import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
 } from "./process-memory";
-import {
-  ContinuationAllocationError,
-  writeForkContinuationAnchor,
-} from "./fork-continuation";
+import { ContinuationAllocationError } from "./fork-continuation";
 import {
   buildForkGuestImports,
   forkActivationFrameImports,
@@ -3224,15 +3221,10 @@ export async function centralizedWorkerMain(
           }
           return inheritedBase;
         },
-        // The fresh child's route to the main activation, written into the
-        // copied control-page word because no JavaScript closure survives a
-        // fork. A BORROWED vfork child never writes it: that word still
-        // belongs to its suspended parent.
-        publishLaunchRoot: (address) => {
-          if (borrowedForkChild) return;
-          writeForkContinuationAnchor(memory, dlopenArchiveControlAddr, ptrWidth, address);
-        },
-      }, forkMode);
+        // The module publishes a capture's launch root in this Worker's fork
+        // control word itself; a borrowed vfork child, whose word still
+        // belongs to its parked parent, may not fork at all.
+      });
       // Publish the region so the kernel host hands a COPIED fork child the
       // same base (above). A borrowed child's region is temporary.
       if (!borrowedForkChild) {
@@ -3273,7 +3265,8 @@ export async function centralizedWorkerMain(
       const childArenaRoot = initData.isForkChild
         ? readForkModuleStateRoot(memory, childLaunchRoot, ptrWidth)
         : 0;
-      kernelImports.kernel_fork = (rawMode: number): number => fork.kernelFork(rawMode);
+      // The fork module serves `kernel.kernel_fork` itself.
+      kernelImports.kernel_fork = fork.kernelForkImport();
 
       const dylinkForkActivationOwner = hasDylinkForkRole
         ? createProcessDylinkActivationOwner({
@@ -3531,8 +3524,9 @@ export async function centralizedWorkerMain(
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
-      const resumeStart = instance.exports.wpk_fork_resume_start;
-      if (typeof resumeStart !== "function") {
+      // The module's run loop calls `_start` and `wpk_fork_resume_start`
+      // through its drive table; a stale artifact fails here, by name.
+      if (typeof instance.exports.wpk_fork_resume_start !== "function") {
         throw new Error(
           `pid=${pid}: fork-capable program is missing wpk_fork_resume_start`,
         );
@@ -3540,25 +3534,12 @@ export async function centralizedWorkerMain(
       // A fork-from-non-main-thread child re-enters through the parent
       // thread's thread function, not `_start`: `_start` is not in that
       // thread's call chain, so rewinding through it would never reach the
-      // saved fork() call site. A fork child never runs the lexical entry,
-      // since the loop picks the entry from the module's phase.
-      const threadFnPtr = isForkFromThreadChild ? initData.forkChildThreadFnPtr! : null;
-      const threadArg = initData.forkChildThreadArgPtr ?? 0;
-      const outcome = fork.run(
-        threadFnPtr === null
-          ? instance.exports._start as () => void
-          : () => {
-              throw new Error("Fork-from-thread child entered lexical thread path");
-            },
-        threadFnPtr === null
-          ? resumeStart as () => void
-          : () =>
-              (instance.exports.wpk_fork_resume_thread as (
-                tableIndex: number,
-                arg: number | bigint,
-              ) => number | bigint)(threadFnPtr, ptrWidth === 8 ? BigInt(threadArg) : threadArg),
-        () => kernelExitStatus,
-      );
+      // saved fork() call site. A fork child never runs the lexical entry:
+      // its install left the module replaying, and `fm_run` picks the entry
+      // from that.
+      const outcome = isForkFromThreadChild
+        ? fork.run("thread", initData.forkChildThreadFnPtr!, initData.forkChildThreadArgPtr ?? 0, () => kernelExitStatus)
+        : fork.run("process", 0, 0, () => kernelExitStatus);
       let exitCode = 0;
       if ("exited" in outcome) {
         exitCode = outcome.exited;
@@ -4382,11 +4363,10 @@ export async function centralizedThreadWorkerMain(
     // own co-resident fork module -- the same `ForkWorker` a process Worker
     // runs. Only three facts differ: the module's region is always a fresh
     // mapping (a pthread Worker is never a fork child, so it inherits
-    // nothing), the launch root goes in THIS thread's anchor word (the child
-    // resumes the thread's function, not `_start`), and the archive it reads
-    // is the process's. The multi-activation RECONSTRUCTION runs in the child,
-    // on the process path.
-    const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
+    // nothing), the module publishes the launch root in THIS thread's fork
+    // control word (the child resumes the thread's function, not `_start`),
+    // and the archive it reads is the process's. The multi-activation
+    // RECONSTRUCTION runs in the child, on the process path.
     const fork = hasForkInstrumentation
       ? new ForkWorker({
           memory,
@@ -4403,9 +4383,7 @@ export async function centralizedThreadWorkerMain(
           borrowedChild: false,
           reserve: (size) =>
             continuationMmap(memory, channelOffset, size, `pid=${pid} tid=${tid}: fork-module`),
-          publishLaunchRoot: (address) =>
-            writeForkContinuationAnchor(memory, forkAnchorAddr, ptrWidth, address),
-        }, PROCESS_FORK_MODE_FORK)
+        })
       : null;
 
     let kernelThreadExitStatus: number | null = null;
@@ -4420,7 +4398,7 @@ export async function centralizedThreadWorkerMain(
         kernelThreadExitStatus = status;
       },
     );
-    if (fork) kernelImports.kernel_fork = (rawMode: number): number => fork.kernelFork(rawMode);
+    if (fork) kernelImports.kernel_fork = fork.kernelForkImport();
     const threadLongjmpTag = createLongjmpTag(ptrWidth);
     const threadCppExceptionTag = createCppExceptionTag(ptrWidth);
     // The import binders below take the unwind tag as `fork?.unwindTag`, which
@@ -4619,30 +4597,28 @@ export async function centralizedThreadWorkerMain(
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
 
-    const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
     let result = 0;
     if (fork) {
-      // The fork run loop: the thread function, or -- once a fork from this
-      // thread has captured -- `wpk_fork_resume_thread`, which rewinds the
-      // parent's frames back into it. Both are the guest's own fixed
-      // `(table_index, arg) -> ptr` entries, emitted by fork-instrument in the
-      // calling convention the guest's table actually uses (plain C, or
-      // binaryen's `--fpcast-emu`), so nothing here adapts the arguments.
-      const threadEntry = instance.exports[WPK_FORK_EXPORT_THREAD_ENTRY];
-      const resumeThread = instance.exports.wpk_fork_resume_thread;
-      if (typeof threadEntry !== "function" || typeof resumeThread !== "function") {
+      // The fork module's run loop (`fm_run`) calls the thread function, or
+      // -- once a fork from this thread has captured --
+      // `wpk_fork_resume_thread`, which rewinds the parent's frames back into
+      // it. Both are the guest's own fixed `(table_index, arg) -> ptr`
+      // entries, emitted by fork-instrument in the calling convention the
+      // guest's table actually uses (plain C, or binaryen's `--fpcast-emu`),
+      // which the module calls through its drive table. Checked here so a
+      // stale artifact fails by name rather than as a call through an
+      // unbound slot.
+      if (
+        typeof instance.exports[WPK_FORK_EXPORT_THREAD_ENTRY] !== "function"
+        || typeof instance.exports.wpk_fork_resume_thread !== "function"
+      ) {
         throw new Error(
           `pid=${pid} tid=${tid}: fork-capable program is missing ` +
             `${WPK_FORK_EXPORT_THREAD_ENTRY} or wpk_fork_resume_thread; ` +
             "rebuild it through the current fork-instrument",
         );
       }
-      type ThreadEntry = (index: number, arg: number | bigint) => unknown;
-      const outcome = fork.run(
-        () => (threadEntry as ThreadEntry)(fnPtr, threadArg),
-        () => (resumeThread as ThreadEntry)(fnPtr, threadArg),
-        () => kernelThreadExitStatus,
-      );
+      const outcome = fork.run("thread", fnPtr, argPtr, () => kernelThreadExitStatus);
       // No `fork.finish()`: after `kernel_exit` this thread's channel is
       // gone, and a module release through it would park forever.
       result = "exited" in outcome ? outcome.exited : Number(outcome.returned);

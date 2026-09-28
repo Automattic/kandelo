@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FAITHFUL_GUEST_BYTES } from "./fork-module-faithful-guest";
 import { readForkModuleStateRoot } from "../src/fork-guest-sections";
+import { ABI_SYSCALLS, HOST_INTERCEPTED_SYSCALLS } from "../src/generated/abi";
+import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import {
   admit,
   bind,
@@ -73,6 +75,10 @@ const STATUS_COMPLETE = 2;
 const SYS_MMAP = 46;
 const SYS_MUNMAP = 47;
 const SYS_GETTID = 202;
+const SYS_FORK = HOST_INTERCEPTED_SYSCALLS.SYS_FORK;
+const SYS_VFORK = HOST_INTERCEPTED_SYSCALLS.SYS_VFORK;
+const SYS_FORK_REPLAY_READY = ABI_SYSCALLS.ForkReplayReady;
+const SYS_FORK_DIAGNOSTIC = ABI_SYSCALLS.ForkDiagnostic;
 /**
  * The thread id the responder answers `SYS_GETTID` with. The module asks it
  * only to tell this Worker's own dynamic-loader transaction from a peer's
@@ -90,8 +96,16 @@ export const DRIVE_SLOT_UNWIND_BEGIN = 10;
 export const DRIVE_SLOT_MODULE_STATE_SAVE = 13;
 /** `DRIVE_SLOT_STATIC_ROOT_FILL` in `fork-codec`'s drive plan. */
 export const DRIVE_SLOT_STATIC_ROOT_FILL = 19;
+/** `DRIVE_SLOT_ENTRY_START` / `_RESUME_START`: the entry pair `fm_run` calls. */
+export const DRIVE_SLOT_ENTRY_START = 20;
+export const DRIVE_SLOT_RESUME_START = 21;
 
-/** `fm_phase` values, from the PHASE_* constants in crates/fork-module. */
+/**
+ * The module's PHASE_* values. No export answers the phase any more (the
+ * module runs the whole fork itself, lane F step 3c); they appear as the
+ * detail of a `runFailed` diagnostic, which names the phase the run loop
+ * found itself in.
+ */
 export const PHASE_IDLE = 0;
 export const PHASE_CAPTURE = 1;
 export const PHASE_SEALED_PARENT = 2;
@@ -132,6 +146,36 @@ export const MMAP_COUNTER = 5 * PAGE + 4;
  */
 export const MMAP_FAIL_SWITCH = 5 * PAGE + 8;
 
+/**
+ * The fork words, on the same free page: what the responder answers the
+ * module's `SYS_FORK` / `SYS_VFORK` with, and what it saw.
+ *
+ * The module issues the fork syscall ITSELF since lane F step 3c (`fm_run`
+ * seals the capture and sends it on the Worker's channel), so the kernel's
+ * side of a fork is this responder's to play: `FORK_ANSWER` is the child pid
+ * the "kernel" returns (0 means the default, 42), or `-errno` to refuse the
+ * child; the responder counts every fork syscall and keeps a vfork's two
+ * workspace arguments (the borrowed prefix and scratch bytes the seal row
+ * carries) where a test can read them.
+ */
+export const FORK_ANSWER = 5 * PAGE + 12;
+export const FORK_CALLS = 5 * PAGE + 16;
+export const FORK_LAST_SYSCALL = 5 * PAGE + 20;
+export const VFORK_PREFIX_BYTES = 5 * PAGE + 24;
+export const VFORK_SCRATCH_BYTES = 5 * PAGE + 28;
+/** How many `SYS_FORK_REPLAY_READY`s a child's finish reported. */
+export const REPLAY_READY_CALLS = 5 * PAGE + 32;
+/**
+ * The `SYS_FORK_DIAGNOSTIC` records the module reported: a count, then one
+ * 24-byte record each -- the kind and its five values, as the module passed
+ * them. The kernel formats the text; what a test pins is the numbers.
+ */
+export const DIAGNOSTIC_COUNT = 5 * PAGE + 64;
+export const DIAGNOSTIC_RECORDS = 5 * PAGE + 68;
+const DIAGNOSTIC_CAPACITY = 256;
+/** The child pid the responder answers a fork with by default. */
+export const DEFAULT_CHILD_PID = 42;
+
 export const MMAP_FLOOR = 12 * 1024 * 1024;
 /** Where a CHILD worker's own module instance sits in the shared memory. */
 export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
@@ -154,7 +198,7 @@ export const CHILD_MODULE_BASE = 20 * 1024 * 1024;
  */
 const CHANNEL_RESPONDER = `
 const { parentPort, workerData } = require("node:worker_threads");
-const { sab, channelBase, floor, mmapCounter, munmapCounter, mmapFailSwitch } = workerData;
+const { sab, channelBase, floor, mmapCounter, munmapCounter, mmapFailSwitch, forkWords } = workerData;
 const i32 = new Int32Array(sab);
 const dv = new DataView(sab);
 // The tallies are OPTIONAL, because their address is not safe everywhere.
@@ -189,6 +233,28 @@ while (!stop) {
     ret = 0n; errno = 0;
   } else if (nr === ${SYS_GETTID}) {
     ret = ${RESPONDER_TID}n; errno = 0;
+  } else if (forkWords && (nr === ${SYS_FORK} || nr === ${SYS_VFORK})) {
+    dv.setUint32(${FORK_CALLS}, dv.getUint32(${FORK_CALLS}, true) + 1, true);
+    dv.setUint32(${FORK_LAST_SYSCALL}, nr, true);
+    if (nr === ${SYS_VFORK}) {
+      dv.setUint32(${VFORK_PREFIX_BYTES}, Number(dv.getBigInt64(channelBase + ${ARGS_OFFSET}, true)), true);
+      dv.setUint32(${VFORK_SCRATCH_BYTES}, Number(dv.getBigInt64(channelBase + ${ARGS_OFFSET} + ${ARG_SIZE}, true)), true);
+    }
+    const answer = dv.getInt32(${FORK_ANSWER}, true) || ${DEFAULT_CHILD_PID};
+    if (answer < 0) { ret = -1n; errno = -answer; } else { ret = BigInt(answer); errno = 0; }
+  } else if (forkWords && nr === ${SYS_FORK_REPLAY_READY}) {
+    dv.setUint32(${REPLAY_READY_CALLS}, dv.getUint32(${REPLAY_READY_CALLS}, true) + 1, true);
+    ret = 0n; errno = 0;
+  } else if (forkWords && nr === ${SYS_FORK_DIAGNOSTIC}) {
+    const count = dv.getUint32(${DIAGNOSTIC_COUNT}, true);
+    if (count < ${DIAGNOSTIC_CAPACITY}) {
+      for (let i = 0; i < 6; i++) {
+        const value = Number(dv.getBigInt64(channelBase + ${ARGS_OFFSET} + i * ${ARG_SIZE}, true));
+        dv.setUint32(${DIAGNOSTIC_RECORDS} + count * 24 + i * 4, value >>> 0, true);
+      }
+      dv.setUint32(${DIAGNOSTIC_COUNT}, count + 1, true);
+    }
+    ret = 0n; errno = 0;
   }
   dv.setBigInt64(channelBase + ${RETURN_OFFSET}, ret, true);
   dv.setUint32(channelBase + ${ERRNO_OFFSET}, errno, true);
@@ -239,6 +305,12 @@ export function startChannelResponder(options: {
   readonly counters?: { readonly mmap: number; readonly munmap: number };
   /** Where the `SYS_MMAP` fail switch lives (see `MMAP_FAIL_SWITCH`), if any. */
   readonly mmapFailSwitch?: number;
+  /**
+   * Answer the fork syscalls (`SYS_FORK`, `SYS_VFORK`, `SYS_FORK_REPLAY_READY`,
+   * `SYS_FORK_DIAGNOSTIC`) through the words at `FORK_ANSWER` and after. Only
+   * for a harness whose page 5 is free, like the address counters.
+   */
+  readonly forkWords?: boolean;
 }): Worker {
   const worker = new Worker(CHANNEL_RESPONDER, {
     eval: true,
@@ -249,6 +321,7 @@ export function startChannelResponder(options: {
       mmapCounter: options.counters?.mmap,
       munmapCounter: options.counters?.munmap,
       mmapFailSwitch: options.mmapFailSwitch,
+      forkWords: options.forkWords === true,
     },
   });
   live.push(worker);
@@ -273,31 +346,60 @@ const NOP_MODULE_BYTES = new Uint8Array([
 ]);
 
 export interface Fixture {
-  /**
-   * The module's exports, with `fm_parent_begin_capture` wrapped to remember
-   * the continuation anchor it returns (see `root`).
-   */
+  /** The module's exports. */
   x: Record<string, unknown>;
   instance: ReturnType<typeof instantiateForkModule>;
   memory: WebAssembly.Memory;
   errno: () => number;
   /**
-   * The module-state (KFMS) arena root of the LAST capture opened through
-   * `x.fm_parent_begin_capture`, or 0 if it failed or none was opened.
+   * The module-state (KFMS) arena root of the LAST capture a `runFork` opened,
+   * or 0 if none opened.
    *
-   * Read the way production reads it: `fm_parent_begin_capture` returns
-   * activation 0's continuation anchor, and the module writes the arena root
-   * into that anchor's prefix, where a fork child's worker reads it
-   * (`readForkModuleStateRoot`). There is no module entry that answers it.
+   * Read the way production reads it: the module publishes activation 0's
+   * continuation anchor in the Worker's fork control word before `SYS_FORK`,
+   * and writes the arena root into that anchor's prefix, where a fork child's
+   * worker reads it (`readForkModuleStateRoot`). No module entry answers it.
    */
   root: () => number;
-  /**
-   * Activation 0's continuation anchor from the LAST capture opened through
-   * `x.fm_parent_begin_capture`, or 0 -- the launch root a parent's host
-   * publishes in its archive control word before `SYS_FORK`.
-   */
+  /** Activation 0's continuation anchor from the LAST capture opened, or 0. */
   anchor: () => number;
   worker: Worker;
+  /** The guest entry pair `fm_run` calls; `runFork` sets them per run. */
+  entries: { lexical: () => void; replay: () => void };
+  /** Every `SYS_FORK_DIAGNOSTIC` the module has reported, in order. */
+  diagnostics: () => ForkDiagnosticRecord[];
+  /** How many fork syscalls the module has issued. */
+  forkCalls: () => number;
+}
+
+/** One `SYS_FORK_DIAGNOSTIC` as the module issued it. */
+export interface ForkDiagnosticRecord {
+  readonly kind: number;
+  readonly values: readonly number[];
+}
+
+/** `FORK_DIAGNOSTIC_KINDS` in `host/src/generated/abi.ts`. */
+export const DIAGNOSTIC_ABORTED = 1;
+export const DIAGNOSTIC_RUN_FAILED = 5;
+/** `fork_diagnostic_wire::RUN_FAILED_*`. */
+export const RUN_FAILED_UNWIND_OUTSIDE_CAPTURE = 1;
+export const RUN_FAILED_RETURN_MID_CONTINUATION = 2;
+export const RUN_FAILED_BAD_PHASE = 6;
+export const RUN_FAILED_MODE_MISMATCH = 7;
+/** `fork_diagnostic_wire::ABORT_CAUSE_*`. */
+export const ABORT_CAUSE_FRAME_RESERVE = 1;
+export const ABORT_CAUSE_SEAL = 2;
+export const ABORT_CAUSE_LAUNCH = 3;
+
+/** Read the diagnostic records the responder kept. */
+function readDiagnostics(memory: WebAssembly.Memory): ForkDiagnosticRecord[] {
+  const view = new DataView(memory.buffer);
+  const count = view.getUint32(DIAGNOSTIC_COUNT, true);
+  return Array.from({ length: count }, (_, i) => {
+    const at = DIAGNOSTIC_RECORDS + i * 24;
+    const words = Array.from({ length: 6 }, (_, w) => view.getUint32(at + w * 4, true));
+    return { kind: words[0]!, values: words.slice(1) };
+  });
 }
 
 /** The KFMS arena root a capture's continuation anchor names; see `Fixture.root`. */
@@ -346,16 +448,7 @@ export function fixture(
     reserve: () => MODULE_BASE,
     label: "capture drive",
   });
-  const raw = fm.exports as Record<string, unknown>;
-  let lastAnchor = 0;
-  const beginCapture = raw.fm_parent_begin_capture as (...a: number[]) => number;
-  const x: Record<string, unknown> = {
-    ...raw,
-    fm_parent_begin_capture: (...args: number[]): number => {
-      lastAnchor = beginCapture(...args);
-      return lastAnchor;
-    },
-  };
+  const x = fm.exports as Record<string, unknown>;
 
   // Callable stubs for the slots the capture plan drives. Both are `(i32) -> ()`
   // on wasm32, so the guest double's recorded-call exports stand in for the
@@ -371,6 +464,7 @@ export function fixture(
     floor: MMAP_FLOOR,
     counters: { mmap: MMAP_COUNTER, munmap: MUNMAP_COUNTER },
     mmapFailSwitch: MMAP_FAIL_SWITCH,
+    forkWords: true,
   });
 
   (x.fm_set_format as (...a: number[]) => void)(
@@ -390,12 +484,14 @@ export function fixture(
   // codec): an admission that ADDS a section to the same template and
   // catalog is accepted. Mappings (a directory chunk and a record chunk)
   // precede every later one because of this, which is why nothing may be
-  // staged inside the responder's range -- see `openCapture`.
+  // staged inside the responder's range -- see `captureGraph`.
   const admitted = admit(x, memory, ARENA_STAGING_AT, 0);
   if (admitted !== 0) throw new Error(`admitting activation 0: errno ${admitted}`);
   const base = driveBase(0);
   const table = fm.driveTable;
-  if (table.length < base + 14) table.grow(base + 14 - table.length);
+  if (table.length < base + FORK_ACTIVATION_DRIVE_SLOTS) {
+    table.grow(base + FORK_ACTIVATION_DRIVE_SLOTS - table.length);
+  }
   // Every slot the parent lifecycle drives. The guest double's three exports
   // are all `(i32) -> ()`, which is the signature of both the activation-argument
   // band and, on wasm32, the pointer band -- so they stand in for each. The
@@ -421,6 +517,13 @@ export function fixture(
   ]) {
     table.set(base + slot, nop as never);
   }
+  // The guest's entry pair, which the module's run loop calls (`fm_run`):
+  // one wasm thunk each over a closure `runFork` replaces per run, so a test
+  // plays the guest -- what it does with the capture open, and what it does
+  // once the replay reaches `fork()` again.
+  const entries = { lexical: (): void => {}, replay: (): void => {} };
+  table.set(base + DRIVE_SLOT_ENTRY_START, voidSlotThunk(() => entries.lexical()) as never);
+  table.set(base + DRIVE_SLOT_RESUME_START, voidSlotThunk(() => entries.replay()) as never);
 
   // Ruling D1-a: this rig holds activations, so it is the one that most needs
   // the directory bound checked at teardown.
@@ -430,11 +533,189 @@ export function fixture(
     instance: fm,
     memory,
     errno: () => (x.fm_last_errno as () => number)(),
-    root: () => moduleStateRootAt(f, lastAnchor),
-    anchor: () => lastAnchor,
+    root: () => moduleStateRootAt(f, publishedAnchor(memory)),
+    anchor: () => publishedAnchor(memory),
     worker,
+    entries,
+    diagnostics: () => readDiagnostics(memory),
+    forkCalls: () => new DataView(memory.buffer).getUint32(FORK_CALLS, true),
   };
   return f;
+}
+
+/**
+ * The fork control word the module publishes a capture's launch root in: the
+ * pointer-sized word just below the Worker's fork save buffer, where the
+ * kernel reads it at `SYS_FORK`.
+ */
+export const FORK_CONTROL_WORD = CHANNEL_BASE - FORK_SAVE_BUFFER_SIZE;
+
+function publishedAnchor(memory: WebAssembly.Memory): number {
+  return new DataView(memory.buffer).getUint32(FORK_CONTROL_WORD, true);
+}
+
+/** `fork_contract::MODE_FORK` / `MODE_VFORK`. */
+export const MODE_FORK = 0;
+export const MODE_VFORK = 1;
+
+/** What a capture callback sees: the capture that is open. */
+export interface OpenFork {
+  /** Activation 0's continuation anchor, as published for the kernel. */
+  readonly anchor: number;
+  /** The KFMS arena root the anchor's prefix names. */
+  readonly root: number;
+}
+
+export interface ForkRunOptions {
+  /** `fork()` (the default) or `vfork()`. */
+  readonly mode?: number;
+  /**
+   * What the "kernel" answers the fork syscall with: a child pid, or
+   * `-errno` to refuse the child. Default `DEFAULT_CHILD_PID`.
+   */
+  readonly answer?: number;
+  /**
+   * Side activations to admit, bind and give no-op lifecycle slots, as a
+   * dlopen fork has (see `openSides`).
+   */
+  readonly sides?: readonly number[];
+  /**
+   * The guest, with its capture open: `fork()` returned 0 and the frames are
+   * about to unwind. Return "aborted" when the guest's own frame reserve
+   * failed (the module began the abort replay in place): the guest then calls
+   * `fork()` again, which finishes the abort. Throw to leave the fork the way
+   * a host exception would.
+   */
+  readonly duringCapture?: (fork: OpenFork) => void | "aborted";
+  /**
+   * The guest, replaying: the module sealed, the kernel answered, and the
+   * parent's (or abort) replay began. Runs before the replayed frames reach
+   * `fork()` again, which finishes the fork.
+   */
+  readonly duringReplay?: (fork: OpenFork) => void;
+  /** Return from the replay entry WITHOUT reaching `fork()` again. */
+  readonly replayReturnsEarly?: boolean;
+  /** The mode the replay reaches `fork()` with, if not `mode`. */
+  readonly replayMode?: number;
+}
+
+export interface ForkRun {
+  /** What the guest's `fork()` returned. */
+  readonly forkReturn: number;
+  /** Activation 0's continuation anchor, or 0 when no capture opened. */
+  readonly anchor: number;
+  /** The KFMS arena root, or 0. */
+  readonly root: number;
+  /** The fork syscalls this run issued. */
+  readonly forkCalls: number;
+  /** The diagnostics this run reported. */
+  readonly diagnostics: readonly ForkDiagnosticRecord[];
+}
+
+/**
+ * Run ONE fork through the module's own run loop, playing the guest.
+ *
+ * WHY THIS IS THE ONLY WAY IN. Since lane F step 3c the module runs a fork
+ * itself: `fm_run` calls the guest entry, `__wpk_fork_kernel_fork` opens the
+ * capture, the entry's unwind reaches the module's `try_table`, and the
+ * module seals, issues `SYS_FORK` on the channel, begins the replay and calls
+ * the replay entry, whose `fork()` finishes. The step entries a test used to
+ * call one at a time (`fm_parent_begin_capture`, `_seal_capture`, `_replay`,
+ * `_finish`, `fm_phase`) are the module's own sequence, not a surface a test
+ * drives. So a test observes a fork the way a guest and a kernel do: what
+ * `fork()` returned, what the kernel was asked, which guest slots the module
+ * drove, what it reported, and the state it left behind -- from inside the
+ * guest's own entries (`duringCapture`, `duringReplay`), where a phase used to
+ * be probed from outside.
+ *
+ * The lexical entry calls `fork()`; a 0 means the capture is open, so it runs
+ * `duringCapture` and throws the module's unwind tag, exactly as an
+ * instrumented guest's frames do once they have committed. A nonzero return
+ * is the capture refusing to open (`-errno`), and the entry returns with it.
+ */
+export function runFork(f: Fixture, options: ForkRunOptions = {}): ForkRun {
+  const mode = options.mode ?? MODE_FORK;
+  const kernelFork = f.x.__wpk_fork_kernel_fork as (mode: number) => number;
+  const tag = f.x.__wpk_fork_unwind as WebAssembly.Tag;
+  registerMain(f);
+  openSides(f, options.sides ?? []);
+  new DataView(f.memory.buffer).setInt32(FORK_ANSWER, options.answer ?? 0, true);
+  const callsBefore = f.forkCalls();
+  const diagnosticsBefore = f.diagnostics().length;
+  let forkReturn: number | undefined;
+  const open = (): OpenFork => ({ anchor: f.anchor(), root: f.root() });
+  f.entries.lexical = () => {
+    const opened = kernelFork(mode);
+    if (opened !== 0) {
+      forkReturn = opened;
+      return;
+    }
+    if (options.duringCapture?.(open()) === "aborted") {
+      forkReturn = kernelFork(mode);
+      return;
+    }
+    throw new WebAssembly.Exception(tag, []);
+  };
+  f.entries.replay = () => {
+    options.duringReplay?.(open());
+    if (options.replayReturnsEarly) return;
+    forkReturn = kernelFork(options.replayMode ?? mode);
+  };
+  (f.x.fm_run as (kind: number, fnptr: number, arg: number) => bigint)(0, 0, 0);
+  if (forkReturn === undefined) throw new Error("the guest's fork() never returned");
+  return {
+    forkReturn,
+    anchor: f.anchor(),
+    root: f.root(),
+    forkCalls: f.forkCalls() - callsBefore,
+    diagnostics: f.diagnostics().slice(diagnosticsBefore),
+  };
+}
+
+/**
+ * Register activation 0 the way a host's registration does before any fork
+ * (the module answers a `fork()` before it with ENOSYS): bind it, placing its
+ * merged catalogs.
+ *
+ * A test that bound activation 0 itself keeps its lengths (binding again
+ * answers the same row). Otherwise the catalogs are placed one stride long --
+ * the single-activation layout, where a slot IS the ordinal, which is what
+ * every leaf in this file names -- and the static-root fill the module then
+ * drives before each capture reports that many roots.
+ */
+export function registerMain(f: Fixture): void {
+  const lengths = boundLengths.get(f.x)?.get(0);
+  if (lengths === undefined) {
+    const table = f.instance.driveTable;
+    const slot = driveBase(0) + DRIVE_SLOT_STATIC_ROOT_FILL;
+    if (table.get(slot) === null) {
+      table.set(slot, fillSlotThunk(() => CATALOG_STRIDE) as never);
+    }
+  }
+  const [func, statics] = lengths ?? [CATALOG_STRIDE, CATALOG_STRIDE];
+  expect(bindActivation(f.x, f.memory, 0, func, statics), "activation 0 is registered")
+    .not.toBeNull();
+}
+
+/**
+ * Run a fork expected to TRAP inside the module's run loop, and answer the
+ * trap and the diagnostics the module reported first. A run loop that
+ * reached a state no one can resume from says why through the kernel, then
+ * traps, so a host's trap guard sees a fault rather than an exit.
+ */
+export function runForkExpectingTrap(
+  f: Fixture,
+  options: ForkRunOptions = {},
+): { readonly error: unknown; readonly diagnostics: readonly ForkDiagnosticRecord[] } {
+  const before = f.diagnostics().length;
+  let error: unknown;
+  try {
+    runFork(f, options);
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error, "the run loop traps").toBeInstanceOf(WebAssembly.RuntimeError);
+  return { error, diagnostics: f.diagnostics().slice(before) };
 }
 
 /**
@@ -513,7 +794,7 @@ export function publishInto(
 }
 
 /**
- * The template id `openCapture` admits a SIDE activation with. A real dlopen
+ * The template id `openSides` admits a SIDE activation with. A real dlopen
  * fork's side module hashes to its OWN template id, so each side gets
  * distinct bytes rather than two activations claiming one id -- a state
  * production cannot produce. Keyed by activation so every helper here that
@@ -542,23 +823,6 @@ export function saveSlotThunk(body: (activation: number) => void): CallableFunct
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-}
-
-/**
- * Begin a sealed parent's own replay (`fm_parent_replay(0)`), the production
- * entry that makes the arena it just sealed the module's current replay: a
- * parent resuming runs the same guest code a child does and asks the same
- * reference questions, so it decodes its own graph. The guest's rewind begin
- * is a no-op thunk here, bound for each of `activations`.
- */
-export function beginParentReplay(f: Fixture, activations: readonly number[] = [0]): void {
-  const table = f.instance.driveTable;
-  for (const activation of activations) {
-    const slot = driveBase(activation) + DRIVE_SLOT_REWIND_BEGIN;
-    if (table.length <= slot) table.grow(slot + 1 - table.length);
-    table.set(slot, saveSlotThunk(() => {}) as never);
-  }
-  (f.x.fm_parent_replay as (abort: number) => void)(0);
 }
 
 /** A `() -> ()` wasm function, for drive slots called with no argument. */
@@ -683,6 +947,13 @@ export function installableChild(
   readonly x: Record<string, unknown>;
   readonly driven: Array<readonly [number, number]>;
   readonly install: (anchor: number, pid?: number) => number;
+  /**
+   * Run the installed child through ITS module's run loop, as a child Worker
+   * does: the install left it replaying, so `fm_run` calls the replay entry,
+   * whose `fork()` finishes the child's replay. Answers what that `fork()`
+   * returned (0 in a child).
+   */
+  readonly run: (mode?: number) => number;
 } {
   const instance = childInstance(f, options);
   const x = instance.exports as Record<string, unknown>;
@@ -701,12 +972,34 @@ export function installableChild(
   ]) {
     table.set(base + slot, saveSlotThunk((arg) => driven.push([slot, arg])) as never);
   }
+  let childMode = MODE_FORK;
+  let childReturn: number | undefined;
+  table.set(base + DRIVE_SLOT_REWIND_END, voidSlotThunk(() => driven.push([DRIVE_SLOT_REWIND_END, 0])) as never);
+  table.set(
+    base + DRIVE_SLOT_ENTRY_START,
+    voidSlotThunk(() => {
+      throw new Error("a fork child ran its LEXICAL entry: its install left it idle");
+    }) as never,
+  );
+  table.set(
+    base + DRIVE_SLOT_RESUME_START,
+    voidSlotThunk(() => {
+      childReturn = (x.__wpk_fork_kernel_fork as (mode: number) => number)(childMode);
+    }) as never,
+  );
   return {
     instance,
     x,
     driven,
     install: (anchor, pid = 1) =>
       (x.fm_child_install as (...a: number[]) => number)(pid, anchor, 0, 0),
+    run: (mode = MODE_FORK) => {
+      childMode = mode;
+      childReturn = undefined;
+      (x.fm_run as (kind: number, fnptr: number, arg: number) => bigint)(0, 0, 0);
+      if (childReturn === undefined) throw new Error("the child's fork() never returned");
+      return childReturn;
+    },
   };
 }
 
@@ -734,62 +1027,81 @@ export interface CaptureOptions {
    * rather than activation 0's.
    */
   readonly sideActivations?: readonly number[];
+  /**
+   * The guest replaying the parent, after the seal and before `fork()`
+   * returns: where a test asks the reference questions a resuming parent asks
+   * of its own sealed graph, or installs a child from the arena while the
+   * parent is still in its fork -- as the kernel does, between the seal and
+   * the parent's return.
+   */
+  readonly duringReplay?: (sealed: SealedCapture) => void;
+}
+
+/** What `captureArena` / `captureGraph` hand a `duringReplay`. */
+export interface SealedCapture {
+  readonly root: number;
+  readonly anchor: number;
+  readonly recipes: readonly number[];
+  readonly aggregateRecipes: readonly number[];
 }
 
 /**
- * Seed every activation the capture will declare, then open the capture.
+ * Admit, bind and give lifecycle slots to each SIDE activation of a fork, as
+ * a dlopen admits and registers a side module before the fork that carries
+ * it.
  *
- * Activation 0 is always present. The capture adds every side activation the
- * module has BOUND -- the host names none -- so `sides` is the set this helper
- * admits, binds and binds drive slots for; a test that bound another
- * activation must bind its drive slots too.
- *
- * Returns the activations whose module-state save the capture drove, in the
- * order it drove them: the observable that a capture really was
- * multi-activation, rather than one that merely named a side activation in a
- * recipe.
+ * Activation 0 is the fixture's own. The capture walks every activation the
+ * module has BOUND -- the host names none -- so each side gets its own
+ * template id (`sideTemplate`), an empty resume catalog, a binding, and a
+ * no-op in every lifecycle slot a test has not already bound.
  */
-export function openCapture(f: Fixture, sides: readonly number[] = []): number[] {
-  expect(admitActivation(f, 0), "admitting activation 0").toBe(0);
+export function openSides(f: Fixture, sides: readonly number[]): void {
   for (const activation of sides) {
-    // Its own template id (`sideTemplate`) and an empty resume catalog, as
-    // `dlopen` admits a side module before the fork that carries it; see
-    // `fixture()` for why a replay needs the catalog. NOTHING GATES THE
-    // DISTINCT TEMPLATE TODAY: admitting every side with zeros leaves every
-    // caller of this fixture passing. It is here because a fixture that
-    // produces an impossible state teaches the next reader the wrong thing.
-    // Then BOUND, as registration binds it: the capture walks bound sides.
-    expect(
-      admitActivation(f, activation, { template: sideTemplate(activation) }),
-      `admitting activation ${activation}`,
-    ).toBe(0);
+    // A side the test already registered keeps the facts it was admitted
+    // with; binding again answers the same row.
+    if (!boundLengths.get(f.x)?.has(activation)) {
+      // NOTHING GATES THE DISTINCT TEMPLATE TODAY: admitting every side with
+      // zeros leaves every caller passing. It is here because a fixture that
+      // produces an impossible state teaches the next reader the wrong thing.
+      expect(
+        admitActivation(f, activation, { template: sideTemplate(activation) }),
+        `admitting activation ${activation}`,
+      ).toBe(0);
+    }
     expect(bindActivation(f.x, f.memory, activation), `binding activation ${activation}`)
       .not.toBeNull();
-  }
-
-  const saved: number[] = [];
-  for (const activation of [0, ...sides]) {
+    const table = f.instance.driveTable;
     const base = driveBase(activation);
     const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
-    if (f.instance.driveTable.length < needed) {
-      f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+    if (table.length < needed) table.grow(needed - table.length);
+    for (const slot of [
+      DRIVE_SLOT_MODULE_STATE_SAVE,
+      DRIVE_SLOT_UNWIND_BEGIN,
+      DRIVE_SLOT_REWIND_BEGIN,
+      DRIVE_SLOT_ABORT_BEGIN,
+    ]) {
+      if (table.get(base + slot) === null) table.set(base + slot, saveSlotThunk(() => {}) as never);
     }
-    f.instance.driveTable.set(
-      base + DRIVE_SLOT_MODULE_STATE_SAVE,
-      saveSlotThunk((id) => saved.push(id)) as never,
-    );
-    f.instance.driveTable.set(
-      base + DRIVE_SLOT_UNWIND_BEGIN,
-      saveSlotThunk(() => {}) as never,
-    );
-    f.instance.driveTable.set(
-      base + DRIVE_SLOT_UNWIND_END,
-      voidSlotThunk(() => {}) as never,
-    );
+    for (const slot of [DRIVE_SLOT_UNWIND_END, DRIVE_SLOT_REWIND_END, DRIVE_SLOT_ABORT_END]) {
+      if (table.get(base + slot) === null) table.set(base + slot, voidSlotThunk(() => {}) as never);
+    }
   }
+}
 
-  (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-  expect(f.errno(), "the capture opens").toBe(0);
+/**
+ * Record which activations a fork's module-state save drove, in the order it
+ * drove them: the observable that a capture really was multi-activation,
+ * rather than one that merely named a side activation in a recipe.
+ */
+export function recordSaves(f: Fixture, activations: readonly number[]): number[] {
+  const saved: number[] = [];
+  for (const activation of activations) {
+    const table = f.instance.driveTable;
+    const base = driveBase(activation);
+    const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+    if (table.length < needed) table.grow(needed - table.length);
+    table.set(base + DRIVE_SLOT_MODULE_STATE_SAVE, saveSlotThunk((id) => saved.push(id)) as never);
+  }
   return saved;
 }
 
@@ -804,7 +1116,7 @@ const CATALOG_STRIDE = 1 << 16;
  * dlopen host binds each one it registers, so that activation `a`'s slice of
  * BOTH merged catalogs starts at `a * STRIDE`: ascending, each sized to reach
  * the next one's base. Each is admitted first (bind refuses an unadmitted
- * activation) with the facts `openCapture` would admit it with.
+ * activation) with the facts `openSides` would admit it with.
  *
  * A capture whose leaves name only activation 0 binds nothing, and the module
  * then maps a slot to activation 0 directly.
@@ -897,18 +1209,26 @@ export function captureArena(
   options: CaptureOptions = {},
 ): { root: number; recipes: number[]; saved: number[] } {
   bindCatalogBases(f, interned);
-  const saved = openCapture(f, options.sideActivations ?? []);
-  const recipes = interned.map((leaf) => {
-    const id = internLeaf(f, leaf);
-    expect(f.errno(), `intern kind ${leaf[0]}`).toBe(0);
-    expect(id, `intern kind ${leaf[0]} returns a recipe`).toBeGreaterThan(0);
-    return id;
+  const sides = options.sideActivations ?? [];
+  const saved = recordSaves(f, [0, ...sides]);
+  let recipes: number[] = [];
+  const run = runFork(f, {
+    sides,
+    // The guest's frames intern their references while the capture is open.
+    duringCapture: () => {
+      recipes = interned.map((leaf) => {
+        const id = internLeaf(f, leaf);
+        expect(f.errno(), `intern kind ${leaf[0]}`).toBe(0);
+        expect(id, `intern kind ${leaf[0]} returns a recipe`).toBeGreaterThan(0);
+        return id;
+      });
+    },
+    duringReplay: (open) =>
+      options.duringReplay?.({ ...open, recipes, aggregateRecipes: [] }),
   });
-  (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-  expect(f.errno(), "the capture seals").toBe(0);
-  const root = f.root();
-  expect(root, "and leaves an arena root").toBeGreaterThan(0);
-  return { root, recipes, saved };
+  expect(run.forkReturn, "the capture seals and the fork completes").toBe(DEFAULT_CHILD_PID);
+  expect(run.root, "and leaves an arena root").toBeGreaterThan(0);
+  return { root: run.root, recipes, saved };
 }
 
 /** Aggregate kinds, from the module's `CAPTURE_KIND_*`. */
@@ -979,8 +1299,33 @@ export function captureGraph(
   options: CaptureOptions & { readonly scalarStagingBase?: number } = {},
 ): { root: number; recipes: number[]; aggregateRecipes: number[] } {
   bindCatalogBases(f, leaves);
-  openCapture(f, options.sideActivations ?? []);
+  let captured: { recipes: number[]; aggregateRecipes: number[] } = {
+    recipes: [],
+    aggregateRecipes: [],
+  };
+  const run = runFork(f, {
+    sides: options.sideActivations ?? [],
+    // The guest's frames intern their references while the capture is open.
+    duringCapture: () => {
+      captured = internGraph(f, leaves, aggregates, options.scalarStagingBase);
+    },
+    duringReplay: (open) => options.duringReplay?.({ ...open, ...captured }),
+  });
+  expect(run.forkReturn, "the capture seals and the fork completes").toBe(DEFAULT_CHILD_PID);
+  expect(run.root, "and leaves an arena root").toBeGreaterThan(0);
+  return { root: run.root, ...captured };
+}
 
+/**
+ * Intern `leaves` and `aggregates` into the capture that is open, through the
+ * module's guest-facing entries (see `captureGraph`).
+ */
+function internGraph(
+  f: Fixture,
+  leaves: readonly (readonly [kind: number, a: number, b: number])[],
+  aggregates: readonly CapturedAggregate[],
+  scalarStagingBase: number | undefined,
+): { recipes: number[]; aggregateRecipes: number[] } {
   const recipes = leaves.map((leaf) => {
     const id = internLeaf(f, leaf);
     expect(f.errno(), `intern kind ${leaf[0]}`).toBe(0);
@@ -990,11 +1335,11 @@ export function captureGraph(
   // LOW scratch, not `MMAP_FLOOR + 6 * PAGE` as it was: the responder
   // bump-allocates upward from `MMAP_FLOOR` and never clears a page, so bytes
   // staged there survive only while fewer than six mappings precede the one
-  // that lands on them -- and the admissions `fixture()` and `openCapture` now
+  // that lands on them -- and the admissions `fixture()` and `openSides` now
   // make (a bump-heap chunk for decoding, a directory chunk and a record chunk)
   // take mappings BEFORE the capture's own. Same finding as the scalar loads
   // in `fork-module-gc-replay.test.ts`.
-  let scalarAt = options.scalarStagingBase ?? SCALAR_SCRATCH;
+  let scalarAt = scalarStagingBase ?? SCALAR_SCRATCH;
   const stage = (bytes: Uint8Array): number => {
     if (bytes.length === 0) return 0;
     const at = scalarAt;
@@ -1074,12 +1419,7 @@ export function captureGraph(
     );
     expect(f.errno(), `define kind ${aggregate.kind}`).toBe(0);
   });
-
-  (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-  expect(f.errno(), "the capture seals").toBe(0);
-  const root = f.root();
-  expect(root, "and leaves an arena root").toBeGreaterThan(0);
-  return { root, recipes, aggregateRecipes };
+  return { recipes, aggregateRecipes };
 }
 
 // -- The record arena and its directory ---------------------------------
@@ -1284,15 +1624,6 @@ export interface ArenaFixture {
    */
   scratchReserve: (len: number) => number;
   scratchRelease: (ptr: number, len: number) => void;
-  /**
-   * The capture begin, `fm_parent_begin_capture`, whose first step is the
-   * fork's designated bump reset (`open_capture_session`) -- the one of
-   * `reset_bump_heap`'s production callers a bare module fixture can reach
-   * without a drive table. This fixture admits no activation 0, so the begin
-   * refuses (EINVAL) only AFTER that reset, before it maps anything, and the
-   * module is back at idle.
-   */
-  driveBumpReset: () => void;
 }
 
 /**
@@ -1416,12 +1747,6 @@ export function arenaFixture(label = "arena"): ArenaFixture {
       (x.__wpk_fork_ref_scratch_reserve as (n: number) => number)(len),
     scratchRelease: (ptr, len) =>
       (x.__wpk_fork_ref_scratch_release as (p: number, n: number) => void)(ptr, len),
-    driveBumpReset: () => {
-      (x.fm_parent_begin_capture as (base: number) => number)(CHANNEL_BASE);
-      if (errno() !== 22) {
-        throw new Error(`driveBumpReset: the begin answered errno ${errno()}, not EINVAL`);
-      }
-    },
   };
   liveStatsReaders.push(f.stats);
   return f;

@@ -2,19 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   admitActivation,
-  CHANNEL_BASE,
+  bindActivation,
+  DEFAULT_CHILD_PID,
   driveBase,
-  DRIVE_SLOT_MODULE_STATE_SAVE,
   DRIVE_SLOT_STATIC_ROOT_FILL,
-  DRIVE_SLOT_UNWIND_BEGIN,
-  DRIVE_SLOT_UNWIND_END,
   fillSlotThunk,
   fixture,
-  PHASE_CAPTURE,
-  PHASE_IDLE,
-  saveSlotThunk,
+  runFork,
   sideTemplate,
-  voidSlotThunk,
   type Fixture,
 } from "./fork-module-capture-fixture";
 import { FORK_ACTIVATION_DRIVE_BINDINGS } from "../src/fork-module-backend";
@@ -36,7 +31,8 @@ import { bind } from "./support/fork-admission";
  * What these tests pin: the module asks EVERY activation that placed roots,
  * at ITS base, before the capture opens; and a shim that copied a different
  * count than the module placed refuses the capture (`EINVAL`) before anything
- * opened, rather than letting it capture against a catalog nobody filled.
+ * opened, rather than letting it capture against a catalog nobody filled --
+ * so the guest's `fork()` fails with -EINVAL and no child is asked for.
  */
 
 const EINVAL = 22;
@@ -61,16 +57,15 @@ function placedPair(short = false): {
     if (activation !== 0) {
       expect(admitActivation(f, activation, { template: sideTemplate(activation) })).toBe(0);
     }
-    const row = bind(f.x, f.memory, activation, 0, lengths[activation]!);
+    // Bound as registration binds it, so a fork's registration keeps these
+    // lengths.
+    const row = bindActivation(f.x, f.memory, activation, 0, lengths[activation]!);
     expect(row, `binding activation ${activation}`).not.toBeNull();
     bases.push(row!.statics);
     const table = f.instance.driveTable;
     const base = driveBase(activation);
     const needed = base + FORK_ACTIVATION_DRIVE_BINDINGS.length;
     if (table.length < needed) table.grow(needed - table.length);
-    table.set(base + DRIVE_SLOT_MODULE_STATE_SAVE, saveSlotThunk(() => {}) as never);
-    table.set(base + DRIVE_SLOT_UNWIND_BEGIN, saveSlotThunk(() => {}) as never);
-    table.set(base + DRIVE_SLOT_UNWIND_END, voidSlotThunk(() => {}) as never);
     table.set(
       base + DRIVE_SLOT_STATIC_ROOT_FILL,
       fillSlotThunk((at) => {
@@ -93,16 +88,24 @@ describe("the merged static-root catalog", () => {
     expect(merged.length, "the MODULE grew it to both slices as it placed them").toBe(5);
     expect(bases).toEqual([0, 3]);
 
-    (f.x.fm_parent_begin_capture as (base: number) => number)(CHANNEL_BASE);
-    expect(f.errno(), "the capture opens").toBe(0);
-    expect((f.x.fm_phase as () => number)()).toBe(PHASE_CAPTURE);
-    expect(asked, "each activation, once, at the base the module placed").toEqual([
+    // What the capture sees, read while it is open.
+    const seen: unknown[] = [];
+    let askedAtCapture: [number, number][] = [];
+    const run = runFork(f, {
+      sides: [1],
+      duringCapture: () => {
+        askedAtCapture = [...asked];
+        for (let slot = 0; slot < 5; slot += 1) seen.push(merged.get(slot));
+      },
+    });
+    expect(run.forkReturn, "the fork completes").toBe(DEFAULT_CHILD_PID);
+    expect(askedAtCapture, "each activation, once, at the base the module placed").toEqual([
       [0, 0],
       [1, 3],
     ]);
     for (const [activation, base, length] of [[0, 0, 3], [1, 3, 2]] as const) {
       for (let slot = 0; slot < length; slot += 1) {
-        expect(merged.get(base + slot), `activation ${activation} ordinal ${slot}`)
+        expect(seen[base + slot], `activation ${activation} ordinal ${slot}`)
           .toMatchObject({ activation, slot });
       }
     }
@@ -110,10 +113,16 @@ describe("the merged static-root catalog", () => {
 
   it("refuses the capture when a guest's copy disagrees with the placement", () => {
     const { f, asked } = placedPair(true);
-    const anchor = (f.x.fm_parent_begin_capture as (base: number) => number)(CHANNEL_BASE);
-    expect(anchor, "no capture anchor").toBe(0);
-    expect(f.errno()).toBe(EINVAL);
-    expect((f.x.fm_phase as () => number)(), "nothing opened").toBe(PHASE_IDLE);
+    let opened = false;
+    const run = runFork(f, {
+      sides: [1],
+      duringCapture: () => {
+        opened = true;
+      },
+    });
+    expect(opened, "nothing opened").toBe(false);
+    expect(run.forkReturn, "fork() fails with the refusal").toBe(-EINVAL);
+    expect(run.forkCalls, "and no child is asked for").toBe(0);
     expect(asked.map(([activation]) => activation)).toEqual([0, 1]);
   });
 

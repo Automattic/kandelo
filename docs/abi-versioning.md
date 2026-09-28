@@ -1169,6 +1169,25 @@ snapshot diff.
     `__wpk_fork_archive_reader_held`, which the host loader reads before
     taking the writer: an internal host-module contract rebuilt in
     lockstep, with no new host import and no new `fm_*` entry.
+  - *The fork module runs the fork.* The guest's `kernel.kernel_fork(mode)`
+    import (unchanged: `(i32) -> i32`) is bound to the module's own
+    `__wpk_fork_kernel_fork` export, and a host runs a guest entry with one
+    call, `fm_run(kind, table_index, arg) -> u64`; the module seals, sends
+    `SYS_FORK` (no arguments) or `SYS_VFORK` (borrowed prefix and scratch
+    bytes) on the Worker's own channel, replays and finishes. The host
+    entries `fm_parent_begin_capture`, `fm_parent_seal_capture`,
+    `fm_parent_replay`, `fm_parent_finish` and `fm_phase` are gone. The
+    drive table grows four slots per activation for the entry pair
+    (`DRIVE_SLOT_ENTRY_START` .. `DRIVE_SLOT_RESUME_THREAD`, 20-23;
+    `DRIVE_SLOTS_PER_ACTIVATION` 20 -> 24; `RUN_KIND_PROCESS` 0,
+    `RUN_KIND_THREAD` 1), and `fm_stats` answers field 106, captures
+    opened. All internal host-module contract, rebuilt in lockstep; no
+    guest artifact or kernel record changes. host-native now reads a fork's
+    mode from its syscall number (as the kernel worker does), not from
+    argument 0. One semantic change a guest can see: a capture that cannot
+    open now fails `fork()` with that errno for every errno, where a host
+    used to kill the Worker for any errno but `ENOMEM`/`EDEADLK` (nothing
+    is captured at that point, and the open releases what it took).
 
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were

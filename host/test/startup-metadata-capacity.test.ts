@@ -1,13 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  CHANNEL_STATUS_COMPLETE,
-  CH_ARG_SIZE,
-  CH_ARGS,
-  CH_ERRNO,
-  CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
-  HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
   PROCESS_FORK_MODE_VFORK,
@@ -16,10 +10,7 @@ import {
   PROCESS_STARTUP_MAX_ENVP_COUNT,
 } from "../src/generated/abi";
 import { buildKernelImportsForTest } from "../src/worker-main";
-import {
-  processForkMode,
-  sendForkSyscall,
-} from "../src/worker-main-fork-support";
+import { processForkMode } from "../src/worker-main-fork-support";
 
 const E2BIG = 7;
 const EFAULT = 14;
@@ -316,44 +307,13 @@ describe("process startup metadata capacity contract", () => {
 });
 
 describe("process fork-mode import contract", () => {
-  it("routes ordinary fork and vfork to distinct syscalls", () => {
-    // The routing lives in the shared fork path (`ForkWorker`,
-    // host/src/worker-main-fork-support.ts) since lane F step 3b; the default
-    // `kernel_fork` below no longer issues any syscall.
-    const memory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
-    const view = new DataView(memory.buffer);
-    view.setBigInt64(CH_RETURN, 73n, true);
-    view.setUint32(CH_ERRNO, 0, true);
-    const wait = vi.spyOn(Atomics, "wait").mockImplementation(
-      (array, index, expected) => {
-        if (Atomics.load(array, index) !== expected) return "not-equal";
-        Atomics.store(array, index, CHANNEL_STATUS_COMPLETE);
-        return "ok";
-      },
-    );
-    const sealed = { prefixBytes: 32, scratchBytes: 4096 };
-
-    try {
-      expect(sendForkSyscall(memory, 0, PROCESS_FORK_MODE_FORK, sealed)).toBe(73);
-      expect(view.getUint32(CH_SYSCALL, true)).toBe(
-        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-      );
-      expect(view.getBigInt64(CH_ARGS, true)).toBe(0n);
-      expect(sendForkSyscall(memory, 0, PROCESS_FORK_MODE_VFORK, sealed)).toBe(73);
-      expect(view.getUint32(CH_SYSCALL, true)).toBe(
-        HOST_INTERCEPTED_SYSCALLS.SYS_VFORK,
-      );
-      // The borrowed child's workspace rides the vfork request.
-      expect(view.getBigInt64(CH_ARGS, true)).toBe(32n);
-      expect(view.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(4096n);
-      expect(processForkMode(2)).toBeNull();
-    } finally {
-      wait.mockRestore();
-    }
+  it("knows the two fork modes and no third", () => {
+    // Which syscall each mode sends (SYS_FORK, or SYS_VFORK carrying the
+    // borrowed child's workspace) is the fork MODULE's since lane F step 3c;
+    // `fork-module-capture-drive.test.ts` pins it against the channel.
+    expect(processForkMode(PROCESS_FORK_MODE_FORK)).toBe(PROCESS_FORK_MODE_FORK);
+    expect(processForkMode(PROCESS_FORK_MODE_VFORK)).toBe(PROCESS_FORK_MODE_VFORK);
+    expect(processForkMode(2)).toBeNull();
   });
 
   it("fails loud, touching no channel, when nothing fork-capable replaced it", () => {

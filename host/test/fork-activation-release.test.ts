@@ -5,7 +5,7 @@ import {
   admitActivation,
   bindActivation,
   fixture,
-  openCapture,
+  runFork,
   sideTemplate,
   type Fixture,
 } from "./fork-module-capture-fixture";
@@ -128,11 +128,23 @@ describe("releasing an activation through the fork module", () => {
     m.place(1, 4, 0);
     m.place(2, 4, 0);
     m.release(1);
-    openCapture(f, [2]);
-    expect(m.slotToRecipe(5), "a slot of the live range").toBeGreaterThanOrEqual(0);
-    expect(f.errno()).toBe(0);
-    expect(m.slotToRecipe(1), "a slot of the released range").toBe(-1);
-    expect(f.errno()).toBe(EINVAL);
+    // Asked while a fork's capture is open, as the injected funcref scan asks.
+    const answers: Array<[number, number]> = [];
+    runFork(f, {
+      sides: [2],
+      duringCapture: () => {
+        answers.push([m.slotToRecipe(5), f.errno()]);
+        answers.push([m.slotToRecipe(1), f.errno()]);
+      },
+    });
+    const [[live, liveErrno], [released, releasedErrno]] = answers as [
+      [number, number],
+      [number, number],
+    ];
+    expect(live, "a slot of the live range").toBeGreaterThanOrEqual(0);
+    expect(liveErrno).toBe(0);
+    expect(released, "a slot of the released range").toBe(-1);
+    expect(releasedErrno).toBe(EINVAL);
   });
 
   it("releases a dlopen that failed before its tables were grown (op 2)", () => {

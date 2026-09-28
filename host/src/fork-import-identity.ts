@@ -107,8 +107,8 @@ function catalogOwner(name: string, prefix: string, label: string): number | nul
  * an activation's own imported globals and tables, and neither of these is one.
  * Publishing provenance for them gave the module a record with no declaration
  * to match, and it refused the whole capture -- which is what
- * `fm_parent_begin_capture failed with errno 22` was, for every fork-
- * instrumented program.
+ * the capture open failing with errno 22 was, for every fork-instrumented
+ * program.
  *
  *  - `env.__channel_base`: the process's syscall channel, rebound per worker
  *    rather than reconstructed. The instrumenter excludes it by this exact name
@@ -282,8 +282,8 @@ export class ForkImportIdentity {
       // name: it is the process's syscall channel base, rebound per worker
       // rather than reconstructed from a parent's value.
       //
-      // Publishing it anyway is what made `fm_parent_begin_capture` answer
-      // EINVAL for every dlopen guest -- the module looked its ordinal up in
+      // Publishing it anyway is what made the capture open answer EINVAL for
+      // every dlopen guest -- the module looked its ordinal up in
       // the KFIG-derived table and found nothing. A capture that refuses is
       // better than one that binds a child's channel base from its parent, so
       // the module's refusal stays; this stops asking it the question.

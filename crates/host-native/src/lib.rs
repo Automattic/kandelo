@@ -2164,6 +2164,14 @@ mod tests {
         let stdout = String::from_utf8_lossy(&outcome.stdout);
         assert!(stdout.contains("child\n"), "the child must run up to its fault: {stdout:?}");
         assert!(stdout.contains("parent\n"), "the parent must return from waitpid: {stdout:?}");
+        // POSIX: a fault is a signal death, so the parent's wait status says
+        // WIFSIGNALED -- not a plain exit whose status happens to be 132. The
+        // child's MAIN thread faulted here, which this host used to report
+        // as `exit_group(128 + signum)`.
+        assert!(
+            stdout.contains("signaled=4\n"),
+            "the parent must reap its child as killed by SIGILL: {stdout:?}"
+        );
         assert!(
             elapsed < std::time::Duration::from_secs(10),
             "the child's fault must release the parent promptly, not after the pump's cap: \
@@ -3640,10 +3648,9 @@ mod tests {
         }
     }
 
-    /// N1-I4 Task 3: a REAL native `fork()` end to end, driven through the
-    /// co-resident fork-module's `fm_*` capture/replay coordinator
-    /// (`guest::run_fork_capable_entry`/`drive_fork_capture_seal_and_launch_
-    /// child`), against a GENUINELY fork-instrumented guest
+    /// N1-I4 Task 3: a REAL native `fork()` end to end, driven by the
+    /// co-resident fork-module's own run loop (`fm_run`, reached from
+    /// `guest::run_fork_capable_entry`), against a GENUINELY fork-instrumented guest
     /// (`native_fork.instrumented.wasm` — the SAME `native_fork.c` source as
     /// Task 2's `native_fork.wasm`, but run through the REAL production
     /// `scripts/run-wasm-fork-instrument.sh`; see `fixtures/README.md`).
@@ -4382,8 +4389,8 @@ mod tests {
     /// E2), identical on every host (native, Node, browser): an
     /// `extern.convert_any` view of the program's own GC object is captured
     /// as that object, but a host object has nothing to rebuild it from in a
-    /// fresh child. The module refuses it at seal, and the host abort-replays
-    /// the parent (`drive_fork_capture_seal_and_launch_child`): the fork
+    /// fresh child. The module refuses it at seal and abort-replays the parent
+    /// itself (its run loop, `fm_run`): the fork
     /// returns `-EOPNOTSUPP`, no child is spawned, and the parent survives. That
     /// boundary is proven by `smoke_fork_host_externref_refused`, and
     /// documented in `docs/fork-reference-support.md`.

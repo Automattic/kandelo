@@ -22,16 +22,17 @@ import type { ForkWasmImports } from "../src/fork-import-identity";
 import {
   FORK_ACTIVATION_DRIVE_BINDINGS,
   ForkModuleContinuationBackend,
+  type ForkChildPlan,
 } from "../src/fork-module-backend";
 import {
   CHANNEL_BASE,
   DRIVE_SLOT_MODULE_STATE_SAVE,
-  DRIVE_SLOT_UNWIND_BEGIN,
   admitActivation,
   bindActivation,
   driveBase,
   fixture,
   publishInto,
+  runFork,
   saveSlotThunk,
   sideTemplate,
   type Fixture,
@@ -118,14 +119,18 @@ interface ActivationFacts {
  * registration binds them. Every declared import gets a snapshot of `SAVED`,
  * written by the guest save the capture drives -- the module refuses a
  * binding with no snapshot behind it.
+ *
+ * The plan is made from the capture's arena while the fork is open (inside
+ * the guest's own entry: `runFork`'s `duringCapture`), which is where the
+ * binding records it reads are; what it answered -- or the refusal it threw,
+ * and the errno -- comes back.
  */
 function captureAndPlan(activations: ReadonlyMap<number, ActivationFacts>): {
   f: Fixture;
-  backend: ForkModuleContinuationBackend;
-  root: number;
+  plan: () => ForkChildPlan;
+  errno: number;
 } {
   const f = fixture();
-  const x = f.x as Record<string, (...a: (number | bigint)[]) => number>;
   const reserve = f.x.__wpk_fork_module_state_record_reserve as (...a: number[]) => number;
   const commit = f.x.__wpk_fork_module_state_record_commit as (payload: number) => void;
   for (const [activation, facts] of activations) {
@@ -151,15 +156,12 @@ function captureAndPlan(activations: ReadonlyMap<number, ActivationFacts>): {
         }
       }) as never,
     );
-    f.instance.driveTable.set(driveBase(activation) + DRIVE_SLOT_UNWIND_BEGIN, saveSlotThunk(() => {}) as never);
     expect(publishInto(f.x, f.memory, activation, [
       ...(facts.exports ?? []).map(([owner, group]) => exportRow(SPACE_GLOBAL, owner, group)),
       ...facts.provenance.map(({ ordinal, kind, group = 0, bits = 0n }) =>
         importRow(SPACE_GLOBAL, ordinal, kind, group, bits)),
     ]), `publishing activation ${activation}`).toBe(0);
   }
-  x.fm_parent_begin_capture(CHANNEL_BASE, 0);
-  expect(f.errno(), "the parent captures").toBe(0);
   const backend = new ForkModuleContinuationBackend({
     instance: f.instance,
     memory: f.memory,
@@ -167,7 +169,28 @@ function captureAndPlan(activations: ReadonlyMap<number, ActivationFacts>): {
     channelBase: CHANNEL_BASE,
     label: "child plan",
   });
-  return { f, backend, root: f.root() };
+  let planned: ForkChildPlan | undefined;
+  let refused: unknown;
+  let errno = 0;
+  runFork(f, {
+    sides: [...activations.keys()].filter((activation) => activation !== 0),
+    duringCapture: ({ root }) => {
+      try {
+        planned = backend.childPlan(root);
+      } catch (error) {
+        refused = error;
+        errno = f.errno();
+      }
+    },
+  });
+  return {
+    f,
+    errno,
+    plan: () => {
+      if (refused !== undefined) throw refused;
+      return planned!;
+    },
+  };
 }
 
 /** 100.0 as f64 bits: a raw number a parent captured by value. */
@@ -218,8 +241,7 @@ const BASE: ForkWasmImports = {
 
 describe("fork child imports, planned by the fork module", () => {
   it("orders the provider first and hands the consumer the provider's own Global", () => {
-    const { backend, root } = captureAndPlan(mainAndSide());
-    const plan = backend.childPlan(root);
+    const plan = captureAndPlan(mainAndSide()).plan();
     expect(plan.order, "activation 0 reads activation 1's export").toEqual([1, 0]);
 
     const imports = new ForkChildImports(plan, new Map([[0, MAIN], [1, SIDE]]), "child");
@@ -238,8 +260,8 @@ describe("fork child imports, planned by the fork module", () => {
   });
 
   it("hands the dylink loader the saved scalar behind a base import", () => {
-    const { backend, root } = captureAndPlan(mainAndSide());
-    const imports = new ForkChildImports(backend.childPlan(root), new Map([[0, MAIN], [1, SIDE]]), "child");
+    const { plan } = captureAndPlan(mainAndSide());
+    const imports = new ForkChildImports(plan(), new Map([[0, MAIN], [1, SIDE]]), "child");
     expect(imports.savedMutableGlobalImport(0, "env", "g")).toBe(SAVED);
     expect(imports.savedMutableGlobalImport(1, "env", "g")).toBe(SAVED);
     expect(imports.savedMutableGlobalImport(0, "env", "absent")).toBeUndefined();
@@ -261,14 +283,14 @@ describe("fork child imports, planned by the fork module", () => {
         exports: [[5, 7]],
       }],
     ]);
-    const { f, backend, root } = captureAndPlan(cyclic);
-    expect(() => backend.childPlan(root)).toThrow(/fm_child_plan failed with errno 35/);
-    expect(f.errno()).toBe(EDEADLK);
+    const { plan, errno } = captureAndPlan(cyclic);
+    expect(plan).toThrow(/fm_child_plan failed with errno 35/);
+    expect(errno).toBe(EDEADLK);
   });
 
   it("refuses to register one activation twice, or one it never planned", () => {
-    const { backend, root } = captureAndPlan(mainAndSide());
-    const imports = new ForkChildImports(backend.childPlan(root), new Map([[0, MAIN], [1, SIDE]]), "child");
+    const { plan } = captureAndPlan(mainAndSide());
+    const imports = new ForkChildImports(plan(), new Map([[0, MAIN], [1, SIDE]]), "child");
     const instance = new WebAssembly.Instance(SIDE, { env: { g: BASE.env!.g } });
     imports.registerInstance(1, instance);
     expect(() => imports.registerInstance(1, instance)).toThrow(/was instantiated twice/);

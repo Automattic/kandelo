@@ -293,20 +293,3 @@ export function requireForkUnwindTag(
   return tag;
 }
 
-/**
- * Whether a caught value is the fork unwind transport rather than a program
- * exception.
- *
- * The distinction is the whole point of a private tag: instrumented catch-all
- * clauses rethrow this one, and only the worker entry boundary consumes it.
- */
-export function isForkUnwindException(
-  value: unknown,
-  tag: WebAssembly.Tag,
-): value is WebAssembly.Exception {
-  return (
-    typeof WebAssembly.Exception === "function"
-    && value instanceof WebAssembly.Exception
-    && value.is(tag)
-  );
-}

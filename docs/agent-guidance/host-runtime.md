@@ -150,8 +150,16 @@ Add an entry here or nowhere.
   the "X cannot do Y, therefore Z must be host" shape, stated with confidence,
   and every one was wrong. `host/src/fork-resume-table.ts` is now a membership
   `Set` and two guards,
-- the guest run-loop + the fork-unwind exception catch (a JS-level throw a Wasm
-  module cannot `try/catch`), and
+- NOTHING for the guest run loop or the fork-unwind catch. This entry read
+  "the guest run-loop + the fork-unwind exception catch (a JS-level throw a
+  Wasm module cannot `try/catch`)". The premise was false: the unwind is the
+  fork module's OWN tag, and a wasm `try_table` catches it. Since lane F step
+  3c the module runs the loop (`fm_run`): an injected thunk calls the guest
+  entry through the drive table inside a `try_table`, and the seal, the
+  `SYS_FORK`/`SYS_VFORK`, the replay and the finish are Rust; the guest's
+  `kernel.kernel_fork` import is the module's own `__wpk_fork_kernel_fork`.
+  What a host keeps is the call to `fm_run` and the reading of how it ended
+  (an `unreachable` after a recorded exit is that exit), and
 - the Node/browser worker-message bridges.
 
 New capture/replay/orchestration logic belongs in the Rust fork-module
@@ -159,9 +167,10 @@ New capture/replay/orchestration logic belongs in the Rust fork-module
 host↔module contract — not in new TypeScript sequencing in
 `host/src/fork-module-backend.ts`, `host/src/fork-process-continuation.ts`, or
 the fork paths of `host/src/worker-main.ts`. A Worker's fork machinery (its
-fork module, the `kernel_fork` import and the run loop) is written once, in
-`ForkWorker` (`host/src/worker-main-fork-support.ts`), and is counted in
-worker-main's surface measures, so moving code there is never a reduction.
+fork module, the bindings, the child install and the one `fm_run` call) is
+written once, in `ForkWorker` (`host/src/worker-main-fork-support.ts`), and is
+counted in worker-main's surface measures, so moving code there is never a
+reduction.
 The `fm_*` surface is the internal
 host↔module contract (rebuilt in lockstep with the module), NOT the guest ABI;
 the frozen guest contract is the `__wpk_fork_*` exports and `kandelo.wpk_fork.*`

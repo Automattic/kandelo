@@ -317,14 +317,13 @@ object included. The same boundary holds on every host:
   refused there: the module latches `EOPNOTSUPP` and hands back a gated
   placeholder recipe beside which the guest publishes the live value,
   so the parent's own replay gets it back unchanged. When the capture
-  seals (`fm_parent_seal_capture`), the latched refusal fails the seal
-  after the journal is sealed; the worker's seal-failure path replays
-  the parent and returns `-EOPNOTSUPP` without issuing the fork syscall.
+  seals, the latched refusal fails the seal after the journal is sealed;
+  the module's run loop (`fm_run`) abort-replays the parent and `fork()`
+  returns `-EOPNOTSUPP` without the fork syscall ever being sent.
 - **Native** (`crates/host-native`). The same: the guest's
   `__wpk_fork_ref_gc_broker_encode` import is the module's own export,
-  the seal fails, and `drive_fork_capture_seal_and_launch_child`
-  abort-replays the parent and returns `-EOPNOTSUPP` without posting the
-  fork syscall.
+  the seal fails, and the module's run loop abort-replays the parent the
+  same way: one implementation, on every host.
 
 No host import is consulted and nothing names a host object: the fork
 module no longer imports `resolve_externref` or
