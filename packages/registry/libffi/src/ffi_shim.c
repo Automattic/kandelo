@@ -10,6 +10,7 @@
  */
 #include <ffi.h>
 
+#include <limits.h> /* UINT_MAX */
 #include <stdlib.h> /* abort */
 
 /*
@@ -41,13 +42,38 @@ DEF_TYPE(ffi_type_pointer, 4, 4, FFI_TYPE_POINTER);
 
 #undef DEF_TYPE
 
+/*
+ * A cif this shim cannot call: marked so ffi_call aborts on it. libwayland's
+ * wl_closure_invoke ignores ffi_prep_cif's status, so a rejected cif must not
+ * keep whatever nargs it held before -- that would be called as if valid.
+ */
+static ffi_status reject(ffi_cif *cif, ffi_status why)
+{
+    cif->nargs = UINT_MAX;
+    cif->rtype = NULL;
+    cif->arg_types = NULL;
+    return why;
+}
+
 ffi_status ffi_prep_cif(ffi_cif *cif, ffi_abi abi, unsigned int nargs,
                         ffi_type *rtype, ffi_type **atypes)
 {
     if (cif == NULL)
         return FFI_BAD_TYPEDEF;
     if (nargs > FFI_SHIM_MAX_ARGS)
-        return FFI_BAD_ARGTYPE; /* beyond WL_CLOSURE_MAX_ARGS+2 */
+        return reject(cif, FFI_BAD_ARGTYPE); /* beyond WL_CLOSURE_MAX_ARGS+2 */
+    /* ffi_call passes each argument as one i32 word and writes no return
+     * value: exactly Wayland's shape. Anything wider, an aggregate, or a
+     * non-void return would be silently truncated or dropped, so refuse
+     * it here instead. */
+    if (rtype == NULL || rtype->type != FFI_TYPE_VOID)
+        return reject(cif, FFI_BAD_TYPEDEF);
+    for (unsigned int i = 0; i < nargs; i++) {
+        if (atypes == NULL || atypes[i] == NULL || atypes[i]->size > 4
+            || atypes[i]->type == FFI_TYPE_FLOAT
+            || atypes[i]->type == FFI_TYPE_VOID)
+            return reject(cif, FFI_BAD_ARGTYPE);
+    }
 
     cif->abi = abi;
     cif->nargs = nargs;
@@ -71,6 +97,11 @@ void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
 
     unsigned int n = cif->nargs;
     uint32_t a[FFI_SHIM_MAX_ARGS];
+
+    /* A cif ffi_prep_cif rejected (or one built by hand) must fail here,
+     * before the copy below writes n words into a[]. */
+    if (n > FFI_SHIM_MAX_ARGS)
+        abort();
 
     /* avalue[i] points at the i-th argument value; each is one i32 word. */
     for (unsigned int i = 0; i < n; i++)
@@ -107,9 +138,8 @@ void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
     case 21: ((void (*)(uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t)) fn)(a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10],a[11],a[12],a[13],a[14],a[15],a[16],a[17],a[18],a[19],a[20]); break;
     case 22: ((void (*)(uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t)) fn)(a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10],a[11],a[12],a[13],a[14],a[15],a[16],a[17],a[18],a[19],a[20],a[21]); break;
     default:
-        /* ffi_prep_cif rejects nargs > FFI_SHIM_MAX_ARGS, so this is
-         * unreachable unless a caller hand-builds a cif. Fail loudly
-         * rather than silently skip the dispatch. */
+        /* n <= FFI_SHIM_MAX_ARGS was checked above and every arity up to
+         * it has a case, so this is unreachable. */
         abort();
     }
 }

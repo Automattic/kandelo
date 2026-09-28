@@ -10,8 +10,10 @@
  * new_id, object pointer, char* string, wl_array*, fd int — is a single
  * 32-bit word, and the invoked function returns void. There are no
  * doubles and no by-value structs anywhere in the Wayland ABI. So the
- * shim ignores libffi's type machinery entirely: `ffi_prep_cif` records
- * only the argument *count*, and `ffi_call` reads that many i32 words
+ * shim uses libffi's type machinery only to refuse what it cannot pass:
+ * `ffi_prep_cif` rejects any argument wider than a word, a float, or a
+ * non-void return, and records the argument *count*; a rejected cif is
+ * left marked so `ffi_call` aborts on it. `ffi_call` reads that many i32 words
  * and dispatches through a `switch` over arity. Each case is a
  * function-pointer call of a distinct `(i32, ...) -> ()` signature,
  * which the LLVM wasm backend lowers to `call_indirect` against the
