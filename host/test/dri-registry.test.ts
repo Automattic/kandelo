@@ -337,4 +337,33 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
     reg.syncImportsForPid(200, memB);
     expectPattern(readPattern(memB, BO_ADDR, BO_SIZE), 0x42);
   });
+
+  it("a process reusing an exited creator's pid is an importer, not the writer", () => {
+    // The creator (100) exits while the compositor (200) still holds the
+    // bo. The kernel then recycles pid 100 for an unrelated process that
+    // imports and maps the same bo. Treating it as the creator would flush
+    // its stale mapping over the last frame and skip refreshing it.
+    const memA = newMemory();
+    const memB = newMemory();
+    const memReused = newMemory();
+    let creatorAlive = true;
+    const reg = new GbmBoRegistry({
+      getProcessMemory: (pid) =>
+        pid === 100 ? (creatorAlive ? memA : memReused) : pid === 200 ? memB : undefined,
+    });
+    reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    fillPattern(memA, BO_ADDR, BO_SIZE, 0x51);   // the creator's final frame
+    reg.releaseProcess(100);
+    creatorAlive = false;
+
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);          // the reused pid imports
+    fillPattern(memReused, BO_ADDR, BO_SIZE, 0xee);
+    reg.syncCreatorToSab(1);
+    expectPattern(reg.pixelView(1)!.slice(0, BO_SIZE), 0x51);
+    expect(reg.hasStaleableImports(100)).toBe(false);
+    reg.syncImportsForPid(100, memReused);
+    expectPattern(readPattern(memReused, BO_ADDR, BO_SIZE), 0x51);
+  });
 });

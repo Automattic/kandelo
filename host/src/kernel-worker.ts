@@ -2787,6 +2787,11 @@ export function createCentralizedKernelWorkerTestDouble(
 interface KmsGlPresenter {
   gl: WebGL2RenderingContext;
   tex: WebGLTexture;
+  /** The presenter's own program and (attribute-free) vertex array. Owned
+   *  so a stand-down can delete them: the context outlives the presenter,
+   *  and each GL-session claim/release cycle builds a new one. */
+  prog: WebGLProgram;
+  vao: WebGLVertexArrayObject;
   texW: number;
   texH: number;
   /** fb_id + kernel commit count at the last present. The presenter
@@ -2852,21 +2857,54 @@ void main() {
  *  context. Returns null when anything fails (context lost, compile
  *  error) so the pump can degrade to stats-only. The program stays
  *  bound for the context's lifetime — the pump is its sole user. */
+/** Delete the GL objects a presenter owns. Its context lives on (a program
+ *  GL session may be inheriting it), so they are not freed otherwise. */
+function releaseKmsGlPresenter(presenter: KmsGlPresenter | null | undefined): void {
+  if (!presenter) return;
+  const { gl } = presenter;
+  gl.deleteTexture(presenter.tex);   // also unbinds it from unit 0
+  gl.deleteVertexArray(presenter.vao);
+  gl.deleteProgram(presenter.prog);
+}
+
 function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null {
   // The context may be inherited from a torn-down program GL session
   // (markKmsCanvasGlReleased): getContext returns the canvas's existing
   // context with whatever state the dying compositor left behind, and
-  // nothing replays it back to defaults. Reset everything the
-  // fullscreen-triangle draw depends on; on a fresh context these are
+  // nothing replays it back to defaults. Reset everything the upload and
+  // the fullscreen-triangle draw depend on; on a fresh context these are
   // all defaults already.
+  //
+  // Draw target and pipeline.
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.bindVertexArray(null);
-  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
   gl.disable(gl.SCISSOR_TEST);
   gl.disable(gl.BLEND);
   gl.disable(gl.CULL_FACE);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.STENCIL_TEST);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+  gl.disable(gl.SAMPLE_COVERAGE);
   gl.disable(gl.RASTERIZER_DISCARD);
   gl.colorMask(true, true, true, true);
+  // Texture unit 0: a bound sampler object would override the scanout
+  // texture's own filtering and wrap parameters.
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindSampler(0, null);
+  // Upload: texImage2D/texSubImage2D read `scratch` as tightly packed RGBA
+  // rows from its start. A bound PIXEL_UNPACK_BUFFER makes them read a
+  // buffer object instead (and reject an ArrayBufferView source), and any
+  // non-default unpack parameter reshapes or offsets the rows.
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_IMAGES, 0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   const compile = (type: number, src: string): WebGLShader | null => {
     const sh = gl.createShader(type);
     if (!sh) return null;
@@ -2880,18 +2918,36 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   };
   const vs = compile(gl.VERTEX_SHADER, KMS_SCANOUT_VS);
   const fs = compile(gl.FRAGMENT_SHADER, KMS_SCANOUT_FS);
-  if (!vs || !fs) return null;
-  const prog = gl.createProgram();
+  const prog = vs && fs ? gl.createProgram() : null;
+  if (prog) {
+    gl.attachShader(prog, vs!);
+    gl.attachShader(prog, fs!);
+    gl.linkProgram(prog);
+  }
+  // A linked program keeps its code; the shader objects are not needed.
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
   if (!prog) return null;
-  gl.attachShader(prog, vs);
-  gl.attachShader(prog, fs);
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    gl.deleteProgram(prog);
+    return null;
+  }
+  // A vertex array of our own, not the default one: the dying session may
+  // have left attribute arrays enabled on the default VAO pointing at
+  // buffers it deleted. The triangle is generated from gl_VertexID, so a
+  // fresh VAO (every attribute disabled) is all the draw needs.
+  const vao = gl.createVertexArray();
+  const tex = gl.createTexture();
+  if (!vao || !tex) {
+    gl.deleteVertexArray(vao);
+    gl.deleteTexture(tex);
+    gl.deleteProgram(prog);
+    return null;
+  }
+  gl.bindVertexArray(vao);
   gl.useProgram(prog);
   const loc = gl.getUniformLocation(prog, "u_scanout");
   if (loc) gl.uniform1i(loc, 0);
-  const tex = gl.createTexture();
-  if (!tex) return null;
   gl.bindTexture(gl.TEXTURE_2D, tex);
   // LINEAR_MIPMAP_LINEAR: the desktop framebuffer is a fixed 1920×1080
   // and panes usually show it smaller — plain bilinear minification
@@ -2903,7 +2959,7 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   return {
-    gl, tex, texW: 0, texH: 0,
+    gl, tex, prog, vao, texW: 0, texH: 0,
     lastFbId: -1, lastCommits: -1,
     presentCount: 0, degraded: false,
     probePhase: 0, lastProbeSum: 0,
@@ -3522,12 +3578,10 @@ export class CentralizedKernelWorker {
         // context actually exists). If the pump's webgl2-scanout
         // presenter was active on this CRTC, it holds state on the SAME
         // WebGL2 context the program just inherited — stand it down and
-        // free its scanout texture (deletion also unbinds it from unit
-        // 0); anything else the presenter set (program binding, viewport,
-        // clear color) is state the claiming session sets itself before
-        // drawing.
-        const presenter = this.kmsGlPresenters.get(crtcId);
-        if (presenter) presenter.gl.deleteTexture(presenter.tex);
+        // free what it owns (texture, program, vertex array; deletion also
+        // unbinds each); anything else the presenter set (viewport, clear
+        // color) is state the claiming session sets itself before drawing.
+        releaseKmsGlPresenter(this.kmsGlPresenters.get(crtcId));
         this.kmsGlPresenters.delete(crtcId);
         if (!this.kmsModeBeforeGlOwn.has(crtcId)) {
           this.kmsModeBeforeGlOwn.set(crtcId, this.kmsContextMode.get(crtcId));
@@ -33879,6 +33933,7 @@ export class CentralizedKernelWorker {
     // Cached `null` failures are dropped too — the new canvas may accept
     // a context the old one refused.
     if (this.kmsCanvases.get(crtc_id) !== canvas) {
+      releaseKmsGlPresenter(this.kmsGlPresenters.get(crtc_id));
       this.kmsGlPresenters.delete(crtc_id);
     }
     const statsView = statsSab === undefined

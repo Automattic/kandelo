@@ -94,6 +94,9 @@ export type GbmBoChangeListener = (
   ev: GbmBoChangeEvent,
 ) => void;
 
+/** `creatorPid` of a bo whose creating process has exited. Never a pid. */
+const NO_CREATOR = -1;
+
 type InternalEntry = {
   bo_id: number;
   size: number;
@@ -103,7 +106,10 @@ type InternalEntry = {
   /** The pid whose DRM_IOCTL_MODE_CREATE_DUMB minted the bo. In the
    *  PRIME sharing pattern this is the writer: the exporting client
    *  draws into its own mapping, importers only read. Used by
-   *  `syncImportsForPid` to pick the flush direction. */
+   *  `syncImportsForPid` to pick the flush direction. `NO_CREATOR` once
+   *  that process is gone: pids are recycled, and a later process that
+   *  reuses the number and imports this bo is an importer, not its
+   *  writer. */
   creatorPid: number;
   /** Canonical pixel storage. Pre-`mmap_shared`, this is also the
    *  authoritative buffer that bind/unbind syncs each pid's wasm
@@ -223,6 +229,9 @@ export class GbmBoRegistry {
         for (const l of this.listeners) l(pid, bo_id, "unbind");
       }
       if (!e.pids.delete(pid)) continue;
+      // The SAB now holds the creator's last pixels (flushed above); no
+      // live process writes this bo any more.
+      if (e.creatorPid === pid) e.creatorPid = NO_CREATOR;
       if (e.pids.size !== 0) continue;
       this.bos.delete(bo_id);
       for (const l of this.listeners) l(pid, bo_id, "destroy");
