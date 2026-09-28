@@ -233,6 +233,14 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     executable: "/usr/local/bin/scummvm",
     command: "/usr/local/bin/scummvm",
   },
+  "ffmpeg-fbdev": {
+    executable: "/usr/bin/ffmpeg",
+    command: "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 -f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 -map 1:a -f oss /dev/dsp",
+  },
+  ffplay: {
+    executable: "/usr/bin/ffplay",
+    command: "/usr/bin/ffplay -autoexit -f lavfi 'testsrc=duration=60:size=320x240:rate=10[out0];sine=duration=60[out1]'",
+  },
 } as const;
 
 /**
