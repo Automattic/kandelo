@@ -786,9 +786,12 @@ done
 if ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
     # Regenerate the Inconsolata TTF→C byte-array header if missing or
     # older than the .ttf. The .h is git-ignored; the .ttf is the
-    # source of truth (see programs/sdl2/third_party/NOTICE.md).
-    sdl2_ttf="$REPO_ROOT/programs/sdl2/third_party/Inconsolata-Regular.ttf"
+    # source of truth (see third_party/NOTICE.md). The .ttf is vendored once
+    # in the repository-root third_party/; only the generated header lives
+    # under programs/sdl2/, so create its directory on a fresh checkout.
+    sdl2_ttf="$REPO_ROOT/third_party/Inconsolata-Regular.ttf"
     sdl2_ttf_h="$REPO_ROOT/programs/sdl2/third_party/inconsolata_ttf.h"
+    mkdir -p "$(dirname "$sdl2_ttf_h")"
     if [ -f "$sdl2_ttf" ]; then
         if [ ! -f "$sdl2_ttf_h" ] || [ "$sdl2_ttf" -nt "$sdl2_ttf_h" ]; then
             echo "  Regenerating inconsolata_ttf.h from $(basename "$sdl2_ttf")..."
@@ -806,7 +809,7 @@ lines = [
 dst.write_text(
     "/* Auto-generated from Inconsolata-Regular.ttf by "
     "scripts/build-programs.sh. */\n"
-    "/* See programs/sdl2/third_party/NOTICE.md for license. */\n"
+    "/* See third_party/NOTICE.md for license. */\n"
     "#pragma once\n"
     f"static const unsigned char inconsolata_ttf[] = {{\n"
     + ",\n".join(lines) + "\n};\n"
@@ -827,7 +830,7 @@ PY
         echo "  Skipping sdl2: package resolver owns wasm32/sdl2.wasm"
     else
         echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
-        "$CC" "${CFLAGS[@]}" "${sdl2_sources[@]}" \
+        "$CC" "${CFLAGS[@]}" -I"$REPO_ROOT/third_party" "${sdl2_sources[@]}" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libSDL2.a" \
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \

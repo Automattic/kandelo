@@ -16,6 +16,10 @@
 set -euo pipefail
 
 SRC_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# stb_truetype.h and the Inconsolata .ttf are vendored once, in the
+# repository-root third_party/ (see third_party/NOTICE.md), and shared
+# with the SDL2 playground rather than copied here.
+VENDOR="$(cd "$SRC_ROOT/../../../third_party" && pwd)"
 SYSROOT="${1:?usage: build.sh <sysroot>}"
 CC="${CC:-clang}"
 AR="${AR:-llvm-ar}"
@@ -26,8 +30,11 @@ mkdir -p "$WORK"
 # --- Embed the font: generate wpk_font_ttf.h from the vendored ttf. The
 # .h is git-ignored; the .ttf is the source of truth (see NOTICE.md). Only
 # regenerate when the ttf is newer, so repeat builds are cheap.
-TTF="$SRC_ROOT/third_party/Inconsolata-Regular.ttf"
+TTF="$VENDOR/Inconsolata-Regular.ttf"
+# The generated header stays next to wpkdraw (git-ignored). Its directory
+# holds no tracked files, so create it on a fresh checkout.
 TTF_H="$SRC_ROOT/third_party/wpk_font_ttf.h"
+mkdir -p "$(dirname "$TTF_H")"
 if [ ! -f "$TTF_H" ] || [ "$TTF" -nt "$TTF_H" ]; then
     echo "  Regenerating wpk_font_ttf.h from $(basename "$TTF")..."
     python3 - "$TTF" "$TTF_H" <<'PY'
@@ -56,6 +63,7 @@ CFLAGS=(
     -fno-trapping-math
     -I"$SRC_ROOT/include"
     -I"$SRC_ROOT/third_party"
+    -I"$VENDOR"
 )
 
 # stb_truetype implementation TU — exactly one place defines the impl.
