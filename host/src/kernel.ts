@@ -965,6 +965,10 @@ export class WasmPosixKernel {
     // would strand the canvas with neither GL nor the 2D blit if
     // getContext("webgl2") returned null (e.g. a prior 2D acquisition).
     if (ctx && attachedCrtc != null) {
+      // Record the claim on the binding. releaseClaimedKmsCanvas reads it to
+      // hand the CRTC back to the pump when this GL session ends; without it
+      // that release is a no-op and the canvas freezes on the last GL frame.
+      b.claimedKmsCrtc = attachedCrtc;
       this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
     }
   }
