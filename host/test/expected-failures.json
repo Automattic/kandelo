@@ -80,12 +80,8 @@
   ],
   "expectedFailures": [
     "../packages/registry/curl/test/curl.test.ts",
-    "../packages/registry/git/test/git.test.ts",
     "../packages/registry/nginx/test/nginx.test.ts",
     "../packages/registry/ruby/test/posix-spawn.test.ts",
-    "../packages/registry/wordpress/test/wordpress-boot.test.ts",
-    "../packages/registry/wordpress/test/wordpress-server.test.ts",
-    "../packages/registry/wordpress/test/wordpress-site-editor.test.ts",
     "../tests/package-system/browser-binary-dependencies.test.ts",
     "../tests/package-system/build-input-import-closure.test.ts",
     "../tests/package-system/installed-host-package.test.ts",
