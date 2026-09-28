@@ -34,7 +34,7 @@ declare global {
 
 /** Suites available in the browser benchmark page. */
 const BROWSER_SUITES = [
-  "syscall-io", "process-lifecycle", "spawn-scratch", "wordpress",
+  "syscall-io", "stdin-throughput", "process-lifecycle", "spawn-scratch", "wordpress",
   "mariadb-aria", "mariadb-aria-64",
   "mariadb-innodb", "mariadb-innodb-64",
 ];
@@ -46,6 +46,7 @@ const DISABLED_BROWSER_SUITES: Record<string, string> = {
 /** Per-suite timeout for page.evaluate (ms). Heavy suites like mariadb need longer. */
 const SUITE_TIMEOUTS: Record<string, number> = {
   "syscall-io": 60_000,
+  "stdin-throughput": 120_000,
   "process-lifecycle": 60_000,
   "spawn-scratch": 60_000,
   "wordpress": 300_000,
