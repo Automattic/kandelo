@@ -20,6 +20,10 @@ kernel_abi = 7
 # bump invalidates the mariadb-vfs cache.
 depends_on = [
   "mariadb@10.5.28",
+  # bash is /bin/sh in the image (installBashAsPosixShell); dash stays an
+  # ordinary command at its own name. Both are wasm32 programs, which a
+  # wasm64 image carries fine: each process runs at its own arch.
+  "bash@5.2.37",
   "dash@0.5.12",
   "dinit@0.19.4",
   "coreutils@9.6",
