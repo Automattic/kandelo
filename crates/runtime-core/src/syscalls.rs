@@ -1249,9 +1249,9 @@ fn handle_dri_ioctl(
             crate::dri::with_registry(|r| r.incref(bo_id));
 
             // Allocate a fresh OFD with the prime-bo sidecar. The
-            // host_handle = -200 sentinel sits outside the
-            // VirtualDevice range (-1..=-9) so this fd isn't
-            // mistakenly routed to a render or card ioctl path.
+            // PRIME_FD_HOST_HANDLE sentinel is disjoint from the
+            // VirtualDevice range, so this fd is never routed to a render
+            // or card ioctl path.
             let path = alloc::format!("/dev/dri/prime-{}-{:x}", bo_id, cookie).into_bytes();
             let prime_ofd = proc.ofd_table.create(
                 crate::ofd::FileType::CharDevice,
@@ -5444,6 +5444,29 @@ pub fn sys_lseek(
     let ofd_idx = entry.ofd_ref.0;
 
     let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+
+    // A prime-bo fd seeks like a Linux dma-buf (dma_buf_llseek): only
+    // offset 0 with SEEK_SET or SEEK_END, and SEEK_END reports the buffer's
+    // size -- the portable way to learn how large the object behind the fd
+    // is. A Wayland compositor uses it to check a client's claimed wl_shm
+    // pool size against the real backing before trusting buffer geometry.
+    if ofd.file_type == FileType::CharDevice
+        && ofd.host_handle == crate::ofd::PRIME_FD_HOST_HANDLE
+    {
+        let bo_id = match ofd.dri_state.as_deref() {
+            Some(crate::ofd::DriOfdState::PrimeBo(p)) => p.bo_id,
+            _ => return Err(Errno::EBADF),
+        };
+        if offset != 0 {
+            return Err(Errno::EINVAL);
+        }
+        return match whence {
+            SEEK_SET => Ok(0),
+            SEEK_END => crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.size as i64))
+                .ok_or(Errno::EBADF),
+            _ => Err(Errno::EINVAL),
+        };
+    }
 
     // Non-seekable file types.
     if matches!(
@@ -27136,7 +27159,7 @@ mod tests {
             (b"/dev/dri/card0", VirtualDevice::DriCard0.host_handle()),
             // Prime fds are kernel-owned CharDevices outside the named
             // VirtualDevice range and obey the same non-terminal contract.
-            (b"/dev/dri/prime-test", -200),
+            (b"/dev/dri/prime-test", crate::ofd::PRIME_FD_HOST_HANDLE),
             // A future host-backed CharDevice must opt into terminal identity
             // rather than inheriting it from a non-negative handle.
             (b"/dev/other-char-device", 77),
@@ -42697,6 +42720,24 @@ mod tests {
         assert_ne!(
             prime_entry.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
             0
+        );
+
+        // It seeks like a Linux dma-buf: SEEK_END reports the buffer's real
+        // size (what a compositor checks a claimed pool size against),
+        // SEEK_SET 0 rewinds, anything else is EINVAL.
+        use wasm_posix_shared::seek::{SEEK_CUR, SEEK_END, SEEK_SET};
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, out.fd, 0, SEEK_END),
+            Ok(created.size as i64)
+        );
+        assert_eq!(sys_lseek(&mut proc, &mut host, out.fd, 0, SEEK_SET), Ok(0));
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, out.fd, 4, SEEK_SET),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, out.fd, 0, SEEK_CUR),
+            Err(Errno::EINVAL)
         );
     }
 
