@@ -291,8 +291,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.activeChannels = [channel];
     worker.processes = new Map([[pid, { channels: [channel], memory }]]);
     worker.execHandoffPids = new Set();
-    worker.stdinFinite = new Set();
-    worker.stdinBuffers = new Map();
     worker.hostReaped = new Set([pid]);
     const alarm = setTimeout(() => {}, 60_000);
     const posixTimeout = setTimeout(() => {}, 60_000);
@@ -2537,8 +2535,6 @@ describe("Rust-owned process wait lifecycle", () => {
       [otherPid, { channels: [otherChannel], memory: otherMemory }],
     ]);
     worker.execHandoffPids = new Set([pid]);
-    worker.stdinFinite = new Set([pid]);
-    worker.stdinBuffers = new Map([[pid, new Uint8Array()]]);
     worker.hostReaped = new Set([pid]);
 
     worker.deactivateProcess(pid);
