@@ -4,13 +4,51 @@
 //! a hand-maintained list that can silently omit a compile input
 //! (e.g. `.cargo/config.toml`, or a newly-added workspace crate).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) const CARGO_INPUT_PREFIX: &str = "cargo:";
 
+type ClosureMemo = Mutex<HashMap<(PathBuf, String), Result<Arc<Vec<String>>, String>>>;
+
+/// Closure of a workspace crate, computed once per `(repo_root, crate)` for
+/// the life of this xtask process.
+///
+/// WHY: every cache-key computation that reaches a `cargo:` input calls this,
+/// and building the program index computes keys for each package, both
+/// arches, and every dependency closure, with no sharing between them. With
+/// the kernel a `cargo:` input of eight packages that meant 23-140 `cargo
+/// metadata` spawns per `program-index-context-ensure`, about 10-12 s per
+/// resolver call. The workspace manifest cannot change under one xtask run,
+/// so the first answer is the answer for the whole process.
 pub(crate) fn cargo_closure_paths(
+    repo_root: &Path,
+    crate_name: &str,
+) -> Result<Vec<String>, String> {
+    cargo_closure_paths_shared(repo_root, crate_name).map(|paths| paths.as_ref().clone())
+}
+
+fn cargo_closure_paths_shared(
+    repo_root: &Path,
+    crate_name: &str,
+) -> Result<Arc<Vec<String>>, String> {
+    static MEMO: OnceLock<ClosureMemo> = OnceLock::new();
+    let key = (repo_root.to_path_buf(), crate_name.to_string());
+    let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = memo.lock().map_err(|e| e.to_string())?.get(&key) {
+        return cached.clone();
+    }
+    let computed = compute_cargo_closure_paths(repo_root, crate_name).map(Arc::new);
+    memo.lock()
+        .map_err(|e| e.to_string())?
+        .entry(key)
+        .or_insert(computed)
+        .clone()
+}
+
+fn compute_cargo_closure_paths(
     repo_root: &Path,
     crate_name: &str,
 ) -> Result<Vec<String>, String> {
@@ -129,6 +167,14 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(paths, sorted, "must be sorted and deduped");
+    }
+
+    #[test]
+    fn closure_is_computed_once_per_process() {
+        let repo = crate::repo_root();
+        let first = cargo_closure_paths_shared(&repo, "kandelo").expect("closure");
+        let second = cargo_closure_paths_shared(&repo, "kandelo").expect("closure");
+        assert!(Arc::ptr_eq(&first, &second), "second call must reuse the first result");
     }
 
     #[test]
