@@ -419,6 +419,55 @@ path = "/usr/bin/getconf"
 aliases = ["/bin/getconf"]
 
 [[packages]]
+name = "flex"
+
+# lex(1) is flex installed under that name, as Linux distributions do.
+[[packages.outputs]]
+binary = "programs/wasm32/flex.wasm"
+path = "/usr/bin/flex"
+aliases = ["/bin/flex", "/usr/bin/lex", "/bin/lex"]
+
+[[packages]]
+name = "byacc"
+
+[[packages.outputs]]
+binary = "programs/wasm32/yacc.wasm"
+path = "/usr/bin/yacc"
+aliases = ["/bin/yacc"]
+
+[[packages]]
+name = "cflow"
+
+[[packages.outputs]]
+binary = "programs/wasm32/cflow.wasm"
+path = "/usr/bin/cflow"
+aliases = ["/bin/cflow"]
+
+[[packages]]
+name = "universal-ctags"
+
+[[packages.outputs]]
+binary = "programs/wasm32/ctags.wasm"
+path = "/usr/bin/ctags"
+aliases = ["/bin/ctags"]
+
+[[packages]]
+name = "paxmirabilis"
+
+[[packages.outputs]]
+binary = "programs/wasm32/pax.wasm"
+path = "/usr/bin/pax"
+aliases = ["/bin/pax"]
+
+[[packages]]
+name = "musl-locales"
+
+[[packages.outputs]]
+binary = "programs/wasm32/locale.wasm"
+path = "/usr/bin/locale"
+aliases = ["/bin/locale"]
+
+[[packages]]
 name = "posix-utils-lite"
 
 [[packages.outputs]]
@@ -430,16 +479,6 @@ aliases = ["/bin/ar"]
 binary = "programs/wasm32/posix-utils-lite/cal.wasm"
 path = "/usr/bin/cal"
 aliases = ["/bin/cal"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/cflow.wasm"
-path = "/usr/bin/cflow"
-aliases = ["/bin/cflow"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/ctags.wasm"
-path = "/usr/bin/ctags"
-aliases = ["/bin/ctags"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/cxref.wasm"
@@ -467,16 +506,6 @@ path = "/usr/bin/ipcs"
 aliases = ["/bin/ipcs"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/lex.wasm"
-path = "/usr/bin/lex"
-aliases = ["/bin/lex"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/locale.wasm"
-path = "/usr/bin/locale"
-aliases = ["/bin/locale"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/logger.wasm"
 path = "/usr/bin/logger"
 aliases = ["/bin/logger"]
@@ -495,11 +524,6 @@ aliases = ["/bin/ngettext"]
 binary = "programs/wasm32/posix-utils-lite/nm.wasm"
 path = "/usr/bin/nm"
 aliases = ["/bin/nm"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/pax.wasm"
-path = "/usr/bin/pax"
-aliases = ["/bin/pax"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/pgrep.wasm"
@@ -530,8 +554,3 @@ aliases = ["/bin/strip"]
 binary = "programs/wasm32/posix-utils-lite/xgettext.wasm"
 path = "/usr/bin/xgettext"
 aliases = ["/bin/xgettext"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/yacc.wasm"
-path = "/usr/bin/yacc"
-aliases = ["/bin/yacc"]

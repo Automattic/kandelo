@@ -1,0 +1,8 @@
+script_path = "packages/registry/universal-ctags/build-universal-ctags.sh"
+inputs = [
+  "packages/registry/universal-ctags/build-universal-ctags.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

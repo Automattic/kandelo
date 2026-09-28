@@ -1,0 +1,23 @@
+# Berkeley yacc (byacc), maintained by Thomas Dickey. The root filesystem
+# installs it as yacc(1).
+kind = "program"
+name = "byacc"
+version = "20260126"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://invisible-mirror.net/archives/byacc/byacc-20260126.tgz"
+sha256 = "b618c5fb44c2f5f048843db90f7d1b24f78f47b07913c8c7ba8c942d3eb24b00"
+provider = "archive"
+
+[license]
+spdx = "LicenseRef-public-domain"
+url = "https://invisible-island.net/byacc/byacc.html"
+
+[build]
+script_path = "packages/registry/byacc/build-byacc.sh"
+
+[[outputs]]
+name = "yacc"
+wasm = "yacc.wasm"

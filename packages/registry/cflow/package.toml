@@ -1,0 +1,22 @@
+# GNU cflow.
+kind = "program"
+name = "cflow"
+version = "1.8"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/cflow/cflow-1.8.tar.xz"
+sha256 = "a5830a708a587ebbf3b475b585935f89c33fc8fbd057af7d817d517aceaa7afa"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/cflow.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/cflow/build-cflow.sh"
+
+[[outputs]]
+name = "cflow"
+wasm = "cflow.wasm"

@@ -25,14 +25,6 @@ name = "cal"
 wasm = "cal.wasm"
 
 [[outputs]]
-name = "cflow"
-wasm = "cflow.wasm"
-
-[[outputs]]
-name = "ctags"
-wasm = "ctags.wasm"
-
-[[outputs]]
 name = "cxref"
 wasm = "cxref.wasm"
 
@@ -53,14 +45,6 @@ name = "ipcs"
 wasm = "ipcs.wasm"
 
 [[outputs]]
-name = "lex"
-wasm = "lex.wasm"
-
-[[outputs]]
-name = "locale"
-wasm = "locale.wasm"
-
-[[outputs]]
 name = "logger"
 wasm = "logger.wasm"
 
@@ -75,10 +59,6 @@ wasm = "ngettext.wasm"
 [[outputs]]
 name = "nm"
 wasm = "nm.wasm"
-
-[[outputs]]
-name = "pax"
-wasm = "pax.wasm"
 
 [[outputs]]
 name = "pgrep"
@@ -103,7 +83,3 @@ wasm = "strip.wasm"
 [[outputs]]
 name = "xgettext"
 wasm = "xgettext.wasm"
-
-[[outputs]]
-name = "yacc"
-wasm = "yacc.wasm"

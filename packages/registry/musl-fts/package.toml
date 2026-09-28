@@ -1,0 +1,28 @@
+# fts(3), the BSD file-tree walk, as a library. glibc carries fts in libc;
+# musl deliberately does not, and musl distributions ship it as this
+# separate library (Void Linux maintains it; Alpine packages the same
+# release). Programs that include <fts.h>, such as pax, depend on it.
+kind = "library"
+
+name = "musl-fts"
+version = "1.2.7"
+kernel_abi = 7
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/void-linux/musl-fts/archive/refs/tags/v1.2.7.tar.gz"
+sha256 = "49ae567a96dbab22823d045ffebe0d6b14b9b799925e9ca9274d47d26ff482a6"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/void-linux/musl-fts/blob/v1.2.7/COPYING"
+
+[build]
+script_path = "packages/registry/musl-fts/build-musl-fts.sh"
+
+[outputs]
+libs = ["lib/libfts.a"]
+headers = ["include/fts.h"]
+pkgconfig = ["lib/pkgconfig/musl-fts.pc"]

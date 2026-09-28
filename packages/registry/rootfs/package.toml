@@ -29,6 +29,12 @@ depends_on = [
   "sharutils@4.15.2",
   "outils@0.14",
   "musl-utils@1.1.12-r7",
+  "flex@2.6.4",
+  "byacc@20260126",
+  "cflow@1.8",
+  "universal-ctags@6.2.1",
+  "paxmirabilis@20240817",
+  "musl-locales@0.1.0",
   "posix-utils-lite@0.1.0",
 ]
 
