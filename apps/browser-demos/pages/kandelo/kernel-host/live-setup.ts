@@ -170,30 +170,6 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlcompositor.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlcompositor.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlterm.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlterm.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlclock.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlclock.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlpaint.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlpaint.wasm", {
-    query: "?url", import: "default",
-  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(
