@@ -141,6 +141,41 @@ must be told the wasm target truth. If upstream `configure` detects host-only
 functions, override the relevant `ac_cv_*` values. Do not let host feature
 detection define what the wasm sysroot claims to support.
 
+## Platform identity: Kandelo is not Linux
+
+Kandelo's compiler describes the target as WebAssembly with a Unix source
+environment (`__wasm__`, `__unix__`). It does not define `__linux__`, and it
+must not. Kandelo is a POSIX platform whose libc is musl. It implements some
+interfaces that originated on Linux (`epoll`, `eventfd`, `/proc`), but it has
+no Linux compatibility target. Defining `__linux__` in the SDK would tell
+every package, and every agent reading the build, that it does.
+
+Portable code often selects its musl or glibc path with `__linux__` (gnulib's
+locale-name lookup, LLVM's choice of `<endian.h>`, Linux UAPI headers), and
+without it falls into a BSD branch or an `#error`. When a package hits that:
+
+1. **Never define `__linux__` in the SDK**, its compiler or linker flags,
+   `sdk/config.site`, or the sysroot.
+2. **Ask: is there another way than defining `__linux__`?** Look in this
+   order:
+   - A feature macro or configure cache variable the upstream code already
+     consults. For example, LLVM's `llvm/ADT/bit.h` includes the BSD
+     `<machine/endian.h>` only when `BYTE_ORDER` is undefined, so
+     pre-including musl's `<endian.h>` answers it truthfully.
+   - The capability the branch actually needs, expressed as a feature test.
+     For example, gnulib's musl locale-name code is guarded by
+     `defined __linux__ && defined NL_LOCALE_NAME`, where `NL_LOCALE_NAME`
+     alone is the capability. Report that upstream, and carry the proposed or
+     accepted upstream change as a documented package patch meanwhile.
+   - A package-local patch or define that selects the portable path by
+     feature, documented in the package.
+3. **Only if none of these works**, a per-package `-D__linux__` in that
+   package's build script is a last resort, and only after a conversation
+   with the maintainer. Put a comment beside it that says it is a last
+   resort, names what the upstream keys on, explains why each alternative
+   above did not work, and states that it does not make Kandelo a Linux
+   target.
+
 Fork-using packages must be instrumented with
 `scripts/run-wasm-fork-instrument.sh` after linking and after optimization.
 Missing `wpk_fork_*` exports are a build/runtime error. Legacy Asyncify
