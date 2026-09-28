@@ -111,7 +111,6 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
  * by any uid is /tmp (mode 1777) — it plays the XDG_RUNTIME_DIR role here. */
 #define WL_SOCKET_PATH "/tmp/wayland-0"
 #define WL_KEYMAP_PATH "/tmp/wlcompositor-keymap.xkb"
-#define MAX_INPUT_RES  16     /* keyboard/pointer resources we track */
 #define MAX_FRAME_CB   32     /* pending frame callbacks per surface */
 #define MAX_SURFACES   16     /* mapped toplevels in the z-order list */
 #define FOCUS_COLOR    0xff4f8fdfu  /* accent ring, GPU and CPU paths */
@@ -126,6 +125,10 @@ struct surface {
     struct wl_resource *resource;       /* the wl_surface */
     struct wl_client *client;
     struct wl_resource *pending_buffer; /* set by attach, consumed by commit */
+    /* attach was called since the last commit. Distinguishes attach(NULL)
+     * -- the client unmapping the surface -- from no attach at all, which
+     * pending_buffer == NULL alone cannot. */
+    int pending_attached;
     struct wl_resource *buffer;         /* committed, retained for repaints */
     struct wl_resource *xdg_surface;    /* xdg_surface wrapping this surface */
     struct wl_resource *xdg_toplevel;
@@ -197,6 +200,9 @@ struct compositor {
              sent_group;
     double cursor_x, cursor_y;
     int buttons_down;
+    /* Serial of the press that began the current implicit pointer grab.
+     * xdg_toplevel.move must quote it -- see toplevel_move. */
+    uint32_t press_serial;
 
     /* Window management. */
     struct surface *zorder[MAX_SURFACES];  /* bottom → top */
@@ -215,8 +221,12 @@ struct compositor {
     double grab_dx, grab_dy;
 
     /* Bound seat resources (across all clients; routed per-client). */
-    struct wl_resource *keyboards[MAX_INPUT_RES];
-    struct wl_resource *pointers[MAX_INPUT_RES];
+    /* Every bound wl_keyboard / wl_pointer, linked through
+     * wl_resource_get_link. A list, not a fixed array: a capped array
+     * silently stopped tracking resources once full, so one client binding
+     * enough of them left every other client's window without input. */
+    struct wl_list keyboards;
+    struct wl_list pointers;
 
     int client_count;
     int had_client;   /* so we only exit after a client has actually connected */
@@ -247,16 +257,15 @@ static uint32_t now_ms(void) {
     return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
-/* Track a resource pointer in a fixed slot array; destroy handlers null the
- * slot so a disconnected client's resource is never sent to (no UAF). */
-static void slot_add(struct wl_resource **slots, struct wl_resource *r) {
-    for (int i = 0; i < MAX_INPUT_RES; i++)
-        if (!slots[i]) { slots[i] = r; return; }
-}
-static void slot_remove(struct wl_resource **slots, struct wl_resource *r) {
-    for (int i = 0; i < MAX_INPUT_RES; i++)
-        if (slots[i] == r) { slots[i] = NULL; return; }
-}
+/* Walk the seat resources on `list` that belong to `client`. Declares `res`
+ * for the loop body; the `continue; else` form keeps a single following
+ * statement or block correctly bound. Destroy handlers unlink each resource,
+ * so a disconnected client's resource is never sent to. */
+#define for_each_seat_res(res, list, client)                               \
+    for (struct wl_resource *res = wl_resource_from_link((list)->next);    \
+         wl_resource_get_link(res) != (list);                              \
+         res = wl_resource_from_link(wl_resource_get_link(res)->next))     \
+        if (wl_resource_get_client(res) != (client)) continue; else
 
 static void schedule_repaint(void);
 static void kbd_set_focus(struct surface *s);
@@ -346,10 +355,31 @@ static void place_surface(struct surface *s) {
 static void surface_destroy(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
 }
+/* Take a mapped surface off screen: out of the z-order and out of every focus
+ * and grab. Focus moves through the normal setters, so the surface's client
+ * gets its leave events and the next window its enter -- unlike
+ * surface_resource_destroy, whose resource is mid-teardown and must not be
+ * named in an event. The buffer goes back to the client. */
+static void unmap_surface(struct surface *s) {
+    if (!s->mapped) return;
+    if (g.grab == s) g.grab = NULL;
+    zorder_remove(s);
+    s->mapped = 0;
+    if (s->buffer) {
+        wl_buffer_send_release(s->buffer);
+        s->buffer = NULL;
+    }
+    if (g.kbd_focus == s)
+        kbd_set_focus(g.n_surfaces ? g.zorder[g.n_surfaces - 1] : NULL);
+    if (g.ptr_focus == s) ptr_refresh_focus();
+    schedule_repaint();
+}
+
 static void surface_attach(struct wl_client *c, struct wl_resource *r,
                            struct wl_resource *buffer, int32_t x, int32_t y) {
     struct surface *s = wl_resource_get_user_data(r);
     s->pending_buffer = buffer;
+    s->pending_attached = 1;
 }
 static void surface_damage(struct wl_client *c, struct wl_resource *r,
                            int32_t x, int32_t y, int32_t w, int32_t h) {}
@@ -372,7 +402,11 @@ static void surface_set_input_region(struct wl_client *c, struct wl_resource *r,
                                      struct wl_resource *reg) {}
 static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
-    if (!s->pending_buffer) { schedule_repaint(); return; }
+    if (!s->pending_attached) { schedule_repaint(); return; }
+    s->pending_attached = 0;
+    /* attach(NULL) + commit is how a client hides its surface. (A pending
+     * buffer destroyed before commit also lands here, as in Weston.) */
+    if (!s->pending_buffer) { unmap_surface(s); return; }
 
     /* Apply double-buffered state: the pending attach becomes current. The
      * previous buffer is released now — its client only reuses it after
@@ -711,6 +745,12 @@ static void toplevel_move(struct wl_client *c, struct wl_resource *r,
                           struct wl_resource *seat, uint32_t serial) {
     struct surface *s = wl_resource_get_user_data(r);
     if (!s || !s->mapped || g.buttons_down <= 0) return;
+    /* The move must continue the press the user made on THIS surface.
+     * While a button is down, ptr_focus is pinned to the pressed surface
+     * (the implicit grab), and that press's serial went only to its client.
+     * Checking just "some button is down" let any client whose window was
+     * merely mapped hijack a drag the user began on another window. */
+    if (g.ptr_focus != s || serial != g.press_serial) return;
     g.grab = s;
     g.grab_dx = g.cursor_x - s->x;
     g.grab_dy = g.cursor_y - s->y;
@@ -720,11 +760,8 @@ static void toplevel_move(struct wl_client *c, struct wl_resource *r,
     /* The pointer leaves the client for the duration of the grab. */
     if (g.ptr_focus) {
         uint32_t ser = wl_display_next_serial(g.display);
-        for (int i = 0; i < MAX_INPUT_RES; i++)
-            if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
-                wl_pointer_send_leave(g.pointers[i], ser,
-                                      g.ptr_focus->resource);
+        for_each_seat_res(res, &g.pointers, g.ptr_focus->client)
+            wl_pointer_send_leave(res, ser, g.ptr_focus->resource);
         g.ptr_focus = NULL;
     }
 }
@@ -760,6 +797,16 @@ static const struct xdg_toplevel_interface toplevel_impl = {
 };
 
 static void xdg_surface_destroy(struct wl_client *c, struct wl_resource *r) {
+    /* xdg-shell: "An xdg_surface must only be destroyed after its role
+     * object has been destroyed, otherwise a defunct_role_object error is
+     * raised." Enforcing it keeps the surface's one tracked toplevel the
+     * only one that can ever exist -- see xdg_surface_get_toplevel. */
+    struct surface *s = wl_resource_get_user_data(r);
+    if (s && s->xdg_toplevel) {
+        wl_resource_post_error(r, XDG_SURFACE_ERROR_DEFUNCT_ROLE_OBJECT,
+                               "xdg_surface destroyed before its xdg_toplevel");
+        return;
+    }
     wl_resource_destroy(r);
 }
 /* Clear the surface's back-pointer so a later destroy does not null the
@@ -776,6 +823,17 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
                                      struct wl_resource *resource,
                                      uint32_t id) {
     struct surface *s = wl_resource_get_user_data(resource);
+    /* A second role object on the same surface would overwrite
+     * s->xdg_toplevel and orphan the first one, which keeps s as its
+     * user_data. surface_resource_destroy only clears the TRACKED one, so
+     * after wl_surface.destroy the orphan would dangle into freed memory
+     * (toplevel_set_app_id writes through it; toplevel_move parks it in
+     * g.grab). The protocol already forbids it -- reject it. */
+    if (s && s->xdg_toplevel) {
+        wl_resource_post_error(resource, XDG_SURFACE_ERROR_ALREADY_CONSTRUCTED,
+                               "xdg_surface already has an xdg_toplevel");
+        return;
+    }
     struct wl_resource *tl = wl_resource_create(
         client, &xdg_toplevel_interface, wl_resource_get_version(resource), id);
     if (!tl) { wl_client_post_no_memory(client); return; }
@@ -828,6 +886,15 @@ static void wm_base_get_xdg_surface(struct wl_client *client,
                                     struct wl_resource *resource, uint32_t id,
                                     struct wl_resource *surface) {
     struct surface *s = wl_resource_get_user_data(surface);
+    /* Same orphaning hazard as xdg_surface_get_toplevel: a second
+     * xdg_surface would overwrite the tracked s->xdg_surface and leave the
+     * first dangling after wl_surface.destroy. "role: given wl_surface has
+     * another role" is the protocol's answer. */
+    if (s && s->xdg_surface) {
+        wl_resource_post_error(resource, XDG_WM_BASE_ERROR_ROLE,
+                               "wl_surface already has an xdg_surface");
+        return;
+    }
     struct wl_resource *xs = wl_resource_create(
         client, &xdg_surface_interface, wl_resource_get_version(resource), id);
     if (!xs) { wl_client_post_no_memory(client); return; }
@@ -862,7 +929,7 @@ static const struct wl_keyboard_interface keyboard_impl = {
     .release = keyboard_release,
 };
 static void keyboard_resource_destroy(struct wl_resource *r) {
-    slot_remove(g.keyboards, r);
+    wl_list_remove(wl_resource_get_link(r));
     /* Close the keymap fd this keyboard's send_keymap left open (stored
      * +1 so an unset user_data reads as -1). Safe now: the fd's
      * open-file description is private to this keyboard bind, and the
@@ -886,7 +953,7 @@ static const struct wl_pointer_interface pointer_impl = {
     .release = pointer_release,
 };
 static void pointer_resource_destroy(struct wl_resource *r) {
-    slot_remove(g.pointers, r);
+    wl_list_remove(wl_resource_get_link(r));
 }
 
 /* Hand a keyboard resource the keymap. Each send opens a FRESH fd on the
@@ -934,22 +1001,16 @@ static void kbd_set_focus(struct surface *s) {
     if (g.kbd_focus == s) return;
     uint32_t serial = wl_display_next_serial(g.display);
     if (g.kbd_focus) {
-        for (int i = 0; i < MAX_INPUT_RES; i++)
-            if (g.keyboards[i] &&
-                wl_resource_get_client(g.keyboards[i]) == g.kbd_focus->client)
-                wl_keyboard_send_leave(g.keyboards[i], serial,
-                                       g.kbd_focus->resource);
+        for_each_seat_res(res, &g.keyboards, g.kbd_focus->client)
+            wl_keyboard_send_leave(res, serial, g.kbd_focus->resource);
     }
     g.kbd_focus = s;
     if (!s) return;
     struct wl_array keys;
     wl_array_init(&keys);
-    for (int i = 0; i < MAX_INPUT_RES; i++) {
-        if (g.keyboards[i] &&
-            wl_resource_get_client(g.keyboards[i]) == s->client) {
-            wl_keyboard_send_enter(g.keyboards[i], serial, s->resource, &keys);
-            send_modifiers_to(g.keyboards[i], serial);
-        }
+    for_each_seat_res(res, &g.keyboards, s->client) {
+        wl_keyboard_send_enter(res, serial, s->resource, &keys);
+        send_modifiers_to(res, serial);
     }
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
@@ -960,20 +1021,15 @@ static void ptr_set_focus(struct surface *s) {
     if (g.ptr_focus == s) return;
     uint32_t serial = wl_display_next_serial(g.display);
     if (g.ptr_focus) {
-        for (int i = 0; i < MAX_INPUT_RES; i++)
-            if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
-                wl_pointer_send_leave(g.pointers[i], serial,
-                                      g.ptr_focus->resource);
+        for_each_seat_res(res, &g.pointers, g.ptr_focus->client)
+            wl_pointer_send_leave(res, serial, g.ptr_focus->resource);
     }
     g.ptr_focus = s;
     if (!s) return;
     wl_fixed_t lx = wl_fixed_from_double(g.cursor_x - s->x);
     wl_fixed_t ly = wl_fixed_from_double(g.cursor_y - s->y);
-    for (int i = 0; i < MAX_INPUT_RES; i++)
-        if (g.pointers[i] &&
-            wl_resource_get_client(g.pointers[i]) == s->client)
-            wl_pointer_send_enter(g.pointers[i], serial, s->resource, lx, ly);
+    for_each_seat_res(res, &g.pointers, s->client)
+        wl_pointer_send_enter(res, serial, s->resource, lx, ly);
 }
 
 static void ptr_refresh_focus(void) {
@@ -988,7 +1044,7 @@ static void seat_get_pointer(struct wl_client *client,
     if (!p) { wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(p, &pointer_impl, NULL,
                                    pointer_resource_destroy);
-    slot_add(g.pointers, p);
+    wl_list_insert(&g.pointers, wl_resource_get_link(p));
     /* If this client's surface already holds pointer focus, enter it now. */
     if (g.ptr_focus && g.ptr_focus->client == client && g.ptr_focus->mapped)
         wl_pointer_send_enter(p, wl_display_next_serial(g.display),
@@ -1003,7 +1059,7 @@ static void seat_get_keyboard(struct wl_client *client,
     if (!k) { wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(k, &keyboard_impl, NULL,
                                    keyboard_resource_destroy);
-    slot_add(g.keyboards, k);
+    wl_list_insert(&g.keyboards, wl_resource_get_link(k));
     send_keymap(k);
     if (g.kbd_focus && g.kbd_focus->client == client && g.kbd_focus->mapped) {
         uint32_t serial = wl_display_next_serial(g.display);
@@ -1105,15 +1161,21 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
     uint32_t *src = shm_buffer_pixels(b, &src_stride_px);
     if (!src) return;
 
-    int32_t x0 = s->x < 0 ? -s->x : 0;               /* first visible col */
-    int32_t x1 = s->x + b->width > (int32_t)g.width  /* one past last col  */
-                     ? (int32_t)g.width - s->x : b->width;
-    if (x1 <= x0) return;
-    for (int32_t row = 0; row < b->height; row++) {
-        int32_t dy = s->y + row;
-        if (dy < 0 || dy >= (int32_t)g.height) continue;
-        memcpy(dst + (size_t)dy * dst_stride_px + (s->x + x0),
-               src + (size_t)row * src_stride_px + x0,
+    /* Copy only the buffer's intersection with the output, computed in
+     * 64-bit. Buffer dimensions are client input: walking every row and
+     * skipping the off-screen ones let one very tall (but protocol-valid)
+     * buffer cost the single-threaded compositor hundreds of millions of
+     * iterations per repaint, and s->x + b->width could overflow int32. */
+    int64_t x0 = s->x < 0 ? -(int64_t)s->x : 0;
+    int64_t x1 = (int64_t)g.width - s->x;
+    if (x1 > b->width) x1 = b->width;
+    int64_t y0 = s->y < 0 ? -(int64_t)s->y : 0;
+    int64_t y1 = (int64_t)g.height - s->y;
+    if (y1 > b->height) y1 = b->height;
+    if (x1 <= x0 || y1 <= y0) return;
+    for (int64_t row = y0; row < y1; row++) {
+        memcpy(dst + (size_t)(s->y + row) * dst_stride_px + (size_t)(s->x + x0),
+               src + (size_t)row * src_stride_px + (size_t)x0,
                (size_t)(x1 - x0) * 4);
     }
 }
@@ -1123,22 +1185,22 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
 static void draw_focus_border(struct surface *s, uint32_t *dst,
                               uint32_t stride_px) {
     const uint32_t color = FOCUS_COLOR;
+    const int64_t W = g.width, H = g.height;
     for (int e = 1; e <= 2; e++) {
-        int32_t x0 = s->x - e, y0 = s->y - e;
-        int32_t x1 = s->x + s->w + e - 1, y1 = s->y + s->h + e - 1;
-        for (int32_t x = x0; x <= x1; x++) {
-            if (x < 0 || x >= (int32_t)g.width) continue;
-            if (y0 >= 0 && y0 < (int32_t)g.height)
-                dst[(size_t)y0 * stride_px + x] = color;
-            if (y1 >= 0 && y1 < (int32_t)g.height)
-                dst[(size_t)y1 * stride_px + x] = color;
+        /* Edges in 64-bit (client-sized w/h), each loop clamped to the
+         * output so its cost is bounded by the screen, not the window. */
+        int64_t x0 = (int64_t)s->x - e, y0 = (int64_t)s->y - e;
+        int64_t x1 = (int64_t)s->x + s->w + e - 1;
+        int64_t y1 = (int64_t)s->y + s->h + e - 1;
+        int64_t xa = x0 < 0 ? 0 : x0, xb = x1 >= W ? W - 1 : x1;
+        int64_t ya = y0 < 0 ? 0 : y0, yb = y1 >= H ? H - 1 : y1;
+        for (int64_t x = xa; x <= xb; x++) {
+            if (y0 >= 0 && y0 < H) dst[(size_t)y0 * stride_px + (size_t)x] = color;
+            if (y1 >= 0 && y1 < H) dst[(size_t)y1 * stride_px + (size_t)x] = color;
         }
-        for (int32_t y = y0; y <= y1; y++) {
-            if (y < 0 || y >= (int32_t)g.height) continue;
-            if (x0 >= 0 && x0 < (int32_t)g.width)
-                dst[(size_t)y * stride_px + x0] = color;
-            if (x1 >= 0 && x1 < (int32_t)g.width)
-                dst[(size_t)y * stride_px + x1] = color;
+        for (int64_t y = ya; y <= yb; y++) {
+            if (x0 >= 0 && x0 < W) dst[(size_t)y * stride_px + (size_t)x0] = color;
+            if (x1 >= 0 && x1 < W) dst[(size_t)y * stride_px + (size_t)x1] = color;
         }
     }
 }
@@ -1577,14 +1639,10 @@ static void handle_keyboard(struct libinput_event_keyboard *k) {
     }
 
     if (!g.kbd_focus) return;
-    for (int i = 0; i < MAX_INPUT_RES; i++) {
-        if (!g.keyboards[i] ||
-            wl_resource_get_client(g.keyboards[i]) != g.kbd_focus->client)
-            continue;
-        wl_keyboard_send_key(g.keyboards[i], serial, t, key, state);
+    for_each_seat_res(res, &g.keyboards, g.kbd_focus->client) {
+        wl_keyboard_send_key(res, serial, t, key, state);
         if (mods_changed)
-            wl_keyboard_send_modifiers(g.keyboards[i], serial, dep, lat, lock,
-                                       grp);
+            wl_keyboard_send_modifiers(res, serial, dep, lat, lock, grp);
     }
 }
 
@@ -1609,10 +1667,8 @@ static void pointer_moved(void) {
         uint32_t t = now_ms();
         wl_fixed_t lx = wl_fixed_from_double(g.cursor_x - g.ptr_focus->x);
         wl_fixed_t ly = wl_fixed_from_double(g.cursor_y - g.ptr_focus->y);
-        for (int i = 0; i < MAX_INPUT_RES; i++)
-            if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
-                wl_pointer_send_motion(g.pointers[i], t, lx, ly);
+        for_each_seat_res(res, &g.pointers, g.ptr_focus->client)
+            wl_pointer_send_motion(res, t, lx, ly);
     }
     /* No repaint on bare motion: with no software cursor the desktop is
      * pixel-identical until a client commits in response. */
@@ -1683,10 +1739,9 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
     if (g.ptr_focus) {
         uint32_t serial = wl_display_next_serial(g.display);
         uint32_t t = now_ms();
-        for (int i = 0; i < MAX_INPUT_RES; i++)
-            if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
-                wl_pointer_send_button(g.pointers[i], serial, t, button, state);
+        if (pressed && was_down == 0) g.press_serial = serial;
+        for_each_seat_res(res, &g.pointers, g.ptr_focus->client)
+            wl_pointer_send_button(res, serial, t, button, state);
     }
 
     /* The implicit grab ends with the last release: only now may focus
@@ -2049,6 +2104,8 @@ static int setup_socket(void) {
 int main(void) {
     g.display = wl_display_create();
     if (!g.display) { fprintf(stderr, "wl_display_create\n"); return 1; }
+    wl_list_init(&g.keyboards);
+    wl_list_init(&g.pointers);
     g.loop = wl_display_get_event_loop(g.display);
 
     if (setup_drm() != 0) return 1;
