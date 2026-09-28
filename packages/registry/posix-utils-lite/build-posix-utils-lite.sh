@@ -25,9 +25,8 @@ fi
 source "$REPO_ROOT/sdk/activate.sh"
 
 UTILITIES=(
-  ar asa cal cflow compress ctags cxref ed fuser getconf gettext ipcrm ipcs
-  lex locale logger msgfmt ngettext nm patch pax pgrep ps renice strings
-  strip uncompress uudecode uuencode what xgettext yacc
+  ar cal cflow ctags cxref fuser gettext ipcrm ipcs lex locale logger
+  msgfmt ngettext nm pax pgrep ps renice strings strip xgettext yacc
 )
 
 if ! command -v wasm32posix-cc &>/dev/null; then

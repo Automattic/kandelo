@@ -365,17 +365,66 @@ path = "/usr/bin/gencat"
 aliases = ["/bin/gencat"]
 
 [[packages]]
+name = "patch"
+
+[[packages.outputs]]
+binary = "programs/wasm32/patch.wasm"
+path = "/usr/bin/patch"
+aliases = ["/bin/patch"]
+
+[[packages]]
+name = "ed"
+
+[[packages.outputs]]
+binary = "programs/wasm32/ed.wasm"
+path = "/usr/bin/ed"
+aliases = ["/bin/ed"]
+
+[[packages]]
+name = "ncompress"
+
+# compress decompresses when invoked as "uncompress".
+[[packages.outputs]]
+binary = "programs/wasm32/compress.wasm"
+path = "/usr/bin/compress"
+aliases = ["/bin/compress", "/usr/bin/uncompress", "/bin/uncompress"]
+
+[[packages]]
+name = "sharutils"
+
+[[packages.outputs]]
+binary = "programs/wasm32/sharutils/uuencode.wasm"
+path = "/usr/bin/uuencode"
+aliases = ["/bin/uuencode"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/sharutils/uudecode.wasm"
+path = "/usr/bin/uudecode"
+aliases = ["/bin/uudecode"]
+
+[[packages]]
+name = "outils"
+
+[[packages.outputs]]
+binary = "programs/wasm32/what.wasm"
+path = "/usr/bin/what"
+aliases = ["/bin/what"]
+
+[[packages]]
+name = "musl-utils"
+
+[[packages.outputs]]
+binary = "programs/wasm32/getconf.wasm"
+path = "/usr/bin/getconf"
+aliases = ["/bin/getconf"]
+
+[[packages]]
 name = "posix-utils-lite"
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/ar.wasm"
 path = "/usr/bin/ar"
 aliases = ["/bin/ar"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/asa.wasm"
-path = "/usr/bin/asa"
-aliases = ["/bin/asa"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/cal.wasm"
@@ -388,11 +437,6 @@ path = "/usr/bin/cflow"
 aliases = ["/bin/cflow"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/compress.wasm"
-path = "/usr/bin/compress"
-aliases = ["/bin/compress"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/ctags.wasm"
 path = "/usr/bin/ctags"
 aliases = ["/bin/ctags"]
@@ -403,19 +447,9 @@ path = "/usr/bin/cxref"
 aliases = ["/bin/cxref"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/ed.wasm"
-path = "/usr/bin/ed"
-aliases = ["/bin/ed"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/fuser.wasm"
 path = "/usr/bin/fuser"
 aliases = ["/bin/fuser"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/getconf.wasm"
-path = "/usr/bin/getconf"
-aliases = ["/bin/getconf"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/gettext.wasm"
@@ -463,11 +497,6 @@ path = "/usr/bin/nm"
 aliases = ["/bin/nm"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/patch.wasm"
-path = "/usr/bin/patch"
-aliases = ["/bin/patch"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/pax.wasm"
 path = "/usr/bin/pax"
 aliases = ["/bin/pax"]
@@ -496,26 +525,6 @@ aliases = ["/bin/strings"]
 binary = "programs/wasm32/posix-utils-lite/strip.wasm"
 path = "/usr/bin/strip"
 aliases = ["/bin/strip"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/uncompress.wasm"
-path = "/usr/bin/uncompress"
-aliases = ["/bin/uncompress"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/uudecode.wasm"
-path = "/usr/bin/uudecode"
-aliases = ["/bin/uudecode"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/uuencode.wasm"
-path = "/usr/bin/uuencode"
-aliases = ["/bin/uuencode"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/what.wasm"
-path = "/usr/bin/what"
-aliases = ["/bin/what"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/xgettext.wasm"

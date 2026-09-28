@@ -1,0 +1,23 @@
+# GNU ed, the line editor Linux distributions ship. GNU publishes it only
+# as lzip (.tar.lz).
+kind = "program"
+name = "ed"
+version = "1.22.6"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/ed/ed-1.22.6.tar.lz"
+sha256 = "3f33b22135219c39c3c695f7b7171c2567d3e2a17c798c0a90607320cbb268f2"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://www.gnu.org/software/ed/"
+
+[build]
+script_path = "packages/registry/ed/build-ed.sh"
+
+[[outputs]]
+name = "ed"
+wasm = "ed.wasm"

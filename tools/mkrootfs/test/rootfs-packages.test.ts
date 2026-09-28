@@ -7,7 +7,6 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const supportablePosixUtilities = [
   "ar",
-  "asa",
   "awk",
   "cal",
   "cflow",
@@ -54,17 +53,29 @@ const supportablePosixUtilities = [
 const existingPackageUtilities = new Set([
   "awk",
   "cmp",
+  "compress",
   "diff",
+  "ed",
   "ex",
   "find",
   "gencat",
+  "getconf",
   "iconv",
   "man",
   "more",
+  "patch",
   "tabs",
   "tput",
+  "uncompress",
+  "uudecode",
+  "uuencode",
+  "what",
   "xargs",
 ]);
+
+// Optional POSIX utilities Kandelo deliberately omits because no maintained
+// implementation exists (see "Shell Utilities" in docs/posix-status.md).
+const omittedOptionalUtilities = ["asa"];
 
 function quotedValues(text: string): string[] {
   return [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
@@ -86,6 +97,11 @@ describe("rootfs package composition", () => {
 
     const missing = supportablePosixUtilities.filter((utility) => !installedPaths.has(`/usr/bin/${utility}`));
     expect(missing).toEqual([]);
+
+    const omittedButInstalled = omittedOptionalUtilities.filter((utility) =>
+      installedPaths.has(`/usr/bin/${utility}`)
+    );
+    expect(omittedButInstalled).toEqual([]);
   });
 
   it("declares posix-utils-lite outputs for every supportable utility not supplied by existing packages", () => {

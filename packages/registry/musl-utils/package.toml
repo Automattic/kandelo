@@ -1,0 +1,26 @@
+# getconf(1) from Alpine Linux's musl-utils: Alpine's getconf.c, a NetBSD
+# getconf rewritten for musl. It reports the values musl's sysconf(),
+# pathconf() and confstr() return. The file is unchanged in Alpine's aports
+# since 2014; this tag of yaybondi/musl-utils carries a byte-identical copy
+# as a released tarball. Only getconf is built from it.
+kind = "program"
+name = "musl-utils"
+version = "1.1.12-r7"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/yaybondi/musl-utils/archive/refs/tags/1.1.12-r7.tar.gz"
+sha256 = "35ecc9c662ff38e18a3c9feee5c0e11305a6e488d8061727a6c804f3e2160eba"
+provider = "archive"
+
+[license]
+spdx = "BSD-2-Clause"
+url = "https://github.com/yaybondi/musl-utils/blob/1.1.12-r7/LICENSE"
+
+[build]
+script_path = "packages/registry/musl-utils/build-musl-utils.sh"
+
+[[outputs]]
+name = "getconf"
+wasm = "getconf.wasm"

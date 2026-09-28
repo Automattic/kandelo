@@ -25,6 +25,13 @@ import lessWasmUrl from "@binaries/programs/wasm32/less.wasm?url";
 import vimWasmUrl from "@binaries/programs/wasm32/vim.wasm?url";
 import iconvWasmUrl from "@binaries/programs/wasm32/iconv.wasm?url";
 import gencatWasmUrl from "@binaries/programs/wasm32/gencat.wasm?url";
+import patchWasmUrl from "@binaries/programs/wasm32/patch.wasm?url";
+import edWasmUrl from "@binaries/programs/wasm32/ed.wasm?url";
+import compressWasmUrl from "@binaries/programs/wasm32/compress.wasm?url";
+import uuencodeWasmUrl from "@binaries/programs/wasm32/sharutils/uuencode.wasm?url";
+import uudecodeWasmUrl from "@binaries/programs/wasm32/sharutils/uudecode.wasm?url";
+import whatWasmUrl from "@binaries/programs/wasm32/what.wasm?url";
+import getconfWasmUrl from "@binaries/programs/wasm32/getconf.wasm?url";
 import ncursesClearWasmUrl from "@binaries/programs/wasm32/ncurses/clear.wasm?url";
 import ncursesResetWasmUrl from "@binaries/programs/wasm32/ncurses/reset.wasm?url";
 import ncursesTsetWasmUrl from "@binaries/programs/wasm32/ncurses/tset.wasm?url";
@@ -36,15 +43,11 @@ import ncursesToeWasmUrl from "@binaries/programs/wasm32/ncurses/toe.wasm?url";
 import ncursesCaptoinfoWasmUrl from "@binaries/programs/wasm32/ncurses/captoinfo.wasm?url";
 import ncursesInfotocapWasmUrl from "@binaries/programs/wasm32/ncurses/infotocap.wasm?url";
 import posixArWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ar.wasm?url";
-import posixAsaWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/asa.wasm?url";
 import posixCalWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/cal.wasm?url";
 import posixCflowWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/cflow.wasm?url";
-import posixCompressWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/compress.wasm?url";
 import posixCtagsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ctags.wasm?url";
 import posixCxrefWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/cxref.wasm?url";
-import posixEdWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ed.wasm?url";
 import posixFuserWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/fuser.wasm?url";
-import posixGetconfWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/getconf.wasm?url";
 import posixGettextWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gettext.wasm?url";
 import posixIpcrmWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ipcrm.wasm?url";
 import posixIpcsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ipcs.wasm?url";
@@ -54,17 +57,12 @@ import posixLoggerWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/logge
 import posixMsgfmtWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/msgfmt.wasm?url";
 import posixNgettextWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ngettext.wasm?url";
 import posixNmWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/nm.wasm?url";
-import posixPatchWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/patch.wasm?url";
 import posixPaxWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/pax.wasm?url";
 import posixPgrepWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/pgrep.wasm?url";
 import posixPsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ps.wasm?url";
 import posixReniceWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/renice.wasm?url";
 import posixStringsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/strings.wasm?url";
 import posixStripWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/strip.wasm?url";
-import posixUncompressWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/uncompress.wasm?url";
-import posixUudecodeWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/uudecode.wasm?url";
-import posixUuencodeWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/uuencode.wasm?url";
-import posixWhatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/what.wasm?url";
 import posixXgettextWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/xgettext.wasm?url";
 import posixYaccWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/yacc.wasm?url";
 import sudoLiteWasmUrl from "@binaries/programs/wasm32/sudo-lite.wasm?url";
@@ -92,6 +90,13 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/vim.wasm", vimWasmUrl],
   ["binaries/programs/wasm32/iconv.wasm", iconvWasmUrl],
   ["binaries/programs/wasm32/gencat.wasm", gencatWasmUrl],
+  ["binaries/programs/wasm32/patch.wasm", patchWasmUrl],
+  ["binaries/programs/wasm32/ed.wasm", edWasmUrl],
+  ["binaries/programs/wasm32/compress.wasm", compressWasmUrl],
+  ["binaries/programs/wasm32/sharutils/uuencode.wasm", uuencodeWasmUrl],
+  ["binaries/programs/wasm32/sharutils/uudecode.wasm", uudecodeWasmUrl],
+  ["binaries/programs/wasm32/what.wasm", whatWasmUrl],
+  ["binaries/programs/wasm32/getconf.wasm", getconfWasmUrl],
   ["binaries/programs/wasm32/ncurses/clear.wasm", ncursesClearWasmUrl],
   ["binaries/programs/wasm32/ncurses/reset.wasm", ncursesResetWasmUrl],
   ["binaries/programs/wasm32/ncurses/tset.wasm", ncursesTsetWasmUrl],
@@ -103,15 +108,11 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/ncurses/captoinfo.wasm", ncursesCaptoinfoWasmUrl],
   ["binaries/programs/wasm32/ncurses/infotocap.wasm", ncursesInfotocapWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ar.wasm", posixArWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/asa.wasm", posixAsaWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/cal.wasm", posixCalWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/cflow.wasm", posixCflowWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/compress.wasm", posixCompressWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ctags.wasm", posixCtagsWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/cxref.wasm", posixCxrefWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/ed.wasm", posixEdWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/fuser.wasm", posixFuserWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/getconf.wasm", posixGetconfWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/gettext.wasm", posixGettextWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ipcrm.wasm", posixIpcrmWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ipcs.wasm", posixIpcsWasmUrl],
@@ -121,17 +122,12 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/posix-utils-lite/msgfmt.wasm", posixMsgfmtWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ngettext.wasm", posixNgettextWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/nm.wasm", posixNmWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/patch.wasm", posixPatchWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/pax.wasm", posixPaxWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/pgrep.wasm", posixPgrepWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ps.wasm", posixPsWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/renice.wasm", posixReniceWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/strings.wasm", posixStringsWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/strip.wasm", posixStripWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/uncompress.wasm", posixUncompressWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/uudecode.wasm", posixUudecodeWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/uuencode.wasm", posixUuencodeWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/what.wasm", posixWhatWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/xgettext.wasm", posixXgettextWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/yacc.wasm", posixYaccWasmUrl],
   ["binaries/programs/wasm32/sudo-lite.wasm", sudoLiteWasmUrl],

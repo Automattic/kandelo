@@ -1,0 +1,23 @@
+# what(1) from outils, Leah Neukirchen's maintained port of OpenBSD
+# utilities to Linux. Only what is built from this source tree.
+kind = "program"
+name = "outils"
+version = "0.14"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/leahneukirchen/outils/archive/refs/tags/v0.14.tar.gz"
+sha256 = "e4dcbd92b25bbb371216b0fad5aa80cdff19f466f7ec8b5e145111fb348c91eb"
+provider = "archive"
+
+[license]
+spdx = "ISC AND BSD-3-Clause"
+url = "https://github.com/leahneukirchen/outils/blob/v0.14/LICENSE"
+
+[build]
+script_path = "packages/registry/outils/build-outils.sh"
+
+[[outputs]]
+name = "what"
+wasm = "what.wasm"
