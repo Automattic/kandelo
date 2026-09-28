@@ -306,6 +306,19 @@ build_cpp_program() {
     rm -f "$raw_wasm"
 }
 
+# Copy one resolved artifact into the shared sysroot as a regular file.
+#
+# Never symlink it: kandelo_package_require_regular_input_tree rejects any
+# private-sysroot seed that contains a symlink, so one symlink planted here
+# fails every later package that seeds its private sysroot from this one
+# (kandelo-sdk first). `rm -f` first matters too -- cp onto an existing
+# symlink writes THROUGH it, into the resolver cache it points at. This is
+# the same rm-then-cp shape ensure_libcxx_in_sysroot and the SDL2 staging use.
+stage_sysroot_file() {
+    rm -f "$2"
+    cp "$1" "$2"
+}
+
 ensure_libcxx_in_sysroot() {
     local arch="$1"
     local sysroot="$2"
@@ -381,12 +394,12 @@ if ls "$REPO_ROOT"/programs/wl_*.c >/dev/null 2>&1; then
     LIBWL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libwayland)"
     LIBFFI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libffi)"
 
-    ln -sfn "$LIBWL_PREFIX/lib/libwayland-client.a" "$SYSROOT/lib/libwayland-client.a"
-    ln -sfn "$LIBWL_PREFIX/lib/libwayland-server.a" "$SYSROOT/lib/libwayland-server.a"
-    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a"           "$SYSROOT/lib/libffi.a"
+    stage_sysroot_file "$LIBWL_PREFIX/lib/libwayland-client.a" "$SYSROOT/lib/libwayland-client.a"
+    stage_sysroot_file "$LIBWL_PREFIX/lib/libwayland-server.a" "$SYSROOT/lib/libwayland-server.a"
+    stage_sysroot_file "$LIBFFI_PREFIX/lib/libffi.a"           "$SYSROOT/lib/libffi.a"
 
     for h in "$LIBWL_PREFIX/include"/wayland-*.h; do
-        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/$(basename "$h")"
     done
 fi
 
@@ -400,10 +413,10 @@ if ls "$REPO_ROOT"/programs/xkb_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libxkbcommon >/dev/null)
     LIBXKB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxkbcommon)"
 
-    ln -sfn "$LIBXKB_PREFIX/lib/libxkbcommon.a" "$SYSROOT/lib/libxkbcommon.a"
+    stage_sysroot_file "$LIBXKB_PREFIX/lib/libxkbcommon.a" "$SYSROOT/lib/libxkbcommon.a"
     mkdir -p "$SYSROOT/include/xkbcommon"
     for h in "$LIBXKB_PREFIX/include/xkbcommon"/*.h; do
-        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
     done
 fi
 
@@ -418,9 +431,9 @@ if ls "$REPO_ROOT"/programs/libevdev_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libevdev >/dev/null)
     LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
 
-    ln -sfn "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
+    stage_sysroot_file "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
     mkdir -p "$SYSROOT/include/libevdev"
-    ln -sfn "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
+    stage_sysroot_file "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
 fi
 
 # Resolve mtdev and symlink its archive + headers into the sysroot when
@@ -434,9 +447,9 @@ if ls "$REPO_ROOT"/programs/mtdev_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve mtdev >/dev/null)
     MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
 
-    ln -sfn "$MTDEV_PREFIX/lib/libmtdev.a" "$SYSROOT/lib/libmtdev.a"
-    ln -sfn "$MTDEV_PREFIX/include/mtdev.h" "$SYSROOT/include/mtdev.h"
-    ln -sfn "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
+    stage_sysroot_file "$MTDEV_PREFIX/lib/libmtdev.a" "$SYSROOT/lib/libmtdev.a"
+    stage_sysroot_file "$MTDEV_PREFIX/include/mtdev.h" "$SYSROOT/include/mtdev.h"
+    stage_sysroot_file "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
 fi
 
 # Resolve libudev and symlink its archive + header into the sysroot when
@@ -450,8 +463,8 @@ if ls "$REPO_ROOT"/programs/libudev_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev >/dev/null)
     LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
 
-    ln -sfn "$LIBUDEV_PREFIX/lib/libudev.a" "$SYSROOT/lib/libudev.a"
-    ln -sfn "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
+    stage_sysroot_file "$LIBUDEV_PREFIX/lib/libudev.a" "$SYSROOT/lib/libudev.a"
+    stage_sysroot_file "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
 fi
 
 # Resolve libinput (real 1.25.0) for the libinput smoke. This is the real
@@ -618,15 +631,15 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Public headers on the sysroot include path (idempotent — the wl_*/xkb_*
     # blocks above symlink the same paths; the archives too).
     for h in "$WLC_LIBWL/include"/wayland-*.h; do
-        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/$(basename "$h")"
     done
-    ln -sfn "$WLC_LIBFFI/lib/libffi.a"            "$SYSROOT/lib/libffi.a"
-    ln -sfn "$WLC_LIBWL/lib/libwayland-server.a"  "$SYSROOT/lib/libwayland-server.a"
-    ln -sfn "$WLC_LIBWL/lib/libwayland-client.a"  "$SYSROOT/lib/libwayland-client.a"
-    ln -sfn "$WLC_LIBXKB/lib/libxkbcommon.a"      "$SYSROOT/lib/libxkbcommon.a"
+    stage_sysroot_file "$WLC_LIBFFI/lib/libffi.a"            "$SYSROOT/lib/libffi.a"
+    stage_sysroot_file "$WLC_LIBWL/lib/libwayland-server.a"  "$SYSROOT/lib/libwayland-server.a"
+    stage_sysroot_file "$WLC_LIBWL/lib/libwayland-client.a"  "$SYSROOT/lib/libwayland-client.a"
+    stage_sysroot_file "$WLC_LIBXKB/lib/libxkbcommon.a"      "$SYSROOT/lib/libxkbcommon.a"
     mkdir -p "$SYSROOT/include/xkbcommon"
     for h in "$WLC_LIBXKB/include/xkbcommon"/*.h; do
-        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
     done
 
     # Generate xdg-shell {server,client} headers + shared private-code from
