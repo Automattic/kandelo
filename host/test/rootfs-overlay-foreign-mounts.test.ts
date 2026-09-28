@@ -27,7 +27,7 @@ import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { tryResolveBinary, tryResolveRootfsArtifact } from "../src/binary-resolver";
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
@@ -38,11 +38,13 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
-const rootfsImagePath = join(repoRoot, "host/wasm/rootfs.vfs");
+// The default rootfs as the resolver finds it -- the same image the host
+// boots for `rootfsImage: "default"`, not a path of this file's own.
+const rootfsImagePath = tryResolveRootfsArtifact()?.selectedPath;
 const helloWasmPath = join(repoRoot, "examples/hello.wasm");
 
 const kernelPath = tryResolveBinary("kernel.wasm");
-const havePrereqs = existsSync(rootfsImagePath) &&
+const havePrereqs = rootfsImagePath !== undefined &&
   existsSync(helloWasmPath) && kernelPath !== null;
 
 describe.runIf(havePrereqs)(
@@ -59,7 +61,7 @@ describe.runIf(havePrereqs)(
 
         let stdout = "";
         const host = new NodeKernelHost({
-          rootfsImage: new Uint8Array(readFileSync(rootfsImagePath)),
+          rootfsImage: new Uint8Array(readFileSync(rootfsImagePath!)),
           rootfsMountSpec: [
             ...DEFAULT_MOUNT_SPEC,
             { path: "/run", source: "scratch", mode: 0o755, nosuid: true },

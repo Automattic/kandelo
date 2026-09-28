@@ -14,14 +14,12 @@
  * - a normal boot keeps the host's real clock and entropy.
  */
 import { describe, expect, it } from "vitest";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { tryResolveRootfsArtifact } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { ImageBuildDeterminism } from "../src/types";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const haveRootfs = existsSync(join(repoRoot, "host/wasm/rootfs.vfs"));
+// The image `rootfsImage: "default"` boots, found the way the host finds it.
+const haveRootfs = tryResolveRootfsArtifact() !== null;
 
 const PROBE = [
   'printf "%s\\n" "$EPOCHREALTIME" "$EPOCHREALTIME"',

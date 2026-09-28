@@ -83,18 +83,6 @@ function executableWasmWithAbi(abi: number): Uint8Array {
   return new Uint8Array(bytes);
 }
 
-function vfsWithMalformedMetadata(): Uint8Array {
-  const image = Buffer.alloc(25);
-  image.writeUInt32LE(0x56465349, 0); // VFSI
-  image.writeUInt32LE(1, 4); // image version
-  image.writeUInt32LE(1 << 2, 8); // metadata present
-  image.writeUInt32LE(0, 12); // empty filesystem snapshot
-  image.writeUInt32LE(0, 16); // empty lazy-file section
-  image.writeUInt32LE(1, 20); // one byte of metadata
-  image[24] = "{".charCodeAt(0); // invalid JSON
-  return image;
-}
-
 async function vfsImage(
   metadata: VfsImageMetadata | null | undefined,
   compressed: boolean,
@@ -825,22 +813,11 @@ printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
     expect(result.stdout.trim()).toBe(localPath);
   });
 
-  it.each([
-    [
-      "corrupt zstd compression",
-      new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0x00]),
-    ],
-    ["malformed metadata", vfsWithMalformedMetadata()],
-  ])("keeps a VFS image with %s fail-closed", (_description, bytes) => {
-    const relPath = "programs/wasm32/__resolve_binary_test__/broken.vfs.zst";
-    writeCandidate("local-binaries", relPath, bytes);
-
-    const result = resolveBinary(relPath);
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("exists but was rejected by artifact policy");
-  });
-
+  // No VFS-image cases here: the resolver stopped parsing images in
+  // b04528668 (the kernel refuses a mismatched image at load, EPROTO), and
+  // that commit removed the in-process image-policy tests. Two shell-wrapper
+  // copies of them survived only because the committed resolver bundle was
+  // still built from the older source; regenerating it exposed them.
   it("keeps an uninspectable .wasm artifact fail-closed", () => {
     const relPath = "programs/wasm32/__resolve_binary_test__/broken.wasm";
     writeCandidate(
@@ -852,6 +829,6 @@ printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
     const result = resolveBinary(relPath);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("exists but was rejected by artifact policy");
+    expect(result.stderr).toContain("Binary exists but was not accepted");
   });
 });

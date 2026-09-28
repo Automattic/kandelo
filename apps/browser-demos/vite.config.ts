@@ -13,6 +13,7 @@ import react from "@vitejs/plugin-react";
 import {
   binaryProgramCacheRoot,
   createSourceOnlyBinarySnapshotSession,
+  resolveRootfsArtifact,
   sourceOnlyBinaryRoot,
   tryResolveBinary,
   tryResolveBinaries,
@@ -330,8 +331,8 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
  * installed-package tiers). There is no legacy fallback path; a missing
  * kernel fails loudly instead.
  *
- * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs` (built by
- * mkrootfs during `./run.sh setup`).
+ * `@rootfs-vfs` resolves through `resolveRootfsArtifact()`, the resolver's
+ * answer for the default rootfs that the Node host also boots.
  *
  * Resolution is deferred until import time so pages that don't consume
  * these aliases can run without a kernel build present. Pages that do
@@ -473,20 +474,16 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
             "programs/wasm32/rootfs.vfs",
           );
         }
-        const candidates = [
-          path.resolve(repoRoot, "host/wasm/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs"),
-        ];
-        for (const file of candidates) {
-          if (fs.existsSync(file)) return access.approve(file) + query;
+        // The same answer the Node host gets for `rootfsImage: "default"`:
+        // one resolver, so both hosts boot the same image from one checkout.
+        // (This used to be a private list of five paths in its own order.)
+        let rootfs: string;
+        try {
+          rootfs = resolveRootfsArtifact().selectedPath;
+        } catch (error) {
+          this.error(error instanceof Error ? error.message : String(error));
         }
-        this.error(
-          "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
-            candidates.map((file) => `  Looked at: ${file}`).join("\n"),
-        );
+        return access.approve(rootfs) + query;
       }
       return null;
     },
@@ -589,23 +586,22 @@ function dropWorkerEntryExports(): Plugin {
  * Vite plugin: resolve `@binaries/...` imports and authored relative imports
  * into the resolver-managed binaries trees.
  *
- * Lookup order, first hit wins:
- *   1. `<repoRoot>/local-binaries/<rest>` — populated by xtask while
- *      installing into the resolver cache, plus any direct
- *      `install_local_binary` writes from build scripts.
- *   2. `<repoRoot>/binaries/<rest>` — populated by xtask when given
- *      `--binaries-dir`; mirrors release archives via symlinks.
+ * Every request is answered by the shared binary resolver
+ * (`tryResolveBinaries` / `tryResolveBinary`), whose tiers and their order
+ * (`local-binaries/source-only-v1`, `local-binaries`, `binaries`, the installed
+ * package) are the same ones the Node host and the rootfs image builder use.
+ * That identity is load-bearing: an image records a digest for each lazy
+ * binary, taken from the resolver's answer at build time, and the browser
+ * serves the bytes this plugin resolves. A lookup of its own here could serve
+ * a different copy than the one the image vouched for.
  *
- * The fallback is what makes the alias useful for both release-shipped
- * artifacts and local-only ones (e.g. dev builds, test fixtures): a
- * page just imports `@binaries/programs/wasm32/<x>` (or uses an optional
- * relative `import.meta.glob()` into either mirror) and gets whichever copy
- * is present.
+ * A page imports `@binaries/programs/wasm32/<x>` (or uses an optional
+ * relative `import.meta.glob()` into either mirror directory).
  *
  * Doing this with a custom plugin (rather than `resolve.alias`) is
- * deliberate: `@rollup/plugin-alias` has a single `replacement` string,
- * which can't express "try this directory first, then that one." A
- * `resolveId` hook can.
+ * deliberate: `@rollup/plugin-alias` has a single `replacement` string, and
+ * the answer here comes from the resolver, not from a directory. A
+ * `resolveId` hook can ask it.
  */
 interface BinaryMirrorImport {
   relPath: string;
@@ -709,12 +705,10 @@ function resolveBinariesAlias(
             `projection at ${configuredSourceOnlyRoot}`,
         );
       }
-      const local = path.resolve(repoRoot, "local-binaries", request.relPath);
-      const fetched = path.resolve(repoRoot, "binaries", request.relPath);
       this.error(
-        `Browser binary ${request.relPath} not found, or every candidate is stale. ` +
-          `Looked at:\n  ${local}\n  ${fetched}\n` +
-          `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
+        `Browser binary ${request.relPath} was not resolved: the binary ` +
+          `resolver found no accepted copy in any tier. Build it locally ` +
+          `(./run.sh setup), or run \`./run.sh fetch\` to install release archives.`,
       );
     },
     configureServer(server) {

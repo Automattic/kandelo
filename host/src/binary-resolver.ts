@@ -3645,6 +3645,65 @@ function resolveBinaryInFreshProgramContext(relPath: string): string {
 }
 
 /**
+ * The default rootfs image, as the resolver finds it.
+ *
+ * Every consumer that needs "the default rootfs" asks this one function: the
+ * Node host (`rootfsImage: "default"`), the test helper, the benchmarks, and
+ * the browser dev server's `@rootfs-vfs` alias. The browser alias used to keep
+ * its own list of five candidate paths in its own order, which is how two
+ * consumers of "the default image" could load different images from one
+ * checkout. `rootfs.vfs` is asked first (the image the rootfs step builds,
+ * whose installed-package tier is `host/wasm/`), then the package-owned
+ * `programs/rootfs.vfs`.
+ */
+export interface ResolvedRootfsArtifact {
+  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
+  selectedPath: string;
+}
+
+export function resolveRootfsArtifact(
+  resolver: (request: string) => string = resolveBinary,
+): ResolvedRootfsArtifact {
+  try {
+    return {
+      resolverRequest: "rootfs.vfs",
+      selectedPath: resolver("rootfs.vfs"),
+    };
+  } catch (rootfsError) {
+    try {
+      return {
+        resolverRequest: "programs/rootfs.vfs",
+        selectedPath: resolver("programs/rootfs.vfs"),
+      };
+    } catch (programsError) {
+      const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
+      const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
+      throw new Error(
+        `rootfsImage:"default" requested but no rootfs image was available.\n` +
+          `Tried rootfs.vfs:\n${rootfsMessage}\n` +
+          `Tried programs/rootfs.vfs:\n${programsMessage}\n` +
+          `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
+      );
+    }
+  }
+}
+
+/**
+ * `resolveRootfsArtifact`, returning `null` only when neither image exists.
+ *
+ * For callers that treat a checkout without a built rootfs as "nothing to
+ * test here". An image that exists but is refused still throws: that is a
+ * broken artifact, not an absent one, and must not read as a skip.
+ */
+export function tryResolveRootfsArtifact(): ResolvedRootfsArtifact | null {
+  for (const resolverRequest of ["rootfs.vfs", "programs/rootfs.vfs"] as const) {
+    const selectedPath = tryResolveBinary(resolverRequest);
+    if (selectedPath !== null) return { resolverRequest, selectedPath };
+  }
+  return null;
+}
+
+/**
  * Like `resolveBinary` but returns `null` instead of throwing when the
  * binary is absent. Callers choose how to handle the miss.
  */

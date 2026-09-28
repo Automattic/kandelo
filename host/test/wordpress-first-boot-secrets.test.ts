@@ -15,10 +15,9 @@
  * install it.
  */
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { tryResolveRootfsArtifact } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   WORDPRESS_SECRETS_SCRIPT,
@@ -29,13 +28,14 @@ import {
   WORDPRESS_SECRET_NAMES,
 } from "../../apps/browser-demos/lib/init/wordpress-runtime-config";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const rootfsPath = join(repoRoot, "host/wasm/rootfs.vfs");
-const haveRootfs = existsSync(rootfsPath);
+// The default rootfs as the resolver finds it -- the same image the host
+// boots for `rootfsImage: "default"`, not a path of this file's own.
+const rootfsPath = tryResolveRootfsArtifact()?.selectedPath;
+const haveRootfs = rootfsPath !== undefined;
 
 async function imageWithService(): Promise<Uint8Array> {
   const fs = KandeloImageFs.create();
-  fs.loadImage(new Uint8Array(readFileSync(rootfsPath)), {
+  fs.loadImage(new Uint8Array(readFileSync(rootfsPath!)), {
     maxDecompressedBytes: 1024 * 1024 * 1024,
   });
   populateWordPressFirstBootSecrets(fs);

@@ -21,10 +21,8 @@ import {
   createProcessMemory,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
-import {
-  NodeKernelHost,
-  resolveRootfsArtifact,
-} from "../src/node-kernel-host";
+import { NodeKernelHost } from "../src/node-kernel-host";
+import { resolveRootfsArtifact } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
 import {

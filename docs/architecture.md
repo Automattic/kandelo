@@ -2962,7 +2962,7 @@ order:
 3. `sysroot64` — provisions the wasm64 musl sysroot the same way
 4. `sdk` — verifies the `wasm32posix-cc` toolchain wrappers resolve against `sysroot`
 5. `engine` — builds every package in the local-build graph, including the kernel: `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`, then copies `kandelo-kernel.wasm` to `host/wasm/`
-6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
+6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`. Every package output in the image comes from the binary resolver, the same one the hosts serve lazy files from, so the digest the image records matches the bytes served (see "One resolution process for image package outputs" in `docs/package-management.md`)
 7. `host-dist` — builds the TypeScript host via `npm run build` (tsup → ESM + CJS)
 
 ```bash

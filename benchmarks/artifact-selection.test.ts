@@ -18,7 +18,7 @@ import {
   SPAWN_SCRATCH_LARGE_WIRE_BYTES,
 } from "./spawn-scratch-evidence.js";
 import type { BenchmarkArtifacts } from "./types.js";
-import { resolveRootfsArtifact } from "../host/src/node-kernel-host.js";
+import { resolveRootfsArtifact } from "../host/src/binary-resolver.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

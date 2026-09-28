@@ -1,12 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { imageOwnedRuntimeUrlTable } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { tryResolveRootfsArtifact } from "../src/binary-resolver";
 
-const repoRoot = resolve(import.meta.dirname, "../..");
-const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
+// The default rootfs as the resolver finds it -- the same image the host
+// boots for `rootfsImage: "default"`, not a path of this file's own.
+const rootfsImage = tryResolveRootfsArtifact()?.selectedPath;
 
 /**
  * Every address the SHIPPED image records is one this deployment can serve.
@@ -29,10 +30,10 @@ const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
  * so after the migration it was asserting against an empty list and could only
  * fail, never catch anything.
  */
-describe.skipIf(!existsSync(rootfsImage))("rootfs lazy assets resolve", () => {
+describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
   const deferredAddresses = (): string[] => {
     const fs = KandeloImageFs.create();
-    fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
+    fs.loadImage(new Uint8Array(readFileSync(rootfsImage!)));
     const { files } = fs.lazyEntries() as { files: { path: string; uri: string }[] };
     return files.map((f) => f.uri);
   };
@@ -52,7 +53,7 @@ describe.skipIf(!existsSync(rootfsImage))("rootfs lazy assets resolve", () => {
     // The three this file has always named, by path rather than by count, so a
     // rootfs that grows does not quietly stop checking them.
     const fs = KandeloImageFs.create();
-    fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
+    fs.loadImage(new Uint8Array(readFileSync(rootfsImage!)));
     const { files } = fs.lazyEntries() as { files: { path: string; uri: string }[] };
     for (const path of ["/usr/bin/dash", "/usr/bin/ps", "/usr/bin/pgrep"]) {
       const entry = files.find((f) => f.path === path);

@@ -30,7 +30,10 @@ import {
   ensureDirRecursive,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
-import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolver";
+import {
+  findRepoRoot,
+  resolveRootfsArtifact,
+} from "../../../host/src/binary-resolver";
 import { preparePhpTestFixtures } from "./php-test-fixtures";
 import { ensureSourceExtract } from "./source-extract-helper";
 import {
@@ -428,8 +431,10 @@ async function main(): Promise<void> {
   const intlPath = runtime?.closureHostPaths.get("php/intl.so") ??
     [...extensionDirectories].reverse().map((dir) => join(dir, "intl.so"))
       .find((path) => existsSync(path));
-  const rootfsPath = process.env.ROOTFS_VFS ?? tryResolveBinary("rootfs.vfs") ??
-    tryResolveBinary("programs/rootfs.vfs") ?? join(repositoryRoot, "host/wasm/rootfs.vfs");
+  // An explicit ROOTFS_VFS, else the default rootfs as every other consumer
+  // resolves it. (A trailing `host/wasm/rootfs.vfs` guess used to follow; the
+  // resolver's installed-package tier already is that directory.)
+  const rootfsPath = process.env.ROOTFS_VFS ?? resolveRootfsArtifact().selectedPath;
   const sourceRoot = process.env.PHP_SOURCE_DIR ?? ensureSourceExtract(
     "php",
     repositoryRoot,

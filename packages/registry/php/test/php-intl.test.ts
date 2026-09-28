@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
-import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { tryResolveRootfsArtifact } from "../../../../host/src/binary-resolver";
 import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import {
   ensureDirRecursive,
@@ -27,10 +27,8 @@ const phpBinaryPath =
   icuRuntime?.closureHostPaths.get("php/php.wasm") ??
   join(__dirname, "../php-src/sapi/cli/php");
 const intlSoPath = icuRuntime?.closureHostPaths.get("php/intl.so");
-const rootfsPath =
-  tryResolveBinary("rootfs.vfs") ??
-  tryResolveBinary("programs/rootfs.vfs") ??
-  join(__dirname, "../../../../host/wasm/rootfs.vfs");
+// The default rootfs as every other consumer resolves it.
+const rootfsPath = tryResolveRootfsArtifact()?.selectedPath ?? null;
 const INTL_GUEST_PATH = "/usr/lib/php/extensions/intl.so";
 const PHP_INTL_VFS_MAX_BYTES = 256 * 1024 * 1024;
 const O_RDONLY = 0;
@@ -43,7 +41,7 @@ if (intlSoPath && !icuRuntime) {
 
 const READY = existsSync(phpBinaryPath)
   && intlSoPath != null
-  && existsSync(rootfsPath);
+  && rootfsPath !== null;
 let intlRootfsImage: Uint8Array;
 
 function readVfsBinary(fs: KandeloImageFs, path: string): Uint8Array {
@@ -79,7 +77,7 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
     // allocation; the module records the ceiling the export will declare and
     // copies nothing.
     const fs = KandeloImageFs.create();
-    fs.loadImage(new Uint8Array(readFileSync(rootfsPath)));
+    fs.loadImage(new Uint8Array(readFileSync(rootfsPath!)));
     fs.setImageCapacity(PHP_INTL_VFS_MAX_BYTES);
     ensureDirRecursive(fs, dirname(INTL_GUEST_PATH));
     ensureDirRecursive(fs, dirname(icuRuntime!.guestPath));

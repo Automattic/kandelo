@@ -33,6 +33,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { tryResolveRootfsArtifact } from "../src/binary-resolver";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
@@ -47,13 +48,15 @@ import { DEFAULT_MOUNT_SPEC, type MountSpec } from "../src/vfs/default-mounts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const probeWasm = join(repoRoot, "examples/mount_probe_test.wasm");
-const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
+// The default rootfs as the resolver finds it: these tests also boot
+// `rootfsImage: "default"`, and both must mean the same image.
+const rootfsImage = tryResolveRootfsArtifact()?.selectedPath;
 const servicesSource = join(repoRoot, "images/rootfs/etc/services");
 const caCertSource = join(repoRoot, "images/rootfs/etc/ssl/cert.pem");
 const opensslConfigSource = join(repoRoot, "images/rootfs/etc/ssl/openssl.cnf");
 
 const haveProbe = existsSync(probeWasm);
-const haveRootfs = existsSync(rootfsImage);
+const haveRootfs = rootfsImage !== undefined;
 
 describe("node session seed configuration", () => {
   it("rejects a custom mount specification without a rootfs before starting a worker", async () => {
@@ -93,7 +96,7 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     // — so a shipped image's own producer and its reader here disagreed about
     // what the artifact says.
     const fs = KandeloImageFs.create();
-    fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
+    fs.loadImage(new Uint8Array(readFileSync(rootfsImage!)));
     for (const [path, source] of [
       ["/etc/ssl/openssl.cnf", opensslConfigSource],
       ["/etc/ssl/cert.pem", caCertSource],

@@ -10,7 +10,7 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  * Usage: npx tsx images/vfs/scripts/build-shell-vfs-image.ts
  */
 import { readFileSync } from "node:fs";
-import { resolveBinary } from "../../../host/src/binary-resolver";
+import { resolveRootfsArtifact } from "../../../host/src/binary-resolver";
 import {
   saveImage,
   writeVfsBinary,
@@ -21,16 +21,9 @@ import { restoreTrustedShellRootfs } from "./shell-rootfs-restore";
 
 const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
 
-function resolveRootfsImagePath(): string {
-  try {
-    return resolveBinary("rootfs.vfs");
-  } catch {
-    return resolveBinary("programs/rootfs.vfs");
-  }
-}
-
 async function main() {
-  const rootfsBytes = readFileSync(resolveRootfsImagePath());
+  // The default rootfs as every other consumer resolves it.
+  const rootfsBytes = readFileSync(resolveRootfsArtifact().selectedPath);
   const fs = await restoreTrustedShellRootfs(
     new Uint8Array(rootfsBytes),
     256 * 1024 * 1024,

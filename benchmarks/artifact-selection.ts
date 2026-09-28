@@ -1,10 +1,8 @@
 import {
-  tryResolveBinary,
-} from "../host/src/binary-resolver.js";
-import {
   resolveRootfsArtifact,
+  tryResolveBinary,
   type ResolvedRootfsArtifact,
-} from "../host/src/node-kernel-host.js";
+} from "../host/src/binary-resolver.js";
 
 export interface BenchmarkRuntimeArtifactSelection {
   logicalPath: string;

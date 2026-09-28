@@ -22,7 +22,7 @@ import {
   Worker as NodeThreadWorker,
   type Transferable,
 } from "node:worker_threads";
-import { resolveBinary } from "./binary-resolver";
+import { resolveBinary, resolveRootfsArtifact } from "./binary-resolver";
 // The main thread validates `kernel.wasm` itself, before any kernel exists.
 
 import type {
@@ -1319,38 +1319,6 @@ function snapshotModuleBytes(
     return copy;
   }
   return src.slice(0);
-}
-
-export interface ResolvedRootfsArtifact {
-  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
-  selectedPath: string;
-}
-
-export function resolveRootfsArtifact(
-  resolver: (request: string) => string = resolveBinary,
-): ResolvedRootfsArtifact {
-  try {
-    return {
-      resolverRequest: "rootfs.vfs",
-      selectedPath: resolver("rootfs.vfs"),
-    };
-  } catch (rootfsError) {
-    try {
-      return {
-        resolverRequest: "programs/rootfs.vfs",
-        selectedPath: resolver("programs/rootfs.vfs"),
-      };
-    } catch (programsError) {
-      const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
-      const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
-      throw new Error(
-        `rootfsImage:"default" requested but no rootfs image was available.\n` +
-          `Tried rootfs.vfs:\n${rootfsMessage}\n` +
-          `Tried programs/rootfs.vfs:\n${programsMessage}\n` +
-          `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
-      );
-    }
-  }
 }
 
 /** Spawn a worker_thread running node-kernel-worker-entry.ts */

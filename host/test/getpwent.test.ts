@@ -17,16 +17,19 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { tryResolveRootfsArtifact } from "../src/binary-resolver";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const smokeWasm = join(repoRoot, "examples/getpwent_smoke.wasm");
-const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
+// The default rootfs as the resolver finds it -- the same image the host
+// boots for `rootfsImage: "default"`, not a path of this file's own.
+const rootfsImage = tryResolveRootfsArtifact()?.selectedPath;
 
 const haveSmoke = existsSync(smokeWasm);
-const haveRootfs = existsSync(rootfsImage);
+const haveRootfs = rootfsImage !== undefined;
 
 describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () => {
   it("iterates all 7 /etc/passwd entries and looks up by name + uid", async () => {

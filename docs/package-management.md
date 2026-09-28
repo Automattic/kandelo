@@ -760,6 +760,55 @@ and exports its path as `WASM_POSIX_XTASK_BIN`. A direct caller may provide that
 override, but doing so is an attestation that the executable was prepared from
 the current source; the resolver deliberately does not rebuild an explicit
 caller-owned tool path.
+The wrapper accepts several paths in one call and prints one answer per line,
+in request order, after a single projection freshness check
+(`tryResolveBinaries`); a miss is re-asked singly so it fails with the
+resolver's own explanation.
+
+### One resolution process for image package outputs
+
+The rootfs image records a SHA-256 and a size for every lazy package output
+(`lazy_sha256=`), and the host later serves that output by asking the
+resolver: the Node kernel worker's lazy fetcher calls `tryResolveBinary`, and
+the browser dev server's `@binaries/` plugin resolves through the same module.
+A digest is only correct if it describes the bytes that will be served, so the
+image builder asks the same resolver. Without an explicit sealed input,
+`scripts/generate-rootfs-package-manifest.mjs` resolves every output, lazy and
+eager, with one `scripts/resolve-binary.sh` call. It has no lookup of its own.
+
+It used to have one: `local-binaries/<path>`, then `binaries/<path>`. The
+resolver searches the local build's tier (`local-binaries/source-only-v1`)
+first, so the two disagreed silently. A leftover
+`local-binaries/programs/wasm32/dash.wasm` symlink from an old build made an
+image record a 640013-byte dash while the host served the freshly built
+506394-byte one; every read of `/bin/sh` then failed its digest with `EIO`.
+With no leftover at all, `binaries/` held a second build of each package made
+by `xtask build-deps resolve`, which lacks the local build's trailing
+`kandelo.build.key` and `kandelo.abi.contract` custom sections, so the image
+recorded a strict prefix of the file the host served.
+
+The default rootfs image itself is found the same way everywhere:
+`resolveRootfsArtifact` in `host/src/binary-resolver.ts` (asking for
+`rootfs.vfs`, then `programs/rootfs.vfs`) serves the Node host's
+`rootfsImage: "default"`, the browser dev server's `@rootfs-vfs` alias, the
+image builders, the benchmarks and the host tests. The browser alias and
+several tests used to keep private path lists.
+
+The package system's sealed modes are unchanged, because a package build must
+consume only its declared dependencies: `--stage-resolver-binaries` copies each
+dependency's output from `WASM_POSIX_DEP_<NAME>_DIR`, and `--binaries-dir` and
+`--resolved-output-map` name their inputs explicitly. Those dependency outputs
+are the same local-build artifacts the resolver's first tier projects.
+
+`scripts/build-rootfs.sh` generates the fragment before deciding whether
+`host/wasm/rootfs.vfs` is current, and its input stamp hashes the fragment. The
+fragment carries a digest for every resolved output (`lazy_sha256=` on a lazy
+line, a `# <path> sha256=<hex>` comment above an eager `src=` line, which
+mkrootfs ignores). A binary the local build rewrote in place therefore makes the
+image stale; hashing paths, or the local build's projection file as the stamp
+used to, could not see that. The `xtask build-deps resolve` loop that fills
+`binaries/` still runs, but only when the image must be rebuilt, and it is
+provisioning: which copy the image records is the resolver's decision.
 
 A registry directory without a regular `package.toml` is an ordinary
 non-package path, matching Rust's lookup. A regular manifest is a first-hit
