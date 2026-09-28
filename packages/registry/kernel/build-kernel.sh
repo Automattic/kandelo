@@ -52,6 +52,7 @@ wasm_require_exports "$OUT" \
     kernel_has_sa_nocldstop \
     kernel_host_adapter_manifest_len \
     kernel_host_adapter_manifest_ptr \
+    kernel_install_host_stdin_pipe \
     kernel_ipc_shm_lookup_mapping_for_task \
     kernel_ipc_shm_record_mapping_for_process \
     kernel_ipc_shm_record_mapping_for_task \
