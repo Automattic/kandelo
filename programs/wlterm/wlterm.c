@@ -7,7 +7,8 @@
  *   - forkpty() spawns a child on a PTY and execs a shell (default `sh`,
  *     or argv[1..] if given); the parent holds the master fd.
  *   - the main loop poll()s { kwl_display_fd(win), pty_master }:
- *       * Wayland key events → vt100_input_key() → write(master) → shell;
+ *       * Wayland key events → vt100_input_key() → pending input → write(master)
+ *         when the PTY can take it (POLLOUT) → shell;
  *       * PTY output → vt100_feed() → re-render → kwl_window_commit().
  *   - the shell exiting (master EOF/HUP) or the window closing ends the loop.
  *
@@ -40,6 +41,35 @@
 #define WIN_W 960
 #define WIN_H 540
 #define FONT_PX 16
+
+/* Keyboard input not yet accepted by the PTY. The master is non-blocking,
+ * so a write can take part of it or none (EAGAIN) when the shell is not
+ * reading -- a paste, or key repeat while a command runs. What the PTY does
+ * not take waits here for POLLOUT instead of being discarded. */
+static char g_input[4096];
+static size_t g_input_len;
+/* Longest sequence vt100_input_key emits into its 8-byte buffer. */
+#define KEY_SEQ_MAX 8
+
+/* Write as much pending input as the PTY accepts. */
+static void flush_input(int master) {
+    while (g_input_len > 0) {
+        ssize_t w = write(master, g_input, g_input_len);
+        if (w > 0) {
+            memmove(g_input, g_input + w, g_input_len - (size_t)w);
+            g_input_len -= (size_t)w;
+        } else if (w < 0 && errno == EINTR) {
+            continue;
+        } else if (w == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
+            return;   /* no room now: POLLOUT resumes the flush */
+        } else {
+            /* EIO: the slave side is gone. The master read path sees the
+             * same hangup and ends the loop; this input has no reader. */
+            g_input_len = 0;
+            return;
+        }
+    }
+}
 
 /* A grid needle the test asks wlterm to watch for and report once seen. */
 static const char *g_watch[8];
@@ -139,31 +169,38 @@ int main(int argc, char **argv) {
     int running = 1;
 
     while (running) {
+        /* With no room for another key's bytes, stop taking Wayland events:
+         * they wait, in order, in libkwl's queue and the socket until the
+         * shell reads and POLLOUT frees space. */
+        int input_room = g_input_len + KEY_SEQ_MAX <= sizeof g_input;
         struct pollfd pfds[2] = {
-            { .fd = display_fd, .events = POLLIN },
-            { .fd = master,     .events = POLLIN },
+            { .fd = display_fd, .events = input_room ? POLLIN : 0 },
+            { .fd = master,
+              .events = POLLIN | (g_input_len > 0 ? POLLOUT : 0) },
         };
-        int pr = poll(pfds, 2, 1000);
+        /* Events libkwl already holds do not wake the display fd. */
+        int pr = poll(pfds, 2, input_room && kwl_pending(win) ? 0 : 1000);
         if (pr < 0) {
             if (errno == EINTR) continue;
             perror("poll");
             break;
         }
 
-        /* Drain all pending Wayland events; translate keys → PTY. */
+        if (pfds[1].revents & POLLOUT) flush_input(master);
+
+        /* Drain pending Wayland events while there is room; keys → PTY. */
         struct kwl_event ev;
-        while (kwl_dispatch(win, &ev, 0)) {
+        while (g_input_len + KEY_SEQ_MAX <= sizeof g_input
+               && kwl_dispatch(win, &ev, 0)) {
             if (ev.type == KWL_KEY && ev.state == 1) {
-                char buf[8];
-                size_t n = vt100_input_key(ev.keysym, ev.mods, buf, sizeof buf);
-                if (n > 0) {
-                    ssize_t w = write(master, buf, n);
-                    (void)w;  /* EPIPE handled via the master EOF path below */
-                }
+                size_t n = vt100_input_key(ev.keysym, ev.mods,
+                                           g_input + g_input_len, KEY_SEQ_MAX);
+                g_input_len += n;
             } else if (ev.type == KWL_CLOSE) {
                 running = 0;
             }
         }
+        flush_input(master);
 
         /* PTY output → terminal grid. */
         int dirty = 0;
@@ -179,6 +216,8 @@ int main(int argc, char **argv) {
                     running = 0;  /* shell closed the PTY */
                     break;
                 } else {
+                    /* A signal is not a hangup: retry. */
+                    if (errno == EINTR) continue;
                     if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                     running = 0;  /* EIO on a hung-up master */
                     break;

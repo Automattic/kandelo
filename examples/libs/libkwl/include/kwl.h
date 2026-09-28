@@ -74,11 +74,14 @@ void kwl_window_destroy(struct kwl_window *win);
 struct wpk_surface *kwl_window_surface(struct kwl_window *win);
 
 /* Present the back buffer: attach + damage + request a frame callback +
- * commit, then swap to the other buffer for the next frame. A KWL_FRAME
- * event is delivered once the compositor presents the committed frame. */
+ * commit, then swap to the other buffer for the next frame. Blocks until
+ * the compositor has released that buffer, so the surface is always safe
+ * to draw into when this returns. A KWL_FRAME event is delivered once the
+ * compositor presents the committed frame. */
 void kwl_window_commit(struct kwl_window *win);
 
-/* Pump the display and return the next input/frame event.
+/* Pump the display and return the next input/frame event. Events are
+ * queued without loss; consecutive pointer motions coalesce to the latest.
  *   timeout_ms < 0 : block until an event is available.
  *   timeout_ms = 0 : non-blocking drain (for an external epoll loop).
  *   timeout_ms > 0 : block up to timeout_ms.
@@ -88,5 +91,11 @@ int kwl_dispatch(struct kwl_window *win, struct kwl_event *out, int timeout_ms);
 /* The wl_display connection fd. LOAD-BEARING: wlterm polls this alongside
  * the PTY master, then drains events with kwl_dispatch(.,.,0). */
 int kwl_display_fd(struct kwl_window *win);
+
+/* Nonzero while events are already queued inside libkwl. The display fd
+ * does not signal these -- kwl_window_commit reads the socket while it
+ * waits for a buffer release -- so an external poll loop must not block
+ * while this is true. */
+int kwl_pending(struct kwl_window *win);
 
 #endif /* KWL_H */

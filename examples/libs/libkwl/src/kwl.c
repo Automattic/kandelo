@@ -12,7 +12,7 @@
  *     pool; commits alternate between them
  *   - xkb keymap compile on wl_keyboard.keymap → keysym + UTF-8
  *   - pointer enter/motion/button
- * events land in a fixed ring the app pops via kwl_dispatch().
+ * events land in a growable ring the app pops via kwl_dispatch().
  *
  * Client-side decoration (CSD): every window carries a KWL_TITLEBAR_H-px
  * titlebar libkwl draws once into each buffer — title text plus a close
@@ -46,7 +46,7 @@
 
 #define KWL_SOCKET_PATH "/tmp/wayland-0"
 #define KWL_NUM_BUFFERS 2
-#define KWL_EVQ_SIZE    64
+#define KWL_EVQ_INITIAL 64
 
 /* CSD titlebar geometry (surface pixels). */
 #define KWL_TB_FONT_PX  14
@@ -59,6 +59,9 @@ struct kwl_buffer {
     uint32_t *pixels;   /* persistent CPU mapping of the shared bytes */
     void *map_data;     /* gbm_bo_map cookie, released at destroy */
     int stride;         /* bytes per row */
+    /* Attached and not yet released by the compositor, which may read the
+     * pixels until it sends wl_buffer.release. Never draw into it. */
+    int busy;
 };
 
 struct kwl_window {
@@ -96,24 +99,50 @@ struct kwl_window {
     /* pointer position (surface-local, i.e. including the titlebar). */
     int ptr_x, ptr_y;
 
-    /* event ring: push at tail, pop at head; overflow drops the newest. */
-    struct kwl_event evq[KWL_EVQ_SIZE];
-    int evq_head, evq_tail, evq_count;
+    /* event ring: push at tail, pop at head; grows when full. */
+    struct kwl_event *evq;
+    int evq_cap, evq_head, evq_tail, evq_count;
 };
 
 /* ---- event ring -------------------------------------------------------- */
 
+/* Queue an event for kwl_dispatch. Discrete events (keys, text, buttons,
+ * close, frame) are never dropped: an app that falls behind receives them
+ * late rather than not at all, so a press is never left without its release
+ * and a close request is never lost. Only pointer motion is lossy, and only
+ * by coalescing: a motion directly after another motion replaces it, since
+ * the app only needs the latest position before the next discrete event. */
 static void kwl_push(struct kwl_window *w, const struct kwl_event *e) {
-    if (w->evq_count >= KWL_EVQ_SIZE) return;   /* drop newest (v1) */
+    if (e->type == KWL_POINTER_MOTION && w->evq_count > 0) {
+        int last = (w->evq_tail + w->evq_cap - 1) % w->evq_cap;
+        if (w->evq[last].type == KWL_POINTER_MOTION) {
+            w->evq[last] = *e;
+            return;
+        }
+    }
+    if (w->evq_count == w->evq_cap) {
+        int cap = w->evq_cap ? w->evq_cap * 2 : KWL_EVQ_INITIAL;
+        struct kwl_event *q = malloc((size_t)cap * sizeof *q);
+        /* Out of memory with the app not draining: there is nowhere to put
+         * the event. Everything already queued stays intact and in order. */
+        if (!q) return;
+        for (int i = 0; i < w->evq_count; i++)
+            q[i] = w->evq[(w->evq_head + i) % w->evq_cap];
+        free(w->evq);
+        w->evq = q;
+        w->evq_cap = cap;
+        w->evq_head = 0;
+        w->evq_tail = w->evq_count;
+    }
     w->evq[w->evq_tail] = *e;
-    w->evq_tail = (w->evq_tail + 1) % KWL_EVQ_SIZE;
+    w->evq_tail = (w->evq_tail + 1) % w->evq_cap;
     w->evq_count++;
 }
 
 static int kwl_pop(struct kwl_window *w, struct kwl_event *out) {
     if (w->evq_count == 0) return 0;
     *out = w->evq[w->evq_head];
-    w->evq_head = (w->evq_head + 1) % KWL_EVQ_SIZE;
+    w->evq_head = (w->evq_head + 1) % w->evq_cap;
     w->evq_count--;
     return 1;
 }
@@ -372,6 +401,14 @@ static int connect_socket(void) {
     return -1;
 }
 
+static void buffer_release(void *data, struct wl_buffer *wl_buf) {
+    (void)wl_buf;
+    ((struct kwl_buffer *)data)->busy = 0;
+}
+static const struct wl_buffer_listener buffer_listener = {
+    .release = buffer_release,
+};
+
 /* Allocate one renderD128 bo, keep it CPU-mapped for the window's life, and
  * share it to the compositor as a wl_shm buffer backed by its prime-fd —
  * the gbm_bo_import path the compositor understands (see wlclient-test.c).
@@ -398,6 +435,7 @@ static int kwl_buffer_init(struct kwl_window *w, struct kwl_buffer *b) {
     wl_shm_pool_destroy(pool);   /* the buffer keeps the pool alive */
     close(prime);                /* wl_shm dup'd it into the pool */
 
+    wl_buffer_add_listener(wl_buf, &buffer_listener, b);
     b->bo = bo;
     b->wl_buf = wl_buf;
     b->pixels = px;
@@ -534,6 +572,7 @@ void kwl_window_destroy(struct kwl_window *win) {
     if (win->xdg_surface) xdg_surface_destroy(win->xdg_surface);
     if (win->surface) wl_surface_destroy(win->surface);
     if (win->display) wl_display_disconnect(win->display);
+    free(win->evq);
     free(win);
 }
 
@@ -548,10 +587,27 @@ void kwl_window_commit(struct kwl_window *win) {
     struct wl_callback *cb = wl_surface_frame(win->surface);
     wl_callback_add_listener(cb, &frame_listener, win);
     wl_surface_commit(win->surface);
+    b->busy = 1;
 
-    /* Swap to the other buffer for the next frame. With 2 buffers + frame
-     * pacing the alternate has always been presented by then. */
+    /* Swap to the other buffer for the next frame -- but only once the
+     * compositor has released it. Until then it may still be reading those
+     * pixels (the compositor composites from the attached buffer at repaint
+     * time), and drawing into it would tear the frame on screen. Apps need
+     * not pace their commits on KWL_FRAME: wlterm commits once per PTY read,
+     * so this wait is what keeps the two buffers from overlapping. It is
+     * short: the compositor releases the previous buffer as soon as it
+     * handles this commit. Events that arrive meanwhile are queued, not
+     * lost. */
     int next = (win->back_index + 1) % KWL_NUM_BUFFERS;
+    wl_display_flush(win->display);
+    while (win->bufs[next].busy) {
+        if (wl_display_dispatch(win->display) < 0) {
+            /* Compositor gone: nothing reads the buffer any more. */
+            struct kwl_event e = { .type = KWL_CLOSE };
+            kwl_push(win, &e);
+            win->bufs[next].busy = 0;
+        }
+    }
     win->back_index = next;
     win->back = content_view(win, &win->bufs[next]);
 }
@@ -597,4 +653,8 @@ int kwl_dispatch(struct kwl_window *win, struct kwl_event *out, int timeout_ms) 
 
 int kwl_display_fd(struct kwl_window *win) {
     return wl_display_get_fd(win->display);
+}
+
+int kwl_pending(struct kwl_window *win) {
+    return win->evq_count > 0;
 }
