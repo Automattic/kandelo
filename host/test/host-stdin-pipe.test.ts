@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -74,4 +75,76 @@ describe("host-supplied stdin", () => {
     expect(r.stdout).toBe("hello");
     expect(Date.now() - appendedAt).toBeLessThan(5_000);
   }, 60_000);
+
+  // Host input can race a process's lifetime: a keypress lands after the
+  // program exited or closed fd 0, or is addressed to a forked child that
+  // owns the display. None of these may take the kernel down (a throw inside
+  // a kernel entry latches the entry gate as fatal); the bytes either reach
+  // a reader or are discarded like a write to a pipe with no reader.
+  describe("input that races the reader", () => {
+    const dashBytes = () => {
+      const b = readFileSync(dash);
+      return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+    };
+
+    it("survives input after the reader closed fd 0 and after it exited", async () => {
+      let out = "";
+      const host = new NodeKernelHost({
+        maxWorkers: 4,
+        rootfsImage: "default",
+        onStdout: (_p, d) => { out += new TextDecoder().decode(d); },
+      });
+      await host.init();
+      try {
+        let pid = 0;
+        const exit = host.spawn(dashBytes(), ["sh", "-c", "exec 0<&-; sleep 1; echo closed-ok"], {
+          onStarted: (p) => { pid = p; },
+        });
+        await new Promise((r) => setTimeout(r, 400)); // fd 0 closed by now
+        host.appendStdinData(pid, enc("after close\n"));
+        host.appendStdinData(pid, enc("again\n"));
+        expect(await exit).toBe(0);
+        host.appendStdinData(pid, enc("after exit\n"));
+        host.setStdinData(pid, enc("after exit, closing\n"));
+        // The kernel still runs programs.
+        expect(await host.spawn(dashBytes(), ["sh", "-c", "echo alive"], {})).toBe(0);
+        expect(out).toBe("closed-ok\nalive\n");
+      } finally {
+        await host.destroy();
+      }
+    }, 120_000);
+
+    it("delivers input addressed to a forked child through its inherited stdin", async () => {
+      let out = "";
+      const host = new NodeKernelHost({
+        maxWorkers: 4,
+        rootfsImage: "default",
+        onStdout: (_p, d) => { out += new TextDecoder().decode(d); },
+      });
+      await host.init();
+      try {
+        // The child prints its pid, then becomes `head -c 5` reading the
+        // fd 0 it inherited from the spawned shell.
+        const exit = host.spawn(
+          dashBytes(),
+          ["sh", "-c", "sh -c 'echo \"child=$$\"; exec head -c 5'; echo; echo done"],
+          { onStarted: () => {} },
+        );
+        const deadline = Date.now() + 30_000;
+        let child = 0;
+        while (child === 0 && Date.now() < deadline) {
+          const m = /child=(\d+)/.exec(out);
+          if (m) child = Number(m[1]);
+          else await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(child).toBeGreaterThan(0);
+        await new Promise((r) => setTimeout(r, 300)); // head blocks in read(0)
+        host.appendStdinData(child, enc("hello"));
+        expect(await exit).toBe(0);
+        expect(out).toContain("hello\ndone\n");
+      } finally {
+        await host.destroy();
+      }
+    }, 120_000);
+  });
 });
