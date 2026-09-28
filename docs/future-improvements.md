@@ -357,9 +357,12 @@ Node is about 13–16% slower; Chromium is no worse (its runs take 30–33 ms an
 the guest clock has 1 ms granularity there). The likely cause, not yet
 profiled: the pipe holds 64 KiB, so 24 MiB takes about 384 refills, and if the
 reader drains the pipe before the host refills it, each refill costs a
-parked-worker wake. The follow-up should profile Node first; if wakes
+parked-worker wake. A second candidate is visible in the code: every refill
+defers `notifyPipeReadable`, whose last step is a broad
+`scheduleWakeBlockedRetries`, so 24 MiB schedules about 384 broad wakes of
+every blocked retry. The follow-up should profile Node first; if wakes
 dominate, refill within the kernel entry that drained the pipe so the reader
-never observes it empty. A larger host-stdin pipe would also cut refills,
+never observes it empty, and wake only this pipe's readers and pollers. A larger host-stdin pipe would also cut refills,
 at a kernel-memory cost per spawned process. Copies are the less likely cause;
 the bridge module above addresses them.
 
