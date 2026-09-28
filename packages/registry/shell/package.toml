@@ -38,6 +38,7 @@ depends_on = [
   "qtgallery@0.1.0",
   "quickshell@0.3.1",
   "scummvm@2026.3.0",
+  "ffmpeg@9.0",
   "vim-browser-bundle@9.1.0900",
   "nethack-browser-bundle@3.6.7",
   "ruby-browser-bundle@4.0.5",

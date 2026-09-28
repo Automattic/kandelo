@@ -614,6 +614,15 @@ describe("canonical source-rootfs shell", () => {
     for (const spec of SHELL_LAZY_BINARY_SPECS) {
       expect(fs.getLazyEntry(spec.vfsPath), spec.id).not.toBeNull();
     }
+    // FFmpeg's three programs are lazy files provided by the ffmpeg package.
+    for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
+      const spec = SHELL_LAZY_BINARY_SPECS.find((candidate) => candidate.id === id);
+      expect(spec, id).toBeDefined();
+      expect(spec!.vfsPath).toBe(`/usr/bin/${id}`);
+      expect(spec!.resolverPath).toBe(`programs/ffmpeg/${id}.wasm`);
+      expect(shellLazySpecDependency(spec!)).toBe("ffmpeg");
+      expect(fs.getLazyEntry(`/usr/bin/${id}`), id).not.toBeNull();
+    }
     for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
       expect(
         fs
@@ -788,6 +797,29 @@ describe("canonical source-rootfs shell", () => {
         sha256: QUAKE_ZIP_SHA256,
         mode: 0o644,
       },
+    ]);
+    expect(resolveDemoInit(demo!, "ffmpeg-fbdev")).toEqual({
+      shellCommand:
+        "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 " +
+        "-f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 " +
+        "-map 1:a -f oss /dev/dsp",
+    });
+    expect(resolveDemoPresentation(demo!, "ffmpeg-fbdev")?.runningPrimary).toEqual([
+      "framebuffer",
+      "terminal",
+      "syslog",
+    ]);
+    // The profile command runs through the machine's shell, so the filter
+    // graph's ';' and '[...]' are quoted.
+    expect(resolveDemoInit(demo!, "ffplay")).toEqual({
+      shellCommand:
+        "/usr/bin/ffplay -autoexit -f lavfi " +
+        "'testsrc=duration=60:size=320x240:rate=10[out0];sine=duration=60[out1]'",
+    });
+    expect(resolveDemoPresentation(demo!, "ffplay")?.runningPrimary).toEqual([
+      "kms",
+      "terminal",
+      "syslog",
     ]);
     expect(resolveDemoInit(demo!, "modeset")).toEqual({
       shellCommand: "/usr/local/bin/modeset",
@@ -1022,7 +1054,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, modeset",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, modeset, quake, scummvm",
     );
   });
 

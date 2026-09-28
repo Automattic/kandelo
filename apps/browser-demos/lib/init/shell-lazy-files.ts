@@ -25,6 +25,9 @@ import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import wgetWasmUrl from "@binaries/programs/wasm32/wget.wasm?url";
 import gitWasmUrl from "@binaries/programs/wasm32/git/git.wasm?url";
 import gitRemoteHttpWasmUrl from "@binaries/programs/wasm32/git/git-remote-http.wasm?url";
+import ffmpegWasmUrl from "@binaries/programs/wasm32/ffmpeg/ffmpeg.wasm?url";
+import ffprobeWasmUrl from "@binaries/programs/wasm32/ffmpeg/ffprobe.wasm?url";
+import ffplayWasmUrl from "@binaries/programs/wasm32/ffmpeg/ffplay.wasm?url";
 import gzipWasmUrl from "@binaries/programs/wasm32/gzip.wasm?url";
 import bzip2WasmUrl from "@binaries/programs/wasm32/bzip2.wasm?url";
 import xzWasmUrl from "@binaries/programs/wasm32/xz.wasm?url";
@@ -68,6 +71,9 @@ const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id
   wget: wgetWasmUrl,
   git: gitWasmUrl,
   "git-remote-http": gitRemoteHttpWasmUrl,
+  ffmpeg: ffmpegWasmUrl,
+  ffprobe: ffprobeWasmUrl,
+  ffplay: ffplayWasmUrl,
   gzip: gzipWasmUrl,
   bzip2: bzip2WasmUrl,
   xz: xzWasmUrl,
