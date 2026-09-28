@@ -84,9 +84,13 @@ wayland-scanner client-header "$XDG_XML" "$GEN/xdg-shell-client-protocol.h"
 LLVM_AR="$(command -v llvm-ar || command -v ar)"
 CC_BIN="$(command -v wasm32posix-cc)"
 echo "==> Building libwpkdraw..."
-CC="$CC_BIN" AR="$LLVM_AR" bash "$SOURCE_ROOT/examples/libs/wpkdraw/build.sh" "$SYSROOT"
+# BUILD_DIR keeps their objects and generated headers in this build's work
+# dir: the source root may be the live checkout (repository provider), which
+# a package build must not write into.
+CC="$CC_BIN" AR="$LLVM_AR" BUILD_DIR="$WORK_DIR/wpkdraw" \
+    bash "$SOURCE_ROOT/examples/libs/wpkdraw/build.sh" "$SYSROOT"
 echo "==> Building libkwl..."
-CC="$CC_BIN" AR="$LLVM_AR" XDG_SHELL_INCLUDE="$GEN" \
+CC="$CC_BIN" AR="$LLVM_AR" XDG_SHELL_INCLUDE="$GEN" BUILD_DIR="$WORK_DIR/libkwl" \
     bash "$SOURCE_ROOT/examples/libs/libkwl/build.sh" "$SYSROOT"
 
 PKG_CFLAGS="$(wasm32posix-pkg-config --cflags gbm libdrm egl glesv2)"

@@ -593,10 +593,13 @@ policy before instrumentation or filesystem mutation. It never guesses a path
 for an unregistered or malformed package. Package publication does not create
 a second `sh` resolver output; guest images own their explicit `/bin/sh`
 symlink. That symlink always targets bash: every Kandelo image binds
-`/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash` through one
-helper, `installBashAsPosixShell` in
-`images/vfs/scripts/vfs-image-helpers.ts`, and bash honors POSIX mode when
-invoked as `sh`. An image may also ship dash (or any other shell) as an
+`/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash`, and bash
+honors POSIX mode when invoked as `sh`. The base rootfs declares the binding
+as bash's `aliases` in `images/rootfs/PACKAGES.toml`; images composed on it
+(the source-rootfs shell image) inherit it and assert the aliases are
+present; images built from scratch (the MariaDB, MariaDB-test and
+SQLite-test builders) bind it with `installBashAsPosixShell` in
+`images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
 ordinary command at its own name, but no other shell claims `/bin/sh` —
 `system()`, `popen()` and `#!/bin/sh` scripts must behave the same in
 every image.

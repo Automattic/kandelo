@@ -9,6 +9,10 @@
 #
 #     CC=/path/to/clang AR=/path/to/llvm-ar ./build.sh <sysroot>
 #
+# Scratch output (objects, the generated font header) goes to BUILD_DIR,
+# default <this dir>/build (git-ignored). A package build passes its own
+# resolver-owned work dir, so it writes nothing into the checkout.
+#
 # It installs:
 #     <sysroot>/lib/libwpkdraw.a
 #     <sysroot>/include/wpkdraw/{wpkdraw.h,wpkfont.h}
@@ -24,17 +28,15 @@ SYSROOT="${1:?usage: build.sh <sysroot>}"
 CC="${CC:-clang}"
 AR="${AR:-llvm-ar}"
 
-WORK="$SRC_ROOT/build"
-mkdir -p "$WORK"
+WORK="${BUILD_DIR:-$SRC_ROOT/build}"
+mkdir -p "$WORK/gen"
 
 # --- Embed the font: generate wpk_font_ttf.h from the vendored ttf. The
 # .h is git-ignored; the .ttf is the source of truth (see NOTICE.md). Only
 # regenerate when the ttf is newer, so repeat builds are cheap.
 TTF="$VENDOR/Inconsolata-Regular.ttf"
-# The generated header stays next to wpkdraw (git-ignored). Its directory
-# holds no tracked files, so create it on a fresh checkout.
-TTF_H="$SRC_ROOT/third_party/wpk_font_ttf.h"
-mkdir -p "$(dirname "$TTF_H")"
+# Generated into the build dir, never next to the tracked sources.
+TTF_H="$WORK/gen/wpk_font_ttf.h"
 if [ ! -f "$TTF_H" ] || [ "$TTF" -nt "$TTF_H" ]; then
     echo "  Regenerating wpk_font_ttf.h from $(basename "$TTF")..."
     python3 - "$TTF" "$TTF_H" <<'PY'
@@ -62,7 +64,7 @@ CFLAGS=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -I"$SRC_ROOT/include"
-    -I"$SRC_ROOT/third_party"
+    -I"$WORK/gen"
     -I"$VENDOR"
 )
 

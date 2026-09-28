@@ -33,8 +33,14 @@ array at build time; the generated header is git-ignored, and this `.ttf`
 is the source of truth.
 
 We do not modify the font binary, so the SIL OFL reserved-name clause does
-not apply. The OFL requires attribution wherever the font is distributed,
-which this NOTICE provides.
+not apply. The OFL requires each copy of the Font Software to carry its
+copyright notice and license, and allows them "in the appropriate
+machine-readable metadata fields within text or binary files". Consumers
+embed the unmodified `.ttf` bytes, so every shipped binary (and every VFS
+image carrying one) includes the font's own `name` table: the copyright
+notice (name ID 0, "Copyright 2006 The Inconsolata Project Authors") and
+the license statement and URL (name IDs 13 and 14, SIL OFL 1.1). This
+NOTICE records the same attribution for the source tree.
 
 ## Consumers
 
@@ -45,7 +51,8 @@ directory. The package build (`packages/registry/sdl2-demo`) generates
 generates it into `programs/sdl2/third_party/` for the local fixture.
 
 **wpkdraw** (`examples/libs/wpkdraw/`), the font engine behind `libkwl` and
-the Wayland desktop's `wlterm`. `build.sh` generates
-`build/wpk_stb_impl.c`, the one translation unit that defines
-`STB_TRUETYPE_IMPLEMENTATION`, and generates `wpk_font_ttf.h` into
-`examples/libs/wpkdraw/third_party/` whenever this `.ttf` is newer.
+the Wayland desktop's `wlterm`. `build.sh` generates `wpk_stb_impl.c`, the
+one translation unit that defines `STB_TRUETYPE_IMPLEMENTATION`, and
+`gen/wpk_font_ttf.h` in its build directory (`BUILD_DIR`: the package
+build's work dir, or the git-ignored `examples/libs/wpkdraw/build/` for a
+local build) whenever this `.ttf` is newer.

@@ -15,12 +15,21 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/xkbcommon-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Source, build scratch and patched copies live in the resolver-owned work
+# root (or a direct run's private one), never under the reviewed checkout.
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/xkbcommon-src"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$WORK_DIR/.kandelo-libxkbcommon-source"
 
 XKB_VERSION="${WASM_POSIX_DEP_VERSION:-1.7.0}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libxkbcommon-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://xkbcommon.org/download/libxkbcommon-${XKB_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-65782f0a10a4b455af9c6baab7040e2f537520caa2ec2092805cdfd36863b247}"
 
 # --- Toolchain ----------------------------------------------------------
 for tool in wasm32posix-cc wasm32posix-ar bison; do
@@ -31,26 +40,25 @@ for tool in wasm32posix-cc wasm32posix-ar bison; do
     fi
 done
 
-# --- Fetch + verify source ---------------------------------------------
+# --- Stage verified source ---------------------------------------------
+# The resolver hands over an already-verified archive (source-only policy);
+# a direct run downloads and checks the pinned sha256. A source tree staged
+# for a different version, URL or hash is discarded rather than reused, so
+# a version bump can never build from the previous release's tree.
+expected_source_marker="$(printf '%s\n%s\n%s' "$XKB_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading libxkbcommon $XKB_VERSION..."
-    TARBALL="/tmp/libxkbcommon-${XKB_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified libxkbcommon $XKB_VERSION source..."
+    kandelo_package_stage_verified_source libxkbcommon "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
+        "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
 fi
 
 # Fresh build + install each run — stale objects would shadow config
 # changes and the cache key varies per build.
-BUILD_DIR="$SCRIPT_DIR/xkbcommon-build"
+BUILD_DIR="$WORK_DIR/xkbcommon-build"
 rm -rf "$BUILD_DIR"
 # Empty the output prefix rather than replacing it: the resolver owns
 # WASM_POSIX_DEP_OUT_DIR and records its inode identity, so an rm -rf +

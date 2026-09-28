@@ -26,7 +26,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/libinput-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Source, build scratch and patched copies live in the resolver-owned work
+# root (or a direct run's private one), never under the reviewed checkout.
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/libinput-src"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$WORK_DIR/.kandelo-libinput-source"
 
 LIBINPUT_VERSION="${WASM_POSIX_DEP_VERSION:-1.25.0}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libinput-install}"
@@ -34,7 +43,7 @@ INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libinput-install}"
 # clear; the Ubuntu `orig` tarball is the byte-identical 1.25.0 tree (sha256
 # below matches the gitlab archive) and its pool mirror is durable.
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://archive.ubuntu.com/ubuntu/pool/main/libi/libinput/libinput_${LIBINPUT_VERSION}.orig.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-f7e8425f185cadba5761d0a1dae6be041750d351163ffa04adc5b9a79a13c0ec}"
 
 # --- Toolchain ----------------------------------------------------------
 for tool in wasm32posix-cc wasm32posix-ar; do
@@ -51,26 +60,25 @@ LIBEVDEV_PREFIX="${WASM_POSIX_DEP_LIBEVDEV_DIR:?WASM_POSIX_DEP_LIBEVDEV_DIR not 
 LIBUDEV_PREFIX="${WASM_POSIX_DEP_LIBUDEV_DIR:?WASM_POSIX_DEP_LIBUDEV_DIR not set (must be invoked via cargo xtask build-deps resolve libinput)}"
 MTDEV_PREFIX="${WASM_POSIX_DEP_MTDEV_DIR:?WASM_POSIX_DEP_MTDEV_DIR not set (must be invoked via cargo xtask build-deps resolve libinput)}"
 
-# --- Fetch + verify source ---------------------------------------------
+# --- Stage verified source ---------------------------------------------
+# The resolver hands over an already-verified archive (source-only policy);
+# a direct run downloads and checks the pinned sha256. A source tree staged
+# for a different version, URL or hash is discarded rather than reused, so
+# a version bump can never build from the previous release's tree.
+expected_source_marker="$(printf '%s\n%s\n%s' "$LIBINPUT_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading libinput $LIBINPUT_VERSION..."
-    TARBALL="/tmp/libinput-${LIBINPUT_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified libinput $LIBINPUT_VERSION source..."
+    kandelo_package_stage_verified_source libinput "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
+        "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
 fi
 
 # Fresh build + install each run — stale objects would shadow config
 # changes and the cache key varies per build.
-BUILD_DIR="$SCRIPT_DIR/libinput-build"
+BUILD_DIR="$WORK_DIR/libinput-build"
 GEN_DIR="$BUILD_DIR/gen"
 rm -rf "$BUILD_DIR"
 # Empty the output prefix rather than replacing it: the resolver owns

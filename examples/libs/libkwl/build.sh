@@ -9,6 +9,9 @@
 #     CC=/path/to/clang AR=/path/to/llvm-ar \
 #     XDG_SHELL_INCLUDE=/path/to/wlcompositor-gen ./build.sh <sysroot>
 #
+# Objects go to BUILD_DIR, default <this dir>/build (git-ignored); a package
+# build passes its own resolver-owned work dir.
+#
 # XDG_SHELL_INCLUDE must point at the directory holding the generated
 # xdg-shell-client-protocol.h (scripts/build-programs.sh generates it into
 # local-binaries/wlcompositor-gen with wayland-scanner). The wayland /
@@ -25,7 +28,7 @@ CC="${CC:-clang}"
 AR="${AR:-llvm-ar}"
 XDG_SHELL_INCLUDE="${XDG_SHELL_INCLUDE:?set XDG_SHELL_INCLUDE to the wlcompositor-gen dir}"
 
-WORK="$SRC_ROOT/build"
+WORK="${BUILD_DIR:-$SRC_ROOT/build}"
 mkdir -p "$WORK"
 
 # Compile flags for a wasm32 static archive — same shape as wpkdraw's

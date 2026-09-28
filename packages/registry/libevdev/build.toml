@@ -1,6 +1,6 @@
 script_path = "packages/registry/libevdev/build-libevdev.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
-commit      = "126f07f12"
+commit      = "126f07f1267ea5b5807f3773b4b9670dc29652c7"
 revision    = 1
 
 # The hand-curated config.h is part of the cache key: editing it (e.g.
