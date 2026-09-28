@@ -338,6 +338,25 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
     expectPattern(readPattern(memB, BO_ADDR, BO_SIZE), 0x42);
   });
 
+  it("hasStaleableImports tracks bindings through bind, unbind, release and destroy", () => {
+    const { reg } = twoPidSetup();
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    expect(reg.hasStaleableImports(300)).toBe(false); // maps nothing
+    expect(reg.hasStaleableImports(200)).toBe(true);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);               // re-bind: not double-counted
+    reg.unbind(200, 1);
+    expect(reg.hasStaleableImports(200)).toBe(false);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.destroy(100, 1);                              // the bo goes away entirely
+    expect(reg.hasStaleableImports(200)).toBe(false);
+    reg.create({ pid: 100, bo_id: 2, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    reg.bind(100, 2, BO_ADDR, BO_SIZE);
+    reg.bind(200, 2, BO_ADDR, BO_SIZE);
+    reg.releaseProcess(200);
+    expect(reg.hasStaleableImports(200)).toBe(false);
+  });
+
   it("a process reusing an exited creator's pid is an importer, not the writer", () => {
     // The creator (100) exits while the compositor (200) still holds the
     // bo. The kernel then recycles pid 100 for an unrelated process that

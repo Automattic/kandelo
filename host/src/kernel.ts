@@ -790,6 +790,14 @@ export interface KernelCallbacks {
    * without letterboxing. `undefined` → the 1920x1080 default.
    */
   getKmsDisplaySize?: () => { width: number; height: number } | undefined;
+  /**
+   * A program has pointed a CRTC at a framebuffer (SETCRTC or PAGE_FLIP).
+   * From here on its page flips retire at vblank, so the host must be
+   * ticking kernel_vblank even with no canvas attached (a Node host, a
+   * headless test). The worker starts its vblank pump on this signal rather
+   * than running it on every kernel, most of which never touch KMS.
+   */
+  onKmsScanoutActive?: () => void;
 }
 
 export class WasmPosixKernel {
@@ -869,6 +877,18 @@ export class WasmPosixKernel {
    * once the embedder has attached a canvas.
    */
   readonly gl = new GlContextRegistry();
+  /**
+   * A bo owns the foreign textures bound from it (see shared's
+   * BIND_FOREIGN_TEXTURE doc), so they die with the bo however it goes:
+   * the guest's GEM_CLOSE (`host_gbm_bo_destroy`) or a process teardown that
+   * releases the bo's last owner (`releaseProcessViews` → `releaseProcess`,
+   * the path a crashed or force-terminated client takes). Hooking only the
+   * GEM_CLOSE import left every crashed client's textures alive in the
+   * compositor's GL context for the rest of the session.
+   */
+  private readonly offBoTextureCleanup = this.bos.onChange((_pid, bo_id, event) => {
+    if (event === "destroy") this.gl.dropForeignTexturesForBo(bo_id);
+  });
   /**
    * Worker-side submit lanes. The compositor (current DRM_MASTER on
    * card0) jumps ahead of clients; clients round-robin. Drain runs
@@ -2106,10 +2126,8 @@ export class WasmPosixKernel {
           }
         },
         host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
-          // The bo owns any foreign textures bound from it (see shared's
-          // BIND_FOREIGN_TEXTURE doc) — drop them across all GL bindings
-          // before the pixel SAB goes away.
-          this.gl.dropForeignTexturesForBo(bo_id);
+          // Its foreign textures are dropped by the bos "destroy" listener
+          // (offBoTextureCleanup), shared with the teardown path.
           this.bos.destroy(pid, bo_id);
         },
         host_gbm_bo_bind: (
@@ -2489,6 +2507,7 @@ export class WasmPosixKernel {
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
         host_kms_set_fb: (pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
+          this.callbacks.onKmsScanoutActive?.();
           // SDL2's KMSDRM backend creates its GL context before the first
           // drmModeSetCrtc (deferred to the first SwapWindow). The
           // create-context attach normally already ran via the master +

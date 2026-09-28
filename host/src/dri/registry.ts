@@ -142,6 +142,24 @@ export interface GbmBoRegistryOptions {
 export class GbmBoRegistry {
   private bos = new Map<number, InternalEntry>();
   private listeners = new Set<GbmBoChangeListener>();
+  /** Live bo bindings held per pid. hasStaleableImports runs on every
+   *  process's poll/epoll/select return; this lets a process that maps no bo
+   *  at all -- nearly every process -- answer without scanning every bo. */
+  private bindingCounts = new Map<number, number>();
+
+  private setBinding(e: InternalEntry, pid: number, binding: GbmBoBinding): void {
+    if (!e.bindingsByPid.has(pid)) {
+      this.bindingCounts.set(pid, (this.bindingCounts.get(pid) ?? 0) + 1);
+    }
+    e.bindingsByPid.set(pid, binding);
+  }
+
+  private deleteBinding(e: InternalEntry, pid: number): void {
+    if (!e.bindingsByPid.delete(pid)) return;
+    const n = (this.bindingCounts.get(pid) ?? 1) - 1;
+    if (n > 0) this.bindingCounts.set(pid, n);
+    else this.bindingCounts.delete(pid);
+  }
   private getProcessMemory: ProcessMemoryResolver | null;
 
   constructor(opts: GbmBoRegistryOptions = {}) {
@@ -177,7 +195,10 @@ export class GbmBoRegistry {
   }
 
   destroy(pid: number, bo_id: number): void {
-    if (!this.bos.delete(bo_id)) return;
+    const e = this.bos.get(bo_id);
+    if (!e) return;
+    for (const holder of Array.from(e.bindingsByPid.keys())) this.deleteBinding(e, holder);
+    this.bos.delete(bo_id);
     for (const l of this.listeners) l(pid, bo_id, "destroy");
   }
 
@@ -192,7 +213,7 @@ export class GbmBoRegistry {
     // mmap region. If we wrote here, the zero-fill would clobber
     // our primed bytes.
     e.pids.add(pid);
-    e.bindingsByPid.set(pid, { addr, len });
+    this.setBinding(e, pid, { addr, len });
     for (const l of this.listeners) l(pid, bo_id, "bind");
     return 0;
   }
@@ -208,7 +229,7 @@ export class GbmBoRegistry {
     // so the Memory still has the bytes here.
     const binding = e.bindingsByPid.get(pid);
     if (binding) this.flushMemoryToSab(e, pid, binding);
-    e.bindingsByPid.delete(pid);
+    this.deleteBinding(e, pid);
     for (const l of this.listeners) l(pid, bo_id, "unbind");
   }
 
@@ -225,7 +246,7 @@ export class GbmBoRegistry {
       const binding = e.bindingsByPid.get(pid);
       if (binding) {
         this.flushMemoryToSab(e, pid, binding);
-        e.bindingsByPid.delete(pid);
+        this.deleteBinding(e, pid);
         for (const l of this.listeners) l(pid, bo_id, "unbind");
       }
       if (!e.pids.delete(pid)) continue;
@@ -349,6 +370,9 @@ export class GbmBoRegistry {
    *  side). Cheap gate for the kernel-worker's post-poll coherence
    *  hook: O(live bos), no copies. */
   hasStaleableImports(pid: number): boolean {
+    // A process that maps no bo imports none: O(1) for everything but the
+    // few processes taking part in buffer sharing.
+    if (!this.bindingCounts.has(pid)) return false;
     for (const e of this.bos.values()) {
       if (
         e.creatorPid !== pid &&

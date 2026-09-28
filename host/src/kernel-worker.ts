@@ -3614,6 +3614,9 @@ export class CentralizedKernelWorker {
         for (const size of this.kmsDisplaySizes.values()) return size;
         return undefined;
       },
+      // The first SETCRTC/PAGE_FLIP needs vblank ticks to retire its flips;
+      // startVblankPump is a no-op once the pump runs.
+      onKmsScanoutActive: () => this.startVblankPump(),
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
         const buf = this.stdinBuffers.get(pid);
@@ -3855,7 +3858,9 @@ export class CentralizedKernelWorker {
         this.#largeTransferScratchInUse = false;
         this.#kernelFatalError = null;
         this.#initialized = true;
-        this.startVblankPump();
+        if (this.kmsCanvases.size > 0 || this.kmsStatsViews.size > 0) {
+          this.startVblankPump();
+        }
       },
       configureScratchBoundaryHooksForTest: (options): void => {
         const previous = this.#scratchBoundaryTestHooks;
@@ -5406,9 +5411,14 @@ export class CentralizedKernelWorker {
     }
 
     this.#initialized = true;
-    // The pump starts unconditionally: kernel_vblank retires queued
-    // page-flips even when no canvas or stats view is attached.
-    this.startVblankPump();
+    // The vblank pump runs only when something needs it: an attached KMS
+    // canvas or stats view (attachKmsCanvas starts it too), or a program
+    // that has started scanning out -- onKmsScanoutActive, since its page
+    // flips retire at vblank even with no canvas (Node, headless). A kernel
+    // that never touches KMS pays no 60 Hz tick.
+    if (this.kmsCanvases.size > 0 || this.kmsStatsViews.size > 0) {
+      this.startVblankPump();
+    }
   }
 
   #requireMainScratchRegion(): KernelScratchRegion {
@@ -13535,16 +13545,12 @@ export class CentralizedKernelWorker {
       // keeps that mapping for the buffer's lifetime and re-reads it on
       // every commit, so refresh imported mappings when a wait reports
       // readiness — the moment the importer wakes to process a commit.
-      // Only poll/ppoll reach this tail (epoll and select/pselect are
-      // intercepted before it; the epoll interception carries its own
-      // mirror of this sync). Below the EAGAIN branch so a still-blocked
-      // poller doesn't pay the copy on every retry.
-      if (
-        (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) &&
-        retVal > 0 &&
-        this.#kernel.bos.hasStaleableImports(channel.pid)
-      ) {
-        this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
+      // Only poll/ppoll reach this tail; epoll_wait, select and pselect6 are
+      // intercepted before it and call the same helper where they report
+      // readiness. Below the EAGAIN branch so a still-blocked poller doesn't
+      // pay the copy on every retry.
+      if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+        this.#syncImportedBosOnReadiness(channel, retVal);
       }
 
       if ((this.sharedMmapBackings?.size ?? 0) > 0) {
@@ -19138,6 +19144,9 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // Imported-bo coherence on readiness, as for poll/ppoll and epoll: a
+    // select-based importer wakes here to re-read long-lived mappings.
+    this.#syncImportedBosOnReadiness(channel, retVal);
     this.completeChannel(
       channel,
       SYS_SELECT,
@@ -19337,6 +19346,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    this.#syncImportedBosOnReadiness(channel, retVal);
     this.completeChannel(
       channel,
       SYS_PSELECT6,
@@ -19884,9 +19894,7 @@ export class CentralizedKernelWorker {
       // re-read its long-lived imported wl_shm mappings. Refresh them from
       // the creator's memory first (mirror of the poll/ppoll hook in the
       // generic post-syscall path — epoll is intercepted before that tail).
-      if (this.#kernel.bos.hasStaleableImports(channel.pid)) {
-        this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
-      }
+      this.#syncImportedBosOnReadiness(channel, readyCount);
       this.completeChannelRawAndRelisten(channel, readyCount, 0, entry);
       return;
     }
@@ -33947,6 +33955,16 @@ export class CentralizedKernelWorker {
     if (this.kmsCanvases.get(crtc_id) !== canvas) {
       releaseKmsGlPresenter(this.kmsGlPresenters.get(crtc_id));
       this.kmsGlPresenters.delete(crtc_id);
+      // A program's GL session owns the CRTC's current canvas, and a WebGL
+      // context cannot move to another canvas: it keeps drawing into the old
+      // one until the session ends (markKmsCanvasGlReleased), so this new
+      // canvas stays blank meanwhile. Say so instead of failing silently.
+      if (this.kmsModeBeforeGlOwn.has(crtc_id)) {
+        console.warn(
+          `kms: crtc ${crtc_id} got a new canvas while a GL session owns the ` +
+          `current one; the new canvas stays blank until that session ends`,
+        );
+      }
     }
     const statsView = statsSab === undefined
       ? undefined
@@ -33970,6 +33988,7 @@ export class CentralizedKernelWorker {
       // failing the attach.
       this.kmsContextMode.set(crtc_id, mode);
     }
+    this.startVblankPump();
   }
 
   /** Report the embedder-side display size (device pixels) for a CRTC's
@@ -33999,6 +34018,21 @@ export class CentralizedKernelWorker {
       crtc_id,
       new Int32Array(statsSab),
     );
+    this.startVblankPump();
+  }
+
+  /**
+   * Imported-bo coherence at a wait's readiness report. The GbmBoRegistry is
+   * bind-boundary-synced (host/src/dri/registry.ts): an importer's
+   * long-lived mmap of another process's bo holds the mmap-time snapshot
+   * until refreshed. A compositor wakes from its wait -- poll, ppoll,
+   * epoll_wait, select or pselect6 -- to process a client's commit, so every
+   * one of them refreshes the importer's mappings when it reports ready fds.
+   */
+  #syncImportedBosOnReadiness(channel: ChannelInfo, readyCount: number): void {
+    if (readyCount > 0 && this.#kernel.bos.hasStaleableImports(channel.pid)) {
+      this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
+    }
   }
 
   private startVblankPump(): void {
