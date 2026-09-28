@@ -112,7 +112,6 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 #define WL_SOCKET_PATH "/tmp/wayland-0"
 #define WL_KEYMAP_PATH "/tmp/wlcompositor-keymap.xkb"
 #define MAX_FRAME_CB   32     /* pending frame callbacks per surface */
-#define MAX_SURFACES   16     /* mapped toplevels in the z-order list */
 #define FOCUS_COLOR    0xff4f8fdfu  /* accent ring, GPU and CPU paths */
 
 /* ---- surface state ----------------------------------------------------- */
@@ -132,6 +131,13 @@ struct surface {
     struct wl_resource *buffer;         /* committed, retained for repaints */
     struct wl_resource *xdg_surface;    /* xdg_surface wrapping this surface */
     struct wl_resource *xdg_toplevel;
+    unsigned frame_tex;                 /* repaint_gl: this frame's texture */
+    /* xdg-shell configure handshake: the serial of the configure sent for
+     * the current role, and whether the client has acked it. A toplevel
+     * maps only once configured; a buffer committed earlier is a client
+     * error (unconfigured_buffer). */
+    uint32_t configure_serial;
+    int configured;
     char app_id[32];
     int32_t x, y;                       /* top-left on the output */
     int32_t w, h;                       /* committed buffer dims */
@@ -204,15 +210,20 @@ struct compositor {
      * xdg_toplevel.move must quote it -- see toplevel_move. */
     uint32_t press_serial;
 
-    /* Window management. */
-    struct surface *zorder[MAX_SURFACES];  /* bottom → top */
+    /* Window management. Both arrays grow with the number of live surfaces
+     * -- there is no fixed cap for one client to exhaust and starve every
+     * other client of windows. zorder's capacity is reserved alongside
+     * all_surfaces at creation (a surface is in zorder at most once), so
+     * mapping never needs to allocate or fail. */
+    struct surface **zorder;               /* bottom → top */
     int n_surfaces;
     /* Every live surface, mapped or not. buffer_resource_destroy must
      * clear buffer references on surfaces that never mapped (attach →
      * wl_buffer.destroy → commit is protocol-legal) and those are absent
      * from zorder. */
-    struct surface *all_surfaces[MAX_SURFACES];
+    struct surface **all_surfaces;
     int n_all_surfaces;
+    int surfaces_cap;                      /* capacity of both arrays */
     struct surface *kbd_focus;
     struct surface *ptr_focus;
 
@@ -274,8 +285,22 @@ static void ptr_refresh_focus(void);
 /* ---- z-order helpers ---------------------------------------------------- */
 
 static void zorder_add(struct surface *s) {
-    if (g.n_surfaces < MAX_SURFACES)
-        g.zorder[g.n_surfaces++] = s;
+    /* Capacity reserved at creation: n_surfaces < n_all_surfaces <= cap. */
+    g.zorder[g.n_surfaces++] = s;
+}
+
+/* Make room for one more live surface in all_surfaces and zorder. */
+static int reserve_surface_slot(void) {
+    if (g.n_all_surfaces < g.surfaces_cap) return 1;
+    int cap = g.surfaces_cap ? g.surfaces_cap * 2 : 16;
+    struct surface **all = realloc(g.all_surfaces, (size_t)cap * sizeof *all);
+    if (!all) return 0;
+    g.all_surfaces = all;
+    struct surface **z = realloc(g.zorder, (size_t)cap * sizeof *z);
+    if (!z) return 0;
+    g.zorder = z;
+    g.surfaces_cap = cap;
+    return 1;
 }
 static void zorder_remove(struct surface *s) {
     int i = 0;
@@ -408,6 +433,21 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
      * buffer destroyed before commit also lands here, as in Weston.) */
     if (!s->pending_buffer) { unmap_surface(s); return; }
 
+    /* Only an xdg_toplevel whose configure the client has acked may show a
+     * buffer. xdg-shell makes a buffer before that a client error; a
+     * surface with no shell role simply is not displayed (it may take a
+     * role later) -- it must not appear on the desktop or take focus. */
+    if (s->xdg_surface && !s->xdg_toplevel) {
+        wl_resource_post_error(s->xdg_surface, XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
+                               "buffer committed to an xdg_surface with no role");
+        return;
+    }
+    if (s->xdg_toplevel && !s->configured) {
+        wl_resource_post_error(s->xdg_surface, XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
+                               "buffer committed before ack_configure");
+        return;
+    }
+
     /* Apply double-buffered state: the pending attach becomes current. The
      * previous buffer is released now — its client only reuses it after
      * this commit's frame callback, by which time we composite from the
@@ -424,7 +464,7 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         b->gl_dirty = 1;   /* GPU path re-uploads this buffer's texture */
     }
 
-    if (!s->mapped) {
+    if (!s->mapped && s->xdg_toplevel) {
         s->mapped = 1;
         if (!s->placed) place_surface(s);
         zorder_raise(s);
@@ -612,10 +652,30 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *r,
 static void pool_destroy_req(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
 }
+/* Size of the object behind a pool fd, or -1. Clients back pools with
+ * dumb-bo prime fds, which report their size through lseek(SEEK_END) as a
+ * Linux dma-buf does. The claimed pool size is client input; buffer
+ * geometry is validated against it, so it must never exceed this. */
+static off_t pool_backing_size(int fd) {
+    off_t end = lseek(fd, 0, SEEK_END);
+    if (end < 0) return -1;
+    lseek(fd, 0, SEEK_SET);
+    return end;
+}
+
 static void pool_resize(struct wl_client *c, struct wl_resource *r,
                         int32_t size) {
     struct shm_pool *p = wl_resource_get_user_data(r);
-    if (size > p->size) p->size = size;
+    if (size <= p->size) return;   /* pools only grow */
+    /* A resize claims the fd's object grew; a dumb bo cannot, so a claim
+     * past its real size would let create_buffer accept geometry the
+     * import then reads beyond. */
+    if ((off_t)size > pool_backing_size(p->fd)) {
+        wl_resource_post_error(r, WL_SHM_ERROR_INVALID_FD,
+                               "pool size %d exceeds the fd's object", size);
+        return;
+    }
+    p->size = size;
 }
 static const struct wl_shm_pool_interface pool_impl = {
     .create_buffer = pool_create_buffer,
@@ -629,6 +689,13 @@ static void pool_resource_destroy(struct wl_resource *r) {
 
 static void shm_create_pool(struct wl_client *client, struct wl_resource *r,
                             uint32_t id, int32_t fd, int32_t size) {
+    off_t backing = pool_backing_size(fd);
+    if (size <= 0 || backing < 0 || (off_t)size > backing) {
+        wl_resource_post_error(r, WL_SHM_ERROR_INVALID_FD,
+                               "pool size %d does not fit the fd's object", size);
+        close(fd);
+        return;
+    }
     struct shm_pool *p = calloc(1, sizeof(*p));
     if (!p) { close(fd); wl_client_post_no_memory(client); return; }
     p->fd = fd;
@@ -664,8 +731,9 @@ static void compositor_create_surface(struct wl_client *client,
                                       struct wl_resource *resource,
                                       uint32_t id) {
     /* Refuse rather than track partially: an untracked surface would be
-     * invisible to buffer_resource_destroy's reference sweep. */
-    if (g.n_all_surfaces >= MAX_SURFACES) {
+     * invisible to buffer_resource_destroy's reference sweep. Only a real
+     * allocation failure refuses; there is no fixed surface limit. */
+    if (!reserve_surface_slot()) {
         wl_client_post_no_memory(client);
         return;
     }
@@ -817,7 +885,14 @@ static void xdg_surface_resource_destroy(struct wl_resource *r) {
 }
 static void toplevel_resource_destroy(struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
-    if (s && s->xdg_toplevel == r) s->xdg_toplevel = NULL;
+    if (!s || s->xdg_toplevel != r) return;
+    s->xdg_toplevel = NULL;
+    /* xdg_toplevel.destroy "destroys the role surface and unmaps the
+     * surface". A surface left mapped here kept compositing its last
+     * buffer and kept keyboard focus for a client that believes its window
+     * is gone. A new role must go through a new configure handshake. */
+    unmap_surface(s);
+    s->configured = 0;
 }
 static void xdg_surface_get_toplevel(struct wl_client *client,
                                      struct wl_resource *resource,
@@ -850,7 +925,13 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
     if (st) *st = XDG_TOPLEVEL_STATE_ACTIVATED;
     xdg_toplevel_send_configure(tl, 0, 0, &states);
     wl_array_release(&states);
-    xdg_surface_send_configure(resource, wl_display_next_serial(g.display));
+    if (s) {
+        s->configure_serial = wl_display_next_serial(g.display);
+        s->configured = 0;
+        xdg_surface_send_configure(resource, s->configure_serial);
+    } else {
+        xdg_surface_send_configure(resource, wl_display_next_serial(g.display));
+    }
 }
 static void xdg_surface_get_popup(struct wl_client *c, struct wl_resource *r,
                                   uint32_t id, struct wl_resource *parent,
@@ -863,7 +944,18 @@ static void xdg_surface_set_window_geometry(struct wl_client *c,
                                             struct wl_resource *r, int32_t x,
                                             int32_t y, int32_t w, int32_t h) {}
 static void xdg_surface_ack_configure(struct wl_client *c, struct wl_resource *r,
-                                      uint32_t serial) {}
+                                      uint32_t serial) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    /* Only one configure is ever outstanding per role here; acking any
+     * other serial is the protocol's invalid_serial. */
+    if (!s->xdg_toplevel || serial != s->configure_serial) {
+        wl_resource_post_error(r, XDG_SURFACE_ERROR_INVALID_SERIAL,
+                               "ack_configure serial %u was never sent", serial);
+        return;
+    }
+    s->configured = 1;
+}
 static const struct xdg_surface_interface xdg_surface_impl = {
     .destroy = xdg_surface_destroy,
     .get_toplevel = xdg_surface_get_toplevel,
@@ -893,6 +985,13 @@ static void wm_base_get_xdg_surface(struct wl_client *client,
     if (s && s->xdg_surface) {
         wl_resource_post_error(resource, XDG_WM_BASE_ERROR_ROLE,
                                "wl_surface already has an xdg_surface");
+        return;
+    }
+    /* "Creating an xdg_surface from a wl_surface which has a buffer
+     * attached or committed is a client error." */
+    if (s && (s->buffer || s->pending_buffer)) {
+        wl_resource_post_error(resource, XDG_WM_BASE_ERROR_INVALID_SURFACE_STATE,
+                               "wl_surface already has a buffer");
         return;
     }
     struct wl_resource *xs = wl_resource_create(
@@ -1415,15 +1514,15 @@ static void setup_gl(void) {
  * them in ONE cmdbuf flush via eglSwapBuffers. Returns 0 on failure so
  * repaint() can fall back to the CPU blit. */
 static int repaint_gl(void) {
-    unsigned texs[MAX_SURFACES] = {0};
     struct surface *top = NULL;
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
+        s->frame_tex = 0;
         if (!s->mapped || !s->buffer) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
-        texs[i] = shm_buffer_gl_texture(b);
-        if (!texs[i]) return 0;
+        s->frame_tex = shm_buffer_gl_texture(b);
+        if (!s->frame_tex) return 0;
     }
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -1431,13 +1530,13 @@ static int repaint_gl(void) {
     glc_draw_tex(glc.wallpaper_tex, 0, 0, (int32_t)g.width, (int32_t)g.height);
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
-        if (!s->mapped || !s->buffer || !texs[i]) continue;
+        if (!s->mapped || !s->buffer || !s->frame_tex) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
             glc_draw_solid(FOCUS_COLOR, s->x - 2, s->y - 2,
                            b->width + 4, b->height + 4);
-        glc_draw_tex(texs[i], s->x, s->y, b->width, b->height);
+        glc_draw_tex(s->frame_tex, s->x, s->y, b->width, b->height);
         top = s;
     }
     /* A failed present (context loss) must degrade like a failed texture
