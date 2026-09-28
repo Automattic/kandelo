@@ -1,0 +1,23 @@
+# flex, the lexical-analyzer generator. The root filesystem installs it as
+# both flex and lex(1), as Linux distributions do.
+kind = "program"
+name = "flex"
+version = "2.6.4"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz"
+sha256 = "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/westes/flex/blob/v2.6.4/COPYING"
+
+[build]
+script_path = "packages/registry/flex/build-flex.sh"
+
+[[outputs]]
+name = "flex"
+wasm = "flex.wasm"

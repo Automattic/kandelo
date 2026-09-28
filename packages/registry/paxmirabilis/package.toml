@@ -1,0 +1,23 @@
+# paxmirabilis, MirBSD's maintained pax (the one Debian ships), installed as
+# pax(1).
+kind = "program"
+name = "paxmirabilis"
+version = "20240817"
+kernel_abi = 7
+depends_on = ["musl-fts@1.2.7"]
+
+[source]
+url = "http://www.mirbsd.org/MirOS/dist/mir/cpio/paxmirabilis-20240817.tgz"
+sha256 = "e955d5d3af97aede0a3f463a9a59b83e8d1083aaf142eb6f388c549a7d182e6b"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause AND MirOS"
+url = "https://www.mirbsd.org/pax.htm"
+
+[build]
+script_path = "packages/registry/paxmirabilis/build-paxmirabilis.sh"
+
+[[outputs]]
+name = "pax"
+wasm = "pax.wasm"

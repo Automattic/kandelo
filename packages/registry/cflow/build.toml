@@ -1,0 +1,8 @@
+script_path = "packages/registry/cflow/build-cflow.sh"
+inputs = [
+  "packages/registry/cflow/build-cflow.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

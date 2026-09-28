@@ -52,8 +52,10 @@ const supportablePosixUtilities = [
 
 const existingPackageUtilities = new Set([
   "awk",
+  "cflow",
   "cmp",
   "compress",
+  "ctags",
   "diff",
   "ed",
   "ex",
@@ -61,9 +63,12 @@ const existingPackageUtilities = new Set([
   "gencat",
   "getconf",
   "iconv",
+  "lex",
+  "locale",
   "man",
   "more",
   "patch",
+  "pax",
   "tabs",
   "tput",
   "uncompress",
@@ -71,6 +76,7 @@ const existingPackageUtilities = new Set([
   "uuencode",
   "what",
   "xargs",
+  "yacc",
 ]);
 
 // Optional POSIX utilities Kandelo deliberately omits because no maintained

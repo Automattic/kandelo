@@ -569,15 +569,21 @@ utilities below replaced commands that used to come from `posix-utils-lite`:
 | `uuencode`, `uudecode` | GNU sharutils 4.15.2 | |
 | `what` | outils 0.14 (OpenBSD `what`) | |
 | `getconf` | Alpine Linux musl-utils `getconf.c` | Reports what musl's `sysconf()`, `pathconf()` and `confstr()` return. |
+| `lex` | flex 2.6.4 (`lex` is `flex` by another name) | No in-guest C compiler ships yet, so the scanner `lex` writes cannot be compiled inside Kandelo. |
+| `yacc` | Berkeley yacc 20260126 | Same: the generated parser cannot be compiled inside Kandelo yet. |
+| `cflow` | GNU cflow 1.8 | |
+| `ctags` | Universal Ctags 6.2.1 | Universal Ctags extensions and extra tag fields are accepted and written. |
+| `pax` | MirBSD paxmirabilis 20240817 | |
+| `locale` | musl-locales 0.1.0 | Reports categories from `LC_ALL` and `LANG` only: individual `LC_*` variables are ignored, and implied values are not quoted as POSIX requires. Upstream behavior; Alpine ships the same program. |
 
 `posix-utils-lite` is a single in-repository program that still answers for
-the remaining base utilities: `ar`, `cal`, `cflow`, `ctags`, `cxref`, `fuser`,
-`gettext`, `ipcrm`, `ipcs`, `lex`, `locale`, `logger`, `msgfmt`, `ngettext`,
-`nm`, `pax`, `pgrep`, `ps`, `renice`, `strings`, `strip`, `xgettext`, and
-`yacc`. Most of these are not working implementations: many report success
-without doing the work (`lex` and `yacc` ignore the grammar, `pax` writes an
-invented format), and unknown options are silently skipped. Do not rely on
-their output. They are being replaced one group at a time with upstream
+the remaining base utilities: `ar`, `cal`, `cxref`, `fuser`, `gettext`,
+`ipcrm`, `ipcs`, `logger`, `msgfmt`, `ngettext`, `nm`, `pgrep`, `ps`,
+`renice`, `strings`, `strip`, and `xgettext`. Most of these are not working
+implementations: many report success without doing the work (`msgfmt` does
+not compile catalogs, `strip` deletes sections Kandelo needs to launch a
+program), and unknown options are silently skipped. Do not rely on their
+output. They are being replaced one group at a time with upstream
 implementations.
 
 Omitted optional utilities: `asa` (the POSIX FORTRAN Runtime option, `[FR]`)

@@ -36,7 +36,15 @@ name = "bc"
 class = "user-software"
 
 [[packages]]
+name = "byacc"
+class = "user-software"
+
+[[packages]]
 name = "bzip2"
+class = "user-software"
+
+[[packages]]
+name = "cflow"
 class = "user-software"
 
 [[packages]]
@@ -93,6 +101,10 @@ class = "user-software"
 
 [[packages]]
 name = "findutils"
+class = "user-software"
+
+[[packages]]
+name = "flex"
 class = "user-software"
 
 [[packages]]
@@ -216,6 +228,14 @@ name = "msmtpd"
 class = "user-software"
 
 [[packages]]
+name = "musl-fts"
+class = "platform"
+
+[[packages]]
+name = "musl-locales"
+class = "user-software"
+
+[[packages]]
 name = "musl-utils"
 class = "user-software"
 
@@ -281,6 +301,10 @@ class = "user-software"
 
 [[packages]]
 name = "patch"
+class = "user-software"
+
+[[packages]]
+name = "paxmirabilis"
 class = "user-software"
 
 [[packages]]
@@ -385,6 +409,10 @@ class = "user-software"
 
 [[packages]]
 name = "tyrquake"
+class = "user-software"
+
+[[packages]]
+name = "universal-ctags"
 class = "user-software"
 
 [[packages]]

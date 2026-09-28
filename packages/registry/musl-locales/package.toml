@@ -1,0 +1,23 @@
+# locale(1) from Adelie Linux's musl-locales, the package Alpine ships. Only
+# the locale program is built; the translated locale data is not installed.
+kind = "program"
+name = "musl-locales"
+version = "0.1.0"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://git.adelielinux.org/adelie/musl-locales/-/archive/0.1.0/musl-locales-0.1.0.tar.bz2"
+sha256 = "92462fba981f05ecbd6cf4816645cb3b91011383a0a6b71a6b0b2718c18d017b"
+provider = "archive"
+
+[license]
+spdx = "MIT AND LGPL-3.0-or-later"
+url = "https://git.adelielinux.org/adelie/musl-locales/-/blob/0.1.0/LICENSE"
+
+[build]
+script_path = "packages/registry/musl-locales/build-musl-locales.sh"
+
+[[outputs]]
+name = "locale"
+wasm = "locale.wasm"

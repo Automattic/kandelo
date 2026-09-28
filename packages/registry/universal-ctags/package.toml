@@ -1,0 +1,23 @@
+# Universal Ctags, the maintained successor of Exuberant Ctags, installed as
+# ctags(1).
+kind = "program"
+name = "universal-ctags"
+version = "6.2.1"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/universal-ctags/ctags/releases/download/v6.2.1/universal-ctags-6.2.1.tar.gz"
+sha256 = "2c63efe9e0e083dc50e6fdd8c5414781cc8873d8c8940cf553c01870ed962f8c"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/universal-ctags/ctags/blob/v6.2.1/COPYING"
+
+[build]
+script_path = "packages/registry/universal-ctags/build-universal-ctags.sh"
+
+[[outputs]]
+name = "ctags"
+wasm = "ctags.wasm"

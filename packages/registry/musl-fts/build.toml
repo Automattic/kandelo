@@ -1,0 +1,8 @@
+script_path = "packages/registry/musl-fts/build-musl-fts.sh"
+inputs = [
+  "packages/registry/musl-fts/build-musl-fts.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
