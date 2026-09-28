@@ -27,6 +27,7 @@ import {
 import {
   COREUTILS_NAMES,
   SHELL_LAZY_BINARY_SPECS,
+  shellArtifactPackage,
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
 import {
@@ -64,10 +65,7 @@ function depEnvKey(name: string): string {
 }
 
 function artifactDepName(relPath: string, depName?: string): string {
-  if (depName) return depName === "git-remote-http" ? "git" : depName;
-  if (relPath.startsWith("programs/git/")) return "git";
-  if (relPath.startsWith("programs/file/")) return "file";
-  return basename(relPath).replace(/\.(wasm|zip|zst)$/, "");
+  return shellArtifactPackage(relPath, depName);
 }
 
 function policyBoundDirectDepArtifact(

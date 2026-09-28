@@ -30,6 +30,23 @@ export interface VfsBinarySpec {
 
 export const SHELL_LAZY_URL_PREFIX = "kandelo-lazy:";
 
+/**
+ * The package that provides a resolver artifact. A package with several
+ * outputs installs them under `programs/<package>/` (git's git and
+ * git-remote-http, ffmpeg's ffmpeg/ffprobe/ffplay, file's magic database), so
+ * a nested path names its package; a flat `programs/<name>.<ext>` is its own
+ * package unless the caller names it.
+ */
+export function shellArtifactPackage(resolverPath: string, requested?: string): string {
+  // Resolver paths may carry an architecture segment (programs/wasm32/...).
+  const path = resolverPath.replace(/^programs\/(?:wasm32|wasm64)\//, "programs/");
+  const nested = /^programs\/([^/]+)\//.exec(path);
+  if (nested) return nested[1]!;
+  if (requested) return requested;
+  const file = path.slice(path.lastIndexOf("/") + 1);
+  return file.replace(/\.(wasm|zip|zst)$/, "");
+}
+
 export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
   return `${SHELL_LAZY_URL_PREFIX}${spec.resolverPath}`;
 }

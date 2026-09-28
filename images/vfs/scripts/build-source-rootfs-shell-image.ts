@@ -28,7 +28,10 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "./vfs-image-helpers";
-import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
+import {
+  SHELL_LAZY_BINARY_SPECS,
+  shellArtifactPackage,
+} from "../lib/init/shell-binaries";
 import {
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
@@ -597,8 +600,7 @@ function strictResolverFromDependencyEnvironment(
   declaredDependencies = SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCY_SET,
 ): ShellLazyArchiveResolver {
   return (resolverPath, requestedDependency) => {
-    const dependency =
-      requestedDependency === "git-remote-http" ? "git" : requestedDependency;
+    const dependency = shellArtifactPackage(resolverPath, requestedDependency);
     if (!declaredDependencies.has(dependency)) {
       throw new Error(
         `source-rootfs shell requested undeclared dependency ${dependency}`,

@@ -28,6 +28,7 @@ import {
   MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
   parseExperimentalTerminalSession,
 } from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
+import { shellArtifactPackage } from "../lib/init/shell-binaries";
 import { PACKAGE_ROOTFS_SHELL_COMPOSITION } from "./source-rootfs-shell-overlay";
 
 const SHELL_DERIVED_CREATED_BY =
@@ -38,10 +39,7 @@ function depEnvKey(name: string): string {
 }
 
 function artifactDepName(relPath: string, depName?: string): string {
-  if (depName) return depName === "git-remote-http" ? "git" : depName;
-  if (relPath.startsWith("programs/git/")) return "git";
-  if (relPath.startsWith("programs/file/")) return "file";
-  return basename(relPath).replace(/\.(wasm|zip|zst)$/, "");
+  return shellArtifactPackage(relPath, depName);
 }
 
 function policyBoundDirectDepArtifact(
