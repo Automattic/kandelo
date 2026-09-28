@@ -320,6 +320,51 @@ path = "/usr/bin/sdiff"
 aliases = ["/bin/sdiff"]
 
 [[packages]]
+name = "mandoc"
+
+# mandoc's man(1) front-end: mandoc selects man mode when argv[0] is "man".
+[[packages.outputs]]
+binary = "programs/wasm32/mandoc.wasm"
+path = "/usr/bin/man"
+aliases = ["/bin/man"]
+
+[[packages]]
+name = "less"
+
+# less acts as POSIX more(1) when invoked as "more" (see less(1),
+# LESS_IS_MORE).
+[[packages.outputs]]
+binary = "programs/wasm32/less.wasm"
+path = "/usr/bin/less"
+aliases = ["/bin/less", "/usr/bin/more", "/bin/more"]
+
+[[packages]]
+name = "vim"
+
+# Vim starts in Ex mode when argv[0] is "ex". Only the ex(1) name is
+# installed here; the interactive shell images add the full vim runtime.
+[[packages.outputs]]
+binary = "programs/wasm32/vim.wasm"
+path = "/usr/bin/ex"
+aliases = ["/bin/ex"]
+
+[[packages]]
+name = "iconv"
+
+[[packages.outputs]]
+binary = "programs/wasm32/iconv.wasm"
+path = "/usr/bin/iconv"
+aliases = ["/bin/iconv"]
+
+[[packages]]
+name = "gencat"
+
+[[packages.outputs]]
+binary = "programs/wasm32/gencat.wasm"
+path = "/usr/bin/gencat"
+aliases = ["/bin/gencat"]
+
+[[packages]]
 name = "posix-utils-lite"
 
 [[packages.outputs]]
@@ -363,19 +408,9 @@ path = "/usr/bin/ed"
 aliases = ["/bin/ed"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/ex.wasm"
-path = "/usr/bin/ex"
-aliases = ["/bin/ex"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/fuser.wasm"
 path = "/usr/bin/fuser"
 aliases = ["/bin/fuser"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/gencat.wasm"
-path = "/usr/bin/gencat"
-aliases = ["/bin/gencat"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/getconf.wasm"
@@ -386,11 +421,6 @@ aliases = ["/bin/getconf"]
 binary = "programs/wasm32/posix-utils-lite/gettext.wasm"
 path = "/usr/bin/gettext"
 aliases = ["/bin/gettext"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/iconv.wasm"
-path = "/usr/bin/iconv"
-aliases = ["/bin/iconv"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/ipcrm.wasm"
@@ -416,16 +446,6 @@ aliases = ["/bin/locale"]
 binary = "programs/wasm32/posix-utils-lite/logger.wasm"
 path = "/usr/bin/logger"
 aliases = ["/bin/logger"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/man.wasm"
-path = "/usr/bin/man"
-aliases = ["/bin/man"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/more.wasm"
-path = "/usr/bin/more"
-aliases = ["/bin/more"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/msgfmt.wasm"

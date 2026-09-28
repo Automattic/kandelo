@@ -333,9 +333,13 @@ packages/registry/dash/test/dash.test.ts	prepared-product
 packages/registry/dinit/test/dinit-scripted-service.test.ts	prepared-product
 packages/registry/dinit/test/dinitctl.test.ts	prepared-product
 packages/registry/erlang/test/erlang.test.ts	prepared-product
+packages/registry/gencat/test/gencat.test.ts	prepared-product
 packages/registry/git/test/git.test.ts	prepared-product
 packages/registry/grep/test/grep.test.ts	prepared-product
 packages/registry/gzip/test/gzip.test.ts	prepared-product
+packages/registry/iconv/test/iconv.test.ts	prepared-product
+packages/registry/less/test/more.test.ts	prepared-product
+packages/registry/mandoc/test/man.test.ts	prepared-product
 packages/registry/nginx/test/nginx.test.ts	prepared-product
 packages/registry/openssl/test/certificates.test.ts	prepared-product
 packages/registry/openssl/test/ssl-basic.test.ts	prepared-product
@@ -352,6 +356,7 @@ packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts	prepared-pr
 packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts	source-only
 packages/registry/spidermonkey/test/spidermonkey.test.ts	prepared-product
 packages/registry/unzip/test/unzip.test.ts	prepared-product
+packages/registry/vim/test/ex.test.ts	prepared-product
 packages/registry/wordpress/test/php-sanity.test.ts	prepared-product
 packages/registry/wordpress/test/service-vfs-demo.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-boot.test.ts	prepared-product

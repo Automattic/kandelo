@@ -7,7 +7,8 @@ import {
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
 import {
-  displacePosixUtilsLiteManApplet,
+  aliasExToArchiveVim,
+  displaceRootfsMan,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerShellProfileScripts,
@@ -52,13 +53,14 @@ export function populateSourceRootfsShellOverlay(
   );
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     if (!archiveUrls.has(spec.archiveUrl)) {
-      // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man
-      // on the imported rootfs; clear it first so mandoc's formatting `man`
-      // wins the path instead of colliding (EEXIST) with the archive symlink.
-      if (spec.id === "man") displacePosixUtilsLiteManApplet(fs);
+      // The imported rootfs's standalone mandoc occupies /usr/bin/man; clear
+      // it first so the archive's `man` claims the path instead of colliding
+      // (EEXIST) with the archive symlink.
+      if (spec.id === "man") displaceRootfsMan(fs);
       registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
     }
   }
+  aliasExToArchiveVim(fs);
 
   for (const [target, alias] of [
     ["/usr/bin/vim", "/bin/vim"],

@@ -1,0 +1,29 @@
+# iconv(1), the POSIX codeset-conversion utility, from GNU libiconv.
+#
+# The libiconv package is a library-only manifest (libiconv.a/libcharset.a
+# for link-time consumers). The package schema has one output shape per
+# manifest, so the iconv program GNU libiconv builds from the same source
+# tree is its own program package. It links GNU libiconv's converter, not
+# musl's iconv(3), because src/iconv.c uses libiconv-only interfaces
+# (iconvctl, iconvlist) for -c, -l and the --*-subst options.
+kind = "program"
+name = "iconv"
+version = "1.17"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz"
+sha256 = "8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/libiconv.git/tree/COPYING?h=v1.17"
+
+[build]
+script_path = "packages/registry/iconv/build-iconv.sh"
+
+[[outputs]]
+name = "iconv"
+wasm = "iconv.wasm"

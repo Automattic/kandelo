@@ -1,0 +1,27 @@
+# gencat(1), the POSIX message-catalog compiler, from chimerautils.
+#
+# chimerautils is Chimera Linux's maintained port of the FreeBSD userland to
+# Linux and musl. Its gencat is FreeBSD's (itself NetBSD's) gencat.c, which
+# writes the big-endian catalog format (magic 0xff88ff89) that musl's
+# catopen(3)/catgets(3) read. Only gencat is built from this source tree.
+kind = "program"
+name = "gencat"
+version = "15.1.1"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/chimera-linux/chimerautils/archive/refs/tags/v15.1.1.tar.gz"
+sha256 = "18c558f0165af078a1a213617c2241d80164dc846ffb05c49f22a476720df773"
+provider = "archive"
+
+[license]
+spdx = "BSD-2-Clause AND ISC"
+url = "https://github.com/chimera-linux/chimerautils/blob/v15.1.1/LICENSE"
+
+[build]
+script_path = "packages/registry/gencat/build-gencat.sh"
+
+[[outputs]]
+name = "gencat"
+wasm = "gencat.wasm"

@@ -549,6 +549,34 @@ remain explicit gaps.
 
 ---
 
+## Shell Utilities
+
+The root filesystem (`images/rootfs/PACKAGES.toml`) installs POSIX utilities
+from upstream implementations built through the normal package path. The
+utilities below replaced commands that used to come from `posix-utils-lite`:
+
+| Utility | Implementation | Known deviations |
+|---------|----------------|------------------|
+| `man` | mandoc 1.14.6 (`man` front-end) | The base root filesystem carries no manual pages; the interactive shell images add them. |
+| `more` | less 668, invoked as `more` | With `-s`, when standard output is not a terminal, less copies its input unmodified instead of squeezing blank lines as POSIX requires. util-linux `more` behaves the same way. |
+| `ex` | Vim 9.1, invoked as `ex` | Vim's Ex mode, not a minimal POSIX `ex`; Vim extensions are accepted. |
+| `iconv` | GNU libiconv 1.17 `iconv` | A `-f`/`-t` operand that names a charmap file (contains a `/`) is not supported; codeset names only. |
+| `gencat` | chimerautils 15.1.1 (FreeBSD `gencat`) | None known. Writes the catalog format musl's `catopen()` reads. |
+| `tput`, `tabs` | ncurses 6.5 | |
+
+`posix-utils-lite` is a single in-repository program that still answers for
+the remaining base utilities: `ar`, `asa`, `cal`, `cflow`, `compress`,
+`ctags`, `cxref`, `ed`, `fuser`, `getconf`, `gettext`, `ipcrm`, `ipcs`, `lex`,
+`locale`, `logger`, `msgfmt`, `ngettext`, `nm`, `patch`, `pax`, `pgrep`, `ps`,
+`renice`, `strings`, `strip`, `uncompress`, `uudecode`, `uuencode`, `what`,
+`xgettext`, and `yacc`. Most of these are not working implementations: many
+report success without doing the work (`patch` changes nothing, `compress`
+copies its input, `lex` and `yacc` ignore the grammar), and unknown options
+are silently skipped. Do not rely on their output. They are being replaced
+one group at a time with upstream implementations.
+
+---
+
 ## Known POSIX Gaps
 
 Systematic audit of all subsystems against POSIX specifications. Gaps are categorized by severity and actionability.

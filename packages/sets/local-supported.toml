@@ -96,6 +96,10 @@ name = "gawk"
 class = "user-software"
 
 [[packages]]
+name = "gencat"
+class = "user-software"
+
+[[packages]]
 name = "git"
 class = "user-software"
 
@@ -110,6 +114,10 @@ class = "user-software"
 [[packages]]
 name = "icu"
 class = "platform"
+
+[[packages]]
+name = "iconv"
+class = "user-software"
 
 [[packages]]
 name = "kandelo-sdk"
