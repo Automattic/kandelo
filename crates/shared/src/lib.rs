@@ -124,7 +124,15 @@ pub mod process_layout;
 ///     13, minor 64+N — so a `stat().st_rdev` uniquely identifies an evdev
 ///     node. Required by the real libinput path backend
 ///     (`udev_device_new_from_devnum`), which is handed only the `st_rdev`
-///     and must recover the devnode from it.
+///     and must recover the devnode from it. The same epoch carries the
+///     Wayland stack's other contract changes, structural and semantic:
+///     the `SO_PEERCRED` option, the evdev `EVIOCGPHYS`/`EVIOCGUNIQ`/
+///     `EVIOCGPROP` ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`,
+///     real peer credentials from `SO_PEERCRED`, a blocking read of
+///     `/dev/dri/card0` that waits for an event instead of returning 0,
+///     dma-buf `lseek` on prime fds, and epoll registrations keyed on
+///     (fd, open file description). docs/abi-versioning.md ("ABI 44") lists
+///     each with why it belongs to this epoch.
 pub const ABI_VERSION: u32 = 44;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.

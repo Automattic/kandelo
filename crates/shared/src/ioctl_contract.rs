@@ -210,19 +210,6 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
             max: EVIOC_MAX_CALLER_LENGTH,
         },
     },
-    // EVIOCGKEY..EVIOCGSW: current-state bitmaps libevdev reads during
-    // construction. The unclaimed 0x1a (EVIOCGSND) inside the range
-    // reaches the kernel dispatcher, which answers ENOTTY.
-    IoctlRequestFamily {
-        dir: 2,
-        magic: b'E' as u32,
-        nr_first: crate::input::EVIOCGKEY_NR,
-        nr_last: crate::input::EVIOCGSW_NR,
-        direction: IoctlDirection::Out,
-        size: IoctlFamilySize::CallerEncoded {
-            max: EVIOC_MAX_CALLER_LENGTH,
-        },
-    },
     IoctlRequestFamily {
         dir: 2,
         magic: b'E' as u32,
@@ -234,7 +221,8 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
         ),
     },
     // EVIOCGKEY / EVIOCGLED / EVIOCGSW: caller-encoded state-query reads
-    // used to resynchronise after a SYN_DROPPED. Each carries its own nr
+    // libevdev issues during construction and after a SYN_DROPPED to
+    // resynchronise. Each carries its own nr
     // (0x18 / 0x19 / 0x1b), so they register as three single-nr families
     // rather than one range — 0x1a (EVIOCGSND) is deliberately absent
     // because Kandelo has no sound-key surface.

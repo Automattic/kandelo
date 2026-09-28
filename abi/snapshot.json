@@ -1814,15 +1814,6 @@
     {
       "dir": 2,
       "direction": "out",
-      "fixedSize": null,
-      "magic": 69,
-      "maxCallerSize": 256,
-      "nrFirst": 24,
-      "nrLast": 27
-    },
-    {
-      "dir": 2,
-      "direction": "out",
       "fixedSize": 24,
       "magic": 69,
       "maxCallerSize": null,
