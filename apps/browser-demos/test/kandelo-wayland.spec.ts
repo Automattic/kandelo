@@ -134,7 +134,7 @@ async function readDesktopDims(page: Page): Promise<void> {
  * chain in a real browser: wlcompositor (a wl_shm/xdg_shell floating-window
  * server on /dev/dri/card0 via KMS) composites THREE concurrent clients —
  * wlclock (animated analog clock), wlpaint (pointer painting), and wlterm
- * (libkwl VT100 terminal running a forkpty'd dash) — with the Modeset pane
+ * (libkwl VT100 terminal running a forkpty'd sh, which is bash) — with the Modeset pane
  * bridging card0 → an OffscreenCanvas presented through the vblank pump's
  * WebGL2 scanout presenter (texture upload + shader swizzle + GPU scaling),
  * BrowserInputSource feeding keystrokes into the compositor's libinput, and
