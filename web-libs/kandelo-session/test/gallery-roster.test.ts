@@ -133,7 +133,7 @@ describe("parseGalleryRoster", () => {
       "quake",
       "modeset",
       "sdl2",
-      "evdev",
+      "wayland",
       "espeak",
     ]);
     // sdl2 is deliberately in the gallery even though its omission from
