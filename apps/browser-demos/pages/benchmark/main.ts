@@ -28,6 +28,7 @@ import { collectSpawnScratchEvidence } from "../../../../benchmarks/spawn-scratc
 import pipeWasmUrl from "../../../../benchmarks/wasm/pipe-throughput.wasm?url";
 import fileWasmUrl from "../../../../benchmarks/wasm/file-throughput.wasm?url";
 import syscallWasmUrl from "../../../../benchmarks/wasm/syscall-latency.wasm?url";
+import stdinWasmUrl from "../../../../benchmarks/wasm/stdin-throughput.wasm?url";
 import forkWasmUrl from "../../../../benchmarks/wasm/fork-bench.wasm?url";
 import cloneWasmUrl from "../../../../benchmarks/wasm/clone-bench.wasm?url";
 import spawnBenchWasmUrl from "../../../../benchmarks/wasm/spawn-bench.wasm?url";
@@ -119,6 +120,7 @@ function parseMetrics(stdout: string): Record<string, number> {
 async function runProgram(
   programBytes: ArrayBuffer,
   argv: string[],
+  stdin?: Uint8Array,
 ): Promise<{ exitCode: number; stdout: string }> {
   let stdout = "";
   const vfsImage = await finalizeKernelOwnedImage(createEmptyBuildFs());
@@ -131,7 +133,11 @@ async function runProgram(
   try {
     // /tmp and friends are worker-provided scratch mounts in kernel-owned mode.
     await kernel.initFromImage({ vfsImage });
-    const exitCode = await kernel.spawn(programBytes, argv);
+    const exitCode = await kernel.spawn(
+      programBytes,
+      argv,
+      stdin === undefined ? undefined : { stdin },
+    );
     return { exitCode, stdout };
   } finally {
     try { await kernel.destroy(); } catch {}
@@ -207,6 +213,24 @@ async function runSyscallIo(): Promise<Record<string, number>> {
   Object.assign(results, parseMetrics(syscall.stdout));
 
   return results;
+}
+
+// ─── stdin-throughput ───────────────────────────────────────────────────────
+
+/** Matches benchmarks/suites/stdin-throughput.ts. */
+const STDIN_THROUGHPUT_BYTES = 24 * 1024 * 1024;
+
+async function runStdinThroughput(): Promise<Record<string, number>> {
+  log("  Running stdin-throughput...");
+  const input = new Uint8Array(STDIN_THROUGHPUT_BYTES).map((_, i) => i % 251);
+  const bytes = await fetchWasm(stdinWasmUrl);
+  const run = await runProgram(bytes, ["stdin-throughput"], input);
+  if (run.exitCode !== 0) throw new Error("stdin-throughput failed");
+  const metrics = parseMetrics(run.stdout);
+  if (metrics.stdin_bytes !== STDIN_THROUGHPUT_BYTES) {
+    throw new Error(`stdin-throughput read ${metrics.stdin_bytes} bytes`);
+  }
+  return { stdin_mbps: metrics.stdin_mbps };
 }
 
 // ─── process-lifecycle ──────────────────────────────────────────────────────
@@ -891,6 +915,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
 
 const SUITES: Record<string, () => Promise<Record<string, number>>> = {
   "syscall-io": runSyscallIo,
+  "stdin-throughput": runStdinThroughput,
   "process-lifecycle": runProcessLifecycle,
   "spawn-scratch": runSpawnScratch,
   "wordpress": runWordPress,
