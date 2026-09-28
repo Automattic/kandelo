@@ -3435,14 +3435,21 @@ export class CentralizedKernelWorker {
     number,
     { count: number; totalTimeMs: number; retries: number }
   > | null = PROFILING ? new Map() : null;
-  /** Per-process stdin buffers: pid → { data, offset } */
-  private stdinBuffers = new Map<
+  /**
+   * Host-supplied stdin. fd 0 of a spawned (non-PTY) process is the read end
+   * of a kernel pipe whose write end the host owns, so a forked child shares
+   * the parent's stdin and read offset as POSIX requires. The pipe is bounded;
+   * `pending` holds bytes it has not accepted yet, fed as readers drain it.
+   * Keyed by pipe, because the pipe outlives the process that created it.
+   */
+  #hostStdinPipes = new Map<
     number,
-    { data: Uint8Array; offset: number }
+    { pending: Uint8Array[]; closeWhenDrained: boolean }
   >();
-  /** Processes with finite stdin (setStdinData). Reads return EOF when buffer exhausted.
-   *  Processes NOT in this set get EAGAIN (blocking) when no stdin data is available. */
-  private stdinFinite = new Set<number>();
+  /** pid → its host stdin pipe; only routes setStdinData/appendStdinData. */
+  #hostStdinPipeByPid = new Map<number, number>();
+  /** Pids whose host stdin was fully delivered and its write end closed. */
+  #hostStdinDelivered = new Set<number>();
   /** Active TCP connections per process for piggyback flushing */
   private tcpConnections = new Map<
     number,
@@ -3669,27 +3676,6 @@ export class CentralizedKernelWorker {
       // The first SETCRTC/PAGE_FLIP needs vblank ticks to retire its flips;
       // startVblankPump is a no-op once the pump runs.
       onKmsScanoutActive: () => this.startVblankPump(),
-      onStdin: (maxLen: number): Uint8Array | null => {
-        const pid = this.currentHandlePid;
-        const buf = this.stdinBuffers.get(pid);
-        if (!buf) {
-          // No buffer: finite stdin → EOF, otherwise block (EAGAIN)
-          return this.stdinFinite.has(pid) ? null : new Uint8Array(0);
-        }
-        const remaining = buf.data.length - buf.offset;
-        if (remaining <= 0) {
-          this.stdinBuffers.delete(pid);
-          // Buffer exhausted: finite stdin → EOF, otherwise block
-          return this.stdinFinite.has(pid) ? null : new Uint8Array(0);
-        }
-        const n = Math.min(remaining, maxLen);
-        const chunk = buf.data.subarray(buf.offset, buf.offset + n);
-        buf.offset += n;
-        if (buf.offset >= buf.data.length) {
-          this.stdinBuffers.delete(pid);
-        }
-        return chunk;
-      },
       onAlarm: (seconds: number): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
@@ -7519,25 +7505,37 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Provide data that will be returned when the process reads from stdin (fd 0).
-   * Data is returned in chunks until exhausted, then EOF is returned.
-   * Must be called before the process starts reading stdin.
+   * Give `pid` host-supplied stdin: replace its fd 0 with the read end of a
+   * kernel pipe whose write end the host owns. Call once, at spawn, before
+   * the program runs, for processes whose stdin is not a PTY.
    */
-  setStdinData(pid: number, data: Uint8Array): void {
-    const owned = new Uint8Array(
-      intrinsicUint8ArrayView(data, "finite stdin data"),
-    );
+  installHostStdinPipe(pid: number): void {
     this.#runOrDeferKernelEntry(
-      `finite stdin replacement pid=${pid}`,
-      () => {
-        // WHY: host imports consume this buffer during later kernel exports.
-        // Install an owned snapshot only at a serialized entry boundary so a
-        // reentrant caller cannot replace bytes while Rust is reading them.
-        this.stdinBuffers.set(pid, { data: owned, offset: 0 });
-        this.stdinFinite.add(pid); // EOF after data is consumed
+      `host stdin pipe install pid=${pid}`,
+      (entry) => {
+        const install = this.#kernelInstanceForEntry(entry).exports
+          .kernel_install_host_stdin_pipe as (pid: number) => number;
+        const pipeIdx = install(pid);
+        if (!Number.isSafeInteger(pipeIdx) || pipeIdx < 0) {
+          throw new Error(
+            `kernel could not install host stdin for pid ${pid}: ${pipeIdx}`,
+          );
+        }
+        this.#hostStdinPipes.set(pipeIdx, { pending: [], closeWhenDrained: false });
+        this.#hostStdinPipeByPid.set(pid, pipeIdx);
+        this.#hostStdinDelivered.delete(pid);
         return undefined;
       },
     );
+  }
+
+  /**
+   * Provide the whole of a process's stdin: the bytes are written into its
+   * stdin pipe and the write end is closed, so readers see end-of-file once
+   * they have read them.
+   */
+  setStdinData(pid: number, data: Uint8Array): void {
+    this.#queueHostStdin(pid, data, true, "finite stdin data");
   }
 
   /**
@@ -7574,39 +7572,119 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Append data to a process's stdin buffer without marking stdin as a pipe.
-   * Used for interactive stdin where data arrives incrementally.
-   * Wakes any blocked stdin readers after appending.
+   * Append bytes to a process's stdin without closing it. Used for
+   * interactive input that arrives incrementally; blocked readers wake as
+   * soon as the bytes reach the pipe.
    */
   appendStdinData(pid: number, data: Uint8Array): void {
-    const owned = new Uint8Array(
-      intrinsicUint8ArrayView(data, "incremental stdin data"),
-    );
+    this.#queueHostStdin(pid, data, false, "incremental stdin data");
+  }
+
+  /**
+   * Whether the host has delivered every byte of `pid`'s stdin into its pipe
+   * and closed the write end. Bytes may still sit in the pipe for a reader;
+   * the host no longer owns them, and once the write end is closed the pipe
+   * index can be reclaimed, so the host does not query it afterwards.
+   */
+  isStdinConsumed(pid: number): boolean {
+    return this.#hostStdinDelivered.has(pid);
+  }
+
+  #queueHostStdin(
+    pid: number,
+    data: Uint8Array,
+    close: boolean,
+    label: string,
+  ): void {
+    const owned = new Uint8Array(intrinsicUint8ArrayView(data, label));
     this.#runOrDeferKernelEntry(
-      `incremental stdin append pid=${pid}`,
+      `${label} pid=${pid}`,
       (entry) => {
-        const existing = this.stdinBuffers.get(pid);
-        if (existing) {
-          // Concatenate with remaining unread data.
-          const remaining = existing.data.subarray(existing.offset);
-          const combined = new Uint8Array(remaining.length + owned.length);
-          combined.set(remaining);
-          combined.set(owned, remaining.length);
-          this.stdinBuffers.set(pid, { data: combined, offset: 0 });
-        } else {
-          this.stdinBuffers.set(pid, { data: owned, offset: 0 });
+        const pipeIdx = this.#hostStdinPipeByPid.get(pid);
+        const state = pipeIdx === undefined
+          ? undefined
+          : this.#hostStdinPipes.get(pipeIdx);
+        if (pipeIdx === undefined || state === undefined) {
+          throw new Error(
+            `pid ${pid} has no open host-supplied stdin (it uses a PTY, ` +
+              "its stdin was already closed, or it is not a spawned process)",
+          );
         }
-        // Wake any blocked readers only after this exact replacement is
-        // visible; the scheduler effect is detached by the entry context.
-        this.scheduleWakeBlockedRetries(entry);
+        if (owned.byteLength > 0) state.pending.push(owned);
+        if (close) state.closeWhenDrained = true;
+        this.#pumpHostStdin(pipeIdx, entry);
         return undefined;
       },
     );
   }
 
-  /** Exact host-side finite-stdin state; exposes no backing buffer authority. */
-  isStdinConsumed(pid: number): boolean {
-    return this.stdinFinite.has(pid) && !this.stdinBuffers.has(pid);
+  /**
+   * Move queued stdin bytes into the pipe until it is full, close the write
+   * end once everything is delivered (setStdinData), and wake readers. Runs
+   * again whenever the kernel reports the pipe writable.
+   */
+  #pumpHostStdin(pipeIdx: number, entry: KernelWorkerEntryContext): void {
+    const state = this.#hostStdinPipes.get(pipeIdx);
+    if (!state) return;
+    if (!this.#tcpPipeReadOpenWithinKernelEntry(pipeIdx, entry)) {
+      // Every reader closed fd 0 or exited: nothing can read these bytes.
+      this.#closeHostStdinPipe(pipeIdx, entry);
+      return;
+    }
+    let wrote = false;
+    while (state.pending.length > 0) {
+      const chunk = state.pending[0]!;
+      const n = this.writePipeChunked(0, pipeIdx, chunk, entry);
+      if (n > 0) wrote = true;
+      if (n >= chunk.byteLength) {
+        state.pending.shift();
+      } else {
+        state.pending[0] = chunk.subarray(n);
+        break;
+      }
+    }
+    let closed = false;
+    if (state.pending.length === 0 && state.closeWhenDrained) {
+      this.#closeHostStdinPipe(pipeIdx, entry);
+      closed = true;
+    }
+    if (wrote || closed) {
+      entry.deferProtocolEffect(() => {
+        this.notifyPipeReadable(pipeIdx);
+        return undefined;
+      });
+    }
+  }
+
+  #closeHostStdinPipe(pipeIdx: number, entry: KernelWorkerEntryContext): void {
+    this.#hostStdinPipes.delete(pipeIdx);
+    for (const [pid, idx] of this.#hostStdinPipeByPid) {
+      if (idx !== pipeIdx) continue;
+      this.#hostStdinPipeByPid.delete(pid);
+      this.#hostStdinDelivered.add(pid);
+    }
+    this.#closeTcpPipeWriteWithinKernelEntry(pipeIdx, entry);
+  }
+
+  /**
+   * The process that owned a host stdin pipe exited. Children that inherited
+   * fd 0 may still read it, so keep feeding the pipe while it has readers;
+   * release it now only if none remain.
+   */
+  #releaseHostStdinForExitedProcess(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    this.#hostStdinDelivered.delete(pid);
+    const pipeIdx = this.#hostStdinPipeByPid.get(pid);
+    if (pipeIdx === undefined) return;
+    this.#hostStdinPipeByPid.delete(pid);
+    if (
+      this.#hostStdinPipes.has(pipeIdx)
+      && !this.#tcpPipeReadOpenWithinKernelEntry(pipeIdx, entry)
+    ) {
+      this.#closeHostStdinPipe(pipeIdx, entry);
+    }
   }
 
   // ── PTY management ──
@@ -8245,8 +8323,7 @@ export class CentralizedKernelWorker {
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
     this.committedExecSecureExec.delete(pid);
-    this.stdinFinite.delete(pid);
-    this.stdinBuffers.delete(pid);
+    this.#releaseHostStdinForExitedProcess(pid, entry);
 
     // Stop poller if no more processes
     if (this.usePolling && this.processes.size === 0) {
@@ -8528,8 +8605,7 @@ export class CentralizedKernelWorker {
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
     this.committedExecSecureExec.delete(pid);
-    this.stdinFinite.delete(pid);
-    this.stdinBuffers.delete(pid);
+    this.#releaseHostStdinForExitedProcess(pid, entry);
     // Cancel pending sleeps for every thread in this process.
     this.cancelPendingSleepsForProcess(pid);
     // Clean up pending poll retries
@@ -15875,6 +15951,10 @@ export class CentralizedKernelWorker {
       }
 
       if (wakeType & WAKEUP_EVENT_TYPES.writable) {
+        // A reader drained (or closed) a host stdin pipe: feed it more.
+        if (this.#hostStdinPipes.has(wakeIdx)) {
+          this.#pumpHostStdin(wakeIdx, entry);
+        }
         // Pipe became writable — wake pending writers on this pipe
         const writers = this.pendingPipeWriters.get(wakeIdx);
         if (writers && writers.length > 0) {

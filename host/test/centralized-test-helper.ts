@@ -1175,6 +1175,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   threadAllocators.set(pid, threadAllocator);
   processPtrWidths.set(pid, ptrWidth);
 
+  kernelWorker.installHostStdinPipe(pid);
   if (options.stdinBytes != null) {
     kernelWorker.setStdinData(pid, options.stdinBytes);
   } else if (options.stdin != null) {

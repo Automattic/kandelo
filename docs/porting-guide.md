@@ -395,7 +395,12 @@ kernelWorker.registerProcess(pid, memory, channelOffsets, options?)
 // Set process working directory
 kernelWorker.setCwd(pid, path)
 
-// Provide stdin data
+// Give a spawned (non-PTY) process host-supplied stdin: fd 0 becomes the
+// read end of a kernel pipe whose write end the host owns
+kernelWorker.installHostStdinPipe(pid)
+
+// Write into that pipe: setStdinData closes it after the bytes, so readers
+// see EOF; appendStdinData leaves it open for more
 kernelWorker.setStdinData(pid, data: Uint8Array)
 kernelWorker.appendStdinData(pid, data: Uint8Array)
 
@@ -535,9 +540,10 @@ const exitCode = await kernel.spawn(programBytes, argv, {
   pty?: boolean,          // Allocate a PTY for this process
 })
 
-// Stdin operations
-kernel.setStdinData(pid, data)       // Set complete stdin (implies EOF)
-kernel.appendStdinData(pid, data)    // Append to stdin buffer (interactive)
+// Stdin operations. Host stdin is a kernel pipe on fd 0, so children that
+// inherit fd 0 share the stream and its read offset, as on Unix.
+kernel.setStdinData(pid, data)       // Write the bytes, then close (EOF)
+kernel.appendStdinData(pid, data)    // Write the bytes, keep open (interactive)
 
 // PTY operations (for terminal demos)
 kernel.ptyWrite(pid, data)           // Write to PTY master
