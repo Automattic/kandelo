@@ -10203,9 +10203,11 @@ pub fn sys_socketpair(
 
     let mut sock_a = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_a.state = SocketState::Connected;
+    sock_a.peer_cred = Some(socket_peer_cred(proc));
 
     let mut sock_b = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_b.state = SocketState::Connected;
+    sock_b.peer_cred = Some(socket_peer_cred(proc));
     if let Some((buf_ab_idx, buf_ba_idx)) = pipe_indices {
         // Socket A sends to A→B and receives from B→A; B is the inverse.
         sock_a.send_buf_idx = Some(buf_ab_idx);
@@ -12370,13 +12372,22 @@ pub fn sys_setsockopt_tcp_congestion(
     Ok(())
 }
 
+/// The credentials a socket this process creates, listens on, or connects
+/// records for its peer: its process ID and effective user/group IDs.
+pub fn socket_peer_cred(proc: &Process) -> crate::socket::PeerCred {
+    crate::socket::PeerCred {
+        pid: proc.pid,
+        uid: proc.effective_uid(),
+        gid: proc.effective_gid(),
+    }
+}
+
 /// Peer credentials for `SO_PEERCRED`, as `(pid, uid, gid)`.
 ///
-/// This kernel is single-user and tracks no per-connection peer identity, so it
-/// reports the querying process's own credentials. For the canonical libwayland
-/// setup (a socketpair, or same-process connect/accept) the peer *is* this
-/// process, so the values are exact; libwayland uses them informationally
-/// (`wl_client_get_credentials`), not for dispatch.
+/// Reports the credentials recorded on the socket (see
+/// `SocketInfo::peer_cred`), so a cross-process AF_UNIX connection reports
+/// the other process, not the caller. A socket with no recorded peer --
+/// unconnected, or not AF_UNIX -- reports Linux's `{0, -1, -1}`.
 pub fn sys_getsockopt_peercred(proc: &Process, fd: i32) -> Result<(u32, u32, u32), Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -12384,8 +12395,11 @@ pub fn sys_getsockopt_peercred(proc: &Process, fd: i32) -> Result<(u32, u32, u32
         return Err(Errno::ENOTSOCK);
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    Ok((proc.pid, proc.effective_uid(), proc.effective_gid()))
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    Ok(sock
+        .peer_cred
+        .map(|c| (c.pid, c.uid, c.gid))
+        .unwrap_or((0, u32::MAX, u32::MAX)))
 }
 
 /// Set socket option value.
@@ -12758,7 +12772,13 @@ pub fn sys_listen(
         return Err(Errno::EINVAL);
     }
 
+    let own_cred = socket_peer_cred(proc);
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if domain == SocketDomain::Unix {
+        // Linux records the listener's credentials at every listen(); each
+        // client that connects later copies them as its SO_PEERCRED.
+        sock.peer_cred = Some(own_cred);
+    }
     if let Some(value) = sock.get_option(
         wasm_posix_shared::socket::IPPROTO_TCP,
         wasm_posix_shared::socket::TCP_DEFER_ACCEPT,
@@ -12898,6 +12918,7 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
                 }
             }
             accepted.peer_port = pc.peer_port;
+            accepted.peer_cred = pc.peer_cred;
             accepted.global_pipes = true;
             let accepted_sock_idx = proc.sockets.alloc(accepted);
             if domain == SocketDomain::Unix && pc.peer_pid == proc.pid {
@@ -13452,6 +13473,8 @@ pub fn sys_connect(
             }
             let shared_idx = listener.shared_backlog_idx;
             let accept_wake_idx = listener.accept_wake_idx;
+            let listener_cred = listener.peer_cred;
+            let own_cred = socket_peer_cred(proc);
 
             // Create pipe pair for bidirectional communication (in global table for fork safety)
             let pipe_table = unsafe { crate::pipe::global_pipe_table() };
@@ -13466,6 +13489,7 @@ pub fn sys_connect(
                     peer_port: 0,
                     peer_pid: proc.pid,
                     peer_sock_idx: Some(sock_idx),
+                    peer_cred: Some(own_cred),
                     recv_pipe_idx: pipe_a_idx,
                     send_pipe_idx: pipe_b_idx,
                 };
@@ -13482,6 +13506,7 @@ pub fn sys_connect(
                 client.recv_buf_idx = Some(pipe_b_idx);
                 client.state = SocketState::Connected;
                 client.peer_idx = None;
+                client.peer_cred = listener_cred;
                 client.global_pipes = true;
             } else {
                 // Defensive compatibility for manually restored listener state
@@ -13490,6 +13515,7 @@ pub fn sys_connect(
                 accepted_sock.state = SocketState::Connected;
                 accepted_sock.recv_buf_idx = Some(pipe_a_idx);
                 accepted_sock.send_buf_idx = Some(pipe_b_idx);
+                accepted_sock.peer_cred = Some(own_cred);
                 accepted_sock.global_pipes = true;
                 let accepted_idx = proc.sockets.alloc(accepted_sock);
 
@@ -13503,6 +13529,7 @@ pub fn sys_connect(
                 client.recv_buf_idx = Some(pipe_b_idx);
                 client.state = SocketState::Connected;
                 client.peer_idx = Some(accepted_idx);
+                client.peer_cred = listener_cred;
                 client.global_pipes = true;
                 proc.sockets.get_mut(accepted_idx).unwrap().peer_idx = Some(sock_idx);
             }
@@ -28523,14 +28550,55 @@ mod tests {
 
     #[test]
     fn test_getsockopt_peercred_reflects_credentials() {
-        // The reported credentials track the process's current uid/gid after a
+        // A socketpair records its creator's effective credentials after a
         // privilege drop, not a hardcoded 0/0.
         let mut proc = Process::new(42);
         proc.configure_ids(Some(1000), Some(1000));
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
-        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
-        assert_eq!(sys_getsockopt_peercred(&proc, fd), Ok((42, 1000, 1000)));
+        let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, fd0), Ok((42, 1000, 1000)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_without_peer_is_linux_sentinel() {
+        // Linux reports {pid 0, uid -1, gid -1} for a socket with no peer;
+        // it never substitutes the caller's own identity.
+        let mut proc = Process::new(9);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let unix = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, unix), Ok((0, u32::MAX, u32::MAX)));
+        let inet = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, inet), Ok((0, u32::MAX, u32::MAX)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_captured_at_listen_and_connect() {
+        // The listener's credentials are fixed at listen(), the connector's at
+        // connect(): a later privilege change does not rewrite either side.
+        let mut proc = Process::new(11);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let listener = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0..2].copy_from_slice(&(AF_UNIX as u16).to_le_bytes());
+        addr[2..2 + 13].copy_from_slice(b"\0peercred-cap");
+        let addr = &addr[..2 + 13];
+        sys_bind(&mut proc, &mut host, listener, addr).unwrap();
+        sys_listen(&mut proc, &mut host, listener, 1).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, listener), Ok((11, 0, 0)));
+
+        proc.configure_ids(Some(1000), Some(1000));
+        let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, addr).unwrap();
+        // The client reports the listener as it was at listen(): root.
+        assert_eq!(sys_getsockopt_peercred(&proc, client), Ok((11, 0, 0)));
+
+        proc.configure_ids(Some(0), Some(0));
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        // The accepted socket reports the connector as it was at connect().
+        assert_eq!(sys_getsockopt_peercred(&proc, accepted), Ok((11, 1000, 1000)));
     }
 
     #[test]

@@ -9882,6 +9882,7 @@ fn cross_process_loopback_connect(
         peer_port: client_port,
         peer_pid: 0,
         peer_sock_idx: None,
+        peer_cred: None,
         recv_pipe_idx: pipe_a_idx, // server reads client's writes
         send_pipe_idx: pipe_b_idx, // server writes to client's reads
     };
@@ -10006,6 +10007,7 @@ fn cross_process_loopback_connect6(
         peer_port: client_port,
         peer_pid: 0,
         peer_sock_idx: None,
+        peer_cred: None,
         recv_pipe_idx: pipe_a_idx,
         send_pipe_idx: pipe_b_idx,
     };
@@ -10095,6 +10097,10 @@ fn cross_process_unix_connect(
     }
     let shared_idx = listener.shared_backlog_idx.ok_or(Errno::ECONNREFUSED)?;
     let accept_wake_idx = listener.accept_wake_idx;
+    // SO_PEERCRED: the client reports the listener's credentials from its
+    // listen(); the accepted socket will report this connecting process.
+    let listener_cred = listener.peer_cred;
+    let client_cred = syscalls::socket_peer_cred(table.get(my_pid).ok_or(Errno::ESRCH)?);
 
     // Allocate pipes only after both endpoints have been validated, so a
     // stale or wrong-type registry entry cannot leak global pipe slots.
@@ -10109,6 +10115,7 @@ fn cross_process_unix_connect(
         peer_port: 0,
         peer_pid: my_pid,
         peer_sock_idx: Some(sock_idx),
+        peer_cred: Some(client_cred),
         recv_pipe_idx: pipe_a_idx,
         send_pipe_idx: pipe_b_idx,
     };
@@ -10125,6 +10132,7 @@ fn cross_process_unix_connect(
     client.recv_buf_idx = Some(pipe_b_idx);
     client.state = SocketState::Connected;
     client.peer_idx = None;
+    client.peer_cred = listener_cred;
     client.global_pipes = true;
 
     if let Some(idx) = accept_wake_idx {
@@ -13129,6 +13137,7 @@ pub extern "C" fn kernel_inject_connection(
         peer_port: peer_port as u16,
         peer_pid: 0,
         peer_sock_idx: None,
+        peer_cred: None,
         recv_pipe_idx,
         send_pipe_idx,
     };

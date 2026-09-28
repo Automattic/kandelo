@@ -41,9 +41,10 @@ const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // This header version is also shared by the cfg(test) exec-state fixture.
 // v15 preserves complete credentials plus the kernel-owned secure-exec marker.
+// v16 carries each socket's SO_PEERCRED peer credentials.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 15;
+const FORK_VERSION: u32 = 16;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -464,6 +465,18 @@ fn write_durable_socket_state(
         write_ipv4_source_list(w, &membership.blocked_sources)?;
         write_ipv4_source_list(w, &membership.included_sources)?;
     }
+
+    // SO_PEERCRED belongs to the socket, not the process holding it: an
+    // inherited connection still reports the peer it was made with.
+    match sock.peer_cred {
+        Some(cred) => {
+            w.write_u32(1)?;
+            w.write_u32(cred.pid)?;
+            w.write_u32(cred.uid)?;
+            w.write_u32(cred.gid)?;
+        }
+        None => w.write_u32(0)?,
+    }
     Ok(())
 }
 
@@ -519,6 +532,16 @@ fn read_durable_socket_state(
         });
     }
     sock.ipv4_multicast_memberships = memberships;
+
+    sock.peer_cred = match r.read_u32()? {
+        0 => None,
+        1 => Some(crate::socket::PeerCred {
+            pid: r.read_u32()?,
+            uid: r.read_u32()?,
+            gid: r.read_u32()?,
+        }),
+        _ => return Err(Errno::EINVAL),
+    };
     Ok(())
 }
 
@@ -2244,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_roundtrips_complete_credentials_in_wire_order() {
+    fn fork_format_roundtrips_complete_credentials_in_wire_order() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2261,7 +2284,7 @@ mod tests {
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
-        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), 15);
+        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), FORK_VERSION);
         let credential_words: Vec<u32> = buf[16..52]
             .chunks_exact(4)
             .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
@@ -2282,7 +2305,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_roundtrips_zero_and_ngroups_max_groups() {
+    fn fork_format_roundtrips_zero_and_ngroups_max_groups() {
         for groups in [vec![], (0..32).map(|index| 20_000 + index).collect()] {
             let mut proc = Process::new(1);
             proc.install_credentials(Credentials {
@@ -2300,7 +2323,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_rejects_wrong_version_malformed_groups_and_trailing_bytes() {
+    fn fork_format_rejects_wrong_version_malformed_groups_and_trailing_bytes() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2315,7 +2338,7 @@ mod tests {
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
 
-        for version in [14u32, 16] {
+        for version in [FORK_VERSION - 1, FORK_VERSION + 1] {
             let mut malformed = buf[..written].to_vec();
             malformed[4..8].copy_from_slice(&version.to_le_bytes());
             assert!(deserialize_fork_state(&malformed, 42).is_err());
@@ -2338,7 +2361,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_rejects_truncation_at_every_new_credential_field() {
+    fn fork_format_rejects_truncation_at_every_new_credential_field() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2370,7 +2393,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_version_15_roundtrips_complete_credentials_and_secure_exec() {
+    fn exec_format_roundtrips_complete_credentials_and_secure_exec() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,
@@ -2392,7 +2415,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_version_15_rejects_wrong_version_truncation_and_trailing_bytes() {
+    fn exec_format_rejects_wrong_version_truncation_and_trailing_bytes() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,
@@ -2407,7 +2430,7 @@ mod tests {
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
 
-        for version in [14u32, 16] {
+        for version in [FORK_VERSION - 1, FORK_VERSION + 1] {
             let mut malformed = buf[..written].to_vec();
             malformed[4..8].copy_from_slice(&version.to_le_bytes());
             assert!(matches!(
@@ -2917,6 +2940,7 @@ mod tests {
                 included_sources: vec![[10, 88, 0, 3], [10, 88, 0, 4]],
             },
         ];
+        socket.peer_cred = Some(crate::socket::PeerCred { pid: 7, uid: 1000, gid: 100 });
         let socket_idx = install_socket_for_fork(&mut proc, socket);
 
         let mut buf = vec![0u8; 64 * 1024];
@@ -2925,6 +2949,12 @@ mod tests {
         let inherited = child.sockets.get(socket_idx).unwrap();
 
         assert_eq!(inherited.state, SocketState::Connected);
+        // SO_PEERCRED belongs to the connection: the child still reports the
+        // peer the parent connected to, not itself.
+        assert_eq!(
+            inherited.peer_cred,
+            Some(crate::socket::PeerCred { pid: 7, uid: 1000, gid: 100 }),
+        );
         assert_eq!(inherited.bind_addr6, bind_addr6);
         assert_eq!(inherited.peer_addr6, peer_addr6);
         assert_eq!(inherited.bind_port, 41000);
