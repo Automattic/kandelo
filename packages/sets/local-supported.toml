@@ -84,6 +84,10 @@ name = "fbdoom"
 class = "user-software"
 
 [[packages]]
+name = "ffmpeg"
+class = "user-software"
+
+[[packages]]
 name = "file"
 class = "user-software"
 
@@ -444,10 +448,6 @@ reason = "deferred software"
 [[exclusions]]
 name = "erlang-vfs"
 reason = "deferred product"
-
-[[exclusions]]
-name = "ffmpeg"
-reason = "blocked on platform gap G2: SDK link probes accept missing functions (docs/plans/2026-09-26-ffmpeg-gap-ledger.md)"
 
 [[exclusions]]
 name = "python-vfs"

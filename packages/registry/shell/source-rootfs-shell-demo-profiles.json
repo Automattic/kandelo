@@ -94,6 +94,60 @@
         }
       }
     },
+    "ffmpeg-fbdev": {
+      "identity": {
+        "title": "FFmpeg to /dev/fb0",
+        "summary": "FFmpeg drawing a test pattern into the framebuffer with a tone on /dev/dsp.",
+        "accent": "#2e7d32",
+        "glyph": "F",
+        "packages": [
+          "ffmpeg@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 -f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 -map 1:a -f oss /dev/dsp"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
+    "ffplay": {
+      "identity": {
+        "title": "ffplay",
+        "summary": "ffplay showing a test pattern through SDL2 on /dev/dri/card0, with a tone.",
+        "accent": "#1565c0",
+        "glyph": "P",
+        "packages": [
+          "ffmpeg@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/ffplay -autoexit -f lavfi 'testsrc=duration=60:size=320x240:rate=10[out0];sine=duration=60[out1]'"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["kms", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
     "modeset": {
       "identity": {
         "title": "DRM/KMS fluid sim",
