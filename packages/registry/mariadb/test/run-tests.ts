@@ -750,6 +750,7 @@ async function runBootstrap(
     const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
     const systemData = readFileSync(resolve(shareDir, "mysql_system_tables_data.sql"), "utf-8");
     const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
+    kernelWorker.installHostStdinPipe(pid);
     kernelWorker.setStdinData(pid, new TextEncoder().encode(bootstrapSql));
 
     const argv = [
