@@ -261,6 +261,9 @@ async function runProgram(
   });
   const initialHeapBase = extractHeapBase(options.programBytes);
   if (initialHeapBase !== null) kernelWorker.setBrkBase(pid, initialHeapBase);
+  // fd 0 is a kernel pipe the host writes into, as for every spawned
+  // non-PTY process; without stdin it stays open, as it did before.
+  kernelWorker.installHostStdinPipe(pid);
   if (options.stdin !== undefined) {
     kernelWorker.setStdinData(pid, encoder.encode(options.stdin));
   }

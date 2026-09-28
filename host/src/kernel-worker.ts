@@ -7476,9 +7476,16 @@ export class CentralizedKernelWorker {
           .kernel_install_host_stdin_pipe as (pid: number) => number;
         const pipeIdx = install(pid);
         if (!Number.isSafeInteger(pipeIdx) || pipeIdx < 0) {
-          throw new Error(
-            `kernel could not install host stdin for pid ${pid}: ${pipeIdx}`,
+          // WHY not throw: a throw inside a kernel entry is fatal to the whole
+          // kernel. A failed install (no such pid, pipe table exhausted) is a
+          // per-process outcome: the process keeps host handle 0 as stdin,
+          // which reads as end-of-file.
+          console.warn(
+            `[kernel-worker] could not give pid ${pid} host stdin ` +
+              `(kernel_install_host_stdin_pipe returned ${pipeIdx}); ` +
+              "its stdin reads as end-of-file",
           );
+          return undefined;
         }
         this.#hostStdinPipes.set(pipeIdx, { pending: [], closeWhenDrained: false });
         this.#hostStdinPipeByPid.set(pid, pipeIdx);
@@ -7559,21 +7566,67 @@ export class CentralizedKernelWorker {
     this.#runOrDeferKernelEntry(
       `${label} pid=${pid}`,
       (entry) => {
-        const pipeIdx = this.#hostStdinPipeByPid.get(pid);
+        const pipeIdx = this.#hostStdinPipeForPid(pid, entry);
         const state = pipeIdx === undefined
           ? undefined
           : this.#hostStdinPipes.get(pipeIdx);
         if (pipeIdx === undefined || state === undefined) {
-          throw new Error(
-            `pid ${pid} has no open host-supplied stdin (it uses a PTY, ` +
-              "its stdin was already closed, or it is not a spawned process)",
-          );
+          // Nothing can read these bytes: the process uses a PTY, closed or
+          // replaced fd 0 until no reader remained, its stdin was already
+          // closed with setStdinData, or it (and every ancestor) exited. Like
+          // a write to a pipe with no reader, the bytes are discarded. This is
+          // an ordinary outcome of host input racing a process's lifetime
+          // (a keypress arriving just after exit), never a kernel fault: a
+          // throw here would latch the kernel entry gate as fatal.
+          this.#warnHostStdinDropped(pid, owned.byteLength);
+          return undefined;
         }
         if (owned.byteLength > 0) state.pending.push(owned);
         if (close) state.closeWhenDrained = true;
         this.#pumpHostStdin(pipeIdx, entry);
         return undefined;
       },
+    );
+  }
+
+  /**
+   * The host stdin pipe that input addressed to `pid` should go to: the pid's
+   * own, or else the nearest ancestor's. A forked child that inherited fd 0
+   * reads its parent's pipe (framebuffer demos address keyboard input to
+   * whichever descendant owns the display), so the first resolution through
+   * an ancestor is cached for later input. A pid whose own pipe was closed
+   * resolves to nothing rather than to an ancestor's stream. Kernel task IDs
+   * are never reused, so a cached route cannot reach an unrelated process.
+   */
+  #hostStdinPipeForPid(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): number | undefined {
+    const own = this.#hostStdinPipeByPid.get(pid);
+    if (own !== undefined) return own;
+    if (this.#hostStdinDelivered.has(pid)) return undefined;
+    let ancestor = this.getParentPid(pid, entry);
+    for (let depth = 0; ancestor !== undefined && depth < 64; depth++) {
+      if (this.#hostStdinDelivered.has(ancestor)) return undefined;
+      const inherited = this.#hostStdinPipeByPid.get(ancestor);
+      if (inherited !== undefined) {
+        this.#hostStdinPipeByPid.set(pid, inherited);
+        return inherited;
+      }
+      ancestor = this.getParentPid(ancestor, entry);
+    }
+    return undefined;
+  }
+
+  /** Report discarded host stdin once per pid, not once per keypress. */
+  #hostStdinDropWarned = new Set<number>();
+  #warnHostStdinDropped(pid: number, byteLength: number): void {
+    if (this.#hostStdinDropWarned.has(pid)) return;
+    this.#hostStdinDropWarned.add(pid);
+    console.warn(
+      `[kernel-worker] discarding ${byteLength} byte(s) of host stdin for pid ` +
+        `${pid}: no open host stdin reaches it (later discards for this pid ` +
+        "are not reported)",
     );
   }
 
@@ -7634,10 +7687,11 @@ export class CentralizedKernelWorker {
     pid: number,
     entry: KernelWorkerEntryContext,
   ): void {
-    this.#hostStdinDelivered.delete(pid);
     const pipeIdx = this.#hostStdinPipeByPid.get(pid);
     if (pipeIdx === undefined) return;
-    this.#hostStdinPipeByPid.delete(pid);
+    // Keep the pid's route while the pipe lives: a child that inherited fd 0
+    // may still read it, and input addressed to the exited pid (or resolved
+    // through it by a descendant) still belongs to that stream.
     if (
       this.#hostStdinPipes.has(pipeIdx)
       && !this.#tcpPipeReadOpenWithinKernelEntry(pipeIdx, entry)
