@@ -779,8 +779,6 @@ export interface KernelCallbacks {
   onUdpUnbind?: (handle: number) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
-  /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
-  onStdin?: (maxLen: number) => Uint8Array | null;
   /**
    * Resolve the wasm `Memory` for `pid`. The GL bridge reads cmdbuf bytes
    * directly out of the process's Memory SAB on `host_gl_submit` and
@@ -2752,37 +2750,10 @@ export class WasmPosixKernel {
         return publish(readEntry.pipe.read(staged));
       }
 
-      // stdin
-      if (h === 0) {
-        if (this.callbacks.onStdin) {
-          const data = this.callbacks.onStdin(destinationCapacity);
-          if (data === null) return 0; // EOF
-          let exactData: Uint8Array;
-          try {
-            exactData = intrinsicUint8ArrayView(data, "stdin callback output");
-          } catch {
-            return -5; // EIO: the callback violated its byte-source contract.
-          }
-          const exactLength = typedArrayByteLength(exactData);
-          if (exactLength === 0) {
-            return -11; // EAGAIN — no data yet, retry later
-          }
-          const n = Math.min(exactLength, destinationCapacity);
-          intrinsicApply(
-            intrinsicUint8ArraySet,
-            staged,
-            [
-            new IntrinsicUint8Array(
-              typedArrayBuffer(exactData),
-              typedArrayByteOffset(exactData),
-              n,
-            ),
-            ],
-          );
-          return publish(n);
-        }
-        return 0; // EOF when no stdin callback
-      }
+      // Host handle 0 is the stdin a process has when the host supplied
+      // none. Host-supplied stdin is a kernel pipe installed at spawn
+      // (kernel_install_host_stdin_pipe), so reads of it never reach here.
+      if (h === 0) return 0; // EOF
     }
 
     try {

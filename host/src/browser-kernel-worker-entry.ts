@@ -1480,6 +1480,9 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
       }
     } else {
+      // fd 0 becomes a kernel pipe the host writes into, so children that
+      // inherit it share the stream (and read offset) as POSIX requires.
+      kernelWorker.installHostStdinPipe(pid);
       if (msg.stdin) {
         const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
         kernelWorker.setStdinData(pid, stdinData);
