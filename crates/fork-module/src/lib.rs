@@ -231,6 +231,18 @@ mod wasm {
         /// through the drive table. NEVER RETURNS -- the callee throws.
         fn __wpk_fork_exn_throw(activation: u32, recipe: u32);
 
+        /// Have `activation` copy its static roots into the merged catalog at
+        /// `base`, returning how many it copied or -1 when the catalog is too
+        /// short. Injector-rewritten to a `call_indirect` of the guest's
+        /// `__wpk_fork_static_root_fill` through the drive table.
+        fn __wpk_fork_fill_static_roots(activation: u32, base: u32) -> i32;
+
+        /// Mirror whether this Worker's fork holds the process archive
+        /// reader into the exported global `__wpk_fork_archive_reader_held`,
+        /// which the host's dynamic loader reads before taking the writer.
+        /// Injector-rewritten into a `global.set`.
+        fn __wpk_fork_set_reader_held(held: u32);
+
         /// The guest table shims, reached through `activation`'s drive-table
         /// slice. Each is injector-rewritten into a thunk that `call_indirect`s
         /// the guest's `wpk_fork_module_table_{read,length,apply}` with the
@@ -423,6 +435,42 @@ mod wasm {
         // SAFETY: after injection this is a local `table.size` + `table.grow`
         // on the module's own static-root catalog, and nothing else.
         unsafe { __wpk_fork_static_root_grow(needed) }
+    }
+
+    /// Fill the merged static-root catalog from every bound activation's own.
+    ///
+    /// A capture recognises a statically initialised reference by finding it
+    /// in the merged catalog, and a child's install rebuilds one by reading it
+    /// back from there, so both must see the live roots. Each activation
+    /// copies its own with one `table.copy` (fork-instrument's
+    /// `__wpk_fork_static_root_fill`); the module decides when, and hands each
+    /// activation the base it placed at bind. The hosts used to copy the roots
+    /// one `Table.set` at a time before every capture and install
+    /// (lane F step 3c, ruling 3).
+    ///
+    /// Only activations with at least one root are asked -- a guest with none
+    /// exports no fill shim, so its drive slot is unbound. A shim that copied
+    /// a different count than the module placed means the two disagree about
+    /// the layout, which is refused (`EINVAL`) rather than trusted.
+    fn fill_static_roots() -> Result<(), Errno> {
+        let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
+        for_each_catalog_range(REC_KIND_STATIC_ROOT_BASE, |activation, base, len| {
+            if len != 0 {
+                ranges.push((activation, base, len));
+            }
+        });
+        for (activation, base, len) in ranges {
+            // SAFETY: after injection this is a local thunk that
+            // `call_indirect`s the guest's `__wpk_fork_static_root_fill`
+            // through `drive_table[base(activation) +
+            // DRIVE_SLOT_STATIC_ROOT_FILL]`, which the host bound when it
+            // registered the activation (it has roots, so it has the shim).
+            let copied = unsafe { __wpk_fork_fill_static_roots(activation, base) };
+            if copied < 0 || copied as u32 != len {
+                return Err(Errno::EINVAL);
+            }
+        }
+        Ok(())
     }
 
     /// Safe wrapper over the injector-wired probe placeholder.
@@ -7776,6 +7824,9 @@ mod wasm {
         archive_control_addr: usize,
         channel_base: usize,
     ) {
+        // A COW child starts with its parent's module state cloned, including
+        // the archive reader its parent held mid-fork; the child holds none.
+        READER_HELD.store(false, Ordering::Relaxed);
         match set_format_impl(
             pointer_width,
             fixed_prefix_size,
@@ -7815,6 +7866,9 @@ mod wasm {
         let result = abort_impl();
         enter_phase(PHASE_IDLE);
         ABORT_REPORT.store(0, Ordering::Relaxed);
+        // A guest that trapped between a capture and its finish left the
+        // archive reader held; the host's error path lands here.
+        release_fork_archive_reader();
         match result {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
@@ -8354,11 +8408,265 @@ mod wasm {
     /// so the record lives where they happen.
     static ABORT_REPORT: AtomicU32 = AtomicU32::new(0);
     /// A frame reserve failed mid-unwind (`frame_reserved`).
-    const ABORT_CAUSE_FRAME_RESERVE: u32 = 1;
+    const ABORT_CAUSE_FRAME_RESERVE: u32 = diagnostic_wire::ABORT_CAUSE_FRAME_RESERVE;
     /// The capture could not seal after its journal sealed.
-    const ABORT_CAUSE_SEAL: u32 = 2;
+    const ABORT_CAUSE_SEAL: u32 = diagnostic_wire::ABORT_CAUSE_SEAL;
     /// The kernel refused to create the child (`fm_parent_replay(errno)`).
-    const ABORT_CAUSE_LAUNCH: u32 = 3;
+    const ABORT_CAUSE_LAUNCH: u32 = diagnostic_wire::ABORT_CAUSE_LAUNCH;
+
+    use wasm_posix_shared::fork_diagnostic_wire as diagnostic_wire;
+
+    /// Report what happened to a fork through the kernel
+    /// (`SYS_FORK_DIAGNOSTIC`), which formats the line every host logs.
+    ///
+    /// WHY THE MODULE AND WHY THE KERNEL (lane F step 3c, ruling 5). The
+    /// module is where every abort is begun or recorded and where every
+    /// fork's work is counted, so it is the one place that can say what
+    /// happened without a host keeping a second record; and the kernel turns
+    /// the numbers into words once, so Node, the browser and host-native no
+    /// longer each format (and drift on) their own sentence. Best effort: a
+    /// report that cannot be made changes nothing about the fork, which has
+    /// already decided its outcome.
+    fn report_fork_diagnostic(kind: u32, values: [u32; diagnostic_wire::VALUE_COUNT]) {
+        let Ok(base) = channel_base() else {
+            return;
+        };
+        let mut args = [0i64; 6];
+        args[0] = i64::from(kind);
+        for (slot, value) in values.iter().enumerate() {
+            args[slot + 1] = i64::from(*value);
+        }
+        let _ = channel_syscall(
+            base,
+            wasm_posix_shared::abi::extended_syscalls::SYS_FORK_DIAGNOSTIC,
+            args,
+        );
+    }
+
+    // -- The fork's archive reader (lane F step 3c, ruling 4) ---------------
+    //
+    // A fork holds the process archive READER from its capture until its
+    // finish, so no library can join the archive between the snapshot and the
+    // child. The host used to take and return that token around the module's
+    // capture and finish, through the dynamic loader's own reader counter. The
+    // module owns both ends of the window, so it owns the token; the loader
+    // asks the module (the exported `__wpk_fork_archive_reader_held` global)
+    // before it takes the writer, so a Worker still cannot wait on itself.
+
+    /// Whether this Worker's fork holds the process archive reader.
+    static READER_HELD: AtomicBool = AtomicBool::new(false);
+
+    /// Byte offset of the dynamic loader's owner word below the control
+    /// address. DUPLICATED from `host/src/worker-main.ts`
+    /// (`DLOPEN_OWNER_OFFSET_WASM32` / `_WASM64`) for the reason
+    /// `DLOPEN_HEAD_OFFSET_*` is, and pinned by the same test.
+    const DLOPEN_OWNER_OFFSET_WASM32: usize = 24;
+    const DLOPEN_OWNER_OFFSET_WASM64: usize = 36;
+    /// The loader-owner word's "no loader transaction in progress".
+    const DLOPEN_OWNER_IDLE: i32 = 0;
+    /// The most readers the lock word may count (the host's own bound).
+    const DLOPEN_LOCK_MAX_READERS: i32 = 0x7fff_ffff;
+
+    /// The loader-owner word as an atomic.
+    fn loader_owner() -> Result<&'static AtomicI32, Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed);
+        let offset = match format()?.pointer_width {
+            4 => DLOPEN_OWNER_OFFSET_WASM32,
+            8 => DLOPEN_OWNER_OFFSET_WASM64,
+            _ => return Err(Errno::EINVAL),
+        };
+        let addr = control.checked_sub(offset).ok_or(Errno::EINVAL)?;
+        if addr % 4 != 0 || addr.checked_add(4).ok_or(Errno::EINVAL)? > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds- and alignment-checked; the host's loader writes the
+        // same word with `Atomics`.
+        Ok(unsafe { &*(addr as *const AtomicI32) })
+    }
+
+    /// The archive generation a Worker must have reached to be current: 0
+    /// while nothing was ever published, else the process generation fence
+    /// (the host loader's `archiveGeneration()`).
+    fn current_archive_generation() -> Result<u64, Errno> {
+        if archive_head()? == 0 {
+            return Ok(0);
+        }
+        Ok(generation_fence()?.load(Ordering::SeqCst))
+    }
+
+    /// Take the process archive reader for a fork, at a generation this
+    /// Worker has already materialized.
+    ///
+    /// Materializing a library a peer published needs the WRITER and may run
+    /// the library's constructors, so it happens first, through the existing
+    /// `__wpk_fork_host_materialize_dlopen_archive` import (only the host can
+    /// instantiate a module; nothing else about the lock is the host's). A
+    /// publication that won the race to the reader sends the loop round
+    /// again, as the host's own loop did.
+    fn acquire_fork_archive_reader() -> Result<(), Errno> {
+        if ARCHIVE_CONTROL.load(Ordering::Relaxed) == 0 || READER_HELD.load(Ordering::Relaxed) {
+            // No archive control block means no archive to lock.
+            return Ok(());
+        }
+        loop {
+            let target = current_archive_generation()?;
+            let materialized = if target == 0 {
+                0
+            } else {
+                // SAFETY: a plain host import taking and returning integers;
+                // this module holds nothing across it.
+                unsafe { __wpk_fork_host_materialize_dlopen_archive(target) }
+            };
+            if materialized != 0 && materialized != Errno::EAGAIN as i32 {
+                return Err(Errno::from_u32(materialized as u32).unwrap_or(Errno::EIO));
+            }
+            take_archive_reader()?;
+            if materialized == 0 && current_archive_generation()? == target {
+                READER_HELD.store(true, Ordering::Relaxed);
+                // SAFETY: after injection a local `global.set`.
+                unsafe { __wpk_fork_set_reader_held(1) };
+                return Ok(());
+            }
+            return_archive_reader()?;
+        }
+    }
+
+    /// One reader on the lock word, waiting out another Worker's loader
+    /// transaction and any writer.
+    ///
+    /// A loader transaction that is this Worker's own is not waited for: a
+    /// fork from inside a library constructor the loader is running is legal
+    /// (the constructor's frames are the calling thread's). But if this
+    /// Worker's transaction also still holds the WRITER, the reader can never
+    /// be had -- waiting would wait on itself -- so the fork is refused with
+    /// `EDEADLK` rather than hung.
+    fn take_archive_reader() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        let owner = loader_owner()?;
+        loop {
+            let transaction = owner.load(Ordering::SeqCst);
+            let own_transaction =
+                transaction != DLOPEN_OWNER_IDLE && transaction == calling_thread_id()?;
+            if transaction != DLOPEN_OWNER_IDLE && !own_transaction {
+                // POSIX fork keeps only its calling thread, so a child must
+                // not inherit another thread's half-run constructor.
+                if atomic_wait32(owner as *const AtomicI32 as usize, transaction) < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                continue;
+            }
+            let state = lock.load(Ordering::SeqCst);
+            if state < 0 && own_transaction {
+                return Err(Errno::EDEADLK);
+            }
+            if state < 0 {
+                if atomic_wait32(lock as *const AtomicI32 as usize, state) < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                continue;
+            }
+            if state >= DLOPEN_LOCK_MAX_READERS {
+                return Err(Errno::EAGAIN);
+            }
+            if lock
+                .compare_exchange(state, state + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    /// The calling thread's id, asked of the kernel on this Worker's channel.
+    ///
+    /// The dynamic loader writes this Worker's identity into the loader-owner
+    /// word, and that identity is the kernel's `gettid()` answer: the pid for
+    /// a process Worker, the tid for a pthread's. Asking the kernel means the
+    /// host passes the module nothing it could get wrong.
+    fn calling_thread_id() -> Result<i32, Errno> {
+        let (tid, errno) = channel_syscall(
+            channel_base()?,
+            wasm_posix_shared::abi::extended_syscalls::SYS_GETTID,
+            [0; 6],
+        );
+        if errno != 0 || tid <= 0 {
+            return Err(Errno::from_u32(errno).unwrap_or(Errno::EIO));
+        }
+        i32::try_from(tid).map_err(|_| Errno::EIO)
+    }
+
+    /// Give one reader back, waking a waiting writer when it was the last.
+    fn return_archive_reader() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        loop {
+            let state = lock.load(Ordering::SeqCst);
+            if state <= 0 {
+                // Not holding one means another participant's view of the
+                // protocol is already wrong; forcing the word would hand the
+                // lock to two owners.
+                return Err(Errno::EPERM);
+            }
+            if lock
+                .compare_exchange(state, state - 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                if state == 1 {
+                    atomic_notify(lock as *const AtomicI32 as usize);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    /// Release the fork's reader if it holds one. Idempotent.
+    fn release_fork_archive_reader() {
+        if READER_HELD.swap(false, Ordering::Relaxed) {
+            let _ = return_archive_reader();
+            // SAFETY: after injection a local `global.set`.
+            unsafe { __wpk_fork_set_reader_held(0) };
+        }
+    }
+
+    /// Clamp a proof-of-use counter into the diagnostic's `u32` value.
+    fn stat_value(counter: &AtomicU64) -> u32 {
+        u32::try_from(counter.load(Ordering::Relaxed)).unwrap_or(u32::MAX)
+    }
+
+    /// The finished fork's report: an abort and why, or the proof that the
+    /// module did the fork's work -- the committed frames for a parent, the
+    /// references and replayed frames for a child. Proof is silent when its
+    /// counters are zero, so a reference-free child adds nothing a consumer
+    /// waiting for the parent's frame count could mistake.
+    fn report_finish(abort_report: Option<u32>, child_replay: bool) {
+        if let Some(report) = abort_report {
+            report_fork_diagnostic(
+                diagnostic_wire::KIND_ABORTED,
+                [report & 0xffff, report >> 16, 0, 0, 0],
+            );
+            return;
+        }
+        if !child_replay {
+            let frames = stat_value(&FRAMES_COMMITTED);
+            if frames > 0 {
+                report_fork_diagnostic(diagnostic_wire::KIND_PARENT_FRAMES, [frames, 0, 0, 0, 0]);
+            }
+            return;
+        }
+        let references = [
+            stat_value(&REFERENCES_RECONSTRUCTED),
+            stat_value(&EXNREFS_RECONSTRUCTED),
+            stat_value(&GC_NODES_RECONSTRUCTED),
+            stat_value(&DRIVE_STEPS_EXECUTED),
+            stat_value(&STATIC_ROOTS_PUBLISHED),
+        ];
+        if references.iter().any(|count| *count > 0) {
+            report_fork_diagnostic(diagnostic_wire::KIND_CHILD_REFERENCES, references);
+        }
+        let frames = stat_value(&FRAMES_REPLAYED);
+        if frames > 0 {
+            report_fork_diagnostic(diagnostic_wire::KIND_CHILD_FRAMES, [frames, 0, 0, 0, 0]);
+        }
+    }
 
     /// Begin the parent's ABORT replay from a sealed parent and record why.
     ///
@@ -8530,6 +8838,14 @@ mod wasm {
                 return Err(Errno::EINVAL);
             }
             format()?;
+            // The fork holds the process archive READER from here until its
+            // finish, so no library joins the archive between the snapshot and
+            // the child (lane F step 3c, ruling 4: the module owns the token).
+            acquire_fork_archive_reader()?;
+            // The capture is about to ask which merged slot holds a
+            // statically initialised reference, so the catalog must hold them
+            // now. Before the session opens, so a refused fill resets nothing.
+            fill_static_roots()?;
             open_capture_session();
             begin_capture_impl(channel_base as u64)
         });
@@ -8563,6 +8879,7 @@ mod wasm {
                 // module frees exactly what the module mapped.
                 let _ = abort_impl();
                 enter_phase(PHASE_IDLE);
+                release_fork_archive_reader();
                 set_err(errno);
                 0
             }
@@ -8606,7 +8923,14 @@ mod wasm {
         } else {
             require_phase_either(PHASE_PARENT_REPLAY, PHASE_CHILD_REPLAY)
         };
+        let in_phase = allowed.is_ok();
         let finished = allowed.and_then(|()| finish_transaction_impl(abort != 0));
+        // The fork is over, finished or not: hand the archive reader back
+        // (the host used to, in a `finally`, right after this call). A
+        // finish refused for being out of phase ended nothing.
+        if in_phase {
+            release_fork_archive_reader();
+        }
         match finished.and_then(|()| {
             if child_replay {
                 report_fork_replay_ready()
@@ -8617,9 +8941,14 @@ mod wasm {
             Ok(()) => {
                 enter_phase(PHASE_IDLE);
                 set_ok();
+                // Every finish reports, from here, so no abort path can forget
+                // to say why (the host-diagnostic-routing test pins this).
                 if abort != 0 {
-                    ABORT_REPORT.swap(0, Ordering::Relaxed) as i32
+                    let report = ABORT_REPORT.swap(0, Ordering::Relaxed);
+                    report_finish(Some(report), false);
+                    report as i32
                 } else {
+                    report_finish(None, child_replay);
                     0
                 }
             }
@@ -9662,8 +9991,11 @@ mod wasm {
     /// Such a child runs on its parked parent's memory, with the table snapshot
     /// its replay already materialized, while the parent holds the archive
     /// READER until the child execs or exits -- so the archive cannot move
-    /// under it. It must also not allocate: its heap chunks are returned when
-    /// its replay finishes (`fm_child_finish`). So its table path adopts the
+    /// under it. It must also not publish: whatever it maps lives on its
+    /// parent's image only until that image ends, when the KERNEL reclaims
+    /// every mapping the child made (`reclaim_vfork_borrow` in
+    /// crates/runtime-core), so nothing it could publish outlives it. So its
+    /// table path adopts the
     /// fence and touches neither the lock nor the heap. The host's TypeScript
     /// replica makes the same choice (`borrowedImmutableSnapshot`).
     fn borrowed_child() -> bool {
@@ -12033,6 +12365,10 @@ mod wasm {
         borrowed_bytes: usize,
     ) -> Result<(), Errno> {
         require_phase(PHASE_IDLE)?;
+        // The install's drive reads the merged static-root catalog on every
+        // DRIVE_OP_STATIC_ROOT step, so it must hold this child's live roots
+        // first; the install nulls it again once the drive has run.
+        fill_static_roots()?;
         // Either word non-zero makes this a borrowed (vfork) child, and
         // `set_borrowed_workspace_impl` refuses a region with the other one
         // zero: a base with no size, or a size with no base, is not a

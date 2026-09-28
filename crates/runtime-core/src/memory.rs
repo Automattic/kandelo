@@ -12,6 +12,11 @@ pub struct MappedRegion {
     pub len: usize,  // length in bytes
     pub prot: u32,   // protection flags (tracked but not enforced)
     pub flags: u32,  // map flags
+    /// Created by a vfork child on the image it borrows from its parked
+    /// parent (see [`MemoryManager::begin_vfork_borrow`]). The kernel
+    /// reclaims every such mapping when the child's image ends, before the
+    /// parent may resume.
+    pub borrowed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +58,24 @@ pub struct MemoryManager {
     data_limit: u64,
     /// Program break at process start, used to compute data segment growth.
     initial_brk: usize,
+    /// This table belongs to a vfork child running on its parked parent's
+    /// image: every mapping it creates is marked `borrowed` so the kernel can
+    /// reclaim exactly those when the child execs or exits.
+    ///
+    /// WHY THE KERNEL, AND WHY HERE. Each process has its own mapping table,
+    /// so a vfork child's mappings (its co-resident fork module's region, the
+    /// module's heap and arena chunks, anything the child mmaps before it
+    /// execs) are recorded only in the child's copy. The parent's table never
+    /// held them and is never touched. Reclaiming them used to be the host's
+    /// job: the child's Worker `munmap`ped its fork-module region the moment
+    /// its replay finished. That cannot survive the fork run loop moving into
+    /// the fork module (lane F step 3c): the region is the module's own
+    /// memory, and a module cannot unmap itself while its frames are live.
+    /// The kernel already owns the vfork lifetime (the borrow, the parent's
+    /// completion), so it owns this end of it too, and
+    /// `ProcessTable::vfork_address_space_released` refuses to resume the
+    /// parent while any borrowed mapping remains.
+    borrowing: bool,
 }
 
 impl MemoryManager {
@@ -95,7 +118,38 @@ impl MemoryManager {
             brk_limit: Self::DEFAULT_MAX_ADDR,
             data_limit: u64::MAX,
             initial_brk: Self::INITIAL_BRK,
+            borrowing: false,
         }
+    }
+
+    /// Start recording this table's new mappings as borrowed: the process is
+    /// a vfork child running on its parent's image. See `borrowing`.
+    pub fn begin_vfork_borrow(&mut self) {
+        self.borrowing = true;
+    }
+
+    /// Whether any mapping made on a borrowed image is still recorded.
+    pub fn has_vfork_borrowed_mappings(&self) -> bool {
+        self.mappings.iter().any(|mapping| mapping.borrowed)
+    }
+
+    /// Reclaim every mapping made on the borrowed image and stop borrowing.
+    ///
+    /// Returns the reclaimed `(addr, len)` ranges. Mappings the child
+    /// inherited from its parent are kept: they describe the parent's own
+    /// memory, which a vfork child's end must leave exactly as it was.
+    pub fn reclaim_vfork_borrow(&mut self) -> Vec<(usize, usize)> {
+        self.borrowing = false;
+        let mut reclaimed = Vec::new();
+        self.mappings.retain(|mapping| {
+            if mapping.borrowed {
+                reclaimed.push((mapping.addr, mapping.len));
+                false
+            } else {
+                true
+            }
+        });
+        reclaimed
     }
 
     /// Read-only access to the mmap mappings (for fork serialization).
@@ -184,6 +238,7 @@ impl MemoryManager {
                 len: aligned_len,
                 prot,
                 flags,
+                borrowed: self.borrowing,
             },
         );
 
@@ -376,6 +431,7 @@ impl MemoryManager {
                         len: m_end - unmap_end,
                         prot: self.mappings[i].prot,
                         flags: self.mappings[i].flags,
+                        borrowed: self.mappings[i].borrowed,
                     };
                     self.mappings[i].len = addr - m_addr;
                     self.mappings.insert(i + 1, right);
@@ -658,6 +714,7 @@ mod tests {
             len,
             prot: PROT_READ | PROT_WRITE,
             flags: MAP_PRIVATE | MAP_ANONYMOUS,
+            borrowed: false,
         }
     }
 

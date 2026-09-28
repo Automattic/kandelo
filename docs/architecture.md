@@ -1258,12 +1258,25 @@ loudly. For every launch:
   The native host calls it with `ENOMEM` when the borrowed-region layout, the
   memory clone or the child launch fails; each happens before the child's
   thread is spawned.
-- A vfork borrower's exec commit or exit clears `vfork_parent` and moves the
-  lifetime to awaiting quiescence. The borrow itself stays recorded. The host
+- A vfork child's mapping table is its own copy of its parent's. Every mapping
+  the child makes on the borrowed image (its co-resident fork module's region,
+  that module's heap and arena chunks, anything else it maps before exec or
+  `_exit`) is marked borrowed. When the child's image ends, the KERNEL reclaims
+  exactly those mappings; the inherited ones describe the parent's memory and
+  stay, and the parent's own table (with its own fork-module region) is never
+  touched. This used to be the host's job: the child's Worker unmapped its
+  fork-module region the moment its replay finished. It moved to the kernel in
+  lane F step 3c because the fork run loop now runs inside the fork module,
+  and a module cannot unmap the memory its own frames are running in; the
+  kernel already owns the rest of the vfork lifetime, so it owns this end too.
+- A vfork borrower's exec commit or exit clears `vfork_parent`, reclaims its
+  borrowed mappings (above), and moves the lifetime to awaiting quiescence.
+  The borrow itself stays recorded. The host
   proves its realm stopped touching the memory, then calls
   `kernel_vfork_address_space_released(child_pid, disposition)`. `RESUME`
-  (`EBUSY` while the child still runs on the image) completes the parent with
-  the child pid. `CONTAIN` records SIGSEGV death for the parent and any live
+  (`EBUSY` while the child still runs on the image, or while the kernel still
+  records a borrowed mapping of the child's, so the reclaim always precedes
+  the parent's resume) completes the parent with the child pid. `CONTAIN` records SIGSEGV death for the parent and any live
   child, and never completes the parent. The Node/browser host asks for
   `CONTAIN` whenever its teardown was not exact or a failure happened after
   the child Worker may have started, and tears both processes down through

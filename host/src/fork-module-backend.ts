@@ -51,29 +51,6 @@ export const FORK_MODULE_STATS = [
   "externrefHandlesScanned",
 ] as const;
 
-/**
- * The backend, or a loud failure naming what was missing.
- *
- * The handle is nullable everywhere in the worker, and every fork path that
- * reaches these calls has one by construction — a fork only gets here having
- * instantiated the module. A bare `!` would be right and would also mean that
- * if the impossible ever happened, the failure would name a JavaScript property
- * rather than the thing that was absent.
- *
- * One guard rather than one per call site: this replaced a
- * `borrowedReplayWorkspaceOf` that did the same job for exactly one method,
- * which stopped being the right shape as soon as a second caller needed it.
- */
-export function requireForkModuleBackend(
-  backend: ForkModuleContinuationBackend | null,
-  pid: number,
-): ForkModuleContinuationBackend {
-  if (backend === null) {
-    throw new Error(`pid=${pid}: this fork path needs a fork-module backend`);
-  }
-  return backend;
-}
-
 /** Sizes a vfork BORROWED child's host-reserved private workspace. */
 export interface ForkBorrowedReplayWorkspace {
   readonly prefixBytes: number;
@@ -101,8 +78,12 @@ export function encodeForkBindings(rows: readonly ForkBindingRow[]): Uint8Array 
   return out;
 }
 
-/** `ENOMEM`: the module could not get memory, which a fork survives. */
-const FORK_MODULE_ENOMEM = 12;
+/**
+ * Refusals a fork survives with `fork()` = `-errno`: the module could not get
+ * memory (`ENOMEM`), or the archive reader it takes as it opens the capture
+ * would wait on this Worker's own loader transaction (`EDEADLK`).
+ */
+const FORK_MODULE_SURVIVABLE_BEGIN = new Set([12, 35]);
 /** `PHASE_ABORT_REPLAY` in `crates/fork-module/src/lib.rs`. */
 const FORK_MODULE_PHASE_ABORT_REPLAY = 5;
 
@@ -174,6 +155,11 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   { slot: 16, name: "wpk_fork_module_table_read", required: true },
   { slot: 17, name: "wpk_fork_module_table_length", required: true },
   { slot: 18, name: "wpk_fork_module_table_apply", required: true },
+  // The guest's own static-root copy into the module's merged catalog; the
+  // module drives it before a capture and before a child's install. Not
+  // required: a guest with no static roots emits no shim, and the module
+  // never drives an activation that placed none.
+  { slot: 19, name: "__wpk_fork_static_root_fill", required: false },
 ] as const;
 
 /** One row of `fm_child_plan`; `resolve` is a `CHILD_PLAN_RESOLVE_*`. */
@@ -380,7 +366,7 @@ export class ForkModuleContinuationBackend {
       channelBase,
     );
     const errno = this.lastErrno();
-    if (errno === FORK_MODULE_ENOMEM) {
+    if (FORK_MODULE_SURVIVABLE_BEGIN.has(errno)) {
       throw new ContinuationAllocationError(
         errno,
         0,

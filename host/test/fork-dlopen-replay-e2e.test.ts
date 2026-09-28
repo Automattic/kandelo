@@ -251,10 +251,11 @@ function moduleFramesCommitted(
 }
 
 /**
- * The fork parent posts its `fork_module_frames` proof from its live run loop
- * (not the worker tail), so a main-thread host delivers it reliably. It can
- * still land a couple of event-loop turns after the run promise resolves, and
- * the diagnostics array is a live reference, so poll it briefly.
+ * The fork module reports the parent's `fork_module_frames` proof through the
+ * kernel (`SYS_FORK_DIAGNOSTIC`) when the parent's fork finishes, so no Worker
+ * tail has to run for it. It can still land a couple of event-loop turns after
+ * the run promise resolves, and the diagnostics array is a live reference, so
+ * poll it briefly.
  */
 async function pollFramesCommitted(
   diagnostics: readonly { source: string; message: string }[],

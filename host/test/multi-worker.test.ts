@@ -394,6 +394,8 @@ function forkLifecycleKernel(
       new Uint8Array(memory!.buffer)[out + 4] = WAKEUP_EVENT_TYPES.forkLifecycle;
       return 1;
     }),
+    // No fork diagnostics in this scenario; the drain runs beside this one.
+    kernel_drain_fork_diagnostics: vi.fn(() => 0),
     kernel_drain_fork_lifecycle_events: vi.fn(
       (rawOut: number | bigint, len: number, max: number) => {
         const out = Number(rawOut);

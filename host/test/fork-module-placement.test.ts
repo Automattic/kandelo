@@ -165,10 +165,10 @@ describe("fork-module placement", () => {
     });
     expect(fm.functionCatalog).toBeInstanceOf(WebAssembly.Table);
     expect(fm.driveTable).toBeInstanceOf(WebAssembly.Table);
-    expect(fm.staticRootCatalog).toBeInstanceOf(WebAssembly.Table);
     // The static-root catalog and the transit table are the module's OWN
-    // exports, not ours: a host cannot mint an anyref table on WebKit.
-    expect(fm.staticRootCatalog).toBe(fm.exports.__wpk_fork_static_root_catalog);
+    // exports, not ours: a host cannot mint an anyref table on WebKit (and no
+    // host touches the static-root catalog at all: the guest fills it).
+    expect(fm.exports.__wpk_fork_static_root_catalog).toBeInstanceOf(WebAssembly.Table);
     expect(fm.exports.__wpk_fork_ref_gc_transit).toBeInstanceOf(WebAssembly.Table);
     expect(fm.exports.__wpk_fork_ref_gc_transit).not.toBe(fm.driveTable);
   });

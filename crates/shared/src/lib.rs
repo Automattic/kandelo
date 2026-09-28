@@ -328,6 +328,62 @@ pub mod fork_lifecycle_event_wire {
     pub const LAUNCH_FAILED_ALREADY_RESOLVED: i32 = 1;
 }
 
+/// One queued fork diagnostic, as `kernel_drain_fork_diagnostics` writes it.
+///
+/// WHY THE KERNEL FORMATS IT. A fork module reports what happened to a fork
+/// (it aborted, and why; or it drove the frames and references it claims) by
+/// issuing `SYS_FORK_DIAGNOSTIC`. The Node/browser host used to post these as
+/// Worker messages and native printed its own sentence; the two had already
+/// drifted. The kernel turns the numbers into the ONE line every host logs,
+/// and hands the numbers alongside for a host that also counts them.
+///
+/// Layout: `pid`, `kind`, five `u32` values, the text length, then the text
+/// (UTF-8, at most `TEXT_CAPACITY` bytes).
+pub mod fork_diagnostic_wire {
+    pub const PID_OFFSET: usize = 0;
+    pub const KIND_OFFSET: usize = 4;
+    pub const VALUES_OFFSET: usize = 8;
+    pub const VALUE_COUNT: usize = 5;
+    pub const TEXT_LEN_OFFSET: usize = VALUES_OFFSET + VALUE_COUNT * 4;
+    pub const TEXT_OFFSET: usize = TEXT_LEN_OFFSET + 4;
+    pub const TEXT_CAPACITY: usize = 224;
+    pub const RECORD_BYTES: usize = TEXT_OFFSET + TEXT_CAPACITY;
+
+    /// A fork aborted: `v0` the errno `fork()` returned, `v1` the cause
+    /// (`ABORT_CAUSE_*`). The parent survives; no child was created. A host
+    /// reports it as a warning, because an abort is the correct outcome for a
+    /// reference the platform refuses to carry.
+    pub const KIND_ABORTED: u32 = 1;
+    /// A parent's fork completed through the module: `v0` frames committed.
+    pub const KIND_PARENT_FRAMES: u32 = 2;
+    /// A child's install reconstructed references: `v0` references, `v1`
+    /// exnrefs, `v2` GC nodes, `v3` drive steps, `v4` static roots.
+    pub const KIND_CHILD_REFERENCES: u32 = 3;
+    /// A child's replay rewound through the module: `v0` frames replayed.
+    pub const KIND_CHILD_FRAMES: u32 = 4;
+
+    /// The fork module's run loop hit a state it cannot resume from: `v0`
+    /// is a `RUN_FAILED_*` reason, `v1` its detail (a phase or an errno).
+    /// The module traps right after reporting it, so a host sees the trap
+    /// and this line says why.
+    pub const KIND_RUN_FAILED: u32 = 5;
+
+    pub const RUN_FAILED_UNWIND_OUTSIDE_CAPTURE: u32 = 1;
+    pub const RUN_FAILED_RETURN_MID_CONTINUATION: u32 = 2;
+    pub const RUN_FAILED_SEAL: u32 = 3;
+    pub const RUN_FAILED_REPLAY: u32 = 4;
+    pub const RUN_FAILED_FINISH: u32 = 5;
+    pub const RUN_FAILED_BAD_PHASE: u32 = 6;
+    pub const RUN_FAILED_MODE_MISMATCH: u32 = 7;
+
+    /// A continuation frame could not be reserved mid-unwind.
+    pub const ABORT_CAUSE_FRAME_RESERVE: u32 = 1;
+    /// The capture unwound completely but could not seal.
+    pub const ABORT_CAUSE_SEAL: u32 = 2;
+    /// The kernel refused to create the child.
+    pub const ABORT_CAUSE_LAUNCH: u32 = 3;
+}
+
 /// Packed host/kernel wire layout for one process-table snapshot record.
 ///
 /// This record is not a native Rust or C structure: the `u64` field is
@@ -2994,6 +3050,15 @@ pub mod abi {
     pub const WPK_FORK_STATIC_ROOT_CATALOG_VERSION: u16 = 1;
     pub const WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE: u16 = 12;
     pub const WPK_FORK_STATIC_ROOT_HARVEST_EXPORT: &str = "__wpk_fork_static_root_harvest";
+    /// `(base: i32) -> i32`: copy this activation's own static-root catalog
+    /// into the fork module's merged catalog (which the guest imports under
+    /// [`WPK_FORK_STATIC_ROOT_CATALOG_EXPORT`]) at `base`, with one
+    /// `table.copy`. Returns the root count, or -1 when the merged catalog is
+    /// too short. Emitted only for a guest with at least one static root. The
+    /// fork module drives it (drive slot `DRIVE_SLOT_STATIC_ROOT_FILL`) before
+    /// a capture and before a child's install, so no host copies references
+    /// one `Table.set` at a time.
+    pub const WPK_FORK_STATIC_ROOT_FILL_EXPORT: &str = "__wpk_fork_static_root_fill";
 
     /// Versioned instrumentation claims required by ABI 43.
     ///
@@ -3160,6 +3225,15 @@ pub mod abi {
         "wpk_fork_module_table_state_restore";
     pub const WPK_FORK_EXPORT_RESUME_START: &str = "wpk_fork_resume_start";
     pub const WPK_FORK_EXPORT_RESUME_THREAD: &str = "wpk_fork_resume_thread";
+    /// `(table_index: i32, arg: ptr) -> ptr`: call the pthread start routine
+    /// at `table_index` of `__indirect_function_table` with `arg`, in the
+    /// calling convention the guest's table actually uses. A guest
+    /// post-processed with binaryen's `--fpcast-emu` has every table entry
+    /// rewritten to one uniform `(i64 x N) -> i64` thunk; fork-instrument
+    /// reads that type from the binary and emits the matching call, so the
+    /// fork module's run loop can call every guest's thread entry through
+    /// one fixed signature, and no host adapts arguments per engine.
+    pub const WPK_FORK_EXPORT_THREAD_ENTRY: &str = "wpk_fork_thread_entry";
     pub const WPK_FORK_EXPORT_REWIND_BEGIN: &str = "wpk_fork_rewind_begin";
     pub const WPK_FORK_EXPORT_REWIND_END: &str = "wpk_fork_rewind_end";
     pub const WPK_FORK_EXPORT_STATE: &str = "wpk_fork_state";
@@ -3486,6 +3560,21 @@ pub mod abi {
             table64: false,
             element: FuncRef,
             minimum: 1,
+            maximum: None,
+        },
+        // The fork module's merged static-root catalog, which the guest's
+        // `__wpk_fork_static_root_fill` copies its own roots into (lane F
+        // step 3c). Imported by EVERY fork-instrumented guest, roots or not,
+        // for the reason the two tables above are: one uniform contract, and
+        // an owned table is not reconstructed state, so the imported-table
+        // recipe section must not name it. Minimum 0: the module grows it as
+        // it places catalogs and it starts empty.
+        ProgramArtifactTableImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
+            table64: false,
+            element: AnyRef,
+            minimum: 0,
             maximum: None,
         },
     ];
@@ -3997,6 +4086,14 @@ pub mod abi {
         /// and returns 0, which becomes the child's fork() return. Not a libc
         /// syscall: only the fork replay path issues it. No arguments.
         pub const SYS_FORK_REPLAY_READY: u32 = 416;
+        /// Issued by a fork module on its own channel to report a fork
+        /// outcome every host must log the same way: an abort and why, or
+        /// the module's proof that it did a fork's work. Arguments
+        /// `(kind, v0, v1, v2, v3, v4)`, `kind` one of
+        /// `fork_diagnostic_wire::KIND_*`. The kernel formats the one line
+        /// every host prints and queues it for the host to drain
+        /// (`kernel_drain_fork_diagnostics`). Not a libc syscall.
+        pub const SYS_FORK_DIAGNOSTIC: u32 = 417;
 
         pub const SYSCALLS: &[AbiSyscallNumber] = &[
             AbiSyscallNumber {
@@ -4367,6 +4464,10 @@ pub mod abi {
                 name: "ForkReplayReady",
                 number: SYS_FORK_REPLAY_READY,
             },
+            AbiSyscallNumber {
+                name: "ForkDiagnostic",
+                number: SYS_FORK_DIAGNOSTIC,
+            },
         ];
     }
 
@@ -4385,7 +4486,7 @@ pub mod abi {
         ///
         /// Numbered 500 to sit clear of every Linux syscall numbering
         /// scheme and of our kernel-side dispatch table in `wasm_api.rs`
-        /// (highest used: 416). The original plan picked 214 to neighbour
+        /// (highest used: 417). The original plan picked 214 to neighbour
         /// SYS_FORK, but 214 collides with the kernel's existing
         /// SYS_GETPGID handler — host-interception alone wouldn't help
         /// because every legitimate getpgid call would also be caught.
@@ -4621,7 +4722,7 @@ pub mod abi {
                 previous_import = current;
             }
 
-            assert_eq!(WPK_FORK_REQUIRED_TABLE_IMPORTS.len(), 2);
+            assert_eq!(WPK_FORK_REQUIRED_TABLE_IMPORTS.len(), 3);
             let mut previous_table_import = ("", "");
             for requirement in WPK_FORK_REQUIRED_TABLE_IMPORTS {
                 let current = (requirement.module, requirement.name);

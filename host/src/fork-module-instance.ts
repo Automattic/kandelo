@@ -57,11 +57,6 @@ export interface ForkModuleInstance {
   readonly functionCatalog: WebAssembly.Table;
   readonly driveTable: WebAssembly.Table;
   /**
-   * The module's own merged static-root catalog (an `anyref` table it defines,
-   * exports and grows as it places each activation). A host only fills slots.
-   */
-  readonly staticRootCatalog: WebAssembly.Table;
-  /**
    * A fixed staging slab INSIDE the reserved region, the per-call scratch
    * every host-to-module stage lands in.
    *
@@ -275,7 +270,6 @@ export function instantiateForkModule(
     regionBytes,
     functionCatalog,
     driveTable,
-    staticRootCatalog: exports.__wpk_fork_static_root_catalog as WebAssembly.Table,
     stagingBase: memoryBase + stagingOffset,
     stagingBytes: STAGING_SLAB_BYTES,
   };

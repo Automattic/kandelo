@@ -160,8 +160,9 @@ async function runFuncrefFork(
           argv0,
         ]);
 
-        // The child posts its `fork_module_references` proof-of-use AFTER the
-        // guest's exit resolves `spawn`; give that best-effort diagnostic a
+        // The child's `fork_module_references` proof-of-use travels through
+        // the kernel (`SYS_FORK_DIAGNOSTIC`) and the kernel worker's drain,
+        // which can trail the guest's exit resolving `spawn`; give it a
         // bounded window to arrive before teardown.
         const started = Date.now();
         const windowMs = 8_000;

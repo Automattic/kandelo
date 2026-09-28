@@ -267,6 +267,7 @@ export const WPK_FORK_UNWIND_TRANSPORT_SECTION = "kandelo.wpk_fork.unwind_transp
 export const WPK_FORK_STATIC_ROOT_CATALOG_EXPORT = "__wpk_fork_static_root_catalog" as const;
 export const WPK_FORK_STATIC_ROOT_CATALOG_SECTION = "kandelo.wpk_fork.static_root_catalog" as const;
 export const WPK_FORK_STATIC_ROOT_HARVEST_EXPORT = "__wpk_fork_static_root_harvest" as const;
+export const WPK_FORK_STATIC_ROOT_FILL_EXPORT = "__wpk_fork_static_root_fill" as const;
 export const WPK_FORK_UNWIND_TRANSPORT_VERSION = 1 as const;
 export const WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY = 0 as const;
 export const WPK_FORK_STATIC_ROOT_CATALOG_VERSION = 1 as const;
@@ -326,6 +327,7 @@ export const WPK_FORK_EXPORT_MODULE_STATE_SAVE = "wpk_fork_module_state_save" as
 export const WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP = "wpk_fork_module_thread_bootstrap" as const;
 export const WPK_FORK_EXPORT_RESUME_START = "wpk_fork_resume_start" as const;
 export const WPK_FORK_EXPORT_RESUME_THREAD = "wpk_fork_resume_thread" as const;
+export const WPK_FORK_EXPORT_THREAD_ENTRY = "wpk_fork_thread_entry" as const;
 export const WPK_FORK_REFERENCE_IMPORT_DECODE_ANYREF = "__wpk_fork_ref_decode_anyref" as const;
 export const WPK_FORK_REFERENCE_IMPORT_DECODE_EXNREF = "__wpk_fork_ref_decode_exnref" as const;
 export const WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF = "__wpk_fork_ref_decode_externref" as const;
@@ -418,6 +420,7 @@ export const WPK_FORK_REQUIRED_IMPORTS = [
 export const WPK_FORK_REQUIRED_TABLE_IMPORTS = [
   { module: "env", name: "__wpk_fork_ref_gc_transit", table64: false, element: "anyref", minimum: 1, maximum: null },
   { module: "env", name: "__wpk_fork_resume_table", table64: false, element: "funcref", minimum: 1, maximum: null },
+  { module: "env", name: "__wpk_fork_static_root_catalog", table64: false, element: "anyref", minimum: 0, maximum: null },
 ] as const;
 export const WPK_FORK_REQUIRED_EXPORTS = [
   { name: "__wpk_fork_exception_materialize", params: ["i32"], results: [] },
@@ -508,6 +511,23 @@ export const VFORK_RELEASE_DISPOSITIONS = {
 export const FORK_LAUNCH_FAILED_RESULTS = {
   rolledBack: 0,
   alreadyResolved: 1,
+} as const;
+
+export const FORK_DIAGNOSTIC_RECORD_BYTES = 256 as const;
+export const FORK_DIAGNOSTIC_VALUE_COUNT = 5 as const;
+export const FORK_DIAGNOSTIC_FIELDS = {
+  pid: 0,
+  kind: 4,
+  values: 8,
+  textLen: 28,
+  text: 32,
+} as const;
+export const FORK_DIAGNOSTIC_KINDS = {
+  aborted: 1,
+  parentFrames: 2,
+  childReferences: 3,
+  childFrames: 4,
+  runFailed: 5,
 } as const;
 
 export const POLL_EVENTS = {
@@ -1313,6 +1333,7 @@ export const ABI_SYSCALLS = {
   ExitGroup: 387,
   ThreadCancel: 415,
   ForkReplayReady: 416,
+  ForkDiagnostic: 417,
 } as const;
 
 export type ChannelScalarSlotKind =
@@ -1763,6 +1784,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   387: "exit_group",
   415: "thread_cancel",
   416: "fork_replay_ready",
+  417: "fork_diagnostic",
   500: "spawn",
 } as const;
 

@@ -209,10 +209,6 @@ export type WorkerToHostMessage =
   | ExecCompleteMessage
   | AlarmSetMessage
   | VmInterruptTimerMessage
-  | ForkModuleFramesMessage
-  | ForkAbortedMessage
-  | ForkModuleChildFramesMessage
-  | ForkModuleReferencesMessage
   | ForkModuleRegionMessage;
 
 /**
@@ -222,7 +218,7 @@ export type WorkerToHostMessage =
  * inherits the region via its memory clone; re-reserving would double-map it
  * and inflate `memory.size`). Reported once per process/exec generation, before
  * the guest can fork. Borrowed (vfork) children do not report — they use an
- * on-demand region they munmap after replay.
+ * on-demand region the kernel reclaims when their image ends.
  */
 export interface ForkModuleRegionMessage {
   type: "fork_module_region";
@@ -231,102 +227,6 @@ export interface ForkModuleRegionMessage {
   base: number;
   /** Total reserved bytes (static/BSS footprint plus the shadow stack). */
   bytes: number;
-}
-
-/**
- * Phase 6 D5: proof-of-use for the co-resident fork-module. A process worker
- * that drove a qualifying fork through the module reports how many frames the
- * module committed, so the host (and tests) can confirm the continuation ran
- * through the module and did not silently fall back to the JS closures.
- */
-export interface ForkModuleFramesMessage {
-  type: "fork_module_frames";
-  pid: number;
-  frames: number;
-}
-
-/**
- * A fork that ABORTED: the parent survives and `fork()` returns `-errno` to
- * the guest, and this says why.
- *
- * Without it the abort is silent. The platform knows exactly what refused --
- * a seal that could not complete, a reference kind it cannot reconstruct, a
- * kernel that would not create the process -- and told nobody, so a program
- * that does not check `fork()`'s return goes on to fail somewhere unrelated
- * (waiting for a child that was never created, usually) and the real reason is
- * gone. Three separate defects wore that disguise in one day (census 189).
- *
- * A WARNING, not an error: an abort is the CORRECT outcome for a reference
- * kind the platform refuses to reconstruct, and one test asserts exactly that.
- */
-export interface ForkAbortedMessage {
-  type: "fork_aborted";
-  pid: number;
-  /** The positive errno `fork()` returns negated. */
-  errno: number;
-  /** Which refusal this was, in words a reader can act on. */
-  reason: string;
-}
-
-/**
- * Phase 6 D7b: replay-side proof-of-use for the co-resident fork-module. A
- * replay-only fork CHILD never commits a frame, so `fork_module_frames` (which
- * the parent commits) cannot prove the CHILD ran its rewind through the module.
- * A fork-from-thread child carries no references either, so
- * `fork_module_references` also stays silent. This distinct message lets a fork
- * CHILD report how many frames the module replayed (consuming rewind advances),
- * so the host (and tests) can confirm both SIDES of a fork-from-thread — the
- * pthread parent (via `fork_module_frames`) and the child (via this) — ran
- * through the module and did not silently fall back to the JS closures. A
- * distinct type (not a second `fork_module_frames`) so a consumer waiting on the
- * parent's committed-frame count is never confused by the child's replay count.
- */
-export interface ForkModuleChildFramesMessage {
-  type: "fork_module_child_frames";
-  pid: number;
-  frames: number;
-}
-
-/**
- * Phase 6 D6.5: PER-KIND proof-of-use for the co-resident fork-module's
- * REFERENCE reconstruction. A fresh fork CHILD worker whose carried references
- * were reconstructed through the module (the flipped `__wpk_fork_ref_decode_*`
- * exports and `fm_begin_reference_replay`) reports one count per reference kind,
- * so the host (and tests) can confirm the reference decode ran through the
- * module rather than silently falling back to the JS reference path. A single
- * message carries every kind because a graph can mix them (an exnref whose
- * payload is an externref advances both counters). Reference reconstruction
- * happens in the child, so — unlike `fork_module_frames`, which the parent
- * commits — this is posted by the child worker.
- *
- * Emitted ONLY when at least one kind's count is positive (the D7b lesson: a
- * `=0` diagnostic broke the `d_01` poll), so a reference-free fork stays silent.
- */
-export interface ForkModuleReferencesMessage {
-  type: "fork_module_references";
-  pid: number;
-  /** Funcref/null count (`fm_stats` ReferencesReconstructed field). */
-  references: number;
-  /** Exnref-node count (`fm_stats` ExnrefsReconstructed field). */
-  exnrefs: number;
-  /** Typed-GC node count — struct/array/i31 (`fm_stats` GcNodesReconstructed). */
-  gcNodes: number;
-  /**
-   * Typed-GC DRIVE step count (`fm_stats` DriveStepsExecuted field, Phase 6
-   * item 3c). Distinct from `gcNodes`: this advances only when the module
-   * actually drove the typed allocate/fill/exn order (`fm_build_gc_plan` +
-   * `fm_drive_execute`), so a nonzero value proves the module — not the JS
-   * `materializeAllTyped` fallback — reconstructed the typed graph.
-   */
-  driveSteps: number;
-  /**
-   * Static-root publish count (`fm_stats` StaticRootsPublished field, the
-   * binder). Advances only when the module's DRIVE_OP_STATIC_ROOT step
-   * republished an immutable static root into the anyref transit, so a nonzero
-   * value proves the module — not the JS `publishTransit` fallback — reconstructed
-   * the static-root identity.
-   */
-  staticRoots: number;
 }
 
 export interface WorkerReadyMessage {

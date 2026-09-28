@@ -79,6 +79,7 @@ import {
 } from "./constants";
 import {
   FILE_MODES,
+  FORK_DIAGNOSTIC_KINDS,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
   VFORK_RELEASE_DISPOSITIONS,
@@ -2846,29 +2847,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         if (isCurrentThreadGeneration() && m.pid === pid) {
           handleVmInterruptTimer(m, pid, processInfo);
         }
-      } else if (m.type === "fork_module_frames" && m.pid === pid) {
-        // Phase 6 D7b: forward the pthread PARENT worker's fork-module proof-of-use
-        // (the parent side of a fork-from-thread). The process-worker handler above
-        // forwards the same message for the main worker; the pthread worker has its
-        // own handler, so mirror it here or the parent-frame proof is dropped.
-        postForkModuleProof({
-          pid,
-          source: "fork-module",
-          message: `fork_module_frames=${m.frames}`,
-        });
-      } else if (m.type === "fork_aborted" && m.pid === pid) {
-        // A fork FROM a pthread aborts the way a process fork does -- both
-        // Workers run the one `ForkWorker` -- so it says why the same way. The
-        // pthread path used to stay silent; a guest that ignored `fork()`'s
-        // -errno then failed somewhere else with the reason gone.
-        reportHostDiagnostic(
-          {
-            pid,
-            source: "fork",
-            message: `fork aborted with errno=${m.errno}: ${m.reason}`,
-          },
-          "warn",
-        );
       }
     });
     threadWorker.on("error", (err: Error) => {
@@ -3888,6 +3866,22 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       onThreadExit: (pid, _tid, channelOffset) =>
         handleThreadExit(pid, channelOffset),
       onExit: handleExit,
+      // Fork diagnostics come from the KERNEL (`SYS_FORK_DIAGNOSTIC`), which
+      // formats the line; a Worker posts none. An abort is a warning -- it is
+      // the right outcome for a reference the platform refuses to carry, but
+      // a guest that ignores `fork()`'s -errno fails somewhere unrelated and
+      // the reason would be gone. Proof-of-use is informational success
+      // telemetry, so it rides `fork_module_proof`, never `onHostDiagnostic`.
+      // A run-loop failure is an error: the module traps right after it.
+      onForkDiagnostic: ({ pid, kind, text }) => {
+        if (kind === FORK_DIAGNOSTIC_KINDS.aborted) {
+          reportHostDiagnostic({ pid, source: "fork", message: text }, "warn");
+        } else if (kind === FORK_DIAGNOSTIC_KINDS.runFailed) {
+          reportHostDiagnostic({ pid, source: "fork", message: text });
+        } else {
+          postForkModuleProof({ pid, source: "fork-module", message: text });
+        }
+      },
     };
   }
 
@@ -4089,62 +4083,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     }
     if (message.type === "vm_interrupt_timer" && message.pid === pid) {
       handleVmInterruptTimer(message, pid, process);
-    } else if (message.type === "fork_module_frames" && message.pid === pid) {
-      // Forward the co-resident fork-module's proof-of-use (Phase 6 D5): a
-      // nonzero frame count confirms the qualifying fork ran its continuation
-      // through the module. Proof-of-use is informational success telemetry,
-      // not a host problem, so it rides the dedicated `fork_module_proof`
-      // channel and never pollutes `onHostDiagnostic`.
-      postForkModuleProof({
-        pid,
-        source: "fork-module",
-        message: `fork_module_frames=${message.frames}`,
-      });
-    } else if (
-      message.type === "fork_module_child_frames"
-      && message.pid === pid
-    ) {
-      // Forward the REPLAY-side proof-of-use (Phase 6 D7b): a nonzero count
-      // confirms a fork CHILD (e.g. a fork-from-thread child) drove its
-      // rewind through the module — the child never commits, so
-      // `fork_module_frames` cannot show this.
-      postForkModuleProof({
-        pid,
-        source: "fork-module",
-        message: `fork_module_child_frames=${message.frames}`,
-      });
-    } else if (
-      message.type === "fork_module_references"
-      && message.pid === pid
-    ) {
-      // Forward the PER-KIND REFERENCE proof-of-use (Phase 6 D6.5): a nonzero
-      // count for a kind confirms the child's carried references of that kind
-      // were reconstructed through the module. All kinds ride one string so a
-      // reader can extract any of funcref/exnref/typed-GC.
-      postForkModuleProof({
-        pid,
-        source: "fork-module",
-        message:
-          `fork_module_references=${message.references} `
-          + `exnrefs_reconstructed=${message.exnrefs} `
-          + `gc_nodes_reconstructed=${message.gcNodes} `
-          + `drive_steps_executed=${message.driveSteps} `
-          + `static_roots_published=${message.staticRoots}`,
-      });
-    } else if (message.type === "fork_aborted" && message.pid === pid) {
-      // Say why a fork aborted. The parent survives and `fork()` returns
-      // `-errno`, which is right -- but a guest that does not check the return
-      // then fails somewhere else entirely, and the reason was never spoken.
-      // A warning, because an abort is the correct outcome for a reference
-      // kind the platform refuses to reconstruct.
-      reportHostDiagnostic(
-        {
-          pid,
-          source: "fork",
-          message: `fork aborted with errno=${message.errno}: ${message.reason}`,
-        },
-        "warn",
-      );
     } else if (message.type === "fork_module_region" && message.pid === pid) {
       // Record where this worker placed its co-resident fork-module region so
       // a COPIED fork child reuses the same base instead of double-mapping the

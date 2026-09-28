@@ -1120,6 +1120,56 @@ snapshot diff.
   Not additive, but 44 is unreleased and every host, kernel and fork-module
   artifact is rebuilt from source together, so there is no version bump.
 
+- **The fork run loop moves into the fork module (lane F step 3c,
+  2026-09-27).** Content folded into unreleased 44 on the maintainer's
+  rulings of 2026-09-27 (snapshot regeneration only, no bump, every
+  artifact rebuilt):
+
+  - *The kernel reclaims a vfork child's own mappings.* A mapping a vfork
+    child makes on its parent's image is marked borrowed in the child's
+    mapping table; the kernel drops every such mapping when the child's
+    image ends (exec or exit), and `kernel_vfork_address_space_released`
+    answers `EBUSY` for `RESUME` while one remains, so the reclaim always
+    precedes the parent's resume. The Node/browser host no longer unmaps a
+    borrowed child's fork-module region after its replay. No export or
+    record changed shape; the change is who releases the memory, and when.
+  - *A fixed-signature pthread entry.* fork-instrument emits
+    `wpk_fork_thread_entry(i32 table_index, ptr arg) -> ptr`
+    (`WPK_FORK_EXPORT_THREAD_ENTRY`) for every guest exporting
+    `__indirect_function_table`, and `wpk_fork_resume_thread` now calls
+    through the same convention. Under binaryen `--fpcast-emu` that is the
+    uniform `(i64 x N) -> i64` table type read from the binary; otherwise the
+    plain `(ptr) -> ptr` it always was. Additive for plain guests.
+  - *The guest fills the merged static-root catalog.* A guest with static
+    roots imports the fork module's `env.__wpk_fork_static_root_catalog`
+    (anyref) and exports `__wpk_fork_static_root_fill(i32 base) -> i32`
+    (`WPK_FORK_STATIC_ROOT_FILL_EXPORT`). The fork-module drive table grows
+    one slot per activation (`DRIVE_SLOT_STATIC_ROOT_FILL` = 19,
+    `DRIVE_SLOTS_PER_ACTIVATION` 19 -> 20), an internal host-module
+    contract rebuilt in lockstep. Every fork-instrumented artifact is
+    rebuilt; an older guest with roots has no shim for the module to call.
+  - *Fork diagnostics are kernel-formatted.* New syscall
+    `SYS_FORK_DIAGNOSTIC` = 417 (`ForkDiagnostic` in `ABI_SYSCALLS`), issued
+    by the fork module on its own channel with `(kind, v0..v4)`; new kernel
+    export `kernel_drain_fork_diagnostics(out_ptr, out_len, max_records)`;
+    new 256-byte `fork_diagnostic_wire` record (snapshot section
+    `fork_diagnostic_wire`; `FORK_DIAGNOSTIC_*` in
+    `host/src/generated/abi.ts`). The queue raises the existing
+    `TYPE_FORK_LIFECYCLE` wake. The Worker messages `fork_aborted`,
+    `fork_module_frames`, `fork_module_child_frames` and
+    `fork_module_references` are removed from the worker protocol.
+  - *The fork module holds the fork's archive reader.* The process
+    dynamic-loader archive READER a fork holds from its capture to its
+    finish is taken and returned by the fork module, on the loader's own
+    lock word and owner word (same encoding, so no guest or kernel record
+    changed). It asks the kernel `gettid()` on its own channel to tell this
+    thread's loader transaction from a peer's, and refuses the capture with
+    `EDEADLK` when this thread's own transaction still holds the writer.
+    The injected module exports a mutable `i32` global,
+    `__wpk_fork_archive_reader_held`, which the host loader reads before
+    taking the writer: an internal host-module contract rebuilt in
+    lockstep, with no new host import and no new `fm_*` entry.
+
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
   removed and ten directory-relative `*at` replacements added, taking the built

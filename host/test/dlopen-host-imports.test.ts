@@ -156,9 +156,6 @@ describe("dlopen host import pointer widths", () => {
     // read and validated inside the planner module; what crosses back is only
     // what a child needs to map activation ids to images.
     expect(support.readForkState()).toEqual([]);
-    expect(() => support.acquireArchiveReader()).toThrow(
-      "cannot acquire the dynamic-loader archive reader",
-    );
     expect(() => support.resetForkChildLock()).toThrow(
       "cannot reset the parent's dynamic-loader lock",
     );
@@ -205,6 +202,42 @@ describe("dlopen host import pointer widths", () => {
         .toBe("symbol not found: missing_symbol");
     },
   );
+
+  it("refuses the archive writer while this Worker's fork holds the reader", () => {
+    // The fork module owns the fork's archive reader (lane F step 3c, ruling
+    // 4) and the loader asks it before taking the writer: a Worker waiting
+    // for the writer behind its own reader would wait forever.
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const support = buildDlopenImports(
+      memory,
+      4_096,
+      128,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+      4,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1,
+      "copied",
+      plannerModule,
+    );
+    let forkHoldsReader = true;
+    support.setForkReaderProbe(() => forkHoldsReader);
+    expect(() => support.acquireArchiveWriter()).toThrow(
+      "cannot acquire the process archive writer while this Worker's fork holds a reader",
+    );
+    forkHoldsReader = false;
+    support.acquireArchiveWriter();
+    expect(support.writerOwned()).toBe(true);
+    support.releaseArchiveWriter();
+    expect(support.writerOwned()).toBe(false);
+  });
 
   it("rejects a memory64 pointer that JavaScript cannot represent exactly", () => {
     const { pointer, dlopen } = createImports(8);

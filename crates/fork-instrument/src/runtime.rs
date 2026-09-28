@@ -305,6 +305,10 @@ pub struct Runtime {
     /// them before rewriting the first function; they are absent while the
     /// runtime is only injected.
     pub frame_io: Option<crate::instrument::FrameIo>,
+    /// How a pthread start routine is called through the guest's function
+    /// table (`crate::instrument::detect_thread_entry_abi`). Set by the
+    /// pipeline from the linker's output; `Plain` for a hand-built runtime.
+    pub thread_entry_abi: crate::instrument::ThreadEntryAbi,
 }
 
 /// Return the pointer type appropriate for the module's primary
@@ -618,6 +622,7 @@ fn inject_runtime_with_frame_storage(
         frames_start_offset,
         fixed_prefix_size,
         frame_io: None,
+        thread_entry_abi: crate::instrument::ThreadEntryAbi::Plain,
     }
 }
 

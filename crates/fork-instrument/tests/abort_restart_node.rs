@@ -108,7 +108,7 @@ for (const descriptor of WebAssembly.Module.imports(module)) {
       break;
     case "table":
       namespace[descriptor.name] = new WebAssembly.Table({
-        element: descriptor.name === "__wpk_fork_ref_gc_transit"
+        element: (descriptor.name === "__wpk_fork_ref_gc_transit" || descriptor.name === "__wpk_fork_static_root_catalog")
           ? "anyref"
           : "anyfunc",
         initial: 64,

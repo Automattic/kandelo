@@ -8,7 +8,8 @@
 import { readFileSync, existsSync, mkdtempSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker, type ForkDiagnostic } from "../src/kernel-worker";
+import { FORK_DIAGNOSTIC_KINDS } from "../src/generated/abi";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
@@ -632,38 +633,16 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   // as the production kernel-worker lifecycle reports it: a `fork` host
   // diagnostic naming the errno and the reason.
   const mainThreadHostDiagnostics: HostDiagnostic[] = [];
-  const recordForkModuleReferences = (
-    forPid: number,
-    message: Extract<WorkerToHostMessage, { type: "fork_module_references" }>,
-  ): void => {
-    mainThreadForkModuleDiagnostics.push({
-      pid: forPid,
-      source: "fork-module",
-      message:
-        `fork_module_references=${message.references} ` +
-        `exnrefs_reconstructed=${message.exnrefs} ` +
-        `gc_nodes_reconstructed=${message.gcNodes}`,
-    });
-  };
-  // Phase 6 D5/D7a.1a: forward the co-resident module's FRAME proof-of-use — the
-  // parent's committed-frame count and a fork child's replayed-frame count — as
-  // `fork-module` host diagnostics, mirroring the Node/browser worker entries so
-  // main-thread tests (which route here via `io`) can assert module drive.
-  const recordForkModuleFrames = (
-    forPid: number,
-    message: Extract<
-      WorkerToHostMessage,
-      { type: "fork_module_frames" | "fork_module_child_frames" }
-    >,
-  ): void => {
-    mainThreadForkModuleDiagnostics.push({
-      pid: forPid,
-      source: "fork-module",
-      message:
-        message.type === "fork_module_frames"
-          ? `fork_module_frames=${message.frames}`
-          : `fork_module_child_frames=${message.frames}`,
-    });
+  // Fork diagnostics arrive from the KERNEL (`SYS_FORK_DIAGNOSTIC`, drained
+  // by the kernel worker), formatted there, exactly as the production host
+  // routes them in `process-lifecycle.ts`: an abort (a warning) and a
+  // run-loop failure are host diagnostics, everything else is proof-of-use.
+  const recordForkDiagnostic = ({ pid: forPid, kind, text }: ForkDiagnostic): void => {
+    if (kind === FORK_DIAGNOSTIC_KINDS.aborted || kind === FORK_DIAGNOSTIC_KINDS.runFailed) {
+      mainThreadHostDiagnostics.push({ pid: forPid, source: "fork", message: text });
+    } else {
+      mainThreadForkModuleDiagnostics.push({ pid: forPid, source: "fork-module", message: text });
+    }
   };
   let mainThreadForkCount: bigint | undefined;
   let spawnScratchCapacity: number | undefined;
@@ -676,12 +655,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   // The production Node and browser hosts terminate a child's Worker only after
   // it becomes QUIESCENT — i.e. after the child Worker has posted its terminal
   // `exit` message and all of its earlier messages have therefore been drained.
-  // A fork child's fork-module reference proof-of-use (`fork_module_references`)
-  // is posted from the child Worker's tail, AFTER its guest `kernel_exit` — so
-  // the kernel-driven `onExit` fires (and the main thread schedules teardown)
-  // while that tail is still running. Terminating the child Worker on that
-  // `onExit` turn races the tail: the Worker is frequently killed before it runs
-  // the tail at all, dropping the diagnostic (a flaky NULL proof-of-use).
+  // A child Worker's tail runs AFTER its guest `kernel_exit`, so the
+  // kernel-driven `onExit` fires (and the main thread schedules teardown) while
+  // that tail is still running. Terminating the child Worker on that `onExit`
+  // turn races the tail. (Fork proof-of-use no longer rides that tail: the fork
+  // module reports it through the kernel, `SYS_FORK_DIAGNOSTIC`.)
   //
   // Mirror production: a child Worker is reaped only once BOTH the kernel has
   // reported its exit AND the child Worker has posted its own terminal `exit`
@@ -906,17 +884,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           const m = msg as WorkerToHostMessage;
           if (m.type === "error" && m.pid === childPid) {
             finalizeChildWorkerError(m.message);
-          } else if (
-            m.type === "fork_module_references" &&
-            m.pid === childPid
-          ) {
-            recordForkModuleReferences(childPid, m);
-          } else if (
-            (m.type === "fork_module_frames" ||
-              m.type === "fork_module_child_frames") &&
-            m.pid === childPid
-          ) {
-            recordForkModuleFrames(childPid, m);
           } else if (m.type === "exit" && m.pid === childPid) {
             // Worker quiescence: every earlier message from this child (e.g. its
             // reference proof-of-use) has been drained in FIFO order. Safe to reap.
@@ -1153,6 +1120,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         });
 
       },
+      onForkDiagnostic: recordForkDiagnostic,
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
           processProgramBytes.delete(exitPid);
@@ -1282,20 +1250,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       clearTimeout(timer);
       for (const [, w] of workers) w.terminate().catch(() => {});
       rejectExit(new Error(m.message));
-    } else if (m.type === "fork_module_references" && m.pid === pid) {
-      recordForkModuleReferences(pid, m);
-    } else if (m.type === "fork_aborted" && m.pid === pid) {
-      mainThreadHostDiagnostics.push({
-        pid,
-        source: "fork",
-        message: `fork aborted with errno=${m.errno}: ${m.reason}`,
-      });
-    } else if (
-      (m.type === "fork_module_frames" ||
-        m.type === "fork_module_child_frames") &&
-      m.pid === pid
-    ) {
-      recordForkModuleFrames(pid, m);
     }
   });
 

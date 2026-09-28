@@ -13,6 +13,9 @@ const REQUIRED_KERNEL_CALLBACKS = [
   "onExec",
   "onExit",
   "onFork",
+  // Fork diagnostics the kernel formatted (lane F step 3c): both entries
+  // route them through the shared lifecycle, so both must wire it.
+  "onForkDiagnostic",
   "onKernelFatal",
   "onProcessMemoryTarget",
   "onResolveSpawn",

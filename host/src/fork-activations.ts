@@ -43,11 +43,6 @@ export interface ForkActivation {
   readonly instance: WebAssembly.Instance;
 }
 
-/** A registered activation, with the static-root base the module placed. */
-export interface RegisteredForkActivation extends ForkActivation {
-  readonly staticRootBase: number;
-}
-
 /** The row `fm_bind_activation` answers for one activation. */
 export interface ForkActivationRow {
   readonly driveBase: number;
@@ -110,7 +105,7 @@ export function forkActivationCatalogSink(records: {
 }
 
 export class ForkActivations {
-  private readonly live = new Map<number, RegisteredForkActivation>();
+  private readonly live = new Map<number, ForkActivation>();
   private readonly bootstrapped = new Set<number>();
 
   constructor(
@@ -127,8 +122,9 @@ export class ForkActivations {
    * what the host does with it is the reference-typed work only it can do:
    * `Table.set` of the drive bindings at the drive base, the guest's own
    * resume-thunk placement, and the funcref catalog copy at its base. The
-   * static-root roots are copied per fork (`ForkMergedStaticRoots.fill`) into
-   * the module's own table, which the bind already grew.
+   * static roots are copied per fork by the guest itself
+   * (`__wpk_fork_static_root_fill`, driven by the module) into the module's
+   * own table, which the bind already grew.
    *
    * The bind happens HERE rather than at capture because it is a property of
    * the instance, not of a fork: an unbound slot is a `call_indirect` on null
@@ -152,7 +148,7 @@ export class ForkActivations {
     this.drive.bindActivationDrive(activationId, row.driveBase, exports);
     placeForkResumeThunks(this.label, activationId, instance, row.resume);
     this.publishCatalogs(activation, row, functions);
-    this.live.set(activationId, { activationId, instance, staticRootBase: row.staticRootBase });
+    this.live.set(activationId, { activationId, instance });
   }
 
   private catalogTable(activationId: number, exports: Record<string, unknown>, name: string): WebAssembly.Table {
@@ -265,7 +261,7 @@ export class ForkActivations {
    * a child instantiates them: a side activation can register before a
    * lower-numbered one (a dlopen races nothing), so insertion order is not it.
    */
-  ordered(): readonly RegisteredForkActivation[] {
+  ordered(): readonly ForkActivation[] {
     return [...this.live.values()].sort(
       (left, right) => left.activationId - right.activationId,
     );

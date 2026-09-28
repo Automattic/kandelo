@@ -34,9 +34,7 @@
  * pthread Worker is never a fork child), which guest entry pair to run, and
  * how the Worker reports its exit.
  */
-import type { WorkerToHostMessage } from "./worker-protocol";
 import {
-  ABI_SYSCALLS,
   CHANNEL_STATUS_IDLE,
   CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
@@ -53,7 +51,6 @@ import {
   type ProcessForkMode,
 } from "./generated/abi";
 import { ContinuationAllocationError } from "./fork-continuation";
-import { ForkMergedStaticRoots } from "./fork-merged-static-roots";
 import {
   buildForkGuestImports,
   FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
@@ -68,10 +65,7 @@ import {
 } from "./fork-module-instance";
 import {
   type ForkBorrowedReplayWorkspace,
-  type ForkModuleStat,
-  FORK_MODULE_STATS,
   ForkModuleContinuationBackend,
-  requireForkModuleBackend,
 } from "./fork-module-backend";
 import { computeForkModuleTemplateId } from "./fork-guest-sections";
 import { ForkImportIdentity } from "./fork-import-identity";
@@ -82,7 +76,6 @@ import { ForkTables } from "./fork-tables";
 import type {
   DlopenSupport,
   ForkActivationTableReplication,
-  MessagePort,
   ProcessTableReplicationOwner,
 } from "./worker-main";
 
@@ -168,7 +161,6 @@ export function sendForkSyscall(
 
 /** Everything that differs between a process Worker and a pthread Worker. */
 export interface ForkWorkerOptions {
-  readonly port: MessagePort;
   readonly memory: WebAssembly.Memory;
   readonly ptrWidth: 4 | 8;
   /** This Worker's own syscall channel. */
@@ -200,25 +192,12 @@ export type ForkWorkerOutcome =
   | { readonly exited: number };
 
 /**
- * The fork module's reasons for an abort, keyed by its `ABORT_CAUSE_*`
- * numbers (`crates/fork-module/src/lib.rs`).
- */
-const FORK_ABORT_REASONS: Readonly<Record<number, string>> = {
-  1: "a continuation frame could not be reserved mid-unwind (the parent's "
-    + "committed frames were replayed; no child was created)",
-  2: "the capture could not seal (the parent's frames are intact "
-    + "and were replayed; no child was created)",
-  3: "the kernel refused to create the child process",
-};
-
-/**
  * One Worker's fork machinery: its co-resident fork module and everything
  * the host keeps beside it.
  */
 export class ForkWorker {
-  /** Null only after a borrowed child handed its region back. */
-  private backend: ForkModuleContinuationBackend | null;
-  private moduleExports: Record<string, unknown> | null;
+  private readonly backend: ForkModuleContinuationBackend;
+  private readonly moduleExports: Record<string, unknown>;
   readonly instance: ForkModuleInstance;
   readonly unwindTag: WebAssembly.Tag;
   readonly activations: ForkActivations;
@@ -226,29 +205,15 @@ export class ForkWorker {
   readonly identity: ForkImportIdentity;
   /** The generation fence as the guest imports it. */
   readonly tableReplication: ForkActivationTableReplication;
-  private readonly staticRoots: ForkMergedStaticRoots;
   /** Set once this Worker's dynamic loader exists; see `bindArchive`. */
   private archive: {
     readonly dlopen: DlopenSupport;
     readonly replication: ProcessTableReplicationOwner;
   } | null = null;
-  private readerHeld = false;
   private mainRegistered = false;
   private forkMode: ProcessForkMode;
   /** What the guest's `fork()` returns once its replay finishes. */
   private forkResult = 0;
-  /**
-   * The module's counters, read while its memory still exists.
-   *
-   * ONLY a borrowed (vfork) child sets this. It hands its fork-module region
-   * back to the kernel the moment its one replay finishes (see
-   * `releaseBorrowedRegion`), and every counter `fm_stats` reports lives in
-   * that region -- measured on the `vfork-lifecycle` child that attempts a
-   * nested fork, the reused region read back `RESUME_NEXT_SLOT` 0, a value no
-   * writer in the module produces. So the counters are READ before the
-   * release and REPORTED from here.
-   */
-  private finalStats: Record<ForkModuleStat, number> | null = null;
 
   constructor(private readonly options: ForkWorkerOptions, forkMode: ProcessForkMode) {
     const { label, memory } = options;
@@ -296,9 +261,6 @@ export class ForkWorker {
     // The module DEFINES the unwind tag; a host that minted its own would
     // disagree with the module the moment the module threw one.
     this.unwindTag = forkUnwindTagFrom(this.instance.exports, `${label} unwind`);
-    // Read at capture, to recognise a statically initialised reference, and
-    // at a child's install, to rebuild one.
-    this.staticRoots = new ForkMergedStaticRoots(this.instance.staticRootCatalog);
     this.activations = new ForkActivations(
       this.backend,
       `${label}: fork activations`,
@@ -332,12 +294,12 @@ export class ForkWorker {
     };
   }
 
-  /** The module backend; throws once a borrowed child has released it. */
+  /** The module backend. */
   module(): ForkModuleContinuationBackend {
-    return requireForkModuleBackend(this.backend, this.options.pid);
+    return this.backend;
   }
 
-  /** The module's phase, or `idle` once a borrowed child released it. */
+  /** The module's phase. */
   phase(): ForkPhase {
     return forkPhase(this.moduleExports, this.options.pid);
   }
@@ -374,52 +336,25 @@ export class ForkWorker {
    * Attach this Worker's dynamic loader and table replica.
    *
    * Late because of a construction cycle: the loader's imports need this
-   * object's unwind tag and activation records, and a fork needs the loader's
-   * archive lock.
+   * object's unwind tag and activation records, and the module's archive
+   * reader needs the loader to materialize what peers published. The loader
+   * in turn asks the MODULE whether this Worker's fork holds the archive
+   * reader before it takes the writer (it would wait on itself forever):
+   * the module owns that token (lane F step 3c, ruling 4).
    */
   bindArchive(dlopen: DlopenSupport, replication: ProcessTableReplicationOwner): void {
     this.archive = { dlopen, replication };
+    const held = this.instance.exports.__wpk_fork_archive_reader_held;
+    if (!(held instanceof WebAssembly.Global)) {
+      throw new Error(`${this.options.label}: the fork module exports no archive reader state`);
+    }
+    dlopen.setForkReaderProbe(() => held.value !== 0);
   }
 
   /** Remember activation 0; a `fork()` before this answers ENOSYS. */
   registerMain(instance: WebAssembly.Instance): void {
     this.activations.register({ activationId: 0, instance });
     this.mainRegistered = true;
-  }
-
-  /** Copy every live activation's static roots into the module's catalog. */
-  fillStaticRoots(): void {
-    this.staticRoots.fill(this.activations.ordered());
-  }
-
-  /**
-   * Take a reader token on the process archive at a generation this Worker
-   * has already materialized.
-   *
-   * Reconciliation may instantiate a missing side module and run its start
-   * function, so it needs the writer; the reader is taken after it, and a
-   * publication that won the handoff race sends the loop round again. The
-   * token is held from capture until the parent's replay finishes, so no
-   * library can join the archive between the snapshot and the child.
-   */
-  private acquireArchiveReader(): void {
-    const archive = this.archive;
-    if (!archive) {
-      throw new Error(`${this.options.label}: fork archive owner is not initialized`);
-    }
-    for (;;) {
-      archive.replication.reconcileNow();
-      archive.dlopen.acquireArchiveReader();
-      this.readerHeld = true;
-      if (archive.replication.isCurrentUnderLock()) return;
-      this.releaseArchiveReader();
-    }
-  }
-
-  private releaseArchiveReader(): void {
-    if (!this.readerHeld) return;
-    this.readerHeld = false;
-    this.archive?.dlopen.releaseArchiveReader();
   }
 
   /** Abort a transaction the module still holds, keeping the first error. */
@@ -453,27 +388,17 @@ export class ForkWorker {
           `${label}: fork ${phase} mode ${mode} does not match captured mode ${this.forkMode}`,
         );
       }
-      // ONE finish for every replay, and for an abort the errno and cause are
-      // the ones the MODULE recorded when it began the abort, whoever began
-      // it -- so no abort path can forget to say why. The parent survives and
-      // `fork()` returns `-errno`, but a guest that does not check the return
-      // fails somewhere else entirely, and the reason would be gone.
-      let finished: { readonly errno: number; readonly cause: number };
-      try {
-        finished = this.module().parentFinish(phase === "abort-replay");
-      } finally {
-        this.releaseArchiveReader();
-      }
-      if (phase === "abort-replay") {
-        const { errno, cause } = finished;
-        const { pid } = this.options;
-        const reason = FORK_ABORT_REASONS[cause] ?? `unknown abort cause ${cause}`;
-        this.post({ type: "fork_aborted", pid, errno, reason });
-        return -errno;
-      }
+      // ONE finish for every replay. The MODULE reports what happened
+      // through the kernel (`SYS_FORK_DIAGNOSTIC`): an abort and why, or the
+      // frames and references it drove. So no abort path can forget to say
+      // why, and every host says it in the kernel's words.
+      // The finish also hands the fork's archive reader back.
+      const finished = this.module().parentFinish(phase === "abort-replay");
+      if (phase === "abort-replay") return -finished.errno;
       // A child's finish has already reported SYS_FORK_REPLAY_READY from
-      // inside the module.
-      if (this.options.borrowedChild) this.releaseBorrowedRegion();
+      // inside the module. A borrowed (vfork) child keeps its fork-module
+      // region until its image ends: the KERNEL reclaims it then, before the
+      // parent may resume (`reclaim_vfork_borrow` in crates/runtime-core).
       return this.forkResult;
     }
     if (phase !== "idle") {
@@ -483,83 +408,18 @@ export class ForkWorker {
     if (this.options.borrowedChild) return -EAGAIN;
     this.forkMode = mode;
     try {
-      this.acquireArchiveReader();
-    } catch (error) {
-      this.releaseArchiveReader();
-      throw error;
-    }
-    try {
-      // The capture is about to ask which slot holds a statically initialised
-      // reference, so the merged catalog has to hold them now.
-      this.fillStaticRoots();
+      // The module fills its merged static-root catalog itself, from each
+      // activation's own, before it opens the capture.
       this.options.publishLaunchRoot(0);
       this.options.publishLaunchRoot(this.module().parentBeginCapture(this.options.channelOffset));
     } catch (error) {
+      // The module takes the archive reader as it opens the capture and
+      // hands it back on any failure to open (and `abort` releases it too).
       this.abortIfOpen();
-      this.releaseArchiveReader();
       if (error instanceof ContinuationAllocationError) return -error.errno;
       throw error;
     }
     return 0; // ignored: the guest is unwinding
-  }
-
-  /**
-   * Give a borrowed (vfork) child's fork-module region back, now.
-   *
-   * The child's one replay is done, and leaving ~5.4 MiB mapped would leak it
-   * into the parked parent's restored address space (the kernel never
-   * shrinks memory). EVERYTHING the module is asked for happens above the
-   * munmap, because below it there is no module: the counter snapshot, the
-   * abort, and `clear()`, which releases arena chunks out of the address
-   * space this child shares with its parent -- running it on freed roots is
-   * how you unmap someone else's mapping. The handles go with it, so a later
-   * `kernel_fork` answers from the host's own "idle" and falls through to
-   * EAGAIN instead of reading freed bytes.
-   */
-  private releaseBorrowedRegion(): void {
-    const { memory, channelOffset, label } = this.options;
-    const module = this.module();
-    this.finalStats = Object.fromEntries(
-      FORK_MODULE_STATS.map((name) => [name, Number(module.stat(name))]),
-    ) as Record<ForkModuleStat, number>;
-    module.abort();
-    this.activations.clear();
-    const { memoryBase, regionBytes } = this.instance;
-    const result = channelSyscall(memory, channelOffset, ABI_SYSCALLS.Munmap, [
-      BigInt(memoryBase),
-      BigInt(regionBytes),
-    ]);
-    if (result < 0) {
-      throw new Error(
-        `${label}: borrowed fork-module region: munmap(0x${memoryBase.toString(16)}, ` +
-          `${regionBytes}) failed errno=${-result}`,
-      );
-    }
-    this.backend = null;
-    this.moduleExports = null;
-  }
-
-  /** A counter: from the borrowed child's snapshot once taken, else live. */
-  private stat(name: ForkModuleStat): number {
-    return this.finalStats?.[name] ?? Number(this.module().stat(name));
-  }
-
-  private post(message: WorkerToHostMessage): void {
-    this.options.port.postMessage(message);
-  }
-
-  /**
-   * Proof that the MODULE drove this parent's unwind: its committed-frame
-   * count. Posted from the run loop as well as the tail, because on a
-   * main-thread host a fork parent's tail can be torn down before it runs.
-   */
-  private postParentFrames(): void {
-    if (this.options.forkChild || !this.backend) return;
-    this.post({
-      type: "fork_module_frames",
-      pid: this.options.pid,
-      frames: Number(this.backend.stat("framesCommitted")),
-    });
   }
 
   /**
@@ -577,9 +437,7 @@ export class ForkWorker {
       const childPid = sendForkSyscall(memory, channelOffset, this.forkMode, sealed);
       this.forkResult = childPid;
       this.module().parentReplay(childPid < 0 ? -childPid : 0);
-      if (childPid < 0) return;
     }
-    this.postParentFrames();
   }
 
 
@@ -629,7 +487,6 @@ export class ForkWorker {
         return { returned };
       }
     } catch (error) {
-      this.releaseArchiveReader();
       const status = exitStatus();
       if (isWasmUnreachableTrap(error) && status !== null) return { exited: status };
       this.abortIfOpen();
@@ -638,52 +495,21 @@ export class ForkWorker {
   }
 
   /**
-   * Report proof of use and release what the Worker still holds.
+   * Abort the module's transaction and release every activation, at a
+   * process Worker's exit.
    *
-   * `teardown` also aborts the module's transaction and releases every
-   * activation. A pthread Worker must NOT: after its `kernel_exit` its channel
+   * A pthread Worker must NOT call this: after its `kernel_exit` its channel
    * is gone, and a module release that unmaps through it would park the
-   * Worker forever.
+   * Worker forever. Nor does a borrowed (vfork) child, for the same reason
+   * and because nothing it mapped outlives its image: the kernel reclaims
+   * every mapping it made on its parent's image when that image ends. (A
+   * fork's archive reader is the module's and ends with the fork, and its
+   * reports go through the kernel, so neither needs a finish here.)
    */
-  finish(teardown: boolean): void {
-    this.postParentFrames();
-    if (this.options.forkChild && (this.backend || this.finalStats)) this.postChildProof();
-    if (teardown) {
-      // No-ops for a borrowed child, which ran both before its release.
-      if (this.backend) this.module().abort();
+  finish(): void {
+    if (!this.options.borrowedChild) {
+      this.module().abort();
       this.activations.clear();
     }
-    this.releaseArchiveReader();
-  }
-
-  /**
-   * A fork child's proof that the module rebuilt its references and rewound
-   * its frames. Silent when every counter is zero, so a reference-free child
-   * does not add a diagnostic that could race a consumer waiting for the
-   * parent's frame count.
-   */
-  private postChildProof(): void {
-    const pid = this.options.pid;
-    const references = this.stat("referencesReconstructed");
-    const exnrefs = this.stat("exnrefsReconstructed");
-    const gcNodes = this.stat("gcNodesReconstructed");
-    const driveSteps = this.stat("driveStepsExecuted");
-    const staticRoots = this.stat("staticRootsPublished");
-    if (references + exnrefs + gcNodes + driveSteps + staticRoots > 0) {
-      this.post({
-        type: "fork_module_references",
-        pid,
-        references,
-        exnrefs,
-        gcNodes,
-        driveSteps,
-        staticRoots,
-      });
-    }
-    // A child never commits a frame, so its replayed count is the proof it
-    // rewound through the module (a fork-from-thread child carries no
-    // references and says nothing above).
-    const frames = this.stat("framesReplayed");
-    if (frames > 0) this.post({ type: "fork_module_child_frames", pid, frames });
   }
 }

@@ -1,8 +1,8 @@
 // Shared test reader for the co-resident fork-module's per-kind reference
 // proof-of-use (Phase 6 D6.5). A fresh fork CHILD whose carried references were
-// reconstructed THROUGH the module posts a single `fork_module_references`
-// message carrying one count per reference kind; the kernel worker forwards it
-// as a `fork-module` host diagnostic whose text lists every kind:
+// reconstructed THROUGH the module reports them once, through the kernel
+// (`SYS_FORK_DIAGNOSTIC`, lane F step 3c), which formats one `fork-module`
+// proof line listing every kind:
 //
 //   fork_module_references=<funcref> exnrefs_reconstructed=<exnref>
 //     gc_nodes_reconstructed=<gc>

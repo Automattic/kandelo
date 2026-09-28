@@ -76,7 +76,6 @@ function archiveFixture(): ArchiveFixture {
 
 function dlopenFixture(archive: ArchiveFixture): DlopenSupport {
   let writerDepth = 0;
-  let readerDepth = 0;
   let writerObserver = () => {};
   return {
     imports: {},
@@ -92,11 +91,6 @@ function dlopenFixture(archive: ArchiveFixture): DlopenSupport {
       if (writerDepth <= 0) throw new Error("writer underflow");
       writerDepth--;
     },
-    acquireArchiveReader: () => { readerDepth++; },
-    releaseArchiveReader: () => {
-      if (readerDepth <= 0) throw new Error("reader underflow");
-      readerDepth--;
-    },
     withArchiveWriter: <T>(operation: () => T): T => {
       if (writerDepth++ === 0) writerObserver();
       try {
@@ -105,14 +99,7 @@ function dlopenFixture(archive: ArchiveFixture): DlopenSupport {
         writerDepth--;
       }
     },
-    withArchiveReader: <T>(operation: () => T): T => {
-      readerDepth++;
-      try {
-        return operation();
-      } finally {
-        readerDepth--;
-      }
-    },
+    setForkReaderProbe: () => {},
     writerOwned: () => writerDepth > 0,
     setWriterAcquireObserver: (observer) => { writerObserver = observer; },
     setOperationAbortObserver: () => {},

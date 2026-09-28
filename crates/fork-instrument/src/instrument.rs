@@ -147,6 +147,7 @@ pub const RESUME_CATALOG_EXPORT: &str = "__wpk_fork_resume_catalog";
 pub const RESUME_CATALOG_SECTION: &str = "kandelo.wpk_fork.resume_catalog";
 pub const RESUME_START_EXPORT: &str = "wpk_fork_resume_start";
 pub const RESUME_THREAD_EXPORT: &str = "wpk_fork_resume_thread";
+pub const THREAD_ENTRY_EXPORT: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_THREAD_ENTRY;
 const RESUME_CATALOG_MAGIC: [u8; 4] = *b"KFRC";
 const RESUME_CATALOG_VERSION: u16 = 1;
 const RESUME_CATALOG_HEADER_SIZE: u16 = 12;
@@ -5046,37 +5047,220 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
     }
 
     if let Some(function_table) = exported_table(module, "__indirect_function_table") {
-        let ptr_ty = runtime.buf_type;
-        let thread_ty = module.types.add(&[ptr_ty], &[ptr_ty]);
-        let resume_ty = module.types.add(&[], &[ptr_ty]);
+        emit_thread_entry_pair(module, runtime, function_table);
+    }
+}
+
+/// How the guest's `__indirect_function_table` entries expect to be called,
+/// which is how a pthread start routine taken from that table must be called.
+///
+/// # Why fork-instrument decides this
+///
+/// binaryen's `--fpcast-emu` (its FuncCastEmulation pass) rewrites EVERY
+/// function reachable through the table into a thunk of one uniform type,
+/// `(i64 x N) -> i64`, and rewrites every `call_indirect` to that type; the
+/// thunk converts each argument from i64 and the result to i64. A pthread
+/// start routine taken from such a table must be called the same way: its
+/// pointer argument widened to i64 in parameter 0, the other N-1 parameters
+/// zero, the i64 result narrowed back to a pointer.
+///
+/// The JavaScript host used to decide this per call from the function
+/// wrapper's arity (`buildThreadEntryArgs`), and nothing else did: a native
+/// host, or the fork module's own run loop, had no way to call such an entry
+/// at all. The convention is a fact of the BINARY -- the type every table
+/// entry has -- so the one tool that already rewrites the binary reads it and
+/// emits the matching call, and every caller uses one fixed signature
+/// (`wpk_fork_thread_entry`, `wpk_fork_resume_thread`).
+///
+/// It is read, not assumed: N and the result type come from the table's own
+/// entries, so a program built with a different `max-func-params` still gets
+/// its own N.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThreadEntryAbi {
+    /// Every entry is an ordinary C function; a start routine is `(ptr) -> ptr`.
+    #[default]
+    Plain,
+    /// Every entry is a `--fpcast-emu` thunk of type `(i64 x params) -> i64`.
+    FpcastEmu { params: usize },
+}
+
+/// Read the thread-entry convention off the guest's own function table.
+///
+/// `--fpcast-emu` leaves every element placed into `__indirect_function_table`
+/// with one shared type whose parameters are all `i64` (at least two of them,
+/// which is what separates it from an ordinary wasm64 `(i64) -> i64` start
+/// routine) and whose one result is `i64`. Anything else -- mixed types, an
+/// empty table -- is the ordinary C convention.
+///
+/// Must run on the linker's output, before any pass adds elements of its own
+/// (the function catalog, the resume table), which is why `instrument` calls
+/// it first.
+pub fn detect_thread_entry_abi(module: &Module) -> ThreadEntryAbi {
+    let Some(function_table) = exported_table(module, "__indirect_function_table") else {
+        return ThreadEntryAbi::Plain;
+    };
+    let mut shared: Option<TypeId> = None;
+    for element in module.elements.iter() {
+        let ElementKind::Active { table, .. } = &element.kind else {
+            continue;
+        };
+        if *table != function_table {
+            continue;
+        }
+        let functions: Vec<FunctionId> = match &element.items {
+            ElementItems::Functions(ids) => ids.clone(),
+            ElementItems::Expressions(_, exprs) => exprs
+                .iter()
+                .filter_map(|expr| match expr {
+                    walrus::ConstExpr::RefFunc(id) => Some(*id),
+                    _ => None,
+                })
+                .collect(),
+        };
+        for id in functions {
+            let ty = module.funcs.get(id).ty();
+            match shared {
+                None => shared = Some(ty),
+                Some(existing) if existing == ty => {}
+                Some(_) => return ThreadEntryAbi::Plain,
+            }
+        }
+    }
+    let Some(ty) = shared else {
+        return ThreadEntryAbi::Plain;
+    };
+    let signature = module.types.get(ty);
+    let params = signature.params();
+    if params.len() >= 2
+        && params.iter().all(|param| *param == ValType::I64)
+        && signature.results() == [ValType::I64]
+    {
+        ThreadEntryAbi::FpcastEmu {
+            params: params.len(),
+        }
+    } else {
+        ThreadEntryAbi::Plain
+    }
+}
+
+/// The table type a start routine is called through, and its result type
+/// (which is also the result of the resume thunk that replays into it).
+fn thread_entry_types(module: &mut Module, ptr_ty: ValType, abi: ThreadEntryAbi) -> (TypeId, ValType) {
+    match abi {
+        ThreadEntryAbi::Plain => (module.types.add(&[ptr_ty], &[ptr_ty]), ptr_ty),
+        ThreadEntryAbi::FpcastEmu { params } => (
+            module.types.add(&vec![ValType::I64; params], &[ValType::I64]),
+            ValType::I64,
+        ),
+    }
+}
+
+/// Emit the two fixed-signature thread entries, `(table_index: i32, arg: ptr)
+/// -> ptr`, in the guest's own convention (`ThreadEntryAbi`):
+///
+/// * `wpk_fork_thread_entry` -- the LEXICAL call: run the start routine.
+///   Not instrumented, so a fork's unwind passes through it as it passed
+///   through the host frame that used to make this call.
+/// * `wpk_fork_resume_thread` -- the REPLAY call: rewind a captured pthread
+///   fork back into the start routine through the resume table.
+///
+/// Both must agree on the call type, or a fork-from-thread child's replay
+/// traps with a signature mismatch the lexical call never hit.
+fn emit_thread_entry_pair(module: &mut Module, runtime: &Runtime, function_table: TableId) {
+    let ptr_ty = runtime.buf_type;
+    let abi = runtime.thread_entry_abi;
+    let (call_ty, call_result) = thread_entry_types(module, ptr_ty, abi);
+    let fpcast_params = match abi {
+        ThreadEntryAbi::Plain => None,
+        ThreadEntryAbi::FpcastEmu { params } => Some(params),
+    };
+    let narrow_pointer = ptr_ty == ValType::I32;
+
+    // Lexical entry.
+    {
         let table_index = module.locals.add(ValType::I32);
         let argument = module.locals.add(ptr_ty);
         let mut builder =
             FunctionBuilder::new(&mut module.types, &[ValType::I32, ptr_ty], &[ptr_ty]);
-        builder.name(RESUME_THREAD_EXPORT.into());
-        let wrapper = builder.finish(vec![table_index, argument], &mut module.funcs);
-        let entry = local_mut(module, wrapper).entry_block();
-        emit_resume_selected_call(
-            local_mut(module, wrapper),
-            entry,
-            CallTarget::Indirect {
-                table: function_table,
-            },
-            thread_ty,
-            resume_ty,
-            InstrLocId::default(),
-            &CallArgMaterialization::Spill {
-                // call_indirect consumes function parameters first and its
-                // table index last; the public wrapper keeps the ergonomic
-                // host ABI `(table_index, arg)`.
-                locals: vec![argument, table_index],
-                types: vec![ptr_ty, ValType::I32],
-            },
-            runtime,
-            0,
-        );
-        module.exports.add(RESUME_THREAD_EXPORT, wrapper);
+        builder.name(THREAD_ENTRY_EXPORT.into());
+        {
+            let mut body = builder.func_body();
+            body.local_get(argument);
+            if let Some(params) = fpcast_params {
+                if narrow_pointer {
+                    body.unop(UnaryOp::I64ExtendUI32);
+                }
+                for _ in 1..params {
+                    body.i64_const(0);
+                }
+            }
+            body.local_get(table_index).call_indirect(call_ty, function_table);
+            if fpcast_params.is_some() && narrow_pointer {
+                body.unop(UnaryOp::I32WrapI64);
+            }
+        }
+        let entry = builder.finish(vec![table_index, argument], &mut module.funcs);
+        module.exports.add(THREAD_ENTRY_EXPORT, entry);
     }
+
+    // Replay entry.
+    let resume_ty = module.types.add(&[], &[call_result]);
+    let table_index = module.locals.add(ValType::I32);
+    let argument = module.locals.add(ptr_ty);
+    let builder = FunctionBuilder::new(&mut module.types, &[ValType::I32, ptr_ty], &[ptr_ty]);
+    let mut builder = builder;
+    builder.name(RESUME_THREAD_EXPORT.into());
+    let wrapper = builder.finish(vec![table_index, argument], &mut module.funcs);
+    // call_indirect consumes function parameters first and its table index
+    // last; the public wrapper keeps the ergonomic host ABI `(table_index,
+    // arg)`. Under `--fpcast-emu` the parameters are the widened argument and
+    // N-1 zeros, held in fresh locals (zero-initialised by the engine).
+    let (spill_locals, spill_types) = match fpcast_params {
+        None => (vec![argument, table_index], vec![ptr_ty, ValType::I32]),
+        Some(params) => {
+            let widened = module.locals.add(ValType::I64);
+            let mut locals = vec![widened];
+            let mut types = vec![ValType::I64];
+            for _ in 1..params {
+                locals.push(module.locals.add(ValType::I64));
+                types.push(ValType::I64);
+            }
+            locals.push(table_index);
+            types.push(ValType::I32);
+            let local = local_mut(module, wrapper);
+            let entry = local.entry_block();
+            let mut body = local.builder_mut().instr_seq(entry);
+            body.local_get(argument);
+            if narrow_pointer {
+                body.unop(UnaryOp::I64ExtendUI32);
+            }
+            body.local_set(widened);
+            (locals, types)
+        }
+    };
+    let entry = local_mut(module, wrapper).entry_block();
+    emit_resume_selected_call(
+        local_mut(module, wrapper),
+        entry,
+        CallTarget::Indirect {
+            table: function_table,
+        },
+        call_ty,
+        resume_ty,
+        InstrLocId::default(),
+        &CallArgMaterialization::Spill {
+            locals: spill_locals,
+            types: spill_types,
+        },
+        runtime,
+        0,
+    );
+    if fpcast_params.is_some() && narrow_pointer {
+        let local = local_mut(module, wrapper);
+        let entry = local.entry_block();
+        local.builder_mut().instr_seq(entry).unop(UnaryOp::I32WrapI64);
+    }
+    module.exports.add(RESUME_THREAD_EXPORT, wrapper);
 }
 
 // ----------------------------------------------------------------------

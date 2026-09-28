@@ -714,3 +714,51 @@ Getting to 5 needs either dilution, which the maintainer already rejected in §1
    so re-running them in the child has no side effects). Anything still
    unrebuildable refuses the fork with EOPNOTSUPP rather than trapping the
    child.
+
+## Maintainer rulings (2026-09-27): the five couplings that stopped 3c
+
+Step 3c (`fm_run`) was stopped on five couplings the host still had inside
+`kernel_fork` and the run loop. The maintainer ruled on all five:
+
+1. **The borrowed vfork child's fork-module region: the KERNEL reclaims it.**
+   It is reclaimed when the child execs or exits, strictly BEFORE the parent
+   is resumed (between the host's quiescence proof and
+   `kernel_vfork_address_space_released` completing the parent; the kernel
+   has owned the vfork lifetime since 2a/2d). The parent never references
+   that region (its own fork-module region is separate), and CONTAIN kills
+   both anyway. The kernel enforces "reclaim before resume", and a test
+   shows the parent's memory and fork-module region are untouched. Kernel /
+   ABI 44 content (unreleased: regenerate the snapshot, no bump).
+2. **Pthread entry under function-pointer-cast emulation** (N i64 params,
+   adapted today by JavaScript `buildThreadEntryArgs`): fork-instrument emits
+   a UNIFORM thread-entry trampoline export with a fixed signature that
+   `fm_run` calls. It must match the SDK's fpcast convention exactly; the
+   coupling moves from JavaScript into Rust and `buildThreadEntryArgs` loses
+   its role. ABI 44 content; rebuild all artifacts.
+3. **The static-root catalog fill before a capture:** fork-instrument emits a
+   guest shim that copies its own catalog into the module-owned
+   `__wpk_fork_static_root_catalog` with `table.copy` (plus the import of that
+   table and a growth check), like the approved 1K placement shims. The host
+   copy loops (`host/src/fork-merged-static-roots.ts` and the native
+   equivalent) are deleted. No new host import.
+4. **The archive reader lock: the MODULE owns it.** It takes the archive
+   reader token with atomics and reconciles through the existing
+   `__wpk_fork_host_materialize_dlopen_archive` import. The dynamic loader's
+   reader-depth bookkeeping MOVES into the module so there is one owner; the
+   loader consults the module, so a Worker still cannot take the writer
+   while it holds a reader.
+5. **Abort and proof-of-use reports go through a KERNEL-SIDE diagnostic
+   syscall** (ABI 44 content), so every host logs them identically. The host
+   `postMessage` / `eprintln` report paths are deleted; the abort reasons
+   host-diagnostic-routing requires still reach the host as diagnostics,
+   routed from the kernel.
+
+Then `fm_run` as planned: the module serves the guest's `kernel.kernel_fork`
+import and sends SYS_FORK itself; an injected `fm_run(entry_slot, arg)` calls
+the guest entry through the drive table inside a `try_table` catching the
+module's own unwind tag, then seals, forks and replay-loops in Rust. The host
+keeps only the call to `fm_run` and the trap guard. Applies to Node/browser
+(`ForkWorker`) and host-native; `fm_parent_begin_capture`,
+`fm_parent_seal_capture`, `fm_parent_replay`, `fm_parent_finish` and
+`fm_phase` leave the host list. A faulting native MAIN thread then reports
+WIFSIGNALED through the per-process fault slot (d7ea6fd83).

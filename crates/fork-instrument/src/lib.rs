@@ -85,8 +85,10 @@ fn reject_preinstrumented_artifact(module: &walrus::Module) -> Result<()> {
                 | instrument::RESUME_CATALOG_EXPORT
                 | instrument::RESUME_START_EXPORT
                 | instrument::RESUME_THREAD_EXPORT
+                | instrument::THREAD_ENTRY_EXPORT
                 | static_reference_catalog::EXPORT
                 | static_reference_catalog::HARVEST_EXPORT
+                | static_reference_catalog::FILL_EXPORT
         )
     }) || module.exports.iter().any(|export| {
         export
@@ -354,6 +356,9 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
     reject_preinstrumented_artifact(&module)?;
     legacy_dlopen::lower(&mut module)?;
+    // Read before any pass adds table elements of its own: see
+    // `instrument::detect_thread_entry_abi`.
+    let thread_entry_abi = instrument::detect_thread_entry_abi(&module);
 
     // Discover the fork-path closure *before* we mutate the module so
     // the runtime's own injected functions are not mistaken for
@@ -457,7 +462,7 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         Some((gc_codec.encode_externref, gc_codec.decode_externref)),
         Some((gc_codec.encode_anyref, gc_codec.decode_anyref)),
     )?;
-    let runtime = runtime::inject_linked_runtime_with_reference_overrides(
+    let mut runtime = runtime::inject_linked_runtime_with_reference_overrides(
         &mut module,
         runtime::ReferenceCodecOverrides {
             funcref: Some((
@@ -473,6 +478,7 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
             cleanup: Some(exception_codec.clear),
         },
     );
+    runtime.thread_entry_abi = thread_entry_abi;
     let _gc_codec =
         module_gc_codec::finish_declaration(&mut module, gc_codec, exception_codec, &runtime)?;
     // Phase 4b: structural wrap of each fork-path function's body.

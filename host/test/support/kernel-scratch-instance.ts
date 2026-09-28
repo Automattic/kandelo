@@ -67,6 +67,10 @@ function signatures(
       parameters: [pointer, i32],
       result: i32,
     },
+    kernel_drain_fork_diagnostics: {
+      parameters: [pointer, i32, i32],
+      result: i32,
+    },
     kernel_drain_fork_lifecycle_events: {
       parameters: [pointer, i32, i32],
       result: i32,
