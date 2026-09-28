@@ -26,8 +26,17 @@ struct vt100 {
     uint8_t fg, bg, flags;
     uint8_t *dirty;       /* one bit per row */
     enum { GROUND, ESCAPE, CSI } state;
-    char csi_buf[32];
-    int csi_used;
+    /* CSI parameters, accumulated byte by byte as the sequence arrives
+     * (so a sequence split across reads needs no buffer). csi_n counts
+     * fields seen so far: 0 until the first digit or ';'. Values saturate
+     * at CSI_PARAM_MAX and fields past CSI_MAX_PARAMS are dropped, so no
+     * input can overflow them. csi_ignore marks a well-formed sequence
+     * this terminal does not implement (private marker, intermediate byte,
+     * ':' sub-parameter); it is consumed through its final byte and
+     * dropped, never misread as a public sequence. */
+    int csi_params[16];
+    int csi_n;
+    int csi_ignore;
     /* A UTF-8 sequence split across two reads. wlterm feeds the PTY in
      * fixed 4096-byte chunks, so without this a multi-byte character
      * straddling a chunk boundary decoded as several U+FFFD. */
@@ -98,14 +107,30 @@ static void put_char(struct vt100 *t, uint32_t codepoint) {
     t->cx++;
 }
 
-static void apply_csi(struct vt100 *t, char final) {
-    int params[16] = {0};
-    int n_params = 0;
-    const char *p = t->csi_buf;
-    while (*p && n_params < 16) {
-        params[n_params++] = (int)strtol(p, (char **)&p, 10);
-        if (*p == ';') p++;
+#define CSI_MAX_PARAMS ((int)(sizeof ((struct vt100 *)0)->csi_params / sizeof(int)))
+#define CSI_PARAM_MAX 65535
+
+/* Blank cells [from, to) of the grid, in row-major order, with the current
+ * colours (as scroll_up fills the new bottom row), and mark their rows. */
+static void erase_cells(struct vt100 *t, int from, int to) {
+    for (int i = from; i < to; i++) {
+        t->grid[i].codepoint = 0;
+        t->grid[i].fg = t->fg;
+        t->grid[i].bg = t->bg;
+        t->grid[i].flags = 0;
     }
+    if (from < to)
+        for (int r = from / t->cols; r <= (to - 1) / t->cols; r++) mark_dirty(t, r);
+}
+
+static void apply_csi(struct vt100 *t, char final) {
+    const int *params = t->csi_params;
+    int n_params = t->csi_n < CSI_MAX_PARAMS ? t->csi_n : CSI_MAX_PARAMS;
+    /* put_char leaves cx == cols after writing the last column (wrap
+     * pending); erasures act on the cell the cursor occupies. */
+    int col = t->cx < t->cols ? t->cx : t->cols - 1;
+    int row = t->cy * t->cols;
+    int end = t->rows * t->cols;
     switch (final) {
     case 'A': t->cy -= params[0] ? params[0] : 1; break;
     case 'B': t->cy += params[0] ? params[0] : 1; break;
@@ -119,27 +144,17 @@ static void apply_csi(struct vt100 *t, char final) {
         t->cx = c;
         break;
     }
-    case 'J': {
-        int mode = params[0];
-        if (mode == 2) {
-            memset(t->grid, 0, (size_t)t->cols * t->rows * sizeof(struct cell));
-            vt100_mark_dirty_all(t);
-        } else if (mode == 0) {
-            int start = t->cy * t->cols + t->cx;
-            memset(&t->grid[start], 0,
-                   ((size_t)t->cols * t->rows - start) * sizeof(struct cell));
-            for (int r = t->cy; r < t->rows; r++) mark_dirty(t, r);
-        }
+    case 'J':   /* ED: 0 cursor..end, 1 start..cursor, 2 whole screen */
+        if (params[0] == 0) erase_cells(t, row + col, end);
+        else if (params[0] == 1) erase_cells(t, 0, row + col + 1);
+        /* 3 also drops scrollback on Linux; there is none to drop here. */
+        else if (params[0] == 2 || params[0] == 3) erase_cells(t, 0, end);
         break;
-    }
-    case 'K': {
-        if (params[0] == 0) {
-            for (int x = t->cx; x < t->cols; x++)
-                memset(&t->grid[t->cy * t->cols + x], 0, sizeof(struct cell));
-            mark_dirty(t, t->cy);
-        }
+    case 'K':   /* EL: 0 cursor..end of line, 1 line start..cursor, 2 line */
+        if (params[0] == 0) erase_cells(t, row + col, row + t->cols);
+        else if (params[0] == 1) erase_cells(t, row, row + col + 1);
+        else if (params[0] == 2) erase_cells(t, row, row + t->cols);
         break;
-    }
     case 'm': {
         if (n_params == 0) { t->fg = 7; t->bg = 16; t->flags = 0; break; }
         for (int i = 0; i < n_params; i++) {
@@ -214,82 +229,116 @@ static int utf8_decode(const unsigned char *b, size_t len, uint32_t *cp,
     return 0;
 }
 
+/* Execute a C0 control other than ESC. */
+static void exec_c0(struct vt100 *t, unsigned char b) {
+    if (b == '\r') t->cx = 0;
+    else if (b == '\n') {
+        /* inline-fix #7: treat LF as CR+LF (cooked-ish output). */
+        t->cx = 0;
+        if (++t->cy >= t->rows) { scroll_up(t); t->cy = t->rows - 1; }
+    }
+    else if (b == '\b') { if (t->cx > 0) t->cx--; }
+    else if (b == '\t') { t->cx = (t->cx + 8) & ~7; if (t->cx > t->cols - 1) t->cx = t->cols - 1; }
+    /* BEL and other C0 controls are ignored in v1. */
+}
+
 void vt100_feed(struct vt100 *t, const char *bytes, size_t len) {
-    /* Complete a sequence split by the previous read's chunk boundary. */
-    if (t->u8_used > 0) {
-        size_t need = utf8_seq_len(t->u8_buf[0]);
-        size_t want = (need > (size_t)t->u8_used) ? need - (size_t)t->u8_used : 0;
-        if (want > len) {
-            /* Still short: absorb what arrived and wait for more. */
-            for (size_t k = 0; k < len && t->u8_used < (int)sizeof t->u8_buf; k++)
-                t->u8_buf[t->u8_used++] = (unsigned char)bytes[k];
-            return;
+    /* Finish a sequence the previous feed left partial.
+     *
+     * Only continuation bytes (10xxxxxx) may join the stash. The first byte
+     * that is not one ends the pending sequence as U+FFFD and is then
+     * processed normally below -- so no byte is ever swallowed, whether the
+     * break arrives in this feed or several feeds later. (Stashing whatever
+     * arrived and validating only once the stash was full lost that byte:
+     * "\xf0", "A", "BC" in three feeds used to drop the 'A'.) */
+    while (t->u8_used > 0 && len > 0) {
+        unsigned char c = (unsigned char)*bytes;
+        if (!utf8_is_cont(c)) {
+            put_char(t, 0xFFFD);
+            t->u8_used = 0;
+            break;
         }
-        size_t stashed = (size_t)t->u8_used;
-        for (size_t k = 0; k < want && t->u8_used < (int)sizeof t->u8_buf; k++)
-            t->u8_buf[t->u8_used++] = (unsigned char)bytes[k];
-        uint32_t cp;
-        size_t used;
-        utf8_decode(t->u8_buf, (size_t)t->u8_used, &cp, &used);
-        put_char(t, cp);
-        t->u8_used = 0;
-        /* Consume from this read only what the decode took beyond the stash.
-         * A malformed stash consumes just its lead byte, so the bytes that
-         * followed it are re-scanned rather than swallowed: "\xc3" then "A"
-         * must render U+FFFD and 'A', not one character. */
-        size_t taken = (used > stashed) ? used - stashed : 0;
-        bytes += taken;
-        len -= taken;
+        t->u8_buf[t->u8_used++] = c;
+        bytes++;
+        len--;
+        if ((size_t)t->u8_used == utf8_seq_len(t->u8_buf[0])) {
+            uint32_t cp;
+            size_t used;
+            utf8_decode(t->u8_buf, (size_t)t->u8_used, &cp, &used);
+            put_char(t, cp);
+            t->u8_used = 0;
+        }
     }
     for (size_t i = 0; i < len;) {
         unsigned char b = (unsigned char)bytes[i];
         switch (t->state) {
         case GROUND:
             if (b == 0x1b) { t->state = ESCAPE; i++; }
-            else if (b == '\r') { t->cx = 0; i++; }
-            else if (b == '\n') {
-                /* inline-fix #7: treat LF as CR+LF (cooked-ish output). */
-                t->cx = 0;
-                if (++t->cy >= t->rows) { scroll_up(t); t->cy = t->rows - 1; }
-                i++;
-            }
-            else if (b == '\b') { if (t->cx > 0) t->cx--; i++; }
-            else if (b == '\t') { t->cx = (t->cx + 8) & ~7; if (t->cx > t->cols - 1) t->cx = t->cols - 1; i++; }
-            else if (b == 0x07) { i++; }  /* BEL — ignored in v1 */
             else if (b >= 0x20) {
                 uint32_t cp;
                 size_t used;
                 size_t avail = len - i;
                 size_t need = utf8_seq_len(b);
-                /* Lead byte announces more than this read holds: stash the
-                 * partial sequence and resume on the next feed, the way the
-                 * CSI parser already carries a split escape. */
+                /* Lead byte announces more than this read holds. Stash it for
+                 * the next feed -- the way the CSI parser carries a split
+                 * escape -- but only if everything after it here is a
+                 * continuation byte. Otherwise the sequence is already
+                 * malformed: fall through, and utf8_decode emits U+FFFD for
+                 * the lead byte alone so the rest is processed normally. */
                 if (need > 1 && need > avail) {
-                    t->u8_used = 0;
-                    for (size_t k = 0; k < avail; k++)
-                        t->u8_buf[t->u8_used++] = (unsigned char)bytes[i + k];
-                    i = len;
-                    break;
+                    size_t k = 1;
+                    while (k < avail && utf8_is_cont((unsigned char)bytes[i + k]))
+                        k++;
+                    if (k == avail) {
+                        t->u8_used = 0;
+                        for (size_t j = 0; j < avail; j++)
+                            t->u8_buf[t->u8_used++] = (unsigned char)bytes[i + j];
+                        i = len;
+                        break;
+                    }
                 }
                 utf8_decode((const unsigned char *)bytes + i, avail, &cp, &used);
                 put_char(t, cp);
                 i += used;
             }
-            else i++;  /* other C0 control — skip */
+            else { exec_c0(t, b); i++; }
             break;
         case ESCAPE:
-            if (b == '[') { t->state = CSI; t->csi_used = 0; }
+            if (b == '[') {
+                t->state = CSI;
+                memset(t->csi_params, 0, sizeof t->csi_params);
+                t->csi_n = 0;
+                t->csi_ignore = 0;
+            }
             else t->state = GROUND;  /* unknown 2-byte escape — drop */
             i++;
             break;
         case CSI:
-            if (b >= 0x40 && b <= 0x7e) {
-                t->csi_buf[t->csi_used] = 0;
-                apply_csi(t, (char)b);
+            if (b >= '0' && b <= '9') {
+                if (t->csi_n == 0) t->csi_n = 1;
+                if (t->csi_n <= CSI_MAX_PARAMS) {
+                    int *v = &t->csi_params[t->csi_n - 1];
+                    *v = *v > (CSI_PARAM_MAX - (b - '0')) / 10
+                        ? CSI_PARAM_MAX : *v * 10 + (b - '0');
+                }
+            } else if (b == ';') {
+                if (t->csi_n == 0) t->csi_n = 1;
+                if (t->csi_n <= CSI_MAX_PARAMS) t->csi_n++;
+            } else if (b >= 0x20 && b <= 0x3f) {
+                /* ':' sub-parameter, '<=>?' private marker, or an
+                 * intermediate byte: none are implemented. */
+                t->csi_ignore = 1;
+            } else if (b >= 0x40 && b <= 0x7e) {
+                if (!t->csi_ignore) apply_csi(t, (char)b);
                 t->state = GROUND;
-            } else if (t->csi_used < (int)sizeof t->csi_buf - 1) {
-                t->csi_buf[t->csi_used++] = (char)b;
+            } else if (b == 0x1b) {
+                t->state = ESCAPE;         /* ESC aborts, starts anew */
+            } else if (b == 0x18 || b == 0x1a) {
+                t->state = GROUND;         /* CAN / SUB abort */
+            } else if (b < 0x20) {
+                exec_c0(t, b);             /* C0 controls act mid-sequence */
             }
+            /* DEL and bytes >= 0x80 are ignored inside a sequence. */
             i++;
             break;
         }
@@ -438,4 +487,14 @@ int vt100_contains(const struct vt100 *t, const char *needle) {
     }
     free(line);
     return found;
+}
+
+uint32_t vt100_cell(const struct vt100 *t, int row, int col) {
+    if (row < 0 || row >= t->rows || col < 0 || col >= t->cols) return 0;
+    return t->grid[row * t->cols + col].codepoint;
+}
+
+void vt100_cursor(const struct vt100 *t, int *row, int *col) {
+    if (row) *row = t->cy;
+    if (col) *col = t->cx;
 }

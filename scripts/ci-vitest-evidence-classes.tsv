@@ -341,6 +341,7 @@ host/test/wlcompositor-smoke.test.ts	prepared-product
 host/test/wldesktop-liveness-smoke.test.ts	prepared-product
 host/test/wldesktop-smoke.test.ts	prepared-product
 host/test/wlterm-smoke.test.ts	prepared-product
+host/test/wlterm-vt100-unit.test.ts	source-only
 host/test/wordpress-benchmark-state.test.ts	source-only
 host/test/wordpress-source-layout.test.ts	prepared-product
 host/test/worker-adapter.test.ts	source-only

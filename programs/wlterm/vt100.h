@@ -53,4 +53,12 @@ size_t vt100_input_key(uint32_t keysym, uint32_t mods, char *out,
  * helper; ignores codepoints > 0x7f). */
 int vt100_contains(const struct vt100 *t, const char *needle);
 
+/* Codepoint stored at (row, col) -- 0 for a blank cell or an out-of-range
+ * position. Unlike vt100_contains this sees non-ASCII codepoints, which is
+ * what a test of the UTF-8 decoder needs (U+FFFD in particular). */
+uint32_t vt100_cell(const struct vt100 *t, int row, int col);
+
+/* Current cursor position. */
+void vt100_cursor(const struct vt100 *t, int *row, int *col);
+
 #endif /* WLTERM_VT100_H */
