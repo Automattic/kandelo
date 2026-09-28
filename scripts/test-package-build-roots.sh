@@ -685,6 +685,28 @@ kandelo_package_stage_verified_source fixture "$archive_dest" "" \
 grep -Fx "archive-selected source" "$archive_dest/archive.txt" >/dev/null ||
     fail "source URL/hash archive was not selected and extracted"
 
+# lzip (.tar.lz) sources, as GNU ed publishes: tar cannot decode them without
+# an lzip program, so the helper decodes with xz. The fixture is the one the
+# xtask lzip decoder tests use; a corrupt member must fail, not truncate.
+lzip_archive="$REPO_ROOT/tools/xtask/tests/fixtures/source-extract/demo.tar.lz"
+lzip_sha="$(shasum -a 256 "$lzip_archive" | awk '{print $1}')"
+lzip_dest="$TMP_ROOT/lzip-dest"
+kandelo_package_stage_verified_source lzip "$lzip_dest" "" \
+    "file://$lzip_archive" "$lzip_sha" "$work_root"
+grep -Fx "hello from lzip" "$lzip_dest/README" >/dev/null ||
+    fail "lzip source archive was not decoded and extracted"
+lzip_corrupt="$TMP_ROOT/corrupt.tar.lz"
+cp "$lzip_archive" "$lzip_corrupt"
+lzip_size="$(wc -c <"$lzip_corrupt" | tr -d '[:space:]')"
+printf '\377' | dd of="$lzip_corrupt" bs=1 seek=$((lzip_size - 20)) conv=notrunc 2>/dev/null
+lzip_corrupt_sha="$(shasum -a 256 "$lzip_corrupt" | awk '{print $1}')"
+if kandelo_package_stage_verified_source lzip "$TMP_ROOT/lzip-corrupt-dest" "" \
+    "file://$lzip_corrupt" "$lzip_corrupt_sha" "$work_root" 2>/dev/null; then
+    fail "a corrupt lzip member was accepted"
+fi
+[ ! -e "$TMP_ROOT/lzip-corrupt-dest" ] ||
+    fail "a rejected lzip archive left a partial destination"
+
 # ftpmirror.gnu.org is a redirector that keeps returning the same mirror, so
 # retrying it cannot escape a dead mirror. The helper must fall back to the
 # canonical ftp.gnu.org origin (stripping the redirector's optional leading

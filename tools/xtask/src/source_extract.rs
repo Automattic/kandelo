@@ -26,6 +26,7 @@ pub enum ArchiveFormat {
     TarXz,
     TarBz2,
     TarZst,
+    TarLz,
     Zip,
     Tar,
 }
@@ -49,6 +50,8 @@ impl ArchiveFormat {
             Ok(Self::TarBz2)
         } else if lc.ends_with(".tar.zst") || lc.ends_with(".tzst") {
             Ok(Self::TarZst)
+        } else if lc.ends_with(".tar.lz") || lc.ends_with(".tlz") {
+            Ok(Self::TarLz)
         } else if lc.ends_with(".zip") {
             Ok(Self::Zip)
         } else if lc.ends_with(".tar") {
@@ -57,7 +60,7 @@ impl ArchiveFormat {
             Err(format!(
                 "could not detect archive format from URL extension: {url:?} \
                  (supported: .tar.gz, .tgz, .tar.xz, .txz, .tar.bz2, .tbz2, .tbz, \
-                  .tar.zst, .tzst, .zip, .tar)"
+                  .tar.zst, .tzst, .tar.lz, .tlz, .zip, .tar)"
             ))
         }
     }
@@ -188,6 +191,13 @@ pub fn extract_verified_archive_with_excluded_members(
                 &excluded_members,
             )?;
         }
+        ArchiveFormat::TarLz => extract_tar_reader_with_excluded_members(
+            LzipDecoder::new(input),
+            destination,
+            "tar.lz",
+            MAX_DECOMPRESSED_BYTES,
+            &excluded_members,
+        )?,
         ArchiveFormat::Tar => {
             extract_tar_reader_with_excluded_members(
                 input,
@@ -315,6 +325,222 @@ impl<R: Read> Read for CappedReader<R> {
 }
 
 #[allow(dead_code)]
+/// Streaming decoder for lzip (`.lz`) data. GNU publishes some packages,
+/// GNU ed among them, only as `.tar.lz`.
+///
+/// An lzip file is one or more members. Each member is a 6-byte header
+/// (`LZIP`, version 1, coded dictionary size), an LZMA stream with the fixed
+/// properties lc=3 lp=0 pb=2 that always ends in an end-of-stream marker, and
+/// a 20-byte trailer: CRC32 of the decoded data, the decoded size, and the
+/// member size, all little-endian.
+///
+/// WHY liblzma's LZMA-alone decoder: the `xz2` binding already linked here
+/// exposes no raw LZMA1 decoder, but an lzip member's LZMA stream is exactly
+/// the payload of the `.lzma` "alone" format. Each member is therefore
+/// decoded by giving liblzma a synthesized 13-byte alone header (properties,
+/// dictionary size, and "size unknown", which requires the end marker lzip
+/// always writes). The framing is parsed and every trailer field checked
+/// here, so a corrupt or truncated archive fails instead of yielding a short
+/// tar stream. Bytes after the last member are rejected rather than ignored.
+struct LzipDecoder<R: Read> {
+    inner: R,
+    input: Vec<u8>,
+    input_pos: usize,
+    input_eof: bool,
+    member: Option<LzipMember>,
+    members_decoded: u64,
+    finished: bool,
+}
+
+struct LzipMember {
+    stream: xz2::stream::Stream,
+    crc: crc32fast::Hasher,
+    data_size: u64,
+}
+
+const LZIP_HEADER_LEN: usize = 6;
+const LZIP_TRAILER_LEN: usize = 20;
+const LZMA_ALONE_HEADER_LEN: u64 = 13;
+
+fn lzip_error(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, format!("lzip: {message}"))
+}
+
+impl<R: Read> LzipDecoder<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            input: Vec::new(),
+            input_pos: 0,
+            input_eof: false,
+            member: None,
+            members_decoded: 0,
+            finished: false,
+        }
+    }
+
+    fn available(&self) -> usize {
+        self.input.len() - self.input_pos
+    }
+
+    /// Read more input. Returns false at end of input.
+    fn fill(&mut self) -> io::Result<bool> {
+        if self.input_eof {
+            return Ok(false);
+        }
+        self.input.drain(..self.input_pos);
+        self.input_pos = 0;
+        let start = self.input.len();
+        self.input.resize(start + 64 * 1024, 0);
+        let read = loop {
+            match self.inner.read(&mut self.input[start..]) {
+                Ok(read) => break read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    self.input.truncate(start);
+                    return Err(error);
+                }
+            }
+        };
+        self.input.truncate(start + read);
+        if read == 0 {
+            self.input_eof = true;
+        }
+        Ok(read != 0)
+    }
+
+    fn fill_to(&mut self, needed: usize) -> io::Result<bool> {
+        while self.available() < needed {
+            if !self.fill()? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Parse a member header and start its decoder. Returns false when the
+    /// input ended cleanly after at least one member.
+    fn start_member(&mut self) -> io::Result<bool> {
+        if !self.fill_to(1)? {
+            if self.members_decoded == 0 {
+                return Err(lzip_error("empty input".into()));
+            }
+            return Ok(false);
+        }
+        let complete = self.fill_to(LZIP_HEADER_LEN)?;
+        let prefix = &self.input[self.input_pos..];
+        let magic_len = prefix.len().min(4);
+        if prefix[..magic_len] != b"LZIP"[..magic_len] {
+            return Err(lzip_error(if self.members_decoded == 0 {
+                "missing LZIP magic".into()
+            } else {
+                "unexpected data after the last member".into()
+            }));
+        }
+        if !complete {
+            return Err(lzip_error("truncated member header".into()));
+        }
+        let header = &self.input[self.input_pos..self.input_pos + LZIP_HEADER_LEN];
+        if header[4] != 1 {
+            return Err(lzip_error(format!("unsupported version {}", header[4])));
+        }
+        let exponent = u32::from(header[5] & 0x1f);
+        if !(12..=29).contains(&exponent) {
+            return Err(lzip_error(format!("invalid dictionary size code {:#x}", header[5])));
+        }
+        let base = 1u32 << exponent;
+        let dict_size = base - (base / 16) * u32::from(header[5] >> 5);
+        // Replace the lzip header in the input with the equivalent alone
+        // header, which the decoder then consumes like ordinary input.
+        let mut alone_header = Vec::with_capacity(LZMA_ALONE_HEADER_LEN as usize);
+        alone_header.push(0x5d); // (pb * 5 + lp) * 9 + lc with lc=3 lp=0 pb=2
+        alone_header.extend_from_slice(&dict_size.to_le_bytes());
+        alone_header.extend_from_slice(&u64::MAX.to_le_bytes()); // size unknown
+        self.input.splice(
+            self.input_pos..self.input_pos + LZIP_HEADER_LEN,
+            alone_header,
+        );
+
+        let stream = xz2::stream::Stream::new_lzma_decoder(u64::MAX)
+            .map_err(|error| lzip_error(format!("decoder: {error}")))?;
+        self.member = Some(LzipMember {
+            stream,
+            crc: crc32fast::Hasher::new(),
+            data_size: 0,
+        });
+        Ok(true)
+    }
+
+    fn finish_member(&mut self) -> io::Result<()> {
+        let member = self.member.take().expect("finish_member needs a member");
+        if !self.fill_to(LZIP_TRAILER_LEN)? {
+            return Err(lzip_error("truncated member trailer".into()));
+        }
+        let trailer = &self.input[self.input_pos..self.input_pos + LZIP_TRAILER_LEN];
+        let crc = u32::from_le_bytes(trailer[0..4].try_into().unwrap());
+        let data_size = u64::from_le_bytes(trailer[4..12].try_into().unwrap());
+        let member_size = u64::from_le_bytes(trailer[12..20].try_into().unwrap());
+        let compressed = member.stream.total_in() - LZMA_ALONE_HEADER_LEN;
+        let actual_member_size =
+            LZIP_HEADER_LEN as u64 + compressed + LZIP_TRAILER_LEN as u64;
+        if crc != member.crc.finalize() {
+            return Err(lzip_error("CRC32 mismatch".into()));
+        }
+        if data_size != member.data_size {
+            return Err(lzip_error(format!(
+                "data size mismatch: trailer {data_size}, decoded {}",
+                member.data_size
+            )));
+        }
+        if member_size != actual_member_size {
+            return Err(lzip_error(format!(
+                "member size mismatch: trailer {member_size}, actual {actual_member_size}"
+            )));
+        }
+        self.input_pos += LZIP_TRAILER_LEN;
+        self.members_decoded += 1;
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for LzipDecoder<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.finished {
+                return Ok(0);
+            }
+            if self.member.is_none() && !self.start_member()? {
+                self.finished = true;
+                return Ok(0);
+            }
+            if self.available() == 0 && !self.fill()? {
+                return Err(lzip_error("truncated member data".into()));
+            }
+            let member = self.member.as_mut().expect("member started above");
+            let before_in = member.stream.total_in();
+            let before_out = member.stream.total_out();
+            let status = member
+                .stream
+                .process(&self.input[self.input_pos..], buf, xz2::stream::Action::Run)
+                .map_err(|error| lzip_error(format!("corrupt data: {error}")))?;
+            let consumed = (member.stream.total_in() - before_in) as usize;
+            let produced = (member.stream.total_out() - before_out) as usize;
+            self.input_pos += consumed;
+            member.crc.update(&buf[..produced]);
+            member.data_size += produced as u64;
+            if status == xz2::stream::Status::StreamEnd {
+                self.finish_member()?;
+            }
+            if produced > 0 {
+                return Ok(produced);
+            }
+        }
+    }
+}
+
 fn extract_tar_reader<R: Read>(
     reader: R,
     destination: &Path,
@@ -721,6 +947,12 @@ fn extract(bytes: &[u8], format: ArchiveFormat, dest: &Path) -> Result<(), Strin
                 .unpack(dest)
                 .map_err(|e| format!("tar.zst unpack {}: {e}", dest.display()))?;
         }
+        ArchiveFormat::TarLz => {
+            let bounded = LzipDecoder::new(bytes).take(MAX_DECOMPRESSED_BYTES);
+            tar::Archive::new(bounded)
+                .unpack(dest)
+                .map_err(|e| format!("tar.lz unpack {}: {e}", dest.display()))?;
+        }
         ArchiveFormat::Tar => {
             // The cap is redundant for plain `.tar` since the
             // fetcher already enforces MAX_RESPONSE_BYTES on the
@@ -967,6 +1199,89 @@ mod tests {
         assert!(hello.is_file(), "expected hello.txt at {}", hello.display());
         let actual = std::fs::read_to_string(hello).unwrap();
         assert_eq!(actual, "world\n");
+    }
+
+    /// A ustar archive holding `ed-demo/README` ("hello from lzip\n") in
+    /// lzip format. Built from `xz --format=lzma` output and verified with
+    /// `xz --format=lzip -t`, an lzip decoder independent of LzipDecoder.
+    const LZIP_FIXTURE: &[u8] = include_bytes!("../tests/fixtures/source-extract/demo.tar.lz");
+
+    fn lzip_decode(bytes: &[u8]) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        LzipDecoder::new(bytes).read_to_end(&mut out)?;
+        Ok(out)
+    }
+
+    #[test]
+    fn from_url_detects_lzip() {
+        assert!(matches!(
+            ArchiveFormat::from_url("https://x/ed-1.22.6.tar.lz").unwrap(),
+            ArchiveFormat::TarLz
+        ));
+        assert!(matches!(
+            ArchiveFormat::from_url("https://x/p.tlz").unwrap(),
+            ArchiveFormat::TarLz
+        ));
+    }
+
+    #[test]
+    fn extract_tar_lz_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        extract(LZIP_FIXTURE, ArchiveFormat::TarLz, &dest).unwrap();
+        flatten_single_top_level(&dest).unwrap();
+        let readme = std::fs::read_to_string(dest.join("README")).unwrap();
+        assert_eq!(readme, "hello from lzip\n");
+    }
+
+    #[test]
+    fn verified_tar_lz_extraction_uses_the_url_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("source.archive");
+        std::fs::write(&archive, LZIP_FIXTURE).unwrap();
+        let dest = dir.path().join("out");
+        extract_verified_archive(&archive, "https://ftp.gnu.org/gnu/ed/ed-demo.tar.lz", &dest)
+            .unwrap();
+        let readme = std::fs::read_to_string(dest.join("README")).unwrap();
+        assert_eq!(readme, "hello from lzip\n");
+    }
+
+    #[test]
+    fn lzip_decodes_concatenated_members() {
+        let single = lzip_decode(LZIP_FIXTURE).unwrap();
+        let double = lzip_decode(&[LZIP_FIXTURE, LZIP_FIXTURE].concat()).unwrap();
+        assert_eq!(double, [single.as_slice(), single.as_slice()].concat());
+    }
+
+    #[test]
+    fn lzip_rejects_corrupt_truncated_and_trailing_input() {
+        let len = LZIP_FIXTURE.len();
+
+        let mut bad_crc = LZIP_FIXTURE.to_vec();
+        bad_crc[len - 20] ^= 0xff;
+        let error = lzip_decode(&bad_crc).unwrap_err().to_string();
+        assert!(error.contains("CRC32 mismatch"), "got: {error}");
+
+        let mut bad_size = LZIP_FIXTURE.to_vec();
+        bad_size[len - 16] ^= 0x01;
+        let error = lzip_decode(&bad_size).unwrap_err().to_string();
+        assert!(error.contains("data size mismatch"), "got: {error}");
+
+        let error = lzip_decode(&LZIP_FIXTURE[..len - 5]).unwrap_err().to_string();
+        assert!(error.contains("truncated"), "got: {error}");
+
+        let error = lzip_decode(&LZIP_FIXTURE[..len / 2]).unwrap_err().to_string();
+        assert!(error.contains("truncated"), "got: {error}");
+
+        let trailing = [LZIP_FIXTURE, b"junk"].concat();
+        let error = lzip_decode(&trailing).unwrap_err().to_string();
+        assert!(error.contains("after the last member"), "got: {error}");
+
+        let error = lzip_decode(b"").unwrap_err().to_string();
+        assert!(error.contains("empty input"), "got: {error}");
+
+        let error = lzip_decode(b"LZMA\x01\x0c").unwrap_err().to_string();
+        assert!(error.contains("missing LZIP magic"), "got: {error}");
     }
 
     #[test]

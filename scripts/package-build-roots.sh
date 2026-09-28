@@ -868,10 +868,29 @@ kandelo_package_stage_verified_source() {
     esac
 
     mkdir -p "$dest"
-    if ! tar xf "$tarball" -C "$dest" --strip-components=1; then
-        rm -rf "$dest" "$download_dir"
-        return 1
-    fi
+    case "$archive_magic" in
+        4c5a4950)
+            # WHY: tar hands lzip ("LZIP") archives to an `lzip` program the
+            # dev shell does not carry; xz 5.4+ decodes lzip itself. xtask's
+            # SourceOnly extractor decodes the same format natively.
+            # pipefail: a corrupt member must fail the extraction even though
+            # tar may accept the truncated stream xz stops writing.
+            if ! (
+                set -o pipefail
+                xz --format=lzip -dc "$tarball" |
+                    tar xf - -C "$dest" --strip-components=1
+            ); then
+                rm -rf "$dest" "$download_dir"
+                return 1
+            fi
+            ;;
+        *)
+            if ! tar xf "$tarball" -C "$dest" --strip-components=1; then
+                rm -rf "$dest" "$download_dir"
+                return 1
+            fi
+            ;;
+    esac
     rm -rf "$download_dir"
 }
 
