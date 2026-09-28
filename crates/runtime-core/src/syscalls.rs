@@ -4864,9 +4864,11 @@ pub fn sys_read(
                             let mut ring = input.ring.borrow_mut();
                             // Empty ring: O_NONBLOCK gets EAGAIN; a blocking
                             // read returns Ok(0) (not a kernel park) so the
-                            // host retries on its poll timer — matches DriCard0
-                            // and is what the read-until-empty drain loop and
-                            // the host's retry path depend on. (Returning
+                            // host retries on its poll timer — the
+                            // read-until-empty drain loop and the host's retry
+                            // path depend on it. This is a known divergence
+                            // from Linux, whose evdev read blocks; DriCard0
+                            // blocks as Linux does. (Returning
                             // EAGAIN for the blocking case instead parks the
                             // read until the next injected event, which hangs a
                             // drain that has already consumed the whole ring.)
@@ -4928,13 +4930,17 @@ pub fn sys_read(
                                 }
                             }
                             if n == 0 {
-                                if status_flags & O_NONBLOCK != 0 {
-                                    return Err(Errno::EAGAIN);
-                                }
-                                // Nothing queued and not non-blocking: return
-                                // 0 so drmHandleEvent treats it as "no events
-                                // this round" rather than a hard error.
-                                return Ok(0);
+                                // Nothing queued. Linux's drm_read blocks until
+                                // an event arrives (EAGAIN only for O_NONBLOCK),
+                                // and EAGAIN is exactly that here: the host
+                                // returns it to an O_NONBLOCK caller and parks a
+                                // blocking one, which the vblank tick wakes after
+                                // kernel_vblank queues the flip completions. A 0
+                                // return is end-of-file: libdrm's drmHandleEvent
+                                // took it as "no event", the caller flipped
+                                // again with its first flip still pending, and
+                                // got EBUSY.
+                                return Err(Errno::EAGAIN);
                             }
                             n
                         }
@@ -43271,6 +43277,16 @@ mod tests {
             )
             .unwrap_err(),
             Errno::EBUSY
+        );
+
+        // Before the vblank there is no event to read. The read must not
+        // report end-of-file (libdrm's drmHandleEvent would take that as "no
+        // event" and flip again into EBUSY): EAGAIN parks a blocking reader
+        // until the vblank tick wakes it.
+        let mut evbuf = [0u8; 64];
+        assert_eq!(
+            sys_read(&mut proc, &mut host, fd, &mut evbuf).unwrap_err(),
+            Errno::EAGAIN
         );
 
         // One vblank tick retires the queued flip into event_ring.
