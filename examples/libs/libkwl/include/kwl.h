@@ -74,10 +74,11 @@ void kwl_window_destroy(struct kwl_window *win);
 struct wpk_surface *kwl_window_surface(struct kwl_window *win);
 
 /* Present the back buffer: attach + damage + request a frame callback +
- * commit, then swap to the other buffer for the next frame. Blocks until
- * the compositor has released that buffer, so the surface is always safe
- * to draw into when this returns. A KWL_FRAME event is delivered once the
- * compositor presents the committed frame. */
+ * commit, then switch to a buffer the compositor has released for the next
+ * frame, so the surface is always safe to draw into when this returns. It
+ * blocks only if the compositor still holds every other buffer. A KWL_FRAME
+ * event is delivered once the compositor presents the committed frame. The
+ * next buffer holds stale pixels: redraw the whole surface each frame. */
 void kwl_window_commit(struct kwl_window *win);
 
 /* Pump the display and return the next input/frame event. Events are

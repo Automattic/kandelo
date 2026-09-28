@@ -45,7 +45,11 @@
 #include <wpkdraw/wpkfont.h>
 
 #define KWL_SOCKET_PATH "/tmp/wayland-0"
-#define KWL_NUM_BUFFERS 2
+/* Three buffers: the one on screen, the one just committed (released once
+ * the compositor handles that commit), and one free to draw into -- so a
+ * commit rarely waits, and never on a compositor that holds a buffer for a
+ * while (an occluded window, a delayed repaint). */
+#define KWL_NUM_BUFFERS 3
 #define KWL_EVQ_INITIAL 64
 
 /* CSD titlebar geometry (surface pixels). */
@@ -589,23 +593,29 @@ void kwl_window_commit(struct kwl_window *win) {
     wl_surface_commit(win->surface);
     b->busy = 1;
 
-    /* Swap to the other buffer for the next frame -- but only once the
-     * compositor has released it. Until then it may still be reading those
-     * pixels (the compositor composites from the attached buffer at repaint
-     * time), and drawing into it would tear the frame on screen. Apps need
-     * not pace their commits on KWL_FRAME: wlterm commits once per PTY read,
-     * so this wait is what keeps the two buffers from overlapping. It is
-     * short: the compositor releases the previous buffer as soon as it
-     * handles this commit. Events that arrive meanwhile are queued, not
-     * lost. */
-    int next = (win->back_index + 1) % KWL_NUM_BUFFERS;
+    /* Draw the next frame into a buffer the compositor has released. Until
+     * wl_buffer.release it may still read a buffer's pixels (it composites
+     * from the attached buffer at repaint time), so drawing into one would
+     * tear the frame on screen. Apps need not pace their commits on
+     * KWL_FRAME -- wlterm commits once per PTY read -- so this choice is
+     * what keeps a frame from overwriting one still in use. Normally a free
+     * buffer exists already; only if the compositor holds every other one
+     * does this wait, and the wait ends because a compositor releases a
+     * buffer once a newer commit replaces it. Events that arrive meanwhile
+     * are queued, not lost. */
     wl_display_flush(win->display);
-    while (win->bufs[next].busy) {
+    int next = -1;
+    for (;;) {
+        for (int k = 1; k <= KWL_NUM_BUFFERS && next < 0; k++) {
+            int i = (win->back_index + k) % KWL_NUM_BUFFERS;
+            if (!win->bufs[i].busy) next = i;
+        }
+        if (next >= 0) break;
         if (wl_display_dispatch(win->display) < 0) {
-            /* Compositor gone: nothing reads the buffer any more. */
+            /* Compositor gone: nothing reads the buffers any more. */
             struct kwl_event e = { .type = KWL_CLOSE };
             kwl_push(win, &e);
-            win->bufs[next].busy = 0;
+            for (int i = 0; i < KWL_NUM_BUFFERS; i++) win->bufs[i].busy = 0;
         }
     }
     win->back_index = next;

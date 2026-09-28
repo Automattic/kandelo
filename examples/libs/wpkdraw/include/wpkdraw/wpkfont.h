@@ -2,8 +2,10 @@
  *
  * The default font (Inconsolata Regular) is embedded in the archive as a
  * byte array, so wpk_font_load_default() needs no file at runtime and no
- * font staged into the VFS. v1 renders BMP codepoints (<= 0xFFFF); 4-byte
- * UTF-8 sequences decode to '?'.
+ * font staged into the VFS. Text is UTF-8: every codepoint up to U+10FFFF
+ * decodes (one the face lacks draws its .notdef glyph), and malformed,
+ * truncated, overlong or surrogate sequences decode to U+FFFD. Decoding
+ * never reads past the terminating NUL.
  */
 #ifndef WPKDRAW_FONT_H
 #define WPKDRAW_FONT_H

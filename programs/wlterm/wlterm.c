@@ -27,6 +27,7 @@
 #include <pty.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -45,11 +46,35 @@
 /* Keyboard input not yet accepted by the PTY. The master is non-blocking,
  * so a write can take part of it or none (EAGAIN) when the shell is not
  * reading -- a paste, or key repeat while a command runs. What the PTY does
- * not take waits here for POLLOUT instead of being discarded. */
-static char g_input[4096];
-static size_t g_input_len;
+ * not take waits here for POLLOUT instead of being discarded. The buffer
+ * grows rather than applying backpressure: holding back Wayland events to
+ * bound it would also hold back a close request, and what it holds is only
+ * what the user typed. */
+static char *g_input;
+static size_t g_input_len, g_input_cap;
 /* Longest sequence vt100_input_key emits into its 8-byte buffer. */
 #define KEY_SEQ_MAX 8
+/* PTY output consumed per loop iteration before Wayland events and input
+ * get a turn again, so a flood (`yes`) cannot starve them. */
+#define OUTPUT_BUDGET (64 * 1024)
+
+/* Append one key's bytes to the pending input. */
+static void queue_key(uint32_t keysym, uint32_t mods) {
+    if (g_input_cap - g_input_len < KEY_SEQ_MAX) {
+        size_t cap = g_input_cap ? g_input_cap * 2 : 4096;
+        char *p = realloc(g_input, cap);
+        if (!p) {
+            /* Out of memory: nowhere to keep the key. Say so rather than
+             * dropping it silently. */
+            fprintf(stderr, "wlterm: out of memory; keystroke lost\n");
+            return;
+        }
+        g_input = p;
+        g_input_cap = cap;
+    }
+    g_input_len += vt100_input_key(keysym, mods, g_input + g_input_len,
+                                   KEY_SEQ_MAX);
+}
 
 /* Write as much pending input as the PTY accepts. */
 static void flush_input(int master) {
@@ -169,17 +194,13 @@ int main(int argc, char **argv) {
     int running = 1;
 
     while (running) {
-        /* With no room for another key's bytes, stop taking Wayland events:
-         * they wait, in order, in libkwl's queue and the socket until the
-         * shell reads and POLLOUT frees space. */
-        int input_room = g_input_len + KEY_SEQ_MAX <= sizeof g_input;
         struct pollfd pfds[2] = {
-            { .fd = display_fd, .events = input_room ? POLLIN : 0 },
+            { .fd = display_fd, .events = POLLIN },
             { .fd = master,
               .events = POLLIN | (g_input_len > 0 ? POLLOUT : 0) },
         };
         /* Events libkwl already holds do not wake the display fd. */
-        int pr = poll(pfds, 2, input_room && kwl_pending(win) ? 0 : 1000);
+        int pr = poll(pfds, 2, kwl_pending(win) ? 0 : 1000);
         if (pr < 0) {
             if (errno == EINTR) continue;
             perror("poll");
@@ -188,14 +209,11 @@ int main(int argc, char **argv) {
 
         if (pfds[1].revents & POLLOUT) flush_input(master);
 
-        /* Drain pending Wayland events while there is room; keys → PTY. */
+        /* Drain pending Wayland events; keys → pending input → PTY. */
         struct kwl_event ev;
-        while (g_input_len + KEY_SEQ_MAX <= sizeof g_input
-               && kwl_dispatch(win, &ev, 0)) {
+        while (kwl_dispatch(win, &ev, 0)) {
             if (ev.type == KWL_KEY && ev.state == 1) {
-                size_t n = vt100_input_key(ev.keysym, ev.mods,
-                                           g_input + g_input_len, KEY_SEQ_MAX);
-                g_input_len += n;
+                queue_key(ev.keysym, ev.mods);
             } else if (ev.type == KWL_CLOSE) {
                 running = 0;
             }
@@ -206,11 +224,13 @@ int main(int argc, char **argv) {
         int dirty = 0;
         if (pfds[1].revents & POLLIN) {
             char buf[4096];
-            for (;;) {
+            size_t budget = OUTPUT_BUDGET;
+            while (budget > 0) {
                 ssize_t r = read(master, buf, sizeof buf);
                 if (r > 0) {
                     vt100_feed(term, buf, (size_t)r);
                     dirty = 1;
+                    budget = (size_t)r < budget ? budget - (size_t)r : 0;
                     if (r < (ssize_t)sizeof buf) break;
                 } else if (r == 0) {
                     running = 0;  /* shell closed the PTY */
@@ -248,6 +268,7 @@ int main(int argc, char **argv) {
     }
     fflush(stdout);
 
+    free(g_input);
     vt100_destroy(term);
     wpk_font_destroy(font);
     kwl_window_destroy(win);

@@ -123,6 +123,17 @@ static void erase_cells(struct vt100 *t, int from, int to) {
         for (int r = from / t->cols; r <= (to - 1) / t->cols; r++) mark_dirty(t, r);
 }
 
+/* Clamp the cursor into the grid. Cursor movement and erasure call this,
+ * which also ends a pending wrap (cx == cols), as Linux's csi_J/csi_K and
+ * cursor commands clear vc_need_wrap; SGR and ignored finals must not, or
+ * a coloured full-width line would lose its wrap. */
+static void clamp_cursor(struct vt100 *t) {
+    if (t->cx < 0) t->cx = 0;
+    if (t->cx > t->cols - 1) t->cx = t->cols - 1;
+    if (t->cy < 0) t->cy = 0;
+    if (t->cy > t->rows - 1) t->cy = t->rows - 1;
+}
+
 static void apply_csi(struct vt100 *t, char final) {
     const int *params = t->csi_params;
     int n_params = t->csi_n < CSI_MAX_PARAMS ? t->csi_n : CSI_MAX_PARAMS;
@@ -132,16 +143,17 @@ static void apply_csi(struct vt100 *t, char final) {
     int row = t->cy * t->cols;
     int end = t->rows * t->cols;
     switch (final) {
-    case 'A': t->cy -= params[0] ? params[0] : 1; break;
-    case 'B': t->cy += params[0] ? params[0] : 1; break;
-    case 'C': t->cx += params[0] ? params[0] : 1; break;
-    case 'D': t->cx -= params[0] ? params[0] : 1; break;
+    case 'A': t->cy -= params[0] ? params[0] : 1; clamp_cursor(t); break;
+    case 'B': t->cy += params[0] ? params[0] : 1; clamp_cursor(t); break;
+    case 'C': t->cx += params[0] ? params[0] : 1; clamp_cursor(t); break;
+    case 'D': t->cx -= params[0] ? params[0] : 1; clamp_cursor(t); break;
     case 'H':
     case 'f': {
         int r = params[0] ? params[0] - 1 : 0;
         int c = n_params > 1 && params[1] ? params[1] - 1 : 0;
         t->cy = r;
         t->cx = c;
+        clamp_cursor(t);
         break;
     }
     case 'J':   /* ED: 0 cursor..end, 1 start..cursor, 2 whole screen */
@@ -149,11 +161,13 @@ static void apply_csi(struct vt100 *t, char final) {
         else if (params[0] == 1) erase_cells(t, 0, row + col + 1);
         /* 3 also drops scrollback on Linux; there is none to drop here. */
         else if (params[0] == 2 || params[0] == 3) erase_cells(t, 0, end);
+        clamp_cursor(t);
         break;
     case 'K':   /* EL: 0 cursor..end of line, 1 line start..cursor, 2 line */
         if (params[0] == 0) erase_cells(t, row + col, row + t->cols);
         else if (params[0] == 1) erase_cells(t, row, row + col + 1);
         else if (params[0] == 2) erase_cells(t, row, row + t->cols);
+        clamp_cursor(t);
         break;
     case 'm': {
         if (n_params == 0) { t->fg = 7; t->bg = 16; t->flags = 0; break; }
@@ -177,10 +191,6 @@ static void apply_csi(struct vt100 *t, char final) {
     default:
         break;  /* unknown CSI final — ignore in v1 */
     }
-    if (t->cx < 0) t->cx = 0;
-    if (t->cx > t->cols - 1) t->cx = t->cols - 1;
-    if (t->cy < 0) t->cy = 0;
-    if (t->cy > t->rows - 1) t->cy = t->rows - 1;
 }
 
 /* Length a UTF-8 lead byte announces, or 0 if it is not a valid lead. */

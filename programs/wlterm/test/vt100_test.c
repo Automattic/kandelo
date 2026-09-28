@@ -308,6 +308,28 @@ static void el_at_pending_wrap(void) {
     vt100_destroy(t);
 }
 
+/* SGR after the last column must keep the pending wrap: the next printable
+ * character starts the next row. (Clamping it away lost the wrap on every
+ * coloured full-width line.) */
+static void sgr_keeps_pending_wrap(void) {
+    struct vt100 *t = fresh();
+    FEED(t, "01234567890123456789");   /* exactly COLS: wrap now pending */
+    FEED(t, "\x1b[31mX\x1b[m");
+    expect_ascii_row("sgr_wrap row0", t, 0, "01234567890123456789");
+    expect_ascii_row("sgr_wrap row1", t, 1, "X");
+    vt100_destroy(t);
+}
+
+/* Erase at a pending wrap ends it, as Linux's csi_K clears vc_need_wrap:
+ * the next character lands on the last column, not the next row. */
+static void el_ends_pending_wrap(void) {
+    struct vt100 *t = fresh();
+    FEED(t, "01234567890123456789\x1b[KX");
+    expect_ascii_row("el_ends_wrap row0", t, 0, "0123456789012345678X");
+    expect_ascii_row("el_ends_wrap row1", t, 1, "");
+    vt100_destroy(t);
+}
+
 int main(void) {
     utf8_whole();
     utf8_truncated_inline();
@@ -331,6 +353,8 @@ int main(void) {
     csi_many_params();
     ed_mode3_clears();
     el_at_pending_wrap();
+    sgr_keeps_pending_wrap();
+    el_ends_pending_wrap();
     if (failures) {
         printf("vt100_test: %d FAILED\n", failures);
         return 1;
