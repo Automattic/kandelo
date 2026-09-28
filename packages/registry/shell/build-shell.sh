@@ -106,6 +106,7 @@ require_real_directory WASM_POSIX_DEP_BASH_DIR "$BASH_DIR"
 require_real_directory WASM_POSIX_DEP_FBDOOM_DIR "$FBDOOM_DIR"
 require_real_directory WASM_POSIX_DEP_MODESET_DIR "$MODESET_DIR"
 require_real_directory WASM_POSIX_DEP_SDL2_DEMO_DIR "$SDL2_DEMO_DIR"
+require_real_directory WASM_POSIX_DEP_WAYLAND_DEMO_DIR "$WAYLAND_DEMO_DIR"
 require_real_directory WASM_POSIX_DEP_ESPEAK_NG_DIR "$ESPEAK_NG_DIR"
 for dependency in "${EXTENDED_DEPENDENCIES[@]}"; do
     dependency_key="$(printf '%s' "$dependency" | tr '[:lower:]-' '[:upper:]_')"
@@ -130,6 +131,8 @@ WLPAINT="$WAYLAND_DEMO_DIR/wlpaint.wasm"
 # The launcher itself. A package runtime_file is NOT installed into the shell
 # image by the composer, so it has to be threaded like the binaries.
 WLDESKTOP="$WAYLAND_DEMO_DIR/wldesktop"
+# libinput's device quirks, unpacked by the composer at /usr/share/libinput.
+LIBINPUT_QUIRKS="$WAYLAND_DEMO_DIR/libinput-quirks.zip"
 ESPEAK_NG="$ESPEAK_NG_DIR/espeak-ng.wasm"
 ESPEAK_NG_DATA="$ESPEAK_NG_DIR/espeak-ng-data.zip"
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
@@ -142,6 +145,12 @@ require_regular_file "bash dependency output" "$BASH"
 require_regular_file "fbdoom dependency output" "$FBDOOM"
 require_regular_file "modeset dependency output" "$MODESET"
 require_regular_file "sdl2 dependency output" "$SDL2"
+require_regular_file "wlcompositor dependency output" "$WLCOMPOSITOR"
+require_regular_file "wlterm dependency output" "$WLTERM"
+require_regular_file "wlclock dependency output" "$WLCLOCK"
+require_regular_file "wlpaint dependency output" "$WLPAINT"
+require_regular_file "wldesktop dependency output" "$WLDESKTOP"
+require_regular_file "libinput quirks dependency output" "$LIBINPUT_QUIRKS"
 require_regular_file "espeak-ng dependency output" "$ESPEAK_NG"
 require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DATA"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
@@ -174,6 +183,7 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --wlclock "$WLCLOCK" \
     --wlpaint "$WLPAINT" \
     --wldesktop "$WLDESKTOP" \
+    --libinput-quirks "$LIBINPUT_QUIRKS" \
     --espeak-ng "$ESPEAK_NG" \
     --espeak-ng-data "$ESPEAK_NG_DATA" \
     --demo-config "$DEMO_CONFIG" \

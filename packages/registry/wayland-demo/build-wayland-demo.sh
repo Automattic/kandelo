@@ -143,3 +143,7 @@ done
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     install -m 0755 "$WORK_DIR/wldesktop" "$WASM_POSIX_DEP_OUT_DIR/wldesktop"
 fi
+# The compositor links libinput statically, so the device quirks libinput
+# reads at runtime travel with this package (see [[runtime_files]]).
+install_local_runtime_file wayland-demo \
+    "$LIBINPUT/share/libinput-quirks.zip" libinput-quirks.zip

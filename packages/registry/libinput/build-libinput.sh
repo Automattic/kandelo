@@ -107,6 +107,15 @@ sed -e "s/@VCS_TAG@/${LIBINPUT_VERSION}/" \
 # fixed-size capability arrays need — identical rationale to the libevdev port.
 cp "$SCRIPT_DIR/src/linux-types.h" "$SRC_DIR/include/linux/linux/types.h"
 
+# quirks.c with patches/0001: report an empty DMI identity where the
+# platform has no DMI source (Kandelo exposes no SMBIOS/DMI or devicetree),
+# so the quirks database loads instead of failing whole. Patched as a copy
+# in GEN_DIR so the fetched source tree stays pristine across rebuilds;
+# its quoted includes still resolve through -I$SRC.
+cp "$SRC/quirks.c" "$GEN_DIR/quirks.c"
+patch --no-backup-if-mismatch -s "$GEN_DIR/quirks.c" \
+    < "$SCRIPT_DIR/patches/0001-quirks-empty-dmi-identity-without-dmi.patch"
+
 # --- Compile ------------------------------------------------------------
 CFLAGS=(
     -O2 -fPIC -fvisibility=hidden -std=gnu11
@@ -152,7 +161,9 @@ OBJS=()
 for tu in "${TUS[@]}"; do
     obj="$BUILD_DIR/${tu%.c}.o"
     echo "    $tu" >&2
-    wasm32posix-cc -c "${CFLAGS[@]}" "$SRC/$tu" -o "$obj"
+    src="$SRC/$tu"
+    [ "$tu" = quirks.c ] && src="$GEN_DIR/quirks.c"
+    wasm32posix-cc -c "${CFLAGS[@]}" "$src" -o "$obj"
     OBJS+=("$obj")
 done
 
@@ -163,6 +174,32 @@ wasm32posix-ar rcs "$INSTALL_DIR/lib/libinput.a" "${OBJS[@]}"
 # Consumers include only <libinput.h> (which pulls <stdlib.h> + <stdint.h>).
 echo "==> Installing header..."
 cp "$SRC/libinput.h" "$INSTALL_DIR/include/libinput.h"
+
+# Device quirks: the data libinput reads at runtime from LIBINPUT_QUIRKS_DIR
+# (/usr/share/libinput, src/config.h). Upstream installs quirks/ there
+# (meson install_subdir). Without it libinput logs "Failed to load the device
+# quirks" and applies no per-device fixups. A static library cannot carry a
+# data directory to its consumer's image, so it ships as one declared file:
+# a stored zip, sorted, with fixed timestamps and modes so its bytes follow
+# the quirks alone. Image builders unpack it at LIBINPUT_QUIRKS_DIR.
+mkdir -p "$INSTALL_DIR/share"
+python3 - "$SRC_DIR/quirks" "$INSTALL_DIR/share/libinput-quirks.zip" <<'PY'
+from pathlib import Path
+import stat
+import sys
+import zipfile
+
+root = Path(sys.argv[1])
+files = sorted(p for p in root.iterdir() if p.is_file() and p.name.endswith(".quirks"))
+if not files:
+    sys.exit(f"no .quirks files under {root}")
+with zipfile.ZipFile(sys.argv[2], "w", compression=zipfile.ZIP_STORED, strict_timestamps=True) as archive:
+    for path in files:
+        info = zipfile.ZipInfo(path.name, date_time=(1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        info.external_attr = (stat.S_IFREG | 0o644) << 16
+        archive.writestr(info, path.read_bytes())
+PY
 
 echo "==> libinput $LIBINPUT_VERSION installed at $INSTALL_DIR"
 echo "    lib/libinput.a ($(wc -c < "$INSTALL_DIR/lib/libinput.a") bytes)"

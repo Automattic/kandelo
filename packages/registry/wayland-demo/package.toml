@@ -34,6 +34,14 @@ url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
 [build]
 script_path = "packages/registry/wayland-demo/build-wayland-demo.sh"
 
+[[host_tools]]
+# Generates the xdg-shell glue the compositor and libkwl compile against;
+# same constraint as libwayland, whose wire tables the output must match.
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 # wpkdraw embeds its font by generating a C byte array from the vendored TTF.
 [[host_tools]]
 name = "python3"
@@ -65,3 +73,11 @@ wasm = "wlpaint.wasm"
 artifact = "wldesktop"
 guest_path = "/usr/local/bin/wldesktop"
 mode = 0o755
+
+# libinput's device quirks, packed by the libinput package. wlcompositor
+# links libinput statically and reads them from /usr/share/libinput; image
+# builders unpack this zip there. (libinput logs "Failed to load the device
+# quirks" and applies no device fixups without them.)
+[[runtime_files]]
+artifact = "libinput-quirks.zip"
+guest_path = "/usr/share/wayland-demo/libinput-quirks.zip"

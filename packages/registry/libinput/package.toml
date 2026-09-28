@@ -53,3 +53,19 @@ script_path = "packages/registry/libinput/build-libinput.sh"
 [outputs]
 libs = ["lib/libinput.a"]
 headers = ["include/libinput.h"]
+# quirks/*.quirks packed as one zip; consumers unpack it at /usr/share/libinput.
+files = ["share/libinput-quirks.zip"]
+
+# Packs the device-quirks data into its declared zip.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.8"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+# Applies patches/0001 (quirks: empty DMI identity where none exists).
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
