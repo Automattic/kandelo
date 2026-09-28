@@ -17,8 +17,9 @@
   (global $__stack_pointer (export "__stack_pointer") (mut i32)
     (i32.const 65536))
 
+  ;; Must equal ABI_VERSION (crates/shared/src/lib.rs); bump with it.
   (func (export "__abi_version") (result i32)
-    i32.const 45)
+    i32.const 46)
 
   (func $wait_child (param $pid i32) (result i32)
     (local $base i32)
