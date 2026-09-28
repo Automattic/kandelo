@@ -810,7 +810,8 @@ alone is therefore enough to boot a first-party machine or a stranger's image,
 and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
-`doom`, `modeset`, `sdl2`, `evdev`, and `espeak` — so one channel selects one:
+`node`, `doom`, `quake`, `modeset`, `sdl2`, `wayland`, and `espeak` — so one
+channel selects one:
 
 1. `&profile=<id>` on the page URL.
 2. else the image's own `defaultProfile`.
