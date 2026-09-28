@@ -19554,6 +19554,18 @@ export class CentralizedKernelWorker {
       }
 
       if (op === EPOLL_CTL_ADD) {
+        // The kernel keys a registration on (fd, open file description) and
+        // drops one whose description has closed, so an ADD it accepts for
+        // an fd number this mirror still lists means that entry is a dead
+        // registration (its file was closed and the number reused). Keeping
+        // it would report the new file's readiness twice, once with the dead
+        // registration's data. This mirror still cannot follow a
+        // registration kept alive only by a dup of a closed fd, nor prune on
+        // close; routing epoll_wait through the kernel's own list (the
+        // Rust-first epoll route) removes the mirror altogether.
+        for (let i = interests.length - 1; i >= 0; i--) {
+          if (interests[i]!.fd === fd) interests.splice(i, 1);
+        }
         interests.push({ fd, events, data });
       } else if (op === EPOLL_CTL_DEL) {
         const idx = interests.findIndex(e => e.fd === fd);

@@ -592,11 +592,19 @@ pub struct EventFdState {
 }
 
 /// An entry in an epoll interest list.
+///
+/// Like Linux, a registration belongs to the pair (fd number, open file
+/// description): `ofd_id` is the description `fd` referred to at
+/// EPOLL_CTL_ADD. The registration lives as long as that description has
+/// an fd in the process -- it survives `close(fd)` while a `dup` keeps the
+/// description open, and disappears once none does -- and a later file that
+/// reuses the fd number is a different registration.
 #[derive(Debug, Clone)]
 pub struct EpollInterest {
     pub fd: i32,
     pub events: u32,
     pub data: u64,
+    pub ofd_id: crate::lock::OfdId,
 }
 
 /// An epoll instance: a set of monitored file descriptors.

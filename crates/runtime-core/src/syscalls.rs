@@ -13981,13 +13981,18 @@ fn poll_check_depth(
                     const EPOLLOUT: u32 = 0x004;
 
                     let ep_idx = (-(ofd.host_handle + 1)) as usize;
-                    // Clone to drop the proc.epolls borrow before recursing on &mut proc.
-                    let interests = proc
-                        .epolls
-                        .get(ep_idx)
-                        .and_then(|s| s.as_ref())
-                        .map(|ep| ep.interests.clone());
-                    if let Some(interests) = interests {
+                    // Owned list: drops the proc.epolls borrow before recursing
+                    // on &mut proc, and resolves each registration to an fd
+                    // that still reaches its description.
+                    let interests: Vec<crate::process::EpollInterest> =
+                        live_epoll_interests(proc, ep_idx)
+                            .into_iter()
+                            .map(|(mut i, probe)| {
+                                i.fd = probe;
+                                i
+                            })
+                            .collect();
+                    {
                         let mut tmp: Vec<WasmPollFd> = interests
                             .iter()
                             // Guard against a direct self-monitoring cycle.
@@ -15837,6 +15842,57 @@ pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
 /// epoll_ctl — modify an epoll interest list.
 ///
 /// op: EPOLL_CTL_ADD (1), EPOLL_CTL_DEL (2), EPOLL_CTL_MOD (3).
+/// The open file description identity behind `fd`, if it is open.
+fn fd_ofd_id(proc: &Process, fd: i32) -> Option<crate::lock::OfdId> {
+    let entry = proc.fd_table.get(fd).ok()?;
+    proc.ofd_table.get(entry.ofd_ref.0).map(|ofd| ofd.ofd_id)
+}
+
+/// Resolve an epoll instance's registrations to the fds that currently
+/// reach their open file descriptions, dropping the ones whose description
+/// is gone -- Linux removes a registration automatically once the last fd
+/// referring to its description is closed. A registration whose own fd was
+/// closed but whose description is still open through a `dup` keeps
+/// reporting, probed through that other fd, as on Linux. Returns each live
+/// registration with the fd to probe it through.
+fn live_epoll_interests(
+    proc: &mut Process,
+    ep_idx: usize,
+) -> Vec<(crate::process::EpollInterest, i32)> {
+    let Some(interests) = proc
+        .epolls
+        .get(ep_idx)
+        .and_then(|s| s.as_ref())
+        .map(|ep| ep.interests.clone())
+    else {
+        return Vec::new();
+    };
+    let mut live = Vec::with_capacity(interests.len());
+    for interest in interests {
+        let probe = if fd_ofd_id(proc, interest.fd) == Some(interest.ofd_id) {
+            Some(interest.fd)
+        } else {
+            proc.fd_table
+                .iter()
+                .find(|(_, entry)| {
+                    proc.ofd_table
+                        .get(entry.ofd_ref.0)
+                        .is_some_and(|ofd| ofd.ofd_id == interest.ofd_id)
+                })
+                .map(|(fd, _)| fd)
+        };
+        if let Some(probe) = probe {
+            live.push((interest, probe));
+        }
+    }
+    if let Some(ep) = proc.epolls.get_mut(ep_idx).and_then(|s| s.as_mut()) {
+        if ep.interests.len() != live.len() {
+            ep.interests = live.iter().map(|(i, _)| i.clone()).collect();
+        }
+    }
+    live
+}
+
 pub fn sys_epoll_ctl(
     proc: &mut Process,
     epfd: i32,
@@ -15857,31 +15913,37 @@ pub fn sys_epoll_ctl(
     }
     let ep_idx = (-(ofd.host_handle + 1)) as usize;
 
-    // Verify the target fd exists
-    let _ = proc.fd_table.get(fd)?;
+    // The target fd must be open; the registration key is (fd, its OFD).
+    let ofd_id = fd_ofd_id(proc, fd).ok_or(Errno::EBADF)?;
+    if proc.epolls.get(ep_idx).and_then(|s| s.as_ref()).is_none() {
+        return Err(Errno::EBADF);
+    }
+    // Drop registrations whose description has closed first, so a reused fd
+    // number is never mistaken for one (a stale entry made ADD fail EEXIST).
+    live_epoll_interests(proc, ep_idx);
 
     let ep = proc
         .epolls
         .get_mut(ep_idx)
         .and_then(|s| s.as_mut())
         .ok_or(Errno::EBADF)?;
+    let same = |e: &crate::process::EpollInterest| e.fd == fd && e.ofd_id == ofd_id;
 
     match op {
         EPOLL_CTL_ADD => {
-            // Check if fd already exists in interest list
-            if ep.interests.iter().any(|e| e.fd == fd) {
+            if ep.interests.iter().any(same) {
                 return Err(Errno::EEXIST);
             }
-            ep.interests
-                .push(crate::process::EpollInterest { fd, events, data });
+            ep.interests.push(crate::process::EpollInterest {
+                fd,
+                events,
+                data,
+                ofd_id,
+            });
             Ok(())
         }
         EPOLL_CTL_DEL => {
-            let pos = ep
-                .interests
-                .iter()
-                .position(|e| e.fd == fd)
-                .ok_or(Errno::ENOENT)?;
+            let pos = ep.interests.iter().position(same).ok_or(Errno::ENOENT)?;
             ep.interests.swap_remove(pos);
             Ok(())
         }
@@ -15889,7 +15951,7 @@ pub fn sys_epoll_ctl(
             let interest = ep
                 .interests
                 .iter_mut()
-                .find(|e| e.fd == fd)
+                .find(|e| same(e))
                 .ok_or(Errno::ENOENT)?;
             interest.events = events;
             interest.data = data;
@@ -15925,15 +15987,15 @@ pub fn sys_epoll_pwait(
     }
     let ep_idx = (-(ofd.host_handle + 1)) as usize;
 
-    // Copy interest list (need to release borrow on proc)
-    let interests = {
-        let ep = proc
-            .epolls
-            .get(ep_idx)
-            .and_then(|s| s.as_ref())
-            .ok_or(Errno::EBADF)?;
-        ep.interests.clone()
-    };
+    if proc.epolls.get(ep_idx).and_then(|s| s.as_ref()).is_none() {
+        return Err(Errno::EBADF);
+    }
+    // Live registrations, each with the fd that reaches its description
+    // (closed descriptions are dropped here, as Linux drops them).
+    let live = live_epoll_interests(proc, ep_idx);
+    let probe_fds: Vec<i32> = live.iter().map(|(_, probe)| *probe).collect();
+    let interests: Vec<crate::process::EpollInterest> =
+        live.into_iter().map(|(i, _)| i).collect();
 
     if interests.is_empty() {
         // No interests — just handle timeout/sigmask
@@ -15958,7 +16020,8 @@ pub fn sys_epoll_pwait(
     // Build pollfds from interests
     let mut pollfds: Vec<WasmPollFd> = interests
         .iter()
-        .map(|interest| {
+        .zip(probe_fds.iter())
+        .map(|(interest, &probe)| {
             let mut poll_events: i16 = 0;
             if interest.events & EPOLLIN != 0 {
                 poll_events |= POLLIN;
@@ -15967,7 +16030,7 @@ pub fn sys_epoll_pwait(
                 poll_events |= POLLOUT;
             }
             WasmPollFd {
-                fd: interest.fd,
+                fd: probe,
                 events: poll_events,
                 revents: 0,
             }
@@ -38096,14 +38159,65 @@ mod tests {
         assert_eq!(ep.interests.len(), 0);
     }
 
-    /// A nested epoll whose interest list still names a CLOSED fd must not
-    /// report the outer epoll readable. `poll_check_depth` counts POLLNVAL
-    /// in its return, and nothing prunes `ep.interests` on close (Linux
-    /// prunes automatically, we only remove on EPOLL_CTL_DEL). Treating that
-    /// count as readiness made epoll_wait on the outer fd return immediately
-    /// forever while the inner one yielded an events==0 entry: a 100% CPU
-    /// spin in exactly the libinput-inside-wl_event_loop shape the recursion
-    /// exists to support.
+    /// Linux drops a registration once the last fd referring to its open
+    /// file description is closed, so a new file that reuses the fd number
+    /// can be added (no EEXIST) and never inherits the old one's data.
+    #[test]
+    fn epoll_registration_ends_with_its_description() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        const EPOLLIN: u32 = 0x001;
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let (rfd, wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd, EPOLLIN, 7).unwrap();
+        sys_close(&mut proc, &mut host, rfd).unwrap();
+        sys_close(&mut proc, &mut host, wfd).unwrap();
+
+        // The fd number comes back for an unrelated pipe.
+        let (rfd2, wfd2) = sys_pipe2(&mut proc, 0).unwrap();
+        assert_eq!(rfd2, rfd);
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd2, EPOLLIN, 99).unwrap();
+        sys_write(&mut proc, &mut host, wfd2, b"x").unwrap();
+        let (n, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 8, 0, None).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(events[0].1, 99, "the old registration's data must not surface");
+        // DEL on the old registration's number addresses the new one only.
+        sys_epoll_ctl(&mut proc, epfd, 2, rfd2, 0, 0).unwrap();
+        assert_eq!(
+            sys_epoll_ctl(&mut proc, epfd, 2, rfd2, 0, 0),
+            Err(Errno::ENOENT)
+        );
+    }
+
+    /// A registration outlives close(fd) while a dup keeps its description
+    /// open, and keeps reporting with its own data -- Linux's behaviour.
+    #[test]
+    fn epoll_registration_survives_close_while_duped() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        const EPOLLIN: u32 = 0x001;
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let (rfd, wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd, EPOLLIN, 5).unwrap();
+        let dup = sys_dup(&mut proc, rfd).unwrap();
+        sys_close(&mut proc, &mut host, rfd).unwrap();
+        sys_write(&mut proc, &mut host, wfd, b"x").unwrap();
+        let (n, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 8, 0, None).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(events[0].1, 5);
+        // Closing the last fd to the description ends the registration.
+        sys_close(&mut proc, &mut host, dup).unwrap();
+        let (n, _) = sys_epoll_pwait(&mut proc, &mut host, epfd, 8, 0, None).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// A nested epoll whose interest list named a CLOSED fd must not report
+    /// the outer epoll readable. Treating the closed fd's POLLNVAL as
+    /// readiness made epoll_wait on the outer fd return immediately forever
+    /// while the inner one yielded an events==0 entry: a 100% CPU spin in
+    /// exactly the libinput-inside-wl_event_loop shape the recursion exists
+    /// to support. (The registration is now also dropped once its
+    /// description closes, as on Linux -- see the tests below.)
     #[test]
     fn nested_epoll_with_a_stale_interest_is_not_readable() {
         let mut proc = Process::new(1);
@@ -38111,9 +38225,7 @@ mod tests {
 
         // Two pipes registered up front: closing one below must not make
         // the outer epoll readable, and the other proves real readiness
-        // still propagates. Registering the second AFTER the close would
-        // reuse the freed fd number and hit EEXIST on the stale interest --
-        // itself a symptom of the same missing-prune behaviour.
+        // still propagates.
         let (stale_rfd, _stale_wfd) = sys_pipe2(&mut proc, 0).unwrap();
         let (live_rfd, live_wfd) = sys_pipe2(&mut proc, 0).unwrap();
         let inner = sys_epoll_create1(&mut proc, 0).unwrap();
