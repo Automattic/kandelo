@@ -715,6 +715,17 @@ function requireRegularXtask(path: string): string {
   throw new Error(`Prepared xtask is not a regular file: ${path}`);
 }
 
+/** Compiler variables a caller may set for its own C builds (see below). */
+const CHECKER_BUILD_SCRUBBED_ENV = [
+  "CC",
+  "CXX",
+  "AR",
+  "CFLAGS",
+  "CXXFLAGS",
+  "CPPFLAGS",
+  "LDFLAGS",
+] as const;
+
 function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const explicit = process.env.WASM_POSIX_XTASK_BIN;
   if (explicit !== undefined) {
@@ -728,9 +739,17 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   }
 
   const host = rustHostTarget(sourceRepoRoot);
+  // WHY a private target directory and a scrubbed compiler environment: the
+  // checker's dependency graph includes C build scripts (ring) whose
+  // fingerprints depend on CC and friends. Callers inherit different values
+  // (the dev shell sets CC=clang; conformance runners export an absolute
+  // clang path), and every change invalidates the whole release build, which
+  // takes about 100 s. Building into a directory nothing else writes, with
+  // those variables removed, keeps its inputs identical across callers, so
+  // after the first build every preparation is Cargo's no-op.
+  const checkerTargetDir = join(sourceRepoRoot, "target", "program-index-checker");
   const xtaskPath = join(
-    sourceRepoRoot,
-    "target",
+    checkerTargetDir,
     host,
     "release",
     process.platform === "win32" ? "xtask.exe" : "xtask",
@@ -746,6 +765,8 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
     "xtask",
     "--target",
     host,
+    "--target-dir",
+    checkerTargetDir,
     "--quiet",
   ];
   const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
@@ -753,9 +774,12 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const args = inDevShell
     ? cargoArgs
     : [join(sourceRepoRoot, "scripts", "dev-shell.sh"), "cargo", ...cargoArgs];
+  const env = { ...process.env };
+  for (const name of CHECKER_BUILD_SCRUBBED_ENV) delete env[name];
   const result = spawnSync(command, args, {
     cwd: sourceRepoRoot,
     encoding: "utf8",
+    env,
   });
   if (result.status !== 0) {
     throw new Error(commandFailure(command, args, result));
