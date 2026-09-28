@@ -563,17 +563,27 @@ utilities below replaced commands that used to come from `posix-utils-lite`:
 | `iconv` | GNU libiconv 1.17 `iconv` | A `-f`/`-t` operand that names a charmap file (contains a `/`) is not supported; codeset names only. |
 | `gencat` | chimerautils 15.1.1 (FreeBSD `gencat`) | None known. Writes the catalog format musl's `catopen()` reads. |
 | `tput`, `tabs` | ncurses 6.5 | |
+| `patch` | GNU patch 2.8 | |
+| `ed` | GNU ed 1.22.6 | GNU extensions (long options, `-E`, `-G`) are accepted; default behavior is POSIX. |
+| `compress`, `uncompress` | ncompress 5.0 | `uncompress` is `compress` invoked by that name. |
+| `uuencode`, `uudecode` | GNU sharutils 4.15.2 | |
+| `what` | outils 0.14 (OpenBSD `what`) | |
+| `getconf` | Alpine Linux musl-utils `getconf.c` | Reports what musl's `sysconf()`, `pathconf()` and `confstr()` return. |
 
 `posix-utils-lite` is a single in-repository program that still answers for
-the remaining base utilities: `ar`, `asa`, `cal`, `cflow`, `compress`,
-`ctags`, `cxref`, `ed`, `fuser`, `getconf`, `gettext`, `ipcrm`, `ipcs`, `lex`,
-`locale`, `logger`, `msgfmt`, `ngettext`, `nm`, `patch`, `pax`, `pgrep`, `ps`,
-`renice`, `strings`, `strip`, `uncompress`, `uudecode`, `uuencode`, `what`,
-`xgettext`, and `yacc`. Most of these are not working implementations: many
-report success without doing the work (`patch` changes nothing, `compress`
-copies its input, `lex` and `yacc` ignore the grammar), and unknown options
-are silently skipped. Do not rely on their output. They are being replaced
-one group at a time with upstream implementations.
+the remaining base utilities: `ar`, `cal`, `cflow`, `ctags`, `cxref`, `fuser`,
+`gettext`, `ipcrm`, `ipcs`, `lex`, `locale`, `logger`, `msgfmt`, `ngettext`,
+`nm`, `pax`, `pgrep`, `ps`, `renice`, `strings`, `strip`, `xgettext`, and
+`yacc`. Most of these are not working implementations: many report success
+without doing the work (`lex` and `yacc` ignore the grammar, `pax` writes an
+invented format), and unknown options are silently skipped. Do not rely on
+their output. They are being replaced one group at a time with upstream
+implementations.
+
+Omitted optional utilities: `asa` (the POSIX FORTRAN Runtime option, `[FR]`)
+is not installed. No maintained implementation exists outside the full
+FreeBSD and NetBSD source trees, and a program that needs it gets "command
+not found" rather than an imitation.
 
 ---
 

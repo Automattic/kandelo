@@ -21,20 +21,12 @@ name = "ar"
 wasm = "ar.wasm"
 
 [[outputs]]
-name = "asa"
-wasm = "asa.wasm"
-
-[[outputs]]
 name = "cal"
 wasm = "cal.wasm"
 
 [[outputs]]
 name = "cflow"
 wasm = "cflow.wasm"
-
-[[outputs]]
-name = "compress"
-wasm = "compress.wasm"
 
 [[outputs]]
 name = "ctags"
@@ -45,16 +37,8 @@ name = "cxref"
 wasm = "cxref.wasm"
 
 [[outputs]]
-name = "ed"
-wasm = "ed.wasm"
-
-[[outputs]]
 name = "fuser"
 wasm = "fuser.wasm"
-
-[[outputs]]
-name = "getconf"
-wasm = "getconf.wasm"
 
 [[outputs]]
 name = "gettext"
@@ -93,10 +77,6 @@ name = "nm"
 wasm = "nm.wasm"
 
 [[outputs]]
-name = "patch"
-wasm = "patch.wasm"
-
-[[outputs]]
 name = "pax"
 wasm = "pax.wasm"
 
@@ -119,22 +99,6 @@ wasm = "strings.wasm"
 [[outputs]]
 name = "strip"
 wasm = "strip.wasm"
-
-[[outputs]]
-name = "uncompress"
-wasm = "uncompress.wasm"
-
-[[outputs]]
-name = "uudecode"
-wasm = "uudecode.wasm"
-
-[[outputs]]
-name = "uuencode"
-wasm = "uuencode.wasm"
-
-[[outputs]]
-name = "what"
-wasm = "what.wasm"
 
 [[outputs]]
 name = "xgettext"

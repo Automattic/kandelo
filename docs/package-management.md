@@ -1527,9 +1527,15 @@ Rejected at parse time (the parser surfaces a clear error):
 When `[build].script_path` is absent, the resolver fetches `source.url`,
 verifies `source.sha256`, and extracts in-place. Format detection
 is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
-`.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
-plain `.tar`. Unrecognized extensions fail loudly rather than
-guessing.
+`.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.tar.lz` /
+`.tlz`, `.zip`, and plain `.tar`. Unrecognized extensions fail loudly
+rather than guessing.
+
+lzip (`.tar.lz`) is supported because some GNU packages, GNU ed among
+them, publish no other format. The resolver decodes it natively, and
+checks each member's CRC32 and sizes; build scripts that stage sources
+themselves through `kandelo_package_stage_verified_source` decode it
+with the dev shell's `xz --format=lzip`.
 
 If the archive contains a single top-level directory (the
 `pcre2-10.42/` shape), that wrapper is stripped — the cache

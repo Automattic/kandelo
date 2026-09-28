@@ -23,6 +23,12 @@ depends_on = [
   "vim@9.1.0900",
   "iconv@1.17",
   "gencat@15.1.1",
+  "patch@2.8",
+  "ed@1.22.6",
+  "ncompress@5.0",
+  "sharutils@4.15.2",
+  "outils@0.14",
+  "musl-utils@1.1.12-r7",
   "posix-utils-lite@0.1.0",
 ]
 

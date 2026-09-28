@@ -1,0 +1,8 @@
+script_path = "packages/registry/ncompress/build-ncompress.sh"
+inputs = [
+  "packages/registry/ncompress/build-ncompress.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

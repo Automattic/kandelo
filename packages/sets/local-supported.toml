@@ -72,6 +72,10 @@ name = "dinit"
 class = "user-software"
 
 [[packages]]
+name = "ed"
+class = "user-software"
+
+[[packages]]
 name = "espeak-ng"
 class = "user-software"
 
@@ -212,7 +216,15 @@ name = "msmtpd"
 class = "user-software"
 
 [[packages]]
+name = "musl-utils"
+class = "user-software"
+
+[[packages]]
 name = "nano"
+class = "user-software"
+
+[[packages]]
+name = "ncompress"
 class = "user-software"
 
 [[packages]]
@@ -262,6 +274,14 @@ class = "browser-product"
 [[packages]]
 name = "openssl"
 class = "platform"
+
+[[packages]]
+name = "outils"
+class = "user-software"
+
+[[packages]]
+name = "patch"
+class = "user-software"
 
 [[packages]]
 name = "perl"
@@ -321,6 +341,10 @@ class = "platform"
 
 [[packages]]
 name = "sed"
+class = "user-software"
+
+[[packages]]
+name = "sharutils"
 class = "user-software"
 
 [[packages]]

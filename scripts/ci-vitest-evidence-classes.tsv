@@ -332,6 +332,7 @@ packages/registry/dash/test/dash-signal-regression.test.ts	prepared-product
 packages/registry/dash/test/dash.test.ts	prepared-product
 packages/registry/dinit/test/dinit-scripted-service.test.ts	prepared-product
 packages/registry/dinit/test/dinitctl.test.ts	prepared-product
+packages/registry/ed/test/ed.test.ts	prepared-product
 packages/registry/erlang/test/erlang.test.ts	prepared-product
 packages/registry/gencat/test/gencat.test.ts	prepared-product
 packages/registry/git/test/git.test.ts	prepared-product
@@ -340,9 +341,13 @@ packages/registry/gzip/test/gzip.test.ts	prepared-product
 packages/registry/iconv/test/iconv.test.ts	prepared-product
 packages/registry/less/test/more.test.ts	prepared-product
 packages/registry/mandoc/test/man.test.ts	prepared-product
+packages/registry/musl-utils/test/getconf.test.ts	prepared-product
+packages/registry/ncompress/test/compress.test.ts	prepared-product
 packages/registry/nginx/test/nginx.test.ts	prepared-product
 packages/registry/openssl/test/certificates.test.ts	prepared-product
 packages/registry/openssl/test/ssl-basic.test.ts	prepared-product
+packages/registry/outils/test/what.test.ts	prepared-product
+packages/registry/patch/test/patch.test.ts	prepared-product
 packages/registry/php/test/php-concurrent-sqlite.test.ts	prepared-product
 packages/registry/php/test/php-curl.test.ts	prepared-product
 packages/registry/php/test/php-hello.test.ts	prepared-product
@@ -351,6 +356,7 @@ packages/registry/php/test/php-pdo-column-metadata.test.ts	prepared-product
 packages/registry/posix-utils-lite/test/process-tools.test.ts	prepared-product
 packages/registry/ruby/test/posix-spawn.test.ts	prepared-product
 packages/registry/sed/test/sed.test.ts	prepared-product
+packages/registry/sharutils/test/uucode.test.ts	prepared-product
 packages/registry/spidermonkey/test/spidermonkey-node-compat.test.ts	prepared-product
 packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts	prepared-product
 packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts	source-only

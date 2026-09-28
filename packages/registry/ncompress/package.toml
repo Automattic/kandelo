@@ -1,0 +1,25 @@
+# compress(1) and uncompress(1): ncompress, the maintained descendant of the
+# original Unix compress. uncompress is the same program; it decompresses
+# when invoked as "uncompress", so the root filesystem installs it as an
+# alias of compress.
+kind = "program"
+name = "ncompress"
+version = "5.0"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/vapier/ncompress/archive/refs/tags/v5.0.tar.gz"
+sha256 = "96ec931d06ab827fccad377839bfb91955274568392ddecf809e443443aead46"
+provider = "archive"
+
+[license]
+spdx = "Unlicense"
+url = "https://github.com/vapier/ncompress/blob/v5.0/UNLICENSE"
+
+[build]
+script_path = "packages/registry/ncompress/build-ncompress.sh"
+
+[[outputs]]
+name = "compress"
+wasm = "compress.wasm"

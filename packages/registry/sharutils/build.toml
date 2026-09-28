@@ -1,0 +1,9 @@
+script_path = "packages/registry/sharutils/build-sharutils.sh"
+inputs = [
+  "packages/registry/sharutils/build-sharutils.sh",
+  "packages/registry/sharutils/patches",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

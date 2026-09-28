@@ -1,0 +1,26 @@
+# uuencode(1) and uudecode(1) from GNU sharutils.
+kind = "program"
+name = "sharutils"
+version = "4.15.2"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/sharutils/sharutils-4.15.2.tar.xz"
+sha256 = "2b05cff7de5d7b646dc1669bc36c35fdac02ac6ae4b6c19cb3340d87ec553a9a"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/sharutils.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/sharutils/build-sharutils.sh"
+
+[[outputs]]
+name = "uuencode"
+wasm = "uuencode.wasm"
+
+[[outputs]]
+name = "uudecode"
+wasm = "uudecode.wasm"

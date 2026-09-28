@@ -1601,6 +1601,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "bzip2",
+ "crc32fast",
  "flate2",
  "fork-instrument",
  "regex",

@@ -1,0 +1,22 @@
+# GNU patch.
+kind = "program"
+name = "patch"
+version = "2.8"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/patch/patch-2.8.tar.xz"
+sha256 = "f87cee69eec2b4fcbf60a396b030ad6aa3415f192aa5f7ee84cad5e11f7f5ae3"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/patch.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/patch/build-patch.sh"
+
+[[outputs]]
+name = "patch"
+wasm = "patch.wasm"
