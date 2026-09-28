@@ -12,7 +12,6 @@ import {
   FORK_ACTIVATION_TRAMPOLINE_SLOTS,
   forkActivationFrameImports,
   forkUnwindTagFrom,
-  isForkUnwindException,
   requireForkUnwindTag,
 } from "../src/fork-guest-imports";
 
@@ -310,19 +309,5 @@ describe("the fork unwind tag", () => {
     expect(() => requireForkUnwindTag(null, "ctx")).toThrow(
       /missing valid process-owned fork unwind tag/,
     );
-  });
-
-  it("tells the unwind transport apart from a program exception", () => {
-    const unwind = new WebAssembly.Tag({ parameters: [] });
-    const other = new WebAssembly.Tag({ parameters: [] });
-    // Distinguishing these is the entire reason the transport has a private
-    // tag: instrumented catch-alls rethrow this one and consume the rest.
-    expect(isForkUnwindException(new WebAssembly.Exception(unwind, []), unwind)).toBe(
-      true,
-    );
-    expect(isForkUnwindException(new WebAssembly.Exception(other, []), unwind)).toBe(
-      false,
-    );
-    expect(isForkUnwindException(new Error("boom"), unwind)).toBe(false);
   });
 });

@@ -1,6 +1,19 @@
 /**
  * The fork half of a process Worker and of a pthread Worker, written once.
  *
+ * # What is left here, and why
+ *
+ * Since lane F step 3c the co-resident fork module runs every fork itself: it
+ * serves the guest's `kernel.kernel_fork` import (`__wpk_fork_kernel_fork`),
+ * takes the process archive reader, has the guest fill its static-root
+ * catalog, seals, issues SYS_FORK / SYS_VFORK, replays, and reports the
+ * outcome through the kernel; `fm_run` runs the guest entry in that loop.
+ * What stays in TypeScript is the host floor: instantiating the module and
+ * the guest, the reference-typed `Table.set` bindings, the child's import
+ * plan and install, and the guard that reads an `unreachable` trap after a
+ * recorded exit as that exit. The sections below describe how this file came
+ * to be.
+ *
  * # Why this file exists
  *
  * `centralizedWorkerMain` (a process) and `centralizedThreadWorkerMain` (a
@@ -45,26 +58,22 @@ import {
   CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
-  HOST_INTERCEPTED_SYSCALLS,
   PROCESS_FORK_MODE_FORK,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
-import { ContinuationAllocationError } from "./fork-continuation";
 import {
   buildForkGuestImports,
   FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
   FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
   forkUnwindTagFrom,
-  isForkUnwindException,
 } from "./fork-guest-imports";
-import { forkPhase, type ForkPhase } from "./fork-phase";
 import {
   type ForkModuleInstance,
   instantiateForkModule,
 } from "./fork-module-instance";
 import {
-  type ForkBorrowedReplayWorkspace,
+  FORK_RUN_KINDS,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
 import { computeForkModuleTemplateId } from "./fork-guest-sections";
@@ -80,8 +89,6 @@ import type {
 } from "./worker-main";
 
 const ENOSYS = 38;
-const EAGAIN = 11;
-const EINVAL = 22;
 
 /** @internal Exported so cross-engine exit-trap recognition is tested. */
 export function isWasmUnreachableTrap(error: unknown): boolean {
@@ -139,26 +146,6 @@ export function channelSyscall(
   return err ? -err : result;
 }
 
-/**
- * SYS_FORK or SYS_VFORK for `mode`; -errno or the child pid. A vfork also
- * tells the kernel how much private workspace the borrowed child's replay
- * needs, from the module's seal row.
- */
-export function sendForkSyscall(
-  memory: WebAssembly.Memory,
-  channelOffset: number,
-  mode: ProcessForkMode,
-  sealed: ForkBorrowedReplayWorkspace,
-): number {
-  const vfork = mode === PROCESS_FORK_MODE_VFORK;
-  return channelSyscall(
-    memory,
-    channelOffset,
-    vfork ? HOST_INTERCEPTED_SYSCALLS.SYS_VFORK : HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-    vfork ? [BigInt(sealed.prefixBytes), BigInt(sealed.scratchBytes)] : [],
-  );
-}
-
 /** Everything that differs between a process Worker and a pthread Worker. */
 export interface ForkWorkerOptions {
   readonly memory: WebAssembly.Memory;
@@ -182,8 +169,6 @@ export interface ForkWorkerOptions {
   readonly borrowedChild: boolean;
   /** Place the fork module's region (see the process main for the COW case). */
   readonly reserve: (size: number) => number;
-  /** Record where a child finds activation 0's continuation. */
-  readonly publishLaunchRoot: (address: number) => void;
 }
 
 /** How a guest entry ended. */
@@ -197,7 +182,6 @@ export type ForkWorkerOutcome =
  */
 export class ForkWorker {
   private readonly backend: ForkModuleContinuationBackend;
-  private readonly moduleExports: Record<string, unknown>;
   readonly instance: ForkModuleInstance;
   readonly unwindTag: WebAssembly.Tag;
   readonly activations: ForkActivations;
@@ -210,12 +194,8 @@ export class ForkWorker {
     readonly dlopen: DlopenSupport;
     readonly replication: ProcessTableReplicationOwner;
   } | null = null;
-  private mainRegistered = false;
-  private forkMode: ProcessForkMode;
-  /** What the guest's `fork()` returns once its replay finishes. */
-  private forkResult = 0;
 
-  constructor(private readonly options: ForkWorkerOptions, forkMode: ProcessForkMode) {
+  constructor(private readonly options: ForkWorkerOptions) {
     const { label, memory } = options;
     // The co-resident module is the unconditional capturer and reconstructor:
     // there is no JavaScript fork engine behind it, so a missing one fails
@@ -223,7 +203,6 @@ export class ForkWorker {
     if (!options.forkModuleModule) {
       throw new Error(`${label}: fork-instrumented worker requires the co-resident fork module`);
     }
-    this.forkMode = forkMode;
     this.instance = instantiateForkModule({
       module: options.forkModuleModule,
       memory,
@@ -248,7 +227,6 @@ export class ForkWorker {
       archiveControlAddr: options.archiveControlAddr,
       label: `${label}: fork-module`,
     });
-    this.moduleExports = this.instance.exports;
     // The per-worker format first (it resets every activation record), then
     // activation 0's admission: every fork section of the program goes to the
     // module before instantiation, including the pointer-width check.
@@ -299,11 +277,6 @@ export class ForkWorker {
     return this.backend;
   }
 
-  /** The module's phase. */
-  phase(): ForkPhase {
-    return forkPhase(this.moduleExports, this.options.pid);
-  }
-
   /** What a side activation needs to route its frames to this module. */
   frameFlip(): {
     readonly moduleExports: Record<string, unknown>;
@@ -351,145 +324,74 @@ export class ForkWorker {
     dlopen.setForkReaderProbe(() => held.value !== 0);
   }
 
-  /** Remember activation 0; a `fork()` before this answers ENOSYS. */
+  /**
+   * The guest's `kernel.kernel_fork(mode)` import: the MODULE's own export,
+   * bound straight in, so no host code runs between `fork()` and the module.
+   */
+  kernelForkImport(): (mode: number) => number {
+    const kernelFork = this.instance.exports.__wpk_fork_kernel_fork;
+    if (typeof kernelFork !== "function") {
+      throw new Error(`${this.options.label}: the fork module does not serve kernel_fork`);
+    }
+    return kernelFork as (mode: number) => number;
+  }
+
+  /**
+   * Register activation 0 (the module answers a `fork()` before this with
+   * ENOSYS), which also binds its entry points for `fm_run`.
+   */
   registerMain(instance: WebAssembly.Instance): void {
     this.activations.register({ activationId: 0, instance });
-    this.mainRegistered = true;
-  }
-
-  /** Abort a transaction the module still holds, keeping the first error. */
-  private abortIfOpen(): void {
-    if (this.phase() === "idle") return;
-    try {
-      this.module().abort();
-    } catch {
-      // Preserve the caller's failure; abort made the transaction unreachable
-      // before attempting any cleanup.
-    }
   }
 
   /**
-   * The guest's `kernel.kernel_fork(mode)` import.
+   * Run a guest entry until it returns or exits, the module serving every
+   * fork it makes (`fm_run`).
    *
-   * Called twice per fork: once on the way down, where it opens a capture
-   * and the guest unwinds, and once more when the replayed frames reach the
-   * same call site, where it finishes the transaction and returns what
-   * `fork()` returns.
-   */
-  kernelFork(rawMode: number): number {
-    const { label } = this.options;
-    if (!this.mainRegistered) return -ENOSYS;
-    const mode = processForkMode(rawMode);
-    if (mode === null) return -EINVAL;
-    const phase = this.phase();
-    if (phase === "parent-replay" || phase === "child-replay" || phase === "abort-replay") {
-      if (mode !== this.forkMode) {
-        throw new Error(
-          `${label}: fork ${phase} mode ${mode} does not match captured mode ${this.forkMode}`,
-        );
-      }
-      // ONE finish for every replay. The MODULE reports what happened
-      // through the kernel (`SYS_FORK_DIAGNOSTIC`): an abort and why, or the
-      // frames and references it drove. So no abort path can forget to say
-      // why, and every host says it in the kernel's words.
-      // The finish also hands the fork's archive reader back.
-      const finished = this.module().parentFinish(phase === "abort-replay");
-      if (phase === "abort-replay") return -finished.errno;
-      // A child's finish has already reported SYS_FORK_REPLAY_READY from
-      // inside the module. A borrowed (vfork) child keeps its fork-module
-      // region until its image ends: the KERNEL reclaims it then, before the
-      // parent may resume (`reclaim_vfork_borrow` in crates/runtime-core).
-      return this.forkResult;
-    }
-    if (phase !== "idle") {
-      throw new Error(`${label}: fork import reached while process continuation is ${phase}`);
-    }
-    // A borrowed vfork child may not fork again before exec or _exit.
-    if (this.options.borrowedChild) return -EAGAIN;
-    this.forkMode = mode;
-    try {
-      // The module fills its merged static-root catalog itself, from each
-      // activation's own, before it opens the capture.
-      this.options.publishLaunchRoot(0);
-      this.options.publishLaunchRoot(this.module().parentBeginCapture(this.options.channelOffset));
-    } catch (error) {
-      // The module takes the archive reader as it opens the capture and
-      // hands it back on any failure to open (and `abort` releases it too).
-      this.abortIfOpen();
-      if (error instanceof ContinuationAllocationError) return -error.errno;
-      throw error;
-    }
-    return 0; // ignored: the guest is unwinding
-  }
-
-  /**
-   * Seal the capture the guest just unwound into, create the child, and
-   * start the parent's replay.
+   * A process runs `_start` (`kind` "process"); a pthread, or a fork child of
+   * one, runs its start routine through `wpk_fork_thread_entry(fnPtr, arg)`
+   * ("thread"). The module picks the replay entry itself while a fork is
+   * open, so a fork child starts in its replay without being told.
    *
-   * A seal that fails after the frames sealed comes back null with the
-   * MODULE already abort-replaying the parent; `fork()` returns `-errno` at
-   * the abort finish, which reports it.
-   */
-  private forkFromCapture(): void {
-    const sealed = this.module().sealCaptureAndSerialize();
-    if (sealed !== null) {
-      const { memory, channelOffset } = this.options;
-      const childPid = sendForkSyscall(memory, channelOffset, this.forkMode, sealed);
-      this.forkResult = childPid;
-      this.module().parentReplay(childPid < 0 ? -childPid : 0);
-    }
-  }
-
-
-  /**
-   * Run a guest entry until it returns or exits, serving every fork it issues.
+   * The one decision left to the host is the trap guard: an `unreachable`
+   * trap after `kernel_exit` recorded a status is a committed exit, not a
+   * crash. Anything else propagates -- a trap, an exec retirement -- and ends
+   * this Worker.
    *
-   * `lexical` runs when no continuation is pending; `replay` re-enters the
-   * guest to rewind a captured one. The fork-unwind exception is the module's
-   * own tag, thrown by the guest's instrumented frames once they have
-   * committed; an `unreachable` trap after `kernel_exit` recorded a status is
-   * a committed exit, not a crash.
+   * Before it does, a fork that still holds the process archive READER gives
+   * it back (`fm_abort`): the reader is the one thing a fork holds that
+   * outlives this Worker, and a peer thread's loader would wait on it
+   * forever. Nothing else is released here. The rest of a fork is this
+   * Worker's own and ends with it, and an abort with no fork open is not
+   * harmless: it frees the last completed fork's arena, which a vfork child
+   * may still be reading, and a borrowed child's heap in the middle of its
+   * exec retirement, which the kernel's exact old-memory fence refuses.
    */
   run(
-    lexical: () => unknown,
-    replay: () => unknown,
+    kind: keyof typeof FORK_RUN_KINDS,
+    fnPtr: number,
+    arg: number,
     exitStatus: () => number | null,
   ): ForkWorkerOutcome {
-    const { label } = this.options;
+    const fmRun = this.instance.exports.fm_run as (
+      kind: number,
+      fnPtr: number,
+      arg: number | bigint,
+    ) => bigint;
     try {
-      for (;;) {
-        let unwound = false;
-        let returned: unknown;
-        try {
-          returned = (this.phase() === "idle" ? lexical : replay)();
-        } catch (error) {
-          if (isForkUnwindException(error, this.unwindTag)) {
-            unwound = true;
-          } else {
-            const status = exitStatus();
-            if (isWasmUnreachableTrap(error) && status !== null) return { exited: status };
-            throw error;
-          }
-        }
-        const phase = this.phase();
-        if (unwound && phase !== "capture") {
-          throw new Error(
-            `${label}: private fork-unwind exception escaped while process continuation is ${phase}`,
-          );
-        }
-        if (phase === "capture") {
-          this.forkFromCapture();
-          continue;
-        }
-        if (phase !== "idle") {
-          throw new Error(`${label}: guest entry returned while continuation is ${phase}`);
-        }
-        return { returned };
-      }
+      const argument = this.options.ptrWidth === 8 ? BigInt(arg) : arg;
+      return { returned: fmRun(FORK_RUN_KINDS[kind], fnPtr, argument) };
     } catch (error) {
       const status = exitStatus();
       if (isWasmUnreachableTrap(error) && status !== null) return { exited: status };
-      this.abortIfOpen();
+      const readerHeld = this.instance.exports.__wpk_fork_archive_reader_held;
+      if (readerHeld instanceof WebAssembly.Global && readerHeld.value !== 0) {
+        try {
+          this.module().abort();
+        } catch {
+          // Keep the guest's failure; the abort is cleanup.
+        }
+      }
       throw error;
     }
   }

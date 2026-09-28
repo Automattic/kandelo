@@ -20,7 +20,6 @@
 import type { ForkActivationRow } from "./fork-activations";
 import type { ForkBindingRow } from "./fork-import-identity";
 import type { ForkModuleInstance } from "./fork-module-instance";
-import { ContinuationAllocationError } from "./fork-continuation";
 import {
   encodeForkAdmission,
   FORK_ADMISSION_BORROWED_CHILD,
@@ -51,12 +50,6 @@ export const FORK_MODULE_STATS = [
   "externrefHandlesScanned",
 ] as const;
 
-/** Sizes a vfork BORROWED child's host-reserved private workspace. */
-export interface ForkBorrowedReplayWorkspace {
-  readonly prefixBytes: number;
-  readonly scratchBytes: number;
-}
-
 export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
 
 /**
@@ -79,13 +72,10 @@ export function encodeForkBindings(rows: readonly ForkBindingRow[]): Uint8Array 
 }
 
 /**
- * Refusals a fork survives with `fork()` = `-errno`: the module could not get
- * memory (`ENOMEM`), or the archive reader it takes as it opens the capture
- * would wait on this Worker's own loader transaction (`EDEADLK`).
+ * `fm_run`'s `kind`: which entry pair the module runs (`RUN_KIND_*` in
+ * `fork-codec`'s drive plan, pinned by `fork-module-backend.test.ts`).
  */
-const FORK_MODULE_SURVIVABLE_BEGIN = new Set([12, 35]);
-/** `PHASE_ABORT_REPLAY` in `crates/fork-module/src/lib.rs`. */
-const FORK_MODULE_PHASE_ABORT_REPLAY = 5;
+export const FORK_RUN_KINDS = { process: 0, thread: 1 } as const;
 
 /**
  * One activation's guest exports, bound into the module's drive table so the
@@ -160,6 +150,14 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   // required: a guest with no static roots emits no shim, and the module
   // never drives an activation that placed none.
   { slot: 19, name: "__wpk_fork_static_root_fill", required: false },
+  // The guest's entry points, which the module's run loop (`fm_run`) calls:
+  // a process's `_start` and its replay, a pthread's start routine through
+  // its fixed-signature trampoline and that routine's replay. Not required
+  // per activation: only activation 0 has them.
+  { slot: 20, name: "_start", required: false },
+  { slot: 21, name: "wpk_fork_resume_start", required: false },
+  { slot: 22, name: "wpk_fork_thread_entry", required: false },
+  { slot: 23, name: "wpk_fork_resume_thread", required: false },
 ] as const;
 
 /** One row of `fm_child_plan`; `resolve` is a `CHILD_PLAN_RESOLVE_*`. */
@@ -233,14 +231,11 @@ export class ForkModuleContinuationBackend {
     const result = fn(...args);
     const errno = this.lastErrno();
     if (errno !== 0) {
-      // EBUSY (16) from a phase entry means the module was in a DIFFERENT phase
-      // than the entry requires, and WHICH phase is the whole diagnosis --
-      // "errno 16" alone leaves a reader six to guess between, which cost an
-      // afternoon on the externref fork (census section 188). The module
-      // answers it, so say it. Written as one expression deliberately: this
-      // surface's ceiling equals its target, so a diagnostic pays for itself
-      // in lines or it does not land.
-      throw new Error(`${this.label}: ${name} failed with errno ${errno}${errno === 16 ? ` in module phase ${(this.exports.fm_phase as () => number)()}` : ""}`);
+      // No phase to add to an EBUSY any more: the entries a host calls in a
+      // fork's middle are gone (the module runs the fork, `fm_run`), and a
+      // wrong-phase arrival at the run loop reports its phase through the
+      // kernel (`runFailed`).
+      throw new Error(`${this.label}: ${name} failed with errno ${errno}`);
     }
     return result;
   }
@@ -334,54 +329,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Open this fork's capture: open its reference-capture session (the fork's
-   * single bump-heap reset), register the activations, publish each one's arena
-   * root, and drive every guest `wpk_fork_unwind_begin` — one module call. The
-   * activations are the ones this worker registered, which the module knows as
-   * the ones it BOUND (`bindActivation`), so nothing about them is passed in.
-   *
-   * The module allocates the fork's arena and declares the activation set
-   * into it; no host supplies an arena root.
-   *
-   * Returns activation 0's module-buffer anchor, which the host publishes as the
-   * process launch root. A side activation's anchor never reaches the host: the
-   * module records every activation's root in the continuation manifest it
-   * writes into the arena at seal.
-   */
-  parentBeginCapture(channelBase: number): number {
-    // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
-    // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
-    // memory exhaustion that fails with ENOMEM -- which is the case
-    // `p_11_fork_continuation_enomem` exists to prove survivable: `fork()`
-    // returns `-ENOMEM`, no child is created, and the parent runs on.
-    //
-    // It was not survivable, because this threw a plain Error. The fork
-    // handler's catch distinguishes `ContinuationAllocationError` from every
-    // other failure precisely so an allocation failure can become an errno,
-    // and anything else can still be fatal; `sealCaptureAndSerialize` has
-    // thrown the typed error for the same reason since it was written. Nothing
-    // has unwound yet at this point, so there are no frames to replay and no
-    // capture to seal -- the errno is the whole of the abort.
-    const root = (this.exports.fm_parent_begin_capture as (base: number) => number)(
-      channelBase,
-    );
-    const errno = this.lastErrno();
-    if (FORK_MODULE_SURVIVABLE_BEGIN.has(errno)) {
-      throw new ContinuationAllocationError(
-        errno,
-        0,
-        `${this.label}: fm_parent_begin_capture could not allocate (errno ${errno})`,
-      );
-    }
-    if (errno !== 0) {
-      throw new Error(
-        `${this.label}: fm_parent_begin_capture failed with errno ${errno}`,
-      );
-    }
-    return root;
-  }
-
-  /**
    * Install this fork's child: ONE module call for a COW child and a vfork
    * BORROWED child, forked from the main thread or from a pthread.
    *
@@ -438,32 +385,6 @@ export class ForkModuleContinuationBackend {
 
 
   /**
-   * Begin the parent's replay, or -- with a nonzero `abortErrno`, the errno the
-   * kernel refused the child with -- its abort replay.
-   *
-   * Drives each activation's `wpk_fork_rewind_begin` / `wpk_fork_abort_begin`
-   * from the module rather than a host loop. The other two aborts (a frame
-   * reserve that failed mid-unwind, a seal that failed) the module begins
-   * itself, where they happen.
-   */
-  parentReplay(abortErrno = 0): void {
-    this.call("fm_parent_replay", abortErrno);
-  }
-
-  /**
-   * End the parent's replay: drive each activation's `wpk_fork_rewind_end` (or
-   * `wpk_fork_abort_end`), finish the journal, and release this fork's
-   * channel-mapped chunks.
-   *
-   * An abort finish answers what the module recorded when the abort began: the
-   * errno `fork()` returns negated, and the module's `ABORT_CAUSE_*` that began it.
-   */
-  parentFinish(abort: boolean): { readonly errno: number; readonly cause: number } {
-    const report = this.call("fm_parent_finish", abort ? 1 : 0);
-    return { errno: report & 0xffff, cause: report >>> 16 };
-  }
-
-  /**
    * Abandon whatever this fork had open and return the module to idle.
    *
    * Best effort by design — it is the teardown path for a capture that failed
@@ -471,28 +392,6 @@ export class ForkModuleContinuationBackend {
    */
   abort(): void {
     this.call("fm_abort");
-  }
-
-  /**
-   * Seal this fork's capture and serialize the child-inheritable journal image.
-   *
-   * Answers what a vfork BORROWED child's workspace must hold, from the
-   * module's seal row (whose image fields the module records itself), or
-   * `null` when the seal failed and
-   * the MODULE turned the failure into an abort replay (a reference the
-   * platform will not carry, a seal-time allocation failure): the parent's
-   * frames replay and `fork()` returns `-errno` at the abort finish. Anything
-   * else is a failure no host can resume from, and throws.
-   */
-  sealCaptureAndSerialize(): ForkBorrowedReplayWorkspace | null {
-    const seal = this.exports.fm_parent_seal_capture as (base: number) => number;
-    const at = Number(seal(this.options.channelBase ?? 0));
-    if (at === 0) {
-      if ((this.exports.fm_phase as () => number)() === FORK_MODULE_PHASE_ABORT_REPLAY) return null;
-      throw new Error(`${this.label}: fm_parent_seal_capture failed with errno=${this.lastErrno()}`);
-    }
-    const [prefixBytes, scratchBytes] = new Uint32Array(this.options.memory.buffer.slice(at + 8, at + 16));
-    return { prefixBytes: prefixBytes!, scratchBytes: scratchBytes! };
   }
 
   /**

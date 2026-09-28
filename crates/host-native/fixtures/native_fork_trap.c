@@ -11,15 +11,17 @@
  *   - killed by a signal:  128 + WTERMSIG
  *   - exited:              WEXITSTATUS
  *
- * Folding both into one number keeps the fixture's verdict independent of
- * whether a host reports the fault as WIFSIGNALED (the JavaScript hosts) or,
- * for now, as a plain exit with status 132 (host-native, which does not yet
- * mark the process signaled; see docs/future-improvements.md). Either way a
- * SIGILL child yields 132. Exit 9 means the fork itself failed.
+ * and it prints which it was ("signaled=N" or "exited=N"), because POSIX
+ * makes a fault a signal death: a host that reported the SIGILL child as a
+ * plain exit with status 132 would give the same exit code and the wrong
+ * wait status. Every host reports it as WIFSIGNALED -- host-native since its
+ * main thread hands a fault to the pump's fault slot (lane F step 3c), as a
+ * faulting pthread already did. Exit 9 means the fork itself failed.
  *
  * Built through the SDK and instrumented with the production fork
  * instrumenter by build-fixtures.sh (INSTRUMENTED_FIXTURES).
  */
+#include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -38,7 +40,11 @@ int main(void) {
     }
     write(1, "parent\n", 7);
     if (WIFSIGNALED(st)) {
+        printf("signaled=%d\n", WTERMSIG(st));
+        fflush(stdout);
         _exit(128 + WTERMSIG(st));
     }
+    printf("exited=%d\n", WEXITSTATUS(st));
+    fflush(stdout);
     _exit(WEXITSTATUS(st));
 }

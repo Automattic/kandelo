@@ -12,7 +12,15 @@
 //
 // What stands in for the guest is the fixture's: wasm thunks bound into the
 // child's drive table at the restore, finish-restore and rewind-begin slots,
-// recording what the module drove. The static-root publish is not a stand-in:
+// recording what the module drove, and the child's entry pair, so the child
+// can be RUN through its module's own loop (`fm_run`) to the `fork()` that
+// finishes its replay -- which is how a test sees that an install left the
+// child replaying, now that no export answers the phase.
+//
+// The parent's fork runs to completion first (`runFork`). The pages it
+// mapped keep what it sealed -- the fixture's responder never reuses a
+// mapping, and the module releases a completed fork's arena only at the next
+// capture -- so the child reads exactly what a COW child's copy holds. The static-root publish is not a stand-in:
 // it is the injected shim's own `table.get` + `table.set`, which is why the
 // transit-growth case below traps for real when the growth is missing.
 
@@ -20,16 +28,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   CHANNEL_BASE,
-  DRIVE_SLOT_MODULE_STATE_SAVE,
+  DEFAULT_CHILD_PID,
+  DRIVE_SLOT_ENTRY_START,
+  DRIVE_SLOT_RESUME_START,
   DRIVE_SLOT_REWIND_BEGIN,
-  DRIVE_SLOT_UNWIND_BEGIN,
-  DRIVE_SLOT_UNWIND_END,
+  DRIVE_SLOT_REWIND_END,
   EBUSY,
   INTERN_KIND_STATIC_ROOT,
+  MODE_FORK,
+  MODE_VFORK,
   MUNMAP_COUNTER,
   PAGE,
-  PHASE_CHILD_REPLAY,
-  PHASE_IDLE,
+  REPLAY_READY_CALLS,
   admitActivation,
   admitInto,
   bindActivation,
@@ -37,6 +47,7 @@ import {
   childInstance,
   driveBase,
   fixture,
+  runFork,
   saveSlotThunk,
   sideTemplate,
   voidSlotThunk,
@@ -89,14 +100,22 @@ interface Child {
   readonly transit: WebAssembly.Table;
   /** The first word of the child's control block. */
   readonly controlWord: () => number;
+  /**
+   * Run the child through its module's loop to the `fork()` that finishes
+   * its replay; answers what that `fork()` returned (0 in a child).
+   */
+  readonly run: (mode?: number) => number;
 }
+
+const replayReadyCalls = (f: Fixture): number =>
+  new DataView(f.memory.buffer).getUint32(REPLAY_READY_CALLS, true);
 
 /**
  * A parent capture of three activation-0 static roots, sealed, and the anchor
  * it returned -- what the kernel hands the child's host as `forkBufAddr`.
  *
  * With a `fixedPrefix` the capture is opened here rather than by
- * `captureArena`, whose `openCapture` admits activation 0 with the fixture's
+ * `captureArena`, whose fork admits activation 0 with the fixture's
  * zero prefix; admission refuses a prefix that disagrees with the format.
  */
 function capturedParent(fixedPrefix = 0): { f: Fixture; recipes: number[]; anchor: number } {
@@ -114,21 +133,17 @@ function capturedParent(fixedPrefix = 0): { f: Fixture; recipes: number[]; ancho
     // fixture's admission; activation 0 is admitted again with the prefix.
     x.fm_set_format(4, fixedPrefix, 0, CHANNEL_BASE);
     expect(admitActivation(f, 0, { fixedPrefix }), "admitting activation 0").toBe(0);
-    const base = driveBase(0);
-    const table = f.instance.driveTable;
-    if (table.length < base + DRIVE_STRIDE) table.grow(base + DRIVE_STRIDE - table.length);
-    for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
-      table.set(base + slot, saveSlotThunk(() => {}) as never);
-    }
-    table.set(base + DRIVE_SLOT_UNWIND_END, voidSlotThunk(() => {}) as never);
-    x.fm_parent_begin_capture(CHANNEL_BASE);
-    expect(f.errno(), "the capture opens").toBe(0);
-    // The production intern entry the injected static-root scan calls; with
-    // one activation the merged slot is the ordinal.
-    recipes = ordinals.map((ordinal) => x.fm_static_root_recipe(ordinal));
-    expect(f.errno(), "the static roots intern").toBe(0);
-    x.fm_parent_seal_capture(CHANNEL_BASE);
-    expect(f.errno(), "the capture seals").toBe(0);
+    let interned: number[] = [];
+    const run = runFork(f, {
+      duringCapture: () => {
+        // The production intern entry the injected static-root scan calls;
+        // with one activation the merged slot is the ordinal.
+        interned = ordinals.map((ordinal) => x.fm_static_root_recipe(ordinal));
+        expect(f.errno(), "the static roots intern").toBe(0);
+      },
+    });
+    expect(run.forkReturn, "the capture seals and the fork completes").toBe(DEFAULT_CHILD_PID);
+    recipes = interned;
   }
   const anchor = f.anchor();
   expect(anchor, "the capture returned activation 0's anchor").toBeGreaterThan(0);
@@ -185,7 +200,24 @@ function childOf(
         saveSlotThunk((arg) => driven.push([slot, arg])) as never,
       );
     }
+    table.set(base + DRIVE_SLOT_REWIND_END, voidSlotThunk(() => {}) as never);
   }
+  // The child's entry pair. A child never runs its lexical entry: its install
+  // leaves it replaying, so `fm_run` calls the replay entry.
+  let childMode = MODE_FORK;
+  let childReturn: number | undefined;
+  table.set(
+    DRIVE_SLOT_ENTRY_START,
+    voidSlotThunk(() => {
+      throw new Error("the child ran its LEXICAL entry: its install left it idle");
+    }) as never,
+  );
+  table.set(
+    DRIVE_SLOT_RESUME_START,
+    voidSlotThunk(() => {
+      childReturn = x.__wpk_fork_kernel_fork(childMode);
+    }) as never,
+  );
 
   const roots = options.roots ?? [];
   const catalog = (instance.exports.__wpk_fork_static_root_catalog as WebAssembly.Table);
@@ -200,6 +232,13 @@ function childOf(
       x.fm_child_install(PID, launchRoot, borrowedBase, borrowedBytes),
     transit: x.__wpk_fork_ref_gc_transit as unknown as WebAssembly.Table,
     controlWord: () => new DataView(f.memory.buffer).getUint32(CONTROL, true),
+    run: (mode = MODE_FORK) => {
+      childMode = mode;
+      childReturn = undefined;
+      x.fm_run(0, 0, 0);
+      if (childReturn === undefined) throw new Error("the child's fork() never returned");
+      return childReturn;
+    },
   };
 }
 
@@ -218,9 +257,6 @@ describe("fm_child_install", () => {
 
     expect(child.install(anchor), "the install answers 0").toBe(0);
     expect(child.x.fm_last_errno()).toBe(0);
-    expect(child.x.fm_phase(), "and leaves the child replaying").toBe(
-      PHASE_CHILD_REPLAY,
-    );
     // The plan drove the guest: restore, finish-restore, then the rewind
     // begin from the launch root.
     expect(child.driven).toEqual([
@@ -228,6 +264,12 @@ describe("fm_child_install", () => {
       [DRIVE_SLOT_FINISH_RESTORE, 0],
       [DRIVE_SLOT_REWIND_BEGIN, anchor],
     ]);
+    // And left the child replaying: its run goes straight to the replay
+    // entry, whose fork() finishes the replay, returns 0, and tells the
+    // kernel the child reached its fork site.
+    const ready = replayReadyCalls(f);
+    expect(child.run(), "the child's fork() returns 0").toBe(0);
+    expect(replayReadyCalls(f) - ready, "SYS_FORK_REPLAY_READY, once").toBe(1);
     expect(child.controlWord(), "the anchor stays published").toBe(anchor);
     // Every static root was published into the transit at `recipe + 1`...
     recipes.forEach((recipe, ordinal) => {
@@ -271,7 +313,6 @@ describe("fm_child_install", () => {
     });
 
     expect(child.install(anchor, WORKSPACE, PAGE), "the install answers 0").toBe(0);
-    expect(child.x.fm_phase()).toBe(PHASE_CHILD_REPLAY);
     // Activation 0 rewinds from the child-private prefix carved at the start
     // of the admitted workspace, never from the parked parent's anchor.
     expect(child.driven).toEqual([
@@ -285,6 +326,12 @@ describe("fm_child_install", () => {
     expect(child.controlWord(), "the owner's word is not the child's to write").toBe(
       STALE_MAIN_ANCHOR,
     );
+    // Only a vfork borrows, so the child's replay must reach `vfork()`: the
+    // install recorded the mode, and a replay reaching `fork()` would trap.
+    expect(child.run(MODE_VFORK), "the borrowed child's vfork() returns 0").toBe(0);
+    // And a borrowed child may not fork again before it execs or exits: it
+    // runs on its parked parent's image, which a capture would write into.
+    expect(child.x.__wpk_fork_kernel_fork(MODE_FORK), "a nested fork is refused").toBe(-11);
   });
 
   it("grows the transit past what the child instantiated, before the drive publishes", () => {
@@ -315,16 +362,19 @@ describe("fm_child_install", () => {
     const { f, anchor } = capturedParent();
     const child = childOf(f, { controlWord: anchor, roots: roots() });
     expect(child.install(0)).toBe(EINVAL);
-    expect(child.x.fm_phase(), "and enters no phase").toBe(PHASE_IDLE);
     expect(child.driven).toEqual([]);
+    // And enters no phase: a retry with the real root installs (from any
+    // other phase it would be refused with EBUSY).
+    expect(child.install(anchor), "the retry installs").toBe(0);
   });
 
   it("refuses a COW child with no control block to publish its root in", () => {
     const { f, anchor } = capturedParent();
     const child = childOf(f, { controlWord: anchor, roots: roots(), control: 0 });
     expect(child.install(anchor)).toBe(EINVAL);
-    expect(child.x.fm_phase()).toBe(PHASE_IDLE);
     expect(child.driven).toEqual([]);
+    // No phase entered: the same refusal again, not EBUSY.
+    expect(child.install(anchor)).toBe(EINVAL);
   });
 
   // The module does not check these words itself: the arena decode in the
@@ -376,7 +426,6 @@ describe("fm_child_install", () => {
       const before = unmaps();
       child.x.fm_abort();
       expect(child.x.fm_last_errno(), "abort is legal from child replay").toBe(0);
-      expect(child.x.fm_phase(), "and returns to idle").toBe(PHASE_IDLE);
       return unmaps() - before;
     };
     const cow = unmapsOnAbort(BORROWED_PREFIX, false);
@@ -390,24 +439,10 @@ describe("fm_child_install", () => {
    */
   function capturedWithSide(): { f: Fixture; anchor: number } {
     const f = fixture();
-    const x = f.x as Record<string, Fn>;
     expect(admitActivation(f, 0)).toBe(0);
-    expect(admitActivation(f, 1, { template: sideTemplate(1) })).toBe(0);
-    expect(bindActivation(f.x, f.memory, 1)).not.toBeNull();
-    for (const activation of [0, 1]) {
-      const base = driveBase(activation);
-      const table = f.instance.driveTable;
-      if (table.length < base + DRIVE_STRIDE) table.grow(base + DRIVE_STRIDE - table.length);
-      for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
-        table.set(base + slot, saveSlotThunk(() => {}) as never);
-      }
-      table.set(base + DRIVE_SLOT_UNWIND_END, voidSlotThunk(() => {}) as never);
-    }
-    const anchor = x.fm_parent_begin_capture(CHANNEL_BASE, 0);
-    expect(f.errno(), "a two-activation capture begins").toBe(0);
-    x.fm_parent_seal_capture(CHANNEL_BASE);
-    expect(f.errno(), "and seals").toBe(0);
-    return { f, anchor };
+    const run = runFork(f, { sides: [1] });
+    expect(run.forkReturn, "a two-activation fork completes").toBe(DEFAULT_CHILD_PID);
+    return { f, anchor: run.anchor };
   }
 
   it("seeds every side it bound, each from its own continuation root", () => {
@@ -437,7 +472,8 @@ describe("fm_child_install", () => {
     const { f, anchor } = capturedWithSide();
     const child = childOf(f, { controlWord: anchor });
     expect(child.install(anchor)).toBe(EINVAL);
-    expect(child.x.fm_phase()).toBe(PHASE_IDLE);
     expect(child.driven).toEqual([]);
+    // No phase entered: the same refusal again, not EBUSY.
+    expect(child.install(anchor)).toBe(EINVAL);
   });
 });

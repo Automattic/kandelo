@@ -689,19 +689,20 @@ JavaScript host records — `128 + signum`, with the signal chosen by
 that is now full parity; on the main thread one piece of fidelity is still
 missing, and it is recorded here rather than papered over in the host.
 
-- **The signal flag, for a main-thread fault.** Node and the browser call the
-  kernel's `kernel_mark_process_signaled(pid, signum)` export, which is what
-  makes `WIFSIGNALED(status)` true and `WTERMSIG(status)` name the signal. The
-  native host's main thread still posts `exit_group(128 + signum)` instead
-  (`report_guest_fault` in `crates/host-native/src/guest.rs`), so its parent
-  sees `WIFEXITED` with that status. The mechanism to close it exists: since
-  2026-09-26 a faulting pthread hands its signal to the pump through a per-image
-  slot (`GuestProcess::thread_faults`), and the pump, which owns the kernel
-  `Store`, calls `kernel_mark_process_signaled` (`retire_faulted_threads`). The
-  main thread was left on the old path only because its entry loop
-  (`run_fork_capable_entry`, which calls `report_guest_fault`) was being
-  restructured by lane F step 3 at the time; handing it the same slot is a
-  small change once that lands.
+
+Closed on 2026-09-28, for the record:
+
+- **The signal flag, for a main-thread fault.** host-native's main thread
+  posted `exit_group(128 + signum)` for a fault, so its parent saw
+  `WIFEXITED` with that status where Node and the browser report
+  `WIFSIGNALED`. It now hands the signal to the pump through the same
+  per-image slot a faulting pthread uses (`GuestProcess::thread_faults`,
+  `report_guest_fault`), and the pump calls `kernel_mark_process_signaled`
+  (`retire_faulted_threads`); `retire_signal_killed_processes` now also
+  retires a process whose last channel was the faulting main thread's.
+  `smoke_fork_child_unreachable_is_reaped_as_a_fault` checks the parent
+  reaps `signaled=4`. It waited for lane F step 3c, which restructured the
+  entry loop around the fork module's `fm_run`.
 
 Closed on 2026-09-26, for the record:
 
@@ -1112,8 +1113,8 @@ runtime because the callback's call chain was not instrumented.
 
 ### Native (wasmtime) empirical exnref fork
 
-Context: `crates/host-native` forks the way the Node/browser hosts do — every
-phase through the coarse `fm_parent_*` entries and `fm_child_install`, every
+Context: `crates/host-native` forks the way the Node/browser hosts do — the
+module's own run loop (`fm_run`) and `fm_child_install`, every
 guest fork import bound to the module's own export, and the topological
 GC/exnref reconstruction driven by the module inside the install.
 

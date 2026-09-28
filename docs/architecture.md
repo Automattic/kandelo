@@ -1141,7 +1141,8 @@ apply the same policy.
 
 1. User calls `fork()` → musl → `kernel_fork(FORK)`; the process adapter
    validates the ABI-owned mode.
-2. The host's `kernel_fork(mode)` override begins one process continuation
+2. The guest's `kernel_fork(mode)` import is the fork module's own export
+   (`__wpk_fork_kernel_fork`, lane F step 3c); it begins one process continuation
    transaction. It captures activation catalogs and module state, maps each
    participating activation's root continuation chunk, and calls
    `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export
@@ -1154,8 +1155,10 @@ apply the same policy.
    into one process recipe graph and the frame stores only its reference-vector
    ordinal. The host maps additional page-rounded chunks when necessary. No
    accepted frame names a module-instance reference-table slot.
-4. Once `_start` returns (top-of-stack), the host sends `SYS_FORK` through the
-   channel for the captured ordinary-fork mode.
+4. Once the unwind reaches the module's run loop (`fm_run`, which called
+   `_start` inside a `try_table` catching the module's own unwind tag), the
+   module seals the capture and sends `SYS_FORK` through the Worker's channel
+   for the captured ordinary-fork mode.
 5. Kernel's `kernel_fork_process(parent_pid, caller_tid, mode)` validates the caller,
    allocates the child PID from the global task-ID sequence, and copies process
    metadata and the fd/OFD tables. The child receives the calling task's blocked
@@ -1233,7 +1236,7 @@ loudly. For every launch:
   `Launching`, `ReplayReady` or `Committed`). A vfork child also carries
   `vfork_parent` for as long as it runs on the borrowed image.
 - The fork module issues `SYS_FORK_REPLAY_READY` (416, no arguments) on the
-  child's own channel from `fm_parent_finish` when a child replay finishes,
+  child's own channel from its finish (`parent_finish`) when a child replay finishes,
   which is the moment replay reaches the fork site. The channel is bound
   to exactly one process, and the process table decides whether that process is
   alive and still launching. That one check replaced the host's

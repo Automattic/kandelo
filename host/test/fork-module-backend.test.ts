@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   FORK_ACTIVATION_DRIVE_BINDINGS,
   FORK_MODULE_STATS,
+  FORK_RUN_KINDS,
 } from "../src/fork-module-backend";
 import {
   encodeForkAdmission,
@@ -190,11 +191,26 @@ describe("activation drive bindings", () => {
       // The guest's own static-root copy into the merged catalog, which the
       // module drives before a capture and a child's install.
       ["__wpk_fork_static_root_fill", constant("DRIVE_SLOT_STATIC_ROOT_FILL")],
+      // The guest's entry points, which the module's run loop (`fm_run`)
+      // calls. Binding a pthread's replay where the lexical start routine
+      // goes would run the thread from its top in the child.
+      ["_start", constant("DRIVE_SLOT_ENTRY_START")],
+      ["wpk_fork_resume_start", constant("DRIVE_SLOT_RESUME_START")],
+      ["wpk_fork_thread_entry", constant("DRIVE_SLOT_THREAD_ENTRY")],
+      ["wpk_fork_resume_thread", constant("DRIVE_SLOT_RESUME_THREAD")],
     ]);
     expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
     for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {
       expect(slot, name).toBe(expected.get(name));
     }
+  });
+
+  it("passes fm_run the entry kinds fork-codec defines", () => {
+    // `fm_run(kind, ...)` picks the entry pair by this number; a host that
+    // passed the thread kind for a process would call `_start` as a
+    // `(table_index, arg) -> ptr` and trap on the signature.
+    expect(FORK_RUN_KINDS.process).toBe(constant("RUN_KIND_PROCESS"));
+    expect(FORK_RUN_KINDS.thread).toBe(constant("RUN_KIND_THREAD"));
   });
 
   it("leaves no slot in the stride unbound", () => {

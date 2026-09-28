@@ -762,3 +762,19 @@ keeps only the call to `fm_run` and the trap guard. Applies to Node/browser
 `fm_parent_seal_capture`, `fm_parent_replay`, `fm_parent_finish` and
 `fm_phase` leave the host list. A faulting native MAIN thread then reports
 WIFSIGNALED through the per-process fault slot (d7ea6fd83).
+
+## Maintainer ruling (2026-09-28): the step-level module tests drive `fm_run`
+
+Deleting the step entries left about 4,000 lines of module tests that
+called them one at a time and read `fm_phase` between steps. Ruling: (b),
+rewrite those tests to drive `fm_run` -- a fixture guest entry that throws
+the module's unwind tag, and a channel responder that answers `SYS_FORK`,
+`SYS_VFORK`, `SYS_FORK_REPLAY_READY` and `SYS_FORK_DIAGNOSTIC` -- and delete
+the step entries, so `forkModuleEntriesWithoutProductionCaller` stays 0.
+No feature-gated test-only entries: an assertion that truly cannot be
+expressed through `fm_run` comes back to the maintainer with its argument.
+Behaviour no longer observable step by step is asserted on end-to-end
+outcomes (the fork return, errno, abort cause, diagnostics, parent and
+child state), and a failure mode a lost phase probe used to cover is
+covered through `fm_run`'s observable result instead; what could not be
+kept is listed in the commit.

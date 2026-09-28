@@ -40,7 +40,15 @@ import { resolveBinary } from "../src/binary-resolver";
 import { buildForkGuestImports } from "../src/fork-guest-imports";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { artifactGate } from "./support/artifact-gate";
-import { startChannelResponder } from "./fork-module-capture-fixture";
+import {
+  MMAP_FAIL_SWITCH,
+  admitActivation,
+  bindActivation,
+  fixture,
+  registerMain,
+  sideTemplate,
+  startChannelResponder,
+} from "./fork-module-capture-fixture";
 import { admit, bind } from "./support/fork-admission";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -249,29 +257,38 @@ describe("the resume assignment fm_bind_activation publishes", () => {
   });
 
   it("survives the per-fork bump-heap reset", () => {
-    const h = harness();
-    // Activation 1, not 0: the capture begin below must refuse after its
-    // reset, and it refuses a worker whose activation 0 was never admitted.
-    h.seed(1, [0, 1, 2]);
-    const before = h.publish(1);
-    const recordsBefore = readRecords(h.memory, before);
+    // Through the capture rig, not this file's harness: the reset is the
+    // fork's, and a fork is reached through `fork()` (`__wpk_fork_kernel_fork`),
+    // which answers ENOSYS until activation 0 is registered.
+    const f = fixture();
+    expect(admitActivation(f, 1, { template: sideTemplate(1), ordinals: [0, 1, 2] })).toBe(0);
+    const before = bindActivation(f.x, f.memory, 1)!.resume;
+    const recordsBefore = readRecords(f.memory, before);
+    registerMain(f);
 
-    // THE RESET HAZARD, reached the cheapest honest way. The capture begin
-    // opens with the fork's single bump-heap reset (`open_capture_session`,
-    // `crates/fork-module/src/lib.rs`), so calling it puts the module in the
+    // THE RESET HAZARD, reached the cheapest honest way. Opening a capture
+    // begins with the fork's single bump-heap reset (`open_capture_session`,
+    // `crates/fork-module/src/lib.rs`), so a fork puts the module in the
     // state a published buffer has to survive. A buffer allocated from the
     // bump heap would be reclaimed here, and the pointer the host is still
-    // holding would address whatever the next allocation put there. With no
-    // activation 0 admitted, the begin refuses (EINVAL) only after that reset,
-    // before it maps anything, and the module is back at idle.
-    (h.exports.fm_parent_begin_capture as (base: number) => number)(CHANNEL_BASE);
-    expect(h.errno(), "the begin refuses after its reset").toBe(22);
+    // holding would address whatever the next allocation put there. With
+    // every mapping refused, the open fails (ENOMEM) only after that reset,
+    // when it maps the fork's arena, and `fork()` returns -ENOMEM.
+    const view = new DataView(f.memory.buffer);
+    view.setUint32(MMAP_FAIL_SWITCH, 1, true);
+    let opened: number;
+    try {
+      opened = (f.x.__wpk_fork_kernel_fork as (mode: number) => number)(0);
+    } finally {
+      view.setUint32(MMAP_FAIL_SWITCH, 0, true);
+    }
+    expect(opened, "the capture fails after its reset").toBe(-12);
 
-    const after = h.publish(1);
-    expect(h.errno()).toBe(0);
+    const after = bindActivation(f.x, f.memory, 1)!.resume;
+    expect(f.errno()).toBe(0);
     expect(after.ptr).toBe(before.ptr);
     expect(after.count).toBe(before.count);
-    expect(readRecords(h.memory, after)).toEqual(recordsBefore);
+    expect(readRecords(f.memory, after)).toEqual(recordsBefore);
   });
 });
 

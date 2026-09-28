@@ -3,7 +3,14 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isForkUnwindException } from "../src/fork-guest-imports";
+/**
+ * Whether `value` is an exception carrying exactly `tag`. The fork module's
+ * run loop (`fm_run`) catches its own tag in wasm since lane F step 3c; this
+ * pins the engine behaviour that relies on: tag IDENTITY decides.
+ */
+function isUnwind(value: unknown, tag: WebAssembly.Tag): boolean {
+  return value instanceof WebAssembly.Exception && value.is(tag);
+}
 import {
   WPK_FORK_UNWIND_TAG_IMPORT_MODULE as FORK_UNWIND_TAG_IMPORT_MODULE,
   WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME,
@@ -51,8 +58,8 @@ describe.skipIf(
     } catch (error) {
       thrown = error;
     }
-    expect(isForkUnwindException(thrown, tag)).toBe(true);
-    expect(isForkUnwindException(thrown, other)).toBe(false);
+    expect(isUnwind(thrown, tag)).toBe(true);
+    expect(isUnwind(thrown, other)).toBe(false);
   });
 
   it("shares one identity across independently instantiated modules", () => {
@@ -67,7 +74,7 @@ describe.skipIf(
       try {
         (instance.exports.throw_unwind as () => void)();
       } catch (error) {
-        expect(isForkUnwindException(error, tag)).toBe(true);
+        expect(isUnwind(error, tag)).toBe(true);
       }
     }
   });

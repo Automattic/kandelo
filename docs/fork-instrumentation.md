@@ -238,14 +238,27 @@ thread instances share linear memory, but separately allocated mappings and
 per-worker replay cursors prevent their unwinds from sharing frame storage.
 
 Both kinds of worker run the same host code for it: one `ForkWorker`
-(`host/src/worker-main-fork-support.ts`) instantiates the module, serves the
-guest's `kernel_fork` import and runs the guest entry in the loop that seals
-a capture, issues SYS_FORK and replays. The process and pthread mains used to
-carry a copy each, and the copies drifted (the pthread one never filled the
-static-root catalog before a capture and never reported why a fork aborted);
-what legitimately differs is passed in, not branched on: where the module's
-region comes from, where the launch root is published, and which entry pair
-runs.
+(`host/src/worker-main-fork-support.ts`) instantiates the module, binds the
+guest's `kernel.kernel_fork` import to the module's own
+`__wpk_fork_kernel_fork` export, and makes one call, `fm_run(kind, fnPtr,
+arg)`. The fork RUN LOOP is the module's (lane F step 3c): an injected thunk
+(`inject_call_entry_thunk`) calls the guest entry through the drive table
+inside a `try_table` that catches only the module's own unwind tag; when a
+capture's unwind reaches it, the module seals, sends `SYS_FORK` or
+`SYS_VFORK` (with the borrowed child's workspace) on the Worker's own
+channel, begins the parent's replay -- or the abort replay the kernel's
+refusal selects -- and calls the replay entry, whose `fork()` finishes the
+fork. The entry pair is `_start` / `wpk_fork_resume_start` for a process and
+`wpk_fork_thread_entry` / `wpk_fork_resume_thread` for a pthread, bound at
+drive slots 20-23; the module picks the replay entry itself while a fork is
+open, so a fork child starts in its replay without being told. A trap, or an
+exception a host import threw, is not caught and passes out to the host,
+which reads an `unreachable` after a recorded exit as that exit; a state the
+loop cannot resume from (an unwind with no capture open, a replay that
+returns early, `fork()` reached mid-capture or in the other mode) is
+reported through the kernel (`runFailed`) and then traps. The process and
+pthread mains, and host-native, each used to run that loop, and the copies
+drifted; the host-native copy was deleted with them.
 
 For `fork()` from a pthread worker, the host must preserve the pthread entry
 context as well as the buffer:
@@ -255,9 +268,9 @@ context as well as the buffer:
   `attachThreadChannel(attachment, offset)` records that kernel-assigned
   identity, pthread entry table index, and userdata for the thread channel;
   host code cannot provide or substitute a PID/TID.
-- `centralizedThreadWorkerMain` binds `kernel_fork` to its `ForkWorker` for
-  instrumented modules and runs the pthread function through that worker's
-  loop: `wpk_fork_thread_entry(table_index, arg)` calls it and
+- `centralizedThreadWorkerMain` binds `kernel_fork` to its fork module for
+  instrumented modules and runs the pthread function through `fm_run`
+  (`RUN_KIND_THREAD`): `wpk_fork_thread_entry(table_index, arg)` calls it and
   `wpk_fork_resume_thread(table_index, arg)` re-enters it to rewind. The fork
   module drives the guest's unwind and rewind entry points itself.
 - Both thread entries are emitted by fork-instrument with ONE fixed signature,
@@ -519,7 +532,7 @@ protocol. Libc `vfork()` therefore no longer aliases the `fork()` wrapper or
 runs `pthread_atfork` handlers.
 
 The replay-ready handshake belongs to the kernel. When a child replay
-finishes, the fork module's `fm_parent_finish` issues `SYS_FORK_REPLAY_READY`
+finishes, the fork module's finish (`parent_finish`) issues `SYS_FORK_REPLAY_READY`
 (416) on the child's own channel before `fork()` returns 0 in the child. The
 kernel checks that the child is alive and still launching and commits the
 launch; for an ordinary fork that completes the parent with the child pid.

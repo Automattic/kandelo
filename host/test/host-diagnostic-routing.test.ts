@@ -245,7 +245,7 @@ describe("an aborted fork says why", () => {
   // its own, so none can forget to, or say it differently.
   it("is reported by the module at the one abort finish, from its own record", () => {
     const finish = forkModuleSource.slice(
-      forkModuleSource.indexOf('pub extern "C" fn fm_parent_finish('),
+      forkModuleSource.indexOf("fn parent_finish("),
     );
     const body = finish.slice(0, finish.indexOf("\n    }\n"));
     expect(body, "the finish reports its abort record").toContain(

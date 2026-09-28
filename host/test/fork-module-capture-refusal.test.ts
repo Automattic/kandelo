@@ -16,92 +16,72 @@
 // replay would read back NULL where its object was. The module instead hands
 // back a real placeholder recipe -- the guest publishes the LIVE value beside
 // it -- and latches the errno for the seal, which fails once the journal is
-// sealed so the host's abort path can replay the parent.
+// sealed, and the module abort-replays the parent itself (its run loop,
+// `fm_run`, since lane F step 3c): `fork()` returns -EOPNOTSUPP.
 //
 // The end-to-end version, through a real process Worker, is
 // `fork-host-externref-refusal.test.ts`.
 
 import { describe, expect, it } from "vitest";
 import {
-  CHANNEL_BASE,
-  DRIVE_SLOT_ABORT_BEGIN,
-  DRIVE_SLOT_ABORT_END,
-  PHASE_ABORT_REPLAY,
-  PHASE_IDLE,
-  PHASE_SEALED_PARENT,
+  ABORT_CAUSE_SEAL,
+  DEFAULT_CHILD_PID,
+  DIAGNOSTIC_ABORTED,
   admitActivation,
-  driveBase,
   fixture,
-  openCapture,
-  saveSlotThunk,
-  voidSlotThunk,
+  runFork,
   type Fixture,
 } from "./fork-module-capture-fixture";
 
 const EOPNOTSUPP = 95;
 
-/** Bind activation 0's abort-replay slots, which `openCapture` leaves unbound. */
-function bindAbortSlots(f: Fixture): void {
-  const base = driveBase(0);
-  f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_BEGIN, saveSlotThunk(() => {}) as never);
-  f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_END, voidSlotThunk(() => {}) as never);
-}
-
-const phase = (f: Fixture): number => Number((f.x.fm_phase as () => number)());
 const brokerEncode = (f: Fixture, slot: number): number =>
   (f.x.__wpk_fork_ref_gc_broker_encode as (s: number) => number)(slot);
-const seal = (f: Fixture): void => {
-  (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+/** What the module reports for a capture its seal refused. */
+const refusedAtSeal = {
+  kind: DIAGNOSTIC_ABORTED,
+  values: [EOPNOTSUPP, ABORT_CAUSE_SEAL, 0, 0, 0],
 };
 
 describe("the fork module refuses a raw host externref at capture", () => {
   it("hands back a placeholder, latches EOPNOTSUPP, and refuses the seal", () => {
     const f = fixture();
-    openCapture(f);
-
-    const recipe = brokerEncode(f, 0);
+    let recipe = -1;
+    let errno = -1;
+    let transitLength = 0;
+    const run = runFork(f, {
+      duringCapture: () => {
+        recipe = brokerEncode(f, 0);
+        errno = f.errno();
+        transitLength = (f.x.__wpk_fork_ref_gc_transit as WebAssembly.Table).length;
+      },
+    });
     expect(recipe, "a real placeholder recipe, never -1").toBeGreaterThan(0);
-    expect(f.errno(), "the call itself succeeds: the walk has no error path").toBe(0);
+    expect(errno, "the call itself succeeds: the walk has no error path").toBe(0);
     // The guest publishes the live value at `recipe + 1` on its next
     // instruction, so that slot has to exist.
-    expect(
-      (f.x.__wpk_fork_ref_gc_transit as WebAssembly.Table).length,
-    ).toBeGreaterThan(recipe + 1);
-
-    bindAbortSlots(f);
-    seal(f);
-    expect(f.errno(), "the seal reports the refusal, not a later EINVAL").toBe(
-      EOPNOTSUPP,
-    );
+    expect(transitLength).toBeGreaterThan(recipe + 1);
     // The journal sealed before the refusal was reported, so the parent's
     // committed frames are replayable, and the module abort-replays them
     // itself: this is what makes `fork()` return -EOPNOTSUPP instead of the
-    // worker dying.
-    expect(phase(f), "a refused capture is abort-replaying").toBe(
-      PHASE_ABORT_REPLAY,
-    );
-    const report = (f.x.fm_parent_finish as (abort: number) => number)(1);
-    expect(f.errno(), "and finishes").toBe(0);
-    expect(report, "with the seal's cause (2) and EOPNOTSUPP").toBe((2 << 16) | EOPNOTSUPP);
-    expect(phase(f)).toBe(PHASE_IDLE);
+    // worker dying -- and the refusal, not a later EINVAL, is what it reports.
+    expect(run.forkReturn, "fork() returns the refusal").toBe(-EOPNOTSUPP);
+    expect(run.forkCalls, "and no child was asked for").toBe(0);
+    expect(run.diagnostics, "with the seal's cause").toContainEqual(refusedAtSeal);
   });
 
   it("starts the next capture in the same worker with no refusal", () => {
     const f = fixture();
-    openCapture(f);
-    brokerEncode(f, 0);
-    bindAbortSlots(f);
-    seal(f);
-    expect(f.errno()).toBe(EOPNOTSUPP);
-    (f.x.fm_parent_finish as (abort: number) => number)(1);
-    expect(phase(f)).toBe(PHASE_IDLE);
+    const refused = runFork(f, { duringCapture: () => void brokerEncode(f, 0) });
+    expect(refused.forkReturn).toBe(-EOPNOTSUPP);
 
     // A refusal belongs to the capture that met the host object. Carried over,
     // it would refuse every later fork in this worker.
-    openCapture(f);
-    seal(f);
-    expect(f.errno(), "a capture with no host object seals").toBe(0);
-    expect(phase(f)).toBe(PHASE_SEALED_PARENT);
+    const next = runFork(f);
+    expect(next.forkReturn, "a capture with no host object seals and forks").toBe(
+      DEFAULT_CHILD_PID,
+    );
+    expect(next.diagnostics).not.toContainEqual(refusedAtSeal);
   });
 });
 
@@ -181,31 +161,22 @@ describe("the fork module refuses an array no constructor can rebuild", () => {
   it("latches EOPNOTSUPP for contents only an unrecorded segment read made", () => {
     const f = fixture();
     expect(admitActivation(f, SIDE, { gcCodec: immutableBytesCodec() })).toBe(0);
-    openCapture(f);
-    defineArray(f, [1, 2, 3]);
-    bindAbortSlots(f);
-    seal(f);
-    expect(f.errno(), "the seal reports the refusal").toBe(EOPNOTSUPP);
+    const run = runFork(f, { duringCapture: () => defineArray(f, [1, 2, 3]) });
     // Since the parent lifecycle folded into the module (lane F 1i), a
     // refused seal starts the abort replay itself, exactly as the host-object
     // refusal above does: the parent's committed frames replay and `fork()`
     // returns -EOPNOTSUPP.
-    expect(phase(f), "a refused capture is abort-replaying").toBe(
-      PHASE_ABORT_REPLAY,
-    );
-    const report = (f.x.fm_parent_finish as (abort: number) => number)(1);
-    expect(report, "with the seal's cause (2) and EOPNOTSUPP").toBe((2 << 16) | EOPNOTSUPP);
-    expect(phase(f)).toBe(PHASE_IDLE);
+    expect(run.forkReturn, "the seal reports the refusal").toBe(-EOPNOTSUPP);
+    expect(run.diagnostics, "with the seal's cause").toContainEqual(refusedAtSeal);
   });
 
   it("seals when a constructor the program has reproduces the contents", () => {
     const f = fixture();
     expect(admitActivation(f, SIDE, { gcCodec: immutableBytesCodec() })).toBe(0);
-    openCapture(f);
     // All default: `array.new_default` rebuilds it, so nothing is refused.
-    defineArray(f, [0, 0, 0]);
-    seal(f);
-    expect(f.errno(), "an array the program's constructors rebuild seals").toBe(0);
-    expect(phase(f)).toBe(PHASE_SEALED_PARENT);
+    const run = runFork(f, { duringCapture: () => defineArray(f, [0, 0, 0]) });
+    expect(run.forkReturn, "an array the program's constructors rebuild seals").toBe(
+      DEFAULT_CHILD_PID,
+    );
   });
 });

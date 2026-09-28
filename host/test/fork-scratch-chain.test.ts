@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import { WASM_PAGE_SIZE } from "../src/constants";
 import {
-  CHANNEL_BASE,
+  DEFAULT_CHILD_PID,
+  MMAP_COUNTER,
+  MODE_VFORK,
+  MUNMAP_COUNTER,
   SCRATCH_CHUNK_COUNT_FIELD,
+  VFORK_SCRATCH_BYTES,
   arenaChunkBytesFromSource,
   arenaFixture,
   fixture,
   admitActivation,
+  runFork,
+  type Fixture,
 } from "./fork-module-capture-fixture";
 
 /**
@@ -20,10 +26,10 @@ import {
  * boundary, and must still TRAP when it does not. That trap is the only
  * thing standing between a mis-nested release and silent capture corruption.
  *
- * WHAT DRIVES THE RESET: `driveBumpReset` is the capture begin
- * (`fm_parent_begin_capture`), whose first step is the fork's designated bump
- * reset and one of `reset_bump_heap`'s production callers (the others need a
- * drive table this fixture has none of). The COW
+ * WHAT DRIVES THE RESET: a fork. Opening a capture is the fork's designated
+ * bump reset and one of `reset_bump_heap`'s production callers, and since
+ * lane F step 3c a test reaches it the way a guest does, through `fork()`
+ * (`runFork`). The COW
  * scrub is `fm_set_format` itself, which is NOT one of those callers -- that
  * is the whole reason the scrub test exists.
  *
@@ -128,29 +134,54 @@ describe("guest-facing scratch chain", () => {
   });
 
   it("returns every chunk when a reset aborts open frames", () => {
-    const x = arenaFixture("scratch chain reset");
-    // The first capture begin in a worker maps the bump heap's chunk, which a
-    // durable instance keeps for the next fork by design
-    // (`fork-bump-heap.test.ts`); take it here so the tally below is balanced.
-    x.driveBumpReset();
+    const f = fixture();
+    admitActivation(f, 0);
+    const stat = (field: number): number =>
+      Number((f.x.fm_stats as (n: number) => bigint)(field));
+    const tally = (): [number, number] => {
+      const view = new DataView(f.memory.buffer);
+      return [view.getUint32(MMAP_COUNTER, true), view.getUint32(MUNMAP_COUNTER, true)];
+    };
+    /**
+     * Run one fork and answer what its capture's OPEN returned beyond what it
+     * mapped: munmaps minus mmaps, measured from before the fork to the moment
+     * the capture is open.
+     */
+    const returnedByOpen = (): number => {
+      const [mmaps, munmaps] = tally();
+      let returned = 0;
+      const run = runFork(f, {
+        duringCapture: () => {
+          const [mmapsNow, munmapsNow] = tally();
+          returned = (munmapsNow - munmaps) - (mmapsNow - mmaps);
+        },
+      });
+      expect(run.forkReturn, "the fork completes").toBe(DEFAULT_CHILD_PID);
+      return returned;
+    };
+    // The first fork in a worker maps the bump heap's chunk, which a durable
+    // instance keeps for the next fork by design (`fork-bump-heap.test.ts`);
+    // the second is the baseline: its open returns the previous fork's arena
+    // and maps its own.
+    returnedByOpen();
+    const baseline = returnedByOpen();
     // Reserve twice without releasing: two open frames across two chunks.
-    x.scratchReserve(FRAME);
-    x.scratchReserve(FRAME);
-    const chunksHeld = x.stats(SCRATCH_CHUNK_COUNT_FIELD);
+    const reserve = f.x.__wpk_fork_ref_scratch_reserve as (n: number) => number;
+    reserve(FRAME);
+    reserve(FRAME);
+    const chunksHeld = stat(SCRATCH_CHUNK_COUNT_FIELD);
     expect(chunksHeld, "two open frames, two chunks").toBe(2);
-    const before = x.munmaps();
-    const mappedBefore = x.mmaps();
 
-    x.driveBumpReset(); // the capture begin reaches `reset_bump_heap`
+    const returned = returnedByOpen(); // the capture open reaches `reset_bump_heap`
 
     // Every chunk must come back -- the defect the old `SCRATCH_TOP.store(0)`
     // comment records as already fixed, arriving by a new route. BOTH HALVES:
     // the count walks the list, so an unlinked-but-unmapped chunk reads as
-    // zero here and only the tally sees it. The begin maps chunks of its own
-    // before it refuses and returns them as it does, so what must come back
-    // BEYOND what it mapped is the scratch chain.
-    expect(x.stats(SCRATCH_CHUNK_COUNT_FIELD)).toBe(0);
-    expect((x.munmaps() - before) - (x.mmaps() - mappedBefore)).toBe(chunksHeld);
+    // zero here and only the tally sees it. The open maps the same arena and
+    // returns the same previous one as the baseline fork's did, so what comes
+    // back BEYOND that is the scratch chain.
+    expect(stat(SCRATCH_CHUNK_COUNT_FIELD)).toBe(0);
+    expect(returned - baseline).toBe(chunksHeld);
   });
 
   it("does not hand a COW child the parent's scratch chunks", () => {
@@ -237,21 +268,23 @@ describe("guest-facing scratch chain", () => {
     // host-parity boundary in the capture-side scratch path, older than the
     // chained stack, closed by routing native's scratch imports to the module
     // rather than by inventing a native gate.
-    const f = fixture();
+    const f: Fixture = fixture();
     admitActivation(f, 0);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-    expect(f.errno(), "the capture opens").toBe(0);
     const reserve = f.x.__wpk_fork_ref_scratch_reserve as (n: number) => number;
     const release = f.x.__wpk_fork_ref_scratch_release as (p: number, n: number) => void;
-    const a = reserve(FRAME);
-    const b = reserve(FRAME);
+    const run = runFork(f, {
+      mode: MODE_VFORK,
+      duringCapture: () => {
+        const a = reserve(FRAME);
+        const b = reserve(FRAME);
+        release(b, FRAME);
+        release(a, FRAME);
+      },
+    });
     expect(2 * FRAME, "two frames open at once exceed a wasm page").toBeGreaterThan(WASM_PAGE_SIZE);
-    release(b, FRAME);
-    release(a, FRAME);
-    const row = (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-    expect(f.errno(), "the parent seals rather than trapping").toBe(0);
-    // The seal row's fourth word is the scratch high-water.
-    const reported = new DataView(f.memory.buffer).getUint32(row + 12, true);
+    expect(run.forkReturn, "the parent seals rather than trapping").toBe(DEFAULT_CHILD_PID);
+    // The module hands the kernel the scratch high-water with `SYS_VFORK`.
+    const reported = new DataView(f.memory.buffer).getUint32(VFORK_SCRATCH_BYTES, true);
     expect(reported, "the reported scratch is what the capture opened").toBe(2 * FRAME);
     expect(reported, "and it is the number the kernel gate refuses").toBeGreaterThan(
       WASM_PAGE_SIZE,

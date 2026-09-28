@@ -66,7 +66,7 @@ use walrus::{
 /// 0; the host provides a table sized to the fork's activations).
 const DRIVE_TABLE_IMPORT: &str = "__wpk_fork_drive_table";
 /// The plain `(ptr, i32) -> ()` placeholder import the module's Rust coarse
-/// entries (`fm_parent_replay` / `fm_parent_abort`) call to run a serialized
+/// steps (`parent_replay` / `abort_impl`) call to run a serialized
 /// drive plan. Rust CAN emit this import (no reference types), but it cannot
 /// emit the ref-typed `call_indirect` the drive needs, so `inject_drive_thunk`
 /// rewrites this import into a local thunk that forwards to the injected
@@ -105,6 +105,12 @@ const DRIVE_SLOT_STATIC_ROOT_FILL: i32 =
 /// The placeholder the module declares for driving one activation's
 /// static-root fill shim; rewritten like the probe and encode ones.
 const STATIC_ROOT_FILL_THUNK_IMPORT: &str = "__wpk_fork_fill_static_roots";
+/// The placeholder the module's run loop (`fm_run`) calls a guest entry
+/// through; rewritten into a `try_table` thunk by `inject_call_entry_thunk`.
+const CALL_ENTRY_THUNK_IMPORT: &str = "__wpk_fork_call_entry";
+/// `fm_run`'s thread kind. See [`DRIVE_SLOT_GC_ENCODE`] for why this is read
+/// rather than copied.
+const RUN_KIND_THREAD: i32 = fork_codec::drive_plan::RUN_KIND_THREAD as i32;
 /// The placeholder the module mirrors its archive-reader state through, and
 /// the exported global it lands in (`inject_reader_held_global`).
 const READER_HELD_THUNK_IMPORT: &str = "__wpk_fork_set_reader_held";
@@ -1136,8 +1142,8 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
 
 /// Rewrite the `__wpk_fork_drive_plan(plan, count)` placeholder import into a
 /// LOCAL thunk that forwards to the injected `fm_drive_execute` shim (control-
-/// flow inversion). The module's Rust coarse entries (`fm_parent_replay` /
-/// `fm_parent_abort`) sequence begin + plan-build in Rust and then call this
+/// flow inversion). The module's Rust coarse steps (`parent_replay` /
+/// `abort_impl`) sequence begin + plan-build in Rust and then call this
 /// placeholder for the one step Rust cannot express — the ref-typed
 /// `call_indirect` drive. `replace_imported_func` turns the import into a local
 /// function whose body just re-issues the two arguments to the shim, so the
@@ -1217,6 +1223,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_fill_static_roots into a thunk")?;
     inject_reader_held_global(&mut module)
         .context("rewriting __wpk_fork_set_reader_held into a global store")?;
+    inject_call_entry_thunk(&mut module)
+        .context("rewriting __wpk_fork_call_entry into a thunk")?;
     inject_transit_grow_thunk(&mut module)
         .context("rewriting __wpk_fork_transit_grow into a thunk")?;
     inject_static_root_grow_thunk(&mut module)
@@ -1681,6 +1689,132 @@ fn inject_reader_held_global(module: &mut Module) -> Result<()> {
             body.local_get(args[0]).global_set(global);
         })
         .with_context(|| format!("rewriting {READER_HELD_THUNK_IMPORT} import into a global store"))?;
+    Ok(())
+}
+
+/// Rewrite `__wpk_fork_call_entry(kind, slot, fnptr, arg, out) -> unwound`
+/// into a local thunk: call the guest entry bound at drive-table `slot`
+/// inside a `try_table` that catches this module's OWN unwind tag.
+///
+/// ```wat
+/// (func (param $kind i32) (param $slot i32) (param $fnptr i32)
+///       (param $arg ptr) (param $out ptr) (result i32)
+///   (block $caught
+///     (try_table (catch $__wpk_fork_unwind $caught)
+///       (if (i32.eq (local.get $kind) (i32.const RUN_KIND_THREAD))
+///         (then (i64.store (local.get $out)
+///                 (<widen> (call_indirect $drive (type $thread)
+///                   (local.get $fnptr) (local.get $arg) (local.get $slot)))))
+///         (else (call_indirect $drive (type $void) (local.get $slot))))
+///       (return (i32.const 0))))
+///   (i32.const 1))
+/// ```
+///
+/// # Why this is injected, and why only this
+///
+/// This is the one piece of the fork run loop Rust cannot express: a
+/// `try_table`, a tag and a reference-typed `call_indirect` (lane F step 3c).
+/// Everything around it -- which entry to call, what an unwind means, the
+/// seal, the `SYS_FORK`, the replay, the loop -- is Rust, in `fm_run`.
+///
+/// The catch names ONLY the module's own tag. A trap, or a JavaScript
+/// exception a host import threw (an exec retirement), is not caught and
+/// passes through the module's frames to the host's trap guard untouched, so
+/// a host still tells an exit from a crash exactly as it did when it ran the
+/// loop itself. `catch_all` would have swallowed those; it is not used.
+fn inject_call_entry_thunk(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, CALL_ENTRY_THUNK_IMPORT) else {
+        return Ok(());
+    };
+    let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
+    let tag = module
+        .exports
+        .iter()
+        .find_map(|export| match export.item {
+            ExportItem::Tag(id) if export.name == UNWIND_TAG_EXPORT => Some(id),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("module does not export the {UNWIND_TAG_EXPORT} tag"))?;
+    let memory = module
+        .memories
+        .iter()
+        .next()
+        .map(|memory| memory.id())
+        .ok_or_else(|| anyhow!("module has no memory to store an entry's result in"))?;
+    let params = module
+        .types
+        .get(module.funcs.get(import_fn).ty())
+        .params()
+        .to_vec();
+    anyhow::ensure!(
+        params.len() == 5,
+        "{CALL_ENTRY_THUNK_IMPORT} must take (kind, slot, fnptr, arg, out)"
+    );
+    // The guest's pointer type is the module's own: a wasm32 module serves a
+    // wasm32 guest, a wasm64 module a wasm64 one.
+    let ptr_ty = params[3];
+    let void_ty = module.types.add(&[], &[]);
+    let thread_ty = module.types.add(&[ValType::I32, ptr_ty], &[ptr_ty]);
+    let locals: Vec<LocalId> = params.iter().map(|ty| module.locals.add(*ty)).collect();
+    let (kind, slot, fnptr, arg, out) = (locals[0], locals[1], locals[2], locals[3], locals[4]);
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &params, &[ValType::I32]);
+    let caught = builder.dangling_instr_seq(None).id();
+    let body = builder.dangling_instr_seq(None).id();
+    builder
+        .instr_seq(body)
+        .local_get(kind)
+        .i32_const(RUN_KIND_THREAD)
+        .binop(BinaryOp::I32Eq)
+        .if_else(
+            None,
+            |then| {
+                then.local_get(out)
+                    .local_get(fnptr)
+                    .local_get(arg)
+                    .local_get(slot)
+                    .instr(CallIndirect {
+                        ty: thread_ty,
+                        table: drive_table,
+                    });
+                if ptr_ty == ValType::I32 {
+                    then.unop(UnaryOp::I64ExtendUI32);
+                }
+                then.store(
+                    memory,
+                    walrus::ir::StoreKind::I64 { atomic: false },
+                    MemArg {
+                        align: 8,
+                        offset: 0,
+                    },
+                );
+            },
+            |otherwise| {
+                otherwise.local_get(slot).instr(CallIndirect {
+                    ty: void_ty,
+                    table: drive_table,
+                });
+            },
+        )
+        .i32_const(0)
+        .return_();
+    builder.instr_seq(caught).instr(walrus::ir::TryTable {
+        seq: body,
+        catches: vec![walrus::ir::TryTableCatch::Catch { tag, label: caught }],
+    });
+    builder
+        .func_body()
+        .instr(walrus::ir::Block { seq: caught })
+        .i32_const(1);
+    let thunk = builder.finish(locals, &mut module.funcs);
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            for argument in args {
+                body.local_get(*argument);
+            }
+            body.call(thunk);
+        })
+        .with_context(|| format!("rewriting {CALL_ENTRY_THUNK_IMPORT} import into a thunk"))?;
     Ok(())
 }
 

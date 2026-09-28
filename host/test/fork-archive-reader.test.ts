@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  CHANNEL_BASE,
+  DEFAULT_CHILD_PID,
   MMAP_FAIL_SWITCH,
+  MODE_FORK,
   PAGE,
   RESPONDER_TID,
-  admitActivation,
   fixture,
-  openCapture,
+  registerMain,
+  runFork,
   type Fixture,
 } from "./fork-module-capture-fixture";
 
@@ -48,28 +49,42 @@ function withArchive(): { f: Fixture; lock: () => number; held: () => number } {
   };
 }
 
+/** The guest's `fork()`, called directly: no run loop, so only its open. */
+const openFork = (f: Fixture): number =>
+  (f.x.__wpk_fork_kernel_fork as (mode: number) => number)(MODE_FORK);
+
 describe("the fork module owns the fork's archive reader", () => {
   it("takes the reader as the capture opens and returns it at the finish", () => {
     const { f, lock, held } = withArchive();
-    openCapture(f);
-    expect(lock(), "one reader on the process lock word").toBe(1);
-    expect(held(), "the loader's probe sees the fork's reader").toBe(1);
-
-    (f.x.fm_parent_seal_capture as (b: number) => number)(CHANNEL_BASE);
-    expect(f.errno(), "the seal").toBe(0);
-    expect(lock(), "held across the seal").toBe(1);
-    (f.x.fm_parent_replay as (abort: number) => void)(0);
-    expect(f.errno(), "the parent replay").toBe(0);
-    (f.x.fm_parent_finish as (abort: number) => void)(0);
-    expect(f.errno(), "the finish").toBe(0);
+    const seen: Array<[string, number, number]> = [];
+    const run = runFork(f, {
+      duringCapture: () => void seen.push(["capture", lock(), held()]),
+      duringReplay: () => void seen.push(["replay", lock(), held()]),
+    });
+    expect(run.forkReturn).toBe(DEFAULT_CHILD_PID);
+    expect(seen, "one reader on the process lock word, the probe seeing it, held across the seal")
+      .toEqual([
+        ["capture", 1, 1],
+        ["replay", 1, 1],
+      ]);
     expect(lock(), "the finish hands the reader back").toBe(0);
     expect(held(), "and the probe says so").toBe(0);
   });
 
-  it("returns the reader when the capture is abandoned", () => {
+  it("returns the reader when the fork is abandoned", () => {
+    // A host exception left the fork mid-capture (an exec retirement); the
+    // host's trap guard calls `fm_abort`.
     const { f, lock, held } = withArchive();
-    openCapture(f);
-    expect(lock()).toBe(1);
+    let during = -1;
+    expect(() =>
+      runFork(f, {
+        duringCapture: () => {
+          during = lock();
+          throw new Error("abandoned");
+        },
+      }),
+    ).toThrow("abandoned");
+    expect(during).toBe(1);
     (f.x.fm_abort as () => void)();
     expect(lock(), "an abandoned fork holds nothing").toBe(0);
     expect(held()).toBe(0);
@@ -77,15 +92,16 @@ describe("the fork module owns the fork's archive reader", () => {
 
   it("returns the reader when the capture cannot open", () => {
     const { f, lock, held } = withArchive();
-    admitActivation(f, 0);
+    registerMain(f);
     const view = new DataView(f.memory.buffer);
     view.setUint32(MMAP_FAIL_SWITCH, 1, true);
+    let opened: number;
     try {
-      (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-      expect(f.errno(), "no memory for the capture").toBe(ENOMEM);
+      opened = openFork(f);
     } finally {
       view.setUint32(MMAP_FAIL_SWITCH, 0, true);
     }
+    expect(opened, "fork() fails: no memory for the capture").toBe(-ENOMEM);
     expect(lock(), "a capture that never opened holds no reader").toBe(0);
     expect(held()).toBe(0);
   });
@@ -95,12 +111,11 @@ describe("the fork module owns the fork's archive reader", () => {
     // it still holds the writer: the reader can never be had, and waiting
     // would wait on itself.
     const { f, lock, held } = withArchive();
-    admitActivation(f, 0);
+    registerMain(f);
     const words = new Int32Array(f.memory.buffer);
     Atomics.store(words, OWNER_WORD / 4, RESPONDER_TID);
     Atomics.store(words, LOCK_WORD / 4, -1);
-    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0);
-    expect(f.errno()).toBe(EDEADLK);
+    expect(openFork(f), "fork() fails with EDEADLK").toBe(-EDEADLK);
     expect(lock(), "the loader's writer is untouched").toBe(-1);
     expect(held()).toBe(0);
   });
@@ -112,9 +127,10 @@ describe("the fork module owns the fork's archive reader", () => {
     const { f, lock } = withArchive();
     const words = new Int32Array(f.memory.buffer);
     Atomics.store(words, OWNER_WORD / 4, RESPONDER_TID);
-    openCapture(f);
-    expect(lock()).toBe(1);
-    (f.x.fm_abort as () => void)();
+    let during = -1;
+    const run = runFork(f, { duringCapture: () => void (during = lock()) });
+    expect(during).toBe(1);
+    expect(run.forkReturn).toBe(DEFAULT_CHILD_PID);
     expect(lock()).toBe(0);
   });
 });

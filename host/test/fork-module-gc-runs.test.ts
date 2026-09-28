@@ -22,18 +22,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  CHANNEL_BASE,
-  DRIVE_SLOT_ABORT_BEGIN,
-  DRIVE_SLOT_ABORT_END,
+  DEFAULT_CHILD_PID,
   MMAP_FAIL_SWITCH,
-  PHASE_ABORT_REPLAY,
-  PHASE_SEALED_PARENT,
   admitActivation,
-  driveBase,
   fixture,
-  openCapture,
-  saveSlotThunk,
-  voidSlotThunk,
+  runFork,
   type Fixture,
 } from "./fork-module-capture-fixture";
 
@@ -108,10 +101,25 @@ function runArrayNewData(f: Fixture, offset: number, bytes: readonly number[]): 
   return token;
 }
 
-/** Capture one array of `bytes` under the base layout, as the guest codec
- *  defines it, then seal; answers the seal's errno. */
+/**
+ * Run a fork whose capture meets the arrays `arrays`, as the guest codec
+ * defines them, and answer the errno it failed with (0 for a fork that sealed
+ * and completed). A refused seal abort-replays the parent in the module, so
+ * the refusal is what `fork()` returns.
+ */
 function captureAndSeal(f: Fixture, arrays: readonly (readonly number[])[]): number {
-  openCapture(f);
+  return forkErrno(runFork(f, { duringCapture: () => defineArrays(f, arrays) }).forkReturn);
+}
+
+/** 0 for a fork that completed with the kernel's child, else its errno. */
+function forkErrno(forkReturn: number): number {
+  if (forkReturn === DEFAULT_CHILD_PID) return 0;
+  expect(forkReturn, "a fork that did not complete returns -errno").toBeLessThan(0);
+  return -forkReturn;
+}
+
+/** Claim and define one array of `bytes` each, under the base layout. */
+function defineArrays(f: Fixture, arrays: readonly (readonly number[])[]): void {
   const transit = f.x.__wpk_fork_ref_gc_transit as WebAssembly.Table;
   const reserve = f.x.__wpk_fork_ref_scratch_reserve as (len: number) => number;
   const release = f.x.__wpk_fork_ref_scratch_release as (ptr: number, len: number) => void;
@@ -130,16 +138,6 @@ function captureAndSeal(f: Fixture, arrays: readonly (readonly number[])[]): num
     release(staging, 4 + bytes.length);
     transit.set(0, null);
   }
-  // A refused seal abort-replays the parent in the module, which drives these.
-  const base = driveBase(0);
-  f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_BEGIN, saveSlotThunk(() => {}) as never);
-  f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_END, voidSlotThunk(() => {}) as never);
-  (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-  const errno = f.errno();
-  expect((f.x.fm_phase as () => number)(), "sealed, or abort-replaying a refusal").toBe(
-    errno === 0 ? PHASE_SEALED_PARENT : PHASE_ABORT_REPLAY,
-  );
-  return errno;
 }
 
 const setFailSwitch = (f: Fixture, on: boolean): void => {
@@ -273,10 +271,14 @@ describe("recorded runs of array.new_elem, when elements cannot be compared", ()
     expect(f.errno()).toBe(0);
   }
 
-  /** Capture a two-element array whose elements are fresh structs, as a
-   *  capture meets them on JavaScriptCore, then seal; answers the errno. */
+  /** Fork with a capture that meets a two-element array whose elements are
+   *  fresh structs, as a capture meets them on JavaScriptCore; answers the
+   *  errno the fork failed with, or 0. */
   function captureFreshElements(f: Fixture): number {
-    openCapture(f);
+    return forkErrno(runFork(f, { duringCapture: () => defineFreshElements(f) }).forkReturn);
+  }
+
+  function defineFreshElements(f: Fixture): void {
     const transit = f.x.__wpk_fork_ref_gc_transit as WebAssembly.Table;
     const claim = f.x.__wpk_fork_ref_gc_claim as (slot: number) => number;
     const define = f.x.__wpk_fork_ref_gc_define as (...args: number[]) => void;
@@ -301,11 +303,6 @@ describe("recorded runs of array.new_elem, when elements cannot be compared", ()
     expect(f.errno(), "define itself succeeds").toBe(0);
     (f.x.__wpk_fork_ref_scratch_release as (p: number, l: number) => void)(staging, 4);
     transit.set(0, null);
-    const base = driveBase(0);
-    f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_BEGIN, saveSlotThunk(() => {}) as never);
-    f.instance.driveTable.set(base + DRIVE_SLOT_ABORT_END, voidSlotThunk(() => {}) as never);
-    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
-    return f.errno();
   }
 
   function elemRig(): Fixture {

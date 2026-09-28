@@ -1,183 +1,158 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { resolveBinary } from "../src/binary-resolver";
-import { instantiateForkModule } from "../src/fork-module-instance";
+import {
+  DEFAULT_CHILD_PID,
+  DIAGNOSTIC_RUN_FAILED,
+  MODE_FORK,
+  MODE_VFORK,
+  PHASE_CAPTURE,
+  PHASE_IDLE,
+  PHASE_PARENT_REPLAY,
+  RUN_FAILED_BAD_PHASE,
+  RUN_FAILED_MODE_MISMATCH,
+  RUN_FAILED_RETURN_MID_CONTINUATION,
+  RUN_FAILED_UNWIND_OUTSIDE_CAPTURE,
+  fixture,
+  runFork,
+  runForkExpectingTrap,
+  type Fixture,
+} from "./fork-module-capture-fixture";
 
 /**
- * The fork lifecycle phase machine, which the module owns.
+ * The fork lifecycle phase machine, which the module owns -- and, since lane F
+ * step 3c, the run loop that walks it.
  *
  * It used to live in `ForkProcessContinuationCoordinator` as a TypeScript
- * `requirePhase(expected, operation)` in front of every coarse module call.
- * That put the rule -- "you cannot seal a capture you never began" -- in the
- * layer being sequenced rather than the layer doing the work, so every host
- * reimplemented it, and a host that got it wrong called the module out of order
- * with no way to be refused. These tests are the refusal.
+ * `requirePhase(expected, operation)` in front of every coarse module call,
+ * then in the module behind step entries a host called in order. Either way
+ * the ORDER was the host's: a host that got it wrong called the module out of
+ * order, and all the module could do was refuse the step (EBUSY). Now the
+ * module runs the order itself (`fm_run`, `__wpk_fork_kernel_fork`), so what
+ * can arrive out of order is the GUEST: an unwind with no capture open, a
+ * replay that returns without reaching `fork()`, a `fork()` reached from the
+ * middle of a capture or in the other mode. Each is a state no one can resume
+ * from, so the run loop reports it through the kernel (`runFailed`) and traps.
+ * These tests are those refusals, and that the module is untouched by them
+ * where it can be.
  *
- * # Why there is no phase accessor to assert against
+ * # Why there is still no phase accessor to assert against
  *
- * The obvious test reads an `fm_phase()` export and asserts a number. I wrote
- * that first and removed it: it adds an `fm_*` entry to a surface the campaign
- * is driving toward five, and it does so for a caller that is a test. So every
- * assertion here is BEHAVIOURAL -- a refused call is followed by a legal one,
- * which can only succeed if the refusal left the phase where it was. That is
- * also the stronger claim. An accessor can agree with a broken machine.
- *
- * # Why EBUSY
- *
- * The module answers `EBUSY` for a wrong-phase call and for nothing else. It
- * answers `EINVAL` at over two hundred sites, so a test asserting EINVAL would
- * pass against a module with no phase machine at all -- any argument check
- * firing for an unrelated reason satisfies it.
+ * `fm_phase` existed so a host could choose the next step; no host chooses
+ * one now. Every assertion here is BEHAVIOURAL -- what the run loop refuses,
+ * what it reports, and whether the next fork runs -- which is also the
+ * stronger claim. An accessor can agree with a broken machine.
  */
 
-const EBUSY = 16;
-
-interface Fm {
-  readonly errno: () => number;
-  readonly exports: Record<string, unknown>;
-  call(name: string, ...args: number[]): number;
+/** The run loop's `runFailed` report: the reason and its detail. */
+function runFailed(reason: number, detail: number) {
+  return { kind: DIAGNOSTIC_RUN_FAILED, values: [reason, detail, 0, 0, 0] };
 }
 
-function freshModule(): Fm {
-  const buf = readFileSync(resolveBinary("fork_module32.wasm"));
-  const module = new WebAssembly.Module(buf);
-  const memory = new WebAssembly.Memory({
-    initial: 256,
-    maximum: 16384,
-    shared: true,
-  });
-  const base = 8 * 1024 * 1024;
-  const fm = instantiateForkModule({
-    module,
-    memory,
-    reserve: () => base,
-    label: "phase test",
-  });
-  const exports = fm.exports as Record<string, unknown>;
-  return {
-    exports,
-    errno: () => (exports.fm_last_errno as () => number)(),
-    call(name, ...args) {
-      return Number((exports[name] as (...a: number[]) => number)(...args) ?? 0);
-    },
-  };
+/** A fork that runs to completion, proving the module is back at idle. */
+function forksNormally(f: Fixture): boolean {
+  (f.x.fm_abort as () => void)();
+  return runFork(f).forkReturn === DEFAULT_CHILD_PID;
 }
 
-/**
- * A call that is legal from idle and fails for its OWN reason, not the phase's.
- *
- * Used after a refusal to prove the module is still idle. Its argument failure
- * is the point: a real capture would need a live guest, but reaching the
- * argument check at all means the phase gate let it through.
- */
-function idleIsStillReachable(fm: Fm): boolean {
-  fm.call("fm_parent_begin_capture", 0, 0);
-  return fm.errno() !== EBUSY;
-}
-
-describe("fork module lifecycle phase", () => {
-  it("refuses to seal a capture that never began", () => {
-    const fm = freshModule();
-    fm.call("fm_parent_seal_capture", 0);
-    expect(fm.errno()).toBe(EBUSY);
-    // The refusal must not itself advance the phase. A guard that rejects the
-    // call but moves the state anyway lets the NEXT out-of-order call through,
-    // and asserting only the errno above would not notice.
-    expect(idleIsStillReachable(fm)).toBe(true);
+describe("fork run loop phase", () => {
+  it("refuses an unwind that reaches it with no capture open", () => {
+    // The module's unwind tag is the capture's own transport. One that
+    // reaches `fm_run` with nothing captured has no frames to seal: sealing
+    // anyway would launch a child from nothing.
+    const f = fixture();
+    const tag = f.x.__wpk_fork_unwind as WebAssembly.Tag;
+    // A guest that throws the transport without calling fork() first.
+    f.entries.lexical = () => {
+      throw new WebAssembly.Exception(tag, []);
+    };
+    const before = f.diagnostics().length;
+    expect(() => (f.x.fm_run as (k: number, p: number, a: number) => bigint)(0, 0, 0))
+      .toThrow(WebAssembly.RuntimeError);
+    expect(f.diagnostics().slice(before)).toEqual([
+      runFailed(RUN_FAILED_UNWIND_OUTSIDE_CAPTURE, PHASE_IDLE),
+    ]);
+    expect(forksNormally(f), "and the next fork runs").toBe(true);
   });
 
-  it("refuses to replay from idle", () => {
-    const fm = freshModule();
-    fm.call("fm_parent_replay", 0);
-    expect(fm.errno()).toBe(EBUSY);
-    expect(idleIsStillReachable(fm)).toBe(true);
-  });
-
-  it("refuses to finish a replay that never began", () => {
-    const fm = freshModule();
-    fm.call("fm_parent_finish", 0);
-    expect(fm.errno()).toBe(EBUSY);
-    expect(idleIsStillReachable(fm)).toBe(true);
-  });
-
-  it("refuses an abort finish from idle", () => {
-    const fm = freshModule();
-    fm.call("fm_parent_finish", 1);
-    expect(fm.errno()).toBe(EBUSY);
-    expect(idleIsStillReachable(fm)).toBe(true);
-  });
-
-  it("guards the two finish arguments with DIFFERENT phase sets", () => {
-    // This one is a source assertion rather than a behavioural one, and the
-    // reason is worth stating because I tried the behavioural version first and
-    // it could not fail.
-    //
-    // `fm_parent_finish(0)` is legal from parent-replay or child-replay;
-    // `fm_parent_finish(1)` only from abort-replay. Telling those apart from
-    // OUTSIDE requires standing in parent-replay and calling finish(1) -- and
-    // reaching parent-replay needs a real capture over a live guest, which this
-    // unit test does not have. Called from idle, both arguments are refused
-    // whether or not the branch exists, so a test that called finish(1) from
-    // idle and claimed to prove the abort branch was proving nothing. It passed
-    // with the branch collapsed.
-    //
-    // The end-to-end coverage of the abort branch is
-    // `fork-module-kernel-abort.test.ts`, which drives a real ENOMEM child
-    // launch failure through abort replay. What is pinned here is only that the
-    // two branches remain distinct in the source.
-    const source = readFileSync(
-      new URL("../../crates/fork-module/src/lib.rs", import.meta.url),
-      "utf8",
+  it("refuses a replay entry that returns without reaching fork()", () => {
+    // The replayed frames rewind back to the fork() call site, where the
+    // fork finishes. An entry that returns with the replay still open would
+    // leave the guest running with half its frames restored.
+    const f = fixture();
+    const { diagnostics } = runForkExpectingTrap(f, { replayReturnsEarly: true });
+    expect(diagnostics.at(-1)).toEqual(
+      runFailed(RUN_FAILED_RETURN_MID_CONTINUATION, PHASE_PARENT_REPLAY),
     );
-    // Bounded at the NEXT export, not by a character count. A fixed window
-    // spills into the following function's doc comment, and a guard mentioned
-    // there would satisfy this pin without `fm_parent_finish` containing it.
-    const from = source.indexOf('pub extern "C" fn fm_parent_finish');
-    const rest = source.slice(from);
-    const end = rest.indexOf("#[unsafe(no_mangle)]");
-    expect(end).toBeGreaterThan(0);
-    const finish = rest.slice(0, end);
-    expect(finish).toMatch(/require_phase\(PHASE_ABORT_REPLAY\)/);
-    expect(finish).toMatch(
-      /require_phase_either\(PHASE_PARENT_REPLAY, PHASE_CHILD_REPLAY\)/,
-    );
+    expect(forksNormally(f), "the abandoned fork is abortable").toBe(true);
+  });
+
+  it("refuses fork() reached again with the capture still open", () => {
+    // `fork()` from the middle of its own capture -- a guest whose frames
+    // called it again before unwinding -- is not a nested fork; the capture
+    // the first call opened cannot be finished or begun from here.
+    const f = fixture();
+    const kernelFork = f.x.__wpk_fork_kernel_fork as (mode: number) => number;
+    const { diagnostics } = runForkExpectingTrap(f, {
+      duringCapture: () => {
+        kernelFork(MODE_FORK);
+      },
+    });
+    expect(diagnostics.at(-1)).toEqual(runFailed(RUN_FAILED_BAD_PHASE, PHASE_CAPTURE));
+    expect(forksNormally(f)).toBe(true);
+  });
+
+  it("refuses a replay that reaches fork() in the other mode", () => {
+    // The replay rewinds to the SAME call site, so it must reach the same
+    // `fork()` or `vfork()`: another mode means the frames were replayed into
+    // a different program point than the one captured.
+    const f = fixture();
+    const { diagnostics } = runForkExpectingTrap(f, { replayMode: MODE_VFORK });
+    expect(diagnostics.at(-1)).toEqual(runFailed(RUN_FAILED_MODE_MISMATCH, MODE_VFORK));
+    expect(forksNormally(f)).toBe(true);
+  });
+
+  it("refuses a fork mode it does not know, without opening anything", () => {
+    // `EINVAL` to the guest, like any bad argument: nothing was captured.
+    const f = fixture();
+    const kernelFork = f.x.__wpk_fork_kernel_fork as (mode: number) => number;
+    expect(kernelFork(7)).toBe(-22);
+    expect(runFork(f).forkReturn, "and a fork afterwards runs").toBe(DEFAULT_CHILD_PID);
+  });
+
+  it("answers ENOSYS to a fork before activation 0 is registered", () => {
+    // A guest that forks before its host registered it (from a start function
+    // run at instantiation) has nothing the module could capture.
+    const f = fixture();
+    const kernelFork = f.x.__wpk_fork_kernel_fork as (mode: number) => number;
+    expect(kernelFork(MODE_FORK)).toBe(-38);
   });
 
   it("does not begin an abort for a frame reserve outside a capture", () => {
-    // The mid-unwind abort lives in the frame reserve now (it was the
-    // `fm_parent_abort_seal` entry). A reserve that fails with no capture open
-    // is only a failed call: it must not seal or replay anything, and the
-    // module must still be idle afterwards.
-    const fm = freshModule();
-    expect(fm.call("__wpk_fork_frame_reserve", 16)).toBe(0);
-    expect(fm.errno()).not.toBe(0);
-    expect(idleIsStillReachable(fm)).toBe(true);
-  });
-
-  it("distinguishes a wrong-phase refusal from every other failure", () => {
-    // The point of EBUSY. Without this, every assertion above would pass
-    // against a module whose entry points simply reject their arguments.
-    const fm = freshModule();
-    fm.call("fm_parent_begin_capture", 0, 0);
-    expect(fm.errno()).not.toBe(EBUSY);
-    expect(fm.errno()).not.toBe(0);
+    // The mid-unwind abort lives in the frame reserve. A reserve that fails
+    // with no capture open is only a failed call: it must not seal or replay
+    // anything, so the next fork still runs from idle.
+    const f = fixture();
+    expect((f.x.__wpk_fork_frame_reserve as (n: number) => number)(16)).toBe(0);
+    expect(f.errno()).not.toBe(0);
+    expect(runFork(f).forkReturn).toBe(DEFAULT_CHILD_PID);
   });
 
   it("accepts abort from idle, so a teardown can never be refused", () => {
-    // `fm_abort` is the path a failed fork unwinds through. A teardown that can
-    // itself be refused leaves the process stuck in the phase it is trying to
-    // leave, so this one is legal everywhere -- including idle, where there is
-    // nothing to tear down.
-    const fm = freshModule();
-    fm.call("fm_abort");
-    expect(fm.errno()).not.toBe(EBUSY);
-    expect(idleIsStillReachable(fm)).toBe(true);
+    // `fm_abort` is the path a failed fork unwinds through (a host's trap
+    // guard calls it). A teardown that can itself be refused leaves the
+    // process stuck in the phase it is trying to leave, so this one is legal
+    // everywhere -- including idle, where there is nothing to tear down.
+    const f = fixture();
+    (f.x.fm_abort as () => void)();
+    expect(f.errno()).toBe(0);
+    expect(runFork(f).forkReturn).toBe(DEFAULT_CHILD_PID);
   });
 
   it("names one wrong-phase errno, used for nothing else in the module", () => {
-    // If EBUSY ever acquires a second meaning here, the tests above stop being
-    // able to tell a phase refusal from that other thing, and they will keep
-    // passing while they do it.
+    // The internal guards still answer EBUSY (a child install or a peer-table
+    // checkpoint from the middle of a fork: `fork-module-capture-drive`). If
+    // EBUSY ever acquires a second meaning here, those tests stop being able
+    // to tell a phase refusal from that other thing.
     const source = readFileSync(
       new URL("../../crates/fork-module/src/lib.rs", import.meta.url),
       "utf8",

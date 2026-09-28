@@ -216,7 +216,7 @@ pub const DRIVE_OP_ABORT_END: u32 = 13;
 /// this count stays consistent as long as every side derives its slots from
 /// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
 /// contract (not a wire/ABI format, not serialized), so growing it is additive.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 20;
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 24;
 
 /// Drive-table slot offset (within an activation's slice) the host binds that
 /// activation's `wpk_fork_module_state_restore` into, and a `DRIVE_OP_RESTORE`
@@ -354,6 +354,30 @@ pub const DRIVE_SLOT_TABLE_APPLY: u32 = 18;
 /// drives (both read the merged catalog). It replaced the hosts' per-slot
 /// `Table.get` / `Table.set` copy loops (lane F step 3c, ruling 3).
 pub const DRIVE_SLOT_STATIC_ROOT_FILL: u32 = 19;
+
+/// Drive-table slots the host binds the guest's ENTRY points into, so the fork
+/// module's run loop (`fm_run`) can call them (lane F step 3c): a process's
+/// `_start` and `wpk_fork_resume_start`, and a pthread's
+/// `wpk_fork_thread_entry` and `wpk_fork_resume_thread`. Only activation 0's
+/// slice is ever used for them; a side module exports none of them.
+///
+/// WHY THROUGH THE DRIVE TABLE. The module is instantiated before the guest,
+/// so it cannot import the guest's entry points, and Rust cannot hold a
+/// funcref; the drive table is how the module already reaches every other
+/// guest export, bound by the same host `Table.set`s at registration.
+pub const DRIVE_SLOT_ENTRY_START: u32 = 20;
+/// See [`DRIVE_SLOT_ENTRY_START`].
+pub const DRIVE_SLOT_RESUME_START: u32 = 21;
+/// See [`DRIVE_SLOT_ENTRY_START`].
+pub const DRIVE_SLOT_THREAD_ENTRY: u32 = 22;
+/// See [`DRIVE_SLOT_ENTRY_START`].
+pub const DRIVE_SLOT_RESUME_THREAD: u32 = 23;
+
+/// `fm_run(kind, ..)`: run a process's entry pair (`() -> ()`).
+pub const RUN_KIND_PROCESS: u32 = 0;
+/// `fm_run(kind, table_index, arg)`: run a pthread's entry pair
+/// (`(i32 table_index, ptr arg) -> ptr`).
+pub const RUN_KIND_THREAD: u32 = 1;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -957,6 +981,10 @@ mod tests {
             ("TABLE_LENGTH", DRIVE_SLOT_TABLE_LENGTH),
             ("TABLE_APPLY", DRIVE_SLOT_TABLE_APPLY),
             ("STATIC_ROOT_FILL", DRIVE_SLOT_STATIC_ROOT_FILL),
+            ("ENTRY_START", DRIVE_SLOT_ENTRY_START),
+            ("RESUME_START", DRIVE_SLOT_RESUME_START),
+            ("THREAD_ENTRY", DRIVE_SLOT_THREAD_ENTRY),
+            ("RESUME_THREAD", DRIVE_SLOT_RESUME_THREAD),
         ];
         for (name, offset) in slots {
             assert!(
@@ -979,11 +1007,11 @@ mod tests {
 
     #[test]
     fn drive_table_base_reserves_slots_per_activation() {
-        // Twenty slots per activation (ALLOC, FILL, EXN, RESTORE,
+        // Twenty-four slots per activation (ALLOC, FILL, EXN, RESTORE,
         // FINISH_RESTORE, REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END,
         // ABORT_END, UNWIND_BEGIN, GC_ENCODE, GC_PROBE, MODULE_STATE_SAVE,
         // MODULE_TABLE_STATE_SAVE, EXN_THROW_RECIPE, TABLE_READ, TABLE_LENGTH,
-        // TABLE_APPLY, STATIC_ROOT_FILL).
+        // TABLE_APPLY, STATIC_ROOT_FILL, and the four entry slots).
         //
         // The bases are spelled as literals rather than computed from the
         // constant, so that widening the stride cannot quietly agree with
@@ -991,10 +1019,10 @@ mod tests {
         // the other two (the host's `bindActivationDrive` and the injector's
         // emitted thunks) are what it stands in for. Census 178 is the drift
         // that happened when one of them kept its own copy.
-        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 20);
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 24);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 20);
-        assert_eq!(drive_table_base(3), 60);
+        assert_eq!(drive_table_base(1), 24);
+        assert_eq!(drive_table_base(3), 72);
     }
 
     #[test]

@@ -82,7 +82,7 @@ use wasm_posix_shared::trap_signal::WasmTrapKind;
 use wasm_posix_shared::abi::host_intercepted::{SYS_EXECVE, SYS_EXECVEAT, SYS_FORK, SYS_SPAWN, SYS_VFORK};
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
 use wasm_posix_shared::flags as open_flags;
-use wasm_posix_shared::fork_contract::MODE_VFORK;
+use wasm_posix_shared::fork_contract::{MODE_FORK, MODE_VFORK};
 use wasm_posix_shared::host_abi::{
     SyscallArgDesc, SyscallArgDirection, SyscallArgSize, SYSCALL_ARG_DESCRIPTORS,
 };
@@ -4894,63 +4894,6 @@ enum ForkEntry {
     ChildBorrowedReplay { root: u32, private_prefix: u32, owner_control: u32 },
 }
 
-/// N1-I4 Task 3: mutable state shared, via `Arc`, between a guest OS thread's
-/// entry-driving loop ([`run_fork_capable_entry`]) and its `kernel_fork`
-/// import closure. Both run on the SAME OS thread in practice (a guest never
-/// forks from a worker thread — see `kernel_fork`'s own doc comment), so
-/// nothing here is ever actually contended — but `Linker::func_wrap`'s
-/// `IntoFunc` bound requires every captured value to be `Send + Sync`
-/// regardless (Wasmtime's `Store`/`Func` types are usable from any thread
-/// the embedder chooses, even though this host only ever calls this one
-/// from its own guest thread), so this uses `Arc<Atomic*>` — the same
-/// cross-thread-safe-by-construction shape `import_exit_status: Arc<Mutex<
-/// Option<i32>>>` already uses elsewhere in this file — rather than a
-/// simpler but non-`Send` `Rc<Cell<_>>`. `kernel_fork` is called TWICE per
-/// fork: once from idle (starts capture, never blocks on the channel itself
-/// — see that branch), and once from a replay (re-entered from within the
-/// resumed frame chain the guest's OWN resume-table dispatch walks back to)
-/// to learn the ACTUAL `fork()` return value now that the child's pid (or
-/// `0`, for the child itself) is known. WHICH of the two a call is, the fork
-/// module's own phase says ([`fork_module_kernel_fork`]); this holds only what
-/// the module does not.
-struct ForkCoordState {
-    /// The value `kernel_fork` returns when an ordinary replay reaches the
-    /// fork site: the child's pid (parent) or `0` (child). An abort's
-    /// `-errno` comes from the module instead. Stored as the bit pattern of
-    /// an `i32`.
-    fork_result: AtomicU32,
-    /// The `mode` argument (`fork()` vs `vfork()`) `kernel_fork`'s `Idle`
-    /// branch recorded, needed by the entry loop to choose `SYS_FORK` vs
-    /// `SYS_VFORK` when it finally posts the real channel request (AFTER
-    /// capture completes — see `drive_fork_capture_seal_and_launch_child`).
-    mode: AtomicU32,
-}
-
-impl ForkCoordState {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            fork_result: AtomicU32::new(0),
-            mode: AtomicU32::new(0),
-        })
-    }
-
-    fn fork_result(&self) -> i32 {
-        self.fork_result.load(Ordering::SeqCst) as i32
-    }
-
-    fn set_fork_result(&self, value: i32) {
-        self.fork_result.store(value as u32, Ordering::SeqCst);
-    }
-
-    fn mode(&self) -> u32 {
-        self.mode.load(Ordering::SeqCst)
-    }
-
-    fn set_mode(&self, value: u32) {
-        self.mode.store(value, Ordering::SeqCst);
-    }
-}
-
 /// Compute [`GuestForkFormat`] from a guest program's raw wasm bytes, or
 /// `Ok(None)` if the guest carries no `kandelo.wpk_fork.linked_frames`
 /// section at all (an ordinary, non-fork-instrumented program -- the common
@@ -5047,9 +4990,6 @@ pub struct ForkModule {
     /// copies what it is given during the entry that takes it, so the slab
     /// holds one request at a time -- in practice activation 0's admission.
     pub staging_base: usize,
-    /// The objects `__wpk_fork_host_ref_identity` has numbered, by identity
-    /// (index + 1). See [`instantiate_fork_module`].
-    ref_identities: Arc<Mutex<Vec<wasmtime::OwnedRooted<AnyRef>>>>,
 
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
@@ -5076,33 +5016,20 @@ pub struct ForkModule {
     /// identity group each catalog entry is. See [`publish_table_bindings`].
     pub fm_publish_bindings: wasmtime::TypedFunc<(u32, u32, u32), i32>,
     pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
-    /// `fm_phase()` -- the module's fork phase. See [`in_fork_capture`].
-    pub fm_phase: wasmtime::TypedFunc<(), u32>,
     /// Proof-of-use statistics: the single folded counter accessor
     /// (`fm_stats(field) -> i64`), replacing the former 11 individual `fm_*`
     /// counter exports. Field indices are the `FM_STAT_*` constants above.
     pub fm_stats: wasmtime::TypedFunc<u32, i64>,
-    /// `fm_parent_begin_capture(channel_base) -> act0_root` -- the module
-    /// opens this fork's capture graph (resetting its bump heap), allocates its
-    /// own arena and drives each guest `wpk_fork_unwind_begin`.
-    pub fm_parent_begin_capture: wasmtime::TypedFunc<u32, u32>,
-    /// `fm_parent_seal_capture(channel_base) -> seal_row` -- drives each guest
-    /// `wpk_fork_unwind_end()`, seals the capture into the module's arena, and
-    /// serializes the child image. 0 on failure, and a failure after the
-    /// frames sealed is already an abort replay (`fm_phase` says so).
-    pub fm_parent_seal_capture: wasmtime::TypedFunc<u32, u32>,
-    /// `fm_parent_replay(abort_errno)` -- begins the parent rewind, or with a
-    /// nonzero errno (the kernel refused the child) the abort replay, driving
-    /// each guest `wpk_fork_{rewind,abort}_begin`.
-    pub fm_parent_replay: wasmtime::TypedFunc<u32, ()>,
-    /// `fm_parent_finish(abort) -> report` -- drives each guest
-    /// `wpk_fork_{rewind,abort}_end()`, then finishes the replay; an abort
-    /// finish answers `(cause << 16) | errno`, -1 on failure.
-    pub fm_parent_finish: wasmtime::TypedFunc<u32, i32>,
     /// `fm_child_install(pid, launch_root, borrowed_base, borrowed_bytes) ->
     /// errno` -- ONE call installs a COW or borrowed fork child. See
     /// [`run_fork_capable_entry`].
     pub fm_child_install: wasmtime::TypedFunc<(u32, u32, u32, u32), i32>,
+    /// `fm_run(kind, table_index, arg) -> result`: run a guest entry until it
+    /// returns, the MODULE serving every fork it makes -- the capture, the
+    /// seal, the `SYS_FORK`/`SYS_VFORK` on the thread's channel, the replay
+    /// and the finish (lane F step 3c). What stays this host's is the call and
+    /// the reading of how it ended. See [`run_fork_capable_entry`].
+    pub fm_run: wasmtime::TypedFunc<(u32, u32, u32), u64>,
 
     /// The module's OWN imported funcref table (`env.__wpk_fork_function_catalog`)
     /// -- created empty by [`instantiate_fork_module`] and filled, after a guest
@@ -5395,18 +5322,31 @@ pub(crate) fn instantiate_fork_module(
     )?;
     // A GC object has no stable integer of its own, so it is kept (rooted) and
     // found again by `ref.eq`. Rooting pins it, where the JavaScript hosts'
-    // `WeakMap` does not, so the pool is cleared at every capture begin
-    // (`kernel_fork`): the module's only map keyed by it, `fm_gc_identity_*`,
-    // is reset there too (`reset_bump_heap`), and both callers, the injected
-    // `gc_lookup` / `gc_claim` shims, run only inside a capture.
-    let ref_identities: Arc<Mutex<Vec<wasmtime::OwnedRooted<AnyRef>>>> = Arc::default();
-    let pool = Arc::clone(&ref_identities);
+    // `WeakMap` does not, so the pool is emptied once per capture: the
+    // module's only map keyed by it, `fm_gc_identity_*`, is reset when a
+    // capture opens (`reset_bump_heap`), and both callers, the injected
+    // `gc_lookup` / `gc_claim` shims, run only inside a capture. The module
+    // opens the capture itself (lane F step 3c), so no host call marks the
+    // moment; its count of opened captures (`fm_stats` field 106) does, and
+    // the first identity asked for in a new capture empties the pool.
+    const CAPTURE_SESSIONS_OPENED_FIELD: u32 = 106;
+    let pool: Arc<Mutex<Vec<wasmtime::OwnedRooted<AnyRef>>>> = Arc::default();
+    let pool_capture = Arc::new(std::sync::atomic::AtomicU64::new(0));
     linker.func_wrap(
         "env",
         "__wpk_fork_host_ref_identity",
         move |mut caller: Caller<'_, ()>, v: Option<wasmtime::Rooted<AnyRef>>| -> wasmtime::Result<i32> {
             let v = v.ok_or_else(|| wasmtime::Error::msg("__wpk_fork_host_ref_identity(null)"))?;
+            let capture = caller
+                .get_export("fm_stats")
+                .and_then(|export| export.into_func())
+                .ok_or_else(|| wasmtime::Error::msg("the fork module exports no fm_stats"))?
+                .typed::<u32, i64>(&caller)?
+                .call(&mut caller, CAPTURE_SESSIONS_OPENED_FIELD)? as u64;
             let mut pool = pool.lock().unwrap();
+            if pool_capture.swap(capture, Ordering::SeqCst) != capture {
+                pool.clear();
+            }
             for (i, known) in pool.iter().enumerate() {
                 if wasmtime::Rooted::ref_eq(&mut caller, known, &v)? {
                     return Ok(i as i32 + 1);
@@ -5433,20 +5373,15 @@ pub(crate) fn instantiate_fork_module(
         memory_base,
         region_bytes,
         staging_base,
-        ref_identities,
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
         fm_admit_activation: fm_func!("fm_admit_activation": (u32, u32) => i32),
         fm_admission_buffer: fm_func!("fm_admission_buffer": u32 => u32),
         fm_bind_activation: fm_func!("fm_bind_activation": (u32, u32, u32) => u32),
         fm_publish_bindings: fm_func!("fm_publish_bindings": (u32, u32, u32) => i32),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
-        fm_phase: fm_func!("fm_phase": () => u32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
-        fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": u32 => u32),
-        fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
-        fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
-        fm_parent_finish: fm_func!("fm_parent_finish": u32 => i32),
         fm_child_install: fm_func!("fm_child_install": (u32, u32, u32, u32) => i32),
+        fm_run: fm_func!("fm_run": (u32, u32, u32) => u64),
         function_catalog_table,
         drive_table,
     })
@@ -5512,7 +5447,6 @@ fn admit_guest(
 #[derive(Debug, Clone, Copy)]
 struct ActivationRow {
     func_catalog_base: u32,
-    static_root_base: u32,
 }
 
 /// Bind the admitted activation 0 after its instantiation, as
@@ -5548,12 +5482,13 @@ fn bind_activation(
     anyhow::ensure!(at + 20 <= guest_mem.data().len(), "fm_bind_activation row {at:#x} is outside guest memory");
     // SAFETY: in bounds (checked above); read before the next module call,
     // which may rewrite the row.
-    let [drive_base, func_catalog_base, static_root_base, resume_ptr, resume_count] =
+    // The static-root base is the module's: the guest fills its slice itself.
+    let [drive_base, func_catalog_base, _static_root_base, resume_ptr, resume_count] =
         std::array::from_fn(|i| unsafe { read_u32(guest_mem, at + i * 4) });
 
     place_resume_thunks(store, instance, 0, resume_ptr, resume_count)?;
 
-    let bindings: [(u32, &str, bool); 20] = [
+    let bindings: [(u32, &str, bool); 24] = [
         (slots::DRIVE_OP_ALLOC, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE, false),
         (slots::DRIVE_OP_FILL, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL, false),
         (slots::DRIVE_OP_EXN, fork_abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE, false),
@@ -5580,6 +5515,14 @@ fn bind_activation(
         // (lane F step 3c, ruling 3). Only a guest with static roots has it,
         // and only such an activation is ever driven through it.
         (slots::DRIVE_SLOT_STATIC_ROOT_FILL, fork_abi::WPK_FORK_STATIC_ROOT_FILL_EXPORT, false),
+        // The guest's entry points, which the module's run loop (`fm_run`)
+        // calls: a process's `_start` and its replay, a pthread's start
+        // routine through its fixed-signature trampoline and that routine's
+        // replay (lane F step 3c).
+        (slots::DRIVE_SLOT_ENTRY_START, "_start", false),
+        (slots::DRIVE_SLOT_RESUME_START, fork_abi::WPK_FORK_EXPORT_RESUME_START, false),
+        (slots::DRIVE_SLOT_THREAD_ENTRY, fork_abi::WPK_FORK_EXPORT_THREAD_ENTRY, false),
+        (slots::DRIVE_SLOT_RESUME_THREAD, fork_abi::WPK_FORK_EXPORT_RESUME_THREAD, false),
     ];
     // Sized to the WHOLE stride, so every slot the module derives from the
     // drive base is addressable even when this host binds nothing into it.
@@ -5603,7 +5546,7 @@ fn bind_activation(
         }
     }
     publish_table_bindings(store, fm, instance, guest_mem)?;
-    Ok(ActivationRow { func_catalog_base, static_root_base })
+    Ok(ActivationRow { func_catalog_base })
 }
 
 /// Tell the module which identity group each of the guest's private tables
@@ -5773,86 +5716,6 @@ fn bind_guest_fork_imports(
     Ok(())
 }
 
-/// `kernel_fork` for a fork-instrumented guest thread with a fork module,
-/// the same decision `worker-main.ts` makes: the MODULE's phase says which
-/// call this is. Idle begins a capture; a parent or child replay reaching the
-/// fork site again finishes it and returns the pid (or 0) the entry loop
-/// recorded; an abort replay finishes the abort and returns the `-errno` the
-/// module recorded when the abort began.
-///
-/// The abort can begin inside the module with no host involved -- a frame
-/// reserve that fails mid-unwind aborts on the spot, and the guest re-enters
-/// here -- which is why this asks the module rather than keeping a phase of
-/// its own. A host mirror said "idle" there, and began a second capture.
-fn fork_module_kernel_fork(
-    caller: &mut Caller<'_, ()>,
-    fm: &ForkModule,
-    coord: &ForkCoordState,
-    mem: &SharedMemory,
-    ch: usize,
-    mode: i32,
-) -> wasmtime::Result<i32> {
-    // `PHASE_*` in `crates/fork-module/src/lib.rs`.
-    const IDLE: u32 = 0;
-    const PARENT_REPLAY: u32 = 3;
-    const CHILD_REPLAY: u32 = 4;
-    const ABORT_REPLAY: u32 = 5;
-    let phase = fm.fm_phase.call(&mut *caller, ())?;
-    if phase == IDLE {
-        coord.set_mode(mode as u32);
-        return begin_fork_capture(caller, fm, mem, ch);
-    }
-    if !matches!(phase, PARENT_REPLAY | CHILD_REPLAY | ABORT_REPLAY) {
-        return Err(wasmtime::Error::msg(format!(
-            "kernel_fork reached while the fork module is in phase {phase}"
-        )));
-    }
-    let abort = phase == ABORT_REPLAY;
-    let report = fm.fm_parent_finish.call(&mut *caller, u32::from(abort))?;
-    if report < 0 {
-        let errno = fm.fm_last_errno.call(&mut *caller, ())?;
-        return Err(wasmtime::Error::msg(format!("fm_parent_finish failed: errno {errno}")));
-    }
-    if !abort {
-        return Ok(coord.fork_result());
-    }
-    // The MODULE reported the abort and why through the kernel
-    // (`SYS_FORK_DIAGNOSTIC`); the pump prints and counts it
-    // (`report_fork_diagnostics`).
-    Ok(-(report & 0xffff))
-}
-
-/// `kernel_fork`'s capture begin, in `worker-main.ts`'s order: refill the
-/// merged static-root catalog the capture reads, then open the capture -- the
-/// module opens its capture graph (resetting its identity map, so this host's
-/// identity pool is emptied with it) and allocates its own arena -- and have
-/// the module drive the guest's `wpk_fork_unwind_begin`. The returned launch root is published
-/// in the forking thread's fork control word, where `handle_fork` reads it.
-///
-/// Returns what `kernel_fork` returns to the (now unwinding) guest: 0, or
-/// `-errno` when the capture could not open, in which case nothing unwinds and
-/// no `SYS_FORK` is posted.
-fn begin_fork_capture(
-    caller: &mut Caller<'_, ()>,
-    fm: &ForkModule,
-    mem: &SharedMemory,
-    ch: usize,
-) -> wasmtime::Result<i32> {
-    fm.ref_identities.lock().unwrap().clear();
-    // The module fills its merged static-root catalog itself before it opens
-    // the capture: each activation copies its own roots in with one
-    // `table.copy` (`__wpk_fork_static_root_fill`, lane F step 3c).
-    let root = fm.fm_parent_begin_capture.call(&mut *caller, ch as u32)?;
-    let errno = fm.fm_last_errno.call(&mut *caller, ())?;
-    if errno != 0 {
-        return Ok(-errno);
-    }
-    // SAFETY: the control word is inside the forking thread's own fork-save
-    // page, which the process layout reserves below its channel.
-    unsafe { write_bytes(mem, fork_control_word(ch), &root.to_le_bytes()) };
-    Ok(0)
-}
-
 /// Launch one guest process instance and return the [`GuestProcess`] the pump
 /// then services: push its brk/mmap/max-addr into the kernel, spawn its guest
 /// OS thread over `memory`, and register its main channel.
@@ -5986,6 +5849,10 @@ fn launch_process(
         }
     }
 
+    // The main thread reports a fault the way a pthread does, into the slot
+    // the pump drains (`retire_faulted_threads`), so the kernel records the
+    // signal death (WIFSIGNALED) -- the same slot the process record holds.
+    let thread_faults = ThreadFaultSlot::default();
     let main_handle = spawn_guest_thread(
         engine,
         guest_module.clone(),
@@ -5999,6 +5866,7 @@ fn launch_process(
         fork_entry,
         fork_format.clone(),
         fork_proof_of_use,
+        Arc::clone(&thread_faults),
     );
     let mut thread_handles = HashMap::new();
     thread_handles.insert(layout.channel_offset, main_handle);
@@ -6013,7 +5881,7 @@ fn launch_process(
         thread_handles,
         fork_format,
         ended: false,
-        thread_faults: ThreadFaultSlot::default(),
+        thread_faults,
     })
 }
 
@@ -6108,6 +5976,7 @@ fn launch_vfork_borrowed_child(
     child_layout.channel_offset = vregion.channel_offset;
     child_layout.max_addr = vregion.child_module_max_addr;
 
+    let thread_faults = ThreadFaultSlot::default();
     let main_handle = spawn_guest_thread(
         engine,
         guest_module.clone(),
@@ -6121,6 +5990,7 @@ fn launch_vfork_borrowed_child(
         fork_entry,
         fork_format.clone(),
         fork_proof_of_use,
+        Arc::clone(&thread_faults),
     );
     let mut thread_handles = HashMap::new();
     thread_handles.insert(child_layout.channel_offset, main_handle);
@@ -6135,7 +6005,7 @@ fn launch_vfork_borrowed_child(
         thread_handles,
         fork_format,
         ended: false,
-        thread_faults: ThreadFaultSlot::default(),
+        thread_faults,
     })
 }
 
@@ -6186,6 +6056,7 @@ fn spawn_guest_thread(
     fork_entry: ForkEntry,
     fork_format: Option<Arc<GuestForkFormat>>,
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
+    thread_faults: ThreadFaultSlot,
 ) -> thread::JoinHandle<()> {
     let engine = engine.clone();
     spawn_guest_os_thread(move || {
@@ -6211,13 +6082,9 @@ fn spawn_guest_thread(
         // ([`bind_guest_fork_imports`]). This runs for EVERY process launched
         // with `use_fork_module` (the boot process, a spawned child, or a fork
         // child), so the parent side of a later fork already has this wiring
-        // from its own launch. Kept alive past this block: the `kernel_fork`
-        // import closure and the entry loop both drive its `fm_*` entries.
+        // from its own launch. Kept alive past this block: its own export
+        // serves `kernel_fork`, and the entry loop runs the guest through it.
         let mut fork_module: Option<ForkModule> = None;
-        // N1-I4 Task 3: shared coordinator state between `kernel_fork` and
-        // the entry loop at the end of this function — see
-        // `ForkCoordState`'s doc comment.
-        let coord = ForkCoordState::new();
         if use_fork_module {
             let fm = match instantiate_fork_module(&engine, &mut store, &guest_mem, &layout) {
                 Ok(fm) => fm,
@@ -6398,106 +6265,70 @@ fn spawn_guest_thread(
                 )
                 .unwrap();
         }
-        // kernel_fork (N1-I4 Task 2): `fork()`/`vfork()`/`_Fork()` call this
-        // import DIRECTLY (`libc/glue/channel_syscall.c:492-493,577-600),
-        // never through the generic channel dispatcher (`__do_syscall_impl`
-        // explicitly returns ENOSYS for `SYS_FORK`/`SYS_VFORK`) — this keeps
-        // wasm-fork-instrument's call-graph rewriting scoped to fork callers
-        // alone, per that file's own module doc comment. Mirrors
-        // `kernel_clone` immediately above: post `SYS_FORK`/`SYS_VFORK` +
-        // `mode` on THIS channel (this import is only ever reached from the
-        // process's main thread — a worker-thread `fork()` is not wired up
-        // by this host and traps, unchanged from before this task) and block
-        // for the pump's `handle_fork` (N1-I4 Task 2) to create the child and
-        // report back. Unlike `kernel_clone`'s tid, the value this import
-        // returns is used DIRECTLY as `kernel_fork`'s own C-level return —
-        // `__do_syscall_impl`'s generic "ret<0 -> -errno" post-processing
-        // never runs for a direct import call, so apply that SAME convention
-        // here explicitly, exactly like `kernel_wait4` below.
+        // kernel_fork: `fork()`/`vfork()`/`_Fork()` call this import DIRECTLY
+        // (`libc/glue/channel_syscall.c`), never through the generic channel
+        // dispatcher, which keeps wasm-fork-instrument's call-graph rewriting
+        // scoped to fork callers alone.
         //
-        // N1-I4 Task 3: for a FORK-INSTRUMENTED guest (`fork_format.is_some()`
-        // — i.e. `fork_module` was seeded above), this import no longer does
-        // the whole round trip itself. Its two reachable phases
-        // (`ForkCoordState::phase`):
+        // A FORK-INSTRUMENTED guest gets the fork MODULE's own export,
+        // `__wpk_fork_kernel_fork`, bound straight in (lane F step 3c): the
+        // module opens the capture, and when the replayed frames reach the
+        // same call site again, finishes the fork and returns what `fork()`
+        // returns. No host code runs in between -- the capture, the seal, the
+        // `SYS_FORK`/`SYS_VFORK` on this channel and the replay all happen
+        // inside `fm_run` (see `run_fork_capable_entry`). The Node/browser
+        // hosts bind the same export.
         //
-        //  - `Idle` (the first call, straight from the guest's own `fork()`
-        //    wrapper, still mid-stack): starts capture ([`begin_fork_capture`],
-        //    which has the module drive the guest's OWN
-        //    `wpk_fork_unwind_begin(root)`, flipping it to UNWINDING) — and
-        //    returns `0` immediately WITHOUT posting anything on the
-        //    channel. Per `wasm-fork-instrument`'s contract (see this file's
-        //    "N1-I4 Task 1" section doc comment and `crates/fork-instrument/
-        //    src/instrument.rs`'s `populate_lexical_call` doc comment), the
-        //    guest's OWN postamble at THIS call site sees `_wpk_fork_state
-        //    == UNWINDING` upon return and starts unwinding the REAL,
-        //    already-live call chain itself (spilling each frame into the
-        //    fork-module via the already-wired `__wpk_fork_frame_*`
-        //    imports), eventually escaping the OS thread's outer `_start`
-        //    call as an uncaught `env.__wpk_fork_unwind` exception —
-        //    `run_fork_capable_entry`'s loop catches that, drives the
-        //    seal/serialize/channel-post/parent-replay-begin sequence, and
-        //    only THEN re-enters this instance via `wpk_fork_resume_start`.
-        //  - a replay (a SECOND call, reached by that resume-table
-        //    dispatch walking back down to this exact call site — see
-        //    `fork_module_kernel_fork`): the rewind of frame STATE is
-        //    already done by this point, so this closes it out —
-        //    `wpk_fork_rewind_end` (flips `_wpk_fork_state` back to NORMAL)
-        //    then `fm_finish_replay` — and returns the REAL value (child pid
-        //    for the parent, `0` for the child, or a negative errno)
-        //    `run_fork_capable_entry` recorded in `coord.fork_result`.
-        //
-        // For a NON-instrumented guest (`fork_module` is `None` or
-        // `fork_format` was `None`, so `fork_module` was never seeded with a
-        // format), this import keeps the OLD direct-passthrough behavior
-        // byte-for-byte: post `SYS_FORK`/`SYS_VFORK` on the channel and
-        // block for `handle_fork`'s reply — there is no coordinator to
-        // drive, so the reply IS the whole answer.
-        {
+        // A NON-instrumented guest has no module to serve it, so this posts
+        // `SYS_FORK`/`SYS_VFORK` + `mode` on the channel and blocks for
+        // `handle_fork`'s reply, which IS the whole answer. The import is
+        // called directly, so `__do_syscall_impl`'s "ret<0 -> -errno"
+        // convention is applied here.
+        let module_kernel_fork = match (fork_module.as_ref(), fork_format.as_ref()) {
+            (Some(fm), Some(_)) => fm.instance.get_func(&mut store, "__wpk_fork_kernel_fork"),
+            _ => None,
+        };
+        if let Some(kernel_fork) = module_kernel_fork {
+            linker.define(&mut store, "kernel", "kernel_fork", kernel_fork).unwrap();
+        } else {
             let mem = guest_mem.clone();
             let ch = layout.channel_offset;
-            let fm_for_import = fork_module.clone();
-            let has_format = fork_format.is_some();
-            let coord = Arc::clone(&coord);
             linker
                 .func_wrap(
                     "kernel",
                     "kernel_fork",
-                    move |mut caller: Caller<'_, ()>, mode: i32| -> wasmtime::Result<i32> {
-                        let Some(fm) = (if has_format { fm_for_import.as_ref() } else { None }) else {
-                            let syscall_nr = if mode as u32 == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
-                            unsafe {
-                                write_bytes(&mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-                                write_bytes(&mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
-                                for i in 1..6 {
-                                    write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
-                                }
-                                write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
-                                atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                    move |_caller: Caller<'_, ()>, mode: i32| -> wasmtime::Result<i32> {
+                        let syscall_nr = if mode as u32 == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
+                        unsafe {
+                            write_bytes(&mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+                            write_bytes(&mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
+                            for i in 1..6 {
+                                write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
                             }
-                            let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
-                            loop {
-                                let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
-                                if s == ChannelStatus::Teardown as u32 {
-                                    // The kernel ended this process while it
-                                    // was parked in fork: unwind, as the glue
-                                    // does, instead of reading a stale reply.
-                                    return Err(wasmtime::Trap::UnreachableCodeReached.into());
-                                }
-                                if s != STATUS_PENDING {
-                                    break;
-                                }
-                                std::thread::sleep(Duration::from_micros(200));
+                            write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+                            atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                        }
+                        let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+                        loop {
+                            let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                            if s == ChannelStatus::Teardown as u32 {
+                                // The kernel ended this process while it was
+                                // parked in fork: unwind, as the glue does,
+                                // instead of reading a stale reply.
+                                return Err(wasmtime::Trap::UnreachableCodeReached.into());
                             }
-                            let (ret, errno) = unsafe {
-                                (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET))
-                            };
-                            unsafe {
-                                atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+                            if s != STATUS_PENDING {
+                                break;
                             }
-                            return Ok(if ret < 0 { -(errno as i32) } else { ret as i32 });
+                            std::thread::sleep(Duration::from_micros(200));
+                        }
+                        let (ret, errno) = unsafe {
+                            (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET))
                         };
-
-                        fork_module_kernel_fork(&mut caller, fm, &coord, &mem, ch, mode)
+                        unsafe {
+                            atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+                        }
+                        Ok(if ret < 0 { -(errno as i32) } else { ret as i32 })
                     },
                 )
                 .unwrap();
@@ -6753,10 +6584,10 @@ fn spawn_guest_thread(
             &instance,
             &guest_mem,
             layout.channel_offset,
-            fork_module.as_ref(),
-            &coord,
+            fork_module.as_ref().filter(|_| fork_format.is_some()),
             pid,
             fork_entry,
+            &thread_faults,
         );
 
         // N1-I4 Task 3: fold this thread's fork-module proof-of-use counters
@@ -6796,66 +6627,36 @@ where
     }
 }
 
-/// Whether a Wasmtime error represents an uncaught Wasm exception escaping a
-/// call into the guest (`wasmtime::ThrownException` — NOT `Trap::
-/// UnhandledTag`, a DIFFERENT error shape reserved for the stack-switching/
-/// continuations proposal; Wasmtime 48's exceptions-proposal implementation
-/// stores the actual pending exception object on the `Store` itself — see
-/// `Store::take_pending_exception`, called at this function's one call site
-/// — and returns this zero-payload marker error from the call, per `wasmtime
-/// ::exception::ThrownException`'s own doc comment). This is the shape an
-/// escaped `env.__wpk_fork_unwind` throw takes once it propagates all the
-/// way out of the guest's outer `_start` call (see `kernel_fork`'s `Idle`
-/// branch's doc comment for why this is the expected, deliberate way a fresh
-/// fork capture surfaces to the host, not a bug). Wasmtime does not
-/// distinguish WHICH tag was thrown at this level (that requires inspecting
-/// the taken `ExnRef`'s own tag, which this frames-only task does not do —
-/// see [`run_fork_capable_entry`]'s call site for why), so that function
-/// additionally requires this to be seen only straight after the LEXICAL
-/// `_start` entry (never during a replay/resume call) before treating it as
-/// a fork capture.
-fn is_thrown_exception_escape(e: &wasmtime::Error) -> bool {
-    e.downcast_ref::<wasmtime::ThrownException>().is_some()
-}
-
-/// Whether this worker's fork module has a capture open -- `PHASE_CAPTURE` in
-/// `crates/fork-module/src/lib.rs`, the phase `fm_parent_begin_capture`
-/// enters and the seal leaves.
-fn in_fork_capture(store: &mut Store<()>, fork_module: Option<&ForkModule>) -> bool {
-    const FORK_MODULE_PHASE_CAPTURE: u32 = 1;
-    fork_module.is_some_and(|fm| fm.fm_phase.call(&mut *store, ()).ok() == Some(FORK_MODULE_PHASE_CAPTURE))
-}
-
-/// N1-I4 Task 3: drive one guest OS thread (either a fresh, `_start`-from-the-
-/// top launch, or a fork child's `fm_child_install`-seeded resume) to
-/// completion, transparently handling however many `fork()`s it makes along
-/// the way. Replaces Task 2's unconditional `let _ = start.call(...)` (and
-/// its `fork_child_pending_replay` stub, still used for a NON-instrumented
-/// guest — see [`ForkEntry::ChildPendingStub`]'s doc comment).
+/// Run one guest OS thread (a fresh `_start`-from-the-top launch, or a fork
+/// child's `fm_child_install`-seeded replay) to completion, and read how it
+/// ended.
 ///
-/// The loop alternates between the guest's LEXICAL entry (`_start`, called
-/// exactly once, only for [`ForkEntry::Normal`]) and its instrumented
-/// `wpk_fork_resume_start` export (called every time execution must
-/// re-enter after a fork: once per capture the lexical entry made, seeded by
-/// [`drive_fork_capture_seal_and_launch_child`]'s `fm_parent_replay` for a
-/// PARENT, or once up front, seeded by this function's own `fm_child_install`
-/// call, for a fresh fork child). Either call
-/// blocks until the guest parks after `exit_group` (normal — the loop
-/// returns), traps via the `kernel_exit` SIGKILL fast path or a normal
-/// `unreachable` halt (also normal — the loop returns), or escapes with an
-/// uncaught `env.__wpk_fork_unwind` exception ([`is_unhandled_tag_trap`]) —
-/// the ONLY case the loop continues on, by driving the seal/serialize/
-/// channel-post/parent-replay-begin sequence before looping back to call
-/// `wpk_fork_resume_start`.
+/// A FORK-INSTRUMENTED guest (`fork_module` is `Some`) runs through the
+/// module's own loop, `fm_run` (lane F step 3c): the module calls `_start` --
+/// or, when a fork is open (a child its install left replaying, or a parent
+/// whose capture just sealed), `wpk_fork_resume_start` -- through its drive
+/// table, inside a `try_table` that catches its OWN unwind tag. It seals each
+/// capture, posts `SYS_FORK`/`SYS_VFORK` on this channel, begins the parent's
+/// replay and calls the replay entry again, all without returning here. This
+/// host used to run that loop itself (`drive_fork_capture_seal_and_launch_child`,
+/// `fork_module_kernel_fork`, the `ForkCoordState` they shared); three hosts
+/// running copies of one sequence had drifted, so the module owns it now.
+///
+/// What stays here is what only this host knows: whether a trap is the pump
+/// unwinding the thread (`CH_TEARDOWN` on its channel) or the guest faulting.
+/// A module run-loop failure reports itself through the kernel
+/// (`SYS_FORK_DIAGNOSTIC`) and then traps, so it reads here as the fault it
+/// is. A NON-instrumented guest has no module to run it and calls `_start`.
+#[allow(clippy::too_many_arguments)]
 fn run_fork_capable_entry(
     store: &mut Store<()>,
     instance: &wasmtime::Instance,
     guest_mem: &SharedMemory,
     channel_offset: usize,
     fork_module: Option<&ForkModule>,
-    coord: &Arc<ForkCoordState>,
     pid: u32,
     fork_entry: ForkEntry,
+    thread_faults: &ThreadFaultSlot,
 ) {
     if matches!(fork_entry, ForkEntry::ChildPendingStub) {
         // N1-I4 Task 2's legacy stub — see `ForkEntry::ChildPendingStub`'s
@@ -6865,20 +6666,6 @@ fn run_fork_capable_entry(
         return;
     }
 
-    let Some(start) = get_guest_export_typed::<(), ()>(&mut *store, instance, "_start") else {
-        return;
-    };
-    // A non-instrumented guest has no `wpk_fork_resume_start` export at all
-    // (its `kernel_fork` import, if it even has one, never reaches a
-    // fork-module replay — see that closure's doc comment) — that
-    // is fine as long as this loop never actually needs to call it (i.e.
-    // `fork_entry` is `Normal` and the guest never captures a fork). Missing
-    // is therefore NOT logged as an error here; a later attempt to actually
-    // USE it (below) is.
-    let resume_start = instance
-        .get_typed_func::<(), ()>(&mut *store, wasm_posix_shared::abi::WPK_FORK_EXPORT_RESUME_START)
-        .ok();
-
     // N1-I4 Task 3 (bootstrap fix): `wasm-fork-instrument` converts every
     // ACTIVE element/data segment on an instrumented guest to PASSIVE and
     // defers their initialization into an EXPORTED bootstrap function — the
@@ -6886,29 +6673,14 @@ fn run_fork_capable_entry(
     // `crates/fork-instrument/src/module_state.rs`'s `inject`/`emit_
     // bootstrap_helper`/`emit_thread_bootstrap_helper`). Node/browser call
     // this exact export, once, straight after instantiation and BEFORE the
-    // guest's own entry point (`host/src/worker-main.ts:4714` before `_start`
-    // at `:5036`; `:6898` for a fresh-table thread/child instance) — this
-    // host must too, or the guest's own `__indirect_function_table` (and any
-    // `.data`/`.rodata`) is never populated, and the FIRST `call_indirect`
-    // (or first read of static data) traps. `ForkEntry::Normal` gets a
-    // brand-new instance whose linear memory + tables need FULL init (data
-    // copy + table.init + the guest's real, original `main`-reaching start
-    // logic) — `WPK_FORK_EXPORT_MODULE_BOOTSTRAP`. `ForkEntry::ChildReplay`
-    // gets a FRESH instance too, but one whose linear memory is a byte-for-
-    // byte private copy of an ALREADY-bootstrapped parent (so its `.data`/
-    // `.rodata` are already correct) with brand-new, EMPTY instance-local
-    // tables — `WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP` re-inits just the
-    // tables (and `DataDrop`s the now-redundant data segments) without
-    // re-copying memory or re-running the original start, exactly matching
-    // `worker-main.ts:6898`'s thread/child-instance variant.
-    //
-    // A NON-instrumented guest exports NEITHER name, so
-    // `get_typed_func(...).ok()` simply finds nothing and this is a byte-
-    // for-byte no-op for it — this is what keeps every pre-existing,
-    // non-instrumented test (and the `ChildPendingStub` legacy path, handled
-    // above before this point is ever reached) unaffected, without needing
-    // to thread `fork_format`/"is this guest instrumented" down into this
-    // function at all: the guest's own export list is the ground truth.
+    // guest's own entry point -- this host must too, or the guest's own
+    // `__indirect_function_table` (and any `.data`/`.rodata`) is never
+    // populated. `ForkEntry::Normal` gets a brand-new instance whose linear
+    // memory + tables need FULL init (`WPK_FORK_EXPORT_MODULE_BOOTSTRAP`); a
+    // fork child's fresh instance runs over a copy of an already-bootstrapped
+    // parent, so only its tables are re-initialised
+    // (`WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP`). A NON-instrumented guest
+    // exports NEITHER name, so this is a no-op for it.
     let bootstrap_export = match fork_entry {
         ForkEntry::Normal => wasm_posix_shared::abi::WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
         // A borrowed vfork child is ALSO a fresh instance over the (shared)
@@ -6926,15 +6698,13 @@ fn run_fork_capable_entry(
         }
     }
 
-    let mut entry_is_lexical = true;
     // A fork child installs with ONE module call, as on the Node/browser host
     // (`installChild` in `host/src/fork-module-backend.ts`): the module reads
     // the arena root out of the launch root's prefix, publishes a COW child's
     // launch root in its own control word, carves a borrowed child's
-    // workspace, seeds, attaches (module-state restore and finish included),
-    // drives the install plan -- growing its own transit table first -- and
-    // nulls the merged static-root catalog the drive read. What stays this
-    // host's is done before: binding the drive slots and filling that catalog.
+    // workspace, seeds, attaches, drives the install plan and leaves itself
+    // replaying -- so `fm_run` below starts the child in its replay, and the
+    // child's `fork()` returns the 0 the install recorded.
     let (launch_root, borrowed_base, borrowed_bytes) = match fork_entry {
         ForkEntry::ChildReplay { root } => (Some(root), 0, 0),
         // `compute_vfork_borrowed_region` reserves exactly one page below the
@@ -6961,215 +6731,58 @@ fn run_fork_capable_entry(
             // wait(2) learns the child is gone instead of hanging.
             Err(e) => {
                 match wasmtime_trap_kind(&e) {
-                    Some(kind) => report_guest_fault(guest_mem, channel_offset, kind, &e),
+                    Some(kind) => report_guest_fault(thread_faults, channel_offset, kind, &e),
                     None => eprintln!("fm_child_install failed: {e:#}"),
                 }
                 return;
             }
         }
-        coord.set_fork_result(0);
-        entry_is_lexical = false;
     }
 
-    loop {
-        let result = if entry_is_lexical {
+    let result = match fork_module {
+        Some(fm) => fm
+            .fm_run
+            .call(&mut *store, (fork_codec::drive_plan::RUN_KIND_PROCESS, 0, 0))
+            .map(|_| ()),
+        None => {
+            let Some(start) = get_guest_export_typed::<(), ()>(&mut *store, instance, "_start") else {
+                return;
+            };
             start.call(&mut *store, ())
-        } else {
-            match resume_start.as_ref() {
-                Some(f) => f.call(&mut *store, ()),
-                None => {
-                    eprintln!(
-                        "guest is missing {} for a required fork replay",
-                        wasm_posix_shared::abi::WPK_FORK_EXPORT_RESUME_START
-                    );
-                    return;
-                }
-            }
-        };
-        match result {
-            Ok(()) => return,
-            // An `unreachable` trap is either the host unwinding this thread
-            // on purpose or the guest faulting, and this loop must not guess
-            // which. It asks the channel, as `worker-main.ts` asks
-            // `kernelExitStatus` before treating the trap as an exit:
-            //
-            //  * `CH_TEARDOWN` on this thread's channel: the pump has already
-            //    decided this process's fate and woke the thread to unwind
-            //    it. It does that after the kernel records the process's exit
-            //    (`run_pump`'s exit branch — the native form of JS's
-            //    `kernel_exit` returning once the exit is committed) and when
-            //    it reclaims a superseded image (execve success, spawn
-            //    rollback — the native form of JS's `ExecRetirement`). The
-            //    glue's `__builtin_trap()` is that unwind. Nothing to report,
-            //    and posting on the channel would race the pump's join.
-            //  * Anything else: the guest executed `unreachable` itself. That
-            //    is a fault, reported as SIGILL through the kernel exactly as
-            //    the arm below reports every other trap kind.
-            Err(e) if is_unreachable_trap(&e) => {
-                let channel_status =
-                    unsafe { atomic_u32(guest_mem, channel_offset + STATUS_OFFSET) }
-                        .load(Ordering::SeqCst);
-                if channel_status != ChannelStatus::Teardown as u32 {
-                    report_guest_fault(
-                        guest_mem,
-                        channel_offset,
-                        WasmTrapKind::IllegalInstruction,
-                        &e,
-                    );
-                }
-                return;
-            }
-            Err(e) if is_thrown_exception_escape(&e) => {
-                // Only a fork's capture unwind may escape, and the MODULE says
-                // whether one is open -- `worker-main.ts` asks the same
-                // question (`forkPhase`). Asking which entry was running
-                // instead refused a fork child that forks again: its capture
-                // unwinds out of its replay entry. Anything else escaping is
-                // a genuine bug or a foreign (non-fork) exception.
-                if !in_fork_capture(store, fork_module) {
-                    eprintln!("unexpected exception escape outside a fork capture: {e:#}");
-                    return;
-                }
-                // Consume the pending exception the `Store` is holding
-                // rooted (per `ThrownException`'s own doc comment: "the
-                // caller should either continue propagating the error
-                // upward, or take and handle the exception"). This task does
-                // not inspect the taken `ExnRef`'s own tag (frames-only has
-                // exactly one possible escaping tag in practice, `env.
-                // __wpk_fork_unwind`); it only clears the slot so it cannot
-                // leak into and confuse a later, unrelated call.
-                if store.take_pending_exception().is_none() {
-                    eprintln!(
-                        "is_thrown_exception_escape matched but the store has no pending \
-                         exception to take — this should not happen"
-                    );
-                }
-                let Some(fm) = fork_module else {
-                    eprintln!("fork-unwind exception escaped with no fork-module");
-                    return;
-                };
-                if !drive_fork_capture_seal_and_launch_child(store, guest_mem, channel_offset, fm, coord) {
-                    return;
-                }
-                entry_is_lexical = false;
-            }
-            Err(e) => {
-                match wasmtime_trap_kind(&e) {
-                    Some(kind) => report_guest_fault(guest_mem, channel_offset, kind, &e),
-                    None => eprintln!("guest entry failed: {e:#}"),
-                }
-                return;
-            }
-        }
-    }
-}
-
-/// N1-I4 Task 3: runs once, from the entry loop, right after the guest's
-/// lexical call escapes with an uncaught `env.__wpk_fork_unwind` exception --
-/// i.e. right after `kernel_fork`'s `Idle` branch began the capture
-/// ([`begin_fork_capture`]) and the guest's own instrumented postambles spilled
-/// every live frame, and every reference it held, into the fork module while
-/// unwinding the real call stack back out to this point. The same sequence
-/// `worker-main.ts` runs at the same point:
-///
-///  1. `fm_parent_seal_capture` -- drives the guest's `wpk_fork_unwind_end`,
-///     seals the capture into the module's own arena and serializes the
-///     child-inheritable journal image, all in the still parent-owned memory
-///     the child's copy is taken from.
-///  2. The real `SYS_FORK`/`SYS_VFORK` channel post (mode from `coord.mode`).
-///     `handle_fork` reads the launch root [`begin_fork_capture`] published in
-///     this thread's fork control word; this blocks until the kernel answers
-///     the parent: the child's pid, or a negative errno.
-///  3. `fm_parent_replay` -- begins the parent's own rewind, so the caller's
-///     next `wpk_fork_resume_start` walks back down to the `fork()` call site
-///     and re-enters `kernel_fork` in the replay for `coord.fork_result`.
-///
-/// A seal that fails -- a reference the platform cannot carry (`EOPNOTSUPP`,
-/// externref stage E2) or an allocation failure -- creates no child: the
-/// MODULE abort-replays the parent's committed frames and its `fork()`
-/// returns `-errno`, as on the JavaScript hosts. A kernel refusal of the child
-/// does the same through `fm_parent_replay(errno)`.
-///
-/// Returns `false` (having already logged the truthful failure) when a module
-/// call fails outright; the caller then ends this OS thread without calling
-/// `wpk_fork_resume_start` -- at that point there is no honest way to resume.
-fn drive_fork_capture_seal_and_launch_child(
-    store: &mut Store<()>,
-    guest_mem: &SharedMemory,
-    ch: usize,
-    fm: &ForkModule,
-    coord: &Arc<ForkCoordState>,
-) -> bool {
-    let row = match fm.fm_parent_seal_capture.call(&mut *store, ch as u32) {
-        Ok(row) => row,
-        Err(e) => {
-            eprintln!("fm_parent_seal_capture failed: {e:#}");
-            return false;
         }
     };
-    if row == 0 {
-        // A seal that failed after the frames sealed -- a reference the
-        // platform cannot carry, an allocation failure -- is already an abort
-        // replay inside the module; `kernel_fork` returns its `-errno` and
-        // reports it. Anything else cannot be resumed.
-        const FORK_MODULE_PHASE_ABORT_REPLAY: u32 = 5;
-        if fm.fm_phase.call(&mut *store, ()).ok() == Some(FORK_MODULE_PHASE_ABORT_REPLAY) {
-            return true;
+    match result {
+        Ok(()) => {}
+        // An `unreachable` trap is either the host unwinding this thread on
+        // purpose or the guest faulting, and this must not guess which. It
+        // asks the channel, as `worker-main.ts` asks `kernelExitStatus` before
+        // treating the trap as an exit:
+        //
+        //  * `CH_TEARDOWN` on this thread's channel: the pump has already
+        //    decided this process's fate and woke the thread to unwind it
+        //    (after the kernel records the process's exit, or when it
+        //    reclaims a superseded image). The glue's `__builtin_trap()` is
+        //    that unwind. Nothing to report, and posting on the channel would
+        //    race the pump's join.
+        //  * Anything else: the guest (or the fork module's run loop, which
+        //    has already said why through the kernel) executed `unreachable`.
+        //    That is a fault, reported as SIGILL exactly as the arm below
+        //    reports every other trap kind.
+        Err(e) if is_unreachable_trap(&e) => {
+            let channel_status =
+                unsafe { atomic_u32(guest_mem, channel_offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
+            if channel_status != ChannelStatus::Teardown as u32 {
+                report_guest_fault(thread_faults, channel_offset, WasmTrapKind::IllegalInstruction, &e);
+            }
         }
-        let errno = fm.fm_last_errno.call(&mut *store, ()).unwrap_or(-1);
-        eprintln!("fm_parent_seal_capture failed: errno {errno}");
-        return false;
-    }
-    let mode = coord.mode();
-    let syscall_nr = if mode == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
-    unsafe {
-        write_bytes(guest_mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-        write_bytes(guest_mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
-        for i in 1..6 {
-            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
-        }
-        write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
-        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
-    }
-    let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
-    loop {
-        let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
-        if s == ChannelStatus::Teardown as u32 {
-            // The kernel ended this process while it was parked in fork
-            // (a fatal signal, or a vfork containment): end this thread
-            // without resuming guest code.
-            return false;
-        }
-        if s != STATUS_PENDING {
-            break;
-        }
-        std::thread::sleep(Duration::from_micros(200));
-    }
-    let (ret, errno) =
-        unsafe { (read_i64(guest_mem, ch + RETURN_OFFSET), read_u32(guest_mem, ch + ERRNO_OFFSET)) };
-    unsafe {
-        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
-    }
-    // A launched child resumes the parent at `fork()` through the ordinary
-    // rewind, returning the pid recorded here; a refused one through the
-    // ABORT replay, with the kernel's errno, which the module records for
-    // the finish to return.
-    let abort_errno = if ret < 0 { errno } else { 0 };
-    coord.set_fork_result(if ret < 0 { 0 } else { ret as i32 });
-    let replayed = fm
-        .fm_parent_replay
-        .call(&mut *store, abort_errno)
-        .and_then(|()| fm.fm_last_errno.call(&mut *store, ()));
-    match replayed {
-        Ok(0) => true,
-        Ok(errno) => {
-            eprintln!("fm_parent_replay({abort_errno}) failed: errno {errno}");
-            false
-        }
-        Err(e) => {
-            eprintln!("fm_parent_replay({abort_errno}) failed: {e:#}");
-            false
-        }
+        Err(e) => match wasmtime_trap_kind(&e) {
+            Some(kind) => report_guest_fault(thread_faults, channel_offset, kind, &e),
+            // Not a trap: an exception the guest threw and nothing caught
+            // (the fork module catches only its own unwind tag), or a host
+            // defect. Neither is a signal the guest raised, so it is not
+            // dressed up as one.
+            None => eprintln!("guest entry failed: {e:#}"),
+        },
     }
 }
 
@@ -7217,34 +6830,20 @@ fn wasmtime_trap_kind(error: &wasmtime::Error) -> Option<WasmTrapKind> {
     })
 }
 
-/// End a guest that faulted, with the exit status the fault produces.
+/// The main thread faulted. POSIX makes a fault the whole process's signal
+/// death, and a parent's `wait(2)` must see it as one (WIFSIGNALED, WTERMSIG):
+/// hand the signal to the pump through the process's fault slot, exactly as
+/// a faulting pthread does, and end this OS thread. The pump's
+/// `retire_faulted_threads` calls `kernel_mark_process_signaled` (only the
+/// pump owns the kernel `Store`), as the JavaScript hosts' `failThread` and
+/// process-Worker error paths do.
 ///
-/// A trap is not a return: the guest never reaches `exit(2)`, so without this
-/// its OS thread simply ends, the kernel never learns the process is gone, and
-/// a parent parked in `wait(2)` waits forever. This host previously did
-/// exactly that — it printed the wasmtime error and returned — while both
-/// JavaScript hosts recorded `128 + signum` for the same fault. That was the
-/// gap: a guest divide-by-zero was `SIGFPE` on Node and in the browser and
-/// nothing at all here.
-///
-/// KNOWN REMAINING GAP, recorded rather than papered over: the JavaScript
-/// hosts additionally call `kernel_mark_process_signaled(pid, signum)` so
-/// `WIFSIGNALED` is true and `WTERMSIG` names the signal. That export must be
-/// called on the kernel `Store`, which belongs to the pump thread, not to this
-/// guest OS thread — so this host reports the right status without the signal
-/// flag. Tracked in `docs/future-improvements.md`. A PTHREAD's fault no longer
-/// comes here: its worker hands the signal to the pump
-/// (`GuestProcess::thread_faults`, drained by `retire_faulted_threads`), which
-/// does make that call; the main thread can take the same route.
-fn post_guest_trap_exit(guest_mem: &SharedMemory, channel_offset: usize, status: i32) {
-    post_process_exit_group(guest_mem, channel_offset, status);
-}
-
-/// The guest faulted. Report it as the signal every other Kandelo host
-/// reports for the same fault, and end the process so the kernel — and any
-/// parent in `wait(2)` — learns it is gone.
+/// It used to post `exit_group(128 + signum)` on the channel instead, which
+/// gave the right exit STATUS but reported a normal exit -- WIFEXITED with
+/// 139 where every other host reported SIGSEGV. That was left in place only
+/// while this entry loop was being restructured (lane F step 3).
 fn report_guest_fault(
-    guest_mem: &SharedMemory,
+    thread_faults: &ThreadFaultSlot,
     channel_offset: usize,
     kind: WasmTrapKind,
     error: &wasmtime::Error,
@@ -7255,7 +6854,7 @@ fn report_guest_fault(
         "guest faulted: {} trap (signal {signum}, status {status}): {error:#}",
         kind.as_str()
     );
-    post_guest_trap_exit(guest_mem, channel_offset, status);
+    thread_faults.lock().unwrap().push(ThreadFault { channel_offset, signum });
 }
 
 /// Post `exit_group(status)` on a channel and wait (bounded) for the pump.
@@ -7435,7 +7034,6 @@ fn run_worker_thread(
     // mirrors `spawn_guest_thread`'s wiring; see this function's doc comment
     // for what differs (channel identity, no `ForkEntry`, vfork rejected).
     let mut fork_module: Option<ForkModule> = None;
-    let coord = ForkCoordState::new();
     if use_fork_module {
         let fm = instantiate_fork_module(engine, &mut store, guest_mem, &layout)
             .map_err(|e| anyhow::anyhow!("instantiate_fork_module failed: {e:#}"))?;
@@ -7450,56 +7048,52 @@ fn run_worker_thread(
         fork_module = Some(fm);
     }
 
-    // `kernel_fork` (N1 residual #4a): mirrors `spawn_guest_thread`'s own
-    // import byte-for-byte, except closed over THIS thread's `channel_offset`
-    // and its own, freshly-created `coord` above — see this function's doc
-    // comment for the `vfork` restriction.
-    {
+    // `kernel_fork` (N1 residual #4a): as `spawn_guest_thread` wires it --
+    // the fork module's own export for an instrumented guest (the module
+    // captures THIS thread and sends the fork syscall on THIS thread's
+    // channel), a channel passthrough otherwise. A `vfork()` from a pthread
+    // is refused by the pump (ENOSYS): see this function's doc comment.
+    let module_kernel_fork = match (fork_module.as_ref(), fork_format.as_ref()) {
+        (Some(fm), Some(_)) => fm.instance.get_func(&mut store, "__wpk_fork_kernel_fork"),
+        _ => None,
+    };
+    if let Some(kernel_fork) = module_kernel_fork {
+        linker.define(&mut store, "kernel", "kernel_fork", kernel_fork)?;
+    } else {
         let mem = guest_mem.clone();
         let ch = channel_offset;
-        let fm_for_import = fork_module.clone();
-        let has_format = fork_format.is_some();
-        let coord = Arc::clone(&coord);
         linker.func_wrap(
             "kernel",
             "kernel_fork",
-            move |mut caller: Caller<'_, ()>, mode: i32| -> wasmtime::Result<i32> {
+            move |_caller: Caller<'_, ()>, mode: i32| -> wasmtime::Result<i32> {
                 if mode as u32 == MODE_VFORK {
-                    // vfork is main-thread-only — see this function's doc
-                    // comment. A truthful, immediate failure, never posted to
-                    // the channel (the pump has no dispatch for a non-main
-                    // SYS_VFORK request, so posting one would hang until its
-                    // 30s hard cap).
+                    // vfork is main-thread-only -- see this function's doc
+                    // comment. A truthful, immediate failure.
                     return Ok(-(libc_errno::ENOSYS));
                 }
-                let Some(fm) = (if has_format { fm_for_import.as_ref() } else { None }) else {
-                    unsafe {
-                        write_bytes(&mem, ch + SYSCALL_OFFSET, &SYS_FORK.to_le_bytes());
-                        write_bytes(&mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
-                        for i in 1..6 {
-                            write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
-                        }
-                        write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
-                        atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                unsafe {
+                    write_bytes(&mem, ch + SYSCALL_OFFSET, &SYS_FORK.to_le_bytes());
+                    write_bytes(&mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
+                    for i in 1..6 {
+                        write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
                     }
-                    let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
-                    loop {
-                        let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
-                        if s != STATUS_PENDING {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_micros(200));
+                    write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+                    atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                }
+                let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+                loop {
+                    let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                    if s != STATUS_PENDING {
+                        break;
                     }
-                    let (ret, errno) = unsafe {
-                        (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET))
-                    };
-                    unsafe {
-                        atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
-                    }
-                    return Ok(if ret < 0 { -(errno as i32) } else { ret as i32 });
-                };
-
-                fork_module_kernel_fork(&mut caller, fm, &coord, &mem, ch, mode)
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                let (ret, errno) =
+                    unsafe { (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET)) };
+                unsafe {
+                    atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+                }
+                Ok(if ret < 0 { -(errno as i32) } else { ret as i32 })
             },
         )?;
     }
@@ -7610,139 +7204,82 @@ fn run_worker_thread(
         bootstrap.call(&mut store, ())?;
     }
 
-    // N1 residual #4a: `wasm-fork-instrument` generates TWO different
-    // "resume-selected call" wrappers for a fork-instrumented guest —
-    // `wpk_fork_resume_start` (`() -> ()`, hardcoded to invoke `_start`
-    // DIRECTLY — see `emit_fixed_resume_boundaries`'s own
-    // `CallTarget::Direct(start)`) and `wpk_fork_resume_thread` (`(i32,
-    // i32) -> i32`, `CallTarget::Indirect` over `__indirect_function_
-    // table` — the ONE shaped for a pthread entry point). Both share the
-    // SAME underlying "is this a fresh call or a resume?" dispatch
-    // (`emit_resume_selected_call`); they differ only in what a FRESH
-    // (non-replayed) call actually invokes. `resume_start` is `_start`-only
-    // and is NEVER correct here (confirmed empirically: calling it for a
-    // worker thread's own resume, or from a fork CHILD launched by a
-    // worker-thread-originated fork, traps `indirect call type mismatch`
-    // inside `wpk_fork_resume_start` — this was this task's real, deep RED
-    // state, not a wiring omission). `resume_thread` takes the SAME
-    // `(table_index, argument)` pair on EVERY call — both the very first
-    // (lexical) entry and every later replay re-entry — since its own
-    // internal dispatch, not this host, decides whether to actually invoke
-    // `__indirect_function_table[table_index](argument)` fresh or resume a
-    // captured continuation instead. A non-instrumented guest declares
-    // neither export, so this falls back to the ORIGINAL raw indirect-call
-    // mechanism unchanged (`smoke_fork_from_thread`'s non-instrumented
-    // sibling scenario, and every pre-existing worker-thread test, use this
-    // branch).
-    let resume_thread = instance
-        .get_typed_func::<(i32, i32), i32>(&mut store, wasm_posix_shared::abi::WPK_FORK_EXPORT_RESUME_THREAD)
-        .ok();
-    let table = instance
-        .get_table(&mut store, "__indirect_function_table")
-        .ok_or_else(|| anyhow::anyhow!("guest missing __indirect_function_table"))?;
-    let entry = table
-        .get(&mut store, u64::from(fn_ptr))
-        .ok_or_else(|| anyhow::anyhow!("thread entry {fn_ptr} out of table range"))?;
-    let func = match entry {
-        Ref::Func(Some(f)) => f,
-        _ => anyhow::bail!("thread entry {fn_ptr} is not a function"),
+    // A FORK-INSTRUMENTED guest's thread runs through the fork module's loop
+    // (`fm_run`, lane F step 3c): the module calls the start routine through
+    // the guest's `wpk_fork_thread_entry(table_index, arg)` trampoline and,
+    // once a fork from this thread has captured, `wpk_fork_resume_thread`,
+    // which rewinds the thread's frames back into it -- both emitted by
+    // fork-instrument in the calling convention the guest's table actually
+    // uses, and reached through the module's drive table. It serves every
+    // fork the thread makes, sending the fork syscall on this thread's
+    // channel. A non-instrumented guest's thread entry is called directly.
+    let instrumented = fork_module.as_ref().filter(|_| fork_format.is_some());
+    let step = match instrumented {
+        Some(fm) => fm
+            .fm_run
+            .call(&mut store, (fork_codec::drive_plan::RUN_KIND_THREAD, fn_ptr, arg))
+            .map(|_| ()),
+        None => {
+            let table = instance
+                .get_table(&mut store, "__indirect_function_table")
+                .ok_or_else(|| anyhow::anyhow!("guest missing __indirect_function_table"))?;
+            let entry = table
+                .get(&mut store, u64::from(fn_ptr))
+                .ok_or_else(|| anyhow::anyhow!("thread entry {fn_ptr} out of table range"))?;
+            let func = match entry {
+                Ref::Func(Some(f)) => f,
+                _ => anyhow::bail!("thread entry {fn_ptr} is not a function"),
+            };
+            let results_len = func.ty(&store).results().len();
+            let mut results = vec![Val::I32(0); results_len];
+            func.call(&mut store, &[Val::I32(arg as i32)], &mut results)
+        }
     };
-
-    // N1 residual #4a: mirrors `run_fork_capable_entry`'s own loop shape — a
-    // call that may escape as a THROWN `__wpk_fork_unwind` exception (a
-    // `fork()` call capturing this thread's own live call stack), after which this drives the SAME capture/seal/launch-child
-    // sequence (`drive_fork_capture_seal_and_launch_child`, already generic
-    // over "which channel") and re-enters via `resume_thread` — using the
-    // IDENTICAL `(fn_ptr, arg)` pair every time (see above for why this is
-    // correct on both the lexical and the replay call).
-    let result = loop {
-        let step = match resume_thread.as_ref() {
-            Some(f) => f.call(&mut store, (fn_ptr as i32, arg as i32)).map(|_| ()),
-            None => {
-                let results_len = func.ty(&store).results().len();
-                let mut results = vec![Val::I32(0); results_len];
-                func.call(&mut store, &[Val::I32(arg as i32)], &mut results)
+    let result = match step {
+        // An `unreachable` trap is either the host unwinding this thread on
+        // purpose or the guest faulting; the channel says which, as it does
+        // for the main thread in `run_fork_capable_entry`:
+        //
+        //  * `CH_TEARDOWN` on this thread's channel: the pump woke it to
+        //    unwind -- its process ended (`end_process_threads`: a signal, a
+        //    fault, or an `exit_group` from any thread, including this one),
+        //    or its image was superseded (exec, spawn rollback). The glue's
+        //    `__builtin_trap()` is that unwind. Nothing to report.
+        //  * Anything else: the guest (or the fork module's run loop, which
+        //    has said why through the kernel) executed `unreachable`, a
+        //    SIGILL fault. It is not a clean thread exit: the glue routes
+        //    every `SYS_exit` to the `kernel_exit` import, which ends the
+        //    call with `ThreadKernelExit` (below) before any `unreachable`
+        //    after it runs.
+        Err(e) if is_unreachable_trap(&e) => {
+            let channel_status =
+                unsafe { atomic_u32(guest_mem, channel_offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
+            if channel_status == ChannelStatus::Teardown as u32 {
+                Ok(())
+            } else {
+                Err(GuestThreadFault { kind: WasmTrapKind::IllegalInstruction, detail: format!("{e:#}") }
+                    .into())
             }
-        };
-        match step {
-            // An `unreachable` trap is either the host unwinding this thread
-            // on purpose or the guest faulting; the channel says which, as it
-            // does for the main thread in `run_fork_capable_entry`:
-            //
-            //  * `CH_TEARDOWN` on this thread's channel: the pump woke it to
-            //    unwind -- its process ended (`end_process_threads`: a
-            //    signal, a fault, or an `exit_group` from any thread,
-            //    including this one), or its image was superseded (exec,
-            //    spawn rollback). The glue's `__builtin_trap()` is that
-            //    unwind. Nothing to report.
-            //  * Anything else: the guest executed `unreachable` itself, a
-            //    SIGILL fault. This used to be read as a clean exit, on the
-            //    theory that musl's detached-thread teardown (`__unmapself`:
-            //    SYS_munmap, SYS_exit, `__builtin_unreachable()`) ends in
-            //    this trap. It cannot here: the glue routes every `SYS_exit`
-            //    to the `kernel_exit` import, which this thread wires to end
-            //    the call with `ThreadKernelExit` (below) before any
-            //    `unreachable` after it runs. So the old reading swallowed
-            //    genuine faults -- and the thread's `pthread_join` then
-            //    parked until the pump's cap.
-            Err(e) if is_unreachable_trap(&e) => {
-                let channel_status =
-                    unsafe { atomic_u32(guest_mem, channel_offset + STATUS_OFFSET) }
-                        .load(Ordering::SeqCst);
-                if channel_status == ChannelStatus::Teardown as u32 {
-                    break Ok(());
-                }
-                break Err(GuestThreadFault {
-                    kind: WasmTrapKind::IllegalInstruction,
-                    detail: format!("{e:#}"),
-                }
-                .into());
-            }
-            // `kernel_exit`'s own closure already posted SYS_EXIT and
-            // completed the channel round trip (see its wiring's doc
-            // comment) before returning this marker error to force the wasm
-            // call stack to unwind — an already-fully-handled, clean exit,
-            // not a failure.
-            Err(e) if e.downcast_ref::<ThreadKernelExit>().is_some() => break Ok(()),
-            Err(e) if is_thrown_exception_escape(&e) => {
-                // Only a fork's capture unwind may escape -- `run_fork_
-                // capable_entry`'s identical guard.
-                if !in_fork_capture(&mut store, fork_module.as_ref()) {
-                    break Err(anyhow::anyhow!(
-                        "unexpected exception escape outside a fork capture: {e:#}"
-                    ));
-                }
-                if store.take_pending_exception().is_none() {
-                    eprintln!(
-                        "is_thrown_exception_escape matched but the store has no pending \
-                         exception to take — this should not happen"
-                    );
-                }
-                let Some(fm) = fork_module.as_ref() else {
-                    break Err(anyhow::anyhow!("fork-unwind exception escaped with no fork-module"));
-                };
-                if !drive_fork_capture_seal_and_launch_child(&mut store, guest_mem, channel_offset, fm, &coord) {
-                    break Err(anyhow::anyhow!("fork-capture seal/launch-child failed (see stderr)"));
-                }
-            }
-            // Every other trap kind the main thread classifies (memory,
-            // bounds, stack overflow, arithmetic, bad indirect calls) is the
-            // same fault on a pthread; see `wasmtime_trap_kind`.
-            Err(e) => match wasmtime_trap_kind(&e) {
-                Some(kind) => {
-                    break Err(GuestThreadFault { kind, detail: format!("{e:#}") }.into());
-                }
-                None => break Err(e.into()),
-            },
-            // A thread entry that returns without self-exiting is unusual
-            // (musl always exits via __pthread_exit); post the exit
-            // ourselves as a fallback — applies equally whether this is the
-            // thread's very first (lexical) return or a REPLAYED program
-            // reaching the same natural end past its own `fork()` call.
-            Ok(()) => {
-                post_thread_exit(guest_mem, channel_offset);
-                break Ok(());
-            }
+        }
+        // `kernel_exit`'s own closure already posted SYS_EXIT and completed
+        // the channel round trip (see its wiring's doc comment) before
+        // returning this marker error to force the wasm call stack to unwind
+        // -- an already-fully-handled, clean exit, not a failure.
+        Err(e) if e.downcast_ref::<ThreadKernelExit>().is_some() => Ok(()),
+        // Every other trap kind the main thread classifies (memory, bounds,
+        // stack overflow, arithmetic, bad indirect calls) is the same fault
+        // on a pthread; see `wasmtime_trap_kind`.
+        Err(e) => match wasmtime_trap_kind(&e) {
+            Some(kind) => Err(GuestThreadFault { kind, detail: format!("{e:#}") }.into()),
+            None => Err(e.into()),
+        },
+        // A thread entry that returns without self-exiting is unusual (musl
+        // always exits via __pthread_exit); post the exit ourselves as a
+        // fallback -- whether this is the thread's first return or a
+        // REPLAYED program reaching the same natural end past its `fork()`.
+        Ok(()) => {
+            post_thread_exit(guest_mem, channel_offset);
+            Ok(())
         }
     };
 
@@ -8305,7 +7842,11 @@ fn retire_signal_killed_processes(
     root_exit_code: &mut Option<i32>,
 ) -> anyhow::Result<()> {
     for pi in 0..processes.len() {
-        if processes[pi].ended || processes[pi].channels.is_empty() {
+        // A process whose last channel is gone is still retired here when
+        // the kernel recorded a signal death for it: a faulting MAIN thread
+        // drops its own channel as it reports the fault
+        // (`retire_faulted_threads`), and it may have been the only one.
+        if processes[pi].ended {
             continue;
         }
         let pid = processes[pi].pid;
@@ -9053,6 +8594,21 @@ fn run_pump(
                 // this is the only pump-side gate that needed relaxing.
                 // `SYS_VFORK` keeps the original `ch.is_main` restriction
                 // unchanged.
+                // A `vfork()` from a pthread's channel: the fork module of an
+                // instrumented guest has captured and sends it here, where the
+                // borrowed-child launch cannot serve it (see
+                // `run_worker_thread`). Refused truthfully, so the module
+                // abort-replays the thread and `vfork()` returns -ENOSYS.
+                if syscall_nr == SYS_VFORK && !ch.is_main {
+                    let guest_mem = processes[pi].memory.clone();
+                    let scratch_ptr = processes[pi].scratch_base;
+                    complete_channel(
+                        &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], -1,
+                        libc_errno::ENOSYS as u32,
+                    )?;
+                    ci += 1;
+                    continue;
+                }
                 if syscall_nr == SYS_FORK || (ch.is_main && syscall_nr == SYS_VFORK) {
                     handle_fork(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
@@ -9742,15 +9298,20 @@ fn handle_fork(
     let caller_tid = ch.tid;
     let scratch_ptr = processes[pi].scratch_base;
     let guest_mem = processes[pi].memory.clone();
-    let mode = args[0] as u32;
+    // The syscall IS the mode: `SYS_VFORK` for `vfork()`, `SYS_FORK` for
+    // `fork()`/`_Fork()`, as on every host. Its arguments are the fork
+    // module's since lane F step 3c -- a `SYS_VFORK` carries the borrowed
+    // child's workspace (prefix and scratch bytes) the JavaScript kernel
+    // worker sizes its reservation from; this host places that workspace
+    // itself (`compute_vfork_borrowed_region`), so it reads neither.
+    let mode = if syscall_nr == SYS_VFORK { MODE_VFORK } else { MODE_FORK };
     let fork_format = processes[pi].fork_format.clone();
 
-    // N1-I4 Task 3: for a fork-instrumented parent, the entry loop (via
-    // `drive_fork_capture_seal_and_launch_child`) already drove the FULL
-    // capture -- the parent's frames and references are already in the fork
-    // module's arena and its journal serialized -- before posting THIS request,
-    // and `begin_fork_capture` published the launch root in the forking
-    // thread's fork control word. Read it back NOW, from the PARENT's still
+    // For a fork-instrumented parent, the fork module's run loop (`fm_run`)
+    // already drove the FULL capture -- the parent's frames and references
+    // are in the module's arena and its journal serialized -- before it posted
+    // THIS request, and published the launch root in the forking thread's
+    // fork control word. Read it back NOW, from the PARENT's still
     // intact memory, as the JavaScript kernel worker reads `forkBufAddr`
     // (`readForkContinuationAnchor`); the child's copy, taken below, inherits
     // the same bytes. A non-instrumented parent (`fork_format == None`) never

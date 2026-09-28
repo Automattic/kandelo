@@ -115,7 +115,8 @@ const module = new WebAssembly.Module(bytes);
 
 const exportNames = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
 for (const name of [
-  "fm_parent_begin_capture",
+  "__wpk_fork_kernel_fork",
+  "fm_run",
   "fm_last_errno",
   "__wpk_fork_ref_exn_claim",
   "__wpk_fork_ref_exn_define",
@@ -158,13 +159,15 @@ function writeBytes(offset, arr) {
 function lastErrno() {
   return x.fm_last_errno();
 }
-// Open a capture session the way every host does: it is the first step of the
-// capture begin (this was the `fm_capture_begin` entry, folded into
-// `fm_parent_begin_capture` in lane F stage 1I). Like every capture begin, it
-// maps through the syscall channel, which nothing here services -- the reason
-// this harness is not runnable as it stands (see the header).
+// Open a capture session the way a guest does: its `fork()` reaches the
+// module's `__wpk_fork_kernel_fork`, whose capture begin opens the session
+// (this was the `fm_capture_begin` entry, folded into the capture begin in
+// lane F stage 1I; the module runs the whole fork itself since step 3c). Like
+// every capture begin, it maps through the syscall channel, which nothing
+// here services -- the reason this harness is not runnable as it stands (see
+// the header).
 function openCaptureSession() {
-  x.fm_parent_begin_capture(PAGE);
+  x.__wpk_fork_kernel_fork(0);
 }
 
 // Admit one activation through `fm_admit_activation`, the entry both hosts
@@ -1415,7 +1418,7 @@ const bindTableShims = (activation, host) => {
   // shared catalog with it, so a scan would find it at a slot no base covers --
   // which is the refusal working, not a match.
   const alpha = x.fm_stats;
-  const beta = x.fm_phase;
+  const beta = x.fm_run;
   const uncatalogued = x.fm_funcref_uncatalogued;
 
   x.fm_set_format(4, 0, 0, 0);

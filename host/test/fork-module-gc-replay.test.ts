@@ -44,7 +44,6 @@ import {
   CAPTURE_KIND_STRUCT,
   INTERN_KIND_FUNCREF,
   PAGE,
-  beginParentReplay,
   captureGraph,
   admitInto,
   childInstance,
@@ -274,9 +273,14 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
     expect(x.fm_last_errno(), "the first fork's graph is resident").toBe(22);
 
     x.fm_abort();
-    expect(f.errno(), "the first fork ends").toBe(0);
-    expect(x.fm_phase(), "and the worker is idle again").toBe(0);
+    expect(f.errno(), "the first fork's replay ends, and the worker is idle again").toBe(0);
 
+    // The second fork: its PARENT, replaying, asks the same question of its
+    // own sealed graph -- a parent resuming runs the same guest code a child
+    // does, so it decodes its own graph.
+    const raise = x.__wpk_fork_ref_exn_broker_throw_recipe;
+    let trapped = false;
+    let errno = -1;
     const b = captureGraph(f, [[INTERN_KIND_FUNCREF, 0, 45]], [
       {
         kind: CAPTURE_KIND_STRUCT,
@@ -286,18 +290,23 @@ describe("fork-module typed-GC (struct/array/i31) admission through the module (
         scalars: new Uint8Array([1, 2, 3, 4]),
         edges: ({ leaves }) => [leaves[0]!],
       },
-    ]);
+    ], {
+      duringReplay: ({ aggregateRecipes }) => {
+        try {
+          raise(aggregateRecipes[0]!);
+        } catch (error) {
+          trapped = error instanceof WebAssembly.RuntimeError;
+        }
+        errno = x.fm_last_errno();
+      },
+    });
     // The whole test rests on this: one recipe id, two meanings.
     expect(
       b.aggregateRecipes[0],
       "both graphs must name the same recipe id",
     ).toBe(a.aggregateRecipes[0]);
-    beginParentReplay(f);
-    expect(f.errno(), "the second fork's replay begins").toBe(0);
-
-    const raise = x.__wpk_fork_ref_exn_broker_throw_recipe;
-    expect(() => raise(b.aggregateRecipes[0]!)).toThrow(WebAssembly.RuntimeError);
-    expect(x.fm_last_errno(), "answered from the SECOND graph").toBe(22);
+    expect(trapped, "the raise is refused").toBe(true);
+    expect(errno, "answered from the SECOND graph").toBe(22);
   });
 
   it("refuses to RAISE a recipe that is not an exception, with a resident graph to ask", () => {
