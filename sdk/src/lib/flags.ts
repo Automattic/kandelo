@@ -320,6 +320,9 @@ const IGNORED_EXACT = new Set([
   '-rdynamic', '-Wl,-Bsymbolic',
   '-Wl,-z,noexecstack', '-Wl,-z,text', '-Wl,-z,relro',
   '-Wl,-z,now', '-Wl,-z,nocopyreloc',
+  // GNU ld's --as-needed decides whether a shared library gets a DT_NEEDED
+  // entry. Kandelo programs link statically, so it has nothing to decide.
+  '-Wl,--as-needed', '-Wl,--no-as-needed',
 ]);
 
 const IGNORED_PREFIXES = [

@@ -63,6 +63,11 @@ describe('filterArgs', () => {
     expect(result.filtered).toEqual(['-Wl,-z,stack-size=16777216', 'main.c']);
   });
 
+  it('removes GNU ld --as-needed toggles, which only affect shared libraries', () => {
+    const result = filterArgs(['-Wl,--as-needed', 'main.o', '-Wl,--no-as-needed', '-lfoo']);
+    expect(result.filtered).toEqual(['main.o', '-lfoo']);
+  });
+
   it('preserves valid and invalid stack-size spellings for wasm-ld', () => {
     for (const value of [
       '0100000000',

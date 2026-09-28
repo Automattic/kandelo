@@ -416,6 +416,7 @@ These flags are common in build systems but irrelevant for Wasm:
 - `-fPIE`, `-pie` (no position-independent executables in Wasm)
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
 - `-rdynamic`, `-Wl,-Bsymbolic`
+- `-Wl,--as-needed`, `-Wl,--no-as-needed` (they only decide which shared libraries an ELF executable records; Kandelo links statically)
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
 
 ## Autoconf Projects
