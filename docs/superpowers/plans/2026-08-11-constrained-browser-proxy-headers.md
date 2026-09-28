@@ -31,7 +31,8 @@ JavaScript, Vite, Playwright, Bash workflow tests.
 > name like every other allowed field, and the alias receives the same value
 > verbatim. The alias is a workaround for the production proxy's front end,
 > which strips `Range`; remove it once `Range` reaches that proxy. `If-Range`
-> is deliberately absent because the proxy's preflight does not allow it.
+> is deliberately absent because the proxy's preflight does not allow it;
+> the proxy dispatch emulates it instead (RFC 9110 section 13.1.5).
 > Callers classify ranged answers with `fetchByteRange()` instead of trusting
 > a `200` as a slice. See `docs/browser-support.md`, "Byte-range reads
 > through the proxy".

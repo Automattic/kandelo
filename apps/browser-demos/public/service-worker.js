@@ -1103,6 +1103,9 @@ if (typeof window !== "undefined") {
       var lower = name.toLowerCase();
       if (allowed.has(lower)) {
         headers.append(name, value);
+      } else if (lower === "if-range") {
+        // The proxy cannot carry it; fetchThroughCorsProxy applies its
+        // semantics to the answer instead (RFC 9110 section 13.1.5).
       } else if (
         lower === "authorization" || lower === "cookie" ||
         lower === "cookie2" || lower === "proxy-authorization"
@@ -1167,6 +1170,51 @@ if (typeof window !== "undefined") {
     return request.arrayBuffer().then(function (body) {
       if (body.byteLength > 0) init.body = body;
       return new Request(outgoingUrl, init);
+    });
+  }
+
+  // Mirror of ifRangeMatches() in host/src/networking/browser-cors-proxy.ts:
+  // does a 206 satisfy an If-Range condition? Unconfirmable counts as no.
+  function ifRangeMatches(ifRange, headers) {
+    var value = ifRange.trim();
+    if (value.indexOf("W/") === 0) return false;
+    if (value.charAt(0) === '"') {
+      return (headers.get("etag") || "").trim() === value;
+    }
+    var lastModified = (headers.get("last-modified") || "").trim();
+    if (!lastModified || lastModified !== value) return false;
+    var modified = Date.parse(lastModified);
+    var date = Date.parse(headers.get("date") || "");
+    return isFinite(modified) && isFinite(date) && date - modified >= 1000;
+  }
+
+  // Mirror of BrowserCorsProxy.fetch(): send the projected request and honor
+  // an If-Range the proxy cannot carry. A 206 without the matching validator
+  // is discarded for the whole representation, as a server whose If-Range
+  // condition is false would send (RFC 9110 section 13.1.5). The cost of
+  // doubt is one extra full request, never a slice of a changed resource.
+  function fetchThroughCorsProxy(request, outgoingUrl, targetUrl) {
+    var config = normalizedCorsProxyConfig();
+    var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
+      ? request.headers.get("if-range")
+      : null;
+    return projectCorsProxyRequest(request, outgoingUrl, targetUrl).then(function (projected) {
+      if (projected instanceof Response) return projected;
+      return fetch(projected).then(function (response) {
+        if (
+          ifRange === null || projected.method !== "GET" ||
+          response.status !== 206 || ifRangeMatches(ifRange, response.headers)
+        ) {
+          return response;
+        }
+        if (response.body) response.body.cancel().catch(function () {});
+        var headers = new Headers(projected.headers);
+        headers.delete("range");
+        if (config.rangeRequestHeaderAlias) {
+          headers.delete(config.rangeRequestHeaderAlias);
+        }
+        return fetch(new Request(projected, { headers: headers }));
+      });
     });
   }
 
@@ -1430,10 +1478,7 @@ if (typeof window !== "undefined") {
     // configured CORS proxy. Do not wrap that request in the same proxy again.
     if (isCorsProxyFetchUrl(targetUrl)) {
       var proxiedTargetUrl = corsProxyTargetUrl(targetUrl) || targetUrl;
-      return projectCorsProxyRequest(request, targetUrl, proxiedTargetUrl).then(function (projected) {
-        if (projected instanceof Response) return projected;
-        return fetch(projected);
-      }).then(function (response) {
+      return fetchThroughCorsProxy(request, targetUrl, proxiedTargetUrl).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return responseWithHeaders(response, headers);
       });
@@ -1442,10 +1487,7 @@ if (typeof window !== "undefined") {
     // If we have a CORS proxy, route through it
     if (normalizedCorsProxyConfig()) {
       var proxyUrl = corsProxyFetchUrl(targetUrl);
-      return projectCorsProxyRequest(request, proxyUrl, targetUrl).then(function (projected) {
-        if (projected instanceof Response) return projected;
-        return fetch(projected);
-      }).then(function (response) {
+      return fetchThroughCorsProxy(request, proxyUrl, targetUrl).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return responseWithHeaders(response, headers);
       });

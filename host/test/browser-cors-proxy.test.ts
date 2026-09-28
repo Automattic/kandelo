@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BrowserCorsProxy,
   BrowserCorsProxyRequestError,
+  ifRangeMatches,
   validateBrowserCorsProxyConfig,
   type BrowserCorsProxyConfig,
 } from "../src/networking/browser-cors-proxy";
@@ -456,5 +457,130 @@ describe("BrowserCorsProxy", () => {
       ["authorization", "Bearer opaque"],
       ["content-type", "application/json"],
     ]);
+  });
+
+  describe("fetch(): If-Range the proxy cannot carry", () => {
+    const ENTITY = "0123456789abcdef";
+    interface Sent {
+      url: string;
+      headers: Headers;
+    }
+
+    // An origin that honors Range (via the alias) and reports ETag "v2".
+    function origin(sent: Sent[], etag = '"v2"') {
+      return async (url: string, init: RequestInit) => {
+        const headers = new Headers(init.headers);
+        sent.push({ url, headers });
+        const match = /^bytes=(\d+)-(\d+)$/.exec(
+          headers.get("x-cors-proxy-range") ?? "",
+        );
+        if (match === null) {
+          return new Response(ENTITY, { status: 200, headers: { ETag: etag } });
+        }
+        const start = Number(match[1]);
+        const end = Number(match[2]);
+        return new Response(ENTITY.slice(start, end + 1), {
+          status: 206,
+          headers: {
+            "Content-Range": `bytes ${start}-${end}/${ENTITY.length}`,
+            ETag: etag,
+          },
+        });
+      };
+    }
+
+    const rangedProxy = (diagnostics: string[] = []) =>
+      proxy({
+        url: PROXY_URL,
+        allowedRequestHeaderNames: ["range"],
+        allowAnonymousGetHeaderOmission: true,
+        rangeRequestHeaderAlias: "x-cors-proxy-range",
+      }, (message) => diagnostics.push(message));
+
+    it("keeps the slice when the 206 carries the If-Range validator", async () => {
+      const sent: Sent[] = [];
+      const diagnostics: string[] = [];
+      const response = await rangedProxy(diagnostics).fetch({
+        method: "GET",
+        headers: [["Range", "bytes=4-7"], ["If-Range", '"v2"']],
+        targetUrl: TARGET_URL,
+      }, origin(sent));
+      expect(response.status).toBe(206);
+      expect(await response.text()).toBe("4567");
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.url).toBe(`${PROXY_URL}${TARGET_URL}`);
+      expect(sent[0]!.headers.has("if-range")).toBe(false);
+      // Honored, not dropped: no omission diagnostic.
+      expect(diagnostics).toEqual([]);
+    });
+
+    it("fetches the whole representation when the resource changed", async () => {
+      const sent: Sent[] = [];
+      const response = await rangedProxy().fetch({
+        method: "GET",
+        headers: [["Range", "bytes=4-7"], ["If-Range", '"v1"']],
+        targetUrl: TARGET_URL,
+      }, origin(sent));
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(ENTITY);
+      expect(sent).toHaveLength(2);
+      expect(sent[1]!.headers.has("range")).toBe(false);
+      expect(sent[1]!.headers.has("x-cors-proxy-range")).toBe(false);
+    });
+
+    it("drops If-Range without Range, which servers must ignore", async () => {
+      const sent: Sent[] = [];
+      const response = await rangedProxy().fetch({
+        method: "GET",
+        headers: [["If-Range", '"v1"']],
+        targetUrl: TARGET_URL,
+      }, origin(sent));
+      expect(response.status).toBe(200);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.headers.has("if-range")).toBe(false);
+    });
+
+    it("forwards If-Range untouched to a proxy whose profile carries it", async () => {
+      const sent: Sent[] = [];
+      const response = await proxy({
+        url: PROXY_URL,
+        allowedRequestHeaderNames: ["range", "if-range"],
+        allowAnonymousGetHeaderOmission: false,
+      }).fetch({
+        method: "GET",
+        headers: [["Range", "bytes=4-7"], ["If-Range", '"v1"']],
+        targetUrl: TARGET_URL,
+      }, async (url, init) => {
+        sent.push({ url, headers: new Headers(init.headers) });
+        return new Response("4567", {
+          status: 206,
+          headers: { "Content-Range": "bytes 4-7/16", ETag: '"v2"' },
+        });
+      });
+      // The proxy evaluated the condition itself; nothing is re-requested.
+      expect(response.status).toBe(206);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.headers.get("if-range")).toBe('"v1"');
+    });
+  });
+});
+
+describe("ifRangeMatches", () => {
+  const date = "Sun, 28 Sep 2026 12:00:10 GMT";
+  const modified = "Sun, 28 Sep 2026 12:00:00 GMT";
+  it.each<[string, string, Record<string, string>, boolean]>([
+    ["an equal strong ETag", '"v1"', { ETag: '"v1"' }, true],
+    ["a different ETag", '"v1"', { ETag: '"v2"' }, false],
+    ["a weak response ETag", '"v1"', { ETag: 'W/"v1"' }, false],
+    ["a weak If-Range", 'W/"v1"', { ETag: 'W/"v1"' }, false],
+    ["no ETag", '"v1"', {}, false],
+    ["a strong Last-Modified", modified, { "Last-Modified": modified, Date: date }, true],
+    ["Last-Modified without Date", modified, { "Last-Modified": modified }, false],
+    ["a weak Last-Modified (under 1 s before Date)", modified,
+      { "Last-Modified": modified, Date: modified }, false],
+    ["a different Last-Modified", modified,
+      { "Last-Modified": date, Date: date }, false],
+  ])("treats %s as %s", (_label, ifRange, headers, expected) => {
+    expect(ifRangeMatches(ifRange, new Headers(headers))).toBe(expected);
   });
 });

@@ -655,19 +655,21 @@ export class TlsNetworkBackend implements NetworkIO {
             );
           }
         }
-        const fetchHeaders = this.corsProxy
-          ? this.corsProxy.project({
+        const requestBody = method !== "GET" && method !== "HEAD"
+          ? outgoingBody
+          : undefined;
+        const response = this.corsProxy
+          ? await this.corsProxy.fetch({
             method,
             headers: outgoingHeaders,
-            bodyPresent: outgoingBody !== undefined,
+            body: requestBody,
             targetUrl: upstreamUrl,
           })
-          : headersFromOccurrences(outgoingHeaders);
-        const response = await fetch(url, {
-          method,
-          headers: fetchHeaders,
-          body: method !== "GET" && method !== "HEAD" ? outgoingBody : undefined,
-        });
+          : await fetch(url, {
+            method,
+            headers: headersFromOccurrences(outgoingHeaders),
+            body: requestBody,
+          });
 
         const responseBytes = formatHttpResponse(
           response.status,
@@ -754,19 +756,18 @@ export class TlsNetworkBackend implements NetworkIO {
 
     const doFetch = async () => {
       try {
-        const fetchHeaders = this.corsProxy
-          ? this.corsProxy.project({
+        const response = this.corsProxy
+          ? await this.corsProxy.fetch({
             method,
             headers: browserHeaders,
-            bodyPresent: fetchBody !== undefined,
+            body: fetchBody,
             targetUrl: upstreamUrl,
           })
-          : headersFromOccurrences(browserHeaders);
-        const response = await fetch(url, {
-          method,
-          headers: fetchHeaders,
-          body: fetchBody,
-        });
+          : await fetch(url, {
+            method,
+            headers: headersFromOccurrences(browserHeaders),
+            body: fetchBody,
+          });
 
         const bodyBuf = await response.arrayBuffer();
 

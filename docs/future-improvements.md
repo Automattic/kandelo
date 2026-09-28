@@ -143,39 +143,42 @@ current browser boundary as complete POSIX socket or HTTP fidelity.
 **Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
 deployment infrastructure and browser acceptance
 
-### Drop the `X-Cors-Proxy-Range` workaround once `Range` reaches the proxy
+### Technical debt: drop the `X-Cors-Proxy-Range` workaround and its preflights
 
 The default proxy's hosting front end strips `Range`, so the profile's
 `rangeRequestHeaderAlias` makes every proxy dispatch repeat `Range` as
-`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. The alias
-also makes every ranged request preflight. When `Range` reaches the proxy
-unchanged (re-measure a plain `Range: bytes=0-15` through
-`wordpress-playground-cors-proxy.net` for a `206`), remove
-`rangeRequestHeaderAlias` from the profile, `BrowserCorsProxy.project()`, the
-service worker, and the development relay, together with their tests and the
-"Byte-range reads through the proxy" text in `docs/browser-support.md`.
+`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. The
+alias is not CORS-safelisted, so **every ranged request through production
+pays an extra `OPTIONS` preflight round trip**, and without
+`Access-Control-Max-Age` on the proxy, browsers cannot reuse one. This is a
+known performance cost accepted to make ranged reads work at all; it has not
+been measured. When `Range` reaches the proxy unchanged (re-measure a plain
+`Range: bytes=0-15` through `wordpress-playground-cors-proxy.net` for a
+`206`), remove `rangeRequestHeaderAlias` from the profile,
+`BrowserCorsProxy.project()`, the service worker, and the development relay,
+together with their tests and the related text in `docs/browser-support.md`.
+Simple `bytes=N-M` ranges then need no preflight at all. Until then, an
+`Access-Control-Max-Age` on the proxy's preflight would reduce the cost to
+about one preflight per page session.
 
 **Files:** `host/src/networking/browser-cors-proxy.ts`,
 `apps/browser-demos/lib/browser-cors-proxy.ts`,
 `apps/browser-demos/public/service-worker.js`,
-`apps/browser-demos/vite/dev-cors-proxy.ts`
+`apps/browser-demos/vite/dev-cors-proxy.ts`, upstream proxy deployment
 
-### Carry `If-Range` through the browser CORS proxy
+### Relay `If-Range` instead of emulating it
 
-The proxy's preflight does not allow `If-Range`, so the browser host drops it
-from anonymous GETs (with a diagnostic) and fails other requests that carry
-it. A dropped `If-Range` makes a guest's conditional ranged request
-unconditional: after the resource changes, a resuming client receives a slice
-of the new version instead of the whole new entity. The Node.js host forwards
-`If-Range`, so this is a host divergence. Either the proxy allows and
-forwards `If-Range` (its front end also strips it, so it would need the same
-alias treatment as `Range`), or Kandelo implements its semantics at dispatch:
-send the range unconditionally and, when the `206` carries a validator other
-than the `If-Range` value, discard it and fetch the whole entity instead.
+The proxy cannot carry `If-Range`, so the browser host emulates it: a `206`
+without the matching validator is discarded for a second, whole-entity
+request. That costs a full extra request whenever the resource changed, and
+always for a date-form `If-Range`, because the proxy does not expose the
+response `Date` that proves `Last-Modified` is strong. If the proxy allowed
+and forwarded `If-Range` (its front end strips it, so it would need an alias
+like `Range`), the profile could list it and the emulation would step aside
+on its own. Exposing `Date` would make date-form `If-Range` confirmable in
+the meantime.
 
 **Files:** `host/src/networking/browser-cors-proxy.ts`,
-`host/src/networking/fetch-backend.ts`,
-`host/src/networking/tls-network-backend.ts`,
 `apps/browser-demos/public/service-worker.js`, upstream proxy deployment
 
 ### Reject credentialed Fetch modes at the constrained proxy boundary

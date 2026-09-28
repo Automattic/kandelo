@@ -168,6 +168,63 @@ export class BrowserCorsProxy {
     return corsProxyFetchUrl(this.config.url, targetUrl);
   }
 
+  /**
+   * Project a request, send it through the proxy, and honor its `If-Range`.
+   *
+   * WHY: a proxy whose profile does not allow `If-Range` cannot carry it, and
+   * dropping it would turn a conditional ranged read into an unconditional
+   * one: after the resource changes, a resuming client would get a slice of
+   * the new version. RFC 9110 section 13.1.5 says a server whose If-Range
+   * condition is false ignores `Range` and sends the whole representation.
+   * Apply that rule here instead: send the range without `If-Range`, and if
+   * the `206` does not carry the matching validator, discard it and fetch
+   * the whole representation. A validator this cannot confirm counts as a
+   * mismatch, so the cost of doubt is one extra full request, never a wrong
+   * slice. Without `Range`, `If-Range` is meaningless and is dropped.
+   */
+  async fetch(
+    request: {
+      method: string;
+      headers: readonly HttpHeaderOccurrence[];
+      body?: BodyInit;
+      targetUrl: string;
+    },
+    fetchImpl: (input: string, init: RequestInit) => Promise<Response> =
+      (input, init) => globalThis.fetch(input, init),
+  ): Promise<Response> {
+    const carriesIfRange = this.isAllowed("if-range");
+    let ifRange: string | undefined;
+    const occurrences = carriesIfRange
+      ? request.headers
+      : request.headers.filter(([name, value]) => {
+        if (asciiLowercase(name) !== "if-range") return true;
+        ifRange = value;
+        return false;
+      });
+    const headers = this.project({
+      method: request.method,
+      headers: occurrences,
+      bodyPresent: request.body !== undefined,
+      targetUrl: request.targetUrl,
+    });
+    const url = this.urlFor(request.targetUrl);
+    const init = { method: request.method, headers, body: request.body };
+    const response = await fetchImpl(url, init);
+    if (
+      ifRange === undefined ||
+      request.method !== "GET" ||
+      response.status !== 206 ||
+      ifRangeMatches(ifRange, response.headers)
+    ) {
+      return response;
+    }
+    await response.body?.cancel().catch(() => {});
+    headers.delete("range");
+    const alias = this.config.rangeRequestHeaderAlias;
+    if (alias !== undefined) headers.delete(alias);
+    return fetchImpl(url, { ...init, headers });
+  }
+
   project(input: {
     method: string;
     headers: readonly HttpHeaderOccurrence[];
@@ -244,6 +301,27 @@ export class BrowserCorsProxy {
       `Browser CORS proxy omitted unsupported request headers for ${origin}: ${names.join(", ")}`,
     );
   }
+}
+
+/**
+ * Whether a `206` satisfies an `If-Range` condition (RFC 9110 13.1.5).
+ *
+ * An entity tag must equal the response's strong `ETag`. A date must equal
+ * `Last-Modified` exactly, and that `Last-Modified` must be a strong
+ * validator: at least one second older than the response's `Date`.
+ */
+export function ifRangeMatches(ifRange: string, headers: Headers): boolean {
+  const value = ifRange.trim();
+  if (value.startsWith("W/")) return false;
+  if (value.startsWith('"')) {
+    return headers.get("etag")?.trim() === value;
+  }
+  const lastModified = headers.get("last-modified")?.trim();
+  if (lastModified === undefined || lastModified !== value) return false;
+  const modified = Date.parse(lastModified);
+  const date = Date.parse(headers.get("date") ?? "");
+  return Number.isFinite(modified) && Number.isFinite(date) &&
+    date - modified >= 1000;
 }
 
 function sortedUnique(names: readonly string[]): readonly string[] {

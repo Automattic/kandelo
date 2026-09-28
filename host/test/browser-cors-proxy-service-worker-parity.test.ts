@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { BROWSER_CONTROLLED_REQUEST_HEADER_NAMES } from "../src/networking/browser-cors-proxy";
+import {
+  BROWSER_CONTROLLED_REQUEST_HEADER_NAMES,
+  ifRangeMatches,
+} from "../src/networking/browser-cors-proxy";
 
 // The CORS proxy request-header projection is implemented twice: once in TS
 // (browser-cors-proxy.ts, used by the guest-socket backends) and once in plain
@@ -55,6 +58,32 @@ describe("browser CORS proxy service-worker parity", () => {
     expect(serviceWorkerSource).toMatch(
       /config\.rangeRequestHeaderAlias && range !== null[\s\S]{0,80}headers\.set\(config\.rangeRequestHeaderAlias, range\)/,
     );
+  });
+
+  it("decides If-Range matches exactly like ifRangeMatches()", () => {
+    const start = serviceWorkerSource.indexOf("function ifRangeMatches(");
+    const end = serviceWorkerSource.indexOf("\n  }\n", start);
+    expect(start).toBeGreaterThan(-1);
+    const serviceWorkerIfRangeMatches = new Function(
+      `${serviceWorkerSource.slice(start, end + 4)}; return ifRangeMatches;`,
+    )() as (ifRange: string, headers: Headers) => boolean;
+    const date = "Sun, 28 Sep 2026 12:00:10 GMT";
+    const modified = "Sun, 28 Sep 2026 12:00:00 GMT";
+    const cases: Array<[string, Record<string, string>]> = [
+      ['"v1"', { ETag: '"v1"' }],
+      ['"v1"', { ETag: '"v2"' }],
+      ['"v1"', { ETag: 'W/"v1"' }],
+      ['W/"v1"', { ETag: 'W/"v1"' }],
+      ['"v1"', {}],
+      [modified, { "Last-Modified": modified, Date: date }],
+      [modified, { "Last-Modified": modified }],
+      [modified, { "Last-Modified": modified, Date: modified }],
+      [modified, { "Last-Modified": date, Date: date }],
+    ];
+    for (const [ifRange, headers] of cases) {
+      expect(serviceWorkerIfRangeMatches(ifRange, new Headers(headers)))
+        .toBe(ifRangeMatches(ifRange, new Headers(headers)));
+    }
   });
 
   it("checks credential headers before the browser-controlled drop in the service worker", () => {

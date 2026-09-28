@@ -25,6 +25,9 @@ const defaultConfig = validateBrowserCorsProxyConfig({
   allowAnonymousGetHeaderOmission: true,
   // WORKAROUND: the Playground proxy's front end strips Range; see
   // BrowserCorsProxyConfig.rangeRequestHeaderAlias for when to remove this.
+  // TECHNICAL DEBT: the alias is not CORS-safelisted, so every ranged request
+  // through production pays an extra OPTIONS preflight round trip (the proxy
+  // sends no Access-Control-Max-Age). See docs/future-improvements.md.
   rangeRequestHeaderAlias: "x-cors-proxy-range",
 });
 if (defaultConfig === undefined) {

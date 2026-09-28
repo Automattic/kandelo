@@ -126,7 +126,26 @@ function constrainedProxyFixture(observed: ProxyRequest[]): Server {
     const aliased = /^bytes=(\d*)-(\d*)$/.exec(
       String(request.headers["x-cors-proxy-range"] ?? ""),
     );
-    if (proxied && aliased !== null) {
+    const ranged = proxied && request.url!.includes("/archive");
+    // WHY no-store: with a cacheable ETag, Chromium's HTTP cache keeps the
+    // partial responses and revalidates them by adding its own If-Range
+    // below the service worker. That is legitimate browser behavior, but it
+    // would hide whether the service worker relayed the page's If-Range. The
+    // production proxy also forbids storing ranged answers (no-cache).
+    if (ranged && aliased === null) {
+      response.writeHead(200, {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, ETag",
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "no-store",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        ETag: '"v1"',
+        Vary: "Origin",
+      });
+      response.end(RANGED_ENTITY);
+      return;
+    }
+    if (ranged && aliased !== null) {
       const size = RANGED_ENTITY.byteLength;
       const start = aliased[1] === ""
         ? size - Number(aliased[2])
@@ -139,7 +158,9 @@ function constrainedProxyFixture(observed: ProxyRequest[]): Server {
         "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, ETag",
         "Content-Range": `bytes ${start}-${end}/${size}`,
         "Content-Type": "application/octet-stream",
+        "Cache-Control": "no-store",
         "Cross-Origin-Resource-Policy": "cross-origin",
+        ETag: '"v1"',
         Vary: "Origin",
       });
       response.end(RANGED_ENTITY.subarray(start, end + 1));
@@ -480,9 +501,10 @@ test("service worker reads ranges through a production-shaped proxy", async ({
         // A suffix range is never CORS-safelisted, so this one preflights.
         suffix: await read({ Range: "bytes=-22" }),
         bounded: await read({ Range: "bytes=1000-1015" }),
-        // If-Range is not in the profile: it is dropped rather than sent,
-        // because the proxy's preflight would reject it.
-        withIfRange: await read({ Range: "bytes=0-3", "If-Range": '"v1"' }),
+        // If-Range is never sent (the proxy's preflight would reject it);
+        // the service worker applies it to the answer instead.
+        currentIfRange: await read({ Range: "bytes=0-3", "If-Range": '"v1"' }),
+        staleIfRange: await read({ Range: "bytes=0-3", "If-Range": '"v0"' }),
       };
     });
 
@@ -496,10 +518,19 @@ test("service worker reads ranges through a production-shaped proxy", async ({
       contentRange: "bytes 1000-1015/4096",
       bytes: Array.from(RANGED_ENTITY.subarray(1000, 1016)),
     });
-    expect(results.withIfRange.status).toBe(206);
-    expect(results.withIfRange.bytes).toEqual(
-      Array.from(RANGED_ENTITY.subarray(0, 4)),
-    );
+    // The resource is still "v1": the slice stands.
+    expect(results.currentIfRange).toEqual({
+      status: 206,
+      contentRange: "bytes 0-3/4096",
+      bytes: Array.from(RANGED_ENTITY.subarray(0, 4)),
+    });
+    // The client's copy is "v0": like a server whose If-Range condition is
+    // false, the answer is the whole current representation.
+    expect(results.staleIfRange).toEqual({
+      status: 200,
+      contentRange: null,
+      bytes: Array.from(RANGED_ENTITY),
+    });
 
     const gets = observed.filter(({ method }) => method === "GET");
     expect(gets.map(({ headers }) => [
@@ -510,15 +541,15 @@ test("service worker reads ranges through a production-shaped proxy", async ({
       ["bytes=-22", "bytes=-22", undefined],
       ["bytes=1000-1015", "bytes=1000-1015", undefined],
       ["bytes=0-3", "bytes=0-3", undefined],
+      ["bytes=0-3", "bytes=0-3", undefined],
+      [undefined, undefined, undefined],
     ]);
     expect(observed.some(({ method }) => method === "OPTIONS")).toBe(true);
-    // Playwright receives service-worker console messages only in Chromium;
-    // WebKit does not route them to the context, so the omission diagnostic
-    // is observable there alone. The requests above prove the omission.
+    // Playwright receives service-worker console messages only in Chromium,
+    // so only there can this show If-Range was honored, not dropped.
     if (browserName === "chromium") {
-      expect(
-        warnings.filter((message) => message.includes("if-range")),
-      ).toHaveLength(1);
+      expect(warnings.filter((message) => message.includes("if-range")))
+        .toEqual([]);
     }
   } finally {
     await Promise.all([close(app), close(proxy)]);
@@ -565,6 +596,31 @@ test("guest curl reads a range through a production-shaped proxy", async ({
     );
     expect(proxied?.headers.range).toBe("bytes=2040-2055");
     expect(proxied?.headers["x-cors-proxy-range"]).toBe("bytes=2040-2055");
+
+    // A resume whose stored ETag is stale gets the whole current file.
+    observed.length = 0;
+    const stale = await page.evaluate(
+      async ({ bytes, proxyUrl, proxyConfig, targetUrl }) =>
+        (window as unknown as TestRunnerWindow).__runTest(
+          new Uint8Array(bytes).buffer,
+          ["curl", "-sS", "-r", "2040-2055", "-H", 'If-Range: "v0"',
+            "-o", "/dev/null", "-w", "%{http_code} %{size_download}", targetUrl],
+          60_000,
+          { corsProxy: { url: `${proxyUrl}/?`, ...proxyConfig } },
+        ),
+      {
+        bytes: curlBytes,
+        proxyUrl: proxyRoot,
+        proxyConfig: EFFECTIVE_PROXY_CONFIG,
+        targetUrl: `${targetRoot}/archive.zip`,
+      },
+    );
+    expect(stale.exitCode, JSON.stringify({ stale, observed }, null, 2)).toBe(0);
+    expect(stale.stdout).toBe(`200 ${RANGED_ENTITY.byteLength}`);
+    expect(
+      observed.filter(({ method, url }) => method === "GET" && url.startsWith("/?"))
+        .map(({ headers }) => [headers.range, headers["if-range"]]),
+    ).toEqual([["bytes=2040-2055", undefined], [undefined, undefined]]);
   } finally {
     await close(proxy);
   }

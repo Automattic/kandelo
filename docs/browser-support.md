@@ -490,23 +490,40 @@ proxy dispatch (`BrowserCorsProxy.project()` for guest traffic, and the
 service worker for page and worker fetches) copies an outgoing `Range` into
 it. Both fields carry the same value, which the proxy documents as safe once
 the front end is fixed; the alias then becomes redundant and should be
-removed. A caller's own `X-Cors-Proxy-Range` is never relayed. Because the
-alias is not CORS-safelisted, every ranged request through production now
-sends a preflight first.
+removed. A caller's own `X-Cors-Proxy-Range` is never relayed.
 
-**`If-Range` is not supported through the proxy.** The proxy's preflight
-does not allow it, and `If-Range` is never CORS-safelisted, so listing it in
-the profile would make every request that carries it fail preflight. It is
-therefore left out. An anonymous GET drops it with the usual omission
-diagnostic; any other request carrying it fails before dispatch. A dropped
-`If-Range` turns a conditional ranged request into an unconditional one: if
-the resource changed since the client's earlier read, the client receives a
-slice of the new version instead of the whole new entity. Guest programs that
-resume downloads by sending `If-Range` with a stored validator are exposed to
-that on the browser host, where the Node.js host would forward `If-Range`.
-Kandelo's own multi-read code does not rely on `If-Range`: it passes the ETag
-it already saw to `fetchByteRange()` as `entityTag` and fails the read if an
-answer carries a different one.
+**Limitation and technical debt: every ranged request through production
+pays a CORS preflight.** `X-Cors-Proxy-Range` is not a CORS-safelisted
+request header, so the browser sends an `OPTIONS` request before every ranged
+request that carries it, including simple `bytes=N-M` ranges that would
+otherwise go straight through. The proxy sends no `Access-Control-Max-Age`,
+so browsers cannot reuse a preflight across requests. Each ranged read
+therefore costs one extra round trip to the proxy; a ZIP index read (a tail
+read, then possibly a directory read) pays it once per request. This cost
+exists only because of the alias workaround. It was not measured. It goes
+away when the front end forwards `Range` and the alias is removed; see
+`docs/future-improvements.md`.
+
+**`If-Range` is emulated, not relayed.** The proxy's preflight does not
+allow `If-Range`, and `If-Range` is never CORS-safelisted, so it is not in
+the profile and is never sent. Dropping it would turn a conditional ranged
+request into an unconditional one: after the resource changes, a resuming
+client would receive a slice of the new version. Instead, the proxy dispatch
+applies RFC 9110 section 13.1.5 to the answer. `BrowserCorsProxy.fetch()`
+does this for guest traffic, and the service worker for page and worker
+fetches. The range goes out without `If-Range`. If the `206` carries the
+matching validator, the slice stands. Otherwise the dispatch discards it and
+fetches the whole representation, exactly what a server whose `If-Range`
+condition is false would have sent. A validator that cannot be confirmed
+counts as a mismatch, so doubt costs one extra full request, never a wrong
+slice. An entity-tag `If-Range` is confirmed against the proxy-exposed
+`ETag`. A date `If-Range` also needs the response's `Date` header to prove
+`Last-Modified` is strong, and the proxy does not expose `Date` to scripts,
+so through the browser a date `If-Range` always takes the full-request path.
+`If-Range` without `Range` is meaningless and is dropped, as servers must
+ignore it. Kandelo's own multi-read code, which issues no `If-Range`, passes
+the ETag it already saw to `fetchByteRange()` as `entityTag` and fails the
+read if an answer carries a different one.
 
 **Development (`__kandelo_cors_proxy`).** The Vite relay implements the same
 profile. It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
@@ -544,9 +561,11 @@ different `ETag` than `entityTag`, becomes `failed`.
 
 Guest HTTP(S) requests reach the proxy through the same profile and get the
 relayed status unchanged. The Node.js host never projects guest requests; it
-fetches them directly with `Range` and `If-Range` intact. For `Range` alone, a
-guest `curl -r` therefore sees the same `206` on both hosts, including behind
-the production proxy.
+fetches them directly with `Range` and `If-Range` intact. A guest `curl -r`
+therefore sees the same `206` on both hosts, including behind the production
+proxy, and a resume whose `If-Range` no longer matches sees the same `200`
+with the whole current file. The browser path may spend an extra request to
+get there.
 
 Bridge initialization now rejects typed CacheStorage and transition failures.
 A worker disappearance or lost acknowledgement after `postMessage` remains a
