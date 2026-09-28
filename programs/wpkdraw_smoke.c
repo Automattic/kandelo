@@ -29,6 +29,15 @@ int main(void) {
     int tw = wpk_text_width(f, "OK");
     printf("TEXT_WIDTH s=OK w=%d\n", tw);
 
+    /* UTF-8 decoding. A truncated lead byte just before the NUL must stop
+     * there: the bytes after the NUL belong to nothing, and a decoder that
+     * skipped over it would measure them too. It is one U+FFFD. A 4-byte
+     * sequence is one codepoint, not four. */
+    static const char trunc[] = "\xc3\0MMMMMMMM";
+    printf("UTF8 trunc=%d fffd=%d four=%d one=%d\n",
+           wpk_text_width(f, trunc), wpk_text_width(f, "\xef\xbf\xbd"),
+           wpk_text_width(f, "\xf0\x9f\x98\x80"), wpk_text_width(f, "M"));
+
     /* Render text well clear of the rect, then count lit pixels in its box. */
     const int tx = 60, baseline = 40;
     wpk_text(&s, f, tx, baseline, "OK", WPK_RGB(255, 255, 255));

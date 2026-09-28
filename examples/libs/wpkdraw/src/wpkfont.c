@@ -74,20 +74,28 @@ static struct cached_glyph *get_glyph(struct wpk_font *f, int cp) {
     return g;
 }
 
-/* Decode one codepoint and advance *pp. Returns 0 at NUL; malformed or
- * 4-byte sequences yield '?' (v1 is BMP-only). */
+/* Decode one codepoint and advance *pp. Returns 0 at NUL. A malformed,
+ * truncated, overlong, or surrogate sequence yields U+FFFD and consumes the
+ * bytes examined so far -- never past the terminating NUL, which is not a
+ * continuation byte and so stops the scan. */
 static int decode_utf8(const char **pp) {
     const unsigned char *p = (const unsigned char *)*pp;
-    if (!*p) return 0;
-    int c;
-    if ((*p & 0x80) == 0)          { c = *p; *pp += 1; }
-    else if ((*p & 0xe0) == 0xc0)  { c = (*p & 0x1f) << 6 | (p[1] & 0x3f);
-                                     *pp += 2; }
-    else if ((*p & 0xf0) == 0xe0)  { c = (*p & 0x0f) << 12 | (p[1] & 0x3f) << 6
-                                         | (p[2] & 0x3f);
-                                     *pp += 3; }
-    else                           { c = '?'; *pp += 1; }
-    return c;
+    unsigned char b = p[0];
+    if (!b) return 0;
+    if (b < 0x80) { *pp += 1; return b; }
+    int need, cp, min;
+    if ((b & 0xe0) == 0xc0)      { need = 1; cp = b & 0x1f; min = 0x80; }
+    else if ((b & 0xf0) == 0xe0) { need = 2; cp = b & 0x0f; min = 0x800; }
+    else if ((b & 0xf8) == 0xf0) { need = 3; cp = b & 0x07; min = 0x10000; }
+    else { *pp += 1; return 0xFFFD; }
+    for (int i = 1; i <= need; i++) {
+        if ((p[i] & 0xc0) != 0x80) { *pp += i; return 0xFFFD; }
+        cp = cp << 6 | (p[i] & 0x3f);
+    }
+    *pp += need + 1;
+    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        return 0xFFFD;
+    return cp;
 }
 
 int wpk_text_width(struct wpk_font *f, const char *utf8) {

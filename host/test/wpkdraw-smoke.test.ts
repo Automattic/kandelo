@@ -45,6 +45,14 @@ describe("wpkdraw — CPU raster into a wrapped heap buffer", () => {
         expect(width, out.value).not.toBeNull();
         expect(Number(width![1])).toBeGreaterThan(4);
 
+        // UTF-8: a lead byte truncated by the NUL decodes as one U+FFFD
+        // and stops there; a 4-byte sequence is one monospace cell.
+        const utf8 = out.value.match(/UTF8 trunc=(\d+) fffd=(\d+) four=(\d+) one=(\d+)/);
+        expect(utf8, out.value).not.toBeNull();
+        const [trunc, fffd, four, one] = utf8!.slice(1).map(Number);
+        expect(trunc).toBe(fffd);
+        expect(four).toBe(one);
+
         // The glyph rasterizer lit pixels inside the text box.
         const cover = out.value.match(/GLYPH_COVERAGE n=(\d+)/);
         expect(cover, out.value).not.toBeNull();
