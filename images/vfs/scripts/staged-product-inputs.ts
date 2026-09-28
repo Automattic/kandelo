@@ -594,6 +594,7 @@ export async function buildStagedStandaloneProduct(
           architecture: build.product.architecture,
           mariadbd: packageBytes("mariadb", "mariadbd"),
           systemTablesDirectory,
+          bash: packageBytes("bash", "bash"),
           dash: packageBytes("dash", "dash"),
           coreutils: packageBytes("coreutils", "coreutils"),
           dinit: dinit(),
@@ -885,6 +886,7 @@ export async function buildStagedSdkOrTestProduct(
         await buildMariadbTestVfsImage({
           mariadbd: packageBytes("mariadb", "mariadbd"),
           mysqltest: packageBytes("mariadb", "mysqltest"),
+          bash: packageBytes("bash", "bash"),
           dash: packageBytes("dash", "dash"),
           coreutils: packageBytes("coreutils", "coreutils"),
           dinit: {
@@ -956,6 +958,7 @@ export async function buildStagedSdkOrTestProduct(
         await buildSqliteTestVfsImage({
           sqlite3: packageBytes("sqlite", "sqlite3"),
           testfixture: packageBytes("sqlite", "testfixture"),
+          bash: packageBytes("bash", "bash"),
           dash: packageBytes("dash", "dash"),
           coreutils: packageBytes("coreutils", "coreutils"),
           sqliteSourceDirectory: sqliteSource,

@@ -10,21 +10,23 @@
  *
  *   - wlterm maps its toplevel via libkwl and commits a first frame, then
  *     prints WLTERM_READY — the compositor imported + presented it;
- *   - wlterm forkpty()'s a dash `-c` script (the wasm dash, exec'd by its
+ *   - wlterm forkpty()'s a bash `-c` script (the wasm bash, exec'd by its
  *     absolute host path — exec reads its target from the kernel VFS, and
- *     the raw NodePlatformIO VFS reaches the resolver cache directly)
+ *     the raw NodePlatformIO VFS reaches the resolver cache directly). bash
+ *     because it is the shell every Kandelo image binds to /bin/sh, so the
+ *     smoke drives the same shell the Wayland desktop's wlterm runs
  *     that prints "READY", reads a line, then echoes it back as "GOT[<x>]";
- *   - dash's "READY" reaches the PTY master → vt100_feed() → the cell grid,
+ *   - the shell's "READY" reaches the PTY master → vt100_feed() → the cell grid,
  *     and wlterm's --watch reports WLTERM_GRID "READY" once it is visible;
  *   - a host-injected key A + Return is routed compositor → libkwl (KWL_KEY)
- *     → vt100_input_key() → write(master), so dash's `read x` returns "a"
+ *     → vt100_input_key() → write(master), so the shell's `read x` returns "a"
  *     (Return → "\r", the tty's ICRNL makes it the newline) and prints
  *     "GOT[a]" → WLTERM_GRID "GOT[a]";
- *   - dash exits, the PTY master hangs up, wlterm reaps it and prints
+ *   - the shell exits, the PTY master hangs up, wlterm reaps it and prints
  *     WLTERM_EXIT code=0.
  *
  * wlterm and the compositor both exit 0. Skips if any binary is missing
- * (bare checkout — dash comes from the package cache / binaries tree).
+ * (bare checkout — bash comes from the package cache / binaries tree).
  */
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
@@ -33,8 +35,8 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
 const wltermBin = tryResolveBinary("programs/wlterm.wasm");
-const dashBin = tryResolveBinary("programs/dash.wasm");
-const hasBinaries = !!compositorBin && !!wltermBin && !!dashBin && existsSync(dashBin!);
+const shellBin = tryResolveBinary("programs/bash.wasm");
+const hasBinaries = !!compositorBin && !!wltermBin && !!shellBin && existsSync(shellBin!);
 
 // Input canvas dims are arbitrary here — wlterm is keyboard-driven, and the
 // compositor routes keys by keycode independent of the pointer scale. We match
@@ -96,20 +98,20 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
         await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
 
-        // --- wlterm (libkwl terminal) + forkpty'd dash script ---
-        // dash prints READY, reads one line, echoes it back as GOT[<line>].
+        // --- wlterm (libkwl terminal) + forkpty'd shell script ---
+        // The shell prints READY, reads one line, echoes it back as GOT[<line>].
         // wlterm watches the grid for both markers and reports each once seen.
-        // The forkpty'd child execs the wasm dash by its absolute host path:
+        // The forkpty'd child execs the wasm bash by its absolute host path:
         // exec reads its target from the kernel VFS, and the raw
         // NodePlatformIO VFS reaches the resolver cache directly. A bare
-        // "dash" would PATH-walk into the host's native /bin/dash (ENOEXEC).
+        // "bash" would PATH-walk into the host's native /bin/bash (ENOEXEC).
         const wltermExit = host.spawn(
           wltermBytes,
           [
             "wlterm",
             "--watch", "READY",
             "--watch", "GOT[a]",
-            dashBin!, "-c",
+            shellBin!, "-c",
             "printf 'READY\\n'; read x; printf 'GOT[%s]\\n' \"$x\"",
           ],
           { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
@@ -117,7 +119,7 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
 
         // The window mapped and committed its first frame.
         await waitFor(out, "WLTERM_READY", 20_000, dump);
-        // dash's "READY" flowed PTY → vt100_feed → grid.
+        // The shell's "READY" flowed PTY → vt100_feed → grid.
         await waitFor(out, 'WLTERM_GRID "READY"', 20_000, dump);
 
         // Type "a" then Return on the keyboard (device 0). The compositor
@@ -132,10 +134,10 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         host.injectInputEvent(0, EV_KEY, KEY_ENTER, 0);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
 
-        // dash's `read x` got "a" and echoed GOT[a] back into the grid.
+        // The shell's `read x` got "a" and echoed GOT[a] back into the grid.
         await waitFor(out, 'WLTERM_GRID "GOT[a]"', 20_000, dump);
 
-        // dash exits → PTY HUP → wlterm reaps it and shuts down cleanly.
+        // The shell exits → PTY HUP → wlterm reaps it and shuts down cleanly.
         await waitFor(out, "WLTERM_EXIT code=0", 20_000, dump);
 
         const wltermCode = await Promise.race([
@@ -186,7 +188,7 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         // reach the grid as a code=.
         const wltermExit = host.spawn(
           wltermBytes,
-          ["wlterm", dashBin!, "-c", `kill -${SIGKILL} $$`],
+          ["wlterm", shellBin!, "-c", `kill -${SIGKILL} $$`],
           { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
         );
 

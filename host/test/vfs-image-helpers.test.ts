@@ -13,6 +13,8 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  BASH_SHELL_PATHS,
+  installBashAsPosixShell,
   saveImage,
   walkAndWrite,
   writeVfsBinary,
@@ -77,6 +79,50 @@ async function expectArtifactInspectionFailure(
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+describe("installBashAsPosixShell", () => {
+  // Every Kandelo image binds /bin/sh to bash. Before this helper existed,
+  // three image builders each wrote their own shell links and drifted to
+  // dash while the rootfs and the shell image used bash -- so the same
+  // `#!/bin/sh` script ran under different shells depending on the image.
+  it("installs bash and resolves every POSIX shell path to it", () => {
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    fs.mkdir("/bin", 0o755);
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    const bash = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x62]);
+
+    installBashAsPosixShell(fs, bash);
+
+    expect(readFile(fs, "/usr/bin/bash")).toEqual(bash);
+    expect(fs.stat("/usr/bin/bash").mode & 0o777).toBe(0o755);
+    expect([...BASH_SHELL_PATHS].sort()).toEqual(["/bin/bash", "/bin/sh", "/usr/bin/sh"]);
+    for (const path of BASH_SHELL_PATHS) {
+      expect(fs.readlink(path)).toBe("/usr/bin/bash");
+      // Follows the link to the same bytes -- /bin/sh IS bash, not a copy.
+      expect(readFile(fs, path)).toEqual(bash);
+    }
+  });
+
+  it("leaves another shell at its own name without letting it claim /bin/sh", () => {
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    fs.mkdir("/bin", 0o755);
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    const dash = new Uint8Array([0x64, 0x61, 0x73, 0x68]);
+    writeVfsBinary(fs, "/bin/dash", dash);
+
+    installBashAsPosixShell(fs, new Uint8Array([0x62, 0x61, 0x73, 0x68]));
+
+    expect(readFile(fs, "/bin/dash")).toEqual(dash);
+    expect(fs.readlink("/bin/sh")).toBe("/usr/bin/bash");
+  });
+
+  it("refuses an empty bash rather than publishing a broken /bin/sh", () => {
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    expect(() => installBashAsPosixShell(fs, new Uint8Array())).toThrow(/empty/);
+  });
+});
 
 describe("walkAndWrite", () => {
   it("copies files, directories, modes, and requested symlinks while honoring exclusions", () => {
