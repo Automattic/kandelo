@@ -111,9 +111,14 @@ export function useMachineSurfaceController(): MachineSurfaceController {
     demoSurface !== null &&
     isSurfaceAvailable(demoSurface, availability) &&
     status === "running";
+  // A KMS display mounts as soon as the kernel exposes it, while booting too:
+  // hidden, but laid out, so it attaches and reports its size before the
+  // machine's command starts a client that picks its video mode from that
+  // size (live-setup waits for the report). Other demo surfaces wait for
+  // "running" — there is nothing for them to show or measure earlier.
   const shouldMountDemoSurface =
     demoSurface !== null &&
-    status === "running" &&
+    (status === "running" || (demoSurface === "kms" && status === "booting")) &&
     isSurfaceAvailable(demoSurface, availability);
   const canUseInternals = status !== "idle" && isSurfaceAvailable("syslog", availability);
 

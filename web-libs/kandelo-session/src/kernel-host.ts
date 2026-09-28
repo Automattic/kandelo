@@ -1195,12 +1195,19 @@ export class LiveKernelHost implements KernelHost {
   private kmsDisplayModeDefault: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null = null;
   /**
    * Last display size (device pixels) reported per CRTC by the
-   * attachKmsDisplay ResizeObserver. Boot flows read it via
-   * {@link getKmsDisplaySize} to derive the advertised video mode
-   * before spawning a mode-picking client (wlcompositor). Scoped to the
+   * attachKmsDisplay ResizeObserver, which also forwards it to the kernel
+   * (`kmsSetDisplaySize`), where `host_kms_mode_info` derives the
+   * connector's advertised mode from it. Boot flows await the first report
+   * with {@link whenKmsDisplaySized} before spawning a mode-picking client
+   * (wlcompositor), so the mode it picks follows the pane. Scoped to the
    * current kernel: detachKernel clears it.
    */
   private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
+  /** Pending {@link whenKmsDisplaySized} calls per CRTC. */
+  private kmsDisplaySizeWaiters = new Map<
+    number,
+    Set<(size: { width: number; height: number } | undefined) => void>
+  >();
 
   constructor(opts: LiveKernelHostOptions = {}) {
     this._status = opts.status ?? "idle";
@@ -1282,10 +1289,12 @@ export class LiveKernelHost implements KernelHost {
     this.audioStateListeners.emit("unavailable");
     this.audioActivityListeners.emit(false);
     // The sizes describe the DETACHED kernel's panes. Left in place, the
-    // next boot's sizing wait-loop would read the previous session's size
-    // via getKmsDisplaySize, skip measuring, and never push the real size
+    // next boot's whenKmsDisplaySized would resolve at once with the
+    // previous session's size, before the new pane has pushed a real size
     // to the new kernel — the desktop falls back to a 1920×1080 letterbox.
+    // Waiters on the detached kernel will never see a report: release them.
     this.kmsDisplaySizes.clear();
+    this.settleKmsDisplaySizeWaiters(undefined, undefined);
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
@@ -2591,6 +2600,53 @@ export class LiveKernelHost implements KernelHost {
     return size ? { ...size } : undefined;
   }
 
+  /**
+   * Resolve once the pane attached to `crtcId` has reported its display
+   * size to the current kernel (at once if it already has), or with
+   * `undefined` after `timeoutMs` or when the kernel detaches first.
+   *
+   * Only a `"webgl2-scanout"` pane reports a size. A boot flow awaits this
+   * before starting a client that picks a video mode, so the connector
+   * already advertises the pane's aspect when the client asks. The bound
+   * keeps a pane that never lays out (no display, a headless host) from
+   * stalling boot; the connector then keeps its 1920×1080 default.
+   */
+  whenKmsDisplaySized(
+    crtcId: number,
+    timeoutMs: number,
+  ): Promise<{ width: number; height: number } | undefined> {
+    const now = this.getKmsDisplaySize(crtcId);
+    if (now) return Promise.resolve(now);
+    return new Promise((resolve) => {
+      let waiters = this.kmsDisplaySizeWaiters.get(crtcId);
+      if (!waiters) {
+        waiters = new Set();
+        this.kmsDisplaySizeWaiters.set(crtcId, waiters);
+      }
+      const settle = (size: { width: number; height: number } | undefined) => {
+        clearTimeout(timer);
+        waiters!.delete(settle);
+        resolve(size ? { ...size } : undefined);
+      };
+      const timer = setTimeout(() => settle(undefined), timeoutMs);
+      waiters.add(settle);
+    });
+  }
+
+  /** Settle {@link whenKmsDisplaySized} waiters for `crtcId` (every CRTC
+   *  when undefined) with `size`. */
+  private settleKmsDisplaySizeWaiters(
+    crtcId: number | undefined,
+    size: { width: number; height: number } | undefined,
+  ): void {
+    const sets = crtcId === undefined
+      ? Array.from(this.kmsDisplaySizeWaiters.values())
+      : [this.kmsDisplaySizeWaiters.get(crtcId)].filter((w) => w !== undefined);
+    for (const waiters of sets) {
+      for (const settle of Array.from(waiters)) settle(size);
+    }
+  }
+
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = 1,
@@ -2649,6 +2705,7 @@ export class LiveKernelHost implements KernelHost {
         if (width >= 1 && height >= 1) {
           this.kmsDisplaySizes.set(crtcId, { width, height });
           kernel.kmsSetDisplaySize?.(crtcId, width, height);
+          this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
         }
       });
       resizeObserver.observe(canvas);

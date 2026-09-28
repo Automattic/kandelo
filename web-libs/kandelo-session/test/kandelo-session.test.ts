@@ -2416,11 +2416,11 @@ describe("Kandelo VFS consumer capacity contract", () => {
 });
 
 describe("LiveKernelHost: KMS display size lifecycle", () => {
-  // attachKmsDisplay's ResizeObserver feeds kmsDisplaySizes, which the
-  // wayland boot flow reads (getKmsDisplaySize) to decide whether it
-  // still needs to measure the pane and push a video mode to the NEW
-  // kernel. A stale entry from the previous session makes the sizing
-  // wait-loop skip that push → 1920×1080 letterbox on every reboot.
+  // attachKmsDisplay's ResizeObserver feeds kmsDisplaySizes and pushes each
+  // size to the kernel; the boot flow awaits the first report
+  // (whenKmsDisplaySized) before starting a mode-picking client. A stale
+  // entry from the previous session would satisfy that wait before the new
+  // pane pushed anything → 1920×1080 letterbox on every reboot.
   class FakeResizeObserver {
     static instances: FakeResizeObserver[] = [];
     disconnected = false;
@@ -2511,6 +2511,40 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       expect(host.getKmsDisplaySize(1)).toEqual({ width: 1024, height: 768 });
       expect(kernelB.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1024, 768);
     });
+  });
+
+  it("whenKmsDisplaySized resolves on the pane's first report, after the kernel has it", async () => {
+    let sized: Promise<{ width: number; height: number } | undefined> | undefined;
+    let kernel: ReturnType<typeof makeKmsKernel> | undefined;
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      sized = host.whenKmsDisplaySized(1, 60_000);
+      host.attachKmsDisplay(makeCanvas());
+      fireResize(FakeResizeObserver.instances[0], 0, 0);   // hidden: ignored
+      fireResize(FakeResizeObserver.instances[0], 1280, 720);
+    });
+    expect(await sized).toEqual({ width: 1280, height: 720 });
+    expect(kernel!.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1280, 720);
+  });
+
+  it("whenKmsDisplaySized is bounded, and a detach releases it", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      const timedOut = host.whenKmsDisplaySized(1, 2_000);
+      vi.advanceTimersByTime(2_000);
+      expect(await timedOut).toBeUndefined();
+
+      const detached = host.whenKmsDisplaySized(1, 60_000);
+      host.detachKernel();
+      expect(await detached).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

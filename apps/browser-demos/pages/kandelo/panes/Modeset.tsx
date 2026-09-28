@@ -65,9 +65,12 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
 
-  // Attach the canvas as soon as we have one and the kernel is up.
+  // Attach the canvas as soon as we have one and the kernel is up. The pane
+  // mounts during boot (MachineView) — hidden, but laid out — so attaching
+  // then lets the display report its size before the machine's command
+  // starts a mode-picking client.
   React.useEffect(() => {
-    if (status !== "running") return;
+    if (status !== "booting" && status !== "running") return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (handleRef.current) return;
@@ -297,7 +300,10 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     return () => window.clearInterval(id);
   }, [status, error]);
 
-  const showCanvas = status === "running" && !error;
+  // Laid out whenever it is attached (booting too): its ResizeObserver is how
+  // the display reports its size before the machine's command picks a video
+  // mode. While booting the pane's slot is hidden, so nothing shows early.
+  const showCanvas = (status === "booting" || status === "running") && !error;
   const hasFrame = stats.width > 0 && stats.height > 0;
   const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, MODESET_FB_W / MODESET_FB_H);
   const statusLabel = hasFrame

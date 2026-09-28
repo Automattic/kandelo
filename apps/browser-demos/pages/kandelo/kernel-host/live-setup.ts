@@ -212,6 +212,9 @@ async function optionalBinaryUrl(
 }
 
 const HTTP_PORT = 8080;
+/** Longest a `kms-gl-scanout` boot waits for its display pane's size. The
+ *  pane normally reports within a frame of the kernel attaching. */
+const KMS_DISPLAY_SIZE_WAIT_MS = 5_000;
 const ROOT_UID = 0;
 const ROOT_GID = 0;
 const ROOT_HOME = "/root";
@@ -1562,6 +1565,26 @@ async function bootProfile(
           message: "HTTP bridge unavailable",
         });
       }
+    }
+
+    // ── Display size, then init and the command ─────────────────────────
+    //
+    // A client that picks its video mode (a Wayland compositor) reads the
+    // connector once, at startup, and the connector's mode follows the
+    // display pane's size. The KMS pane mounts as soon as the kernel is
+    // attached (hidden while booting, but laid out), so wait for its first
+    // size report before anything that could start such a client runs.
+    // Bounded: a pane that never lays out must not stall boot; the
+    // connector then keeps its default 1920×1080 mode, as on Node.
+    if (machine.runtime.features.includes("kms-gl-scanout")) {
+      const size = await host.whenKmsDisplaySized(1, KMS_DISPLAY_SIZE_WAIT_MS);
+      assertCurrent();
+      tick(
+        size
+          ? `display: ${Math.round(size.width)}×${Math.round(size.height)} device px`
+          : `display: no size reported within ${KMS_DISPLAY_SIZE_WAIT_MS} ms; ` +
+            "the connector keeps its default mode",
+      );
     }
 
     if (initLaunch !== null) {

@@ -434,11 +434,15 @@ presenter renders at display resolution instead of letting the page
 compositor rescale an fb-sized bitmap; any letterbox is drawn in GL
 with the same contain math the pane's pointer mapping uses.
 
-The desktop itself also fills the pane: the boot flow feeds the pane's
-size to the kernel before spawning the compositor, and
-`host_kms_mode_info` advertises a preferred mode matching the pane's
-aspect ratio (`round(1080 × aspect) × 1080`, width clamped
-[1440, 3840]; 1920×1080 fallback when no size is known). wlcompositor
+The desktop itself also fills the pane. A machine declaring
+`kms-gl-scanout` mounts its display pane as soon as the kernel is
+attached — hidden while booting, but laid out, so it has its real size —
+and the boot flow waits for that pane's first size report before starting
+init or the machine's command. `host_kms_mode_info` then advertises a
+preferred mode matching the pane's aspect ratio
+(`round(1080 × aspect) × 1080`, width clamped [1440, 3840]). The wait is
+bounded at 5 s; a pane that never reports (no layout) leaves the
+connector at the 1920×1080 fallback, which the boot log records. wlcompositor
 sizes its scanout from that mode and its placement rules are
 edge-anchored (wlterm left, wlclock/wlpaint offsets from the right
 edge), so wider panes spread the demo across the full width with no

@@ -2172,6 +2172,7 @@
   min-height: 0;
   min-width: 0;
   display: flex;
+  position: relative;
 }
 .kmachine-primary-slot {
   flex: 1;
@@ -2179,8 +2180,14 @@
   min-width: 0;
   display: flex;
 }
+/* Hidden, but still laid out over the visible slot (not display: none), so a
+   hidden surface keeps its real size: a KMS pane mounted during boot reports
+   that size to the kernel before the machine's command picks a video mode. */
 .kmachine-primary-slot.is-hidden {
-  display: none;
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 .kmachine-primary-slot > * {
   flex: 1;
