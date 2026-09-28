@@ -7,9 +7,10 @@
  * wrapper runs it and asserts "ALL PASS". `wayland-scanner` is provided
  * by flake.nix, so this exercises the real dev-shell toolchain — the
  * CLAUDE.md vitest gate runs inside scripts/dev-shell.sh where the
- * scanner is present. Outside the dev shell (bare `npx vitest run`) the
- * scanner is absent and the test skips, exactly like the sdl2/libffi
- * native tests skip without a host C compiler.
+ * scanner is present. A missing scanner FAILS the test, as the sdl2/libffi
+ * native tests fail without a host C compiler: it is a declared host tool
+ * (packages/registry/{libwayland,wayland-demo}/package.toml), so its absence
+ * is a broken toolchain to surface, not a reason to report green.
  *
  * Scope note: this proves scanner + XML completeness, which is what PR2
  * owns. Compiling the generated glue for wasm32 additionally needs
@@ -41,9 +42,13 @@ function hasScanner(): boolean {
 }
 
 describe("wayland-protocols — wayland-scanner generates the v1 glue", () => {
-  it.skipIf(!hasScanner())(
+  it(
     "produces the full core + xdg-shell interface set",
     () => {
+      expect(
+        hasScanner(),
+        "wayland-scanner not found on PATH; run through scripts/dev-shell.sh",
+      ).toBe(true);
       expect(existsSync(SCRIPT)).toBe(true);
       const out = execFileSync("bash", [SCRIPT], { encoding: "utf8" });
       expect(out, out).toContain("wayland-protocols: ALL PASS");

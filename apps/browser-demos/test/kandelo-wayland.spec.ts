@@ -13,32 +13,54 @@ async function gotoOrSkip(page: Page, path: string) {
   }
 }
 
-async function openSurface(page: Page, label: string) {
-  const btn = page.locator("button.kmachine-switch-btn", { hasText: label });
-  await btn.waitFor({ state: "visible", timeout: 30_000 });
-  await btn.click();
+/**
+ * Show the Internals syslog, the demo canvas, or the machine's terminal.
+ * This machine declares `internalsAccess: "drawer"`, so Internals is an
+ * overlay toggle in the dock (aria-pressed), not a primary view: showing the
+ * demo or the terminal means closing it — its popover would otherwise sit
+ * over the pane and intercept pointer events — and selecting that view.
+ */
+async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  const internals = page.getByRole("button", { name: "Internals", exact: true });
+  await internals.waitFor({ state: "visible", timeout: 30_000 });
+  const open = (await internals.getAttribute("aria-pressed")) === "true";
+  if (open !== (label === "Internals")) await internals.click();
+  if (label !== "Internals") {
+    const view = page
+      .getByLabel("Computer views")
+      .getByRole("button", { name: label, exact: true });
+    if ((await view.getAttribute("aria-current")) !== "true") await view.click();
+  }
 }
 
+/** The host's boot log (Internals), where the command launch is recorded. */
 async function syslogText(page: Page): Promise<string> {
   const lines = await page.locator(".ksys-line").allInnerTexts();
   return lines.join("\n");
 }
 
 /**
- * The syslog message stream re-joined for marker matching. Process stdout
- * reaches the syslog in arbitrary chunks, so a single printf marker can
- * split across two .ksys-line entries (observed: `MOVE_GRAB "wlclock` +
- * `"`). Each line renders as `[timestamp]LEVEL message`, so joining whole
- * lines would interleave the next line's prefix into the marker — join
- * only the .ksys-msg spans.
+ * The desktop's own output. The image's command runs in the machine's login
+ * shell, so wldesktop and every program it starts write to that terminal;
+ * the markers the gates match (CLIENT_CONNECTED, MOVE_END, ...) are read
+ * from its rows. Needs the Terminal view — the xterm is unmounted otherwise.
  */
-async function syslogStream(page: Page): Promise<string> {
-  const msgs = await page.locator(".ksys-line .ksys-msg").allInnerTexts();
-  return msgs.join("");
+async function terminalText(page: Page): Promise<string> {
+  if ((await page.locator(".xterm-rows").count()) === 0) return "";
+  const rows = await page.locator(".xterm-rows").first().locator(":scope > div").allInnerTexts();
+  return rows.join("\n");
 }
 
-const SETUP_FAILURE =
-  /wayland failed|wlcompositor failed|wlclock failed|wlpaint failed/;
+/** Show the terminal and wait until `pattern` appears in it. */
+async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
+  await openSurface(page, "Terminal");
+  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+}
+
+// A command the host could not run, or wldesktop reporting that a program
+// died before the desktop came up.
+const SETUP_FAILURE = /configured command failed/;
+const DESKTOP_FAILURE = /wldesktop: /;
 
 // The compositor's desktop geometry (wlcompositor.c placement_rules;
 // libkwl adds a 28 px CSD titlebar):
@@ -68,10 +90,11 @@ const wltermRegion = () => ({
 const canvasLocator = (page: Page) =>
   page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
 
-/** Full text of the Modeset pane's status chip ("" while mounting). */
+/** Full text of the Modeset status chip in the dock ("" while mounting). */
 async function chipText(page: Page): Promise<string> {
+  // The Modeset pane publishes its status chip into the dock.
   const texts = await page
-    .locator(".kpane")
+    .locator(".kdemo-surface-controls")
     .filter({ hasText: "flips" })
     .allInnerTexts()
     .catch(() => [] as string[]);
@@ -134,15 +157,17 @@ async function readDesktopDims(page: Page): Promise<void> {
  * chain in a real browser: wlcompositor (a wl_shm/xdg_shell floating-window
  * server on /dev/dri/card0 via KMS) composites THREE concurrent clients —
  * wlclock (animated analog clock), wlpaint (pointer painting), and wlterm
- * (libkwl VT100 terminal running a forkpty'd sh, which is bash) — with the Modeset pane
+ * (libkwl VT100 terminal running a forkpty'd sh, which is bash) — with
+ * the Modeset pane
  * bridging card0 → an OffscreenCanvas presented through the vblank pump's
  * WebGL2 scanout presenter (texture upload + shader swizzle + GPU scaling),
  * BrowserInputSource feeding keystrokes into the compositor's libinput, and
  * the pane's pointer bridge feeding mouse events into event1.
  *
  * Gates:
- *   1. All three clients connected (syslog CLIENT_CONNECTED count=3 — the
- *      compositor's stdout lands in the Internals syslog) and the composited
+ *   1. All three clients connected (CLIENT_CONNECTED count=3 — the
+ *      command runs in the machine's login shell, so the compositor's
+ *      stdout lands in its terminal) and the composited
  *      desktop is on the canvas: wallpaper + three windows compress to a PNG
  *      far larger than a blank frame (v1's gate passed on an all-black
  *      ~3.2 KB canvas; a real desktop run measures ~21.5 KB). The Modeset
@@ -216,26 +241,29 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // The desktop boot is heavy (four wasm programs + a forkpty'd shell).
   // The image declares one command, /usr/local/bin/wldesktop, which brings
   // the compositor up and then starts the clients; wait for the tick that
-  // fires when the host runs it.
+  // fires when the host runs it. The display pane reports its size before
+  // that (live-setup waits for it), so the compositor's mode follows the
+  // pane rather than the 1920×1080 fallback.
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
     .toMatch(/running \/usr\/local\/bin\/wldesktop/);
-  expect(await syslogText(page), "wayland setup reported failure")
-    .not.toMatch(SETUP_FAILURE);
+  const bootLog = await syslogText(page);
+  expect(bootLog, "wayland setup reported failure").not.toMatch(SETUP_FAILURE);
+  expect(bootLog, "display size was not reported before the command ran")
+    .toMatch(/display: \d+×\d+ device px[\s\S]*running \/usr\/local\/bin\/wldesktop/);
 
   // Gate 1a: all three clients connected to the compositor.
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/CLIENT_CONNECTED count=3/);
+  await expectTerminal(page, /CLIENT_CONNECTED count=3/, 120_000);
+  expect(await terminalText(page), "wldesktop reported failure")
+    .not.toMatch(DESKTOP_FAILURE);
 
   // Gate 1d: the compositor composites on the GPU. wlcompositor probes
   // the renderD128 GLES bridge at boot (shader compile via sync queries)
   // and prints WLC_RENDERER before COMPOSITOR_UP; under new-headless
   // Chromium WebGL2 is available in the worker, so anything but "gpu"
-  // means the probe or the WPK dmabuf-texture path regressed. Checked
-  // while the Internals surface (syslog pane) is still mounted.
-  expect(await syslogStream(page)).toMatch(/WLC_RENDERER gpu/);
+  // means the probe or the WPK dmabuf-texture path regressed.
+  expect(await terminalText(page)).toMatch(/WLC_RENDERER gpu/);
 
   // Gate 1e: the GPU path's one-shot proof that client pixels crossed the
   // process boundary — repaint_gl() samples the composited GL framebuffer
@@ -244,10 +272,8 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // means the readback or the dmabuf-texture import silently failed. The
   // node smokes only ever see the CPU path; this is the sole gate on the
   // GL readback.
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x[0-9a-f]{8}/);
-  const gpuSample = (await syslogStream(page)).match(
+  await expectTerminal(page, /COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x[0-9a-f]{8}/, 60_000);
+  const gpuSample = (await terminalText(page)).match(
     /COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x([0-9a-f]{8})/,
   )!;
   expect(parseInt(gpuSample[1], 16) & 0xffffff, "GL readback sampled black")
@@ -289,8 +315,8 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // Gate 2: type on the keyboard. Focus the page off the canvas placeholder
   // first (BrowserInputSource listens on window), then type a line. wlterm
   // maps last so it holds keyboard focus; the tty echoes into the grid and
-  // dash runs `echo`, so wlterm's window region — clipped clear of the
-  // animated clock — must change.
+  // the shell (bash, as /bin/sh) runs `echo`, so wlterm's window region —
+  // clipped clear of the animated clock — must change.
   const preTyping = await wltermRegionShot(page);
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.type("echo wlterm-browser-ok\n", { delay: 40 });
@@ -305,8 +331,8 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // Gate 3: drag wlclock by its titlebar. Press on the CSD bar (clear of
   // the close box on the right edge), drag left+down, release. libkwl
   // requests xdg_toplevel.move on the press; the compositor grabs and the
-  // window tracks the cursor until release. The syslog pane only renders
-  // on the Internals surface, so run the whole gesture on Demo first and
+  // window tracks the cursor until release. The markers print to the
+  // terminal, a different view, so run the whole gesture on Demo first and
   // assert the compositor's grab markers afterwards.
   const titlebar = clockTitlebar();
   const from = await desktopPoint(page, titlebar.x, titlebar.y);
@@ -347,14 +373,9 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   await page.waitForTimeout(120);
   await page.mouse.up();
 
-  await openSurface(page, "Internals");
-  await expect
-    .poll(() => syslogStream(page), { timeout: 30_000 })
-    .toMatch(/MOVE_GRAB "wlclock"/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 30_000 })
-    .toMatch(/MOVE_END "wlclock" x=-?\d+ y=-?\d+/);
-  const moved = (await syslogStream(page)).match(
+  await expectTerminal(page, /MOVE_GRAB "wlclock"/, 30_000);
+  await expectTerminal(page, /MOVE_END "wlclock" x=-?\d+ y=-?\d+/, 30_000);
+  const moved = (await terminalText(page)).match(
     /MOVE_END "wlclock" x=(-?\d+) y=(-?\d+)/,
   )!;
   // Placement slot was (W-680,110); the drop point puts the titlebar grip
@@ -390,10 +411,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
       .toBeGreaterThan(f0);
   }
 
-  await openSurface(page, "Internals");
-  await expect
-    .poll(() => syslogStream(page), { timeout: 15_000 })
-    .toMatch(/WLPAINT_STROKE x=\d+ y=\d+/);
+  await expectTerminal(page, /WLPAINT_STROKE x=\d+ y=\d+/, 15_000);
 
   // Gate 5: flicker stability. Screenshot the whole canvas 120 times
   // back-to-back and assert no frame compresses below 90% of the median
@@ -414,7 +432,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
       `median ${flickerMedian} B — pump blitting a mid-composite back buffer`,
   ).toHaveLength(0);
 
-  await openSurface(page, "Internals");
-  expect(await syslogText(page), "wayland reported failure after input")
-    .not.toMatch(SETUP_FAILURE);
+  await openSurface(page, "Terminal");
+  expect(await terminalText(page), "wldesktop reported failure after input")
+    .not.toMatch(DESKTOP_FAILURE);
 });
