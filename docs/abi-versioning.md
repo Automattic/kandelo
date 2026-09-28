@@ -868,14 +868,21 @@ every executable link. Before ABI 44 an executable could leave any symbol
 undefined and the host stubbed unknown imports with a throwing function, so
 configure checks accepted functions Kandelo lacks and programs trapped when
 they first called one. An ABI 44 host refuses to instantiate a program that
-imports anything undeclared from `env`.
+imports anything undeclared from `env` (`host/src/env-imports.ts`), and
+`scripts/check-program-env-imports.sh` surveys built programs for the same
+rule. Both read the fork runtime's imports from the declarations too,
+including `WPK_FORK_GLOBAL_IMPORTS`, the two immutable globals fork
+instrumentation adds (the activation index and the table-generation fence).
 
 ABI 44 also gives host-supplied stdin a kernel pipe
 (`kernel_install_host_stdin_pipe`): fd 0 is an ordinary pipe read end shared
 across `fork`, `dup`, and `exec`, instead of a host handle answered per pid.
 
 Every artifact is rebuilt for ABI 44; the strict `__abi_version` equality
-check rejects ABI 43 programs.
+check rejects ABI 43 programs. As with any bump, the committed resolver bundle
+`scripts/resolve-binary.bundle.mjs` embeds the ABI version and the required
+kernel exports, so it is regenerated (`scripts/build-resolve-binary-bundle.sh`)
+in the same change; a stale bundle rejects the new kernel "by artifact policy".
 
 ## The snapshot
 
