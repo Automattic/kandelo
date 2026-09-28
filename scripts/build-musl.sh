@@ -317,6 +317,23 @@ echo "==> Building sigsetjmp helpers..."
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/sigsetjmp_helpers.o"
 
 # ---------------------------------------------------------------
+# 8b. Build the opt-in ucontext stand-ins (NOT part of libc.a)
+# ---------------------------------------------------------------
+# ucontext is unsupported, so by default a program that calls it fails to
+# link. Packages that reference ucontext without depending on it (PHP's
+# always-compiled Fibers) opt in with -lkandelo-ucontext-unsupported; see
+# the source for why these abort instead of returning an error.
+echo "==> Building opt-in ucontext stand-ins..."
+"$CC" --target=$TARGET -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$REPO_ROOT/libc/glue/ucontext_unsupported.c" \
+    -o "$SYSROOT/lib/ucontext_unsupported.o"
+rm -f "$SYSROOT/lib/libkandelo-ucontext-unsupported.a"
+"$AR" rcs "$SYSROOT/lib/libkandelo-ucontext-unsupported.a" "$SYSROOT/lib/ucontext_unsupported.o"
+rm -f "$SYSROOT/lib/ucontext_unsupported.o"
+
+# ---------------------------------------------------------------
 # 9. Install override headers
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."

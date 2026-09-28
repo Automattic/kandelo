@@ -611,10 +611,10 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
             // by these two scripts and only ever from inside build-musl.sh —
             // which this branch deliberately skips. A worktree therefore kept
             // whatever graphics archives it was first provisioned with, no
-            // matter how far libc/glue or the libdrm package moved on, and
-            // `-Wl,--allow-undefined` turned every entry point the stale
-            // archive lacked into an `env.*` import that traps at call time
-            // rather than failing the link. Both scripts skip on a matching
+            // matter how far libc/glue or the libdrm package moved on; every
+            // entry point a stale archive lacks then fails the link of each
+            // program that uses it (before ABI 44 it became an `env.*` import
+            // that trapped at call time). Both scripts skip on a matching
             // input digest, so this is a no-op once the sysroot is current.
             run_repo_script(repo, "scripts/build-dri-stubs.sh", &[])?;
             run_repo_script(repo, "scripts/build-gles-stubs.sh", &[])?;

@@ -37,6 +37,7 @@ import {
   WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
   WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
   WPK_FORK_MODULE_STATE_ARENA_VERSION,
+  ABI_VERSION,
   WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE,
   WPK_FORK_MODULE_STATE_FORMAT_MAGIC,
   WPK_FORK_MODULE_STATE_FORMAT_SECTION,
@@ -2585,7 +2586,10 @@ export function describeWasmArtifactPolicyFailures(
     );
   }
   if (options.forbidForkInstrumentation && hasForkArtifactSurface) {
-    failures.push("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
+    failures.push(
+      `contains ABI ${options.expectedAbi ?? ABI_VERSION} ` +
+        "wasm-fork-instrument metadata, imports, or exports",
+    );
   }
 
   const requireForkInstrumentation =

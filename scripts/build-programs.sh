@@ -170,7 +170,7 @@ LINK_POST_LIBS=(
     -Wl,--import-memory
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
+    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--growable-table
@@ -180,7 +180,6 @@ LINK_POST_LIBS=(
     -Wl,--export=__tls_align
     -Wl,--export=__stack_pointer
     -Wl,--export=__wasm_thread_init
-    -Wl,--export=__abi_version
 )
 
 # Fork support comes from wasm-fork-instrument. The tool auto-discovers
@@ -260,9 +259,8 @@ build_program() {
 # Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
 # injects the toolchain's standard compile + link flags, the channel
 # syscall glue, the C++ runtime stubs (cxxrt.c), and the sysroot path.
-# The default include search includes the sysroot's libc++ headers so
-# no extra -isystem is needed; we only have to supply -lc++ / -lc++abi
-# at link time.
+# libc++ comes from the resolved libcxx package (libcxx_flags), not from
+# the sysroot.
 build_cpp_program() {
     local src="$1"
     local out_dir="$2"
@@ -279,9 +277,11 @@ build_cpp_program() {
     # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
     # whole exception-propagation chain (libunwind + libc++abi) never
     # runs.
+    # shellcheck disable=SC2046
     wasm32posix-c++ \
         -O2 \
         -fwasm-exceptions \
+        $(libcxx_flags "$LIBCXX_PREFIX_32") \
         "$src" \
         -lc++ -lc++abi \
         -o "$raw_wasm"
@@ -290,10 +290,12 @@ build_cpp_program() {
     # normally instrumented fork-bearing program.
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
+        # shellcheck disable=SC2046
         wasm32posix-c++ \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
+            $(libcxx_flags "$LIBCXX_PREFIX_32") \
             "$src" \
             -lc++ -lc++abi \
             -o "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
@@ -306,30 +308,33 @@ build_cpp_program() {
     rm -f "$raw_wasm"
 }
 
-ensure_libcxx_in_sysroot() {
+# Resolve libcxx and print its output directory. C++ programs compile and
+# link against that directory directly. Copying it into the shared worktree
+# sysroot made libc++'s presence there depend on build order
+# (scripts/build-musl.sh recreates the sysroot without it), so a package
+# build could silently find, or miss, whichever copy was left behind.
+resolve_libcxx_prefix() {
     local arch="$1"
-    local sysroot="$2"
-    echo "==> Resolving libcxx for $arch C++ programs..."
+    echo "==> Resolving libcxx for $arch C++ programs..." >&2
     local host_triple
-    local libcxx_prefix
     host_triple="$(rustc -vV | awk '/^host/ {print $2}')"
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_triple" --quiet -- \
         build-deps --arch "$arch" resolve libcxx >/dev/null)
-    libcxx_prefix="$(cd "$REPO_ROOT" && cargo run -p xtask \
-        --target "$host_triple" --quiet -- build-deps --arch "$arch" path libcxx)"
-    mkdir -p "$sysroot/lib" "$sysroot/include/c++"
-    rm -f "$sysroot/lib/libc++.a" "$sysroot/lib/libc++abi.a"
-    cp "$libcxx_prefix/lib/libc++.a" "$sysroot/lib/libc++.a"
-    cp "$libcxx_prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
-    rm -rf "$sysroot/include/c++/v1"
-    cp -RL "$libcxx_prefix/include/c++/v1" "$sysroot/include/c++/v1"
+    (cd "$REPO_ROOT" && cargo run -p xtask \
+        --target "$host_triple" --quiet -- build-deps --arch "$arch" path libcxx)
 }
 
-# Resolve libcxx and copy its outputs into the sysroot if there are any .cpp
-# programs to build. Refresh every run so an interrupted prior copy cannot be
-# mistaken for a complete regular-file projection.
+# Compile and link flags that take libc++ from a resolved libcxx directory:
+# -nostdinc++ drops the sysroot's C++ header search so only the resolved,
+# version-matched headers are visible.
+libcxx_flags() {
+    local prefix="$1"
+    printf '%s\n' -nostdinc++ -isystem "$prefix/include/c++/v1" -L"$prefix/lib"
+}
+
+LIBCXX_PREFIX_32=""
 if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
-    ensure_libcxx_in_sysroot wasm32 "$SYSROOT"
+    LIBCXX_PREFIX_32="$(resolve_libcxx_prefix wasm32)"
 fi
 
 # Resolve SDL2 and stage it in the sysroot when there are SDL2 programs to
@@ -385,6 +390,25 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
                 "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a"
+            ;;
+        f_01_ucontext_get.c|f_02_ucontext_makeswap.c)
+            # ucontext (getcontext/makecontext/swapcontext/setcontext) is a
+            # documented unsupported API (docs/posix-status.md), and libc has
+            # no such symbols. Since ABI 44 links are honest, so the boundary
+            # shows up where it belongs: these fixtures must FAIL to link on
+            # exactly those symbols. If one ever links, revisit the boundary.
+            local_log="$(mktemp)"
+            if "$CC" "${CFLAGS[@]}" "${LINK_PRE_LIBS[@]}" "$src" "${LINK_POST_LIBS[@]}" \
+                    -o "$(mktemp -d)/ucontext.wasm" >"$local_log" 2>&1; then
+                echo "Error: $(basename "$src") linked, but ucontext is documented as unsupported" >&2
+                rm -f "$local_log"; exit 1
+            fi
+            if ! grep -qE 'undefined symbol: (getcontext|makecontext|swapcontext|setcontext)$' "$local_log"; then
+                echo "Error: $(basename "$src") failed to link for an unexpected reason:" >&2
+                cat "$local_log" >&2; rm -f "$local_log"; exit 1
+            fi
+            rm -f "$local_log"
+            echo "  $(basename "$src" .c): does not link (ucontext unsupported) — as expected"
             ;;
         posix-timer-thread.c)
             # Keep the fixture's pthread capacity small so its timer-helper
@@ -506,7 +530,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--import-memory
         -Wl,--shared-memory
         -Wl,--max-memory=1073741824
-        -Wl,--allow-undefined
+        -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
         -Wl,--table-base=3
         -Wl,--export-table
         -Wl,--growable-table
@@ -516,7 +540,6 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--export=__tls_align
         -Wl,--export=__stack_pointer
         -Wl,--export=__wasm_thread_init
-        -Wl,--export=__abi_version
     )
 
     for src in \
@@ -559,13 +582,15 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
     # fork anchor. Keep it in the test-only tree for symmetry with wasm32.
     sjlj_noexcept_src="$REPO_ROOT/programs/sjlj_noexcept_boundary.cpp"
     if [ -f "$sjlj_noexcept_src" ]; then
-        ensure_libcxx_in_sysroot wasm64 "$SYSROOT64"
+        LIBCXX_PREFIX_64="$(resolve_libcxx_prefix wasm64)"
         mkdir -p "$TEST_FIXTURE_DIR/wasm64"
         echo "  Compiling sjlj_noexcept_boundary (raw wasm64 test fixture)..."
+        # shellcheck disable=SC2046
         wasm64posix-c++ \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
+            $(libcxx_flags "$LIBCXX_PREFIX_64") \
             "$sjlj_noexcept_src" \
             -lc++ -lc++abi \
             -o "$TEST_FIXTURE_DIR/wasm64/sjlj_noexcept_boundary.raw.wasm"

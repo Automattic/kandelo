@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 import {
   FORK_CAP_DYLINK_MAIN,
   FORK_CAP_SIDE_ENTRY,
@@ -30,10 +31,10 @@ const instrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
 const buildDir = join(tmpdir(), "kandelo-fork-from-side-module");
 const hasPrerequisites =
   existsSync(join(sysroot, "lib", "libc.a"))
-  && (
-    existsSync(join(repoRoot, "binaries", "kernel.wasm"))
-    || existsSync(join(repoRoot, "local-binaries", "kernel.wasm"))
-  );
+  // The kernel is found the way the test helper boots it (the resolver);
+  // ./run.sh setup installs it under local-binaries/source-only-v1/, which a
+  // probe of binaries/ and local-binaries/ missed, silently skipping this.
+  && tryResolveBinary("kernel.wasm") !== null;
 
 if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisites) {
   throw new Error(

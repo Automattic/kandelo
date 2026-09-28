@@ -118,7 +118,7 @@ pub mod process_layout;
 ///     `fork`, and `exec` so a buffered record is delivered once rather than
 ///     duplicated into each descendant. These are new surfaces, not changes to
 ///     existing 43 contracts, so they ride ABI 43.
-pub const ABI_VERSION: u32 = 43;
+pub const ABI_VERSION: u32 = 44;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1954,6 +1954,69 @@ pub mod abi {
     /// the host can thread channel / TLS state through fork and exec.
     pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &["__channel_base", "__tls_base"];
 
+    /// Kind of an import the host supplies to a user program from `env`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HostEnvImportKind {
+        Function,
+        Global,
+        Memory,
+        Table,
+        Tag,
+    }
+
+    impl HostEnvImportKind {
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::Function => "function",
+                Self::Global => "global",
+                Self::Memory => "memory",
+                Self::Table => "table",
+                Self::Tag => "tag",
+            }
+        }
+    }
+
+    /// One import the host supplies to a user program from the `env` module.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HostEnvImport {
+        pub name: &'static str,
+        pub kind: HostEnvImportKind,
+        /// Allowed to stay undefined when an executable is linked. False only
+        /// for imports a later build step adds (none today outside the fork
+        /// runtime, which is declared by `WPK_FORK_REQUIRED_*`).
+        pub link_time: bool,
+        pub reason: &'static str,
+    }
+
+    /// The `env` imports the host really provides to user programs, besides
+    /// the fork runtime's imports (declared by `WPK_FORK_REQUIRED_IMPORTS`,
+    /// `WPK_FORK_REQUIRED_TABLE_IMPORTS`, `WPK_FORK_GLOBAL_IMPORTS`, and the
+    /// unwind tag, which fork instrumentation adds after linking).
+    ///
+    /// WHY one declaration: the SDK's link-time allowance
+    /// (`libc/glue/kandelo-host-imports.txt`) and the host's load-time check
+    /// are both generated from this list, so a program can leave a symbol
+    /// undefined only if the host will supply it. C and C++ library functions
+    /// never belong here; they come from libc, libc++abi, or libc++. Before
+    /// ABI 44 the SDK linked with `--allow-undefined` and the host stubbed any
+    /// unknown import with a throwing function, so configure checks accepted
+    /// functions Kandelo lacks and programs trapped when they first called one.
+    pub const HOST_ENV_IMPORTS: &[HostEnvImport] = &[
+        HostEnvImport { name: "memory", kind: HostEnvImportKind::Memory, link_time: true, reason: "process linear memory" },
+        HostEnvImport { name: "__channel_base", kind: HostEnvImportKind::Global, link_time: true, reason: "syscall channel base address" },
+        HostEnvImport { name: "__c_longjmp", kind: HostEnvImportKind::Tag, link_time: true, reason: "setjmp/longjmp exception tag shared with the host" },
+        HostEnvImport { name: "__cpp_exception", kind: HostEnvImportKind::Tag, link_time: true, reason: "C++ exception tag shared with the host" },
+        HostEnvImport { name: "__wasm_dlopen_main", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: main-program handle" },
+        HostEnvImport { name: "__wasm_dlopen_prepare", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: stage a side module" },
+        HostEnvImport { name: "__wasm_dlopen_next", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: advance a staged load" },
+        HostEnvImport { name: "__wasm_dlopen_commit", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: commit a staged load" },
+        HostEnvImport { name: "__wasm_dlopen", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: single-step load" },
+        HostEnvImport { name: "__wasm_dlsym", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: symbol lookup" },
+        HostEnvImport { name: "__wasm_dlclose", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: unload" },
+        HostEnvImport { name: "__wasm_dlerror", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: last error text" },
+        HostEnvImport { name: "__wasm_posix_vm_interrupt_after", kind: HostEnvImportKind::Function, link_time: true, reason: "host timer that sets a VM interrupt flag (PHP max_execution_time)" },
+    ];
+
     /// Pointer-sensitive value types used by program-artifact function
     /// requirements. `Pointer` resolves to i32 for wasm32 artifacts and i64
     /// for wasm64 artifacts.
@@ -1986,6 +2049,15 @@ pub mod abi {
         pub element: ProgramArtifactValueType,
         pub minimum: u64,
         pub maximum: Option<u64>,
+    }
+
+    /// One immutable global import that fork instrumentation adds to a
+    /// program artifact.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ProgramArtifactGlobalImport {
+        pub module: &'static str,
+        pub name: &'static str,
+        pub value: ProgramArtifactValueType,
     }
 
     /// One required function export in an instrumented program artifact.
@@ -2705,6 +2777,25 @@ pub mod abi {
         },
     ];
 
+    /// Immutable globals fork instrumentation imports, which the host's fork
+    /// runtime supplies per Worker: the activation index the exception and GC
+    /// codecs read, and the address of the shared table-generation fence
+    /// (always i64, whatever the pointer width). Like the lists above, these
+    /// are `env` imports a program may carry although no link left them
+    /// undefined, so import checks read them from here.
+    pub const WPK_FORK_GLOBAL_IMPORTS: &[ProgramArtifactGlobalImport] = &[
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+            value: I32,
+        },
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_GENERATION_ADDR,
+            value: I64,
+        },
+    ];
+
     pub const WPK_FORK_REQUIRED_EXPORTS: &[ProgramArtifactExport] = &[
         ProgramArtifactExport {
             name: WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
@@ -3003,6 +3094,7 @@ pub mod abi {
         "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
+        "kernel_install_host_stdin_pipe",
         "kernel_ipc_shm_lookup_mapping_for_task",
         "kernel_ipc_shm_record_mapping_for_process",
         "kernel_ipc_shm_record_mapping_for_task",

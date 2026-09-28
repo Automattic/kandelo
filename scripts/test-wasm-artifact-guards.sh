@@ -516,6 +516,28 @@ WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
     wasm_require_approved_reserved_env_imports \
     "$work/approved-reserved-import.wasm"
 
+# The approval comes from the generated allowance
+# (libc/glue/kandelo-host-imports.txt, from HOST_ENV_IMPORTS), not from a list
+# in the guard: with an allowance that omits the name, the same import is
+# refused, on both inspection paths.
+grep -v '^__wasm_posix_vm_interrupt_after$' \
+    "$REPO_ROOT/libc/glue/kandelo-host-imports.txt" >"$work/no-vm-interrupt-imports.txt"
+for tool in "$missing_structural_tool" ""; do
+    if KANDELO_HOST_IMPORTS_FILE="$work/no-vm-interrupt-imports.txt" \
+        WASM_POSIX_FORK_INSTRUMENT="$tool" \
+        wasm_require_approved_reserved_env_imports \
+        "$work/approved-reserved-import.wasm" 2>/dev/null; then
+        echo "ERROR: reserved import approved without an entry in the host-import allowance (tool='$tool')" >&2
+        exit 1
+    fi
+done
+if KANDELO_HOST_IMPORTS_FILE="$work/does-not-exist.txt" \
+    wasm_require_approved_reserved_env_imports \
+    "$work/approved-reserved-import.wasm" 2>/dev/null; then
+    echo "ERROR: reserved import approved with a missing host-import allowance" >&2
+    exit 1
+fi
+
 cat >"$work/nonreserved-import.wat" <<'WAT'
 (module
   (import "env" "package_owned_callback" (func))

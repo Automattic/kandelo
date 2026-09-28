@@ -821,6 +821,11 @@ jobs:
       - name: Test package build root contract
         run: bash scripts/dev-shell.sh bash scripts/test-package-build-roots.sh
 
+      - name: Check executables link only against the host-import allowance
+        run: |
+          bash scripts/test-check-no-allow-undefined.sh
+          bash scripts/check-no-allow-undefined.sh
+
       - name: Test package publish flow
         if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
         run: |
@@ -1328,6 +1333,9 @@ jobs:
             cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
+            # Every built program imports from env only what the host
+            # provides (HOST_ENV_IMPORTS + the fork runtime's imports).
+            bash scripts/check-program-env-imports.sh
             bash scripts/build-rootfs.sh
           '
 

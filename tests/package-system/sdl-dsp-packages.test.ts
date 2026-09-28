@@ -75,9 +75,9 @@ describe("SDL OSS package recipes", () => {
     expect(sdl3).toContain("-DSDL_UNIX_CONSOLE_BUILD=ON");
     expect(sdl3).toContain("-DSDL_ALSA=OFF");
     expect(sdl3).toContain("-DSDL_PULSEAUDIO=OFF");
-    const sdl3Toolchain = source(
-      "packages/registry/sdl3/cmake/kandelo-toolchain.cmake",
-    );
+    // The Kandelo CMake identity is shared SDK platform, not SDL3's own.
+    expect(sdl3).toContain('-DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-toolchain.cmake"');
+    const sdl3Toolchain = source("sdk/cmake/kandelo-toolchain.cmake");
     expect(sdl3Toolchain).toContain("set(CMAKE_NM wasm32posix-nm)");
     expect(sdl3Toolchain).toContain("set(CMAKE_STRIP wasm32posix-strip)");
   });

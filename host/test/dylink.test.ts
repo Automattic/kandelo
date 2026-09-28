@@ -1435,7 +1435,9 @@ describe("side-module fork contract", () => {
       ABI_VERSION - 1,
     );
     expect(() => loadSharedLibrarySync("libstale.so", stale, options))
-      .toThrow(/declares ABI 42, but the host requires ABI 43/);
+      .toThrow(
+        `declares ABI ${ABI_VERSION - 1}, but the host requires ABI ${ABI_VERSION}`,
+      );
 
     const missing = buildDylinkWat(
       sideWat,

@@ -75,6 +75,19 @@ set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR}")
 # --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS) ---
 # Path to the kandelo glue objs that the SDK normally injects. We hand
 # them to CMake via CMAKE_EXE_LINKER_FLAGS_INIT so cmake's link rule
+# Executables may leave undefined only the imports the host supplies:
+# libc/glue/kandelo-host-imports.txt, generated from
+# shared::abi::HOST_ENV_IMPORTS (same contract as sdk/src/lib/flags.ts).
+if(DEFINED ENV{WASM_POSIX_GLUE_DIR})
+  set(_KANDELO_GLUE_DIR "$ENV{WASM_POSIX_GLUE_DIR}")
+else()
+  get_filename_component(_KANDELO_GLUE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../libc/glue" ABSOLUTE)
+endif()
+set(_KANDELO_HOST_IMPORTS "${_KANDELO_GLUE_DIR}/kandelo-host-imports.txt")
+if(NOT EXISTS "${_KANDELO_HOST_IMPORTS}")
+  message(FATAL_ERROR "Link allowance not found at ${_KANDELO_HOST_IMPORTS}")
+endif()
+
 # picks them up for `add_executable` targets (espeak-ng-bin).
 get_filename_component(_TOOLCHAIN_DIR2 "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
 set(_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/glue-objs")
@@ -87,7 +100,7 @@ set(WASM32_LINK_FLAGS
   "-Wl,--import-memory"
   "-Wl,--shared-memory"
   "-Wl,--max-memory=1073741824"
-  "-Wl,--allow-undefined"
+  "-Wl,--allow-undefined-file=${_KANDELO_HOST_IMPORTS}"
   "-Wl,--global-base=1114112"
   "-Wl,--table-base=3"
   "-Wl,--export-table"
@@ -102,8 +115,11 @@ set(WASM32_LINK_FLAGS
 )
 string(REPLACE ";" " " WASM32_LINK_FLAGS_STR "${WASM32_LINK_FLAGS}")
 
+# speechPlayer is C++, and -nostdlib keeps the driver from adding its runtime,
+# so name libc++/libc++abi (indexed into the sysroot by build-espeak-ng.sh).
+# Before honest links the missing operator new/delete became host imports.
 set(CMAKE_EXE_LINKER_FLAGS_INIT
-  "${WASM32_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc"
+  "${WASM32_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc++ -lc++abi -lc"
 )
 
 # --- Type sizes for wasm32 ILP32 ---
