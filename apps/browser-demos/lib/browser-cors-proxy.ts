@@ -5,20 +5,27 @@ import {
 
 const defaultConfig = validateBrowserCorsProxyConfig({
   url: "https://wordpress-playground-cors-proxy.net/?",
-  // WHY range/if-range: forwarding them is what makes a byte-range read
-  // possible at all. They are relayed opaquely; nothing here parses them. A
-  // proxy that still ignores them answers 200 with the whole entity, which
-  // fetchByteRange() reports as such instead of as the requested slice.
+  // WHY range: forwarding it is what makes a byte-range read possible at
+  // all. It is relayed opaquely; nothing here parses it. A relay that still
+  // ignores it answers 200 with the whole entity, which fetchByteRange()
+  // reports as such instead of as the requested slice.
+  //
+  // WHY NOT if-range: the Playground proxy's preflight does not allow it, and
+  // If-Range is never CORS-safelisted, so listing it here would make every
+  // request that carries it fail preflight. Unlisted, an anonymous GET drops
+  // it with a diagnostic, which is how it behaved before ranges were added.
   allowedRequestHeaderNames: [
     "accept",
     "content-type",
     "git-protocol",
-    "if-range",
     "range",
     "wp_blog",
     "wp_install",
   ],
   allowAnonymousGetHeaderOmission: true,
+  // WORKAROUND: the Playground proxy's front end strips Range; see
+  // BrowserCorsProxyConfig.rangeRequestHeaderAlias for when to remove this.
+  rangeRequestHeaderAlias: "x-cors-proxy-range",
 });
 if (defaultConfig === undefined) {
   throw new Error("default browser CORS proxy configuration is missing");

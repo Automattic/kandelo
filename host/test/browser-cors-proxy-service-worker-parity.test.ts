@@ -49,6 +49,14 @@ describe("browser CORS proxy service-worker parity", () => {
     expect(serviceWorkerSource).toMatch(/indexOf\("sec-"\)\s*===\s*0/);
   });
 
+  it("mirrors a forwarded Range into the configured alias like project()", () => {
+    // Behavior is proven in a real browser by browser-cors-proxy.spec.ts;
+    // this guards that the hand-maintained copy still reads the same field.
+    expect(serviceWorkerSource).toMatch(
+      /config\.rangeRequestHeaderAlias && range !== null[\s\S]{0,80}headers\.set\(config\.rangeRequestHeaderAlias, range\)/,
+    );
+  });
+
   it("checks credential headers before the browser-controlled drop in the service worker", () => {
     // proxy-authorization matches the proxy- prefix, so the credential check
     // must run first or credentials would be silently dropped instead of

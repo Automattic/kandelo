@@ -9,7 +9,10 @@
  * ZIP tail read, silently corrupt metadata. This helper classifies the answer
  * once, so every caller has to handle the three real outcomes explicitly:
  *
- * - `partial`: a `206` whose `Content-Range` is exactly the range requested.
+ * - `partial`: a `206` whose `Content-Range` answers the range requested:
+ *   the exact bounded range (clamped to the representation's end), the
+ *   final bytes for a suffix range, or a run starting at the requested
+ *   position for an open-ended range (servers may send those in chunks).
  * - `whole-entity`: a `200`. The server or a relay did not apply the range;
  *   the body is the complete representation from offset 0.
  * - `failed`: anything else, including a `206` for a different range.
@@ -17,6 +20,13 @@
  * Transport failures (network errors, aborts) still reject, like `fetch()`.
  * The helper does not parse caller-supplied range syntax: callers describe
  * the range structurally and the helper writes the one header it validates.
+ *
+ * Several reads of one resource need to know it did not change between
+ * them. HTTP's tool for that is `If-Range`, but the browser CORS proxy
+ * cannot carry it (its preflight does not allow it). `entityTag` instead
+ * compares the answer's strong `ETag` with one the caller already saw. That
+ * needs no request field, costs no extra round trip, and fails the read
+ * rather than splicing bytes of two versions together.
  */
 
 export type ByteRange =
@@ -70,12 +80,16 @@ export interface ByteRangeFetchOptions {
   readonly fetch?: ByteRangeFetch;
   /** Extra request fields. Must not carry `Range` or `If-Range`. */
   readonly headers?: HeadersInit;
-  /** Entity tag or HTTP-date sent as `If-Range`. */
-  readonly ifRange?: string;
+  /**
+   * A strong `ETag` from an earlier response for this resource. A `206`
+   * with a different or missing `ETag` is `failed`: the resource changed.
+   */
+  readonly entityTag?: string;
   readonly signal?: AbortSignal;
 }
 
-const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+|\*)$/;
+// Range units are case-insensitive (RFC 9110 section 14.1).
+const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i;
 
 /** Format a structured range as a single-range `Range` header value. */
 export function byteRangeHeaderValue(range: ByteRange): string {
@@ -106,8 +120,10 @@ export async function fetchByteRange(
       "fetchByteRange owns Range and If-Range; pass the range structurally",
     );
   }
+  if (options.entityTag !== undefined && !isStrongEntityTag(options.entityTag)) {
+    throw new TypeError("fetchByteRange entityTag must be a strong ETag");
+  }
   headers.set("Range", byteRangeHeaderValue(range));
-  if (options.ifRange !== undefined) headers.set("If-Range", options.ifRange);
 
   const fetchImpl = options.fetch ??
     ((input: string, init: RequestInit) => globalThis.fetch(input, init));
@@ -147,7 +163,8 @@ export async function fetchByteRange(
   const start = Number(match[1]);
   const end = Number(match[2]);
   const completeLength = match[3] === "*" ? undefined : Number(match[3]);
-  const mismatch = rangeMismatch(range, start, end, completeLength);
+  const mismatch = unsafePosition(start, end, completeLength) ??
+    rangeMismatch(range, start, end, completeLength);
   if (mismatch !== undefined) {
     await discardBody(response);
     return {
@@ -155,6 +172,20 @@ export async function fetchByteRange(
       status: 206,
       reason: `206 response Content-Range ${contentRange} ${mismatch}`,
     };
+  }
+
+  if (options.entityTag !== undefined) {
+    const etag = response.headers.get("etag");
+    if (etag !== options.entityTag) {
+      await discardBody(response);
+      return {
+        kind: "failed",
+        status: 206,
+        reason: etag === null
+          ? `206 response has no ETag to confirm it is still ${options.entityTag}`
+          : `resource changed: ETag ${etag} is not ${options.entityTag}`,
+      };
+    }
   }
 
   const expectedLength = end - start + 1;
@@ -209,6 +240,25 @@ function rangeMismatch(
     ? range.end
     : Math.min(range.end, completeLength - 1);
   return end === expectedEnd ? undefined : `does not end at ${expectedEnd}`;
+}
+
+/** Positions JavaScript numbers cannot hold exactly would be misplaced. */
+function unsafePosition(
+  start: number,
+  end: number,
+  completeLength: number | undefined,
+): string | undefined {
+  const values = completeLength === undefined
+    ? [start, end]
+    : [start, end, completeLength];
+  return values.every(Number.isSafeInteger)
+    ? undefined
+    : "has positions beyond Number.MAX_SAFE_INTEGER";
+}
+
+/** A strong entity tag: a quoted opaque string without the `W/` prefix. */
+export function isStrongEntityTag(value: string): boolean {
+  return /^"[^"]*"$/.test(value);
 }
 
 function assertPosition(value: number, name: string): void {

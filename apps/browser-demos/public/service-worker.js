@@ -1001,7 +1001,9 @@ if (typeof window !== "undefined") {
     if (
       typeof CORS_PROXY_CONFIG.url !== "string" ||
       !Array.isArray(CORS_PROXY_CONFIG.allowedRequestHeaderNames) ||
-      typeof CORS_PROXY_CONFIG.allowAnonymousGetHeaderOmission !== "boolean"
+      typeof CORS_PROXY_CONFIG.allowAnonymousGetHeaderOmission !== "boolean" ||
+      (CORS_PROXY_CONFIG.rangeRequestHeaderAlias !== undefined &&
+        typeof CORS_PROXY_CONFIG.rangeRequestHeaderAlias !== "string")
     ) {
       return null;
     }
@@ -1119,6 +1121,13 @@ if (typeof window !== "undefined") {
         unsupported.push(lower);
       }
     });
+    // WORKAROUND, mirroring BrowserCorsProxy.project(): the Playground proxy's
+    // front end strips Range, so that proxy also reads the same value from an
+    // alias field. Send both; remove with rangeRequestHeaderAlias.
+    var range = headers.get("range");
+    if (config.rangeRequestHeaderAlias && range !== null) {
+      headers.set(config.rangeRequestHeaderAlias, range);
+    }
     var diagnosticNames = Array.from(new Set(unsupported)).sort();
     if (diagnosticNames.length > 0) {
       var canOmit = config.allowAnonymousGetHeaderOmission &&

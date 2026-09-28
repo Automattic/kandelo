@@ -133,7 +133,7 @@ existing Linux-VT guests working and preserve Node/browser parity.
 
 ### Replace the constrained public CORS proxy with an owned relay
 
-The current public proxy has a narrow seven-name request-header profile. A
+The current public proxy has a narrow six-name request-header profile. A
 Kandelo-owned authenticated relay should add explicit origin policy, private
 network controls, rate limiting, abuse prevention, response limits, and
 operational ownership. Once that capability exists, remove anonymous GET
@@ -143,20 +143,40 @@ current browser boundary as complete POSIX socket or HTTP fidelity.
 **Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
 deployment infrastructure and browser acceptance
 
-### Honor byte ranges at the production CORS proxy
+### Drop the `X-Cors-Proxy-Range` workaround once `Range` reaches the proxy
 
-Kandelo forwards `Range`/`If-Range` to the configured proxy, and the
-development relay honors them, but the default production proxy
-(`wordpress-playground-cors-proxy.net`) answers a ranged request with `200`
-and the whole entity, and its preflight does not allow `Range`. Until that
-service relays ranges, a browser ranged read through it either fails at
-preflight or downloads the whole entity (reported by `fetchByteRange()` as
-`whole-entity`). Once it ships, re-measure a suffix read and a bounded read
-through the public proxy, add a browser acceptance test against it, and
-update "Byte-range reads through the proxy" in `docs/browser-support.md`.
+The default proxy's hosting front end strips `Range`, so the profile's
+`rangeRequestHeaderAlias` makes every proxy dispatch repeat `Range` as
+`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. The alias
+also makes every ranged request preflight. When `Range` reaches the proxy
+unchanged (re-measure a plain `Range: bytes=0-15` through
+`wordpress-playground-cors-proxy.net` for a `206`), remove
+`rangeRequestHeaderAlias` from the profile, `BrowserCorsProxy.project()`, the
+service worker, and the development relay, together with their tests and the
+"Byte-range reads through the proxy" text in `docs/browser-support.md`.
 
-**Files:** upstream proxy deployment, `docs/browser-support.md`,
-`apps/browser-demos/test/browser-cors-proxy.spec.ts`
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/lib/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/vite/dev-cors-proxy.ts`
+
+### Carry `If-Range` through the browser CORS proxy
+
+The proxy's preflight does not allow `If-Range`, so the browser host drops it
+from anonymous GETs (with a diagnostic) and fails other requests that carry
+it. A dropped `If-Range` makes a guest's conditional ranged request
+unconditional: after the resource changes, a resuming client receives a slice
+of the new version instead of the whole new entity. The Node.js host forwards
+`If-Range`, so this is a host divergence. Either the proxy allows and
+forwards `If-Range` (its front end also strips it, so it would need the same
+alias treatment as `Range`), or Kandelo implements its semantics at dispatch:
+send the range unconditionally and, when the `206` carries a validator other
+than the `If-Range` value, discard it and fetch the whole entity instead.
+
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`host/src/networking/fetch-backend.ts`,
+`host/src/networking/tls-network-backend.ts`,
+`apps/browser-demos/public/service-worker.js`, upstream proxy deployment
 
 ### Reject credentialed Fetch modes at the constrained proxy boundary
 
@@ -174,7 +194,7 @@ test that proves rejection happens before dispatch.
 
 git compresses the smart-HTTP `git-upload-pack` fetch request and sets
 `Content-Encoding: gzip`. The browser TLS-MITM currently decodes such bodies to
-identity and drops the header so the request fits the proxy's seven-name
+identity and drops the header so the request fits the proxy's six-name
 allow-list — a faithful *equivalent* of what the guest sent, but not a
 faithful *representation* of it. The more complete behavior is to forward
 `Content-Encoding` and the compressed body unchanged. That requires

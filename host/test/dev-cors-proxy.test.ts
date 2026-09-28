@@ -7,6 +7,7 @@ import {
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -140,7 +141,6 @@ describe("development CORS proxy", () => {
       "accept-encoding": "identity",
       "content-type": "application/json",
       "git-protocol": "version=2",
-      "if-range": '"v1"',
       range: "bytes=0-9",
       wp_blog: "https://blog.example/",
       wp_install: "yes",
@@ -491,7 +491,7 @@ describe("development CORS proxy", () => {
       const tail = await sendRequest({
         url: proxyUrl(relayRoot, `${upstreamRoot}/archive.zip`),
         method: "GET",
-        headers: { Range: "bytes=4074-4095", "If-Range": '"v1"' },
+        headers: { Range: "bytes=4074-4095" },
       });
       expect(tail.status).toBe(206);
       expect(tail.headers["content-range"]).toBe("bytes 4074-4095/4096");
@@ -501,7 +501,6 @@ describe("development CORS proxy", () => {
       expect(tail.body).not.toEqual(entity.subarray(0, 22));
 
       expect(observed[0]!.range).toBe("bytes=4074-4095");
-      expect(observed[0]!["if-range"]).toBe('"v1"');
       // Fetch appends its own `identity` for a ranged request, so the field
       // may list it twice; every listed coding must be identity.
       expect(
@@ -709,6 +708,134 @@ describe("development CORS proxy", () => {
       expect(outcome).toEqual({ status: 200, complete: false });
     } finally {
       upstream.closeAllConnections();
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  describe("range alias, like the production Playground proxy", () => {
+    function rangeEchoUpstream(observed: IncomingHttpHeaders[]): Server {
+      const entity = Buffer.from("0123456789abcdef");
+      return createServer((request, response) => {
+        observed.push(request.headers);
+        const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? "");
+        if (match === null) {
+          response.writeHead(200);
+          response.end(entity);
+          return;
+        }
+        const start = Number(match[1]);
+        const end = Number(match[2]);
+        response.writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/${entity.byteLength}`,
+        });
+        response.end(entity.subarray(start, end + 1));
+      });
+    }
+
+    it.each([
+      ["the alias alone", { "X-Cors-Proxy-Range": "bytes=4-7" }],
+      ["both with one value", { Range: "bytes=4-7", "X-Cors-Proxy-Range": "bytes=4-7" }],
+    ])("reads the range from %s and never forwards the alias", async (_label, headers) => {
+      const observed: IncomingHttpHeaders[] = [];
+      const upstream = rangeEchoUpstream(observed);
+      const relay = relayServer();
+      const upstreamRoot = await listen(upstream);
+      const relayRoot = await listen(relay);
+      try {
+        const result = await sendRequest({
+          url: proxyUrl(relayRoot, `${upstreamRoot}/file`),
+          method: "GET",
+          headers,
+        });
+        expect(result.status).toBe(206);
+        expect(result.headers["content-range"]).toBe("bytes 4-7/16");
+        expect(result.body.toString()).toBe("4567");
+        expect(observed[0]!.range).toBe("bytes=4-7");
+        expect(observed[0]!["x-cors-proxy-range"]).toBeUndefined();
+      } finally {
+        await Promise.all([close(relay), close(upstream)]);
+      }
+    });
+
+    it("rejects an alias that disagrees with Range before contacting upstream", async () => {
+      const observed: IncomingHttpHeaders[] = [];
+      const upstream = rangeEchoUpstream(observed);
+      const relay = relayServer();
+      const upstreamRoot = await listen(upstream);
+      const relayRoot = await listen(relay);
+      try {
+        const result = await sendRequest({
+          url: proxyUrl(relayRoot, `${upstreamRoot}/file`),
+          method: "GET",
+          headers: { Range: "bytes=0-1", "X-Cors-Proxy-Range": "bytes=2-3" },
+        });
+        expect(result.status).toBe(400);
+        expect(result.body.toString()).toContain("disagree");
+        expect(observed).toHaveLength(0);
+      } finally {
+        await Promise.all([close(relay), close(upstream)]);
+      }
+    });
+
+    it("ignores an empty alias", () => {
+      const projected = devCorsProxyRequestHeaders({
+        range: "bytes=0-1",
+        "x-cors-proxy-range": "",
+      });
+      expect(projected.get("range")).toBe("bytes=0-1");
+      expect(projected.has("x-cors-proxy-range")).toBe(false);
+    });
+  });
+
+  it("refuses to relay an encoded 206 whose Content-Range cannot describe the body", async () => {
+    const encoded = gzipSync(Buffer.alloc(64, 0x61));
+    const upstream = createServer((_request, response) => {
+      // Upstream ignored the identity request and compressed the slice.
+      response.writeHead(206, {
+        "Content-Encoding": "gzip",
+        "Content-Length": String(encoded.byteLength),
+        "Content-Range": `bytes 0-${encoded.byteLength - 1}/4096`,
+      });
+      response.end(encoded);
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+    try {
+      const result = await sendRequest({
+        url: proxyUrl(relayRoot, `${upstreamRoot}/file`),
+        method: "GET",
+        headers: { Range: `bytes=0-${encoded.byteLength - 1}` },
+      });
+      expect(result.status).toBe(502);
+      expect(result.headers["content-range"]).toBeUndefined();
+    } finally {
+      await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("drops an encoded upstream's Content-Length, which counts bytes the relay decoded", async () => {
+    const decoded = Buffer.alloc(4096, 0x61);
+    const encoded = gzipSync(decoded);
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, {
+        "Content-Encoding": "gzip",
+        "Content-Length": String(encoded.byteLength),
+      });
+      response.end(encoded);
+    });
+    const relay = relayServer();
+    const upstreamRoot = await listen(upstream);
+    const relayRoot = await listen(relay);
+    try {
+      const result = await sendRequest({
+        url: proxyUrl(relayRoot, `${upstreamRoot}/file`),
+        method: "GET",
+      });
+      expect(result.status).toBe(200);
+      expect(result.headers["content-length"]).toBeUndefined();
+      expect(result.body).toEqual(decoded);
+    } finally {
       await Promise.all([close(relay), close(upstream)]);
     }
   });

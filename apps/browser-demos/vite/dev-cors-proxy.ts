@@ -45,6 +45,14 @@ const ALLOWED_RESPONSE_HEADERS = new Set([
 ]);
 
 class EntityTooLargeError extends Error {}
+class RangeAliasConflictError extends Error {}
+
+// WORKAROUND, matching the production Playground proxy: that proxy also reads
+// a byte range from this alias because its front end strips Range. Honoring
+// it here keeps the development relay a faithful stand-in for the profile the
+// browser sends. Remove with BrowserCorsProxyConfig.rangeRequestHeaderAlias.
+const RANGE_REQUEST_HEADER_ALIAS =
+  DEFAULT_BROWSER_CORS_PROXY_CONFIG.rangeRequestHeaderAlias?.toLowerCase();
 
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -68,6 +76,19 @@ export function devCorsProxyRequestHeaders(
     if (!ALLOWED_REQUEST_HEADERS.has(lower)) continue;
     const value = headerValue(rawValue);
     if (value !== undefined) headers.set(name, value);
+  }
+  if (RANGE_REQUEST_HEADER_ALIAS !== undefined) {
+    // Like the production proxy: an empty alias is ignored, the alias is
+    // never forwarded, and an alias that disagrees with Range is an error
+    // rather than a silent choice between two ranges.
+    const aliased = headerValue(incoming[RANGE_REQUEST_HEADER_ALIAS]);
+    if (aliased !== undefined && aliased !== "") {
+      const range = headers.get("range");
+      if (range !== null && range !== aliased) {
+        throw new RangeAliasConflictError();
+      }
+      headers.set("range", aliased);
+    }
   }
   if (headers.has("range")) {
     // WHY: byte offsets address one representation. A fetch that negotiated
@@ -175,11 +196,12 @@ async function streamResponseBody(
 function relayedContentLength(upstream: Response): string | undefined {
   const raw = upstream.headers.get("content-length");
   if (raw === null || !/^\d+$/.test(raw)) return undefined;
+  return hasContentCoding(upstream) ? undefined : raw;
+}
+
+function hasContentCoding(upstream: Response): boolean {
   const encoding = upstream.headers.get("content-encoding");
-  if (encoding !== null && encoding.trim().toLowerCase() !== "identity") {
-    return undefined;
-  }
-  return raw;
+  return encoding !== null && encoding.trim().toLowerCase() !== "identity";
 }
 
 function fail(response: ServerResponse, status: number, message: string): void {
@@ -328,6 +350,19 @@ export async function relayDevCorsProxyRequest(
     return;
   }
 
+  let upstreamHeaders: Headers;
+  try {
+    upstreamHeaders = devCorsProxyRequestHeaders(request.headers);
+  } catch (error) {
+    if (!(error instanceof RangeAliasConflictError)) throw error;
+    fail(
+      response,
+      400,
+      `Range and ${RANGE_REQUEST_HEADER_ALIAS} disagree`,
+    );
+    return;
+  }
+
   // WHY: a client that gives up (an aborted fetch, a closed tab) must not
   // leave the relay downloading on its behalf. Before the body streams this
   // signal cancels the upstream request; afterwards pipeline() does.
@@ -340,7 +375,7 @@ export async function relayDevCorsProxyRequest(
   try {
     const upstream = await fetchImpl(targetUrl, {
       method,
-      headers: devCorsProxyRequestHeaders(request.headers),
+      headers: upstreamHeaders,
       signal: upstreamAbort.signal,
       body:
         method === "POST" && requestBody.byteLength > 0
@@ -384,6 +419,15 @@ export async function relayDevCorsProxyRequest(
       return;
     }
 
+    if (upstream.status === 206 && hasContentCoding(upstream)) {
+      // Fetch decoded the body, so its Content-Range, which names bytes of the
+      // encoded representation, would describe bytes the relay never sends.
+      // Upstream ignored the identity request; fail rather than mislabel.
+      await upstream.body?.cancel().catch(() => {});
+      fail(response, 502, "Encoded partial content cannot be relayed");
+      return;
+    }
+
     response.statusCode = upstream.status;
     response.statusMessage = upstream.statusText;
     copySafeResponseHeaders(upstream.headers, response);
@@ -396,8 +440,10 @@ export async function relayDevCorsProxyRequest(
     if (response.headersSent) {
       // The status line is already on the wire, so a late failure (an upstream
       // reset, or a body that outgrew an undeclared length past the cap) can
-      // only be reported by cutting the response short. The client sees a
-      // truncated transfer, never a complete-looking body.
+      // only be reported by cutting the response short. pipeline() has
+      // already destroyed the response for any failure inside it; this call is
+      // idempotent and keeps the invariant local. The client sees a truncated
+      // transfer, never a complete-looking body.
       response.destroy();
       return;
     }

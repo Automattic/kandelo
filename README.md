@@ -328,9 +328,10 @@ already active, reload the page; clearing site data may be needed if the browser
 keeps an older service worker around.
 
 The application owns one complete proxy profile. The current profile relays
-only `Accept`, `Content-Type`, `git-protocol`, `If-Range`, `Range`, `wp_blog`,
-and `wp_install`, by case-insensitive field name, at every configured proxy
-dispatch. Unsupported
+only `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`, and
+`wp_install`, by case-insensitive field name, at every configured proxy
+dispatch, and also sends `Range` as `X-Cors-Proxy-Range` (a workaround the
+default proxy needs because its front end strips `Range`). Unsupported
 fields may be omitted with a diagnostic only for anonymous bodyless GETs;
 lossy credentialed, body-bearing, or non-GET requests fail before dispatch.
 This is a browser transport boundary, not full HTTP-header fidelity. Direct

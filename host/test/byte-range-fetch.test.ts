@@ -37,7 +37,10 @@ function rangeCapableOrigin(observed: Observed[] = []) {
     }
     return new Response(ENTITY.slice(start, end + 1), {
       status: 206,
-      headers: { "Content-Range": `bytes ${start}-${end}/${ENTITY.length}` },
+      headers: {
+        "Content-Range": `bytes ${start}-${end}/${ENTITY.length}`,
+        ETag: '"v1"',
+      },
     });
   };
 }
@@ -86,7 +89,7 @@ describe("fetchByteRange", () => {
       {
         fetch: rangeCapableOrigin(observed),
         headers: { Accept: "application/zip" },
-        ifRange: '"v1"',
+        entityTag: '"v1"',
         signal: controller.signal,
       },
     );
@@ -97,7 +100,9 @@ describe("fetchByteRange", () => {
     expect(await result.bytes()).toEqual(ENTITY.slice(48, 64));
     expect(observed).toHaveLength(1);
     expect(observed[0]!.headers.get("range")).toBe("bytes=48-63");
-    expect(observed[0]!.headers.get("if-range")).toBe('"v1"');
+    // The entity check happens on the answer; no If-Range goes out, because
+    // the browser CORS proxy cannot carry it.
+    expect(observed[0]!.headers.get("if-range")).toBeNull();
     expect(observed[0]!.headers.get("accept")).toBe("application/zip");
     expect(observed[0]!.signal).toBe(controller.signal);
   });
@@ -184,6 +189,69 @@ describe("fetchByteRange", () => {
     expect(result.status).toBe(status);
     expect(result.reason).toMatch(reason);
     if (status !== 416) expect(cancelled).toBe(true);
+  });
+
+  it("accepts a range unit in any letter case", async () => {
+    const result = await fetchByteRange(
+      URL_UNDER_TEST,
+      { start: 0, end: 3 },
+      { fetch: answering(206, "BYTES 0-3/64", ENTITY.slice(0, 4)) },
+    );
+    expect(result.kind).toBe("partial");
+  });
+
+  it("fails on positions a JavaScript number cannot hold exactly", async () => {
+    const huge = "9007199254740993"; // MAX_SAFE_INTEGER + 2
+    const result = await fetchByteRange(
+      URL_UNDER_TEST,
+      { start: 0 },
+      { fetch: answering(206, `bytes 0-3/${huge}`, ENTITY.slice(0, 4)) },
+    );
+    expect(result).toMatchObject({
+      kind: "failed",
+      reason: expect.stringMatching(/MAX_SAFE_INTEGER/),
+    });
+  });
+
+  it.each<[string, string | null, RegExp]>([
+    ["a different ETag", '"v2"', /resource changed: ETag "v2" is not "v1"/],
+    ["a weak form of the same ETag", 'W/"v1"', /resource changed/],
+    ["no ETag", null, /no ETag to confirm/],
+  ])("fails when the entity check sees %s", async (_label, etag, reason) => {
+    const result = await fetchByteRange(
+      URL_UNDER_TEST,
+      { start: 0, end: 3 },
+      {
+        entityTag: '"v1"',
+        fetch: async () =>
+          new Response(ENTITY.slice(0, 4), {
+            status: 206,
+            headers: {
+              "Content-Range": "bytes 0-3/64",
+              ...(etag === null ? {} : { ETag: etag }),
+            },
+          }),
+      },
+    );
+    expect(result).toMatchObject({ kind: "failed", reason: expect.stringMatching(reason) });
+  });
+
+  it("does not apply the entity check to a whole-entity answer", async () => {
+    // A 200 is the whole current resource from offset 0, so there is nothing
+    // to splice; the caller reads it as a fresh copy.
+    const result = await fetchByteRange(
+      URL_UNDER_TEST,
+      { start: 0, end: 3 },
+      { entityTag: '"v1"', fetch: rangeStrippingRelay },
+    );
+    expect(result.kind).toBe("whole-entity");
+  });
+
+  it("refuses a weak entity tag, which cannot vouch for byte identity", async () => {
+    await expect(fetchByteRange(URL_UNDER_TEST, { start: 0 }, {
+      entityTag: 'W/"v1"',
+      fetch: rangeCapableOrigin(),
+    })).rejects.toThrow(/strong ETag/);
   });
 
   it("rejects a 206 body whose length contradicts Content-Range", async () => {

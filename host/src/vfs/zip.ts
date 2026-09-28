@@ -8,7 +8,10 @@
 
 import { Inflate, inflateSync } from "fflate";
 import { FILE_MODES } from "../generated/abi";
-import { fetchByteRange } from "../networking/byte-range-fetch";
+import {
+  fetchByteRange,
+  isStrongEntityTag,
+} from "../networking/byte-range-fetch";
 
 // --- Zip format signatures ---
 
@@ -333,10 +336,13 @@ export async function fetchZipCentralDirectory(
     return parseWholeArchive(resp);
   }
 
-  // If-Range makes a changed archive come back whole instead of as a slice
-  // of a different entity. It requires a strong validator.
+  // The tail and directory are separate reads, so the archive could change
+  // between them. With a strong ETag, each ranged answer must carry the same
+  // one, or the read fails instead of mixing two versions. (If-Range would
+  // do this in one request, but the browser CORS proxy cannot carry it.)
+  // Without one, only a change in total length is caught.
   const etag = headResp.headers.get("etag");
-  const ifRange = etag !== null && !etag.startsWith("W/") ? etag : undefined;
+  const entityTag = etag !== null && isStrongEntityTag(etag) ? etag : undefined;
 
   // Step 2: Fetch tail to find EOCD
   const tailSize = Math.min(contentLength, EOCD_MAX_SEARCH);
@@ -344,7 +350,7 @@ export async function fetchZipCentralDirectory(
   const tail = await fetchByteRange(
     url,
     { start: tailStart, end: contentLength - 1 },
-    { ifRange },
+    { entityTag },
   );
   if (tail.kind === "whole-entity") return parseWholeArchive(tail.response);
   if (tail.kind === "failed") {
@@ -378,7 +384,7 @@ export async function fetchZipCentralDirectory(
   const cd = await fetchByteRange(
     url,
     { start: cdOffset, end: cdEnd },
-    { ifRange },
+    { entityTag },
   );
   if (cd.kind === "whole-entity") return parseWholeArchive(cd.response);
   if (cd.kind === "failed") {

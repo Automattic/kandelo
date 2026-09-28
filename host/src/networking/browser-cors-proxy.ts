@@ -7,6 +7,17 @@ export interface BrowserCorsProxyConfig {
   readonly url: string;
   readonly allowedRequestHeaderNames: readonly string[];
   readonly allowAnonymousGetHeaderOmission: boolean;
+  /**
+   * A second request field this proxy reads a byte range from.
+   *
+   * WORKAROUND: the WordPress Playground proxy's hosting front end strips
+   * `Range` before the proxy sees it, so that proxy also accepts the same
+   * value as `X-Cors-Proxy-Range` and forwards it upstream as `Range`.
+   * Projection copies an outgoing `Range` into this field verbatim and keeps
+   * `Range` itself, which is the combination that proxy documents as safe
+   * after the front end is fixed. Remove when `Range` reaches that proxy.
+   */
+  readonly rangeRequestHeaderAlias?: string;
 }
 
 export class BrowserCorsProxyRequestError extends Error {
@@ -112,10 +123,36 @@ export function validateBrowserCorsProxyConfig(
     },
   );
 
+  const alias = value.rangeRequestHeaderAlias;
+  if (alias !== undefined) {
+    if (typeof alias !== "string" || !HTTP_FIELD_NAME.test(alias)) {
+      throw new TypeError(
+        "browser CORS proxy rangeRequestHeaderAlias must be an HTTP field-name token",
+      );
+    }
+    if (asciiCaseInsensitiveEqual(alias, "range")) {
+      throw new TypeError(
+        "browser CORS proxy rangeRequestHeaderAlias must differ from Range",
+      );
+    }
+    // The alias is written by projection from Range, never taken from the
+    // caller: a guest-supplied value could disagree with the Range it sent.
+    if (
+      allowedRequestHeaderNames.some((name) =>
+        asciiCaseInsensitiveEqual(name, alias)
+      )
+    ) {
+      throw new TypeError(
+        "browser CORS proxy rangeRequestHeaderAlias must not be an allowed request header",
+      );
+    }
+  }
+
   return Object.freeze({
     url: value.url,
     allowedRequestHeaderNames: Object.freeze(allowedRequestHeaderNames),
     allowAnonymousGetHeaderOmission: value.allowAnonymousGetHeaderOmission,
+    ...(alias === undefined ? {} : { rangeRequestHeaderAlias: alias }),
   });
 }
 
@@ -166,6 +203,7 @@ export class BrowserCorsProxy {
       unsupportedNames.push(lowerName);
     }
 
+    this.mirrorRange(headers);
     if (unsupportedNames.length === 0) return headers;
 
     const origin = new URL(input.targetUrl).origin;
@@ -183,6 +221,12 @@ export class BrowserCorsProxy {
     throw new BrowserCorsProxyRequestError(
       `Browser CORS proxy ${this.config.url} cannot relay ${input.method} request to ${origin} with unsupported request headers: ${names.join(", ")}`,
     );
+  }
+
+  private mirrorRange(headers: Headers): void {
+    const alias = this.config.rangeRequestHeaderAlias;
+    const range = headers.get("range");
+    if (alias !== undefined && range !== null) headers.set(alias, range);
   }
 
   private isAllowed(name: string): boolean {

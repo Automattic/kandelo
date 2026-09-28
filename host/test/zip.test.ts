@@ -101,6 +101,7 @@ describe("fetchZipCentralDirectory", () => {
         status: 206,
         headers: {
           "Content-Range": `bytes ${start}-${end}/${archive.byteLength}`,
+          ETag: '"v1"',
         },
       });
     });
@@ -138,5 +139,47 @@ describe("fetchZipCentralDirectory", () => {
     await expect(fetchZipCentralDirectory(URL_UNDER_TEST)).rejects.toThrow(
       /ZIP tail read failed: .*does not start at/,
     );
+  });
+
+  it("fails when the archive changes between the tail and directory reads", async () => {
+    let reads = 0;
+    stubServer((range) => {
+      reads += 1;
+      const match = /^bytes=(\d+)-(\d+)$/.exec(range ?? "")!;
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      // Same length, new version: only the ETag reveals the change.
+      return new Response(archive.slice(start, end + 1), {
+        status: 206,
+        headers: {
+          "Content-Range": `bytes ${start}-${end}/${archive.byteLength}`,
+          ETag: reads === 1 ? '"v1"' : '"v2"',
+        },
+      });
+    });
+
+    await expect(fetchZipCentralDirectory(URL_UNDER_TEST)).rejects.toThrow(
+      /ZIP central directory read failed: resource changed/,
+    );
+  });
+
+  it("does not send If-Range, which the browser CORS proxy cannot carry", async () => {
+    const sent: Headers[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return new Response(null, {
+          headers: {
+            "Accept-Ranges": "bytes",
+            "Content-Length": String(archive.byteLength),
+            ETag: '"v1"',
+          },
+        });
+      }
+      sent.push(new Headers(init?.headers));
+      return new Response(archive, { status: 200 });
+    });
+    await fetchZipCentralDirectory(URL_UNDER_TEST);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.get("if-range")).toBeNull();
   });
 });

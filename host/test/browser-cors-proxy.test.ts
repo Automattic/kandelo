@@ -92,6 +92,29 @@ describe("validateBrowserCorsProxyConfig", () => {
   it("retains an absent configuration", () => {
     expect(validateBrowserCorsProxyConfig(undefined)).toBeUndefined();
   });
+
+  it("keeps a range alias and omits the field when none is configured", () => {
+    expect(validate({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["range"],
+      allowAnonymousGetHeaderOmission: true,
+      rangeRequestHeaderAlias: "X-Cors-Proxy-Range",
+    }).rangeRequestHeaderAlias).toBe("X-Cors-Proxy-Range");
+    expect("rangeRequestHeaderAlias" in validate()).toBe(false);
+  });
+
+  it.each([
+    ["an invalid token", "x bad", /field-name token/],
+    ["an allowed request header", "X-Cors-Proxy-Range", /must not be an allowed/],
+    ["Range itself", "RANGE", /must differ from Range/],
+  ])("rejects a range alias that is %s", (_label, alias, message) => {
+    expect(() => validateBrowserCorsProxyConfig({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["range", "x-cors-proxy-range"],
+      allowAnonymousGetHeaderOmission: true,
+      rangeRequestHeaderAlias: alias,
+    })).toThrow(message);
+  });
 });
 
 describe("BrowserCorsProxy", () => {
@@ -347,6 +370,71 @@ describe("BrowserCorsProxy", () => {
     })).toThrow(new BrowserCorsProxyRequestError(
       `Browser CORS proxy ${PROXY_URL} cannot relay POST request to ${TARGET_ORIGIN} with unsupported request headers: authorization`,
     ));
+  });
+
+  describe("range alias", () => {
+    const aliased = (onDiagnostic?: (message: string) => void) =>
+      proxy({
+        url: PROXY_URL,
+        allowedRequestHeaderNames: ["range"],
+        allowAnonymousGetHeaderOmission: true,
+        rangeRequestHeaderAlias: "x-cors-proxy-range",
+      }, onDiagnostic);
+
+    it("sends the forwarded Range value in both fields", () => {
+      const headers = aliased().project({
+        method: "GET",
+        headers: [["Range", "bytes=-22"]],
+        bodyPresent: false,
+        targetUrl: TARGET_URL,
+      });
+      expect([...headers.entries()]).toEqual([
+        ["range", "bytes=-22"],
+        ["x-cors-proxy-range", "bytes=-22"],
+      ]);
+    });
+
+    it("adds nothing to a request without Range", () => {
+      const headers = aliased().project({
+        method: "GET",
+        headers: [],
+        bodyPresent: false,
+        targetUrl: TARGET_URL,
+      });
+      expect([...headers.entries()]).toEqual([]);
+    });
+
+    it("never relays a caller's own alias value", () => {
+      const diagnostics: string[] = [];
+      const headers = aliased((message) => diagnostics.push(message)).project({
+        method: "GET",
+        headers: [
+          ["X-Cors-Proxy-Range", "bytes=0-0"],
+          ["Range", "bytes=10-19"],
+        ],
+        bodyPresent: false,
+        targetUrl: TARGET_URL,
+      });
+      expect(headers.get("x-cors-proxy-range")).toBe("bytes=10-19");
+      expect(diagnostics).toEqual([
+        `Browser CORS proxy omitted unsupported request headers for ${TARGET_ORIGIN}: x-cors-proxy-range`,
+      ]);
+    });
+
+    it("does not mirror a Range the profile does not forward", () => {
+      const headers = proxy({
+        url: PROXY_URL,
+        allowedRequestHeaderNames: [],
+        allowAnonymousGetHeaderOmission: true,
+        rangeRequestHeaderAlias: "x-cors-proxy-range",
+      }).project({
+        method: "GET",
+        headers: [["Range", "bytes=0-9"]],
+        bodyPresent: false,
+        targetUrl: TARGET_URL,
+      });
+      expect([...headers.entries()]).toEqual([]);
+    });
   });
 
   it("passes allowed-only body-bearing and state-changing requests without judging header or method meaning", () => {

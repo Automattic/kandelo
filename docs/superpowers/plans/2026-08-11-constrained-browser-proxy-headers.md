@@ -23,16 +23,18 @@ browser requests and all Node.js networking remain unfiltered.
 **Tech stack:** TypeScript, Vitest, browser Web Workers, service-worker
 JavaScript, Vite, Playwright, Bash workflow tests.
 
-> **Later change (2026-09-26): byte-range fields joined the profile.** The
-> shipped profile is now `accept`, `content-type`, `git-protocol`, `if-range`,
-> `range`, `wp_blog`, and `wp_install`. This does not change the rule below
-> that projection never parses range syntax: `Range` and `If-Range` are
-> relayed by name like every other allowed field. The development relay now
-> forwards them, relays `206` and `Content-Range`, and streams bodies. The
-> default production proxy still ignores `Range` (it answers `200` with the
-> whole entity), so callers classify answers with `fetchByteRange()` instead
-> of trusting a `200` as a slice. See `docs/browser-support.md`, "Byte-range
-> reads through the proxy".
+> **Later change (2026-09-26, revised 2026-09-28): byte ranges joined the
+> profile.** The shipped profile is now `accept`, `content-type`,
+> `git-protocol`, `range`, `wp_blog`, and `wp_install`, plus
+> `rangeRequestHeaderAlias: "x-cors-proxy-range"`. This does not change the
+> rule below that projection never parses range syntax: `Range` is relayed by
+> name like every other allowed field, and the alias receives the same value
+> verbatim. The alias is a workaround for the production proxy's front end,
+> which strips `Range`; remove it once `Range` reaches that proxy. `If-Range`
+> is deliberately absent because the proxy's preflight does not allow it.
+> Callers classify ranged answers with `fetchByteRange()` instead of trusting
+> a `200` as a slice. See `docs/browser-support.md`, "Byte-range reads
+> through the proxy".
 
 ## Global Constraints
 
