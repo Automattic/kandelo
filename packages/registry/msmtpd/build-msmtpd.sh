@@ -11,8 +11,19 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-20cd58b58dd007acf7b937fa1a1e21f3a
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/msmtp-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns this script only when the package's cache key changed (an
+# ABI bump, a toolchain change). A tree kept in the package directory still
+# held the previous build's objects, which make treated as up to date, so the
+# rebuild shipped stale code (bzip2 kept declaring the old ABI version).
+# The reuse short-circuit below therefore only fires for direct invocations.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/msmtp-src"
+BIN_DIR="$WORK_DIR/bin"
 OUT="$BIN_DIR/msmtpd.wasm"
 
 if [ -f "$OUT" ]; then
@@ -27,14 +38,14 @@ if ! command -v wasm32posix-cc >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ ! -f "$SCRIPT_DIR/$TARBALL" ]; then
+if [ ! -f "$WORK_DIR/$TARBALL" ]; then
     echo "==> Downloading msmtp $VERSION..."
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
-        -o "$SCRIPT_DIR/$TARBALL" \
+        -o "$WORK_DIR/$TARBALL" \
         "$SOURCE_URL"
 fi
 
-actual_sha="$(shasum -a 256 "$SCRIPT_DIR/$TARBALL" | awk '{print $1}')"
+actual_sha="$(shasum -a 256 "$WORK_DIR/$TARBALL" | awk '{print $1}')"
 if [ "$actual_sha" != "$SOURCE_SHA256" ]; then
     echo "ERROR: checksum mismatch for $TARBALL" >&2
     echo "  expected: $SOURCE_SHA256" >&2
@@ -45,8 +56,8 @@ fi
 if [ ! -d "$SRC_DIR/src" ]; then
     echo "==> Extracting msmtp $VERSION..."
     rm -rf "$SRC_DIR"
-    tar xf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR"
-    mv "$SCRIPT_DIR/msmtp-$VERSION" "$SRC_DIR"
+    tar xf "$WORK_DIR/$TARBALL" -C "$WORK_DIR"
+    mv "$WORK_DIR/msmtp-$VERSION" "$SRC_DIR"
 fi
 
 cd "$SRC_DIR/src"

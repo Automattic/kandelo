@@ -4,7 +4,7 @@ set -euo pipefail
 # Build less for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: packages/registry/less/bin/less.wasm
+# Output: <work root>/bin/less.wasm (see the work-root note below)
 #
 # less requires termcap functions (tgetent, tgetstr, etc.) which musl
 # doesn't provide. Previously this built a stub libtermcap.a whose
@@ -21,8 +21,18 @@ set -euo pipefail
 LESS_VERSION="${LESS_VERSION:-668}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/less-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns this script only when the package's cache key changed (an
+# ABI bump, a toolchain change). A tree kept in the package directory still
+# held the previous build's objects, which make treated as up to date, so the
+# rebuild shipped stale code (bzip2 kept declaring the old ABI version).
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/less-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -76,19 +86,19 @@ if [ ! -d "$SRC_DIR" ]; then
             --retry-max-time 120 \
             --retry-all-errors \
             -fsSL "$URL" \
-            -o "/tmp/$TARBALL"
+            -o "$WORK_DIR/$TARBALL"
         then
             break
         fi
-        rm -f "/tmp/$TARBALL"
+        rm -f "$WORK_DIR/$TARBALL"
     done
-    if [ ! -f "/tmp/$TARBALL" ]; then
+    if [ ! -f "$WORK_DIR/$TARBALL" ]; then
         echo "ERROR: failed to download $TARBALL from all configured mirrors" >&2
         exit 1
     fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$WORK_DIR/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "$WORK_DIR/$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -153,4 +163,4 @@ echo "Binary: $BIN_DIR/less.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-[ -f "$SCRIPT_DIR/bin/less.wasm" ] && install_local_binary less "$SCRIPT_DIR/bin/less.wasm" || true
+[ -f "$BIN_DIR/less.wasm" ] && install_local_binary less "$BIN_DIR/less.wasm" || true

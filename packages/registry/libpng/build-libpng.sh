@@ -15,13 +15,23 @@
 #
 # For ad-hoc / legacy invocation (`bash build-libpng.sh`), the script
 # falls back to the in-tree `libpng-install/` layout and the zlib
-# artifacts previously staged into `$REPO_ROOT/sysroot`.
+# artifacts previously staged into `$REPO_ROOT/sysroot`, and builds next
+# to this script instead of in the resolver work dir.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/libpng-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns this script only when the package's cache key changed (an
+# ABI bump, a toolchain change). A source tree kept in the package directory
+# survived across those rebuilds, so a stale extraction could be reused.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/libpng-src"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 LIBPNG_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBPNG_VERSION:-1.6.43}}"
@@ -32,7 +42,7 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 # autoconf bakes --prefix into the Makefile. A rerun from a different
 # INSTALL_DIR would install into the wrong path, so always build in a
 # fresh dir rather than reusing a stale libpng-build/.
-BUILD_DIR="$SCRIPT_DIR/libpng-build"
+BUILD_DIR="$WORK_DIR/libpng-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
@@ -56,7 +66,7 @@ fi
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading libpng $LIBPNG_VERSION..."
-    TARBALL="/tmp/libpng-${LIBPNG_VERSION}.tar.xz"
+    TARBALL="$WORK_DIR/libpng-${LIBPNG_VERSION}.tar.xz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."

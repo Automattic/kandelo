@@ -33,8 +33,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-PCAUDIO_SRC_DIR="$HERE/pcaudiolib-src"
-SRC_DIR="$HERE/espeak-ng-src"
 
 # --- Resolver-contract env / legacy fallbacks ---
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$HERE/espeak-ng-install}"
@@ -64,6 +62,16 @@ SDK_SYSROOT="$SYSROOT"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$HERE/espeak-ng-work" wasm32
+# Every source tree, build tree, and intermediate object lives under the
+# package work root: the resolver's fresh WASM_POSIX_DEP_WORK_DIR, or
+# espeak-ng-work/ for a direct invocation. The resolver reruns this script
+# only when the package's cache key changed (an ABI bump, a toolchain change),
+# and trees kept in this directory outlived those rebuilds: the native data
+# build was skipped whenever its output existed, and stale objects could be
+# reused.
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+PCAUDIO_SRC_DIR="$WORK_DIR/pcaudiolib-src"
+SRC_DIR="$WORK_DIR/espeak-ng-src"
 
 if ! command -v wasm32posix-cc >/dev/null; then
     echo "ERROR: wasm32posix-cc not found on PATH after sourcing sdk/activate.sh." >&2
@@ -81,8 +89,8 @@ for tool in cmake curl tar shasum python3; do
 done
 
 # --- Fetch upstream sources --------------------------------------------
-# Both trees are gitignored build inputs, not vendored files. Download
-# and verify each once, then reuse it across resolves.
+# Both trees are build inputs, not vendored files. Download and verify
+# each into the work root; a resolver run always starts from a fresh one.
 fetch_source() {
     local url="$1" sha256="$2" dest="$3" name="$4"
     [ -d "$dest" ] && return 0
@@ -110,7 +118,9 @@ LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 # Mirrors mariadb's mariadb-glue-objs/. crt1.o comes from the sysroot;
 # the channel_syscall + compiler_rt objects come from the kandelo libc
 # glue and are linked into every user program at exec time.
-GLUE_OBJ_DIR="$HERE/glue-objs"
+GLUE_OBJ_DIR="$WORK_DIR/glue-objs"
+# wasm32-posix-toolchain.cmake links these objects into espeak-ng-bin.
+export ESPEAK_NG_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"
 GLUE_SRC_DIR="$REPO_ROOT/libc/glue"
 mkdir -p "$GLUE_OBJ_DIR"
 # Compile both objects on every build. They are two small files, and a
@@ -136,7 +146,7 @@ mkdir -p "$GLUE_OBJ_DIR"
 # qsa units compile to `return NULL` stubs; they are still built because
 # create_audio_device_object in audio.c references their symbols and
 # falls through them to the OSS object. No source file is patched.
-PCAUDIO_BUILD_DIR="$HERE/pcaudiolib-build"
+PCAUDIO_BUILD_DIR="$WORK_DIR/pcaudiolib-build"
 PCAUDIO_CONFIG_DIR="$PCAUDIO_BUILD_DIR/config"
 mkdir -p "$PCAUDIO_CONFIG_DIR"
 printf '#define HAVE_SYS_SOUNDCARD_H 1\n' > "$PCAUDIO_CONFIG_DIR/config.h"
@@ -216,16 +226,27 @@ PYEOF
 # build honours ESPEAK_LANG_LIST too. The outputs are byte tables, not
 # code, and both this host and wasm32 are little-endian, so the cross
 # build consumes them unchanged.
-NATIVE_BUILD_DIR="$HERE/espeak-ng-host-build"
+NATIVE_BUILD_DIR="$WORK_DIR/espeak-ng-host-build"
 if [ ! -d "$NATIVE_BUILD_DIR/espeak-ng-data" ]; then
     echo "==> Native build of espeak-ng (for data tools)..."
     mkdir -p "$NATIVE_BUILD_DIR"
     # Use the wrapped cc/c++ drivers on PATH, not the bare LLVM binaries
     # CMake finds first. Only the wrappers carry the host C++ standard
     # library include paths, and speechPlayer is C++.
+    #
+    # The data compiler finds its tree through ESPEAK_DATA_PATH, which
+    # data.cmake points at this build dir, and copies that path into a
+    # fixed N_PATH_HOME buffer (160 bytes on POSIX). A resolver work dir
+    # path is longer, so the copy truncates, the directory check fails, and
+    # espeak-ng silently falls back to /usr/share/espeak-ng-data. Upstream
+    # leaves N_PATH_HOME overridable (#ifndef in speech.h); size it to
+    # PATH_MAX for this host tool. It only changes a buffer size, not the
+    # compiled data, and the wasm build below keeps upstream's default.
     cmake -S "$SRC_DIR" -B "$NATIVE_BUILD_DIR" \
         -DCMAKE_C_COMPILER=cc \
         -DCMAKE_CXX_COMPILER=c++ \
+        -DCMAKE_C_FLAGS=-DN_PATH_HOME=4096 \
+        -DCMAKE_CXX_FLAGS=-DN_PATH_HOME=4096 \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DBUILD_SHARED_LIBS=OFF \
         -DUSE_MBROLA=OFF \
@@ -269,7 +290,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 echo "==> libcxx resolved at $LIBCXX_PREFIX (projected into $SYSROOT)"
 
 # --- Phase 3: cross build of espeak-ng ---------------------------------
-CROSS_BUILD_DIR="$HERE/espeak-ng-cross-build"
+CROSS_BUILD_DIR="$WORK_DIR/espeak-ng-cross-build"
 # Configure from scratch. CMake applies a toolchain file's *_INIT flags only
 # on the first configure of a build tree, so a reused tree silently kept the
 # link line from whichever toolchain first configured it. The resolver runs

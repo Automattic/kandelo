@@ -5,14 +5,24 @@ set -euo pipefail
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # --disable-threads is critical (no pthreads support).
-# Output: packages/registry/xz/bin/xz.wasm
+# Output: <work root>/bin/xz.wasm (see the work-root note below)
 # Also installs liblzma.a + headers to sysroot.
 
 XZ_VERSION="${XZ_VERSION:-5.6.4}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/xz-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns this script only when the package's cache key changed (an
+# ABI bump, a toolchain change). A tree kept in the package directory still
+# held the previous build's objects, which make treated as up to date, so the
+# rebuild shipped stale code (bzip2 kept declaring the old ABI version).
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/xz-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -33,10 +43,10 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading xz $XZ_VERSION..."
     TARBALL="xz-${XZ_VERSION}.tar.gz"
     URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$WORK_DIR/$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$WORK_DIR/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "$WORK_DIR/$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 
     # Patch: xz excludes __wasm__ from sigprocmask path, but our sysroot has it
@@ -119,4 +129,4 @@ echo "Binary: $BIN_DIR/xz.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary xz "$SCRIPT_DIR/bin/xz.wasm"
+install_local_binary xz "$BIN_DIR/xz.wasm"

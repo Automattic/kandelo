@@ -102,11 +102,20 @@ if [ ! -d "$NIX_LIBUNWIND_SOURCE/libunwind" ]; then
     exit 1
 fi
 
-BUILD_DIR="$SCRIPT_DIR/build-${ARCH}"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the resolver's fresh WASM_POSIX_DEP_WORK_DIR rather than this
+# directory. The resolver reruns this script only when the package's cache key
+# changed (an ABI bump, a toolchain change); trees kept in the package
+# directory outlived those rebuilds. Directory names stay per-arch so the
+# wasm32 and wasm64 builds never share a tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" "$ARCH"
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+BUILD_DIR="$WORK_DIR/build-${ARCH}"
 # Assembled source tree lives OUTSIDE the build dirs so both the default
 # (static, non-PIC) build and the position-independent build below can share it
 # without one build's `rm -rf` deleting the other's source.
-LLVM_SRC_DIR="$SCRIPT_DIR/llvm-source-${ARCH}"
+LLVM_SRC_DIR="$WORK_DIR/llvm-source-${ARCH}"
 
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -138,13 +147,17 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 # archive must also compile with `-wasm-use-legacy-eh=false` (the
 # SDK's `compileFlags` was updated in lock-step).
 #
-# LLVM records source/compilation paths in archive members. All assembled
-# sources and both variant build directories live under REPO_ROOT, so one
-# stable worktree mapping covers LLVM_SRC_DIR, BUILD_DIR, PIC_BUILD_DIR, the
-# generated smoke source, and sysroot paths for both PIC and non-PIC builds.
-# Without it, libc++abi.a and every side module absorbing it differ solely by
-# the caller's checkout path.
+# LLVM records source/compilation paths in archive members. The assembled
+# sources, both variant build directories, and the generated smoke source live
+# under WORK_DIR, whose path differs on every resolver run; the sysroot lives
+# under REPO_ROOT. Map both to stable producer paths. WORK_DIR is mapped last
+# because the last matching -ffile-prefix-map wins, so a work root inside the
+# checkout still maps to its own destination. Without these, libc++abi.a and
+# every side module absorbing it differ solely by the caller's paths. This is
+# the same work-root destination the SDK wrapper (sdk/src/bin/cc.ts) uses;
+# this script calls clang directly, so it must add the maps itself.
 REPRODUCIBLE_PREFIX_MAPS="-ffile-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fdebug-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fmacro-prefix-map=${REPO_ROOT}=/usr/src/kandelo"
+REPRODUCIBLE_PREFIX_MAPS+=" -ffile-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fdebug-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fmacro-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx"
 WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
 
 # Start with a fresh source tree so a cache-miss rebuild does not mix old + new
@@ -340,7 +353,7 @@ echo "==> Header smoke compile passed."
 # and the header set above are untouched, so existing static consumers are
 # unaffected; only side-module consumers reach for the -pic archives.
 echo "==> Building position-independent libc++/libc++abi (for wasm side modules)..."
-PIC_BUILD_DIR="$SCRIPT_DIR/build-${ARCH}-pic"
+PIC_BUILD_DIR="$WORK_DIR/build-${ARCH}-pic"
 build_libcxx_variant "$PIC_BUILD_DIR" "${WASM_C_FLAGS} -fPIC" -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
 LIBCXX_PIC_A=$(find "$PIC_BUILD_DIR" -name "libc++.a" -not -path "*/CMakeFiles/*" | head -1)

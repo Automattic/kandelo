@@ -24,14 +24,25 @@ set -euo pipefail
 # request, and re-issues it with fetch() through the configured CORS proxy —
 # so no HTTPS->HTTP gitconfig rewrite is used or needed.
 #
-# Output: packages/registry/git/bin/git.wasm
-#         packages/registry/git/bin/git-remote-http.wasm
+# Output: <work root>/bin/git.wasm
+#         <work root>/bin/git-remote-http.wasm
+# (see the work-root note below)
 
 GIT_VERSION="${GIT_VERSION:-2.47.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/git-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns this script only when the package's cache key changed (an
+# ABI bump, a toolchain change). A tree kept in the package directory still
+# held the previous build's objects, which make treated as up to date, so the
+# rebuild shipped stale code (bzip2 kept declaring the old ABI version).
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/git-src"
+BIN_DIR="$WORK_DIR/bin"
 # Explicit env wins; else the in-tree sysroot. Matches build-libcurl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
@@ -108,10 +119,10 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading git $GIT_VERSION..."
     TARBALL="git-${GIT_VERSION}.tar.xz"
     URL="https://www.kernel.org/pub/software/scm/git/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$WORK_DIR/$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xJf "$WORK_DIR/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "$WORK_DIR/$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 

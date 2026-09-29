@@ -3,8 +3,19 @@ set -euo pipefail
 
 NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/nginx-src"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/../../../scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns the build only when the package's cache key changed (an ABI
+# bump, a toolchain change). A source tree kept in the package directory still
+# held the previous build's objs/*.o, which the timestamp check below treated
+# as up to date, so the rebuild would link stale objects.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/nginx-src"
 BUILD_DIR="$SRC_DIR/objs"
+NGINX_WASM="$WORK_DIR/nginx.wasm"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
@@ -19,10 +30,10 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading nginx $NGINX_VERSION..."
     TARBALL="nginx-${NGINX_VERSION}.tar.gz"
-    curl -fsSL "https://nginx.org/download/${TARBALL}" -o "/tmp/${TARBALL}"
+    curl -fsSL "https://nginx.org/download/${TARBALL}" -o "$WORK_DIR/${TARBALL}"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$WORK_DIR/${TARBALL}" -C "$SRC_DIR" --strip-components=1
+    rm "$WORK_DIR/${TARBALL}"
 fi
 
 cd "$SRC_DIR"
@@ -410,7 +421,7 @@ if [ -f objs/ngx_modules.c ]; then
 fi
 
 echo "  Linking nginx.wasm..."
-wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
+wasm32posix-cc "${OBJS[@]}" -o "$NGINX_WASM" -lcrypt
 
 # Fork instrumentation (master_process on requires fork children to
 # resume from the fork point rather than re-executing _start).
@@ -419,13 +430,13 @@ wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
 # and any later pass reordering globals would corrupt the fork buffer.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "  Applying fork instrumentation..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm.instr"
-mv "$SCRIPT_DIR/nginx.wasm.instr" "$SCRIPT_DIR/nginx.wasm"
+"$FORK_INSTRUMENT" "$NGINX_WASM" -o "$NGINX_WASM.instr"
+mv "$NGINX_WASM.instr" "$NGINX_WASM"
 
 echo "==> nginx.wasm built successfully!"
-ls -la "$SCRIPT_DIR/nginx.wasm"
+ls -la "$NGINX_WASM"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nginx "$SCRIPT_DIR/nginx.wasm"
+install_local_binary nginx "$NGINX_WASM"
