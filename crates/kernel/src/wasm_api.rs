@@ -13359,6 +13359,17 @@ pub extern "C" fn kernel_pipe_has_readers(_pid: u32, pipe_idx: u32) -> i32 {
     }
 }
 
+/// The `index`-th fd watched by a live epoll registration of `pid` (across
+/// all its epoll instances), or -1 past the end. A parked epoll_wait
+/// registers targeted wakeups on these fds; the host reads them from the
+/// kernel's registrations instead of mirroring epoll_ctl.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_watched_fd(pid: u32, index: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else { return -1 };
+    syscalls::epoll_watched_fd(proc, index as usize).unwrap_or(-1)
+}
+
 /// Look up the recv pipe index for a socket fd.
 /// Returns the recv_buf_idx or -1 if the fd is not a connected socket.
 #[unsafe(no_mangle)]

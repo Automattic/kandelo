@@ -896,7 +896,12 @@ listed here:
   Linux: one survives `close(fd)` while a `dup` keeps its description
   open, ends once the last fd to it closes, and a new file reusing the fd
   number is a separate registration. Before, a registration was keyed on
-  the fd number alone and outlived its file.
+  the fd number alone and outlived its file. Epoll instances now also cross
+  `fork()` and `posix_spawn()` with their registrations (the child's
+  inherited epoll fd used to name no instance), and the host's `epoll_wait`
+  evaluates the kernel's registrations instead of keeping its own mirror;
+  the new `kernel_epoll_watched_fd(pid, index)` export lists the fds a
+  parked wait registers wakeups on.
 
 Each semantic change corrects behavior toward Linux without changing a
 layout. They share this epoch rather than taking their own because a

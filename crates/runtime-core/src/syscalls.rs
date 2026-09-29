@@ -15848,6 +15848,36 @@ fn fd_ofd_id(proc: &Process, fd: i32) -> Option<crate::lock::OfdId> {
     proc.ofd_table.get(entry.ofd_ref.0).map(|ofd| ofd.ofd_id)
 }
 
+/// The fd through which a registration's open file description is reached
+/// now: its own fd if that still refers to the description, else any other
+/// fd that does (a dup), else None -- the description is closed.
+fn epoll_probe_fd(proc: &Process, interest: &crate::process::EpollInterest) -> Option<i32> {
+    if fd_ofd_id(proc, interest.fd) == Some(interest.ofd_id) {
+        return Some(interest.fd);
+    }
+    proc.fd_table
+        .iter()
+        .find(|(_, entry)| {
+            proc.ofd_table
+                .get(entry.ofd_ref.0)
+                .is_some_and(|ofd| ofd.ofd_id == interest.ofd_id)
+        })
+        .map(|(fd, _)| fd)
+}
+
+/// The `index`-th fd watched by a live registration in any of the process's
+/// epoll instances, or None past the end. The host registers targeted
+/// wakeups on these fds for a parked epoll_wait; it reads the kernel's list
+/// rather than keeping a copy of its own.
+pub fn epoll_watched_fd(proc: &Process, index: usize) -> Option<i32> {
+    proc.epolls
+        .iter()
+        .flatten()
+        .flat_map(|ep| ep.interests.iter())
+        .filter_map(|interest| epoll_probe_fd(proc, interest))
+        .nth(index)
+}
+
 /// Resolve an epoll instance's registrations to the fds that currently
 /// reach their open file descriptions, dropping the ones whose description
 /// is gone -- Linux removes a registration automatically once the last fd
@@ -15869,19 +15899,7 @@ fn live_epoll_interests(
     };
     let mut live = Vec::with_capacity(interests.len());
     for interest in interests {
-        let probe = if fd_ofd_id(proc, interest.fd) == Some(interest.ofd_id) {
-            Some(interest.fd)
-        } else {
-            proc.fd_table
-                .iter()
-                .find(|(_, entry)| {
-                    proc.ofd_table
-                        .get(entry.ofd_ref.0)
-                        .is_some_and(|ofd| ofd.ofd_id == interest.ofd_id)
-                })
-                .map(|(fd, _)| fd)
-        };
-        if let Some(probe) = probe {
+        if let Some(probe) = epoll_probe_fd(proc, &interest) {
             live.push((interest, probe));
         }
     }
@@ -38157,6 +38175,30 @@ mod tests {
         sys_epoll_ctl(&mut proc, epfd, 2, 0, 0, 0).unwrap();
         let ep = proc.epolls[ep_idx].as_ref().unwrap();
         assert_eq!(ep.interests.len(), 0);
+    }
+
+    /// An inherited epoll fd keeps working in the child: its instance and
+    /// registrations cross fork at the same slot, and a registration still
+    /// names the same open file description (ofd_id travels with the fd).
+    #[test]
+    fn test_fork_carries_epoll_instances() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (rfd, wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd, 0x001, 77).unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&proc, &mut buf).unwrap();
+        let mut child = crate::fork::deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        sys_write(&mut child, &mut host, wfd, b"x").unwrap();
+        let (n, events) =
+            sys_epoll_pwait(&mut child, &mut host, epfd, 4, 0, None).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(events[0].1, 77);
+        // The child can keep managing the inherited instance.
+        sys_epoll_ctl(&mut child, epfd, 2, rfd, 0, 0).unwrap();
     }
 
     /// Linux drops a registration once the last fd referring to its open

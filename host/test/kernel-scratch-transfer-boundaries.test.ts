@@ -443,7 +443,6 @@ function makeScratchHarness(
   ]);
   worker.pendingSelectRetries = new Map();
   worker.pendingPollRetries = new Map();
-  worker.epollInterests = new Map();
 
   kernelBytes.fill(0xa5, scratchEnd, scratchEnd + 16_384);
   return {
@@ -4720,14 +4719,8 @@ describe("kernel scratch transfer capacity regressions", () => {
       0n,
     ]);
 
+    // The kernel owns the registration; the host keeps no copy of it.
     expect(harness.handleChannel).toHaveBeenCalledTimes(1);
-    expect(harness.worker.epollInterests.get("41:3")).toEqual([
-      {
-        fd: 7,
-        events: 0x1234,
-        data: expectedData,
-      },
-    ]);
     expectScratchTailUntouched(harness);
   });
 
@@ -4735,13 +4728,6 @@ describe("kernel scratch transfer capacity regressions", () => {
     const harness = makeScratchHarness();
     const invalidEvents =
       harness.processBytes.byteLength - STRUCT_SIZE_WASM_EPOLL_EVENT + 1;
-    harness.worker.epollInterests.set("41:3", [
-      {
-        fd: 7,
-        events: 1,
-        data: 9n,
-      },
-    ]);
 
     expect(() =>
       dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.EpollPwait, [
@@ -4773,24 +4759,23 @@ describe("kernel scratch transfer capacity regressions", () => {
       eventsPointer,
       eventsPointer + STRUCT_SIZE_WASM_EPOLL_EVENT,
     );
-    harness.worker.epollInterests.set("41:3", [
-      {
-        fd: 7,
-        events: 1,
-        data: expectedData,
-      },
-    ]);
+    // The host asks the kernel's own epoll_pwait for one nonblocking pass
+    // (the kernel owns the registrations) and copies its events out.
     harness.handleChannel.mockImplementation(() => {
       const channelView = new DataView(
         harness.kernelBytes.buffer,
         harness.scratchOffset,
       );
-      const pollfdsPointer = Number(channelView.getBigInt64(CH_ARGS, true));
-      new DataView(harness.kernelBytes.buffer).setInt16(
-        pollfdsPointer + 6,
-        1,
-        true,
+      expect(channelView.getUint32(CH_SYSCALL, true)).toBe(ABI_SYSCALLS.EpollPwait);
+      expect(channelView.getBigInt64(CH_ARGS, true)).toBe(3n);
+      expect(channelView.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true)).toBe(0n);
+      const eventsPointer = Number(
+        channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
       );
+      const kernelEvents = new DataView(harness.kernelBytes.buffer, eventsPointer);
+      kernelEvents.setUint32(WASM_EPOLL_EVENT_EVENTS_OFFSET, 1, true);
+      kernelEvents.setUint32(WASM_EPOLL_EVENT_PAD_OFFSET, 0, true);
+      kernelEvents.setBigUint64(WASM_EPOLL_EVENT_DATA_OFFSET, expectedData, true);
       channelView.setBigInt64(CH_RETURN, 1n, true);
       channelView.setUint32(CH_ERRNO, 0, true);
       return 0;

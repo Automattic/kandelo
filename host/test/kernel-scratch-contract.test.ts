@@ -691,12 +691,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#pickKernelSignalTargetTid::kernel-export-direct-use::pickSignalTarget(pid, signum)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareExecFdMirrorPruneWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, epfd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareExecFdMirrorPruneWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, interest.fd)",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareTcpListenerRegistration::kernel-export-direct-use::getAcceptWake?.(pid, fd)",
   ),
   reviewedScalarKernelExportCall(
@@ -848,12 +842,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::statBytes(processPointerWidth)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::fdIsOpen(childPid, entry.fd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::fdIsOpen(childPid, epfd)",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::getAcceptWake?.(parentPid, parentTarget.fd)",
   ),
   reviewedScalarKernelExportCall(
@@ -896,10 +884,13 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseAllSysvShmMappingsForProcess::kernel-export-direct-use::kernelShmdtAddr(pid, this.toKernelPtr(addr))",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, interest.fd)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, fd)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getRecvPipe(pid, interest.fd)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getRecvPipe(pid, fd)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::watchedFd(pid, i)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",

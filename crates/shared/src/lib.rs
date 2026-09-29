@@ -130,8 +130,9 @@ pub mod process_layout;
 ///     `EVIOCGPROP` ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`,
 ///     real peer credentials from `SO_PEERCRED`, a blocking read of
 ///     `/dev/dri/card0` that waits for an event instead of returning 0,
-///     dma-buf `lseek` on prime fds, and epoll registrations keyed on
-///     (fd, open file description). docs/abi-versioning.md ("ABI 44") lists
+///     dma-buf `lseek` on prime fds, epoll registrations keyed on (fd, open
+///     file description) and inherited across fork/spawn, and the
+///     `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
 ///     each with why it belongs to this epoch.
 pub const ABI_VERSION: u32 = 44;
 
