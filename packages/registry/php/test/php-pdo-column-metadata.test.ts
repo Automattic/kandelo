@@ -3,11 +3,11 @@
  * table name. Two halves have to line up, and each fails differently:
  *
  * 1. libsqlite3 must be built with -DSQLITE_ENABLE_COLUMN_METADATA so
- *    sqlite3_column_table_name() actually exists. Without it, PHP still
- *    links (the SDK passes -Wl,--allow-undefined), wasm-ld emits the
- *    symbol as an `env.` import, and worker-main.ts fills it with a
- *    throwing stub — the first getColumnMeta() call kills the PHP
- *    process (host reports the trap; the kernel marks it SIGSEGV).
+ *    sqlite3_column_table_name() actually exists. Without it, PHP now
+ *    fails to link (ABI 44 links against the host-import allowance, not
+ *    -Wl,--allow-undefined). Before ABI 44 it linked, wasm-ld emitted the
+ *    symbol as an `env.` import, and the host filled it with a throwing
+ *    stub, so the first getColumnMeta() call killed the PHP process.
  * 2. PHP must be compiled with HAVE_SQLITE3_COLUMN_TABLE_NAME defined.
  *    pdo_sqlite_stmt_col_meta() #ifdef-guards the "table" key behind it,
  *    so an undefined macro silently omits the key rather than crashing.

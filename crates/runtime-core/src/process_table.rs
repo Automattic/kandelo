@@ -443,7 +443,6 @@ impl ProcessTable {
         self.create_process_with_stdio(StdioConfig::captured())
     }
 
-    /// Create a new process with explicit stdio wiring and add it to the table.
     /// Make fd 0 of `pid` the read end of a new kernel pipe whose write end
     /// the host holds, and return the pipe index.
     ///
@@ -494,6 +493,7 @@ impl ProcessTable {
         }
     }
 
+    /// Create a new process with explicit stdio wiring and add it to the table.
     pub fn create_process_with_stdio(&mut self, stdio: StdioConfig) -> Result<u32, Errno> {
         self.ensure_init();
         let task_id = self.allocate_task_id()?;
