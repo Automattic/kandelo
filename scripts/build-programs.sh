@@ -1051,7 +1051,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # libwpkdraw renders the compositor's wallpaper (gradient + wordmark);
     # libEGL/libGLESv2 drive the GPU compositing path (CPU fallback when
     # the host has no WebGL2).
-    # The wldesktop package publishes the server itself; only the test
+    # The wayland-demo package publishes the server itself; only the test
     # clients below still build here. The generated glue and the sysroot
     # copies above stay — libkwl and those clients need them.
     if package_owns_program_output wasm32 wlcompositor.wasm; then

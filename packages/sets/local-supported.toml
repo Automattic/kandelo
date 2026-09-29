@@ -541,10 +541,6 @@ name = "wget"
 class = "user-software"
 
 [[packages]]
-name = "wldesktop"
-class = "user-software"
-
-[[packages]]
 name = "wordpress"
 class = "browser-product"
 
