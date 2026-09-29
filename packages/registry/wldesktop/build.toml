@@ -1,0 +1,32 @@
+script_path = "packages/registry/wldesktop/build-wldesktop.sh"
+inputs = [
+  "packages/registry/wldesktop/build-wldesktop.sh",
+  "programs/wlcompositor/wlcompositor.c",
+  "programs/wlterm/wlterm.c",
+  "programs/wlterm/vt100.c",
+  "programs/wlterm/vt100.h",
+  "programs/wlclock.c",
+  "programs/wlpaint.c",
+  "programs/klauncher.c",
+  "programs/notify-send.c",
+  "examples/libs/libkwl/src/kwl.c",
+  "examples/libs/libkwl/include/kwl.h",
+  "examples/libs/wpkdraw/src/wpkdraw.c",
+  "examples/libs/wpkdraw/src/wpkfont.c",
+  "examples/libs/wpkdraw/include/wpkdraw/wpkdraw.h",
+  "examples/libs/wpkdraw/include/wpkdraw/wpkfont.h",
+  "examples/libs/wpkdraw/third_party/stb_truetype.h",
+  "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
+  "libc/glue/libgbm_stub.c",
+  "libc/glue/libegl_stub.c",
+  "libc/glue/libglesv2_stub.c",
+  "libc/glue/gl_abi.h",
+  "libc/musl-overlay/include/linux/input-event-codes.h",
+  "scripts/build-musl.sh",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = ""
+revision    = 1

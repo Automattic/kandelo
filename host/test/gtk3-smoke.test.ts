@@ -37,7 +37,7 @@ const INCONSOLATA = join(
   "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
 );
 
-const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const gtkSmokeBin = tryResolveBinary("programs/gtk3_smoke.wasm");
 const hasBinaries = !!compositorBin && !!gtkSmokeBin;
 

@@ -65,6 +65,44 @@ describe("BrowserInputSource", () => {
     ]);
   });
 
+  it("a typed letter wins over its physical position (AZERTY Ctrl+W)", () => {
+    // On AZERTY the key labeled W sits at the QWERTY-Z position: the browser
+    // reports code=KeyZ, key="w". The kernel-side keymap is a fixed US
+    // layout, so the wire must carry KEY_W (17) — what the key says — or a
+    // `bind = CTRL, W` never fires for a French keyboard.
+    target.fire("keydown", {
+      code: "KeyZ",
+      key: "w",
+      repeat: false,
+      preventDefault() {},
+    });
+    target.fire("keyup", {
+      code: "KeyZ",
+      key: "w",
+      repeat: false,
+      preventDefault() {},
+    });
+    expect(recorded).toEqual([
+      { device: 0, ev_type: 0x01, code: 17, value: 1 },
+      { device: 0, ev_type: 0x00, code: 0, value: 0 },
+      { device: 0, ev_type: 0x01, code: 17, value: 0 },
+      { device: 0, ev_type: 0x00, code: 0, value: 0 },
+    ]);
+  });
+
+  it("a non-letter key value falls back to the positional code", () => {
+    // Dead keys ("Dead"), modified characters ("å"), and layout symbols
+    // ("&" on an AZERTY digit) are not typed ASCII letters: the positional
+    // path stays authoritative for them.
+    target.fire("keydown", {
+      code: "Digit1",
+      key: "&",
+      repeat: false,
+      preventDefault() {},
+    });
+    expect(recorded[0]).toEqual({ device: 0, ev_type: 0x01, code: 2, value: 1 });
+  });
+
   it("repeat keydown emits value=2 (Linux autorepeat convention)", () => {
     target.fire("keydown", {
       code: "Space",

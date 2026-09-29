@@ -17,37 +17,56 @@ static inline uint32_t blend(uint32_t dst, uint32_t src) {
     return (fa << 24) | (r << 16) | (g << 8) | b;
 }
 
+static int ui_scale = 1;
+
+void wpk_set_scale(int scale) { ui_scale = scale < 1 ? 1 : scale; }
+int wpk_scale(void) { return ui_scale; }
+
+/* The surface's extent in device pixels — what every primitive clips to. */
+static inline int dev_w(const struct wpk_surface *s) { return s->w * s->scale; }
+static inline int dev_h(const struct wpk_surface *s) { return s->h * s->scale; }
+
 struct wpk_surface wpk_surface_wrap(uint32_t *pixels, int w, int h, int stride) {
     struct wpk_surface s;
     s.pixels = pixels;
     s.w = w;
     s.h = h;
-    s.stride = stride > 0 ? stride : w * 4;
+    s.scale = ui_scale;
+    s.stride = stride > 0 ? stride : w * s.scale * 4;
     return s;
 }
 
 void wpk_clear(struct wpk_surface *s, wpk_color color) {
     if (!s || !s->pixels) return;
     int stride_px = s->stride / 4;
-    for (int y = 0; y < s->h; y++) {
+    int w = dev_w(s), h = dev_h(s);
+    for (int y = 0; y < h; y++) {
         uint32_t *row = s->pixels + (size_t)y * stride_px;
-        for (int x = 0; x < s->w; x++) row[x] = color;
+        for (int x = 0; x < w; x++) row[x] = color;
     }
 }
 
-void wpk_pixel(struct wpk_surface *s, int x, int y, wpk_color color) {
+void wpk_pixel_device(struct wpk_surface *s, int x, int y, wpk_color color) {
     if (!s || !s->pixels) return;
-    if (x < 0 || y < 0 || x >= s->w || y >= s->h) return;
+    if (x < 0 || y < 0 || x >= dev_w(s) || y >= dev_h(s)) return;
     uint32_t *p = s->pixels + (size_t)y * (s->stride / 4) + x;
     *p = blend(*p, color);
+}
+
+void wpk_pixel(struct wpk_surface *s, int x, int y, wpk_color color) {
+    if (!s) return;
+    wpk_rect(s, x, y, 1, 1, color);
 }
 
 void wpk_rect(struct wpk_surface *s, int x, int y, int w, int h,
               wpk_color color) {
     if (!s || !s->pixels || w <= 0 || h <= 0) return;
-    int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
-    int x1 = x + w; if (x1 > s->w) x1 = s->w;
-    int y1 = y + h; if (y1 > s->h) y1 = s->h;
+    int n = s->scale;
+    int x0 = x * n, y0 = y * n, x1 = (x + w) * n, y1 = (y + h) * n;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > dev_w(s)) x1 = dev_w(s);
+    if (y1 > dev_h(s)) y1 = dev_h(s);
     int stride_px = s->stride / 4;
     if ((color >> 24) == 0xff) {
         for (int py = y0; py < y1; py++) {
@@ -57,7 +76,7 @@ void wpk_rect(struct wpk_surface *s, int x, int y, int w, int h,
     } else {
         for (int py = y0; py < y1; py++)
             for (int px = x0; px < x1; px++)
-                wpk_pixel(s, px, py, color);
+                wpk_pixel_device(s, px, py, color);
     }
 }
 
@@ -79,12 +98,14 @@ static void blend_coverage(struct wpk_surface *s, int x, int y,
     if (cov > 1.0f) cov = 1.0f;
     uint32_t a = (uint32_t)((float)(color >> 24) * cov + 0.5f);
     if (a == 0) return;
-    wpk_pixel(s, x, y, (a << 24) | (color & 0x00ffffffu));
+    wpk_pixel_device(s, x, y, (a << 24) | (color & 0x00ffffffu));
 }
 
 void wpk_line_aa(struct wpk_surface *s, float x0, float y0,
                  float x1, float y1, float width, wpk_color color) {
     if (!s || !s->pixels || width <= 0.0f) return;
+    float n = (float)s->scale;
+    x0 *= n; y0 *= n; x1 *= n; y1 *= n; width *= n;
     float halfw = width * 0.5f;
 
     /* Bounding box, padded one pixel for the AA fringe. */
@@ -95,8 +116,8 @@ void wpk_line_aa(struct wpk_surface *s, float x0, float y0,
     int ix1 = (int)bx1 + 1, iy1 = (int)by1 + 1;
     if (ix0 < 0) ix0 = 0;
     if (iy0 < 0) iy0 = 0;
-    if (ix1 > s->w) ix1 = s->w;
-    if (iy1 > s->h) iy1 = s->h;
+    if (ix1 > dev_w(s)) ix1 = dev_w(s);
+    if (iy1 > dev_h(s)) iy1 = dev_h(s);
 
     float vx = x1 - x0, vy = y1 - y0;
     float len2 = vx * vx + vy * vy;

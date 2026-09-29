@@ -75,6 +75,41 @@ struct kwl_event {
  * NULL on failure. */
 struct kwl_window *kwl_window_create(const char *title, int w, int h);
 
+/* Stacking layers for a shell component, bottom-most first (the
+ * zwlr_layer_shell_v1 layers). */
+enum kwl_layer {
+    KWL_LAYER_BACKGROUND = 0,
+    KWL_LAYER_BOTTOM,
+    KWL_LAYER_TOP,
+    KWL_LAYER_OVERLAY,
+};
+
+/* Edges a layer surface anchors to. Anchoring both edges of an axis stretches
+ * the surface along it; anchoring neither centers it. */
+#define KWL_ANCHOR_TOP    1u
+#define KWL_ANCHOR_BOTTOM 2u
+#define KWL_ANCHOR_LEFT   4u
+#define KWL_ANCHOR_RIGHT  8u
+
+struct kwl_layer_opts {
+    int layer;              /* enum kwl_layer */
+    unsigned anchor;        /* KWL_ANCHOR_* mask */
+    int w, h;               /* 0 on an axis the surface stretches along */
+    int exclusive_zone;     /* px of the anchored edge windows must not cover */
+    int keyboard;           /* 1 = take the keyboard for as long as it lives */
+    int margin_top, margin_right, margin_bottom, margin_left;
+};
+
+/* Map a shell component — a bar, a launcher, a wallpaper — instead of a
+ * window. The compositor decides the geometry from the anchor and size, so the
+ * surface size arrives in the initial KWL_RESIZE-free configure and is
+ * readable through kwl_window_surface(). `ns` names the component ("bar",
+ * "launcher") and doubles as the app_id kwlctl reports. Returns NULL when the
+ * compositor has no layer shell. Everything else — draw, commit, dispatch — is
+ * the same as a window. */
+struct kwl_window *kwl_layer_create(const char *ns,
+                                    const struct kwl_layer_opts *opts);
+
 void kwl_window_destroy(struct kwl_window *win);
 
 /* The window's current back buffer as a wpk_surface. The returned pointer

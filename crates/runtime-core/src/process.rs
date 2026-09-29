@@ -333,11 +333,14 @@ pub trait HostIO {
         0
     }
 
-    /// Flush any pending GL work and signal "frame ready". v1 no-op
-    /// (canvas presents on the next RAF); kept as a hook for future
-    /// fence/sync work.
+    /// Flush any pending GL work and signal "frame ready". Returns 0 on
+    /// success or negative errno when the host cannot present — a lost
+    /// WebGL context must fail `eglSwapBuffers` so a GPU compositor
+    /// degrades to its CPU path instead of presenting frozen pixels.
     #[allow(unused_variables)]
-    fn gl_present(&mut self, pid: i32) {}
+    fn gl_present(&mut self, pid: i32) -> i32 {
+        0
+    }
 
     /// Synchronous GL query (`glGetError`, `glReadPixels`, etc.).
     /// Returns bytes written into `out`, or negative errno on failure.
