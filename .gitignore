@@ -1,5 +1,6 @@
-# Claude
-.claude/
+# Claude — local state stays private; shared agent skills are checked in.
+.claude/*
+!.claude/skills/
 
 # Build artifacts
 /target
