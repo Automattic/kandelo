@@ -148,6 +148,12 @@ pub mod process_layout;
 ///     gains three ops and a query, /dev/input/event1 is an absolute
 ///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
 ///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
+/// 46: honest program links and kernel-owned host stdin. `HOST_ENV_IMPORTS`
+///     declares every `env` import the host provides; executables link against
+///     the generated allowance instead of `--allow-undefined`, and the host
+///     refuses a program importing anything else. Host-supplied stdin is a
+///     kernel pipe on fd 0 (`kernel_install_host_stdin_pipe`), shared across
+///     fork/dup/exec, instead of a host handle answered per pid.
 pub const ABI_VERSION: u32 = 46;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
