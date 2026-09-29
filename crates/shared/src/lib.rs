@@ -134,7 +134,18 @@ pub mod process_layout;
 ///     file description) and inherited across fork/spawn, and the
 ///     `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
 ///     each with why it belongs to this epoch.
-pub const ABI_VERSION: u32 = 44;
+/// 45: the DRI desktop stack (GPU-tier buffers, layer shell, the toolkit
+///     ports). The kernel's `host_gl_present` import now returns a status
+///     (`i32`), a new `host_gbm_gpu_bo_create` import backs
+///     `DRM_IOCTL_WPK_CREATE_GPU_BO` (previously ENOSYS), `GLIO_CREATE_SURFACE`
+///     attributes grow a target-bo field, and the kernel exports
+///     `kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask`. Semantic
+///     changes ride along: epoll_pwait holds its signal mask for the whole
+///     wait and a signal ends a parked wait, SA_RESTART alone decides whether
+///     an interrupted wait restarts, sendmsg/recvmsg gather every iovec, and a
+///     new thread's stack pointer is 16-byte aligned. docs/abi-versioning.md
+///     ("ABI 45") lists each.
+pub const ABI_VERSION: u32 = 45;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
