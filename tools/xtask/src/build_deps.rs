@@ -7731,6 +7731,40 @@ fn build_input_digests_from_repo(
             digest,
         });
     }
+    // The build script is the recipe, so it is always part of the build
+    // closure, whether or not `inputs` names it. Sixteen packages did not list
+    // theirs; editing the script left their cache keys unchanged and the
+    // resolver kept serving the artifact the old script produced. A script
+    // already covered by a declared input (exactly, or under an input
+    // directory) is not hashed twice, so those packages keep their keys.
+    let script = build.script_path.trim();
+    let script_covered = build.inputs.iter().any(|input| {
+        let input = input.trim_end_matches('/');
+        script == input || script.starts_with(&format!("{input}/"))
+    });
+    if !script.is_empty() && !script_covered {
+        // A script that does not resolve is keyed as absent rather than
+        // rejected here: resolving it is the build's job, which fails loudly
+        // when there is nothing to run, and the key still changes the moment
+        // the script appears.
+        let digest = match resolve_build_input_path_from_repo(target, registry, script, main_repo_root) {
+            Ok(path) if validate_declared_source_inputs => {
+                let authority_root =
+                    repository_source_authority_root(&path, registry, main_repo_root)?;
+                strict_source_build_input_digest(&authority_root, &path)?
+            }
+            Ok(path) => hash_build_input(&path)?,
+            Err(_) => {
+                let mut h = Sha256::new();
+                h.update(b"wasm-posix-build-script-absent\0");
+                h.finalize().into()
+            }
+        };
+        out.push(BuildInputDigest {
+            label: format!("build-script:{script}"),
+            digest,
+        });
+    }
     // External Git inputs are content-addressed before any network access.
     // Preserve authored order and length-prefix every field so distinct
     // tuples cannot collide through concatenation. Adding this section is
@@ -21708,6 +21742,27 @@ spdx = "MIT"
     }
 
     #[test]
+    fn editing_the_build_script_changes_the_cache_key_even_when_inputs_omit_it() {
+        // Sixteen registry packages did not list their build script in
+        // build.toml `inputs`, so editing the script left their cache keys
+        // unchanged and the resolver kept serving the old artifact.
+        let root = tempdir("build-script-is-an-implicit-input");
+        write(&root, "scripted", "1.0.0", &[]);
+        write_build_revision(&root, "scripted", 1);
+        let script = root.join("scripted/build-scripted.sh");
+        fs::write(&script, "#!/bin/sh\necho one\n").unwrap();
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let before =
+            package_context_cache_keys(&registry.load("scripted").unwrap(), &registry).unwrap();
+        fs::write(&script, "#!/bin/sh\necho two\n").unwrap();
+        let after =
+            package_context_cache_keys(&registry.load("scripted").unwrap(), &registry).unwrap();
+        assert_ne!(before, after, "a build-script edit must change the cache key");
+    }
+
+    #[test]
     fn source_context_check_rejects_revision_input_and_transitive_input_mutations() {
         let root = tempdir("program-index-context-source-freshness");
         write(&root, "dependency", "1.0.0", &[]);
@@ -23134,12 +23189,15 @@ revision = 7
             compute_cache_key_sha_for_package(&package, &registry, TargetArch::Wasm32, TEST_ABI)
                 .unwrap();
 
-        // Golden produced by the resolver before build.toml learned the
-        // optional [[git_inputs]] section. Merely adding that schema must not
-        // invalidate every package whose immutable-Git vector remains empty.
+        // Golden for a package with no [[git_inputs]]: merely having that
+        // optional schema must not invalidate every package whose
+        // immutable-Git vector is empty. Regenerated when the build script
+        // became an implicit input (this fixture's `build.sh` is not listed in
+        // `inputs`, so its key gained the absent-script digest); the property
+        // pinned here is unchanged.
         assert_eq!(
             actual,
-            "db1f2fac54f8b14e0caf4f8a2e2fe15767f07260a4b0437cdb276ce6d40b5fb5"
+            "8eca625925211a672d10f958a215920e3beb98575db84da10cfb4e18fa925781"
         );
     }
 
@@ -30998,7 +31056,9 @@ libs = ["lib/libF3b.a"]
         );
         assert_eq!(
             hex(&source_only),
-            "9954d4bfe2c4fd86789b9201dab865c7d3ed2c3cf7c9276a06fd11df3c88f48a",
+            // Regenerated when the build script became an implicit
+            // source-only input (the fixture does not list its script).
+            "1011893256fa81b97d562408507251aa056cd05b6697063007cdc9d9b67af262",
             "this golden binds the exact source-only-v1 provider-domain bytes"
         );
     }
