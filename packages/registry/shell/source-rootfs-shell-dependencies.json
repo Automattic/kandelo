@@ -127,6 +127,26 @@
       "role": "lazy-file"
     },
     {
+      "name": "foot",
+      "version": "1.17.2",
+      "role": "lazy-file"
+    },
+    {
+      "name": "waybar",
+      "version": "0.14.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "mako",
+      "version": "1.10.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "dbus",
+      "version": "1.14.10",
+      "role": "lazy-file"
+    },
+    {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",
       "role": "lazy-archive"

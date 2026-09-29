@@ -42,12 +42,19 @@ REPRO_FLAGS=(
 # into an `env.*` import the host resolves to a throwing stub. Link the
 # sysroot libraries SDL2 actually calls into.
 SDL2_PLATFORM_LIBS="$(wasm32posix-pkg-config --libs gbm libdrm egl glesv2)"
+# libSDL2.a includes the Wayland video backend, which calls into
+# libwayland-{client,egl,cursor} and libxkbcommon, and libwayland-client
+# marshals through libffi. They are static archives
+# from those packages, so link them here: `-Wl,--allow-undefined` would
+# otherwise turn every wl_*/xkb_* call into an `env.*` import the host
+# resolves to a throwing stub, and SDL tries the Wayland driver before KMSDRM.
+SDL2_WAYLAND_LIBS="-L${WASM_POSIX_DEP_LIBWAYLAND_DIR:?resolver did not provide the direct libwayland dependency}/lib -L${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?resolver did not provide the direct libxkbcommon dependency}/lib -L${WASM_POSIX_DEP_LIBFFI_DIR:?resolver did not provide the direct libffi dependency}/lib -lwayland-client -lwayland-egl -lwayland-cursor -lxkbcommon -lffi"
 
 echo "==> Building the SDL2 blocking-write pacing fixture..."
 "$CC" -O2 "${REPRO_FLAGS[@]}" -DSDL_MAIN_HANDLED \
     -I"$SDL2_PREFIX/include/SDL2" \
     "$SCRIPT_DIR/src/sdl2-dsp-test.c" \
-    "$SDL2_PREFIX/lib/libSDL2.a" $SDL2_PLATFORM_LIBS -lm \
+    "$SDL2_PREFIX/lib/libSDL2.a" $SDL2_WAYLAND_LIBS $SDL2_PLATFORM_LIBS -lm \
     -o "$INSTALL_DIR/sdl2-dsp-test.wasm"
 
 echo "==> Building the SDL3 GETOSPACE pacing fixture..."

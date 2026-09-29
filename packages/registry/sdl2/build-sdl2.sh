@@ -228,19 +228,25 @@ rm -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc.bak"
 # an SDL_LoadFunction lookup. libSDL2.a therefore has hard undefined
 # references to EGL and GLES2, and consumers that link through this file must
 # be told so. Without it, `-Wl,--allow-undefined` turns each one into an
-# `env.*` import that traps the first time a window is created.
+# `env.*` import that traps the first time a window is created. The same
+# holds for libffi: configure's Libs names the static Wayland archives, but
+# libwayland-client marshals every request through ffi_call, and nothing
+# else would tell a consumer to link it.
 sdl2_pc="$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
 awk '
     /^Libs:/ {
         line = "Libs:"
         has_egl = 0
         has_gles = 0
+        has_ffi = 0
         for (i = 2; i <= NF; i++) {
             if ($i ~ /^-L\//) continue
             if ($i == "-lEGL")    has_egl = 1
             if ($i == "-lGLESv2") has_gles = 1
+            if ($i == "-lffi")    has_ffi = 1
             line = line " " $i
         }
+        if (!has_ffi)  line = line " -lffi"
         if (!has_egl)  line = line " -lEGL"
         if (!has_gles) line = line " -lGLESv2"
         print line
@@ -254,7 +260,7 @@ if grep -q -- '-L/' "$sdl2_pc"; then
     grep -- '-L/' "$sdl2_pc" >&2
     exit 1
 fi
-for flag in -lSDL2 -ldrm -lgbm -lEGL -lGLESv2; do
+for flag in -lSDL2 -ldrm -lgbm -lwayland-client -lxkbcommon -lffi -lEGL -lGLESv2; do
     grep -q -- "$flag" "$sdl2_pc" || {
         echo "ERROR: sdl2.pc does not declare $flag" >&2
         exit 1

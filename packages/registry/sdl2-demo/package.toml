@@ -7,7 +7,7 @@ kind = "program"
 name = "sdl2-demo"
 version = "0.1.0"
 kernel_abi = 43
-depends_on = ["sdl2@2.32.10"]
+depends_on = ["sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]
 arches = ["wasm32"]
 
 [source]
