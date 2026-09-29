@@ -1,5 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createBenchmarkScratchDirectory } from "./scratch.js";
 
 export interface WordPressMeasurementState {
   databaseDirectory: string;
@@ -7,14 +8,75 @@ export interface WordPressMeasurementState {
   opcacheCacheDirectory: string;
 }
 
+/** The copy of WordPress one suite run measures. */
+export interface WordPressStage {
+  root: string;
+  wpDir: string;
+  routerScript: string;
+  databaseDirectory: string;
+  debugLogPath: string;
+}
+
 /**
- * Give each suite round its own benchmark-owned OPcache root. Measurement
- * subdirectories are reset independently so the CLI and HTTP metrics cannot
- * reuse compiled scripts from each other or from another benchmark process.
+ * Copy the WordPress tree and router into checkout-independent scratch
+ * (see scratch.ts for why path depth matters). Symlinks are dereferenced:
+ * setup.sh links the SQLite plugin in by absolute path, and db.php
+ * realpath()s it, which would lead the guest straight back into the
+ * checkout.
  */
-export function createWordPressOpcacheRunDirectory(resultsDirectory: string): string {
-  mkdirSync(resultsDirectory, { recursive: true });
-  return mkdtempSync(join(resultsDirectory, ".wordpress-opcache-run-"));
+export function stageWordPress(
+  sourceWpDir: string,
+  sourceRouterScript: string,
+  scratchParent?: string,
+): WordPressStage {
+  const root = createBenchmarkScratchDirectory("wordpress", scratchParent);
+  const wpDir = join(root, "wordpress");
+  copyTreeFollowingLinks(sourceWpDir, wpDir);
+  // router.php finds WordPress at dirname(__DIR__)/wordpress, so it keeps
+  // its checkout layout: <root>/demo/router.php beside <root>/wordpress.
+  const routerScript = join(root, "demo", "router.php");
+  mkdirSync(dirname(routerScript));
+  copyFileSync(sourceRouterScript, routerScript);
+  return {
+    root,
+    wpDir,
+    routerScript,
+    databaseDirectory: join(wpDir, "wp-content/database"),
+    debugLogPath: join(wpDir, "wp-content/debug.log"),
+  };
+}
+
+/**
+ * Copy a tree, replacing every symlink with what it points at. Not
+ * cpSync's `dereference`: that follows only the top-level source, and
+ * copies nested links (the SQLite plugin link) as links. The WordPress
+ * tree has no link cycles; a cycle here would recurse until the path is
+ * too long, failing loudly rather than staging a wrong tree.
+ */
+function copyTreeFollowingLinks(source: string, destination: string): void {
+  if (statSync(source).isDirectory()) {
+    mkdirSync(destination, { recursive: true });
+    for (const entry of readdirSync(source)) {
+      copyTreeFollowingLinks(join(source, entry), join(destination, entry));
+    }
+  } else {
+    copyFileSync(source, destination);
+  }
+}
+
+export function removeWordPressStage(stage: WordPressStage): void {
+  rmSync(stage.root, { recursive: true, force: true });
+}
+
+/**
+ * Give each suite round its own benchmark-owned OPcache root, inside the
+ * run's stage. Measurement subdirectories are reset independently so the
+ * CLI and HTTP metrics cannot reuse compiled scripts from each other or
+ * from another benchmark process.
+ */
+export function createWordPressOpcacheRunDirectory(stageRoot: string): string {
+  mkdirSync(stageRoot, { recursive: true });
+  return mkdtempSync(join(stageRoot, ".wordpress-opcache-run-"));
 }
 
 /** Restore the WordPress setup state and an empty file cache. */
