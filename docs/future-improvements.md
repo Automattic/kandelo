@@ -131,6 +131,26 @@ existing Linux-VT guests working and preserve Node/browser parity.
 
 ## Browser
 
+### Investigate the WebKit fbDOOM WAD-drop failure
+`apps/browser-demos/test/kandelo-doom-ingest.spec.ts` "dropping a WAD on the
+framebuffer loads it" failed in WebKit in three of three local runs on
+2026-09-28, each at a different step: the 90 s wait for the restarted
+fbDOOM to render, and a locator that never became visible. The drop itself
+works — the screenshot shows the shell running
+`/usr/local/bin/fbdoom -iwad /user.wad`, and the new fbDOOM initializing
+through `HU_Init` before it stops making visible progress. Chromium passes
+the same test, and WebKit passes the Load WAD button path, which uses the
+same restart command.
+
+That demo's keyboard input goes through the PTY (`ptyWrite`), not the host
+stdin pipe that ABI 44 changed, and no old-code baseline was available
+locally to compare against, so the failure is recorded here rather than
+attributed. The investigation should: run the test on main in WebKit to
+establish whether it predates ABI 44; compare what the drop path does
+differently from the button path (synthetic `DataTransfer` drop, focus,
+pane switching to the terminal); and capture the kernel's view of the
+restarted fbDOOM (blocked syscall, fb0 ownership) when it stalls.
+
 ### Replace the constrained public CORS proxy with an owned relay
 
 The current public proxy has a narrow six-name request-header profile. A

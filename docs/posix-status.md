@@ -36,6 +36,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 **Key kernel-side APIs:**
 - `kernel_create_process()` — allocate and register a new process, returning its PID
 - `kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind)` — same allocation with explicit stdio semantics
+- `kernel_install_host_stdin_pipe(pid)` — make fd 0 of a spawned, non-PTY process the read end of a kernel pipe whose write end the host holds; host-supplied stdin is written into that pipe, so fd 0 is one open file description shared across `fork`, `dup`, and `exec` with one read offset, and readers see end-of-file once the host closes it
 - `kernel_fork_process(parent, caller_tid, mode)` — validate the calling task
   and ABI-owned ordinary/vfork mode, allocate a child PID, and copy inherited
   state including that task's signal mask
@@ -177,7 +178,7 @@ same final-OFD lifetime rules.
 | `init_module()` / `delete_module()` | Stub | Returns EPERM. No kernel module support. |
 | `ioperm()` / `iopl()` | Stub | Returns EPERM. No I/O port access. |
 | `remap_file_pages()` | Stub | Returns ENOSYS. |
-| `getcontext()` / `setcontext()` / `makecontext()` / `swapcontext()` | Unsupported | Userspace stack-switching primitives, deprecated in POSIX.1-2008, not planned. See the "ucontext API unsupported" row under [Wasm-Inherent gaps](#wasm-inherent--gaps-that-cannot-be-fully-resolved-in-wasm) for rationale. |
+| `getcontext()` / `setcontext()` / `makecontext()` / `swapcontext()` | Unsupported | Userspace stack-switching primitives, deprecated in POSIX.1-2008, not planned. libc defines none of them, so a program calling them fails to link; the sysroot still ships musl's `<ucontext.h>`, so a header-only configure check reports it present. Software that references ucontext only on a path it never takes can link the opt-in `-lkandelo-ucontext-unsupported`, whose stand-ins abort with a diagnostic. See the "ucontext API unsupported" row under [Wasm-Inherent gaps](#wasm-inherent--gaps-that-cannot-be-fully-resolved-in-wasm) for rationale. |
 | `fork()` called from an exception catch handler | Partial | ABI 43 supports mixed `Catch`, `CatchRef`, `CatchAll`, and `CatchAllRef` arms, including scalar, vector, reference, JSTag, and modern C++ cleanup payloads. Scalar tagged arms serialize one exact activation selector and maximum live operand tuple; complete exceptions use the process reference graph and are thrown inside the fresh Wasm instance so reference clauses receive child-local exnrefs. Multiple arms/targets, recursion, loop re-entry, nested catches, later merged-flow forks, reference locals/carryovers, mutable reference globals, and mutated tables use the same versioned ownership machinery without module-static stashes. Dash and the configured shell/rootfs closure rebuild through this path. This row inherits the broader incomplete `fork()` status; catch/reference replay itself is not intentionally excluded. See [fork-instrumentation.md](fork-instrumentation.md). |
 
 ## Signals
@@ -653,7 +654,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 | `Atomics.wait()` on main thread | Works | Throws — must use workers |
 | Network sockets | TCP via `net` backend plus in-kernel/virtual UDP; raw external UDP not yet wired behind HostIO | Local virtual TCP/UDP works between browser Kandelo machines; external networking still requires WebSocket/WebRTC/proxy backends because browsers expose no raw sockets |
 | Process signals | `process.on('SIGINT', ...)` | Not available |
-| stdin | `process.stdin` | Requires custom input mechanism |
+| stdin | `process.stdin` (piped or redirected) is written into the process's fd 0 kernel pipe | The page writes input into the fd 0 kernel pipe (`appendStdinData`); terminal demos use a PTY instead |
 
 ---
 
